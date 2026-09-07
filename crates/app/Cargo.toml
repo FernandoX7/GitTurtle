@@ -1,0 +1,20 @@
+[package]
+name = "gitturtle"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+gpui-kit = { version = "=0.6.0", features = ["tree-sitter-diff", "tree-sitter-rust", "tree-sitter-typescript", "tree-sitter-javascript", "tree-sitter-json", "tree-sitter-css", "tree-sitter-markdown"] }
+gitturtle-core = { path = "../git-core" }
+gitturtle-preview = { path = "../preview" }
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+image = { version = "0.25", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rust-embed = "8"
+
+[[bin]]
+name = "gitturtle"
+path = "src/main.rs"
