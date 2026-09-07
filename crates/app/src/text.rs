@@ -18,6 +18,7 @@ pub fn editor(
         let mut state = EditorState::new(window, cx)
             .language(language.to_owned())
             .line_number(!diff)
+            .folding(!diff)
             .soft_wrap(false)
             .default_value(value.to_owned());
         if diff {
@@ -123,6 +124,9 @@ fn diff_ranges(value: &str) -> Vec<DiffRange> {
 }
 
 fn hunk_counts(line: &str) -> Option<(usize, usize)> {
+    if !line.starts_with("@@ ") {
+        return None;
+    }
     let mut fields = line.split_ascii_whitespace();
     if fields.next()? != "@@" {
         return None;
@@ -154,6 +158,19 @@ mod tests {
                 (range.kind, &value[range.range])
             })
             .collect()
+    }
+
+    #[test]
+    fn context_that_looks_like_a_hunk_keeps_following_changes() {
+        let patch = "@@ -1,2 +1,2 @@\n @@ -99 +100 @@\n-old\n+new\n";
+        assert_eq!(
+            decorated(patch),
+            vec![
+                (Kind::Hunk, "@@ -1,2 +1,2 @@\n"),
+                (Kind::Removed, "-old\n"),
+                (Kind::Added, "+new\n")
+            ]
+        );
     }
 
     #[test]

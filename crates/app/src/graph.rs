@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 pub const ROW_HEIGHT: f32 = 34.;
 const CANVAS: u32 = 0x0f171c;
 const TEXT: u32 = 0xdee9ed;
-const COLORS: [u32; 6] = [0x7adfb4, 0x8db7f6, 0xc3a5f2, 0xe8be7a, 0xea9ca5, 0x72ccd8];
+pub(super) const COLORS: [u32; 6] = [0x7adfb4, 0x8db7f6, 0xc3a5f2, 0xe8be7a, 0xea9ca5, 0x72ccd8];
 const NODE_MARGIN: f32 = 10.;
 const LANE_SPACING: f32 = 12.;
 

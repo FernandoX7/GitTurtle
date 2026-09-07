@@ -4,7 +4,7 @@ This records the v0.1 validation performed on September 7, 2026. Native interact
 
 ## Automated and build checks
 
-The completed workspace run passed **57 tests**, strict workspace Clippy, and a release build. Tests use disposable repositories for operations that create Git objects, refs, or worktrees.
+The completed workspace run passed **70 tests**, strict workspace Clippy, and a release build. Tests use disposable repositories for operations that create Git objects, refs, or worktrees.
 
 ```sh
 cargo fmt --all -- --check
@@ -13,11 +13,17 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo build --release --locked -p gitturtle
 ```
 
-Coverage includes repository roots and merge parents, branches and linked worktrees, unusual path bytes, binary/text/mode/type changes, SHA-256 repositories, missing partial-clone objects, local LFS integrity and symlink rejection, Git process deadlines, and repository-file snapshots with hostile configured helpers. Preview tests cover decoding limits, alpha handling, SVG resource rejection, and LFS pointer recognition. App tests exercise queue replacement, stale-work cancellation, cache identity and accounting, BGRA conversion, local LFS arrival, refreshed branch/worktree tips, and graph budgets.
+Coverage includes repository roots and merge parents, branches and linked worktrees, unusual path bytes, binary/text/mode/type changes, SHA-256 repositories, missing partial-clone objects, local LFS integrity and symlink rejection, Git process deadlines, and repository-file snapshots with hostile configured helpers. Preview tests cover decoding limits, alpha handling, SVG resource rejection, and LFS pointer recognition. App tests exercise queue replacement, stale-work cancellation, cache identity and accounting, BGRA conversion, local LFS arrival, refreshed branch/worktree tips, and graph budgets. New coverage includes branch folder expansion/filtering, retained repository sessions, and old/new line numbering for unified patches, including header-like source text.
 
 A local macOS `.app` can be built with [the packaging script](../scripts/package-macos.sh). It is signed ad-hoc for local use, not notarized. The script's `--debug` option packages a debug build, while the default uses release; `--no-build` reuses the selected profile's existing executable.
 
-## Native macOS checks
+## Column layout update
+
+The updated release has a full-height history table and persistent right-hand commit/file inspector. Explicit file activation opens a full-height comparison; Back returns to retained history. Local and remote references are grouped into branch folders. Unified patches now have a separately painted old/new line-number gutter, preserving the literal editor text.
+
+The 70-test run, strict workspace Clippy, and release packaging passed after these changes. Native visual/focus/scroll verification of this update is pending: the Mac was locked when the updated app was launched. Earlier native checks below apply to the previous layout and are retained as historical evidence.
+
+## Initial native macOS checks (before column layout)
 
 The application was opened against the locally available `world-of-claudecraft` repository containing **5,577 branches and 130 worktrees**, and against a generated demonstration repository.
 
@@ -31,7 +37,7 @@ The application was opened against the locally available `world-of-claudecraft` 
 
 Horizontal wheel panning did not visibly respond to the CUA test; full two-axis gesture behavior remains unverified.
 
-These are manual checks of the current native build, not an exhaustive platform or accessibility certification. The [design document](design.md) includes intended behavior beyond the implemented surface.
+These are manual checks of the initial native build, not an exhaustive platform or accessibility certification. The [design document](design.md) includes intended behavior beyond the implemented surface.
 
 To create a fresh disposable demonstration repository:
 
@@ -52,13 +58,15 @@ The native app has a separate optional trace:
 GITTURTLE_TRACE=1 target/release/gitturtle /path/to/repository
 ```
 
-`gitturtle.selection_frame_ms` starts in the application selection handler. For a commit selection, it includes reading the changed-file list and preparing the chosen file preview; a direct file selection starts at that file's handler. The value is emitted at a GPUI frame-completion callback after the current preview is prepared, with a generation check to suppress superseded results. It does not measure input delivery before the handler, OS display presentation, or completed GPU execution. Interactions without a completed preview do not produce this sample.
+`gitturtle.commit_files_frame_ms` now measures a History selection through its changed-file list frame. `gitturtle.file_preview_frame_ms` measures an explicit file activation through its prepared comparison frame. History selection does not eagerly prepare a file preview. Returning to History uses retained state without a new Git request. Both metrics start in the application handler and use a generation- and mode-checked GPUI callback; they exclude input delivery before the handler, OS presentation, and completed GPU execution. Superseded interactions emit no sample.
+
+The earlier `gitturtle.selection_frame_ms` trace, used for the historical measurements below, starts in the application selection handler. For a commit selection, it includes reading the changed-file list and preparing the chosen file preview; a direct file selection starts at that file's handler. The value is emitted at a GPUI frame-completion callback after the current preview is prepared, with a generation check to suppress superseded results. It does not measure input delivery before the handler, OS display presentation, or completed GPU execution. Interactions without a completed preview do not produce this sample.
 
 The status bar's **content read** duration covers worker processing, including a content-cache lookup on a hit. It excludes time waiting for the worker and subsequent editor construction or frame work. Comparing this value directly with another client's click-to-visible delay would be misleading.
 
 Native trace samples should be reported with the build profile, repository, selected content, sample count, system load, and cache conditions. No frame-latency or memory guarantee is established by the current checks.
 
-## Initial optimized native measurements
+## Initial optimized native measurements (before column layout)
 
 On Apple M4 Max / macOS 26.6.2, the release build at `8b0799e` opened `world-of-claudecraft` with 500 loaded commits. We sent 25 Down actions and then 25 Up actions, observing the native accessibility state after each. The OS filesystem cache was not flushed; other desktop applications and development activity remained running. This is a small first measurement, not a comparative benchmark or latency guarantee.
 
@@ -75,7 +83,7 @@ Process RSS snapshots were about 142.3 MiB after the outbound traversal and 143.
 
 - The UI loads 500 commits initially and adds 500 per **Load more**, up to 10,000. It reloads the full prefix and restores the selected commit/preferred file when possible, centering the history selection. It does not retain an incremental history traversal cursor. Search covers loaded commits.
 - Refresh is manual and resolves the selected scope's current tip. Another tool is responsible for fetches. Missing objects are reported without automatic downloads.
-- Text uses a unified patch plus Before/After tabs. There is no aligned split view or dual old/new line-number gutter. The UI's initial file list omits rename detection, displaying additions and deletions instead.
+- Text uses a unified patch plus Before/After tabs. A separate old/new gutter accompanies unified patches; there is no aligned split view. Parent controls expose the first 128 parents of unusually large merge commits with an explicit count notice. The UI's initial file list omits rename detection, displaying additions and deletions instead.
 - Images use a first-frame preview capped at a 1,600-pixel edge. Zoom percentages refer to that decoded preview; original dimensions and reduced preview dimensions are shown. SVG filters and embedded/external images are explicitly unsupported.
 - Graph preparation allows at most 128 simultaneous lanes, 200,000 edges, and 200,000 parent entries. Above the budget, the UI explains why connections are hidden and shows isolated nodes instead of incomplete ancestry lines.
 - The preview cache is limited to 32 entries and 128 MiB of retained CPU content allocations. UI-held references and GPU resources have separate lifetimes. Active decoder work stops at cooperative checkpoints; input and allocation limits are not a process sandbox or a hard end-to-end deadline.

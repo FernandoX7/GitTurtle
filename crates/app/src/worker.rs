@@ -154,7 +154,12 @@ impl Default for Worker {
 
 impl Worker {
     pub fn new() -> Self {
-        Self::with_executor(execute)
+        // The session is owned by the executor on its reader thread. UI clones
+        // can be cleared without closing/waiting for the shared cat-file child.
+        let mut session = RepositorySession::default();
+        Self::with_executor(move |job, cache, cancellation| {
+            execute(job, cache, cancellation, &mut session)
+        })
     }
 
     fn with_executor(
@@ -246,6 +251,46 @@ impl Worker {
         });
         ready.notify_one();
         receiver
+    }
+}
+
+struct RetainedRepository {
+    canonical_root: PathBuf,
+    repository: Arc<GitRepository>,
+}
+
+/// Retain one current worktree session, independently of preview eviction and
+/// UI selection. Replacing it and dropping its process-owning Git handle happen
+/// on the worker. Linked worktrees never share a session merely because their
+/// common object directory is the same: HEAD and local configuration differ.
+#[derive(Default)]
+struct RepositorySession {
+    current: Option<RetainedRepository>,
+}
+
+impl RepositorySession {
+    fn open(&mut self, requested: &Path) -> Result<GitRepository> {
+        let canonical = requested.canonicalize()?;
+        if let Some(current) = &self.current
+            && current.canonical_root == canonical
+        {
+            return Ok(current.repository.as_ref().clone());
+        }
+        // A nested directory needs Git discovery; it may still resolve to the
+        // existing root, in which case keep the original persistent reader.
+        let discovered = GitRepository::open(&canonical)?;
+        let canonical_root = discovered.path().canonicalize()?;
+        if let Some(current) = &self.current
+            && current.canonical_root == canonical_root
+        {
+            return Ok(current.repository.as_ref().clone());
+        }
+        let repository = Arc::new(discovered);
+        self.current = Some(RetainedRepository {
+            canonical_root,
+            repository: Arc::clone(&repository),
+        });
+        Ok(repository.as_ref().clone())
     }
 }
 
@@ -346,12 +391,17 @@ impl PreviewCache {
     }
 }
 
-fn execute(job: Job, cache: &mut PreviewCache, cancellation: &Cancellation) -> Result<Output> {
+fn execute(
+    job: Job,
+    cache: &mut PreviewCache,
+    cancellation: &Cancellation,
+    session: &mut RepositorySession,
+) -> Result<Output> {
     let start = Instant::now();
     cancellation.check()?;
     match job {
         Job::Open { path, scope, limit } => {
-            let mut snapshot = read_snapshot(path, scope.as_ref(), limit, cancellation)?;
+            let mut snapshot = read_snapshot(path, scope.as_ref(), limit, cancellation, session)?;
             cancellation.check()?;
             // This single worker serializes preference saves with successful
             // opens. Refreshing a branch in the same repository needs no write.
@@ -411,10 +461,11 @@ fn read_snapshot(
     scope: Option<&Scope>,
     limit: usize,
     cancellation: &Cancellation,
+    session: &mut RepositorySession,
 ) -> Result<Snapshot> {
     let start = Instant::now();
     cancellation.check()?;
-    let repository = GitRepository::open(path)?;
+    let repository = session.open(&path)?;
     cancellation.check()?;
     let branches = repository.branches()?;
     cancellation.check()?;
@@ -1125,6 +1176,7 @@ mod image_tests {
             new_mode: "100644".into(),
         };
         let mut cache = PreviewCache::default();
+        let mut session = RepositorySession::default();
         let mut preview = |expected_cached_entries| {
             let output = execute(
                 Job::Preview {
@@ -1133,6 +1185,7 @@ mod image_tests {
                 },
                 &mut cache,
                 &active(),
+                &mut session,
             )
             .unwrap();
             assert_eq!(cache.entries.len(), expected_cached_entries);
@@ -1194,7 +1247,9 @@ mod image_tests {
             name: "main".into(),
             remote: false,
         };
-        let before = read_snapshot(fixture.0.clone(), Some(&scope), 10, &active()).unwrap();
+        let mut session = RepositorySession::default();
+        let before =
+            read_snapshot(fixture.0.clone(), Some(&scope), 10, &active(), &mut session).unwrap();
         assert_eq!(before.commits[0].oid, first);
         let worktree_scope = Scope::Worktree {
             path: before.repository.path().to_owned(),
@@ -1202,15 +1257,89 @@ mod image_tests {
         let second = fixture.git(&["commit-tree", &tree, "-p", &first, "-m", "second"], &[]);
         fixture.git(&["update-ref", "refs/heads/main", &second], &[]);
         for scope in [&scope, &worktree_scope] {
-            let refreshed = read_snapshot(fixture.0.clone(), Some(scope), 10, &active()).unwrap();
+            let refreshed =
+                read_snapshot(fixture.0.clone(), Some(scope), 10, &active(), &mut session).unwrap();
             assert_eq!(refreshed.commits[0].oid, second);
             assert_eq!(refreshed.commits[1].oid, first);
         }
         // A missing selection must never silently fall back to unrelated refs.
         fixture.git(&["update-ref", "-d", "refs/heads/main"], &[]);
-        let error = read_snapshot(fixture.0.clone(), Some(&scope), 10, &active())
+        let error = read_snapshot(fixture.0.clone(), Some(&scope), 10, &active(), &mut session)
             .err()
             .expect("deleted branch must fail");
         assert!(error.to_string().contains("no longer exists"));
+    }
+
+    #[test]
+    fn retained_session_survives_ui_clear_and_nested_opens_but_separates_worktrees() {
+        let fixture = Fixture::new();
+        fixture.git(&["symbolic-ref", "HEAD", "refs/heads/main"], &[]);
+        let tree = fixture.git(&["mktree"], &[]);
+        let oid = fixture.git(&["commit-tree", &tree, "-m", "initial"], &[]);
+        fixture.git(&["update-ref", "refs/heads/main", &oid], &[]);
+        let blob = fixture.blob(b"retained object reader\n");
+        let mut session = RepositorySession::default();
+        let ui_repository = session.open(&fixture.0).unwrap();
+        assert_eq!(
+            ui_repository.blob(&blob).unwrap(),
+            b"retained object reader\n"
+        );
+        let retained = Arc::downgrade(&session.current.as_ref().unwrap().repository);
+        drop(ui_repository);
+        assert!(
+            retained.upgrade().is_some(),
+            "clearing UI must retain the process owner"
+        );
+
+        let nested = fixture.0.join("nested/directory");
+        fs::create_dir_all(&nested).unwrap();
+        for path in [&fixture.0, &nested] {
+            let reopened = session.open(path).unwrap();
+            assert!(Arc::ptr_eq(
+                &retained.upgrade().unwrap(),
+                &session.current.as_ref().unwrap().repository,
+            ));
+            assert_eq!(reopened.blob(&blob).unwrap(), b"retained object reader\n");
+        }
+
+        let linked = fixture.0.join("linked-worktree");
+        fixture.git(
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "feature",
+                linked.to_str().unwrap(),
+            ],
+            &[],
+        );
+        let linked_repo = session.open(&linked).unwrap();
+        assert!(
+            retained.upgrade().is_none(),
+            "old retained owner is released on session replacement"
+        );
+        assert_eq!(linked_repo.path(), linked.canonicalize().unwrap());
+        assert_eq!(
+            linked_repo
+                .branches()
+                .unwrap()
+                .iter()
+                .find(|b| b.current)
+                .unwrap()
+                .name,
+            "feature"
+        );
+        let main_repo = session.open(&fixture.0).unwrap();
+        assert_eq!(
+            main_repo
+                .branches()
+                .unwrap()
+                .iter()
+                .find(|b| b.current)
+                .unwrap()
+                .name,
+            "main"
+        );
     }
 }
