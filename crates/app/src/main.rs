@@ -276,6 +276,7 @@ impl GitTurtle {
         self.commits.clear();
         self.visible.clear();
         self.graph.clear();
+        self.graph_notice = None;
         self.request(
             Job::Open {
                 path,
@@ -349,6 +350,8 @@ impl GitTurtle {
                         .as_ref()
                         .and_then(|path| self.files.iter().position(|f| f.path() == path))
                         .unwrap_or(0);
+                    self.file_scroll
+                        .scroll_to_item(index, ScrollStrategy::Center);
                     self.load_file(index, window, cx);
                 }
             }

@@ -17,7 +17,8 @@ GitTurtle is a beautiful, fast, read-only native Git inspection client. macOS is
 - Perform repository reads, diff computation, parsing, and image decoding off the UI thread. Load metadata before file content; virtualize lists. Generation checks prevent stale results, and queues/concurrency/input limits bound underlying work.
 - Read external repositories without commits, staging, checkout, fetch, maintenance, repair, index refresh, configuration changes, or repository-local cache writes. Preferences/caches belong in the application data directory. Test Git mutations only in disposable fixtures.
 - Use fixed Git argument arrays, raw object reads, disabled external helpers/filters, no lazy fetch, and no optional locks. Treat missing LFS/promisor objects explicitly. Never follow stored symlinks as local files.
-- Preserve parent comparison, absent image sides, filename bytes, mode/type changes, and shared-versus-private worktree state.
+- Preserve parent comparison, absent image sides, filename bytes, mode/type changes, and shared-versus-private worktree state. Resolve branch/worktree identities again on Refresh; do not retain a stale tip OID.
+- Keep preference writes serialized outside the UI thread. Initialize text editors lazily; prepare graph topology and render-image pixels on the worker. Keep selected files visible when lists change.
 - Use GPUI Kit's matching dependency set; pin it through Cargo.lock. Avoid copying GPL Zed editor code into this project.
 
 ## Validation
