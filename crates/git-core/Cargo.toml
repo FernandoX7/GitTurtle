@@ -1,0 +1,17 @@
+[package]
+name = "gitturtle-core"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Read-only Git repository inspection for GitTurtle"
+
+[dependencies]
+anyhow = "1.0"
+similar = "2.7"
+sha2 = "0.10"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1", features = ["fs", "process"] }
+
+[dev-dependencies]
+tempfile = "3.27"
