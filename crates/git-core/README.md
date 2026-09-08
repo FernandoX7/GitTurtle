@@ -21,6 +21,12 @@ Local LFS lookup supports the common Git directory shared by linked worktrees an
 
 Real writes preserve normal Git configuration, clean/smudge filters, hooks and signing. A failing hook or signing helper is reported, never bypassed. `GitProfile` reads effective author identity and configured signing. Identity updates write repository config, or the current worktree's private config when the repository already enables `extensions.worktreeConfig`; global identity is never changed. If saving the email fails after the name was saved, the partial outcome is reported.
 
+Text working previews can include a `PartialDiff` snapshot for explicit hunk or changed-line staging and unstaging. `ApplyPartial` validates the selected repository, HEAD, attributes, index entry and working bytes under the real index lock, then atomically publishes a copied index. Unrelated index entries and all working files are preserved. Binary, oversized, filtered, normalized, renamed and mode/type-changing files retain whole-file operations. A selection that would ambiguously join unterminated lines is refused; select the complete replacement or hunk. Commit messages use verbatim cleanup to preserve description whitespace and comment lines.
+
+`integration_plan` resolves and pins a named local branch, remote-tracking branch or configured upstream. Explicit merge and rebase refuse stale plans and never autostash. Rebase also checks ignored paths against the target and each replayed commit before starting. `operation_state` detects external merge, rebase, cherry-pick and revert operations; continuation snapshots include staged paths and the index identity. `conflict_preview` returns the base and both complete sides with branch-aware labels, including the reversed roles during rebase. Resolution can choose a side, save bounded manual text, or stage an externally edited file. Reads and manual writes never follow a stored symlink. Continue respects hooks/signing; externally requested message editing must finish in an editor. Abort refuses unrelated staged changes it cannot preserve; Quit keeps HEAD, index and working files while ending the operation.
+
+`BranchCommand` uses prepared snapshots for tracking-branch creation, rename, safe deletion and upstream changes. Plans validate branch tips, configuration and linked-worktree occupancy again before writing. `remote_configs` retains every URL, push URL and fetch refspec. Remote edits publish shared repository configuration atomically while preserving unrelated options; removal reports affected tracking relationships and preserves refs shared with another remote. Configuration inherited from another source must be changed at that source. These management operations are local and do not fetch.
+
 `GitRepository::init` and `clone_repository` accept only a fresh or empty destination in an existing parent folder. They preserve an occupied destination and do not remove partially created files after failure. Clone does not recurse into submodules. Explicit network operations use configured remotes, Git credentials and SSH configuration with terminal/askpass prompting disabled. Default SSH uses BatchMode and a connection timeout; custom SSH commands and credential/signing helpers remain subject to the operation deadline. Interactive authentication setup is performed outside this client; no credentials are stored by the core. Executable `ext` transport is disabled.
 
 Every write runs once with bounded input/output. A timeout terminates and reaps its process group and reports that local or remote effects may already have happened. There is no automatic retry. The UI must refresh after success **or** failure and let the user inspect the result before another action. Configured hooks and filters are executable user configuration, and their own side effects are not transactional.
@@ -47,11 +53,13 @@ Image callers must separately bound decoded pixels and GPU allocations. A genera
 ## Verification
 
 ```sh
-cargo test -p gitturtle-core
-cargo run --release -p gitturtle-core --example inspect -- /path/to/repository
+cargo test --locked -p gitturtle-core
+cargo run --locked --release -p gitturtle-core --example inspect -- /path/to/repository
 ```
 
 Tests mutate only temporary repositories and local disposable remotes. The everyday workflow fixtures cover staged-only commits with later work preserved, unborn/rename unstaging, literal filenames, raw image/symlink previews, effective and private-worktree identity, hook/filter preservation, signing failure, checkout refusal, merge conflict state, fresh init/clone, fetch, fast-forward pull and non-force push. macOS filesystems reject non-UTF-8 filesystem names; parser/path-input tests preserve these bytes, immutable-tree fixtures cover their Git object representation, and the write fixture creates such files on Linux. The inspection tests cover empty/bare repositories, roots, merge parent selection, topological paging, branches and linked worktrees, non-UTF-8/newline paths constructed directly in Git trees, binary/text/mode/type changes, gitlinks, SHA-256 repositories, partial clones, local LFS integrity and symlink rejection, stalled-process cleanup, and repository-file snapshots with hostile configured helpers.
+
+Dedicated partial-staging, integration and branch-management fixtures cover stale snapshots, mixed staged/unstaged work, missing final newlines, filtered and SHA-256 indexes, linked worktrees, manual and binary conflicts, external sequencers, abort preservation, ignored-path collisions, tracking relationships, atomic remote edits and inherited configuration. These backend fixtures do not establish native interaction or platform coverage.
 
 ## Initial measurement, September 7, 2026
 

@@ -2,6 +2,11 @@
 use super::*;
 use std::path::Component;
 
+mod integration;
+pub use integration::*;
+mod branches;
+pub use branches::*;
+
 const WRITE_TIMEOUT: Duration = Duration::from_secs(90);
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(180);
 const WRITE_OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
@@ -71,10 +76,76 @@ pub struct WorktreePreview {
     pub old: Vec<u8>,
     pub new: Vec<u8>,
     pub preview: TextPreview,
+    /// A bounded, owned selection model. Working snapshots must not be cached.
+    pub partial: Option<PartialDiff>,
+    pub partial_unavailable: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PartialLineKind {
+    Context,
+    Addition,
+    Deletion,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PartialLine {
+    pub kind: PartialLineKind,
+    pub old_line: Option<usize>,
+    pub new_line: Option<usize>,
+    /// Exact source text, including the terminating newline when present.
+    pub text: String,
+    /// Stable within this snapshot. Context lines cannot be selected.
+    pub change_id: Option<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PartialHunk {
+    pub header: String,
+    pub lines: Vec<PartialLine>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PartialSelection {
+    /// Zero-based hunk positions from this snapshot.
+    Hunks(Vec<usize>),
+    /// Changed-line IDs, including both removed and added lines for a replacement.
+    Lines(Vec<usize>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PartialDiff {
+    pub path: PathBuf,
+    pub area: ChangeArea,
+    pub hunks: Vec<PartialHunk>,
+    snapshot: PartialSnapshot,
+    edits: Vec<PartialEdit>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PartialSnapshot {
+    root: PathBuf,
+    file: FileChange,
+    old: Vec<u8>,
+    new: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PartialEdit {
+    kind: PartialLineKind,
+    old_index: Option<usize>,
+    new_index: Option<usize>,
+    change_id: Option<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WriteCommand {
+    Branch(Arc<BranchCommand>),
+    Integration(IntegrationCommand),
+    ApplyPartial {
+        diff: Arc<PartialDiff>,
+        selection: PartialSelection,
+    },
     Stage {
         paths: Vec<PathBuf>,
     },
@@ -300,11 +371,195 @@ impl GitRepository {
         } else {
             preview_bytes(&file, &old, &new)
         };
-        Ok(WorktreePreview {
+        let mut result = WorktreePreview {
             file,
             old,
             new,
             preview,
+            partial: None,
+            partial_unavailable: None,
+        };
+        match self.partial_diff(entry, area, &result) {
+            Ok(diff) => result.partial = Some(diff),
+            Err(error) => result.partial_unavailable = Some(error.to_string()),
+        }
+        Ok(result)
+    }
+
+    fn partial_diff(
+        &self,
+        entry: &StatusEntry,
+        area: ChangeArea,
+        preview: &WorktreePreview,
+    ) -> Result<PartialDiff> {
+        let file = &preview.file;
+        ensure!(
+            entry.original_path.is_none() && file.status != ChangeStatus::Renamed,
+            "Stage or unstage this rename as a whole file."
+        );
+        ensure!(
+            [&file.old_mode, &file.new_mode]
+                .iter()
+                .all(|mode| matches!(mode.as_str(), "100644" | "100755" | "000000")),
+            "Use the whole-file action for symbolic links, submodules, or type changes."
+        );
+        ensure!(
+            file.old_mode == file.new_mode || file.old_path.is_none() || file.new_path.is_none(),
+            "Use the whole-file action to preserve this file's permission change."
+        );
+        ensure!(
+            matches!(&preview.preview, TextPreview::Patch(_)),
+            "Partial staging is available for text within the diff size limits."
+        );
+        // check-attr is a passive read of normal attributes; it never invokes a
+        // filter or a diff driver. Keep display bytes raw, and disclose cases in
+        // which combining those bytes with index contents would be misleading.
+        let mut command = normal_command(&self.path);
+        command.env("GIT_OPTIONAL_LOCKS", "0").args([
+            "check-attr",
+            "-z",
+            "--stdin",
+            "filter",
+            "working-tree-encoding",
+            "ident",
+            "text",
+            "eol",
+            "diff",
+        ]);
+        let attributes = checked_write_output(
+            command,
+            Some(path_input(std::slice::from_ref(&entry.path))?),
+            GIT_TIMEOUT,
+        )?
+        .stdout;
+        let fields: Vec<_> = attributes.split(|byte| *byte == 0).collect();
+        let attribute = |name: &[u8]| -> &[u8] {
+            fields
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .find_map(|item| (item[1] == name).then_some(item[2]))
+                .unwrap_or(b"unspecified")
+        };
+        let enabled = |value: &[u8]| !matches!(value, b"unset" | b"unspecified");
+        ensure!(
+            attribute(b"diff") != b"unset",
+            "Git marks this file as binary; use the whole-file action."
+        );
+        if area == ChangeArea::Unstaged {
+            ensure!(
+                ![b"filter".as_slice(), b"working-tree-encoding", b"ident"]
+                    .iter()
+                    .any(|name| enabled(attribute(name))),
+                "This file uses Git content conversion; stage it as a whole file to respect that configuration."
+            );
+            if preview.new.windows(2).any(|pair| pair == b"\r\n") && attribute(b"text") != b"unset"
+            {
+                let autocrlf = self.normal_config("core.autocrlf")?.unwrap_or_default();
+                ensure!(
+                    !enabled(attribute(b"text"))
+                        && !enabled(attribute(b"eol"))
+                        && !matches!(autocrlf.to_ascii_lowercase().as_str(), "true" | "input"),
+                    "Git normalizes this file's line endings; stage it as a whole file."
+                );
+            }
+        }
+        PartialDiff::new(self.path.clone(), entry.path.clone(), area, preview)
+    }
+
+    fn apply_partial(
+        &self,
+        diff: &PartialDiff,
+        selection: &PartialSelection,
+    ) -> Result<WriteOutcome> {
+        ensure!(
+            diff.snapshot.root == self.path,
+            "This selection belongs to another working copy; refresh first."
+        );
+        validate_path(&diff.path)?;
+        let (bytes, remove) = diff.selected_contents(selection)?;
+        // Holding the real index.lock prevents other cooperating Git writers
+        // from changing the target between validation and atomic publication.
+        let index = path_from_bytes(trim_line(&run_git(
+            &self.path,
+            &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+        )?));
+        let transaction = PartialIndex::acquire(index)?;
+        let current = self.status()?;
+        let entry = current
+            .entries
+            .iter()
+            .find(|entry| entry.path == diff.path)
+            .context("This change is no longer present; refresh before selecting changes again.")?;
+        ensure!(
+            !entry.conflicted,
+            "This file has become conflicted; refresh and resolve it first."
+        );
+        let fresh = self.worktree_preview(entry, diff.area)?;
+        ensure!(
+            fresh
+                .partial
+                .as_ref()
+                .is_some_and(|fresh| fresh.snapshot == diff.snapshot),
+            "This file, its staged contents, or its Git attributes changed; refresh and select changes again."
+        );
+        let mut input = if remove {
+            // The object-ID width is repository-dependent (SHA-1 or SHA-256).
+            let oid = diff
+                .snapshot
+                .file
+                .old_oid
+                .as_ref()
+                .or(diff.snapshot.file.new_oid.as_ref())
+                .context("Missing object identity for file removal")?;
+            format!("0 {}\t", "0".repeat(oid.len())).into_bytes()
+        } else {
+            let mut hash = normal_command(&self.path);
+            hash.args(["hash-object", "-w", "--stdin"]);
+            if diff.area == ChangeArea::Unstaged {
+                hash.arg("--path").arg(&diff.path);
+            } else {
+                hash.arg("--no-filters");
+            }
+            let oid = text(trim_line(
+                &checked_write_output(hash, Some(bytes.clone()), WRITE_TIMEOUT)?.stdout,
+            ));
+            validate_oid(&oid)?;
+            if diff.area == ChangeArea::Unstaged {
+                let mut raw_hash = normal_command(&self.path);
+                raw_hash.args(["hash-object", "--stdin", "--no-filters"]);
+                let raw_oid = checked_write_output(raw_hash, Some(bytes), WRITE_TIMEOUT)?.stdout;
+                ensure!(
+                    trim_line(&raw_oid) == oid.as_bytes(),
+                    "Git content conversion changed this selection; use whole-file staging to preserve Git's configured behavior."
+                );
+            }
+            let mode = if diff.snapshot.file.old_mode != "000000" {
+                &diff.snapshot.file.old_mode
+            } else {
+                &diff.snapshot.file.new_mode
+            };
+            format!("{mode} {oid}\t").into_bytes()
+        };
+        input.extend_from_slice(diff.path.as_os_str().as_encoded_bytes());
+        input.push(0);
+        transaction.prepare(self)?;
+        let mut update = normal_command(&self.path);
+        update.env("GIT_INDEX_FILE", &transaction.lock).args([
+            "update-index",
+            "-z",
+            "--index-info",
+        ]);
+        checked_write_output(update, Some(input), WRITE_TIMEOUT)?;
+        transaction.publish()?;
+        Ok(WriteOutcome {
+            message: if diff.area == ChangeArea::Unstaged {
+                "Selected changes staged"
+            } else {
+                "Selected changes unstaged"
+            }
+            .into(),
+            commit_oid: None,
         })
     }
 
@@ -316,6 +571,11 @@ impl GitRepository {
         let mut input = None;
         let mut timeout = WRITE_TIMEOUT;
         match operation {
+            WriteCommand::Branch(command) => return self.execute_branch(command),
+            WriteCommand::Integration(command) => return self.execute_integration(command),
+            WriteCommand::ApplyPartial { diff, selection } => {
+                return self.apply_partial(diff, selection);
+            }
             WriteCommand::Stage { paths } => {
                 input = Some(path_input(paths)?);
                 command.args([
@@ -382,7 +642,7 @@ impl GitRepository {
                     message.len() <= 64 * 1024 && !message.contains('\0'),
                     "Commit message must be at most 64 KiB and contain no NUL bytes"
                 );
-                command.args(["commit", "--file=-"]);
+                command.args(["commit", "--cleanup=verbatim", "--file=-"]);
                 input = Some(message.as_bytes().to_vec());
             }
             WriteCommand::Checkout { branch } => {
@@ -602,6 +862,331 @@ impl GitRepository {
                 &format!("{name}^{{commit}}"),
             ],
         )?)))
+    }
+}
+
+impl PartialDiff {
+    fn new(
+        root: PathBuf,
+        path: PathBuf,
+        area: ChangeArea,
+        preview: &WorktreePreview,
+    ) -> Result<Self> {
+        let old = std::str::from_utf8(&preview.old)?;
+        let new = std::str::from_utf8(&preview.new)?;
+        let diff = TextDiff::configure()
+            .algorithm(Algorithm::Patience)
+            .timeout(Duration::from_millis(250))
+            .diff_lines(old, new);
+        let mut next_id = 0;
+        let edits: Vec<_> = diff
+            .iter_all_changes()
+            .map(|change| {
+                let kind = match change.tag() {
+                    similar::ChangeTag::Equal => PartialLineKind::Context,
+                    similar::ChangeTag::Insert => PartialLineKind::Addition,
+                    similar::ChangeTag::Delete => PartialLineKind::Deletion,
+                };
+                let change_id = (kind != PartialLineKind::Context).then(|| {
+                    let id = next_id;
+                    next_id += 1;
+                    id
+                });
+                PartialEdit {
+                    kind,
+                    old_index: change.old_index(),
+                    new_index: change.new_index(),
+                    change_id,
+                }
+            })
+            .collect();
+        ensure!(next_id > 0, "There are no text changes to select.");
+        // Merge changed ranges whenever their three lines of context overlap.
+        let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
+        for (index, _) in edits
+            .iter()
+            .enumerate()
+            .filter(|(_, edit)| edit.change_id.is_some())
+        {
+            let range = index.saturating_sub(3)..(index + 4).min(edits.len());
+            if let Some(previous) = ranges
+                .last_mut()
+                .filter(|previous| previous.end >= range.start)
+            {
+                previous.end = range.end;
+            } else {
+                ranges.push(range);
+            }
+        }
+        let old_lines: Vec<_> = old.split_inclusive('\n').collect();
+        let new_lines: Vec<_> = new.split_inclusive('\n').collect();
+        let mut old_before = 0;
+        let mut new_before = 0;
+        let mut cursor = 0;
+        let mut hunks = Vec::with_capacity(ranges.len());
+        for range in ranges {
+            for edit in &edits[cursor..range.start] {
+                old_before += usize::from(edit.old_index.is_some());
+                new_before += usize::from(edit.new_index.is_some());
+            }
+            let old_count = edits[range.clone()]
+                .iter()
+                .filter(|edit| edit.old_index.is_some())
+                .count();
+            let new_count = edits[range.clone()]
+                .iter()
+                .filter(|edit| edit.new_index.is_some())
+                .count();
+            let header = format!(
+                "@@ -{},{} +{},{} @@",
+                old_before + usize::from(old_count > 0),
+                old_count,
+                new_before + usize::from(new_count > 0),
+                new_count
+            );
+            let lines = edits[range.clone()]
+                .iter()
+                .map(|edit| PartialLine {
+                    kind: edit.kind,
+                    old_line: edit.old_index.map(|index| index + 1),
+                    new_line: edit.new_index.map(|index| index + 1),
+                    text: edit
+                        .old_index
+                        .map(|index| old_lines[index])
+                        .unwrap_or_else(|| new_lines[edit.new_index.expect("added line index")])
+                        .into(),
+                    change_id: edit.change_id,
+                })
+                .collect();
+            hunks.push(PartialHunk { header, lines });
+            old_before += old_count;
+            new_before += new_count;
+            cursor = range.end;
+        }
+        Ok(Self {
+            path,
+            area,
+            hunks,
+            snapshot: PartialSnapshot {
+                root,
+                file: preview.file.clone(),
+                old: preview.old.clone(),
+                new: preview.new.clone(),
+            },
+            edits,
+        })
+    }
+
+    /// Retained allocation estimate for worker/UI memory accounting.
+    pub fn bytes(&self) -> usize {
+        self.path.capacity()
+            + self.snapshot.root.capacity()
+            + self
+                .snapshot
+                .file
+                .old_path
+                .as_ref()
+                .map_or(0, PathBuf::capacity)
+            + self
+                .snapshot
+                .file
+                .new_path
+                .as_ref()
+                .map_or(0, PathBuf::capacity)
+            + self
+                .snapshot
+                .file
+                .old_oid
+                .as_ref()
+                .map_or(0, String::capacity)
+            + self
+                .snapshot
+                .file
+                .new_oid
+                .as_ref()
+                .map_or(0, String::capacity)
+            + self.snapshot.file.old_mode.capacity()
+            + self.snapshot.file.new_mode.capacity()
+            + self.snapshot.old.capacity()
+            + self.snapshot.new.capacity()
+            + self.edits.capacity() * std::mem::size_of::<PartialEdit>()
+            + self.hunks.capacity() * std::mem::size_of::<PartialHunk>()
+            + self
+                .hunks
+                .iter()
+                .map(|hunk| {
+                    hunk.header.capacity()
+                        + hunk.lines.capacity() * std::mem::size_of::<PartialLine>()
+                        + hunk
+                            .lines
+                            .iter()
+                            .map(|line| line.text.capacity())
+                            .sum::<usize>()
+                })
+                .sum::<usize>()
+    }
+
+    fn selected_contents(&self, selection: &PartialSelection) -> Result<(Vec<u8>, bool)> {
+        let count = self
+            .edits
+            .iter()
+            .filter(|edit| edit.change_id.is_some())
+            .count();
+        let mut chosen = vec![false; count];
+        let mut select = |id: usize| -> Result<()> {
+            *chosen
+                .get_mut(id)
+                .context("This selection is invalid; refresh and select changes again.")? = true;
+            Ok(())
+        };
+        match selection {
+            PartialSelection::Hunks(indices) => {
+                for index in indices {
+                    let hunk = self
+                        .hunks
+                        .get(*index)
+                        .context("This hunk no longer exists; refresh the preview.")?;
+                    for id in hunk.lines.iter().filter_map(|line| line.change_id) {
+                        select(id)?;
+                    }
+                }
+            }
+            PartialSelection::Lines(ids) => {
+                for id in ids {
+                    select(*id)?;
+                }
+            }
+        }
+        ensure!(
+            chosen.iter().any(|selected| *selected),
+            "Select at least one changed line or hunk."
+        );
+        let old_lines: Vec<_> = self
+            .snapshot
+            .old
+            .split_inclusive(|byte| *byte == b'\n')
+            .collect();
+        let new_lines: Vec<_> = self
+            .snapshot
+            .new
+            .split_inclusive(|byte| *byte == b'\n')
+            .collect();
+        let mut result = Vec::with_capacity(self.snapshot.old.len().max(self.snapshot.new.len()));
+        for edit in &self.edits {
+            let selected = edit.change_id.is_some_and(|id| chosen[id]);
+            let use_new = if self.area == ChangeArea::Unstaged {
+                selected
+            } else {
+                !selected
+            };
+            let line = match edit.kind {
+                PartialLineKind::Context => Some(old_lines[edit.old_index.expect("context index")]),
+                PartialLineKind::Deletion if !use_new => {
+                    Some(old_lines[edit.old_index.expect("deleted index")])
+                }
+                PartialLineKind::Addition if use_new => {
+                    Some(new_lines[edit.new_index.expect("added index")])
+                }
+                _ => None,
+            };
+            if let Some(line) = line {
+                // A retained EOF fragment followed by an addition would silently
+                // join two lines. Require both sides of that newline replacement.
+                ensure!(
+                    result.is_empty() || result.ends_with(b"\n"),
+                    "This selection changes the final newline; select both replacement lines or the whole hunk."
+                );
+                result.extend_from_slice(line);
+            }
+        }
+        let all = chosen.iter().all(|selected| *selected);
+        let remove = all
+            && match self.area {
+                ChangeArea::Unstaged => self.snapshot.file.new_path.is_none(),
+                ChangeArea::Staged => self.snapshot.file.old_path.is_none(),
+            };
+        Ok((result, remove))
+    }
+}
+
+struct PartialIndex {
+    index: PathBuf,
+    lock: PathBuf,
+    nested_lock: PathBuf,
+    published: bool,
+}
+
+impl PartialIndex {
+    fn acquire(index: PathBuf) -> Result<Self> {
+        let mut lock = index.as_os_str().to_os_string();
+        lock.push(".lock");
+        let lock = PathBuf::from(lock);
+        let mut nested_lock = lock.as_os_str().to_os_string();
+        nested_lock.push(".lock");
+        let nested_lock = PathBuf::from(nested_lock);
+        match std::fs::symlink_metadata(&nested_lock) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+            Ok(_) => bail!(
+                "A partial-staging lock already exists; inspect the prior operation before retrying."
+            ),
+        }
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock)
+            .context("Git's index is locked by another operation; let it finish, then refresh.")?;
+        Ok(Self {
+            index,
+            lock,
+            nested_lock,
+            published: false,
+        })
+    }
+
+    fn prepare(&self, repository: &GitRepository) -> Result<()> {
+        match std::fs::symlink_metadata(&self.index) {
+            Ok(metadata) => {
+                ensure!(
+                    metadata.file_type().is_file(),
+                    "Partial staging requires a regular Git index."
+                );
+                ensure!(
+                    metadata.len() <= MAX_COMMAND_OUTPUT as u64,
+                    "This index exceeds the partial-staging size limit; use whole-file staging."
+                );
+                std::fs::copy(&self.index, &self.lock)
+                    .context("Unable to prepare the staged selection")?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let mut command = normal_command(&repository.path);
+                command
+                    .env("GIT_INDEX_FILE", &self.lock)
+                    .args(["read-tree", "--empty"]);
+                checked_write_output(command, None, WRITE_TIMEOUT)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        Ok(())
+    }
+
+    fn publish(mut self) -> Result<()> {
+        std::fs::File::open(&self.lock)?.sync_all()?;
+        std::fs::rename(&self.lock, &self.index)
+            .context("Unable to publish selected changes; the previous index was preserved")?;
+        self.published = true;
+        Ok(())
+    }
+}
+
+impl Drop for PartialIndex {
+    fn drop(&mut self) {
+        if !self.published {
+            // Clean our nested lock while the real lock is still held. The Git
+            // process has exited or been reaped; unpublished bytes can be dropped.
+            let _ = std::fs::remove_file(&self.nested_lock);
+            let _ = std::fs::remove_file(&self.lock);
+        }
     }
 }
 
