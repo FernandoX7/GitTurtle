@@ -53,21 +53,21 @@ pub fn editor_with_decorations(
     window: &mut Window,
     cx: &mut App,
 ) -> (Entity<EditorState>, Option<TextDecorationCollection>) {
-    let mut collection = None;
     let editor = cx.new(|cx| {
-        let mut state = EditorState::new(window, cx)
+        EditorState::new(window, cx)
             .language(language.to_owned())
             .line_number(diff.is_none())
             .folding(diff.is_none())
             .soft_wrap(false)
-            .default_value(value.to_owned());
-        if let Some(presentation) = diff {
-            let decorations = theme_decorations(presentation, cx);
-            // Collections are retained by EditorState, not by the returned
-            // handle, and disappear with this editor when selection changes.
-            collection = Some(state.create_decorations_collection(decorations, cx));
-        }
-        state
+            .default_value(value.to_owned())
+    });
+    crate::editor_find::reserve_highlight_layer(&editor, cx);
+    let collection = diff.map(|presentation| {
+        let decorations = theme_decorations(presentation, cx);
+        // Find reserves the first collection; patch colors remain underneath it.
+        editor.update(cx, |state, cx| {
+            state.create_decorations_collection(decorations, cx)
+        })
     });
     (editor, collection)
 }

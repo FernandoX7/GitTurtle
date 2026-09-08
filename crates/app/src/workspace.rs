@@ -9,6 +9,11 @@ pub(super) enum WorkingRow {
     File(usize, ChangeArea),
 }
 
+struct WorkingInspectorLayout {
+    height: Pixels,
+    list_size: Option<Size<Pixels>>,
+}
+
 impl GitTurtle {
     pub(super) fn current_commit_draft(&self, cx: &App) -> CommitDraft {
         CommitDraft {
@@ -741,8 +746,50 @@ impl GitTurtle {
         );
     }
 
-    pub(super) fn render_working_inspector(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_working_inspector(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let p = palette(cx);
+        let previous_list = self.working_scroll.0.borrow().last_item_size;
+        // Use the laid-out inspector after the header, Targets, and operation
+        // feedback have taken their space. Notify only when its bounds change.
+        let layout = window.use_keyed_state("working-inspector-layout", cx, |window, _| {
+            WorkingInspectorLayout {
+                height: (window.viewport_size().height - px(250.)).max(px(240.)),
+                list_size: previous_list.map(|size| size.item),
+            }
+        });
+        let available = f32::from(layout.read(cx).height);
+        let short = available < 560.;
+        let header_height = if short { 44. } else { 52. };
+        let list_reserve = (self.settings.density.file_row_height() * 3.5).max(available * 0.30);
+        let composer_max = (available - header_height - list_reserve).clamp(120., 440.);
+        let normal_description = if self.settings.density == appearance::Density::Compact {
+            100.
+        } else {
+            128.
+        };
+        let description_height = ((available - 440.) * 0.5 + 64.).clamp(64., normal_description);
+        let composer_height =
+            composer_max.min(description_height + if short { 180. } else { 244. });
+        let list_layout = layout.clone();
+        let list_scroll = self.working_scroll.clone();
+        let selected_row = self.working_rows.iter().position(
+            |row| matches!(row, WorkingRow::File(index, area) if Some((*index, *area)) == self.working_selected),
+        );
+        // GPUI retains this content geometry in the scroll handle even while
+        // Settings hides the inspector. Density changes must not reuse a pixel
+        // offset that now points at a different set of rows.
+        if previous_list.is_some_and(|size| {
+            size.contents.height
+                != px(self.settings.density.file_row_height() * self.working_rows.len() as f32)
+        }) && let Some(selected) = selected_row
+        {
+            self.working_scroll
+                .scroll_to_item(selected, ScrollStrategy::Nearest);
+        }
         let staged = self.work_status.as_ref().map_or(0, |status| {
             status.entries.iter().filter(|e| e.staged.is_some()).count()
         });
@@ -779,9 +826,17 @@ impl GitTurtle {
         .size_full()
         .track_scroll(&self.working_scroll);
         div()
-            .size_full().flex().flex_col().bg(rgb(p.panel))
+            .size_full().min_h_0().relative().flex().flex_col().bg(rgb(p.panel))
+            .child(canvas(|_, _, _| (), move |bounds, _, _, cx| {
+                layout.update(cx, |layout, cx| {
+                    if layout.height != bounds.size.height {
+                        layout.height = bounds.size.height;
+                        cx.notify();
+                    }
+                });
+            }).absolute().inset_0())
             .child(
-                div().h(px(52.)).px_4().flex().items_center().gap_2()
+                div().h(px(header_height)).flex_shrink_0().px_4().flex().items_center().gap_2()
                     .border_b_1().border_color(rgb(p.border))
                     .child(icon("commit", 17., p.accent))
                     .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child("Changes"))
@@ -797,7 +852,7 @@ impl GitTurtle {
             .child(
                 div().id("working-pane").role(Role::ListBox).aria_label("Working tree files")
                     .tab_stop(true).key_context("GitTurtleList").track_focus(&self.file_focus)
-                    .flex_1().min_h_0().overflow_hidden()
+                    .relative().flex_1().min_h_0().overflow_hidden()
                     .when(total > 0, |el| el.child(list))
                     .when(total == 0, |el| el.child(
                         div().size_full().flex().flex_col().items_center().justify_center().p_5().gap_2()
@@ -812,22 +867,37 @@ impl GitTurtle {
                                 .child(if status_ready { "No staged changes or local edits. Your next changes will appear here." }
                                     else if refreshing { "Checking staged changes and local edits." }
                                     else { "Refresh to try reading this working tree again." })),
-                    )),
+                    ))
+                    .child(canvas(|_, _, _| (), move |bounds, _, _, cx| {
+                        list_layout.update(cx, |layout, cx| {
+                            if layout.list_size != Some(bounds.size) {
+                                if layout.list_size.is_some() && let Some(selected) = selected_row {
+                                    list_scroll.scroll_to_item(selected, ScrollStrategy::Nearest);
+                                }
+                                layout.list_size = Some(bounds.size);
+                                cx.notify();
+                            }
+                        });
+                    }).absolute().inset_0()),
             )
             .when(self.work_status.as_ref().is_none_or(|status| status.operation.is_none()), |el| el.child(
-                div().flex_shrink_0().p_3().flex().flex_col().gap_2()
+                div().flex_shrink_0().min_h_0().h(px(composer_height)).flex().flex_col()
                     .bg(rgb(p.subtle)).border_t_1().border_color(rgb(p.border))
+                    .child(div().id("commit-composer-fields").flex_1().min_h_0().overflow_y_scroll()
+                    .child(div().flex().flex_col().gap_2().p_3()
+                    .when(short, |el| el.gap_1().p_2())
                     .child(div().flex().items_center().gap_2()
                         .child(icon("commit", 16., p.accent))
-                        .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child("Create a commit"))
-                        .child(div().flex_1())
+                        .child(div().id("commit-composer-heading").flex_1().min_w_0().truncate().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD)
+                            .tooltip({ let branch = branch.to_owned(); move |window, cx| Tooltip::new(format!("Commit to {branch}")).build(window, cx) })
+                            .child(if short { format!("Commit to {branch}") } else { "Create a commit".into() }))
                         .child(div().px_1p5().py_0p5().rounded(px(4.))
                             .bg(rgb(if staged > 0 { p.added_background } else { p.hover }))
                             .text_size(px(10.)).text_color(rgb(if staged > 0 { p.added } else { p.muted }))
                             .child(format!("{staged} staged"))))
-                    .child(div().flex().items_center().gap_1p5().min_w_0().text_size(px(11.))
+                    .when(!short, |el| el.child(div().flex().items_center().gap_1p5().min_w_0().text_size(px(11.))
                         .text_color(rgb(p.muted)).child(icon("branch", 13., p.muted))
-                        .child(div().truncate().child(branch.to_owned())))
+                        .child(div().truncate().child(branch.to_owned()))))
                     .child(div().flex().items_center().gap_2().text_size(px(11.))
                         .child(div().flex_1().font_weight(FontWeight::MEDIUM).child("Title"))
                         .child(div().text_color(rgb(if summary_length > 72 { p.warning } else { p.muted }))
@@ -841,7 +911,7 @@ impl GitTurtle {
                         .child(div().text_color(rgb(p.muted)).child("· optional")))
                     .child(Textarea::new(&self.commit_message).readonly(busy)
                         .aria_label("Commit description, optional")
-                        .h(px(if self.settings.density == appearance::Density::Compact { 100. } else { 128. }))
+                        .h(px(description_height))
                         .text_size(px(12.)))
                     .child(div().flex().items_center().gap_2().text_size(px(10.)).text_color(rgb(p.muted))
                         .child(div().flex_1().child(if staged == 0 { "Stage files to include in your commit" } else { "Only staged changes will be committed" })))
@@ -860,8 +930,8 @@ impl GitTurtle {
                         div().flex().items_center().gap_2().text_size(px(11.)).text_color(rgb(p.warning))
                             .child(icon("file-conflict", 15., p.warning))
                             .child("Resolve conflicted files before committing."),
-                    ))
-                    .child(
+                    ))))
+                    .child(div().flex_shrink_0().px_3().pb_3().when(short, |el| el.px_2().pb_2()).child(
                         Button::new("commit-staged").primary().w_full().h(px(36.))
                             .icon(Icon::default().path("icons/commit.svg").size(px(16.)))
                             .label(if busy {
@@ -886,7 +956,7 @@ impl GitTurtle {
                                 let message = this.current_commit_draft(cx).message();
                                 this.write(WriteCommand::Commit { message }, "Creating commit…", window, cx);
                             })),
-                    ),
+                    )),
             ))
             .into_any_element()
     }

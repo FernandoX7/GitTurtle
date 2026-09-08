@@ -253,6 +253,9 @@ pub fn new(
                 .default_value(presentation.sides[side].text.clone())
         })
     });
+    for editor in &editors {
+        crate::editor_find::reserve_highlight_layer(editor, cx);
+    }
     let decorations = std::array::from_fn(|side| {
         let color = if side == 0 {
             colors.removed_background

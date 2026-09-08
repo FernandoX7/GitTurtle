@@ -33,7 +33,7 @@ use gpui_kit::component::{
         EditorState, Input, InputEvent, InputState, TextDecorationCollection, Textarea,
         TextareaState,
     },
-    resizable::{h_resizable, resizable_panel},
+    resizable::{ResizableState, h_resizable, resizable_panel},
     tooltip::Tooltip,
 };
 use gpui_kit::*;
@@ -152,6 +152,8 @@ struct GitTurtle {
     branch_actions: branch_actions::State,
     recovery: recovery::State,
     page_return_focus: Option<FocusHandle>,
+    content_panels: Entity<ResizableState>,
+    history_panels: Entity<ResizableState>,
     retained_history_files: Option<(Vec<FileChange>, Option<usize>)>,
     commit_drafts: HashMap<PathBuf, CommitDraft>,
     draft_saver: commit_drafts::DraftSaver,
@@ -293,6 +295,8 @@ impl GitTurtle {
             branch_actions: branch_actions::State::default(),
             recovery: recovery::State::default(),
             page_return_focus: None,
+            content_panels: cx.new(|_| ResizableState::default()),
+            history_panels: cx.new(|_| ResizableState::default()),
             retained_history_files: None,
             commit_drafts: preferences.commit_drafts,
             draft_saver: commit_drafts::DraftSaver::default(),
@@ -442,6 +446,10 @@ impl GitTurtle {
                         cx.notify();
                     }
                 }));
+        }
+        for panels in [&this.content_panels, &this.history_panels] {
+            this.subscriptions
+                .push(cx.observe(panels, |_, _, cx| cx.notify()));
         }
         this.subscribe_settings_inputs(window, cx);
         this.subscriptions

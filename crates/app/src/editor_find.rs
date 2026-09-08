@@ -29,6 +29,47 @@ const MAX_HIGHLIGHTS: usize = 4096;
 struct Panels(Vec<Entity<FindBar>>);
 impl Global for Panels {}
 
+struct ReservedLayer {
+    editor: WeakEntity<EditorState>,
+    decorations: TextDecorationCollection,
+}
+#[derive(Default)]
+struct ReservedLayers(Vec<ReservedLayer>);
+impl Global for ReservedLayers {}
+
+/// Reserve Find's precedence before creating any patch decoration collections.
+/// This allocates one empty collection, not a Find input or panel. Handles have
+/// weak source ownership; the bounded cache is pruned as previews are released.
+pub fn reserve_highlight_layer(editor: &Entity<EditorState>, cx: &mut App) {
+    if reserved_layer(editor, cx).is_some() {
+        return;
+    }
+    let mut layers = std::mem::take(&mut cx.default_global::<ReservedLayers>().0);
+    layers.retain(|layer| layer.editor.upgrade().is_some());
+    if layers.len() >= RETAINED_PANELS {
+        // Keep memory bounded even if a future caller retains many more groups;
+        // the late-layer fallback uses ordinary readable text colors below.
+        cx.default_global::<ReservedLayers>().0 = layers;
+        return;
+    }
+    let decorations = editor.update(cx, |source, cx| {
+        source.create_decorations_collection(Vec::new(), cx)
+    });
+    layers.push(ReservedLayer {
+        editor: editor.downgrade(),
+        decorations,
+    });
+    cx.default_global::<ReservedLayers>().0 = layers;
+}
+
+fn reserved_layer(editor: &Entity<EditorState>, cx: &App) -> Option<TextDecorationCollection> {
+    cx.try_global::<ReservedLayers>()?
+        .0
+        .iter()
+        .find(|layer| layer.editor.entity_id() == editor.entity_id())
+        .map(|layer| layer.decorations.clone())
+}
+
 fn panel(editor: &Entity<EditorState>, cx: &App) -> Option<Entity<FindBar>> {
     cx.try_global::<Panels>()?
         .0
@@ -198,6 +239,7 @@ struct FindBar {
     open: bool,
     height: Pixels,
     decorations: TextDecorationCollection,
+    highest_priority: bool,
     painted: Option<PaintedMatches>,
     _subscriptions: Vec<Subscription>,
 }
@@ -228,6 +270,8 @@ impl FindBar {
                 session.query.clone()
             }
         };
+        let reserved = reserved_layer(editor, cx);
+        let highest_priority = reserved.is_some();
         let decorations = editor.update(cx, |source, cx| {
             // The native overlay is private and lacks labels. Keep its engine
             // closed; its query and match navigation remain public and usable.
@@ -239,7 +283,7 @@ impl FindBar {
                     cx,
                 );
             }
-            source.create_decorations_collection(Vec::new(), cx)
+            reserved.unwrap_or_else(|| source.create_decorations_collection(Vec::new(), cx))
         });
         let query = cx.new(|cx| {
             InputState::new(window, cx)
@@ -267,6 +311,7 @@ impl FindBar {
             open: false,
             height: px(0.),
             decorations,
+            highest_priority,
             painted: None,
             _subscriptions: subscriptions,
         }
@@ -318,7 +363,19 @@ impl FindBar {
         let ranges = session.matcher.matched_ranges();
         let current = session.matcher.current_match_index();
         let colors = palette(cx);
-        let colors = (colors.selected, colors.accent, colors.accent_foreground);
+        let colors = (
+            colors.selected,
+            if self.highest_priority {
+                colors.accent
+            } else {
+                colors.selected
+            },
+            if self.highest_priority {
+                colors.accent_foreground
+            } else {
+                colors.text
+            },
+        );
         if self.painted.as_ref().is_some_and(|painted| {
             Rc::ptr_eq(&painted.ranges, &ranges)
                 && painted.current == current
@@ -329,16 +386,7 @@ impl FindBar {
         let decorations = highlight_window(ranges.len(), current)
             .map(|index| {
                 let active = index == current;
-                TextDecoration::new(
-                    ranges[index].clone(),
-                    HighlightStyle {
-                        background_color: Some(
-                            rgb(if active { colors.1 } else { colors.0 }).into(),
-                        ),
-                        color: active.then(|| rgb(colors.2).into()),
-                        ..Default::default()
-                    },
-                )
+                TextDecoration::new(ranges[index].clone(), match_style(active, colors))
             })
             .collect();
         self.painted = Some(PaintedMatches {
@@ -481,6 +529,14 @@ impl Render for FindBar {
     }
 }
 
+fn match_style(active: bool, colors: (u32, u32, u32)) -> HighlightStyle {
+    HighlightStyle {
+        background_color: Some(rgb(if active { colors.1 } else { colors.0 }).into()),
+        color: active.then(|| rgb(colors.2).into()),
+        ..Default::default()
+    }
+}
+
 // Reject an oversized query rather than silently searching a different prefix.
 fn bounded_query(value: &str) -> &str {
     if value.len() <= MAX_QUERY_BYTES {
@@ -530,6 +586,47 @@ mod tests {
         session.matcher.update_query("file", false);
         assert_eq!(&*session.matcher.matched_ranges(), &[3..7, 17..21]);
     }
+    #[test]
+    fn find_priority_composes_both_match_colors_over_split_and_unified_patch_styles() {
+        use crate::appearance::ThemeChoice;
+        use gpui_kit::{HighlightStyle, combine_highlights, rgb};
+        for theme in ThemeChoice::ALL {
+            let palette = theme.palette();
+            let find = super::match_style(
+                true,
+                (palette.selected, palette.accent, palette.accent_foreground),
+            );
+            for unified in [false, true] {
+                for (foreground, background) in [
+                    (palette.added, palette.added_background),
+                    (palette.removed, palette.removed_background),
+                ] {
+                    let patch = HighlightStyle {
+                        background_color: Some(rgb(background).into()),
+                        color: unified.then(|| rgb(foreground).into()),
+                        ..Default::default()
+                    };
+                    // GPUI applies collections in reverse creation order using
+                    // this public compositor. Reserved Find is composed last.
+                    let combined =
+                        combine_highlights([(0..20, patch)], [(5..10, find)]).collect::<Vec<_>>();
+                    assert_eq!(combined.len(), 3);
+                    assert_eq!(combined[0], (0..5, patch));
+                    assert_eq!(combined[1].0, 5..10);
+                    assert_eq!(
+                        combined[1].1.background_color, find.background_color,
+                        "{theme:?}"
+                    );
+                    assert_eq!(combined[1].1.color, find.color, "{theme:?}");
+                    assert_eq!(combined[2], (10..20, patch));
+                    // Clearing only Find leaves the complete original patch.
+                    let closed = combine_highlights([(0..20, patch)], []).collect::<Vec<_>>();
+                    assert_eq!(closed, vec![(0..20, patch)]);
+                }
+            }
+        }
+    }
+
     #[test]
     fn find_query_limit_does_not_silently_change_unicode_search() {
         let accepted = "é".repeat(MAX_QUERY_BYTES / 2);

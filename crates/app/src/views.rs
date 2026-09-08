@@ -1606,7 +1606,7 @@ impl GitTurtle {
 }
 
 impl GitTurtle {
-    fn render_repository(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_repository(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let left = if self.mode != WorkspaceMode::History {
             div()
                 .size_full()
@@ -1623,6 +1623,7 @@ impl GitTurtle {
                 .into_any_element()
         } else if self.sidebar {
             h_resizable("history-columns")
+                .with_state(&self.history_panels)
                 .child(
                     resizable_panel()
                         .size(px(220.))
@@ -1651,9 +1652,11 @@ impl GitTurtle {
                 )
                 .into_any_element()
         };
-        // The inspector's parent and element identity are identical in both
-        // modes, preserving its width and keeping file navigation in place.
+        // The app retains both panel states while Repository is not rendered.
+        // Element-local state alone is dropped across Settings/Projects and
+        // would restore the initial widths, including after a manual drag.
         let workspace = h_resizable("content-columns")
+            .with_state(&self.content_panels)
             .child(
                 resizable_panel()
                     .size_range(px(520.)..px(10000.))
@@ -1665,7 +1668,7 @@ impl GitTurtle {
                     .size_range(px(280.)..px(480.))
                     .flex_none()
                     .child(if self.mode == WorkspaceMode::Working {
-                        self.render_working_inspector(cx)
+                        self.render_working_inspector(window, cx)
                     } else {
                         self.render_inspector(cx)
                     }),
@@ -1685,7 +1688,7 @@ impl Render for GitTurtle {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = palette(cx);
         let body = match self.page {
-            AppPage::Repository => self.render_repository(cx),
+            AppPage::Repository => self.render_repository(window, cx),
             AppPage::Projects => self.hub.clone().into_any_element(),
             AppPage::Settings => self.render_settings(window, cx),
         };
