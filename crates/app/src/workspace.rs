@@ -359,6 +359,16 @@ impl GitTurtle {
             _ => None,
         };
         let success_notice = match &command {
+            WriteCommand::Stage { paths } => Some(match paths.as_slice() {
+                [path] => format!("Staged {}", path.display()),
+                _ => "Staged selected changes".into(),
+            }),
+            WriteCommand::Unstage { paths } => Some(match paths.as_slice() {
+                [path] => format!("Unstaged {}", path.display()),
+                _ => "Unstaged selected changes".into(),
+            }),
+            WriteCommand::StageAll => Some("Staged all working changes".into()),
+            WriteCommand::UnstageAll => Some("Unstaged all changes".into()),
             WriteCommand::Checkout { branch } => Some(format!("Switched to {branch}")),
             WriteCommand::CreateBranch { name, .. } => {
                 Some(format!("Created and switched to {name}"))
@@ -400,14 +410,15 @@ impl GitTurtle {
                 let succeeded=result.is_ok();
                 match result {
                     Ok(outcome) => {
-                        this.operation_notice = Some(if let Some(oid) = outcome.commit_oid.as_ref() {
+                        let notice = if let Some(oid) = outcome.commit_oid.as_ref() {
                             format!("Committed {} · {}", short_oid(oid), submitted_message.as_deref().unwrap_or_default().lines().next().unwrap_or_default())
                         } else if let Some(notice) = &success_notice {
                             notice.clone()
                         } else {
                             outcome.message.lines().find(|line| !line.trim().is_empty()).unwrap_or("Git operation completed").to_owned()
-                        });
-                        this.status = outcome.message;
+                        };
+                        this.status = notice.clone();
+                        this.operation_notice = Some(notice);
                     }
                     Err(error) => {
                         this.operation_notice = None;
