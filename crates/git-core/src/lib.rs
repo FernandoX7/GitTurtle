@@ -5,7 +5,9 @@
 //! Clones share a persistent `cat-file` process; its lock only protects the wire
 //! protocol. Repository operations themselves do not take that lock.
 
+mod history;
 mod work;
+pub use history::*;
 pub use work::*;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -200,6 +202,30 @@ impl GitRepository {
 
     pub fn is_bare(&self) -> bool {
         self.bare
+    }
+
+    /// Resolve actual administration directories for local notifications.
+    /// Linked worktrees have a private HEAD/index but share refs and objects.
+    /// These passive reads never create or update Git metadata.
+    pub fn git_directories(&self) -> Result<(PathBuf, PathBuf)> {
+        let private = path_from_bytes(trim_line(&run_git(
+            &self.path,
+            &["rev-parse", "--absolute-git-dir"],
+        )?));
+        let common = path_from_bytes(trim_line(&run_git(
+            &self.path,
+            &["rev-parse", "--git-common-dir"],
+        )?));
+        let absolute = |path: PathBuf| -> Result<PathBuf> {
+            let path = if path.is_absolute() {
+                path
+            } else {
+                self.path.join(path)
+            };
+            path.canonicalize()
+                .context("Resolve Git administration directory")
+        };
+        Ok((absolute(private)?, absolute(common)?))
     }
 
     pub fn branches(&self) -> Result<Vec<Branch>> {
