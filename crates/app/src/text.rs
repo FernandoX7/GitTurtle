@@ -3,27 +3,56 @@ use gpui_kit::{
     component::input::{EditorState, TextDecoration},
     rgb,
 };
-use std::ops::Range;
+use std::{mem::size_of, ops::Range, sync::Arc};
+
+/// Immutable patch metadata prepared by the repository worker and shared with
+/// the editor/gutter. Keeping the literal patch separate preserves copy/search.
+pub struct PatchPresentation {
+    pub(crate) rows: Arc<[crate::diff_view::LineNumbers]>,
+    pub(crate) column_width: f32,
+    ranges: Arc<[DiffRange]>,
+}
+
+impl PatchPresentation {
+    pub fn prepare(patch: &str) -> Self {
+        let (rows, column_width) = crate::diff_view::prepare_gutter(patch);
+        Self {
+            rows,
+            column_width,
+            ranges: diff_ranges(patch).into(),
+        }
+    }
+
+    /// Retained metadata allocations, including the outer Arc payload and the
+    /// three Arc reference-count headers; allocator bookkeeping is excluded.
+    pub fn retained_bytes(&self) -> usize {
+        size_of::<Self>()
+            + std::mem::size_of_val(self.rows.as_ref())
+            + std::mem::size_of_val(self.ranges.as_ref())
+            + 3 * 2 * size_of::<usize>()
+    }
+}
 
 /// Build only the currently requested editor. Decorations change presentation,
 /// while the editor receives one owned copy of the unmodified source text.
 pub fn editor(
     value: &str,
     language: &str,
-    diff: bool,
+    diff: Option<&PatchPresentation>,
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<EditorState> {
     cx.new(|cx| {
         let mut state = EditorState::new(window, cx)
             .language(language.to_owned())
-            .line_number(!diff)
-            .folding(!diff)
+            .line_number(diff.is_none())
+            .folding(diff.is_none())
             .soft_wrap(false)
             .default_value(value.to_owned());
-        if diff {
-            let decorations = diff_ranges(value)
-                .into_iter()
+        if let Some(presentation) = diff {
+            let decorations = presentation
+                .ranges
+                .iter()
                 .map(|decoration| {
                     let style = match decoration.kind {
                         Kind::Added => HighlightStyle {
@@ -42,7 +71,7 @@ pub fn editor(
                             ..Default::default()
                         },
                     };
-                    TextDecoration::new(decoration.range, style)
+                    TextDecoration::new(decoration.range.clone(), style)
                 })
                 .collect();
             // Collections are retained by EditorState, not by the returned
@@ -148,6 +177,31 @@ fn range_count(range: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_metadata_keeps_utf8_rows_ranges_and_worker_safe_ownership() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<PatchPresentation>();
+        let patch = "@@ -9999 +10000 @@\r\n-héllo 🐢\r\n+你好\r\n";
+        let presentation = PatchPresentation::prepare(patch);
+        assert_eq!(presentation.rows.len(), 4);
+        assert_eq!(presentation.rows[1].old, Some(9999));
+        assert_eq!(presentation.rows[1].new, None);
+        assert_eq!(presentation.rows[2].old, None);
+        assert_eq!(presentation.rows[2].new, Some(10000));
+        assert_eq!(presentation.rows[3].old, None);
+        assert_eq!(presentation.rows[3].new, None);
+        assert_eq!(presentation.ranges.as_ref(), diff_ranges(patch));
+        assert!(presentation.column_width > PatchPresentation::prepare("").column_width);
+
+        // Extra neutral rows require storage even though they add no highlights.
+        let empty = PatchPresentation::prepare("");
+        let neutral = PatchPresentation::prepare(&"\n".repeat(128));
+        assert_eq!(
+            neutral.retained_bytes() - empty.retained_bytes(),
+            128 * size_of::<crate::diff_view::LineNumbers>()
+        );
+    }
 
     fn decorated(value: &str) -> Vec<(Kind, &str)> {
         diff_ranges(value)

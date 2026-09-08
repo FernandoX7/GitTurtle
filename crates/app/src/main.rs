@@ -438,7 +438,13 @@ impl GitTurtle {
         let Some(content) = &self.content else {
             return;
         };
-        let Content::Text { patch, old, new } = content.as_ref() else {
+        let Content::Text {
+            patch,
+            old,
+            new,
+            presentation,
+        } = content.as_ref()
+        else {
             return;
         };
         let language = self
@@ -453,13 +459,19 @@ impl GitTurtle {
             TextMode::After => (&mut self.after_editor, new, language, false),
         };
         if slot.is_none() {
-            *slot = Some(text::editor(value, language, diff, window, cx));
+            *slot = Some(text::editor(
+                value,
+                language,
+                diff.then_some(presentation.as_ref()),
+                window,
+                cx,
+            ));
         }
         if diff && self.patch_view.is_none() {
             self.patch_view = self
                 .patch_editor
                 .as_ref()
-                .map(|editor| diff_view::new(editor.clone(), patch, window, cx));
+                .map(|editor| diff_view::new(editor.clone(), presentation, window, cx));
         }
     }
 

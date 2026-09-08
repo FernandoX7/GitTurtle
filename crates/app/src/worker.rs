@@ -1,4 +1,4 @@
-use crate::{graph, preferences::Preferences};
+use crate::{graph, preferences::Preferences, text::PatchPresentation};
 use anyhow::{Result, anyhow, ensure};
 use futures::channel::oneshot;
 use gitturtle_core::{Branch, Commit, FileChange, GitRepository, TextPreview, Worktree};
@@ -47,6 +47,7 @@ pub enum Content {
         patch: String,
         old: String,
         new: String,
+        presentation: Arc<PatchPresentation>,
     },
     Images {
         old: ImageSide,
@@ -60,7 +61,12 @@ impl Content {
     /// textures have independent lifetimes and need their own presentation budget.
     fn bytes(&self) -> usize {
         match self {
-            Self::Text { patch, old, new } => patch.capacity() + old.capacity() + new.capacity(),
+            Self::Text {
+                patch,
+                old,
+                new,
+                presentation,
+            } => patch.capacity() + old.capacity() + new.capacity() + presentation.retained_bytes(),
             Self::Images { old, new } => [old, new]
                 .iter()
                 .map(|side| {
@@ -444,7 +450,7 @@ fn execute(
                     image_side(&repo, file.new_oid.as_deref(), &new_name, cancellation);
                 (Content::Images { old, new }, old_cacheable && new_cacheable)
             } else {
-                (text_content(&repo, &file)?, true)
+                (text_content(&repo, &file, cancellation)?, true)
             };
             cancellation.check()?;
             let content = Arc::new(content);
@@ -603,10 +609,16 @@ fn image_change(file: &FileChange) -> bool {
             .any(is_image_path)
 }
 
-fn text_content(repo: &GitRepository, file: &FileChange) -> Result<Content> {
+fn text_content(
+    repo: &GitRepository,
+    file: &FileChange,
+    cancellation: &Cancellation,
+) -> Result<Content> {
     let sources = repo.text_preview_with_sources(file)?;
+    cancellation.check()?;
     Ok(match sources.preview {
         TextPreview::Patch(patch) => Content::Text {
+            presentation: Arc::new(PatchPresentation::prepare(&patch)),
             patch,
             // The core only produces a patch after UTF-8 validation. Move the
             // source buffers into the UI response without another Git read.
@@ -839,6 +851,33 @@ mod tests {
             message(block_on(worker.submit(open_job("next"))).unwrap().unwrap()),
             "recovered"
         );
+    }
+
+    #[test]
+    fn text_cache_budget_includes_prepared_patch_metadata() {
+        let patch = "@@ -1 +1 @@\n-old\n+new\n".to_owned();
+        let old = "old\n".to_owned();
+        let new = "new\n".to_owned();
+        let source_bytes = patch.capacity() + old.capacity() + new.capacity();
+        let presentation = Arc::new(PatchPresentation::prepare(&patch));
+        let metadata_bytes = presentation.retained_bytes();
+        let content = Arc::new(Content::Text {
+            patch,
+            old,
+            new,
+            presentation,
+        });
+        assert_eq!(content.bytes(), source_bytes + metadata_bytes);
+
+        let mut cache = PreviewCache::with_limits(source_bytes + metadata_bytes - 1, 1);
+        cache.insert(key("text"), Arc::clone(&content));
+        assert!(cache.get(&key("text")).is_none());
+        assert_eq!(cache.bytes, 0);
+
+        let mut cache = PreviewCache::with_limits(source_bytes + metadata_bytes, 1);
+        cache.insert(key("text"), content);
+        assert!(cache.get(&key("text")).is_some());
+        assert_eq!(cache.bytes, source_bytes + metadata_bytes);
     }
 
     #[test]

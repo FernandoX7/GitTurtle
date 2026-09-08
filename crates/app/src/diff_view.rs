@@ -2,7 +2,7 @@
 //! The editor retains the exact patch, so selection, copying, and search never
 //! include presentation-only numbers. No Git reads happen in this component.
 
-use crate::{BORDER, MINT as ADDED, MUTED, PANEL as BACKGROUND};
+use crate::{BORDER, MINT as ADDED, MUTED, PANEL as BACKGROUND, text::PatchPresentation};
 use gpui_kit::{
     App, AppContext, Bounds, ContentMask, Context, Entity, InteractiveElement, IntoElement,
     ParentElement, Pixels, Point, Render, SharedString, Styled, Subscription, TextAlign, TextRun,
@@ -28,12 +28,12 @@ pub struct DiffView {
     _subscription: Subscription,
 }
 
-/// Wrap an existing patch editor. The patch must be the unchanged text already
-/// loaded into that editor. Folding/wrapping are disabled so each patch line has
-/// exactly one gutter row; the editor remains responsible for input and copy.
+/// Wrap an existing patch editor with metadata prepared for its unchanged text.
+/// Folding/wrapping are disabled so each patch line has exactly one gutter row;
+/// the editor remains responsible for input and copy. No patch parsing occurs.
 pub fn new(
     editor: Entity<EditorState>,
-    patch: &str,
+    presentation: &PatchPresentation,
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<DiffView> {
@@ -42,16 +42,8 @@ pub fn new(
         state.set_soft_wrap(false, window, cx);
         state.set_folding(false, window, cx);
     });
-    let rows: Arc<[LineNumbers]> = parse_rows(patch).into();
-    let digits = rows
-        .iter()
-        .flat_map(|row| [row.old, row.new])
-        .flatten()
-        .map(|number| number.checked_ilog10().unwrap_or(0) + 1)
-        .max()
-        .unwrap_or(1)
-        .max(3);
-    let column_width = digits as f32 * FONT_SIZE * 0.65 + CELL_PADDING * 2.;
+    let rows = Arc::clone(&presentation.rows);
+    let column_width = presentation.column_width;
     cx.new(|cx| {
         let viewport = Viewport::read(editor.read(cx));
         let subscription = cx.observe(&editor, |this: &mut DiffView, editor, cx| {
@@ -292,9 +284,24 @@ fn paint_gutter(
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct LineNumbers {
-    old: Option<u64>,
-    new: Option<u64>,
+pub(crate) struct LineNumbers {
+    pub(crate) old: Option<u64>,
+    pub(crate) new: Option<u64>,
+}
+
+/// Pure worker-side preparation; the UI constructor only shares these results.
+pub(crate) fn prepare_gutter(patch: &str) -> (Arc<[LineNumbers]>, f32) {
+    let rows: Arc<[LineNumbers]> = parse_rows(patch).into();
+    let digits = rows
+        .iter()
+        .flat_map(|row| [row.old, row.new])
+        .flatten()
+        .map(|number| number.checked_ilog10().unwrap_or(0) + 1)
+        .max()
+        .unwrap_or(1)
+        .max(3);
+    let column_width = digits as f32 * FONT_SIZE * 0.65 + CELL_PADDING * 2.;
+    (rows, column_width)
 }
 
 #[derive(Clone, Copy)]
