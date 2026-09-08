@@ -9,7 +9,7 @@ impl GitTurtle {
         let p = palette(cx);
         let busy = self.operation_busy.is_some();
         div()
-            .h(px(52.))
+            .h(px(56.))
             .flex_shrink_0()
             .flex()
             .items_center()
@@ -18,17 +18,17 @@ impl GitTurtle {
             .bg(rgb(p.panel))
             .border_b_1()
             .border_color(rgb(p.border))
-            .child(icon("turtle", 24., p.accent))
+            .child(icon("turtle", 28., p.accent))
             .child(
                 div()
-                    .w(px(200.))
+                    .w(px(190.))
                     .min_w_0()
                     .flex()
                     .flex_col()
                     .gap_0p5()
                     .child(
                         div()
-                            .text_size(px(13.))
+                            .text_size(px(14.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .truncate()
                             .child(
@@ -40,7 +40,7 @@ impl GitTurtle {
                     )
                     .child(
                         div()
-                            .text_size(px(10.))
+                            .text_size(px(11.))
                             .text_color(rgb(p.muted))
                             .truncate()
                             .child(
@@ -74,8 +74,17 @@ impl GitTurtle {
                 .child(
                     button(
                         "changes-tab",
-                        "Changes",
-                        "",
+                        self.work_status
+                            .as_ref()
+                            .map(|status| {
+                                if status.entries.is_empty() {
+                                    "Changes".into()
+                                } else {
+                                    format!("Changes · {}", status.entries.len())
+                                }
+                            })
+                            .unwrap_or_else(|| "Changes".into()),
+                        "changes",
                         self.page == AppPage::Repository && self.mode == WorkspaceMode::Working,
                     )
                     .on_click(cx.listener(|this, _, window, cx| this.show_working(window, cx))),
@@ -96,13 +105,13 @@ impl GitTurtle {
                         .filter(|p| !p.name.is_empty())
                         .map(|p| p.name.clone())
                         .unwrap_or("Git identity".into()),
-                    "",
+                    "user",
                     self.page == AppPage::Settings,
                 )
                 .on_click(cx.listener(|this, _, window, cx| this.show_settings(window, cx))),
             )
             .child(
-                button("settings", "Settings", "", false)
+                button("settings", "Settings", "settings", false)
                     .on_click(cx.listener(|this, _, window, cx| this.show_settings(window, cx))),
             )
             .into_any_element()
@@ -211,7 +220,7 @@ impl GitTurtle {
                     .text_color(rgb(colors.muted))
                     .border_t_1()
                     .border_color(rgb(colors.border))
-                    .child("Remote branches reflect local refs.\nRefresh never fetches."),
+                    .child("Browse branches to filter history.\nUse Branch above to switch."),
             )
             .into_any_element()
     }
@@ -442,7 +451,7 @@ impl GitTurtle {
         };
         let view = cx.entity().downgrade();
         let header = div()
-            .h(px(30.))
+            .h(px(34.))
             .flex_shrink_0()
             .flex()
             .items_center()
@@ -450,7 +459,9 @@ impl GitTurtle {
             .border_l_2()
             .border_color(rgb(colors.canvas))
             .border_b_1()
-            .text_size(px(10.))
+            .bg(rgb(colors.panel))
+            .text_size(px(11.))
+            .font_weight(FontWeight::MEDIUM)
             .text_color(rgb(colors.muted))
             .children(columns.columns.iter().map(|column| {
                 let id = column.id;
@@ -462,8 +473,9 @@ impl GitTurtle {
                     .flex_shrink_0()
                     .flex()
                     .items_center()
-                    .pr_2()
-                    .child(div().truncate().child(id.label().to_uppercase()))
+                    .pl(px(10.))
+                    .pr_3()
+                    .child(div().truncate().child(id.label()))
                     .child(
                         div()
                             .id(("column-resize", id as usize))
@@ -527,12 +539,14 @@ impl GitTurtle {
                             .child(format!("{} commits", self.visible.len())),
                     )
                     .child(div().flex_1())
-                    .child(button("columns", "Columns", "", self.column_menu).on_click(
-                        cx.listener(|this, _, _, cx| {
-                            this.column_menu = !this.column_menu;
-                            cx.notify();
-                        }),
-                    ))
+                    .child(
+                        button("columns", "Columns", "columns", self.column_menu).on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.column_menu = !this.column_menu;
+                                cx.notify();
+                            }),
+                        ),
+                    )
                     .child(
                         button(
                             "load-more",
@@ -637,6 +651,7 @@ impl GitTurtle {
         let mut references = div()
             .w(px(refs_width))
             .flex_shrink_0()
+            .pl(px(10.))
             .pr_2()
             .flex()
             .items_center()
@@ -649,7 +664,7 @@ impl GitTurtle {
                     div()
                         .id(("refs", index))
                         .min_w_0()
-                        .max_w(px(refs_width - 12.))
+                        .max_w(px(refs_width - 22.))
                         .truncate()
                         .px_1()
                         .py_0p5()
@@ -718,27 +733,31 @@ impl GitTurtle {
                         ))
                         .into_any_element(),
                     ColumnId::Subject => cell
-                        .pr_2()
+                        .pl(px(10.))
+                        .pr_3()
                         .truncate()
                         .text_size(px(13.))
                         .child(commit.subject.clone())
                         .into_any_element(),
                     ColumnId::Author => cell
-                        .pr_2()
+                        .pl(px(10.))
+                        .pr_3()
                         .truncate()
                         .text_size(px(11.))
                         .text_color(rgb(colors.muted))
                         .child(commit.author.clone())
                         .into_any_element(),
                     ColumnId::Date => cell
-                        .pr_2()
+                        .pl(px(10.))
+                        .pr_3()
                         .truncate()
                         .text_size(px(11.))
                         .text_color(rgb(colors.muted))
                         .child(short_date(commit.timestamp))
                         .into_any_element(),
                     ColumnId::Sha => cell
-                        .pr_2()
+                        .pl(px(10.))
+                        .pr_3()
                         .truncate()
                         .font_family(mono())
                         .text_size(px(11.))
@@ -829,7 +848,8 @@ impl GitTurtle {
                             .justify_between()
                             .text_size(px(10.))
                             .text_color(rgb(colors.muted))
-                            .child("COMMIT DETAILS")
+                            .font_weight(FontWeight::MEDIUM)
+                            .child("Commit details")
                             .child(
                                 button("copy-commit", short_oid(&commit.oid), "copy", false)
                                     .on_click(move |_, _, cx| {
@@ -848,15 +868,52 @@ impl GitTurtle {
                     )
                     .child(
                         div()
-                            .text_size(px(11.))
-                            .text_color(rgb(colors.muted))
-                            .child(commit.author.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(10.))
-                            .text_color(rgb(colors.muted))
-                            .child(full_date(commit.timestamp)),
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .py_1()
+                            .child(
+                                div()
+                                    .size(px(30.))
+                                    .flex_shrink_0()
+                                    .rounded_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .bg(rgba((colors.hunk << 8) | 0x22))
+                                    .text_color(rgb(colors.hunk))
+                                    .text_size(px(11.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(
+                                        commit
+                                            .author
+                                            .split_whitespace()
+                                            .filter_map(|part| part.chars().next())
+                                            .take(2)
+                                            .flat_map(char::to_uppercase)
+                                            .collect::<String>(),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .flex_1()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_0p5()
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .text_size(px(12.))
+                                            .child(commit.author.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(11.))
+                                            .text_color(rgb(colors.muted))
+                                            .child(full_date(commit.timestamp)),
+                                    ),
+                            ),
                     )
                     .child(parents)
                     .children((!commit.body.is_empty()).then(|| {
@@ -911,7 +968,19 @@ impl GitTurtle {
                     .items_center()
                     .text_size(px(11.))
                     .text_color(rgb(colors.muted))
-                    .child(format!("CHANGED FILES   {}", self.files.len())),
+                    .font_weight(FontWeight::MEDIUM)
+                    .gap_2()
+                    .child(icon("changes", 15., colors.muted))
+                    .child("Changed files")
+                    .child(
+                        div()
+                            .px_1p5()
+                            .py_0p5()
+                            .rounded(px(4.))
+                            .bg(rgb(colors.hover))
+                            .text_size(px(10.))
+                            .child(self.files.len().to_string()),
+                    ),
             )
             .child(
                 div()
@@ -957,11 +1026,12 @@ impl GitTurtle {
         let file = &self.files[index];
         let active = self.selected_file == Some(index);
         let path = file.path();
-        let color = match file.status.letter() {
-            "A" => colors.accent,
-            "D" => colors.removed,
-            "R" => colors.hunk,
-            _ => colors.muted,
+        let (symbol, color, label) = match file.status.letter() {
+            "A" => ("file-added", colors.added, "New"),
+            "D" => ("file-deleted", colors.removed, "Deleted"),
+            "R" => ("file-renamed", colors.renamed, "Renamed"),
+            "T" => ("file-type", colors.modified, "Type"),
+            _ => ("file-modified", colors.modified, "Modified"),
         };
         div()
             .id(("file", index))
@@ -983,15 +1053,17 @@ impl GitTurtle {
             .border_color(rgb(if active { colors.accent } else { colors.panel }))
             .hover(|s| s.bg(rgb(colors.hover)))
             .cursor_pointer()
-            .child(icon(
-                if gitturtle_preview::is_image_path(path) {
-                    "image"
-                } else {
-                    "code"
-                },
-                16.,
-                colors.muted,
-            ))
+            .child(
+                div()
+                    .size(px(26.))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(6.))
+                    .bg(rgba((color << 8) | 0x18))
+                    .child(icon(symbol, 16., color)),
+            )
             .child(
                 div()
                     .flex_1()
@@ -1022,9 +1094,13 @@ impl GitTurtle {
             )
             .child(
                 div()
+                    .flex_shrink_0()
+                    .px_1()
+                    .py_0p5()
+                    .rounded(px(3.))
                     .text_size(px(10.))
                     .text_color(rgb(color))
-                    .child(file.status.letter()),
+                    .child(label),
             )
             .on_click(cx.listener(move |this, _, window, cx| this.select_file(index, window, cx)))
             .into_any_element()
@@ -1046,7 +1122,7 @@ impl GitTurtle {
             .border_b_1()
             .border_color(rgb(colors.border))
             .child(
-                button("back-history", "← History", "", false)
+                button("back-history", "History", "arrow-left", false)
                     .accessibility_label("Back to history")
                     .on_click(cx.listener(|this, _, window, cx| this.back_to_history(window, cx))),
             )
@@ -1328,9 +1404,8 @@ impl GitTurtle {
     }
 }
 
-impl Render for GitTurtle {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = palette(cx);
+impl GitTurtle {
+    fn render_repository(&self, cx: &mut Context<Self>) -> AnyElement {
         let left = if self.mode != WorkspaceMode::History {
             div()
                 .size_full()
@@ -1394,14 +1469,21 @@ impl Render for GitTurtle {
                         self.render_inspector(cx)
                     }),
             );
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(self.render_git_actions(cx))
+            .child(div().flex_1().min_h_0().child(workspace))
+            .into_any_element()
+    }
+}
+
+impl Render for GitTurtle {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = palette(cx);
         let body = match self.page {
-            AppPage::Repository => div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .child(self.render_git_actions(cx))
-                .child(div().flex_1().min_h_0().child(workspace))
-                .into_any_element(),
+            AppPage::Repository => self.render_repository(cx),
             AppPage::Projects => self.hub.clone().into_any_element(),
             AppPage::Settings => self.render_settings(cx),
         };

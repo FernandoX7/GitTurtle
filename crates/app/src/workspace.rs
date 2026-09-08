@@ -1,5 +1,6 @@
 use crate::*;
-use gitturtle_core::{ChangeArea, WriteCommand};
+use gitturtle_core::{ChangeArea, ChangeStatus, WriteCommand};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder;
 
 #[derive(Clone, Copy)]
@@ -350,6 +351,11 @@ impl GitTurtle {
             WriteCommand::Commit { message } => Some(message.clone()),
             _ => None,
         };
+        let submitted_branch = match &command {
+            WriteCommand::Checkout { branch } => Some(branch.clone()),
+            WriteCommand::CreateBranch { name, .. } => Some(name.clone()),
+            _ => None,
+        };
         let refresh_history = matches!(
             &command,
             WriteCommand::Commit { .. }
@@ -394,6 +400,9 @@ impl GitTurtle {
                     if succeeded && submitted_message.as_deref().is_some_and(|message| this.commit_message.read(cx).value().as_str() == message) {
                         this.commit_message.update(cx,|input,cx|input.set_value("",window,cx));
                     }
+                    if succeeded && submitted_branch.as_deref().is_some_and(|branch| this.branch_name.read(cx).value().trim() == branch) {
+                        this.branch_name.update(cx,|input,cx|input.set_value("",window,cx));
+                    }
                     if refresh_history { this.refresh_after_write(path, window, cx); }
                     else { this.refresh_worktree(window,cx); }
                 }
@@ -429,6 +438,10 @@ impl GitTurtle {
         let staged = self.work_status.as_ref().map_or(0, |status| {
             status.entries.iter().filter(|e| e.staged.is_some()).count()
         });
+        let total = self
+            .work_status
+            .as_ref()
+            .map_or(0, |status| status.entries.len());
         let conflicted = self
             .work_status
             .as_ref()
@@ -438,6 +451,20 @@ impl GitTurtle {
             .as_ref()
             .is_some_and(|p| !p.name.is_empty() && !p.email.is_empty());
         let busy = self.operation_busy.is_some();
+        let branch = self
+            .work_status
+            .as_ref()
+            .and_then(|s| s.branch.as_deref())
+            .unwrap_or("detached HEAD");
+        let summary_length = self
+            .commit_message
+            .read(cx)
+            .value()
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .count();
         let list = uniform_list(
             "working-files",
             self.working_rows.len(),
@@ -450,110 +477,77 @@ impl GitTurtle {
         .size_full()
         .track_scroll(&self.working_scroll);
         div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(rgb(p.panel))
+            .size_full().flex().flex_col().bg(rgb(p.panel))
             .child(
-                div()
-                    .h(px(48.))
-                    .px_4()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .border_b_1()
-                    .border_color(rgb(p.border))
-                    .child(icon("commit", 16., p.accent))
-                    .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Working changes"),
-                    )
+                div().h(px(52.)).px_4().flex().items_center().gap_2()
+                    .border_b_1().border_color(rgb(p.border))
+                    .child(icon("commit", 17., p.accent))
+                    .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child("Changes"))
+                    .child(div().px_2().py_0p5().rounded(px(5.)).bg(rgb(p.hover))
+                        .text_size(px(11.)).text_color(rgb(p.muted)).child(total.to_string()))
                     .child(div().flex_1())
-                    .child(
-                        button("refresh-working", "Refresh", "refresh", false)
-                            .disabled(busy)
-                            .on_click(
-                                cx.listener(|this, _, window, cx| {
-                                    this.refresh_worktree(window, cx)
-                                }),
-                            ),
-                    ),
+                    .child(button("refresh-working", "", "refresh", false)
+                        .accessibility_label("Refresh working changes").tooltip("Refresh working changes")
+                        .disabled(busy).on_click(cx.listener(|this, _, window, cx| this.refresh_worktree(window, cx)))),
             )
             .child(
-                div()
-                    .id("working-pane")
-                    .role(Role::ListBox)
-                    .aria_label("Working tree files")
-                    .tab_stop(true)
-                    .key_context("GitTurtleList")
-                    .track_focus(&self.file_focus)
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_hidden()
-                    .child(list),
+                div().id("working-pane").role(Role::ListBox).aria_label("Working tree files")
+                    .tab_stop(true).key_context("GitTurtleList").track_focus(&self.file_focus)
+                    .flex_1().min_h_0().overflow_hidden()
+                    .when(total > 0, |el| el.child(list))
+                    .when(total == 0, |el| el.child(
+                        div().size_full().flex().flex_col().items_center().justify_center().p_5().gap_2()
+                            .child(div().size(px(40.)).rounded(px(12.)).bg(rgb(p.added_background))
+                                .flex().items_center().justify_center().child(icon("check", 22., p.added)))
+                            .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM)
+                                .child(if self.work_status.is_some() { "Working tree clean" } else { "Reading working tree…" }))
+                            .child(div().max_w(px(220.)).text_center().text_size(px(11.)).text_color(rgb(p.muted))
+                                .child("Your changed files will appear here, ready to review and stage.")),
+                    )),
             )
             .child(
-                div()
-                    .flex_shrink_0()
-                    .p_4()
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .border_t_1()
-                    .border_color(rgb(p.border))
+                div().flex_shrink_0().p_4().flex().flex_col().gap_3()
+                    .bg(rgb(p.subtle)).border_t_1().border_color(rgb(p.border))
+                    .child(div().flex().items_center().gap_2()
+                        .child(icon("commit", 16., p.accent))
+                        .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child("Create a commit"))
+                        .child(div().flex_1())
+                        .child(div().text_size(px(11.)).text_color(rgb(if staged > 0 { p.added } else { p.muted }))
+                            .child(format!("{staged} staged"))))
+                    .child(div().flex().items_center().gap_1p5().min_w_0().text_size(px(11.))
+                        .text_color(rgb(p.muted)).child(icon("branch", 13., p.muted))
+                        .child(div().truncate().child(branch.to_owned())))
+                    .child(Textarea::new(&self.commit_message).readonly(busy).h(px(112.)).text_size(px(12.)))
+                    .child(div().flex().items_center().gap_2().text_size(px(10.)).text_color(rgb(p.muted))
+                        .child(div().flex_1().child(if staged == 0 { "Stage files to include in your commit" } else { "Only staged changes will be committed" }))
+                        .child(div().text_color(rgb(if summary_length > 72 { p.warning } else { p.muted }))
+                            .child(format!("{summary_length}/72"))))
+                    .when(!identity_ready, |el| el.child(
+                        button("configure-identity", "Set your commit identity", "", false)
+                            .on_click(cx.listener(|this, _, window, cx| this.show_settings(window, cx))),
+                    ))
+                    .when(conflicted, |el| el.child(
+                        div().flex().items_center().gap_2().text_size(px(11.)).text_color(rgb(p.warning))
+                            .child(icon("file-conflict", 15., p.warning))
+                            .child("Resolve conflicted files before committing."),
+                    ))
                     .child(
-                        div().flex().items_center().child(
-                            div()
-                                .text_size(px(11.))
-                                .text_color(rgb(p.muted))
-                                .child(format!("COMMIT · {staged} staged files")),
-                        ),
-                    )
-                    .child(
-                        Textarea::new(&self.commit_message)
-                            .readonly(busy)
-                            .h(px(100.))
-                            .text_size(px(12.)),
-                    )
-                    .when(!identity_ready, |el| {
-                        el.child(
-                            button("configure-identity", "Set your commit identity", "", false)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.show_settings(window, cx)
-                                })),
-                        )
-                    })
-                    .when(conflicted, |el| {
-                        el.child(
-                            div()
-                                .text_size(px(11.))
-                                .text_color(rgb(p.removed))
-                                .child("Resolve conflicted files before committing."),
-                        )
-                    })
-                    .child(
-                        Button::new("commit-staged")
-                            .primary()
+                        Button::new("commit-staged").primary().w_full().h(px(36.))
+                            .icon(Icon::default().path("icons/commit.svg").size(px(16.)))
                             .label(if busy {
-                                "Working…"
+                                "Working…".to_owned()
+                            } else if staged == 0 {
+                                "Stage files to commit".to_owned()
+                            } else if self.commit_message.read(cx).value().trim().is_empty() {
+                                "Write a commit message".to_owned()
                             } else {
-                                "Commit staged changes"
+                                format!("Commit {staged} {}", if staged == 1 { "file" } else { "files" })
                             })
-                            .disabled(
-                                busy || staged == 0
-                                    || conflicted
-                                    || !identity_ready
-                                    || self.commit_message.read(cx).value().trim().is_empty(),
-                            )
+                            .disabled(busy || staged == 0 || conflicted || !identity_ready
+                                || self.commit_message.read(cx).value().trim().is_empty())
                             .on_click(cx.listener(|this, _, window, cx| {
                                 let message = this.commit_message.read(cx).value().to_string();
-                                this.write(
-                                    WriteCommand::Commit { message },
-                                    "Creating commit…",
-                                    window,
-                                    cx,
-                                );
+                                this.write(WriteCommand::Commit { message }, "Creating commit…", window, cx);
                             })),
                     ),
             )
@@ -575,21 +569,30 @@ impl GitTurtle {
                     .gap_2()
                     .border_b_1()
                     .border_color(rgb(p.border))
+                    .bg(rgb(p.subtle))
+                    .child(icon(
+                        if staged { "check" } else { "code" },
+                        15.,
+                        if staged { p.added } else { p.modified },
+                    ))
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(if staged { "Staged" } else { "Unstaged" }),
+                    )
                     .child(
                         div()
                             .text_size(px(11.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(format!(
-                                "{} · {count}",
-                                if staged { "Staged" } else { "Unstaged" }
-                            )),
+                            .text_color(rgb(p.muted))
+                            .child(count.to_string()),
                     )
                     .child(div().flex_1())
                     .child(
                         button(
                             if staged { "unstage-all" } else { "stage-all" },
                             if staged { "Unstage all" } else { "Stage all" },
-                            "",
+                            if staged { "minus" } else { "plus" },
                             false,
                         )
                         .disabled(busy || count == 0)
@@ -631,14 +634,23 @@ impl GitTurtle {
                     .unwrap_or("Repository root".into());
                 let active = self.working_selected == Some((index, area));
                 let staged = area == ChangeArea::Staged;
-                let letter = if entry.conflicted {
-                    "!"
-                } else if entry.untracked {
-                    "?"
-                } else if staged {
-                    entry.staged.map(|s| s.letter()).unwrap_or("M")
+                let change = if staged { entry.staged } else { entry.unstaged };
+                let (symbol, status_label, color, background) = if entry.conflicted {
+                    ("file-conflict", "Conflict", p.warning, p.hover)
+                } else if entry.untracked || change == Some(ChangeStatus::Added) {
+                    ("file-added", "New", p.added, p.added_background)
                 } else {
-                    entry.unstaged.map(|s| s.letter()).unwrap_or("M")
+                    match change.unwrap_or(ChangeStatus::Modified) {
+                        ChangeStatus::Added => ("file-added", "New", p.added, p.added_background),
+                        ChangeStatus::Modified => {
+                            ("file-modified", "Modified", p.modified, p.hover)
+                        }
+                        ChangeStatus::Deleted => {
+                            ("file-deleted", "Deleted", p.removed, p.removed_background)
+                        }
+                        ChangeStatus::Renamed => ("file-renamed", "Renamed", p.renamed, p.hover),
+                        ChangeStatus::TypeChanged => ("file-type", "Type", p.warning, p.hover),
+                    }
                 };
                 div()
                     .id((
@@ -651,8 +663,9 @@ impl GitTurtle {
                     ))
                     .role(Role::ListBoxOption)
                     .aria_label(format!(
-                        "{} · {}",
+                        "{} · {} · {}",
                         entry.path.display(),
+                        status_label,
                         if staged { "Staged" } else { "Unstaged" }
                     ))
                     .aria_selected(active)
@@ -667,13 +680,14 @@ impl GitTurtle {
                     .cursor_pointer()
                     .child(
                         div()
-                            .text_size(px(11.))
-                            .text_color(rgb(if entry.conflicted {
-                                p.removed
-                            } else {
-                                p.accent
-                            }))
-                            .child(letter),
+                            .size(px(26.))
+                            .flex_shrink_0()
+                            .rounded(px(7.))
+                            .bg(rgb(background))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon(symbol, 16., color)),
                     )
                     .child(
                         div()
@@ -682,23 +696,36 @@ impl GitTurtle {
                             .flex()
                             .flex_col()
                             .gap_0p5()
-                            .child(div().truncate().text_size(px(11.)).child(name))
                             .child(
                                 div()
                                     .truncate()
-                                    .text_size(px(9.))
+                                    .text_size(px(12.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(name),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(10.))
                                     .text_color(rgb(p.muted))
                                     .child(parent),
                             ),
                     )
                     .child(
+                        div()
+                            .text_size(px(10.))
+                            .text_color(rgb(color))
+                            .child(status_label),
+                    )
+                    .child(
                         button(
                             (if staged { "unstage" } else { "stage" }, index),
-                            if staged { "−" } else { "+" },
                             "",
+                            if staged { "minus" } else { "plus" },
                             false,
                         )
                         .accessibility_label(if staged { "Unstage file" } else { "Stage file" })
+                        .tooltip(if staged { "Unstage file" } else { "Stage file" })
                         .disabled(busy)
                         .on_click(cx.listener(
                             move |this, _, window, cx| {
@@ -740,184 +767,181 @@ impl GitTurtle {
             .as_ref()
             .and_then(|s| s.branch.clone())
             .unwrap_or("Detached HEAD".into());
-        let selected_remote = self.remote_name.read(cx).value().to_string();
-        let destination = self
+        let selected_remote = self.remote_name.read(cx).value().trim().to_owned();
+        let selected_branch = self.remote_branch.read(cx).value().trim().to_owned();
+        let remote = self
             .remotes
             .iter()
-            .find(|remote| remote.name == selected_remote)
-            .map(|remote| {
-                format!(
-                    "Push destination · {} · {}",
-                    remote.name,
-                    display_remote_url(&remote.push_url)
-                )
-            });
-        div()
-            .flex()
-            .flex_col()
-            .bg(rgb(p.panel))
-            .border_b_1()
-            .border_color(rgb(p.border))
-            .child(
-                div()
-                    .h(px(40.))
-                    .px_4()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(icon("branch", 14., p.accent))
-                    .child(
-                        div()
-                            .max_w(px(260.))
-                            .truncate()
-                            .text_size(px(12.))
-                            .child(branch),
-                    )
-                    .children(
-                        self.work_status
-                            .as_ref()
-                            .and_then(|status| status.operation.as_ref())
-                            .map(|operation| {
-                                div()
-                                    .text_size(px(10.))
-                                    .text_color(rgb(p.accent))
-                                    .child(format!("{operation} in progress"))
+            .find(|remote| remote.name == selected_remote);
+        let target = format!("{selected_remote}/{selected_branch}");
+        let branch_empty = self.branch_name.read(cx).value().trim().is_empty();
+        let detached = self.work_status.as_ref().is_none_or(|s| s.branch.is_none());
+        let view = cx.entity().downgrade();
+        let branch_picker = action_button("current-branch", branch.clone(), "branch")
+            .max_w(px(280.))
+            .dropdown_caret(true)
+            .disabled(busy)
+            .tooltip("Switch to a local branch")
+            .dropdown_menu(move |mut menu, _, cx| {
+                let Some(view) = view.upgrade() else {
+                    return menu;
+                };
+                let this = view.read(cx);
+                let path = this.path.clone();
+                let query = this.branch_name.read(cx).value().trim().to_lowercase();
+                let current = this.work_status.as_ref().and_then(|s| s.branch.as_deref());
+                menu = menu.label("Switch branch").max_h(px(360.)).scrollable(true);
+                // Build this bounded list only when the menu opens, never on each frame.
+                let branches = this.branches.iter().filter(|branch| {
+                    !branch.remote
+                        && Some(branch.name.as_str()) != current
+                        && (query.is_empty() || branch.name.to_lowercase().contains(&query))
+                });
+                let current_branch = this
+                    .branches
+                    .iter()
+                    .find(|branch| !branch.remote && Some(branch.name.as_str()) == current);
+                for branch in current_branch.into_iter().chain(branches.take(40)) {
+                    let name = branch.name.clone();
+                    let view = view.downgrade();
+                    let path = path.clone();
+                    let checked = Some(name.as_str()) == current;
+                    menu = menu.item(
+                        PopupMenuItem::new(name.clone())
+                            .checked(checked)
+                            .disabled(checked)
+                            .on_click(move |_, window, cx| {
+                                let _ = view.update(cx, |this, cx| {
+                                    if this.path == path {
+                                        this.write(
+                                            WriteCommand::Checkout {
+                                                branch: name.clone(),
+                                            },
+                                            "Switching branch…",
+                                            window,
+                                            cx,
+                                        );
+                                    }
+                                });
                             }),
-                    )
-                    .children(self.work_status.as_ref().map(|s| {
-                        div()
-                            .text_size(px(10.))
-                            .text_color(rgb(p.muted))
-                            .child(format!("↑ {}   ↓ {}", s.ahead, s.behind))
+                    );
+                }
+                let view = view.downgrade();
+                menu.separator()
+                    .item(PopupMenuItem::new("Find or create a branch…").on_click(
+                        move |_, window, cx| {
+                            let _ = view.update(cx, |this, cx| {
+                                this.git_actions_open = true;
+                                this.branch_name.read(cx).focus_handle(cx).focus(window, cx);
+                                cx.notify();
+                            });
+                        },
+                    ))
+            });
+        div().flex().flex_col().flex_shrink_0().bg(rgb(p.panel)).border_b_1().border_color(rgb(p.border))
+            .child(
+                div().min_h(px(54.)).px_4().py_2().flex().flex_wrap().items_center().gap_2()
+                    .child(branch_picker)
+                    .children(self.work_status.as_ref().map(|status| {
+                        div().flex().items_center().gap_2().px_2().text_size(px(11.))
+                            .child(div().text_color(rgb(if status.ahead > 0 { p.added } else { p.muted }))
+                                .child(format!("↑ {}", status.ahead)))
+                            .child(div().text_color(rgb(if status.behind > 0 { p.modified } else { p.muted }))
+                                .child(format!("↓ {}", status.behind)))
+                    }))
+                    .children(self.work_status.as_ref().and_then(|s| s.operation.as_ref()).map(|operation| {
+                        div().px_2().py_1().rounded(px(5.)).bg(rgb(p.hover)).text_size(px(11.))
+                            .text_color(rgb(p.warning)).child(format!("{operation} in progress"))
                     }))
                     .child(div().flex_1())
-                    .child(
-                        button(
-                            "git-actions-toggle",
-                            if self.git_actions_open {
-                                "Close Git actions"
-                            } else {
-                                "Git actions"
-                            },
-                            "",
-                            self.git_actions_open,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.git_actions_open = !this.git_actions_open;
-                            cx.notify();
-                        })),
-                    ),
+                    .children([("fetch", "Fetch"), ("pull", "Pull"), ("push", "Push")].into_iter().map(|(id, label)| {
+                        let unavailable = busy || remote.is_none() || (id != "fetch" && (selected_branch.is_empty() || detached));
+                        let tooltip = if remote.is_none() { "No configured remote selected".to_owned() } else {
+                            match id {
+                                "fetch" => format!("Fetch from {selected_remote}"),
+                                "pull" => format!("Pull {target} into {branch} · fast-forward only"),
+                                _ => format!("Push {branch} to {target}"),
+                            }
+                        };
+                        action_button(id, label, id).when(id == "push", |button| button.primary())
+                            .disabled(unavailable).tooltip(tooltip)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                let remote = this.remote_name.read(cx).value().trim().to_owned();
+                                let branch = this.remote_branch.read(cx).value().trim().to_owned();
+                                let command = match id {
+                                    "fetch" => WriteCommand::Fetch { remote },
+                                    "pull" => WriteCommand::Pull { remote, branch },
+                                    _ => WriteCommand::Push {
+                                        remote,
+                                        local_branch: this.work_status.as_ref().and_then(|s| s.branch.clone()).unwrap_or_default(),
+                                        remote_branch: branch,
+                                    },
+                                };
+                                this.write(command, match id { "fetch" => "Fetching remote…", "pull" => "Pulling fast-forward…", _ => "Pushing branch…" }, window, cx);
+                            }))
+                    }))
+                    .child(button("git-actions-toggle", "Targets", "sliders", self.git_actions_open)
+                        .tooltip("Show branch and remote targets")
+                        .on_click(cx.listener(|this, _, _, cx| { this.git_actions_open = !this.git_actions_open; cx.notify(); }))),
             )
-            .when(self.git_actions_open, |el| {
-                el.when_some(destination, |el, destination| {
-                    el.child(
-                        div()
-                            .px_4()
-                            .pb_2()
-                            .text_size(px(10.))
-                            .text_color(rgb(p.muted))
-                            .child(destination),
-                    )
-                })
-                .child(
-                    div()
-                        .px_4()
-                        .pb_3()
-                        .flex()
-                        .flex_wrap()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div()
-                                .w(px(170.))
-                                .child(Input::new(&self.branch_name).text_size(px(12.))),
-                        )
-                        .child(
-                            button("checkout-branch", "Switch branch", "", false)
-                                .disabled(busy)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    let branch =
-                                        this.branch_name.read(cx).value().trim().to_owned();
-                                    this.write(
-                                        WriteCommand::Checkout { branch },
-                                        "Switching branch…",
-                                        window,
-                                        cx,
-                                    );
-                                })),
-                        )
-                        .child(
-                            button("create-branch", "Create branch", "", false)
-                                .disabled(busy)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    let name = this.branch_name.read(cx).value().trim().to_owned();
-                                    this.write(
-                                        WriteCommand::CreateBranch {
-                                            name,
-                                            start_point: None,
-                                        },
-                                        "Creating branch…",
-                                        window,
-                                        cx,
-                                    );
-                                })),
-                        )
-                        .child(div().w(px(1.)).h(px(20.)).mx_2().bg(rgb(p.border)))
-                        .child(
-                            div()
-                                .w(px(100.))
-                                .child(Input::new(&self.remote_name).text_size(px(12.))),
-                        )
-                        .child(
-                            div()
-                                .w(px(150.))
-                                .child(Input::new(&self.remote_branch).text_size(px(12.))),
-                        )
-                        .children(
-                            [("fetch", "Fetch"), ("pull", "Pull · FF"), ("push", "Push")]
-                                .into_iter()
-                                .map(|(id, label)| {
-                                    button(id, label, "", false)
-                                        .disabled(busy || self.remotes.is_empty())
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            let remote =
-                                                this.remote_name.read(cx).value().trim().to_owned();
-                                            let branch = this
-                                                .remote_branch
-                                                .read(cx)
-                                                .value()
-                                                .trim()
-                                                .to_owned();
-                                            let command = match id {
-                                                "fetch" => WriteCommand::Fetch { remote },
-                                                "pull" => WriteCommand::Pull { remote, branch },
-                                                _ => WriteCommand::Push {
-                                                    remote,
-                                                    local_branch: this
-                                                        .work_status
-                                                        .as_ref()
-                                                        .and_then(|s| s.branch.clone())
-                                                        .unwrap_or_default(),
-                                                    remote_branch: branch,
-                                                },
-                                            };
-                                            this.write(
-                                                command,
-                                                match id {
-                                                    "fetch" => "Fetching remote…",
-                                                    "pull" => "Pulling fast-forward…",
-                                                    _ => "Pushing branch…",
-                                                },
-                                                window,
-                                                cx,
-                                            );
-                                        }))
-                                }),
-                        ),
-                )
-            })
+            .when(self.git_actions_open, |el| el.child(
+                div().px_4().pb_3().flex().flex_col().gap_2()
+                    .child(div().flex().flex_wrap().items_end().gap_3()
+                        .child(div().flex().flex_col().gap_1()
+                            .child(action_field_label("Find or create a branch", p.muted))
+                            .child(div().flex().items_center().gap_1()
+                                .child(div().w(px(170.)).child(Input::new(&self.branch_name).text_size(px(12.)).disabled(busy)))
+                                .child(button("checkout-branch", "Switch", "branch", false).disabled(busy || branch_empty)
+                                    .tooltip("Switch to the named local branch")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        let branch = this.branch_name.read(cx).value().trim().to_owned();
+                                        this.write(WriteCommand::Checkout { branch }, "Switching branch…", window, cx);
+                                    })))
+                                .child(button("create-branch", "Create", "branch-add", false).disabled(busy || branch_empty)
+                                    .tooltip("Create and switch to a branch from HEAD")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        let name = this.branch_name.read(cx).value().trim().to_owned();
+                                        this.write(WriteCommand::CreateBranch { name, start_point: None }, "Creating branch…", window, cx);
+                                    })))))
+                        .child(div().w(px(1.)).h(px(32.)).mx_1().bg(rgb(p.border)))
+                        .child(div().w(px(120.)).flex().flex_col().gap_1()
+                            .child(action_field_label("Remote", p.muted))
+                            .child(Input::new(&self.remote_name).text_size(px(12.)).disabled(busy)))
+                        .child(div().w(px(200.)).flex().flex_col().gap_1()
+                            .child(action_field_label("Remote branch", p.muted))
+                            .child(Input::new(&self.remote_branch).text_size(px(12.)).disabled(busy))))
+                    .child(div().flex().items_center().gap_1p5().text_size(px(10.)).text_color(rgb(p.muted))
+                        .child(icon("remote", 12., p.muted))
+                        .child(div().min_w_0().truncate().child(remote.map_or_else(
+                            || "No remote configured · branch and commit actions are available locally".to_owned(),
+                            |remote| format!("Push to {} · {}", target, display_remote_url(&remote.push_url)),
+                        )))),
+            ))
             .into_any_element()
     }
+}
+
+fn action_button(id: impl Into<ElementId>, label: impl Into<SharedString>, symbol: &str) -> Button {
+    Button::new(id)
+        .secondary()
+        .h(px(34.))
+        .px_3()
+        .text_size(px(12.))
+        .font_weight(FontWeight::MEDIUM)
+        .label(label)
+        .icon(
+            Icon::default()
+                .path(format!("icons/{symbol}.svg"))
+                .size(px(16.)),
+        )
+}
+
+fn action_field_label(label: &'static str, color: u32) -> impl IntoElement {
+    div()
+        .text_size(px(10.))
+        .text_color(rgb(color))
+        .font_weight(FontWeight::MEDIUM)
+        .child(label)
 }
 
 fn retained_area(preferred: ChangeArea, staged: bool, unstaged: bool) -> Option<ChangeArea> {

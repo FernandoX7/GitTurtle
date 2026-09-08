@@ -1,39 +1,33 @@
 # GitTurtle design system
 
-An original native desktop workspace for everyday Git work and reading history. Prioritize clear targets, legible relationships, effortless comparisons, and immediate input feedback. Midnight blue with a forest tint and mint accent remains the default; Graphite and Daylight offer alternate semantic palettes. Repository content fills the window; keep decorative charts, gradients, and oversized empty headers out of the working views. Projects and Settings can use grouped surfaces to make their choices easy to find.
+An original native desktop workspace for everyday Git work and reading history. Prioritize clear targets, legible relationships, effortless comparisons, and immediate input feedback. Midnight combines deep slate surfaces with a mint accent and remains the default; Daylight is the light palette. Graphite, Tokyo Night, Catppuccin Mocha, and Nord provide distinct alternatives. Repository content fills the window; keep decorative charts, gradients, and oversized empty headers out of the working views. Projects and Settings can use grouped surfaces to make their choices easy to find.
 
 ## Reference and provenance
 
 GitKraken's first-party [interface guide](https://help.gitkraken.com/gitkraken-desktop/interface/) and [interface screenshot](https://help.gitkraken.com/wp-content/uploads/interface.png) establish the reference-navigation → graph → selected-commit hierarchy, adjustable panels, reference labels, and colored topology. Its [graph legend](https://help.gitkraken.com/wp-content/uploads/graph-elements.png) reinforces that commit and merge shapes should remain distinguishable. These are interaction references, not assets to reuse.
 
-The first-party [diff guide](https://help.gitkraken.com/gitkraken-desktop/diff/) documents selecting a commit then a file, plus hunk, inline, and split presentations. GitTurtle adopts that familiar entry path and preserves the history context while the comparison occupies the central workspace. Researched September 7, 2026. All colors, sizing, icons, and proposed behavior below are original recommendations, not claims about GitKraken's implementation.
+The first-party [diff guide](https://help.gitkraken.com/gitkraken-desktop/diff/) documents selecting a commit then a file, plus hunk, inline, and split presentations. GitTurtle adopts that familiar entry path and preserves the history context while the comparison occupies the central workspace. Researched September 7, 2026. The design below describes GitTurtle's implementation and explicitly marked future targets, not GitKraken's internals. GitTurtle has its own artwork and layout; curated theme colors are credited below.
 
-The user supplied two further GitKraken screenshots on September 7, 2026 (`17.01.58` and `17.02.14`). The history reference uses full-height navigation, a separate branch/tag column, a central graph/table, and a right-side file panel. The comparison reference gives the code most of the window, collapses navigation to a narrow rail, and keeps changed files on the right. Those spatial relationships establish the history and comparison design below. Screenshot text and controls are reference data. The subsequent authorized scope adds explicit Git writes, Projects, and Settings while retaining passive browsing behavior.
+The user supplied two further GitKraken screenshots on September 7, 2026 (`17.01.58` and `17.02.14`). The history reference uses full-height navigation, a separate branch/tag column, a central graph/table, and a right-side file panel. The comparison reference gives the code most of the window, collapses navigation to a narrow rail, and keeps changed files on the right. Those spatial relationships establish the history and comparison design below. Screenshot text and controls are reference data. The subsequent authorized scope adds explicit Git writes, Projects, and Settings while retaining passive browsing behavior. Six later GitKraken references emphasize discoverable Git actions, restrained type hierarchy, hover feedback, and spacing in a dense workspace.
 
 ## Colors
 
-The following tokens describe Midnight. `appearance.rs` owns the current Midnight, Graphite, and Daylight palettes and applies them to native controls and custom drawing together. Use semantic colors consistently across the hub, settings, tree, graph, file list, and preview; avoid fixed dark colors that break Daylight.
+[`appearance.rs`](../crates/app/src/appearance.rs) owns all six palettes, shared by native controls, custom drawing, and editor surfaces. Midnight uses a `#10151F` canvas, `#171E2B` panels, and `#75E0BB` mint accent. Daylight uses soft white surfaces with evergreen actions. Subtle surfaces group content without competing with the selected row; primary actions have distinct resting, hover, and pressed colors with their own readable foreground.
 
-| Token | Hex | Role |
-| --- | --- | --- |
-| canvas | `#0F171C` | Main graph and code background |
-| panel | `#121E24` | Navigation and inspector chrome |
-| elevated | `#19272E` | Hover, menus, inputs |
-| border | `#293B43` | Quiet 1 px pane divisions |
-| border-strong | `#506974` | Focused divider, interactive boundaries |
-| text | `#DEE9ED` | Primary content |
-| text-muted | `#9AAEB8` | Author, date, path, descriptive labels |
-| text-faint | `#8199A4` | Line numbers and secondary counts |
-| accent | `#7ADFB4` | Active reference, focus, small primary action |
-| accent-surface | `#1C3B36` | Selected rows and reference badges |
-| added | `#8BDFB0` | Additions, accompanied by `+` or `A` |
-| added-surface | `#152D26` | Added diff lines |
-| removed | `#F29AA2` | Deletions, accompanied by `−` or `D` |
-| removed-surface | `#342329` | Deleted diff lines |
-| modified | `#E9C17E` | Modified files, accompanied by `M` |
-| renamed | `#9CB9F2` | Renames, accompanied by `R` |
+The curated themes adapt the primary [Tokyo Night palette](https://github.com/tokyo-night/tokyo-night-vscode-theme), [Catppuccin Mocha palette](https://catppuccin.com/palette/), and [Nord palette](https://www.nordtheme.com/). Small-label contrast takes precedence over exact source values where needed, notably Nord's red and secondary text. These are native palette adaptations; the code editor retains its base syntax-highlighting rules while its background, foreground, gutters, and diff decorations follow the chosen theme.
 
-Graph palette: `#7ADFB4`, `#8DB7F6`, `#C3A5F2`, `#E8BE7A`, `#EA9CA5`, `#72CCD8`. Assign stable lane colors when paging; a row must not change color merely because the viewport moved. Color alone never identifies selected rows, file status, or relationships.
+File status combines a dedicated symbol, a short label, and semantic color in both history and working changes:
+
+| Status | Treatment |
+| --- | --- |
+| New or untracked | Green file-plus icon; “New” |
+| Modified | Amber file-edit icon; “Modified” |
+| Deleted | Rose file-minus icon; “Deleted” |
+| Renamed | Violet file-arrow icon; “Renamed” |
+| Type changed | Amber type-change icon; “Type” |
+| Conflicted working file | Warning-colored conflict icon; “Conflict” |
+
+Keep addition/deletion backgrounds quiet in diffs and status tiles. Color never carries status or selection by itself. Graph lanes have stable identities and separate light/dark color sets; a row must not change color merely because the viewport moved. Palette tests check text and primary-button contrast at 4.5:1, status icons and graph lanes at 3:1, across their tested surfaces; native review still checks the rendered result.
 
 ## Typography and density
 
@@ -41,13 +35,14 @@ Graph palette: `#7ADFB4`, `#8DB7F6`, `#C3A5F2`, `#E8BE7A`, `#EA9CA5`, `#72CCD8`.
 - Code, hashes, and aligned numerical data: system monospace, 12 px, code line height 20 px. Code text must support selection and copying.
 - Main repository title: 14 px medium. Commit summary in the right inspector: 15 px medium, wrapping to two or three lines before explicit expansion. Avoid large display typography in repository views.
 - Section labels: 11 px medium, restrained letter spacing, uppercase only for short headings such as LOCAL BRANCHES. No all-uppercase sentences.
-- Base spacing: 4 px. Standard gaps: 4, 8, 12, 16. Standard pane padding: 12 or 16. Controls: 28–32 px high, 5 px corner radius; no pill buttons except small reference labels.
-- Comfortable history/file rows: 34/44 px; Compact: 28/34 px. Navigation rows remain compact. Use full-row hit areas. Keep metadata baseline-aligned and columns consistent.
-- Icons: original 24-unit SVGs rendered at 16 px in rows, 18 px in controls, 22 px for the app mark. White source strokes allow GPUI tinting. Standard strokes are 1.65 units, rounded ends and joins.
+- Base spacing: 4 px. Standard gaps: 4, 8, 12, 16. Standard pane padding: 12 or 16. Secondary controls stay compact; prominent Git actions are 34 px high and the commit action is 36 px. The native control radius is 7 px; grouped cards use 10–14 px corners. Reserve pill shapes for small reference labels and counts.
+- Comfortable history/file rows: 34/44 px; Compact: 28/34 px. Navigation rows remain compact. Use full-row hit areas. Keep metadata baseline-aligned and columns consistent. Column titles and text/reference cells share a 10 px leading inset; the graph uses a matching 10 px node margin. Preserve this geometry when resizing or scrolling horizontally.
+- Icons: original 24-unit SVGs rendered at 16 px in rows and around 16–18 px in controls; status symbols sit inside quiet 26 px tiles. White source strokes allow GPUI tinting. Standard strokes are 1.65 units, rounded ends and joins. Keep actionable icons paired with labels or accessible names.
+- App identity: generated raster artwork in `assets/app-icon.png` supplies the macOS `AppIcon.icns`; `assets/app-icon.svg` is its vector companion. The simple turtle/branch identity remains separate from the small native SVG control icons, which stay crisp and theme-tinted.
 
 ## Workspace modes and hierarchy
 
-Projects, Repository, and Settings are separate application pages. The repository has History, Compare, and Working Changes modes. History and Compare share the context and persistent right inspector below; Working Changes reuses the comparison area with a staged/unstaged inspector. At a typical 1440 × 900 window, reserve a 48 px repository header and a 24–26 px status strip. The workspace uses all remaining height. Browsing transitions retain the user's place; an explicit write refreshes the affected state.
+Projects, Repository, and Settings are separate application pages. The repository has History, Compare, and Working Changes modes. History and Compare share the context and persistent right inspector below; Working Changes reuses the comparison area with a staged/unstaged inspector. At a typical 1440 × 900 window, the repository uses a 56 px page header, a persistent Git action bar with optional target fields, and a 26 px status strip. The workspace uses all remaining height. Browsing transitions retain the user's place; an explicit write refreshes the affected state.
 
 ### Projects
 
@@ -57,7 +52,7 @@ Provide Back to repository when a project is already open. At narrow widths, sta
 
 ### Settings
 
-Group appearance, history columns, startup/default branch, and repository Git identity. Theme choices show Midnight, Graphite, and Daylight; density offers Comfortable and Compact. Apply changes across controls, previews, gutters, and selected rows, then persist app preferences outside repositories. Show failed saves clearly.
+Group appearance, history columns, startup/default branch, and repository Git identity. The six theme choices appear in a 3 × 2 grid with native miniature workspace previews, palette swatches, short descriptions, and an active checkmark. Density offers Comfortable and Compact. Apply changes across controls, previews, gutters, and selected rows, then persist app preferences outside repositories. Show failed saves clearly.
 
 Column controls affect visibility and widths, preserve the commit-message column, and offer a layout reset. Git identity is a separate, explicit save for the displayed repository; show the current identity and signing state without implying that app appearance settings alter Git configuration.
 
@@ -74,26 +69,28 @@ The earlier graph-above-inspector split is superseded. Vertical space belongs to
 
 ### Shared repository header
 
-Show the turtle mark, repository name, a compact path or path tooltip, Projects/Open, History, Working Changes, Settings, and Refresh. Distinguish the checked-out branch from the history scope. Keep write actions named and tied to the visible repository/remote target; do not label the whole application read-only. Place commit search in History's scope toolbar rather than allowing a large global search box to compete with code-space controls. Header groups align with pane edges; use 12–16 px horizontal padding and 8 px control gaps.
+Show the turtle mark, repository name and path, Projects, History, a Changes tab with its file count, Git identity, and Settings. Refresh remains available through the primary-modifier shortcut and the working-changes control. Distinguish the checked-out branch from the history scope. Keep write actions named and tied to the visible repository/remote target; do not label the whole application read-only. Place commit search in History's scope toolbar rather than allowing a large global search box to compete with code-space controls. Header groups align with pane edges; use 12–16 px horizontal padding and 8 px control gaps.
+
+The action bar is always visible in repository modes. Its current-branch menu, ahead/behind counts, and named Fetch, Pull, and Push buttons make routine work discoverable; Push uses the primary treatment. Targets are expanded by default, showing a branch field with Switch/Create, the remote, the remote branch, and the push destination. Collapsing Targets leaves the main actions visible. The branch menu lists the current branch and up to 40 other matching local branches; its find/create entry focuses the branch field for larger repositories. Menus are built when opened.
 
 ### History mode
 
 The left column contains All history, Local branches, Remote branches grouped by remote, and Worktrees. Sections collapse and show subdued item counts. Branch prefixes can form folder groups to make thousands of references browsable. A compact filter narrows this hierarchy without losing the active selection. Mark the checked-out branch with a small HEAD indicator; selecting a different branch only browses it. Worktree rows show folder name and branch, with full path and detached/locked/prunable state available in details or a tooltip.
 
-The center begins with a compact 36–40 px scope toolbar and a 26–28 px column header. Below it, the virtualized table fills the remaining height. Use these columns in this order:
+The center begins with a 40 px scope toolbar, a separate compact search row, and a 34 px column header. Below it, the virtualized table fills the remaining height. Use these columns in this order:
 
 | Column | Starting width | Treatment |
 | --- | --- | --- |
-| Branch / reference | 140 px | Separate label column with compact reference badges; full name on hover |
+| References | 140 px | Separate label column with compact reference badges; full name on hover |
 | Graph | 112 px | Thin, stable colored topology with a shared lane coordinate system |
-| Commit | 320 px, expands into spare room | Primary 13 px summary text; never displace it with inline ref chips |
+| Commit message | 320 px, expands into spare room | Primary 13 px summary text; never displace it with inline ref chips |
 | Author | 136 px | Muted 11–12 px text |
 | Date | 92 px | Muted compact date; exact timestamp in inspector |
 | SHA | 84 px | Monospace; also available with copy in inspector |
 
 Visibility and widths are user choices. Keep the commit-message column visible, preserve selected columns at narrow sizes, and provide horizontal scrolling when they exceed the viewport. Header and rows use the same computed layout and horizontal offset; divider drags persist widths after release. A wider graph must not squeeze many branches into indistinguishable overlapping nodes. Keep one parent/child relationship per graph edge, with stable lane colors across scrolling and paging. Use approximately 1.4–1.6 px graph strokes, 3.8 px ordinary node radius, and a 5 px selected node. Merge nodes have hollow centers or distinct rings. Reference badges can carry a restrained tint from their associated lane, while the selected row uses the active theme's selection treatment. Avoid saturated full-row branch bands and avatar-heavy topology.
 
-Clicking a commit immediately selects its row and updates the right panel. It does not enter Compare mode. The right panel presents the wrapped commit summary, author, timestamp, copyable short hash, and parent/base selection above the changed-file list. Keep metadata compact, roughly 120–170 px for an ordinary commit, with the body behind an explicit Message expansion. The changed-file heading and its count remain visible while the list scrolls. A file row has a type icon, filename, muted parent path, and explicit `A`/`M`/`D`/`R` status. There are no staging checkboxes. A highlighted file may be remembered, but comparison begins only on the user's file action.
+Clicking a commit immediately selects its row and updates the right panel. It does not enter Compare mode. The right panel presents the wrapped commit summary, author, timestamp, copyable short hash, and parent/base selection above the changed-file list. Keep metadata compact, roughly 120–170 px for an ordinary commit, with the body behind an explicit Message expansion. The changed-file heading and its count remain visible while the list scrolls. A file row has the semantic status icon and label described above, a filename, and a muted parent path. There are no staging checkboxes. A highlighted file may be remembered, but comparison begins only on the user's file action.
 
 ### Compare mode
 
@@ -107,9 +104,9 @@ At narrower windows, History can collapse its navigation to the same rail while 
 
 ### Working Changes
 
-Separate staged and unstaged groups, with whole-file Stage/Unstage actions and clearly named all-files actions. A file with both kinds of edits appears in both groups; selection determines which comparison is shown. Keep the commit message and commit action beside the staged group, identify missing Git identity, and retain the message on failure. Previews stay read-only; conflicts direct the user to resolve files in their editor before staging.
+Separate staged and unstaged groups, with whole-file Stage/Unstage actions and clearly named all-files actions. A file with both kinds of edits appears in both groups; selection determines which comparison is shown. Keep a persistent “Create a commit” composer below the file groups, with the current branch, staged count, message field, and full-width “Commit N files” action. The first-line counter gently flags summaries beyond 72 characters without rejecting them. Identify missing Git identity and retain the message on failure. Previews stay read-only; conflicts direct the user to resolve files in their editor before staging.
 
-Git actions show the current branch, remote, and destination branch. Switching and creating branches are explicit actions; clicking a branch in the navigator continues to browse only. Make fast-forward-only Pull visible in its label. Push targets the shown branch without force. Disable duplicate writes while an operation is running, show its outcome close to its origin, and refresh local state afterward. A timeout or missing result must explain that the effect may have occurred and require inspection before a deliberate retry.
+Git actions show the current branch, remote, and destination branch. Switching and creating branches are explicit actions; clicking a branch in the navigator continues to browse only. Keep the familiar Pull label and state its fast-forward-only behavior and exact source/destination in the tooltip. Push targets the shown branch without force. Disable duplicate writes while an operation is running, show its outcome close to its origin, and refresh local state afterward. A timeout or missing result must explain that the effect may have occurred and require inspection before a deliberate retry.
 
 ### Status strip
 
@@ -117,7 +114,7 @@ Use the bottom strip for local refresh state, loaded/visible history count, sele
 
 ## Selection, focus, and feedback
 
-- Selected row: accent-surface background, 2 px accent leading marker, primary text. Hover: elevated background. A selected node has a contrasting ring. Selection remains visible after focus moves to another pane.
+- Selected row: semantic selected background, 2 px accent leading marker, primary text. Hover: semantic hover background. A selected node has a contrasting ring. Selection remains visible after focus moves to another pane.
 - Keyboard focus: a visible 1 px accent outline or inset outline on the active control/pane. All controls require accessible labels; color or tooltip is insufficient as the only label.
 - Input response is immediate. In History, commit selection updates the right heading before changed-file work starts. A file action enters Compare immediately and sets the path heading before preview work starts. Load uncached metadata, changed-file lists, diffs, highlighting, and images in separate stages. Returning to History uses retained state and must not wait on an active preview request.
 - Never display an old commit's diff under a new commit's header. On selection, clear or explicitly mark the pending preview; late results for previous selections cannot replace the current one.

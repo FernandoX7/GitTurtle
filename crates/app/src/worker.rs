@@ -583,17 +583,20 @@ fn layout_graph(
     cancellation: &Cancellation,
 ) -> Result<(Vec<graph::GraphRow>, Option<String>)> {
     if graph_within_budget(commits, cancellation)? {
-        return Ok((graph::layout(commits), None));
+        return Ok((graph::layout(commits, || cancellation.check())?, None));
     }
     // Never truncate individual edges: that would imply incorrect ancestry.
     // A node-only fallback keeps the full history list and inspectors usable.
     let rows = commits
         .iter()
-        .map(|_| graph::GraphRow {
-            width: 1,
-            ..Default::default()
+        .map(|_| {
+            cancellation.check()?;
+            Ok(graph::GraphRow {
+                width: 1,
+                ..Default::default()
+            })
         })
-        .collect();
+        .collect::<Result<_>>()?;
     Ok((
         rows,
         Some(
@@ -608,6 +611,7 @@ fn layout_graph(
 /// commits containing enormous parent lists before calling the layout engine.
 fn graph_within_budget(commits: &[Commit], cancellation: &Cancellation) -> Result<bool> {
     let mut frontier = HashSet::<&str>::new();
+    let mut parents = HashSet::new();
     let mut edges = 0usize;
     let mut parent_entries = 0usize;
     for commit in commits {
@@ -617,7 +621,7 @@ fn graph_within_budget(commits: &[Commit], cancellation: &Cancellation) -> Resul
             return Ok(false);
         }
         frontier.remove(commit.oid.as_str());
-        let mut parents = HashSet::new();
+        parents.clear();
         for parent in &commit.parents {
             parent_entries += 1;
             if parent_entries > GRAPH_EDGE_LIMIT {

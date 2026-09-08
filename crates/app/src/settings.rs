@@ -9,7 +9,6 @@ impl GitTurtle {
     pub(super) fn show_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.page = AppPage::Settings;
         self.column_menu = false;
-        self.git_actions_open = false;
         self.column_drag = None;
         self.image_drag = None;
         self.settings_branch.update(cx, |input, cx| {
@@ -213,126 +212,42 @@ impl GitTurtle {
                 .flex_col()
                 .gap_5()
                 .child(
-                    div()
-                        .flex()
-                        .gap_3()
-                        .children(ThemeChoice::ALL.into_iter().enumerate().map(
-                            |(index, choice)| {
-                                let preview = choice.palette();
-                                let selected = self.settings.theme == choice;
-                                Button::new(("settings-theme", index))
-                                    .ghost()
-                                    .accessibility_label(format!("{} theme", choice.label()))
-                                    .selected(selected)
-                                    .flex_1()
-                                    .min_w_0()
-                                    .h(px(154.))
-                                    .p_0()
-                                    .border_1()
-                                    .border_color(rgb(if selected { p.accent } else { p.border }))
-                                    .rounded(px(10.))
-                                    .overflow_hidden()
-                                    .child(
-                                        div()
-                                            .size_full()
-                                            .flex()
-                                            .flex_col()
-                                            .bg(rgb(preview.canvas))
-                                            .child(
-                                                div()
-                                                    .h(px(26.))
-                                                    .flex_shrink_0()
-                                                    .px_3()
-                                                    .flex()
-                                                    .items_center()
-                                                    .gap_1()
-                                                    .bg(rgb(preview.panel))
-                                                    .children(
-                                                        [
-                                                            preview.accent,
-                                                            preview.muted,
-                                                            preview.border,
-                                                        ]
-                                                        .map(|color| {
-                                                            div()
-                                                                .size(px(5.))
-                                                                .rounded_full()
-                                                                .bg(rgb(color))
-                                                        }),
-                                                    ),
-                                            )
-                                            .child(
-                                                div()
-                                                    .flex_1()
-                                                    .min_h_0()
-                                                    .p_3()
-                                                    .flex()
-                                                    .gap_2()
-                                                    .child(
-                                                        div()
-                                                            .w(px(25.))
-                                                            .rounded(px(3.))
-                                                            .bg(rgb(preview.panel)),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .flex_1()
-                                                            .flex()
-                                                            .flex_col()
-                                                            .gap_2()
-                                                            .children((0..4).map(|row| {
-                                                                div()
-                                                                    .h(px(8.))
-                                                                    .w(if row == 2 {
-                                                                        relative(0.68)
-                                                                    } else {
-                                                                        relative(1.)
-                                                                    })
-                                                                    .rounded(px(2.))
-                                                                    .bg(rgb(if row == 1 {
-                                                                        preview.selected
-                                                                    } else {
-                                                                        preview.hover
-                                                                    }))
-                                                                    .child(
-                                                                        div()
-                                                                            .w(px(4.))
-                                                                            .h_full()
-                                                                            .bg(rgb(if row == 1 {
-                                                                                preview.accent
-                                                                            } else {
-                                                                                preview.border
-                                                                            })),
-                                                                    )
-                                                            })),
-                                                    ),
-                                            )
-                                            .child(
-                                                div()
-                                                    .h(px(34.))
-                                                    .px_3()
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_between()
-                                                    .bg(rgb(preview.panel))
-                                                    .text_size(px(12.))
-                                                    .text_color(rgb(preview.text))
-                                                    .child(choice.label())
-                                                    .when(selected, |element| {
-                                                        element.child(
-                                                            div()
-                                                                .text_size(px(10.))
-                                                                .text_color(rgb(preview.accent))
-                                                                .child("ACTIVE"),
-                                                        )
-                                                    }),
-                                            ),
-                                    )
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.choose_theme(choice, window, cx)
-                                    }))
-                            },
-                        )),
+                    div().flex().flex_col().gap_3().children(
+                        ThemeChoice::ALL
+                            .chunks(3)
+                            .enumerate()
+                            .map(|(row, choices)| {
+                                div().flex().gap_3().children(
+                                    choices.iter().copied().enumerate().map(|(column, choice)| {
+                                        let selected = self.settings.theme == choice;
+                                        Button::new(("settings-theme", row * 3 + column))
+                                            .ghost()
+                                            .accessibility_label(format!(
+                                                "{} theme",
+                                                choice.label()
+                                            ))
+                                            .selected(selected)
+                                            .flex_1()
+                                            .min_w_0()
+                                            .h(px(178.))
+                                            .p_0()
+                                            .border_1()
+                                            .border_color(rgb(if selected {
+                                                p.accent
+                                            } else {
+                                                p.border
+                                            }))
+                                            .rounded(px(10.))
+                                            .overflow_hidden()
+                                            .hover(|style| style.border_color(rgb(p.accent)))
+                                            .child(theme_preview(choice, selected))
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.choose_theme(choice, window, cx)
+                                            }))
+                                    }),
+                                )
+                            }),
+                    ),
                 )
                 .child(
                     div()
@@ -340,17 +255,23 @@ impl GitTurtle {
                         .items_center()
                         .justify_between()
                         .gap_3()
+                        .pt_4()
+                        .border_t_1()
+                        .border_color(rgb(p.border))
                         .child(setting_description(
                             "List density",
-                            "Make room for more commits and files.",
+                            "A little breathing room, or more at a glance.",
                             cx,
                         ))
                         .child(
-                            div().flex().gap_1().children(
-                                Density::ALL
-                                    .into_iter()
-                                    .enumerate()
-                                    .map(|(index, density)| {
+                            div()
+                                .flex()
+                                .gap_1()
+                                .p_1()
+                                .rounded(px(8.))
+                                .bg(rgb(p.canvas))
+                                .children(Density::ALL.into_iter().enumerate().map(
+                                    |(index, density)| {
                                         Button::new(("settings-density", index))
                                             .small()
                                             .ghost()
@@ -362,8 +283,8 @@ impl GitTurtle {
                                                     this.save_preferences(window, cx);
                                                 }
                                             }))
-                                    }),
-                            ),
+                                    },
+                                )),
                         ),
                 )
                 .into_any_element();
@@ -616,7 +537,7 @@ impl GitTurtle {
                                             .gap_5()
                                             .child(settings_section(
                                                 "Appearance",
-                                                "A familiar workspace, in your colors.",
+                                                "Choose a palette for your workspace and code previews.",
                                                 appearance,
                                                 cx,
                                             ))
@@ -652,6 +573,155 @@ impl GitTurtle {
             )
             .into_any_element()
     }
+}
+
+/// A tiny workspace built from native elements stays crisp at any display scale
+/// and previews the same tokens the real controls and diff viewer will use.
+fn theme_preview(choice: ThemeChoice, selected: bool) -> AnyElement {
+    let p = choice.palette();
+    div()
+        .size_full()
+        .flex()
+        .flex_col()
+        .bg(rgb(p.canvas))
+        .child(
+            div()
+                .h(px(25.))
+                .flex_shrink_0()
+                .px_2()
+                .flex()
+                .items_center()
+                .gap_1()
+                .bg(rgb(p.panel))
+                .border_b_1()
+                .border_color(rgb(p.border))
+                .children(
+                    [p.removed, p.modified, p.added]
+                        .map(|color| div().size(px(4.)).rounded_full().bg(rgb(color))),
+                )
+                .child(div().flex_1())
+                .child(div().w(px(21.)).h(px(6.)).rounded(px(2.)).bg(rgb(p.hover)))
+                .child(div().w(px(24.)).h(px(8.)).rounded(px(2.)).bg(rgb(p.accent))),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .child(
+                    div()
+                        .w(px(30.))
+                        .flex_shrink_0()
+                        .h_full()
+                        .p(px(6.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(7.))
+                        .bg(rgb(p.subtle))
+                        .border_r_1()
+                        .border_color(rgb(p.border))
+                        .children((0..4).map(|row| {
+                            div().h(px(3.)).w_full().rounded_full().bg(rgb(if row == 1 {
+                                p.accent
+                            } else {
+                                p.border
+                            }))
+                        })),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .py_2()
+                        .flex()
+                        .flex_col()
+                        .children((0..4).map(|row| {
+                            let color = [p.added, p.accent, p.renamed, p.modified][row];
+                            div()
+                                .h(px(14.))
+                                .px_2()
+                                .flex()
+                                .items_center()
+                                .gap(px(7.))
+                                .when(row == 1, |element| element.bg(rgb(p.selected)))
+                                .child(
+                                    div()
+                                        .relative()
+                                        .w(px(9.))
+                                        .h_full()
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(div().w(px(2.)).h_full().bg(rgb(color)))
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .size(px(5.))
+                                                .rounded_full()
+                                                .bg(rgb(color)),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .h(px(3.))
+                                                .w(relative([0.68, 0.84, 0.55, 0.74][row]))
+                                                .rounded_full()
+                                                .bg(rgb(if row == 1 { p.muted } else { p.border })),
+                                        ),
+                                )
+                        })),
+                ),
+        )
+        .child(
+            div()
+                .h(px(70.))
+                .flex_shrink_0()
+                .px_3()
+                .py_2()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .bg(rgb(p.panel))
+                .border_t_1()
+                .border_color(rgb(p.border))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_1()
+                        .text_size(px(12.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(p.text))
+                        .child(div().min_w_0().truncate().child(choice.label()))
+                        .when(selected, |element| {
+                            element.child(icon("check", 12., p.accent))
+                        }),
+                )
+                .child(
+                    div()
+                        .text_size(px(10.))
+                        .font_weight(FontWeight::NORMAL)
+                        .text_color(rgb(p.muted))
+                        .truncate()
+                        .child(choice.description()),
+                )
+                .child(
+                    div().flex().gap(px(4.)).children(
+                        [p.accent, p.added, p.hunk, p.renamed, p.modified, p.removed]
+                            .map(|color| div().size(px(5.)).rounded_full().bg(rgb(color))),
+                    ),
+                ),
+        )
+        .into_any_element()
 }
 
 fn setting_description(title: &'static str, description: &'static str, cx: &App) -> AnyElement {

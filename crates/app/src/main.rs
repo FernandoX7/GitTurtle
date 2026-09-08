@@ -55,20 +55,21 @@ gpui_kit::actions!(
 );
 
 #[derive(rust_embed::RustEmbed)]
-#[folder = "../../assets/"]
+#[folder = "../../assets/icons/"]
 struct EmbeddedAssets;
 struct Assets;
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
-        if let Some(asset) = EmbeddedAssets::get(path) {
+        if let Some(asset) = path.strip_prefix("icons/").and_then(EmbeddedAssets::get) {
             return Ok(Some(asset.data));
         }
         gpui_kit::assets::Assets.load(path)
     }
     fn list(&self, path: &str) -> anyhow::Result<Vec<SharedString>> {
         let mut result: Vec<SharedString> = EmbeddedAssets::iter()
+            .map(|s| format!("icons/{s}"))
             .filter(|s| s.starts_with(path))
-            .map(|s| s.to_string().into())
+            .map(Into::into)
             .collect();
         result.extend(gpui_kit::assets::Assets.list(path)?);
         Ok(result)
@@ -230,7 +231,7 @@ impl GitTurtle {
         });
         let commit_message = cx.new(|cx| {
             TextareaState::new(window, cx)
-                .placeholder("Commit message")
+                .placeholder("Summarize your changes…\n\nAdd a description (optional)")
                 .rows(3)
         });
         let identity_name = cx.new(|cx| InputState::new(window, cx).placeholder("Your name"));
@@ -275,7 +276,7 @@ impl GitTurtle {
             settings_branch,
             column_drag: None,
             column_menu: false,
-            git_actions_open: false,
+            git_actions_open: true,
             history_horizontal: ScrollHandle::new(),
             worker: Worker::new(),
             task: None,
@@ -357,6 +358,14 @@ impl GitTurtle {
             window,
             |_, _, _, _, cx| cx.notify(),
         ));
+        for input in [&this.branch_name, &this.remote_name, &this.remote_branch] {
+            this.subscriptions
+                .push(cx.subscribe_in(input, window, |_, _, event, _, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        cx.notify();
+                    }
+                }));
+        }
         window.focus(
             if initial.is_some() {
                 &this.focus
@@ -1020,7 +1029,7 @@ fn button(
         .small()
         .ghost()
         .selected(active)
-        .text_size(px(11.));
+        .text_size(px(12.));
     if label.is_empty() {
         button = button.accessibility_label(format!("{} file path", symbol));
     } else {
@@ -1030,7 +1039,7 @@ fn button(
         button = button.icon(
             Icon::default()
                 .path(format!("icons/{symbol}.svg"))
-                .size(px(14.)),
+                .size(px(16.)),
         );
     }
     button

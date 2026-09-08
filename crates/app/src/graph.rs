@@ -61,11 +61,21 @@ struct Lane<'a> {
 ///
 /// Input parents can extend beyond a paged history; their edges remain open at
 /// the bottom. Existing rows retain their topology when more rows are appended.
-pub fn layout(commits: &[Commit]) -> Vec<GraphRow> {
+/// The worker checks cancellation before each row so a superseded snapshot
+/// does not keep allocating geometry after its budget preflight has finished.
+pub fn layout<E>(
+    commits: &[Commit],
+    mut checkpoint: impl FnMut() -> Result<(), E>,
+) -> Result<Vec<GraphRow>, E> {
     let mut lanes: Vec<Lane<'_>> = Vec::new();
+    let mut before = Vec::new();
+    let mut seen = HashSet::new();
+    let mut parents = Vec::new();
+    let mut positions = HashMap::new();
     let mut next_color = 0;
     let mut rows = Vec::with_capacity(commits.len());
     for commit in commits {
+        checkpoint()?;
         let existing_lane = lanes.iter().position(|lane| lane.oid == commit.oid);
         let incoming = existing_lane.is_some();
         let lane = existing_lane.unwrap_or_else(|| {
@@ -77,18 +87,22 @@ pub fn layout(commits: &[Commit]) -> Vec<GraphRow> {
             next_color += 1;
             index
         });
-        // Borrowed OIDs make frontier snapshots cheap even in wide histories.
-        let before = lanes.clone();
+        // Retain bounded scratch allocations across rows. Only each row's
+        // final edges need a separate allocation in the delivered graph.
+        before.clear();
+        before.extend_from_slice(&lanes);
         let color = lanes[lane].color;
         lanes.remove(lane);
 
-        let mut seen = HashSet::new();
-        let parents: Vec<_> = commit
-            .parents
-            .iter()
-            .map(String::as_str)
-            .filter(|parent| seen.insert(*parent))
-            .collect();
+        seen.clear();
+        parents.clear();
+        parents.extend(
+            commit
+                .parents
+                .iter()
+                .map(String::as_str)
+                .filter(|parent| seen.insert(*parent)),
+        );
         let mut insertion = lane.min(lanes.len());
         for (index, &parent) in parents.iter().enumerate() {
             if !lanes.iter().any(|lane| lane.oid == parent) {
@@ -110,11 +124,13 @@ pub fn layout(commits: &[Commit]) -> Vec<GraphRow> {
             }
         }
 
-        let positions: HashMap<_, _> = lanes
-            .iter()
-            .enumerate()
-            .map(|(index, lane)| (lane.oid, index))
-            .collect();
+        positions.clear();
+        positions.extend(
+            lanes
+                .iter()
+                .enumerate()
+                .map(|(index, lane)| (lane.oid, index)),
+        );
         let mut edges = Vec::with_capacity(before.len() - 1 + parents.len());
         for (from, previous) in before.iter().enumerate() {
             if from != lane
@@ -128,7 +144,7 @@ pub fn layout(commits: &[Commit]) -> Vec<GraphRow> {
                 });
             }
         }
-        for parent in parents {
+        for &parent in &parents {
             if let Some(&to) = positions.get(parent) {
                 edges.push(Edge {
                     from: lane,
@@ -148,7 +164,7 @@ pub fn layout(commits: &[Commit]) -> Vec<GraphRow> {
             width: before.len().max(lanes.len()),
         });
     }
-    rows
+    Ok(rows)
 }
 
 /// One coordinate system for every row. The caller passes the maximum `width`
@@ -258,6 +274,35 @@ pub fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn layout(commits: &[Commit]) -> Vec<GraphRow> {
+        super::layout(commits, || Ok::<_, ()>(())).unwrap()
+    }
+
+    #[test]
+    fn superseded_layout_stops_between_rows() {
+        let commits: Vec<_> = (0..10_000)
+            .map(|index| {
+                commit(
+                    &format!("commit-{index}"),
+                    &[&format!("commit-{}", index + 1)],
+                )
+            })
+            .collect();
+        let mut checkpoints = 0;
+        let rows = super::layout(&commits, || {
+            checkpoints += 1;
+            if checkpoints == 7 {
+                Err("superseded")
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(rows.unwrap_err(), "superseded");
+        assert_eq!(checkpoints, 7);
+        // A later request can still build the same topology from scratch.
+        assert_eq!(layout(&commits).len(), commits.len());
+    }
 
     #[test]
     fn graph_lanes_remain_visible_on_all_theme_surfaces_without_changing_identity() {
