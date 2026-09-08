@@ -2,6 +2,7 @@ use gpui_kit::component::{
     Disableable, Icon, Selectable, Theme,
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
+    tooltip::Tooltip,
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -422,6 +423,7 @@ impl ProjectHub {
 
     fn render_recent(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
         let colors = Theme::global(cx).colors;
+        let searching = !self.search.read(cx).value().trim().is_empty();
         div()
             .flex_1()
             .min_w_0()
@@ -444,10 +446,10 @@ impl ProjectHub {
                         div().px_2().py_0p5().rounded(px(6.))
                             .bg(colors.secondary).text_size(px(11.))
                             .text_color(colors.muted_foreground)
-                            .child(self.filtered.len().to_string()),
+                            .child(if searching { format!("{} of {}", self.filtered.len(), self.recent.len()) } else { self.recent.len().to_string() }),
                     ),
             )
-            .child(Input::new(&self.search).disabled(self.unavailable()).prefix(Icon::default().path("icons/search.svg").size(px(15.))))
+            .child(Input::new(&self.search).disabled(self.unavailable()).cleanable(true).prefix(Icon::default().path("icons/search.svg").size(px(15.))))
             .child(
                 div()
                     .flex_1()
@@ -470,7 +472,13 @@ impl ProjectHub {
                                 .text_center()
                                 .child(hub_icon("folder", 28., colors.muted_foreground))
                                 .child(div().text_size(px(15.)).font_weight(FontWeight::MEDIUM).child(if self.recent.is_empty() { "Your next project starts here" } else { "No matching projects" }))
-                                .child(div().max_w(px(240.)).text_size(px(12.)).text_color(colors.muted_foreground).child(if self.recent.is_empty() { "Open, clone, or create a repository. It will be waiting here next time." } else { "Try another project name or folder." })),
+                                .child(div().max_w(px(240.)).text_size(px(12.)).line_height(relative(1.5)).text_color(colors.muted_foreground).child(if self.recent.is_empty() { "Open, clone, or create a repository. It will be waiting here next time." } else { "Try another project name or folder." }))
+                                .when(searching, |empty| empty.child(Button::new("hub-clear-search").label("Clear search").disabled(self.unavailable()).on_click(cx.listener(|this, _, window, cx| {
+                                    this.search.update(cx, |input, cx| {
+                                        input.set_value("", window, cx);
+                                        input.focus(window, cx);
+                                    });
+                                })))),
                         )
                     })
                     .when(!self.filtered.is_empty(), |panel| {
@@ -564,7 +572,11 @@ impl ProjectHub {
                                         .size(px(14.)),
                                 )
                                 .selected(self.mode == mode)
+                                .toggled(self.mode == mode)
                                 .disabled(self.unavailable())
+                                .when(self.mode == mode && !self.unavailable(), |button| {
+                                    button.hover(|style| style.opacity(0.9))
+                                })
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.change_mode(mode, window, cx)
                                 }))
@@ -741,6 +753,41 @@ impl ProjectHub {
                                 form.child(self.field("Initial branch", &self.branch, cx))
                             }),
                     )
+                    .when_some(self.destination(cx).ok(), |panel, destination| {
+                        let display = destination.display().to_string();
+                        let tooltip = display.clone();
+                        panel.child(
+                            div()
+                                .id("hub-destination-preview")
+                                .tooltip(move |window, cx| {
+                                    Tooltip::new(tooltip.clone()).build(window, cx)
+                                })
+                                .min_w_0()
+                                .rounded(px(8.))
+                                .bg(colors.background)
+                                .px_3()
+                                .py_2()
+                                .flex()
+                                .items_start()
+                                .gap_2()
+                                .child(hub_icon("folder", 14., colors.muted_foreground))
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .flex_1()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_1()
+                                        .child(
+                                            div()
+                                                .text_size(px(10.))
+                                                .text_color(colors.muted_foreground)
+                                                .child("New repository folder"),
+                                        )
+                                        .child(div().text_size(px(11.)).truncate().child(display)),
+                                ),
+                        )
+                    })
                     .child(
                         Button::new("hub-submit")
                             .primary()
@@ -773,7 +820,9 @@ impl ProjectHub {
                         .rounded(px(8.))
                         .border_1()
                         .border_color(colors.danger)
+                        .bg(rgb(palette.removed_background))
                         .p_3()
+                        .line_height(relative(1.5))
                         .text_size(px(12.))
                         .text_color(colors.danger)
                         .child(error.clone()),
@@ -791,6 +840,7 @@ impl Render for ProjectHub {
         }
         let colors = Theme::global(cx).colors;
         let compact = window.viewport_size().width < px(900.);
+        let narrow = window.viewport_size().width < px(640.);
         div()
             .size_full()
             .bg(colors.background)
@@ -801,6 +851,7 @@ impl Render for ProjectHub {
                 div()
                     .h(px(62.))
                     .px_6()
+                    .when(narrow, |header| header.px_4())
                     .flex_shrink_0()
                     .flex()
                     .items_center()
@@ -831,6 +882,7 @@ impl Render for ProjectHub {
                     .items_center()
                     .px_6()
                     .py_8()
+                    .when(narrow, |body| body.px_4().py_5())
                     .child(
                         div()
                             .w_full()
@@ -850,7 +902,7 @@ impl Render for ProjectHub {
                             .child(
                                 div()
                                     .w_full()
-                                    .h(px(if self.error.is_some() { 710. } else { 590. }))
+                                    .h(px(if self.error.is_some() { 750. } else if self.mode == ProjectMode::Open { 590. } else { 650. }))
                                     .flex_shrink_0()
                                     .flex()
                                     .gap_6()

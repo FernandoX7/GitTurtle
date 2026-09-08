@@ -112,6 +112,7 @@ impl GitTurtle {
             )
             .child(
                 button("settings", "Settings", "settings", false)
+                    .tooltip(format!("Settings · {},", primary_label()))
                     .on_click(cx.listener(|this, _, window, cx| this.show_settings(window, cx))),
             )
             .into_any_element()
@@ -271,7 +272,8 @@ impl GitTurtle {
                 .text_size(px(12.))
                 .text_color(rgb(colors.muted))
                 .cursor_pointer()
-                .hover(|s| s.bg(rgb(colors.hover)))
+                .hover(|s| s.bg(rgb(colors.hover)).text_color(rgb(colors.text)))
+                .active(|s| s.bg(rgb(colors.selected)))
                 .child(div().w(px(12.)).child(if *expanded { "⌄" } else { "›" }))
                 .child(icon("folder", 14., colors.muted))
                 .child(div().flex_1().truncate().child(label.clone()))
@@ -355,7 +357,8 @@ impl GitTurtle {
             } else {
                 colors.panel
             }))
-            .hover(|s| s.bg(rgb(colors.hover)))
+            .hover(|s| s.bg(rgb(colors.row_hover(active))))
+            .active(|s| s.bg(rgb(colors.selected)))
             .text_color(rgb(if active { colors.accent } else { colors.text }))
             .child(icon(
                 symbol,
@@ -657,7 +660,11 @@ impl GitTurtle {
             .items_center()
             .gap_1()
             .overflow_hidden();
-        if let Some(names) = self.refs.get(&commit.oid) {
+        if let Some(names) = self
+            .refs
+            .get(&commit.oid)
+            .filter(|_| self.settings.columns.refs.visible)
+        {
             if let Some(name) = names.first() {
                 let title = names.join("\n");
                 references = references.child(
@@ -711,7 +718,8 @@ impl GitTurtle {
             }))
             .border_l_2()
             .border_color(rgb(if active { colors.accent } else { colors.canvas }))
-            .hover(|s| s.bg(rgb(colors.hover)))
+            .hover(|s| s.bg(rgb(colors.row_hover(active))))
+            .active(|s| s.bg(rgb(colors.selected)))
             .cursor_pointer()
             .children(columns.columns.iter().map(|column| {
                 let cell = div()
@@ -852,6 +860,8 @@ impl GitTurtle {
                             .child("Commit details")
                             .child(
                                 button("copy-commit", short_oid(&commit.oid), "copy", false)
+                                    .accessibility_label("Copy commit hash")
+                                    .tooltip("Copy full commit hash")
                                     .on_click(move |_, _, cx| {
                                         cx.write_to_clipboard(ClipboardItem::new_string(
                                             oid.clone(),
@@ -1026,6 +1036,7 @@ impl GitTurtle {
         let file = &self.files[index];
         let active = self.selected_file == Some(index);
         let path = file.path();
+        let full_path = path.display().to_string();
         let (symbol, color, label) = match file.status.letter() {
             "A" => ("file-added", colors.added, "New"),
             "D" => ("file-deleted", colors.removed, "Deleted"),
@@ -1038,6 +1049,7 @@ impl GitTurtle {
             .role(Role::ListBoxOption)
             .aria_label(format!("{} · {}", path.display(), file.status.label()))
             .aria_selected(active)
+            .tooltip(move |window, cx| Tooltip::new(full_path.clone()).build(window, cx))
             .w_full()
             .h(px(self.settings.density.file_row_height()))
             .flex()
@@ -1051,7 +1063,8 @@ impl GitTurtle {
             }))
             .border_l_2()
             .border_color(rgb(if active { colors.accent } else { colors.panel }))
-            .hover(|s| s.bg(rgb(colors.hover)))
+            .hover(|s| s.bg(rgb(colors.row_hover(active))))
+            .active(|s| s.bg(rgb(colors.selected)))
             .cursor_pointer()
             .child(
                 div()
@@ -1124,21 +1137,53 @@ impl GitTurtle {
             .child(
                 button("back-history", "History", "arrow-left", false)
                     .accessibility_label("Back to history")
+                    .tooltip("Back to history · Escape")
                     .on_click(cx.listener(|this, _, window, cx| this.back_to_history(window, cx))),
             )
             .child(div().h(px(18.)).w(px(1.)).bg(rgb(colors.border)))
+            .children(
+                self.working_selected
+                    .filter(|_| self.mode == WorkspaceMode::Working)
+                    .map(|(_, area)| {
+                        let staged = area == gitturtle_core::ChangeArea::Staged;
+                        div()
+                            .flex_shrink_0()
+                            .px_2()
+                            .py_1()
+                            .rounded(px(4.))
+                            .text_size(px(10.))
+                            .text_color(rgb(if staged {
+                                colors.added
+                            } else {
+                                colors.modified
+                            }))
+                            .bg(rgb(if staged {
+                                colors.added_background
+                            } else {
+                                colors.subtle
+                            }))
+                            .child(if staged { "Staged" } else { "Unstaged" })
+                    }),
+            )
             .child(
                 div()
+                    .id("preview-file-path")
                     .flex_1()
                     .min_w_0()
                     .truncate()
                     .text_size(px(11.))
-                    .child(path),
+                    .tooltip(move |window, cx| Tooltip::new(path.clone()).build(window, cx))
+                    .child(
+                        file.map(|file| file.path().display().to_string())
+                            .unwrap_or("File comparison".into()),
+                    ),
             )
             .children(file.map(|_| {
-                button("copy-path", "", "copy", false).on_click(move |_, _, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(copy_path.clone()))
-                })
+                button("copy-path", "", "copy", false)
+                    .tooltip("Copy file path")
+                    .on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(copy_path.clone()))
+                    })
             }));
         let content = if let Some(error) = &self.error {
             empty("Preview unavailable", error)
@@ -1162,20 +1207,29 @@ impl GitTurtle {
         } else if let Some(content) = &self.content {
             match content.as_ref() {
                 Content::Text { patch, .. } => {
+                    let mut modes = div()
+                        .flex()
+                        .items_center()
+                        .gap_0p5()
+                        .p_0p5()
+                        .rounded(px(7.))
+                        .bg(rgb(colors.panel));
                     for (mode, name) in [
                         (TextMode::Unified, "Diff"),
                         (TextMode::Before, "Before"),
                         (TextMode::After, "After"),
                     ] {
-                        toolbar =
-                            toolbar.child(button(name, name, "", self.text_mode == mode).on_click(
-                                cx.listener(move |this, _, window, cx| {
+                        modes = modes.child(
+                            button(name, name, "", self.text_mode == mode)
+                                .toggled(self.text_mode == mode)
+                                .on_click(cx.listener(move |this, _, window, cx| {
                                     this.text_mode = mode;
                                     this.ensure_editor(window, cx);
                                     cx.notify();
-                                }),
-                            ));
+                                })),
+                        );
                     }
+                    toolbar = toolbar.child(modes);
                     let editor = match self.text_mode {
                         TextMode::Unified => &self.patch_editor,
                         TextMode::Before => &self.before_editor,
@@ -1389,7 +1443,7 @@ impl GitTurtle {
                     .text_size(px(10.))
                     .text_color(rgb(colors.muted))
                     .child(name)
-                    .child(details),
+                    .child(div().truncate().child(details)),
             )
             .child(
                 div()
@@ -1397,7 +1451,7 @@ impl GitTurtle {
                     .min_h_0()
                     .relative()
                     .overflow_hidden()
-                    .child(checkerboard())
+                    .child(checkerboard(colors))
                     .child(div().absolute().inset_0().child(view)),
             )
             .into_any_element()
@@ -1480,12 +1534,12 @@ impl GitTurtle {
 }
 
 impl Render for GitTurtle {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = palette(cx);
         let body = match self.page {
             AppPage::Repository => self.render_repository(cx),
             AppPage::Projects => self.hub.clone().into_any_element(),
-            AppPage::Settings => self.render_settings(cx),
+            AppPage::Settings => self.render_settings(window, cx),
         };
         div()
             .id("gitturtle")
@@ -1681,13 +1735,21 @@ impl Render for GitTurtle {
                                 .to_string(),
                         ),
                     )
-                    .child(if self.mode == WorkspaceMode::Compare {
-                        "Esc Back to history · ↑↓ Files".to_owned()
-                    } else {
-                        format!(
-                            "{}F Search · ↑↓ Navigate · Return Open file",
-                            primary_label()
-                        )
+                    .child(match self.page {
+                        AppPage::Settings => "Tab Move between controls · Esc Back".to_owned(),
+                        AppPage::Projects => {
+                            format!("{}O Open repository · Esc Back", primary_label())
+                        }
+                        AppPage::Repository => match self.mode {
+                            WorkspaceMode::Compare => "Esc Back to history · ↑↓ Files".to_owned(),
+                            WorkspaceMode::Working => {
+                                "↑↓ Review files · Esc Back to history".to_owned()
+                            }
+                            WorkspaceMode::History => format!(
+                                "{}F Search · ↑↓ Navigate · Return Open file",
+                                primary_label()
+                            ),
+                        },
                     }),
             )
     }

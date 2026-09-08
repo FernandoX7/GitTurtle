@@ -587,14 +587,15 @@ fn layout_graph(
     }
     // Never truncate individual edges: that would imply incorrect ancestry.
     // A node-only fallback keeps the full history list and inspectors usable.
+    let node = graph::GraphRow {
+        width: 1,
+        ..Default::default()
+    };
     let rows = commits
         .iter()
         .map(|_| {
             cancellation.check()?;
-            Ok(graph::GraphRow {
-                width: 1,
-                ..Default::default()
-            })
+            Ok(node.clone())
         })
         .collect::<Result<_>>()?;
     Ok((

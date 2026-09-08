@@ -45,6 +45,22 @@ pub struct Palette {
 
 impl Global for Palette {}
 
+impl Palette {
+    /// Preserve the selection while giving a selected, clickable row feedback.
+    pub fn row_hover(self, selected: bool) -> u32 {
+        if !selected {
+            return self.hover;
+        }
+        let mut color = 0;
+        for shift in [0, 8, 16] {
+            let base = (self.selected >> shift) & 0xff;
+            let accent = (self.accent >> shift) & 0xff;
+            color |= ((base * 93 + accent * 7) / 100) << shift;
+        }
+        color
+    }
+}
+
 pub fn palette(cx: &App) -> Palette {
     cx.try_global::<Palette>()
         .copied()
@@ -423,6 +439,7 @@ mod tests {
                 palette.subtle,
                 palette.hover,
                 palette.selected,
+                palette.row_hover(true),
             ] {
                 assert!(
                     contrast(palette.text, background) >= 4.5,

@@ -50,11 +50,15 @@ Give recent projects a searchable list with repository names and readable folder
 
 Provide Back to repository when a project is already open. At narrow widths, stack the action panel and recents; preserve scrolling and keyboard access. Larger headings and generous spacing belong here, while the repository view stays dense.
 
+Search shows the matching count against all recents and offers Clear search when no projects match. Clone/Create show the resulting repository folder before submission; truncated destinations retain a full-path tooltip.
+
 ### Settings
 
 Group appearance, history columns, startup/default branch, and repository Git identity. The six theme choices appear in a 3 × 2 grid with native miniature workspace previews, palette swatches, short descriptions, and an active checkmark. Density offers Comfortable and Compact. Apply changes across controls, previews, gutters, and selected rows, then persist app preferences outside repositories. Show failed saves clearly.
 
 Column controls affect visibility and widths, preserve the commit-message column, and offer a layout reset. Git identity is a separate, explicit save for the displayed repository; show the current identity and signing state without implying that app appearance settings alter Git configuration.
+
+Below 1060 px, stack the settings groups into one scrollable column. Theme cards expose hover feedback in their caption and mark the selected choice explicitly. Save/Reset reflect edited values, Return submits the focused form, and a failed preference write offers Retry save.
 
 ### History and Compare
 
@@ -114,7 +118,7 @@ Use the bottom strip for local refresh state, loaded/visible history count, sele
 
 ## Selection, focus, and feedback
 
-- Selected row: semantic selected background, 2 px accent leading marker, primary text. Hover: semantic hover background. A selected node has a contrasting ring. Selection remains visible after focus moves to another pane.
+- Selected row: semantic selected background, 2 px accent leading marker, primary text. Hover: semantic hover background; selected rows retain their tint with a subtle accent blend. Selected controls preserve their surface with gentle hover feedback. A selected node has a contrasting ring. Selection remains visible after focus moves to another pane.
 - Keyboard focus: a visible 1 px accent outline or inset outline on the active control/pane. All controls require accessible labels; color or tooltip is insufficient as the only label.
 - Input response is immediate. In History, commit selection updates the right heading before changed-file work starts. A file action enters Compare immediately and sets the path heading before preview work starts. Load uncached metadata, changed-file lists, diffs, highlighting, and images in separate stages. Returning to History uses retained state and must not wait on an active preview request.
 - Never display an old commit's diff under a new commit's header. On selection, clear or explicitly mark the pending preview; late results for previous selections cannot replace the current one.
@@ -128,7 +132,11 @@ Use the bottom strip for local refresh state, loaded/visible history count, sele
 
 Text opens in the user's active Diff / Before / After mode, defaulting to unified Diff for a new session. Make added/deleted lines explicit with signs and background tints; keep hunk headers blue and visually separate. Preserve indentation and literal patch text for copying. Source views show line numbers. Unified patches show separate old/new line numbers without inserting them into the copied text. A future split diff must share vertical scrolling and use clear Before/After headings; do not advertise it before implementation. Respect horizontal scrolling for unwrapped lines. Word wrap, if exposed, is a user control rather than an implicit width-dependent change. Highlighting may arrive after readable plain text, without reflow. Build only the currently displayed editor mode.
 
+Group Diff / Before / After as one compact mode control. Working previews identify Staged or Unstaged beside the path so two versions of the same file remain unambiguous. File rows and comparison paths provide full-path tooltips; keyboard hints follow the current page and workspace mode.
+
 Image comparison defaults to side-by-side Before/After on a subtle checkerboard. Show dimensions and byte sizes beside the labels, with Added/Deleted state replacing the absent image when appropriate. Fit is the default; 100%, zoom in/out, and fit controls are small and familiar. Link zoom and pan across both images. An overlay/wipe is a useful later enhancement, after side-by-side behavior is solid. Preserve aspect ratio, avoid upscaling by default, and keep checkerboard contrast below the artwork. SVG is a static image; never execute embedded content. A Git LFS pointer without available local content must be identified as such rather than presented as a broken image.
+
+The transparency grid uses the current palette's canvas and subtle surfaces, including Daylight, and image metadata truncates within its own pane.
 
 ## Keyboard contract
 

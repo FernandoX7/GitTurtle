@@ -366,6 +366,7 @@ impl GitTurtle {
                     }
                 }));
         }
+        this.subscribe_settings_inputs(window, cx);
         window.focus(
             if initial.is_some() {
                 &this.focus
@@ -690,7 +691,10 @@ impl GitTurtle {
             let count = self
                 .branches
                 .iter()
-                .filter(|b| b.remote == remote && b.name.to_lowercase().contains(&query))
+                .filter(|b| {
+                    b.remote == remote
+                        && (query.is_empty() || b.name.to_lowercase().contains(&query))
+                })
                 .count();
             self.nav_rows.push(NavRow::Section(
                 if remote {
@@ -1030,6 +1034,11 @@ fn button(
         .ghost()
         .selected(active)
         .text_size(px(12.));
+    if active {
+        // The kit omits variant hover styles for selected controls. Keep their
+        // selected surface and expose gentle pointer feedback explicitly.
+        button = button.secondary().hover(|style| style.opacity(0.9));
+    }
     if label.is_empty() {
         button = button.accessibility_label(format!("{} file path", symbol));
     } else {
@@ -1065,19 +1074,19 @@ fn empty(title: &str, detail: &str) -> AnyElement {
         .into_any_element()
 }
 
-fn checkerboard() -> AnyElement {
+fn checkerboard(colors: appearance::Palette) -> AnyElement {
     canvas(
         |_, _, _| (),
-        |bounds, _, window, _| {
+        move |bounds, _, window, _| {
             let tile = 12.;
             let rows = (f32::from(bounds.size.height) / tile).ceil() as i32;
             let cols = (f32::from(bounds.size.width) / tile).ceil() as i32;
             for row in 0..rows {
                 for col in 0..cols {
                     let color = if (row + col) % 2 == 0 {
-                        0x172229
+                        colors.canvas
                     } else {
-                        0x1c2930
+                        colors.subtle
                     };
                     window.paint_quad(fill(
                         Bounds::new(

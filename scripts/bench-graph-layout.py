@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Measure the pure graph layout, excluding Git reads and native presentation.
+"""Measure pure graph layout and row cloning, excluding native presentation.
 
 Extracts the graph model/layout from the chosen source and compiles a temporary
 standalone Rust harness with rustc -O. No dependencies, repository writes, or
 native app launch are required. The old layout signature is supported for an
 explicit baseline revision. Current layout includes an acquire cancellation
 checkpoint for every row, matching the worker's successful checkpoint path.
+Row-clone samples reproduce the owned geometry clones passed to 60 visible
+paint callbacks. They exclude element construction, tessellation, and drawing.
 
 Example:
   python3 scripts/bench-graph-layout.py --baseline-ref <revision> --output result.json
@@ -45,7 +47,7 @@ def benchmark(stage, source, warmups, samples, directory):
     harness = r"""
 #![allow(unused_imports, unused_variables)]
 use std::collections::{HashMap, HashSet};
-use std::{hint::black_box, time::Instant, sync::atomic::{AtomicU64, Ordering}};
+use std::{hint::black_box, time::Instant, sync::{Arc, atomic::{AtomicU64, Ordering}}};
 pub struct Commit { oid: String, parents: Vec<String> }
 """ + engine + r"""
 fn main() {
@@ -68,6 +70,23 @@ fn main() {
             samples.push(start.elapsed().as_secs_f64() * 1000.);
         }
         println!("{name}: {samples:?}");
+        let rows = INVOCATION;
+        let clone_visible = || {
+            for row in rows.iter().skip(1).take(60) {
+                black_box(row.clone());
+            }
+        };
+        for _ in 0..WARMUPS {
+            for _ in 0..200 { clone_visible(); }
+        }
+        let mut samples = Vec::new();
+        for _ in 0..SAMPLES {
+            let start = Instant::now();
+            for _ in 0..200 { clone_visible(); }
+            // A batch stabilizes the timer for this small amount of work.
+            samples.push(start.elapsed().as_secs_f64() * 1000. / 200.);
+        }
+        println!("clone-visible-60-{name}: {samples:?}");
     }
 }
 """
@@ -114,10 +133,13 @@ def main():
         "working_tree_base_revision": command("git", "rev-parse", "HEAD"),
         "baseline_revision": command("git", "rev-parse", "--verify", args.baseline_ref)
             if args.baseline_ref else None,
-        "benchmark": "Pure layout extracted from graph.rs, compiled with rustc -O; "
-            "inputs reused in memory, output destruction included. No Git, GPUI, "
-            "preflight, OS presentation, or end-to-end navigation measurement. "
-            "Current layout includes an AtomicU64 acquire checkpoint per row.",
+        "benchmark": "Pure layout and row cloning extracted from graph.rs, compiled "
+            "with rustc -O; inputs reused in memory, output destruction included. "
+            "No Git, GPUI, preflight, OS presentation, or end-to-end navigation "
+            "measurement. Current layout includes an AtomicU64 acquire checkpoint "
+            "per row. Clone cases measure 60 row clones and drops per simulated "
+            "frame, averaged over 200 frames per sample; this excludes element "
+            "construction, tessellation, and drawing.",
         "warmups_per_case": args.warmups,
         "samples_per_case": args.samples,
         "other_load": "Uncontrolled; close competing work before comparing runs.",

@@ -4,7 +4,10 @@ use gpui_kit::{
     AnyElement, App, Bounds, IntoElement, ParentElement, PathBuilder, Styled, canvas, div, point,
     px, quad, rgb, size,
 };
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 const DARK_COLORS: [u32; 6] = [0x7adfb4, 0x8db7f6, 0xc3a5f2, 0xe8be7a, 0xea9ca5, 0x72ccd8];
 const LIGHT_COLORS: [u32; 6] = [0x146c53, 0x315da7, 0x7651aa, 0x8c5916, 0xa42d63, 0x156b7c];
@@ -44,7 +47,9 @@ pub struct GraphRow {
     pub lane: usize,
     pub color: usize,
     pub incoming: bool,
-    pub edges: Vec<Edge>,
+    /// Immutable geometry is shared with visible row paint callbacks. Cloning
+    /// a row during scrolling must not allocate or copy its ancestry edges.
+    pub edges: Arc<[Edge]>,
     /// Required lanes including both boundary frontiers and the node itself.
     pub width: usize,
 }
@@ -74,6 +79,7 @@ pub fn layout<E>(
     let mut positions = HashMap::new();
     let mut next_color = 0;
     let mut rows = Vec::with_capacity(commits.len());
+    let empty_edges: Arc<[Edge]> = Arc::default();
     for commit in commits {
         checkpoint()?;
         let existing_lane = lanes.iter().position(|lane| lane.oid == commit.oid);
@@ -87,8 +93,8 @@ pub fn layout<E>(
             next_color += 1;
             index
         });
-        // Retain bounded scratch allocations across rows. Only each row's
-        // final edges need a separate allocation in the delivered graph.
+        // Retain bounded scratch allocations across rows. Rows without edges
+        // share an empty buffer; other final geometry is allocated here once.
         before.clear();
         before.extend_from_slice(&lanes);
         let color = lanes[lane].color;
@@ -160,7 +166,11 @@ pub fn layout<E>(
             lane,
             color,
             incoming,
-            edges,
+            edges: if edges.is_empty() {
+                Arc::clone(&empty_edges)
+            } else {
+                edges.into()
+            },
             width: before.len().max(lanes.len()),
         });
     }
@@ -203,7 +213,7 @@ pub fn render(
                     if !filtered {
                         // Curves meet adjacent rows at exact lane coordinates with
                         // vertical tangents, including collapsing lanes.
-                        for edge in &row.edges {
+                        for edge in row.edges.iter() {
                             let start =
                                 point(x(edge.from), if edge.from_node { middle } else { top });
                             let end = point(x(edge.to), bottom);
@@ -386,7 +396,7 @@ mod tests {
         for adjacent in rows.windows(2) {
             let (previous, current) = (&adjacent[0], &adjacent[1]);
             let mut incoming = HashMap::new();
-            for edge in &previous.edges {
+            for edge in previous.edges.iter() {
                 if let Some(color) = incoming.insert(edge.to, edge.color) {
                     assert_eq!(color, edge.color, "Joined ancestry has conflicting colors");
                 }

@@ -6,6 +6,33 @@ use gpui_kit::component::{checkbox::Checkbox, switch::Switch};
 use gpui_kit::prelude::FluentBuilder;
 
 impl GitTurtle {
+    pub(super) fn subscribe_settings_inputs(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.subscriptions.push(cx.subscribe_in(
+            &self.settings_branch,
+            window,
+            |this, _, event, window, cx| match event {
+                InputEvent::Change => cx.notify(),
+                InputEvent::PressEnter { .. } => this.save_default_branch(window, cx),
+                _ => {}
+            },
+        ));
+        for input in [&self.identity_name, &self.identity_email] {
+            self.subscriptions.push(cx.subscribe_in(
+                input,
+                window,
+                |this, _, event, window, cx| match event {
+                    InputEvent::Change => cx.notify(),
+                    InputEvent::PressEnter { .. } => this.save_identity(window, cx),
+                    _ => {}
+                },
+            ));
+        }
+    }
+
     pub(super) fn show_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.page = AppPage::Settings;
         self.column_menu = false;
@@ -162,6 +189,7 @@ impl GitTurtle {
                     .flex()
                     .items_center()
                     .gap_3()
+                    .min_h(px(32.))
                     .child(
                         Checkbox::new(("history-column", index))
                             .label(id.label())
@@ -177,6 +205,10 @@ impl GitTurtle {
                     .child(div().flex_1())
                     .child(
                         div()
+                            .px_2()
+                            .py_1()
+                            .rounded(px(5.))
+                            .bg(rgb(p.canvas))
                             .text_size(px(11.))
                             .text_color(rgb(p.muted))
                             .child(if id == ColumnId::Subject {
@@ -202,9 +234,18 @@ impl GitTurtle {
             .into_any_element()
     }
 
-    pub(super) fn render_settings(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_settings(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         let busy = self.operation_busy.is_some();
+        let compact = window.viewport_size().width < px(1060.);
+        let narrow = window.viewport_size().width < px(720.);
+        let theme_columns = if narrow { 2 } else { 3 };
+        let branch_edited =
+            self.settings_branch.read(cx).value().as_ref() != self.settings.default_branch.as_str();
+        let identity_edited = self.profile.as_ref().is_none_or(|profile| {
+            self.identity_name.read(cx).value().trim() != profile.name
+                || self.identity_email.read(cx).value().trim() != profile.email
+        });
         let repository_name = self.repository.as_ref().map(|repository| repository.name());
         let appearance =
             div()
@@ -214,36 +255,49 @@ impl GitTurtle {
                 .child(
                     div().flex().flex_col().gap_3().children(
                         ThemeChoice::ALL
-                            .chunks(3)
+                            .chunks(theme_columns)
                             .enumerate()
                             .map(|(row, choices)| {
                                 div().flex().gap_3().children(
                                     choices.iter().copied().enumerate().map(|(column, choice)| {
                                         let selected = self.settings.theme == choice;
-                                        Button::new(("settings-theme", row * 3 + column))
-                                            .ghost()
-                                            .accessibility_label(format!(
-                                                "{} theme",
-                                                choice.label()
-                                            ))
-                                            .selected(selected)
-                                            .flex_1()
-                                            .min_w_0()
-                                            .h(px(178.))
-                                            .p_0()
-                                            .border_1()
-                                            .border_color(rgb(if selected {
-                                                p.accent
-                                            } else {
-                                                p.border
-                                            }))
-                                            .rounded(px(10.))
-                                            .overflow_hidden()
-                                            .hover(|style| style.border_color(rgb(p.accent)))
-                                            .child(theme_preview(choice, selected))
-                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                        Button::new((
+                                            "settings-theme",
+                                            row * theme_columns + column,
+                                        ))
+                                        .ghost()
+                                        .group("settings-theme-choice")
+                                        .accessibility_label(format!("{} theme", choice.label()))
+                                        .selected(selected)
+                                        .toggled(selected)
+                                        .tooltip(format!(
+                                            "{} · {}",
+                                            choice.label(),
+                                            choice.description()
+                                        ))
+                                        .flex_1()
+                                        .min_w_0()
+                                        .h(px(178.))
+                                        .p(px(2.))
+                                        .border_1()
+                                        .border_color(rgb(if selected {
+                                            p.accent
+                                        } else {
+                                            p.border
+                                        }))
+                                        .rounded(px(10.))
+                                        .overflow_hidden()
+                                        .child(theme_preview(
+                                            choice,
+                                            selected,
+                                            p.accent,
+                                            p.accent_foreground,
+                                        ))
+                                        .on_click(
+                                            cx.listener(move |this, _, window, cx| {
                                                 this.choose_theme(choice, window, cx)
-                                            }))
+                                            }),
+                                        )
                                     }),
                                 )
                             }),
@@ -255,6 +309,7 @@ impl GitTurtle {
                         .items_center()
                         .justify_between()
                         .gap_3()
+                        .when(narrow, |row| row.flex_col().items_start())
                         .pt_4()
                         .border_t_1()
                         .border_color(rgb(p.border))
@@ -277,6 +332,10 @@ impl GitTurtle {
                                             .ghost()
                                             .label(density.label())
                                             .selected(self.settings.density == density)
+                                            .toggled(self.settings.density == density)
+                                            .when(self.settings.density == density, |button| {
+                                                button.hover(|style| style.opacity(0.9))
+                                            })
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 if this.settings.density != density {
                                                     this.settings.density = density;
@@ -337,11 +396,15 @@ impl GitTurtle {
                                     .min_w_0()
                                     .child(Input::new(&self.settings_branch)),
                             )
-                            .child(Button::new("save-default-branch").label("Save").on_click(
-                                cx.listener(|this, _, window, cx| {
-                                    this.save_default_branch(window, cx)
-                                }),
-                            )),
+                            .child(
+                                Button::new("save-default-branch")
+                                    .label("Save")
+                                    .disabled(!branch_edited)
+                                    .tooltip("Save the default branch for new repositories")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.save_default_branch(window, cx)
+                                    })),
+                            ),
                     ),
             )
             .into_any_element();
@@ -356,16 +419,17 @@ impl GitTurtle {
                         .rounded(px(8.))
                         .bg(rgb(p.canvas))
                         .p_3()
+                        .min_w_0()
                         .flex()
                         .flex_col()
                         .gap_2()
-                        .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).child(repository_name))
+                        .child(div().flex().items_center().gap_2().child(icon("folder", 14., p.accent)).child(div().min_w_0().truncate().text_size(px(12.)).font_weight(FontWeight::MEDIUM).child(repository_name)))
                         .child(
-                            div().text_size(px(11.)).text_color(rgb(p.muted)).child(
+                            div().text_size(px(11.)).text_color(rgb(p.muted)).overflow_hidden().child(
                                 self.path.as_ref().map(|path| path.display().to_string()).unwrap_or_default(),
                             ),
                         )
-                        .child(div().text_size(px(11.)).text_color(rgb(p.muted)).child(
+                        .child(div().text_size(px(11.)).line_height(relative(1.5)).text_color(rgb(p.muted)).child(
                             match &self.profile {
                                 Some(profile) if !profile.name.is_empty() && !profile.email.is_empty() => {
                                     format!("Current identity: {} <{}>", profile.name, profile.email)
@@ -396,13 +460,15 @@ impl GitTurtle {
                         .child(
                             Button::new("save-repository-identity")
                                 .primary()
+                                .icon(Icon::default().path("icons/check.svg").size(px(14.)))
                                 .label(if busy { "Working…" } else { "Save repository identity" })
-                                .disabled(busy)
+                                .disabled(busy || !identity_edited)
                                 .on_click(cx.listener(|this, _, window, cx| this.save_identity(window, cx))),
                         )
                         .child(
-                            button("use-current-identity", "Use current identity", "refresh", false)
-                                .disabled(busy || self.profile.is_none())
+                            button("use-current-identity", "Reset edits", "refresh", false)
+                                .tooltip("Restore the repository’s current name and email")
+                                .disabled(busy || self.profile.is_none() || !identity_edited)
                                 .on_click(cx.listener(|this, _, window, cx| this.fill_identity_inputs(window, cx))),
                         ),
                 )
@@ -457,7 +523,7 @@ impl GitTurtle {
                     .border_b_1()
                     .border_color(rgb(p.border))
                     .child(
-                        button("settings-back", "Back", "chevron", false).on_click(cx.listener(
+                        button("settings-back", "Back", "arrow-left", false).on_click(cx.listener(
                             |this, _, window, cx| {
                                 this.page = if this.repository.is_some() {
                                     AppPage::Repository
@@ -505,13 +571,25 @@ impl GitTurtle {
                     .min_h_0()
                     .overflow_y_scroll()
                     .p_6()
+                    .when(narrow, |body| body.p_4())
                     .child(
                         div()
+                            .w_full()
                             .max_w(px(1160.))
                             .mx_auto()
                             .flex()
                             .flex_col()
                             .gap_5()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .text_size(px(12.))
+                                    .text_color(rgb(p.muted))
+                                    .child(icon("check", 14., p.accent))
+                                    .child("Appearance and layout save automatically."),
+                            )
                             .when_some(self.operation_error.as_ref(), |element, error| {
                                 element.child(
                                     div()
@@ -520,7 +598,13 @@ impl GitTurtle {
                                         .bg(rgb(p.removed_background))
                                         .text_color(rgb(p.removed))
                                         .text_size(px(12.))
-                                        .child(error.clone()),
+                                        .flex()
+                                        .items_center()
+                                        .gap_3()
+                                        .child(div().flex_1().min_w_0().child(error.clone()))
+                                        .when(error.starts_with("Could not save settings:"), |notice| {
+                                            notice.child(Button::new("retry-save-settings").label("Retry save").on_click(cx.listener(|this, _, window, cx| this.save_preferences(window, cx))))
+                                        }),
                                 )
                             })
                             .child(
@@ -528,21 +612,25 @@ impl GitTurtle {
                                     .flex()
                                     .items_start()
                                     .gap_5()
+                                    .when(compact, |columns| columns.flex_col())
                                     .child(
                                         div()
                                             .flex_1()
                                             .min_w_0()
+                                            .when(compact, |column| column.flex_none().w_full())
                                             .flex()
                                             .flex_col()
                                             .gap_5()
                                             .child(settings_section(
                                                 "Appearance",
+                                                "sliders",
                                                 "Choose a palette for your workspace and code previews.",
                                                 appearance,
                                                 cx,
                                             ))
                                             .child(settings_section(
                                                 "History columns",
+                                                "columns",
                                                 "Keep the information you care about in view.",
                                                 self.render_columns_controls(cx),
                                                 cx,
@@ -551,18 +639,21 @@ impl GitTurtle {
                                     .child(
                                         div()
                                             .w(px(360.))
+                                            .when(compact, |column| column.w_full())
                                             .flex_shrink_0()
                                             .flex()
                                             .flex_col()
                                             .gap_5()
                                             .child(settings_section(
                                                 "Projects",
+                                                "folder",
                                                 "Choose how new sessions and projects start.",
                                                 startup,
                                                 cx,
                                             ))
                                             .child(settings_section(
                                                 "Git identity",
+                                                "user",
                                                 "The name behind your commits.",
                                                 identity,
                                                 cx,
@@ -577,10 +668,17 @@ impl GitTurtle {
 
 /// A tiny workspace built from native elements stays crisp at any display scale
 /// and previews the same tokens the real controls and diff viewer will use.
-fn theme_preview(choice: ThemeChoice, selected: bool) -> AnyElement {
+fn theme_preview(
+    choice: ThemeChoice,
+    selected: bool,
+    active_accent: u32,
+    active_foreground: u32,
+) -> AnyElement {
     let p = choice.palette();
     div()
         .size_full()
+        .rounded(px(7.))
+        .overflow_hidden()
         .flex()
         .flex_col()
         .bg(rgb(p.canvas))
@@ -682,6 +780,7 @@ fn theme_preview(choice: ThemeChoice, selected: bool) -> AnyElement {
         )
         .child(
             div()
+                .id("theme-preview-caption")
                 .h(px(70.))
                 .flex_shrink_0()
                 .px_3()
@@ -690,6 +789,8 @@ fn theme_preview(choice: ThemeChoice, selected: bool) -> AnyElement {
                 .flex_col()
                 .gap(px(4.))
                 .bg(rgb(p.panel))
+                .group_hover("settings-theme-choice", |style| style.bg(rgb(p.hover)))
+                .group_active("settings-theme-choice", |style| style.bg(rgb(p.selected)))
                 .border_t_1()
                 .border_color(rgb(p.border))
                 .child(
@@ -703,7 +804,16 @@ fn theme_preview(choice: ThemeChoice, selected: bool) -> AnyElement {
                         .text_color(rgb(p.text))
                         .child(div().min_w_0().truncate().child(choice.label()))
                         .when(selected, |element| {
-                            element.child(icon("check", 12., p.accent))
+                            element.child(
+                                div()
+                                    .size(px(18.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_full()
+                                    .bg(rgb(active_accent))
+                                    .child(icon("check", 12., active_foreground)),
+                            )
                         }),
                 )
                 .child(
@@ -767,12 +877,15 @@ fn settings_field(
 
 fn settings_section(
     title: &'static str,
+    symbol: &'static str,
     description: &'static str,
     content: AnyElement,
     cx: &App,
 ) -> AnyElement {
     let p = palette(cx);
     div()
+        .w_full()
+        .min_w_0()
         .p_5()
         .rounded(px(14.))
         .border_1()
@@ -784,19 +897,39 @@ fn settings_section(
         .child(
             div()
                 .flex()
-                .flex_col()
-                .gap_1()
+                .items_start()
+                .gap_3()
                 .child(
                     div()
-                        .text_size(px(15.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(title),
+                        .size(px(32.))
+                        .flex_shrink_0()
+                        .rounded(px(9.))
+                        .bg(rgb(p.selected))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon(symbol, 16., p.accent)),
                 )
                 .child(
                     div()
-                        .text_size(px(11.))
-                        .text_color(rgb(p.muted))
-                        .child(description),
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_size(px(15.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.))
+                                .line_height(relative(1.5))
+                                .text_color(rgb(p.muted))
+                                .child(description),
+                        ),
                 ),
         )
         .child(content)

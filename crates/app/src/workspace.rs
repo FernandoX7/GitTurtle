@@ -166,6 +166,7 @@ impl GitTurtle {
             let result = response.await.unwrap_or_else(|_| Err(anyhow::anyhow!("Working-copy refresh ended without a result")));
             let _ = this.update_in(cx, |this, window, cx| {
                 if this.work_generation != generation || this.path.as_ref() != Some(&path) { return; }
+                this.status_task = None;
                 match result {
                     Ok((status, profile, remotes)) => {
                         // Use the user's current selection, not the selection at
@@ -224,6 +225,7 @@ impl GitTurtle {
                 cx.notify();
             });
         }));
+        cx.notify();
     }
 
     pub(super) fn show_working(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -467,6 +469,8 @@ impl GitTurtle {
             .as_ref()
             .is_some_and(|p| !p.name.is_empty() && !p.email.is_empty());
         let busy = self.operation_busy.is_some();
+        let refreshing = self.status_task.is_some();
+        let status_ready = self.work_status.is_some();
         let branch = self
             .work_status
             .as_ref()
@@ -502,9 +506,10 @@ impl GitTurtle {
                     .child(div().px_2().py_0p5().rounded(px(5.)).bg(rgb(p.hover))
                         .text_size(px(11.)).text_color(rgb(p.muted)).child(total.to_string()))
                     .child(div().flex_1())
+                    .when(refreshing, |el| el.child(div().text_size(px(10.)).text_color(rgb(p.muted)).child("Refreshing…")))
                     .child(button("refresh-working", "", "refresh", false)
                         .accessibility_label("Refresh working changes").tooltip("Refresh working changes")
-                        .disabled(busy).on_click(cx.listener(|this, _, window, cx| this.refresh_worktree(window, cx)))),
+                        .disabled(busy || refreshing).on_click(cx.listener(|this, _, window, cx| this.refresh_worktree(window, cx)))),
             )
             .child(
                 div().id("working-pane").role(Role::ListBox).aria_label("Working tree files")
@@ -513,32 +518,39 @@ impl GitTurtle {
                     .when(total > 0, |el| el.child(list))
                     .when(total == 0, |el| el.child(
                         div().size_full().flex().flex_col().items_center().justify_center().p_5().gap_2()
-                            .child(div().size(px(40.)).rounded(px(12.)).bg(rgb(p.added_background))
-                                .flex().items_center().justify_center().child(icon("check", 22., p.added)))
+                            .child(div().size(px(40.)).rounded(px(12.))
+                                .bg(rgb(if status_ready { p.added_background } else { p.hover }))
+                                .flex().items_center().justify_center()
+                                .child(icon(if status_ready { "check" } else if refreshing { "refresh" } else { "changes" },
+                                    22., if status_ready { p.added } else { p.muted })))
                             .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM)
-                                .child(if self.work_status.is_some() { "Working tree clean" } else { "Reading working tree…" }))
+                                .child(if status_ready { "Working tree clean" } else if refreshing { "Reading working tree…" } else { "Changes unavailable" }))
                             .child(div().max_w(px(220.)).text_center().text_size(px(11.)).text_color(rgb(p.muted))
-                                .child("Your changed files will appear here, ready to review and stage.")),
+                                .child(if status_ready { "No staged changes or local edits. Your next changes will appear here." }
+                                    else if refreshing { "Checking staged changes and local edits." }
+                                    else { "Refresh to try reading this working tree again." })),
                     )),
             )
             .child(
-                div().flex_shrink_0().p_4().flex().flex_col().gap_3()
+                div().flex_shrink_0().p_3().flex().flex_col().gap_2()
                     .bg(rgb(p.subtle)).border_t_1().border_color(rgb(p.border))
                     .child(div().flex().items_center().gap_2()
                         .child(icon("commit", 16., p.accent))
                         .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child("Create a commit"))
                         .child(div().flex_1())
-                        .child(div().text_size(px(11.)).text_color(rgb(if staged > 0 { p.added } else { p.muted }))
+                        .child(div().px_1p5().py_0p5().rounded(px(4.))
+                            .bg(rgb(if staged > 0 { p.added_background } else { p.hover }))
+                            .text_size(px(10.)).text_color(rgb(if staged > 0 { p.added } else { p.muted }))
                             .child(format!("{staged} staged"))))
                     .child(div().flex().items_center().gap_1p5().min_w_0().text_size(px(11.))
                         .text_color(rgb(p.muted)).child(icon("branch", 13., p.muted))
                         .child(div().truncate().child(branch.to_owned())))
-                    .child(Textarea::new(&self.commit_message).readonly(busy).h(px(112.)).text_size(px(12.)))
+                    .child(Textarea::new(&self.commit_message).readonly(busy).h(px(96.)).text_size(px(12.)))
                     .child(div().flex().items_center().gap_2().text_size(px(10.)).text_color(rgb(p.muted))
                         .child(div().flex_1().child(if staged == 0 { "Stage files to include in your commit" } else { "Only staged changes will be committed" }))
                         .child(div().text_color(rgb(if summary_length > 72 { p.warning } else { p.muted }))
                             .child(format!("{summary_length}/72"))))
-                    .when(!identity_ready, |el| el.child(
+                    .when(!identity_ready && status_ready, |el| el.child(
                         button("configure-identity", "Set your commit identity", "", false)
                             .on_click(cx.listener(|this, _, window, cx| this.show_settings(window, cx))),
                     ))
@@ -552,6 +564,12 @@ impl GitTurtle {
                             .icon(Icon::default().path("icons/commit.svg").size(px(16.)))
                             .label(if busy {
                                 "Working…".to_owned()
+                            } else if !status_ready {
+                                if refreshing { "Reading working changes…" } else { "Changes unavailable" }.to_owned()
+                            } else if conflicted {
+                                "Resolve conflicts to commit".to_owned()
+                            } else if !identity_ready {
+                                "Set your commit identity".to_owned()
                             } else if staged == 0 {
                                 "Stage files to commit".to_owned()
                             } else if self.commit_message.read(cx).value().trim().is_empty() {
@@ -561,6 +579,7 @@ impl GitTurtle {
                             })
                             .disabled(busy || staged == 0 || conflicted || !identity_ready
                                 || self.commit_message.read(cx).value().trim().is_empty())
+                            .tooltip(format!("Commit staged changes to {branch}"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 let message = this.commit_message.read(cx).value().to_string();
                                 this.write(WriteCommand::Commit { message }, "Creating commit…", window, cx);
@@ -612,6 +631,11 @@ impl GitTurtle {
                             false,
                         )
                         .disabled(busy || count == 0)
+                        .tooltip(if staged {
+                            "Remove all staged changes from the next commit"
+                        } else {
+                            "Include all local changes in the next commit"
+                        })
                         .on_click(cx.listener(
                             move |this, _, window, cx| {
                                 this.write(
@@ -650,6 +674,15 @@ impl GitTurtle {
                     .unwrap_or("Repository root".into());
                 let active = self.working_selected == Some((index, area));
                 let staged = area == ChangeArea::Staged;
+                let path_detail = entry.original_path.as_ref().map_or_else(
+                    || entry.path.display().to_string(),
+                    |original| format!("{} → {}", original.display(), entry.path.display()),
+                );
+                let stage_label = format!(
+                    "{} {}",
+                    if staged { "Unstage" } else { "Stage" },
+                    entry.path.display()
+                );
                 let change = if staged { entry.staged } else { entry.unstaged };
                 let (symbol, status_label, color, background) = if entry.conflicted {
                     ("file-conflict", "Conflict", p.warning, p.hover)
@@ -687,12 +720,16 @@ impl GitTurtle {
                     .aria_selected(active)
                     .h(px(self.settings.density.file_row_height()))
                     .w_full()
-                    .px_3()
+                    .pl(px(10.))
+                    .pr_3()
                     .flex()
                     .items_center()
                     .gap_2()
                     .bg(rgb(if active { p.selected } else { p.panel }))
-                    .hover(move |s| s.bg(rgb(p.hover)))
+                    .border_l_2()
+                    .border_color(if active { rgb(p.accent) } else { rgba(0) })
+                    .hover(move |s| s.bg(rgb(p.row_hover(active))))
+                    .active(move |s| s.bg(rgb(p.selected)))
                     .cursor_pointer()
                     .child(
                         div()
@@ -707,11 +744,15 @@ impl GitTurtle {
                     )
                     .child(
                         div()
+                            .id(("working-path", position))
                             .flex_1()
                             .min_w_0()
                             .flex()
                             .flex_col()
                             .gap_0p5()
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(path_detail.clone()).build(window, cx)
+                            })
                             .child(
                                 div()
                                     .truncate()
@@ -729,6 +770,7 @@ impl GitTurtle {
                     )
                     .child(
                         div()
+                            .flex_shrink_0()
                             .text_size(px(10.))
                             .text_color(rgb(color))
                             .child(status_label),
@@ -740,8 +782,8 @@ impl GitTurtle {
                             if staged { "minus" } else { "plus" },
                             false,
                         )
-                        .accessibility_label(if staged { "Unstage file" } else { "Stage file" })
-                        .tooltip(if staged { "Unstage file" } else { "Stage file" })
+                        .accessibility_label(stage_label.clone())
+                        .tooltip(stage_label)
                         .disabled(busy)
                         .on_click(cx.listener(
                             move |this, _, window, cx| {
@@ -797,7 +839,8 @@ impl GitTurtle {
             .max_w(px(280.))
             .dropdown_caret(true)
             .disabled(busy)
-            .tooltip("Switch to a local branch")
+            .accessibility_label(format!("Current branch: {branch}. Switch branch"))
+            .tooltip(format!("{branch} · Switch to a local branch"))
             .dropdown_menu(move |mut menu, _, cx| {
                 let Some(view) = view.upgrade() else {
                     return menu;
@@ -806,18 +849,33 @@ impl GitTurtle {
                 let path = this.path.clone();
                 let query = this.branch_name.read(cx).value().trim().to_lowercase();
                 let current = this.work_status.as_ref().and_then(|s| s.branch.as_deref());
-                menu = menu.label("Switch branch").max_h(px(360.)).scrollable(true);
+                menu = menu
+                    .label(if query.is_empty() {
+                        "Switch branch".to_owned()
+                    } else {
+                        format!("Branches matching “{query}”")
+                    })
+                    .max_h(px(360.))
+                    .scrollable(true);
                 // Build this bounded list only when the menu opens, never on each frame.
-                let branches = this.branches.iter().filter(|branch| {
-                    !branch.remote
-                        && Some(branch.name.as_str()) != current
-                        && (query.is_empty() || branch.name.to_lowercase().contains(&query))
-                });
+                let branches: Vec<_> = this
+                    .branches
+                    .iter()
+                    .filter(|branch| {
+                        !branch.remote
+                            && Some(branch.name.as_str()) != current
+                            && (query.is_empty() || branch.name.to_lowercase().contains(&query))
+                    })
+                    .take(41)
+                    .collect();
                 let current_branch = this
                     .branches
                     .iter()
                     .find(|branch| !branch.remote && Some(branch.name.as_str()) == current);
-                for branch in current_branch.into_iter().chain(branches.take(40)) {
+                for branch in current_branch
+                    .into_iter()
+                    .chain(branches.iter().take(40).copied())
+                {
                     let name = branch.name.clone();
                     let view = view.downgrade();
                     let path = path.clone();
@@ -842,6 +900,15 @@ impl GitTurtle {
                             }),
                     );
                 }
+                if branches.is_empty() {
+                    menu = menu.label(if query.is_empty() {
+                        "No other local branches"
+                    } else {
+                        "No other matching branches"
+                    });
+                } else if branches.len() > 40 {
+                    menu = menu.label("Showing 40 branches · Find to narrow the list");
+                }
                 let view = view.downgrade();
                 menu.separator()
                     .item(PopupMenuItem::new("Find or create a branch…").on_click(
@@ -859,11 +926,22 @@ impl GitTurtle {
                 div().min_h(px(54.)).px_4().py_2().flex().flex_wrap().items_center().gap_2()
                     .child(branch_picker)
                     .children(self.work_status.as_ref().map(|status| {
-                        div().flex().items_center().gap_2().px_2().text_size(px(11.))
-                            .child(div().text_color(rgb(if status.ahead > 0 { p.added } else { p.muted }))
-                                .child(format!("↑ {}", status.ahead)))
-                            .child(div().text_color(rgb(if status.behind > 0 { p.modified } else { p.muted }))
-                                .child(format!("↓ {}", status.behind)))
+                        let tooltip = status.upstream.as_ref().map_or_else(
+                            || "No upstream is configured. Choose a remote and branch in Targets to push.".to_owned(),
+                            |upstream| format!("Compared with local {upstream}. Fetch to update remote information."),
+                        );
+                        div().id("branch-sync-state").flex().items_center().gap_2().px_2().text_size(px(11.))
+                            .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                            .when(status.upstream.is_some(), |el| el
+                                .child(div().flex().items_center().gap_1()
+                                    .text_color(rgb(if status.ahead > 0 { p.added } else { p.muted }))
+                                    .child(icon("push", 12., if status.ahead > 0 { p.added } else { p.muted }))
+                                    .child(format!("{} ahead", status.ahead)))
+                                .child(div().flex().items_center().gap_1()
+                                    .text_color(rgb(if status.behind > 0 { p.modified } else { p.muted }))
+                                    .child(icon("pull", 12., if status.behind > 0 { p.modified } else { p.muted }))
+                                    .child(format!("{} behind", status.behind))))
+                            .when(status.upstream.is_none(), |el| el.child(div().text_color(rgb(p.muted)).child("No upstream")))
                     }))
                     .children(self.work_status.as_ref().and_then(|s| s.operation.as_ref()).map(|operation| {
                         div().px_2().py_1().rounded(px(5.)).bg(rgb(p.hover)).text_size(px(11.))
@@ -872,7 +950,11 @@ impl GitTurtle {
                     .child(div().flex_1())
                     .children([("fetch", "Fetch"), ("pull", "Pull"), ("push", "Push")].into_iter().map(|(id, label)| {
                         let unavailable = busy || remote.is_none() || (id != "fetch" && (selected_branch.is_empty() || detached));
-                        let tooltip = if remote.is_none() { "No configured remote selected".to_owned() } else {
+                        let tooltip = if busy { self.operation_busy.unwrap_or_default().to_owned() }
+                        else if remote.is_none() { "No configured remote selected · Check Targets".to_owned() }
+                        else if id != "fetch" && detached { "Switch to a local branch before pulling or pushing".to_owned() }
+                        else if id != "fetch" && selected_branch.is_empty() { "Choose a remote branch in Targets".to_owned() }
+                        else {
                             match id {
                                 "fetch" => format!("Fetch from {selected_remote}"),
                                 "pull" => format!("Pull {target} into {branch} · fast-forward only"),
@@ -897,7 +979,8 @@ impl GitTurtle {
                             }))
                     }))
                     .child(button("git-actions-toggle", "Targets", "sliders", self.git_actions_open)
-                        .tooltip("Show branch and remote targets")
+                        .toggled(self.git_actions_open)
+                        .tooltip(if self.git_actions_open { "Hide branch and remote targets" } else { "Show branch and remote targets" })
                         .on_click(cx.listener(|this, _, _, cx| { this.git_actions_open = !this.git_actions_open; cx.notify(); }))),
             )
             .when(self.git_actions_open, |el| el.child(
@@ -926,7 +1009,7 @@ impl GitTurtle {
                         .child(div().w(px(200.)).flex().flex_col().gap_1()
                             .child(action_field_label("Remote branch", p.muted))
                             .child(Input::new(&self.remote_branch).text_size(px(12.)).disabled(busy))))
-                    .child(div().flex().items_center().gap_1p5().text_size(px(10.)).text_color(rgb(p.muted))
+                    .child(div().flex().items_center().gap_1p5().text_size(px(11.)).text_color(rgb(p.muted))
                         .child(icon("remote", 12., p.muted))
                         .child(div().min_w_0().truncate().child(remote.map_or_else(
                             || "No remote configured · branch and commit actions are available locally".to_owned(),
