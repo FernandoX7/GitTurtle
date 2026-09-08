@@ -134,7 +134,7 @@ struct ReturnContext {
     preferred_file: Option<PathBuf>,
     content: Option<Arc<Content>>,
     patch_editor: Option<Entity<EditorState>>,
-    patch_decoration: Option<TextDecorationCollection>,
+    patch_decoration: Option<editor_find::PatchDecorations>,
     patch_view: Option<Entity<diff_view::DiffView>>,
     partial_subscription: Option<Subscription>,
     split_view: Option<Entity<split_diff::SplitView>>,

@@ -7,7 +7,7 @@ use crate::{
 use gpui_kit::{
     App, AppContext, ClipboardItem, Context, Entity, Focusable, HighlightStyle, InteractiveElement,
     IntoElement, ParentElement, Pixels, Render, Styled, Subscription, Window,
-    component::input::{Copy, EditorState, TextDecoration, TextDecorationCollection},
+    component::input::{Copy, EditorState, TextDecoration},
     div, point, px, rgb,
 };
 use std::{mem::size_of, ops::Range, sync::Arc};
@@ -200,7 +200,7 @@ pub struct SplitView {
     presentation: Arc<SplitPresentation>,
     editors: [Entity<EditorState>; 2],
     views: [Entity<diff_view::DiffView>; 2],
-    decorations: [TextDecorationCollection; 2],
+    decorations: [crate::editor_find::PatchDecorations; 2],
     search_heights: [Pixels; 2],
     scroll: LinkedScroll,
     initial_row: Option<usize>,
@@ -262,9 +262,11 @@ pub fn new(
         } else {
             colors.added_background
         };
-        editors[side].update(cx, |editor, cx| {
-            editor.create_decorations_collection(presentation.sides[side].decorations(color), cx)
-        })
+        crate::editor_find::patch_decorations(
+            &editors[side],
+            presentation.sides[side].decorations(color),
+            cx,
+        )
     });
     let views = std::array::from_fn(|side| {
         let numbers = Arc::clone(&presentation.sides[side].numbers);

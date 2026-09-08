@@ -133,6 +133,21 @@ impl GitTurtle {
                     })
                     .max_h(px(430.))
                     .scrollable(true);
+                let find_owner = owner.clone();
+                let find_path = path.clone();
+                menu = menu
+                    .item(PopupMenuItem::new("Find or create a branch…").on_click(
+                        move |_, window, cx| {
+                            let _ = find_owner.update(cx, |this, cx| {
+                                if this.path == find_path && this.page == AppPage::Repository {
+                                    this.git_actions_open = true;
+                                    this.branch_name.read(cx).focus_handle(cx).focus(window, cx);
+                                    cx.notify();
+                                }
+                            });
+                        },
+                    ))
+                    .separator();
                 let candidates: Vec<_> = this
                     .branches
                     .iter()
@@ -185,24 +200,7 @@ impl GitTurtle {
                 if candidates.is_empty() {
                     menu = menu.label("No other matching local branches");
                 }
-                let find_owner = owner.clone();
-                let find_path = path.clone();
-                menu =
-                    menu.separator()
-                        .item(PopupMenuItem::new("Find or create a branch…").on_click(
-                            move |_, window, cx| {
-                                let _ = find_owner.update(cx, |this, cx| {
-                                    if this.path == find_path && this.page == AppPage::Repository {
-                                        this.git_actions_open = true;
-                                        this.branch_name
-                                            .read(cx)
-                                            .focus_handle(cx)
-                                            .focus(window, cx);
-                                        cx.notify();
-                                    }
-                                });
-                            },
-                        ));
+                menu = menu.separator();
                 if current.is_some() {
                     menu = add_menu_action(
                         menu,

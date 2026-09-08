@@ -1,7 +1,7 @@
 use crate::appearance::palette;
 use gpui_kit::{
     App, AppContext, Entity, FontWeight, HighlightStyle, Window,
-    component::input::{EditorState, TextDecoration, TextDecorationCollection},
+    component::input::{EditorState, TextDecoration},
     rgb,
 };
 use std::{mem::size_of, ops::Range, sync::Arc};
@@ -52,7 +52,10 @@ pub fn editor_with_decorations(
     diff: Option<&PatchPresentation>,
     window: &mut Window,
     cx: &mut App,
-) -> (Entity<EditorState>, Option<TextDecorationCollection>) {
+) -> (
+    Entity<EditorState>,
+    Option<crate::editor_find::PatchDecorations>,
+) {
     let editor = cx.new(|cx| {
         EditorState::new(window, cx)
             .language(language.to_owned())
@@ -64,10 +67,7 @@ pub fn editor_with_decorations(
     crate::editor_find::reserve_highlight_layer(&editor, cx);
     let collection = diff.map(|presentation| {
         let decorations = theme_decorations(presentation, cx);
-        // Find reserves the first collection; patch colors remain underneath it.
-        editor.update(cx, |state, cx| {
-            state.create_decorations_collection(decorations, cx)
-        })
+        crate::editor_find::patch_decorations(&editor, decorations, cx)
     });
     (editor, collection)
 }
@@ -77,7 +77,7 @@ pub fn editor_with_decorations(
 pub fn refresh_editor(
     editor: &Entity<EditorState>,
     value: &str,
-    decorations: Option<(&TextDecorationCollection, &PatchPresentation)>,
+    decorations: Option<(&crate::editor_find::PatchDecorations, &PatchPresentation)>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -94,7 +94,7 @@ pub fn refresh_editor(
 }
 
 pub fn refresh_theme(
-    collection: &TextDecorationCollection,
+    collection: &crate::editor_find::PatchDecorations,
     presentation: &PatchPresentation,
     cx: &mut App,
 ) {

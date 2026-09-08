@@ -29,10 +29,7 @@ use gitturtle_core::{Branch, Commit, FileChange, GitRepository, Worktree};
 use gpui_kit::component::{
     Disableable, Icon, Root, Selectable, Sizable,
     button::{Button, ButtonVariants},
-    input::{
-        EditorState, Input, InputEvent, InputState, TextDecorationCollection, Textarea,
-        TextareaState,
-    },
+    input::{EditorState, Input, InputEvent, InputState, Textarea, TextareaState},
     resizable::{ResizableState, h_resizable, resizable_panel},
     tooltip::Tooltip,
 };
@@ -163,6 +160,7 @@ struct GitTurtle {
     preferences_writer: SerialExecutor,
     operations: SerialExecutor,
     operation_busy: Option<&'static str>,
+    operation_outcomes: operations::RepositoryOutcomes,
     operation_error: Option<String>,
     operation_notice: Option<String>,
     operation_task: Option<Task<()>>,
@@ -215,7 +213,7 @@ struct GitTurtle {
     files: Vec<FileChange>,
     content: Option<Arc<Content>>,
     patch_editor: Option<Entity<EditorState>>,
-    patch_decoration: Option<TextDecorationCollection>,
+    patch_decoration: Option<editor_find::PatchDecorations>,
     patch_view: Option<Entity<diff_view::DiffView>>,
     partial_subscription: Option<Subscription>,
     split_view: Option<Entity<split_diff::SplitView>>,
@@ -306,6 +304,7 @@ impl GitTurtle {
             preferences_writer: SerialExecutor::new("gitturtle-preferences"),
             operations: SerialExecutor::new("gitturtle-operations"),
             operation_busy: None,
+            operation_outcomes: operations::RepositoryOutcomes::default(),
             operation_error: None,
             operation_notice: None,
             operation_task: None,
@@ -493,6 +492,10 @@ impl GitTurtle {
         let generation = self.generation;
         self.loading = Some(label);
         self.error = None;
+        let opening = matches!(&job, Job::Open { .. }).then(|| {
+            self.operation_outcomes
+                .begin_open(&self.operation_error, &self.operation_notice)
+        });
         let response = self.worker.submit(job);
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
             let Ok(result) = response.await else {
@@ -505,7 +508,17 @@ impl GitTurtle {
                 this.loading = None;
                 this.task = None;
                 match result {
-                    Ok(output) => this.receive(output, window, cx),
+                    Ok(output) => {
+                        if let (Some(opening), Output::Snapshot(snapshot)) = (opening, &output) {
+                            this.operation_outcomes.opened(
+                                snapshot.repository.path(),
+                                opening,
+                                &mut this.operation_error,
+                                &mut this.operation_notice,
+                            );
+                        }
+                        this.receive(output, window, cx);
+                    }
                     Err(error) => {
                         this.error = Some(format!("{error:#}"));
                         this.status = "Read could not complete".into();
@@ -547,7 +560,6 @@ impl GitTurtle {
         };
         if self.path.as_ref() != Some(&path) {
             self.automatic.reset();
-            self.operation_notice = None;
             self.retained_history_files = None;
             self.repository = None;
             self.work_generation += 1;

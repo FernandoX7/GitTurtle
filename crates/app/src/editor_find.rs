@@ -6,7 +6,7 @@ use crate::appearance::palette;
 use gpui_kit::{
     App, AppContext, Context, DefiniteLength, Entity, EntityId, FocusHandle, Focusable, Global,
     HighlightStyle, InteractiveElement, IntoElement, ParentElement, Pixels, Render, RenderOnce,
-    SharedString, StyleRefinement, Styled, Subscription, WeakEntity, Window,
+    SharedString, StyleRefinement, Styled, Subscription, UnderlineStyle, WeakEntity, Window,
     base::ElementExt,
     component::{
         Disableable, Sizable,
@@ -19,7 +19,11 @@ use gpui_kit::{
     },
     div, px, relative, rgb,
 };
-use std::{ops::Range, rc::Rc};
+use std::{
+    cell::RefCell,
+    ops::Range,
+    rc::{Rc, Weak},
+};
 
 const RETAINED_PANELS: usize = 64;
 const MAX_QUERY_BYTES: usize = 4096;
@@ -32,14 +36,16 @@ impl Global for Panels {}
 struct ReservedLayer {
     editor: WeakEntity<EditorState>,
     decorations: TextDecorationCollection,
+    patch: Option<Weak<RefCell<PatchLayer>>>,
 }
 #[derive(Default)]
 struct ReservedLayers(Vec<ReservedLayer>);
 impl Global for ReservedLayers {}
 
-/// Reserve Find's precedence before creating any patch decoration collections.
-/// This allocates one empty collection, not a Find input or panel. Handles have
-/// weak source ownership; the bounded cache is pruned as previews are released.
+/// Reserve a Find collection without constructing its input or panel. The
+/// pinned renderer composes overlapping properties in hash order, so patch
+/// backgrounds are explicitly removed underneath Find instead of relying on
+/// collection order. Handles retain neither released editors nor patch data.
 pub fn reserve_highlight_layer(editor: &Entity<EditorState>, cx: &mut App) {
     if reserved_layer(editor, cx).is_some() {
         return;
@@ -47,8 +53,8 @@ pub fn reserve_highlight_layer(editor: &Entity<EditorState>, cx: &mut App) {
     let mut layers = std::mem::take(&mut cx.default_global::<ReservedLayers>().0);
     layers.retain(|layer| layer.editor.upgrade().is_some());
     if layers.len() >= RETAINED_PANELS {
-        // Keep memory bounded even if a future caller retains many more groups;
-        // the late-layer fallback uses ordinary readable text colors below.
+        // Keep memory bounded if a future caller retains more groups. Find's
+        // fallback still has a visible underline without competing backgrounds.
         cx.default_global::<ReservedLayers>().0 = layers;
         return;
     }
@@ -58,8 +64,130 @@ pub fn reserve_highlight_layer(editor: &Entity<EditorState>, cx: &mut App) {
     layers.push(ReservedLayer {
         editor: editor.downgrade(),
         decorations,
+        patch: None,
     });
     cx.default_global::<ReservedLayers>().0 = layers;
+}
+
+struct PatchLayer {
+    collection: TextDecorationCollection,
+    source: Vec<TextDecoration>,
+    matches: Vec<Range<usize>>,
+}
+
+/// Patch styles owned with their editor view; Find only holds a weak handle.
+#[derive(Clone)]
+pub struct PatchDecorations(Rc<RefCell<PatchLayer>>);
+
+impl PatchDecorations {
+    pub fn set(&self, decorations: Vec<TextDecoration>, cx: &mut App) {
+        let (collection, visible) = {
+            let mut layer = self.0.borrow_mut();
+            layer.source = decorations;
+            (
+                layer.collection.clone(),
+                without_match_backgrounds(&layer.source, &layer.matches),
+            )
+        };
+        collection.set(visible, cx);
+    }
+}
+
+pub fn patch_decorations(
+    editor: &Entity<EditorState>,
+    decorations: Vec<TextDecoration>,
+    cx: &mut App,
+) -> PatchDecorations {
+    reserve_highlight_layer(editor, cx);
+    let collection = editor.update(cx, |source, cx| {
+        source.create_decorations_collection(Vec::new(), cx)
+    });
+    let patch = PatchDecorations(Rc::new(RefCell::new(PatchLayer {
+        collection,
+        source: Vec::new(),
+        matches: Vec::new(),
+    })));
+    if let Some(layer) = cx
+        .default_global::<ReservedLayers>()
+        .0
+        .iter_mut()
+        .find(|layer| layer.editor.entity_id() == editor.entity_id())
+    {
+        layer.patch = Some(Rc::downgrade(&patch.0));
+    }
+    patch.set(decorations, cx);
+    patch
+}
+
+fn set_match_ranges(editor: &WeakEntity<EditorState>, ranges: Vec<Range<usize>>, cx: &mut App) {
+    let patch = cx
+        .try_global::<ReservedLayers>()
+        .and_then(|layers| {
+            layers
+                .0
+                .iter()
+                .find(|layer| layer.editor.entity_id() == editor.entity_id())
+        })
+        .and_then(|layer| layer.patch.as_ref())
+        .and_then(Weak::upgrade);
+    if let Some(patch) = patch {
+        let (collection, visible) = {
+            let mut layer = patch.borrow_mut();
+            if layer.matches == ranges {
+                return;
+            }
+            layer.matches = ranges;
+            (
+                layer.collection.clone(),
+                without_match_backgrounds(&layer.source, &layer.matches),
+            )
+        };
+        collection.set(visible, cx);
+    }
+}
+
+// Both inputs are ordered, disjoint UTF-8 ranges prepared by the patch worker
+// and search engine. Visit the metadata once; never rescan source text. Keep
+// foreground/font styles so Find changes neither syntax nor diff text colors.
+fn without_match_backgrounds(
+    source: &[TextDecoration],
+    matches: &[Range<usize>],
+) -> Vec<TextDecoration> {
+    let mut output = Vec::with_capacity(source.len().saturating_add(matches.len() * 2));
+    let mut first_match = 0;
+    for decoration in source {
+        if decoration.style.background_color.is_none() {
+            output.push(decoration.clone());
+            continue;
+        }
+        while first_match < matches.len() && matches[first_match].end <= decoration.range.start {
+            first_match += 1;
+        }
+        let mut cursor = decoration.range.start;
+        for range in &matches[first_match..] {
+            if range.start >= decoration.range.end {
+                break;
+            }
+            let start = range.start.max(cursor);
+            let end = range.end.min(decoration.range.end);
+            if cursor < start {
+                output.push(TextDecoration::new(cursor..start, decoration.style));
+            }
+            if start < end {
+                let mut style = decoration.style;
+                style.background_color = None;
+                output.push(TextDecoration::new(start..end, style));
+                cursor = end;
+            }
+        }
+        if cursor < decoration.range.end {
+            output.push(TextDecoration::new(
+                cursor..decoration.range.end,
+                decoration.style,
+            ));
+        }
+    }
+    output
 }
 
 fn reserved_layer(editor: &Entity<EditorState>, cx: &App) -> Option<TextDecorationCollection> {
@@ -239,14 +367,14 @@ struct FindBar {
     open: bool,
     height: Pixels,
     decorations: TextDecorationCollection,
-    highest_priority: bool,
+    background_available: bool,
     painted: Option<PaintedMatches>,
     _subscriptions: Vec<Subscription>,
 }
 struct PaintedMatches {
     ranges: Rc<Vec<Range<usize>>>,
     current: usize,
-    colors: (u32, u32, u32),
+    colors: (u32, u32),
 }
 impl FindBar {
     fn new(
@@ -271,7 +399,7 @@ impl FindBar {
             }
         };
         let reserved = reserved_layer(editor, cx);
-        let highest_priority = reserved.is_some();
+        let background_available = reserved.is_some();
         let decorations = editor.update(cx, |source, cx| {
             // The native overlay is private and lacks labels. Keep its engine
             // closed; its query and match navigation remain public and usable.
@@ -311,7 +439,7 @@ impl FindBar {
             open: false,
             height: px(0.),
             decorations,
-            highest_priority,
+            background_available,
             painted: None,
             _subscriptions: subscriptions,
         }
@@ -346,6 +474,7 @@ impl FindBar {
         self.height = px(0.);
         self.painted = None;
         self.decorations.clear(cx);
+        set_match_ranges(&self.editor, Vec::new(), cx);
         if focus_source && let Some(editor) = self.editor.upgrade() {
             editor.focus_handle(cx).focus(window, cx);
         }
@@ -363,19 +492,7 @@ impl FindBar {
         let ranges = session.matcher.matched_ranges();
         let current = session.matcher.current_match_index();
         let colors = palette(cx);
-        let colors = (
-            colors.selected,
-            if self.highest_priority {
-                colors.accent
-            } else {
-                colors.selected
-            },
-            if self.highest_priority {
-                colors.accent_foreground
-            } else {
-                colors.text
-            },
-        );
+        let colors = (colors.selected, colors.accent);
         if self.painted.as_ref().is_some_and(|painted| {
             Rc::ptr_eq(&painted.ranges, &ranges)
                 && painted.current == current
@@ -383,12 +500,23 @@ impl FindBar {
         }) {
             return;
         }
-        let decorations = highlight_window(ranges.len(), current)
+        let decorations: Vec<_> = highlight_window(ranges.len(), current)
             .map(|index| {
                 let active = index == current;
-                TextDecoration::new(ranges[index].clone(), match_style(active, colors))
+                TextDecoration::new(
+                    ranges[index].clone(),
+                    match_style(active, self.background_available, colors),
+                )
             })
             .collect();
+        set_match_ranges(
+            &self.editor,
+            decorations
+                .iter()
+                .map(|decoration| decoration.range.clone())
+                .collect(),
+            cx,
+        );
         self.painted = Some(PaintedMatches {
             ranges,
             current,
@@ -529,10 +657,16 @@ impl Render for FindBar {
     }
 }
 
-fn match_style(active: bool, colors: (u32, u32, u32)) -> HighlightStyle {
+fn match_style(active: bool, background_available: bool, colors: (u32, u32)) -> HighlightStyle {
     HighlightStyle {
-        background_color: Some(rgb(if active { colors.1 } else { colors.0 }).into()),
-        color: active.then(|| rgb(colors.2).into()),
+        background_color: background_available.then(|| rgb(colors.0).into()),
+        // Syntax styles supply foreground/font properties only. Avoid competing
+        // with them in the pinned renderer's unordered property compositor.
+        underline: (active || !background_available).then(|| UnderlineStyle {
+            color: Some(rgb(colors.1).into()),
+            thickness: px(1.),
+            wavy: false,
+        }),
         ..Default::default()
     }
 }
@@ -587,15 +721,12 @@ mod tests {
         assert_eq!(&*session.matcher.matched_ranges(), &[3..7, 17..21]);
     }
     #[test]
-    fn find_priority_composes_both_match_colors_over_split_and_unified_patch_styles() {
+    fn find_background_and_active_underline_survive_real_viewport_style_composition() {
         use crate::appearance::ThemeChoice;
-        use gpui_kit::{HighlightStyle, combine_highlights, rgb};
+        use gpui_kit::{HighlightStyle, combine_highlights, component::input::TextDecoration, rgb};
         for theme in ThemeChoice::ALL {
             let palette = theme.palette();
-            let find = super::match_style(
-                true,
-                (palette.selected, palette.accent, palette.accent_foreground),
-            );
+            let find = super::match_style(true, true, (palette.selected, palette.accent));
             for unified in [false, true] {
                 for (foreground, background) in [
                     (palette.added, palette.added_background),
@@ -606,25 +737,103 @@ mod tests {
                         color: unified.then(|| rgb(foreground).into()),
                         ..Default::default()
                     };
-                    // GPUI applies collections in reverse creation order using
-                    // this public compositor. Reserved Find is composed last.
-                    let combined =
-                        combine_highlights([(0..20, patch)], [(5..10, find)]).collect::<Vec<_>>();
-                    assert_eq!(combined.len(), 3);
-                    assert_eq!(combined[0], (0..5, patch));
-                    assert_eq!(combined[1].0, 5..10);
-                    assert_eq!(
-                        combined[1].1.background_color, find.background_color,
-                        "{theme:?}"
-                    );
-                    assert_eq!(combined[1].1.color, find.color, "{theme:?}");
-                    assert_eq!(combined[2], (10..20, patch));
-                    // Clearing only Find leaves the complete original patch.
-                    let closed = combine_highlights([(0..20, patch)], []).collect::<Vec<_>>();
-                    assert_eq!(closed, vec![(0..20, patch)]);
+                    // Match in the middle of changing visible syntax runs. A
+                    // two-style test with the match in the first run missed
+                    // GPUI's unordered active-style fold and passed falsely.
+                    for visible_runs in 1..64 {
+                        let start = (visible_runs / 2) * 10 + 3;
+                        let range = start..start + 4;
+                        let source = [TextDecoration::new(0..visible_runs * 10, patch)];
+                        let masked =
+                            super::without_match_backgrounds(&source, std::slice::from_ref(&range));
+                        let syntax = (0..visible_runs).map(|index| {
+                            (
+                                index * 10..index * 10 + 10,
+                                HighlightStyle {
+                                    color: Some(rgb(palette.text).into()),
+                                    ..Default::default()
+                                },
+                            )
+                        });
+                        let base = combine_highlights(
+                            syntax,
+                            masked.into_iter().map(|d| (d.range, d.style)),
+                        )
+                        .collect::<Vec<_>>();
+                        // Check either collection order through the actual
+                        // renderer compositor, including its hash-set fold.
+                        for styles in [
+                            combine_highlights(base.clone(), [(range.clone(), find)])
+                                .collect::<Vec<_>>(),
+                            combine_highlights([(range.clone(), find)], base.clone())
+                                .collect::<Vec<_>>(),
+                        ] {
+                            let active = styles.iter().find(|(r, _)| r.contains(&start)).unwrap().1;
+                            assert_eq!(
+                                active.background_color, find.background_color,
+                                "{theme:?}, {visible_runs}"
+                            );
+                            assert_eq!(
+                                active.underline, find.underline,
+                                "{theme:?}, {visible_runs}"
+                            );
+                            assert!(
+                                active.color == Some(rgb(palette.text).into())
+                                    || active.color == patch.color
+                            );
+                        }
+                        assert_eq!(super::without_match_backgrounds(&source, &[]), source);
+                    }
                 }
             }
         }
+    }
+
+    #[test]
+    fn match_mask_preserves_styles_across_gaps_boundaries_and_theme_refresh() {
+        use gpui_kit::{FontWeight, HighlightStyle, component::input::TextDecoration, rgb};
+        let patch = HighlightStyle {
+            color: Some(rgb(0xabcdef).into()),
+            background_color: Some(rgb(0x123456).into()),
+            font_weight: Some(FontWeight::MEDIUM),
+            ..Default::default()
+        };
+        let source = [
+            TextDecoration::new(0..12, patch),
+            TextDecoration::new(16..26, patch),
+        ];
+        let matches = [2..4, 6..9, 11..18, 22..26];
+        let visible = super::without_match_backgrounds(&source, &matches);
+        for offset in 0..26 {
+            let original = source.iter().find(|d| d.range.contains(&offset));
+            let actual = visible.iter().find(|d| d.range.contains(&offset));
+            assert_eq!(original.is_some(), actual.is_some());
+            if let (Some(original), Some(actual)) = (original, actual) {
+                assert_eq!(actual.style.color, original.style.color);
+                assert_eq!(actual.style.font_weight, original.style.font_weight);
+                assert_eq!(
+                    actual.style.background_color.is_none(),
+                    matches.iter().any(|r| r.contains(&offset))
+                );
+            }
+        }
+        let changed = [TextDecoration::new(
+            0..26,
+            HighlightStyle {
+                background_color: Some(rgb(0x654321).into()),
+                ..patch
+            },
+        )];
+        let themed = super::without_match_backgrounds(&changed, &matches);
+        assert_eq!(
+            themed[0].style.background_color,
+            changed[0].style.background_color
+        );
+        assert_eq!(super::without_match_backgrounds(&changed, &[]), changed);
+        let fallback = super::match_style(true, false, (0, 0xabcdef));
+        assert!(fallback.background_color.is_none());
+        assert!(fallback.color.is_none());
+        assert!(fallback.underline.is_some());
     }
 
     #[test]
