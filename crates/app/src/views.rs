@@ -1009,6 +1009,14 @@ impl GitTurtle {
                     }
                 }
                 Content::Images { old, new } => {
+                    if self.zoom > 0. {
+                        toolbar = toolbar.child(
+                            div()
+                                .text_size(px(10.))
+                                .text_color(rgb(MUTED))
+                                .child("Drag to pan"),
+                        );
+                    }
                     for (name, zoom) in [("Fit", 0.), ("50%", 0.5), ("100%", 1.), ("200%", 2.)] {
                         toolbar =
                             toolbar.child(button(name, name, "", self.zoom == zoom).on_click(
@@ -1021,8 +1029,8 @@ impl GitTurtle {
                     div()
                         .size_full()
                         .flex()
-                        .child(self.render_image_side(0, old))
-                        .child(self.render_image_side(1, new))
+                        .child(self.render_image_side(0, old, cx))
+                        .child(self.render_image_side(1, new, cx))
                         .into_any_element()
                 }
                 Content::Notice(message) => empty("File information", message),
@@ -1068,7 +1076,12 @@ impl GitTurtle {
             }))
             .into_any_element()
     }
-    pub(super) fn render_image_side(&self, index: usize, side: &worker::ImageSide) -> AnyElement {
+    pub(super) fn render_image_side(
+        &self,
+        index: usize,
+        side: &worker::ImageSide,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let name = if index == 0 { "BEFORE" } else { "AFTER" };
         let details = side
             .image
@@ -1110,6 +1123,18 @@ impl GitTurtle {
                     .size_full()
                     .overflow_scroll()
                     .track_scroll(&self.image_scroll)
+                    .cursor(if self.image_drag.is_some() {
+                        CursorStyle::ClosedHand
+                    } else {
+                        CursorStyle::OpenHand
+                    })
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                            this.image_drag = Some((event.position, this.image_scroll.offset()));
+                            cx.notify();
+                        }),
+                    )
                     .child(
                         div()
                             .w(px(self
@@ -1256,6 +1281,42 @@ impl Render for GitTurtle {
             .bg(rgb(CANVAS))
             .text_color(rgb(TEXT))
             .text_size(px(13.))
+            // Keep an active image drag continuous across the toolbar, inspector,
+            // and either image viewport until the mouse is released.
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                let Some((start, offset)) = this.image_drag else {
+                    return;
+                };
+                if event.pressed_button != Some(MouseButton::Left) {
+                    if this.image_drag.take().is_some() {
+                        cx.notify();
+                    }
+                    return;
+                }
+                let requested = offset + event.position - start;
+                let maximum = this.image_scroll.max_offset();
+                this.image_scroll.set_offset(point(
+                    requested.x.clamp(-maximum.x, px(0.)),
+                    requested.y.clamp(-maximum.y, px(0.)),
+                ));
+                cx.notify();
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    if this.image_drag.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    if this.image_drag.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
             .on_action(cx.listener(Self::choose_repository))
             .on_action(cx.listener(Self::refresh))
             .on_action(cx.listener(Self::search))

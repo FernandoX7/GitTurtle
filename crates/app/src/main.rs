@@ -144,6 +144,7 @@ struct GitTurtle {
     text_mode: TextMode,
     zoom: f32,
     image_scroll: ScrollHandle,
+    image_drag: Option<(Point<Pixels>, Point<Pixels>)>,
     search: Entity<InputState>,
     nav_search: Entity<InputState>,
     subscriptions: Vec<Subscription>,
@@ -207,6 +208,7 @@ impl GitTurtle {
             text_mode: TextMode::Unified,
             zoom: 0.,
             image_scroll: ScrollHandle::new(),
+            image_drag: None,
             search: search.clone(),
             nav_search: nav_search.clone(),
             subscriptions: vec![],
@@ -332,6 +334,7 @@ impl GitTurtle {
     }
 
     fn clear_preview(&mut self) {
+        self.image_drag = None;
         self.content = None;
         self.patch_editor = None;
         self.patch_view = None;

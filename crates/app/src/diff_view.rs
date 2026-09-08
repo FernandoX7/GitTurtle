@@ -4,15 +4,16 @@
 
 use crate::{BORDER, MINT as ADDED, MUTED, PANEL as BACKGROUND};
 use gpui_kit::{
-    App, AppContext, Bounds, ContentMask, Context, Entity, IntoElement, ParentElement, Pixels,
-    Point, Render, SharedString, Styled, Subscription, TextAlign, TextRun, Window, canvas,
+    App, AppContext, Bounds, ContentMask, Context, Entity, InteractiveElement, IntoElement,
+    ParentElement, Pixels, Point, Render, SharedString, Styled, Subscription, TextAlign, TextRun,
+    Window, canvas,
     component::{
         Theme,
         input::{Editor, EditorState},
     },
     div, fill, point, px, relative, rgb, size,
 };
-use std::{ops::Range, sync::Arc};
+use std::{cell::Cell, ops::Range, rc::Rc, sync::Arc};
 
 const REMOVED: u32 = 0xf29aa2;
 const FONT_SIZE: f32 = 12.;
@@ -23,6 +24,7 @@ pub struct DiffView {
     rows: Arc<[LineNumbers]>,
     column_width: f32,
     viewport: Viewport,
+    pending_scroll: Rc<PendingScroll>,
     _subscription: Subscription,
 }
 
@@ -66,6 +68,7 @@ pub fn new(
             rows,
             column_width,
             viewport,
+            pending_scroll: Rc::default(),
             _subscription: subscription,
         }
     })
@@ -74,7 +77,11 @@ pub fn new(
 impl Render for DiffView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let editor = self.editor.clone();
+        let scroll_editor = self.editor.clone();
+        let pending_scroll = Rc::clone(&self.pending_scroll);
+        let painted_scroll = Rc::clone(&self.pending_scroll);
         let rows = Arc::clone(&self.rows);
+        let row_count = rows.len();
         let column_width = self.column_width;
         let width = column_width * 2.;
         div()
@@ -96,18 +103,78 @@ impl Render for DiffView {
                     .text_size(px(FONT_SIZE)),
             )
             .child(
-                canvas(
-                    |_, _, _| (),
-                    move |bounds, _, window, cx| {
-                        paint_gutter(&editor, &rows, column_width, bounds, window, cx);
-                    },
-                )
-                .absolute()
-                .left_0()
-                .top_0()
-                .w(px(width))
-                .h_full(),
+                div()
+                    .id("diff-line-gutter")
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .w(px(width))
+                    .h_full()
+                    .on_scroll_wheel(move |event, _, cx| {
+                        scroll_editor.update(cx, |state, cx| {
+                            let (Some(line_height), Some(text_bounds)) =
+                                (state.line_height(), state.text_bounds())
+                            else {
+                                return;
+                            };
+                            let delta = event.delta.pixel_delta(line_height);
+                            let old_offset = state.scroll_offset();
+                            // Match Editor's default trailing space; bound the deferred
+                            // scroll before layout, which applies its own final clamp.
+                            let bottom_padding =
+                                (text_bounds.size.height / 2.).max(line_height * 3.);
+                            let content_height = (line_height * row_count as f32 + bottom_padding)
+                                .max(text_bounds.size.height);
+                            let min_y =
+                                (state.input_bounds().size.height - content_height).min(px(0.));
+                            if let Some(next) = pending_scroll.advance(old_offset, delta.y, min_y) {
+                                // The gutter stays fixed horizontally, including when
+                                // a trackpad gesture includes both axes.
+                                state.set_scroll_offset(next, cx);
+                                cx.stop_propagation();
+                            }
+                        });
+                    })
+                    .child(
+                        canvas(
+                            |_, _, _| (),
+                            move |bounds, _, window, cx| {
+                                // Editor has painted and applied its deferred offset.
+                                // Notifications alone do not mark that boundary.
+                                painted_scroll.clear();
+                                paint_gutter(&editor, &rows, column_width, bounds, window, cx);
+                            },
+                        )
+                        .size_full(),
+                    ),
             )
+    }
+}
+
+#[derive(Default)]
+struct PendingScroll(Cell<Option<Point<Pixels>>>);
+
+impl PendingScroll {
+    fn advance(
+        &self,
+        applied: Point<Pixels>,
+        delta_y: Pixels,
+        min_y: Pixels,
+    ) -> Option<Point<Pixels>> {
+        // Editor's public setter defers until layout, so wheel bursts must
+        // accumulate against the pending position instead of the last frame.
+        let previous_y = self.0.get().map_or(applied.y, |offset| offset.y);
+        let next_y = (previous_y + delta_y).clamp(min_y, px(0.));
+        if next_y == previous_y {
+            return None;
+        }
+        let next = point(applied.x, next_y);
+        self.0.set(Some(next));
+        Some(next)
+    }
+
+    fn clear(&self) {
+        self.0.set(None);
     }
 }
 
@@ -331,6 +398,40 @@ mod tests {
 
     fn n(old: Option<u64>, new: Option<u64>) -> LineNumbers {
         LineNumbers { old, new }
+    }
+
+    #[test]
+    fn wheel_burst_accumulates_until_paint_and_can_reverse_to_applied_position() {
+        let pending = PendingScroll::default();
+        // Every event in this burst reads the same last-painted editor offset.
+        let applied = point(px(-40.), px(0.));
+        let min_y = px(-100.);
+        assert_eq!(
+            pending.advance(applied, px(-10.), min_y),
+            Some(point(px(-40.), px(-10.)))
+        );
+        assert_eq!(
+            pending.advance(applied, px(-15.), min_y),
+            Some(point(px(-40.), px(-25.)))
+        );
+        assert_eq!(pending.advance(applied, px(25.), min_y), Some(applied));
+        assert_eq!(
+            pending.advance(applied, px(-1000.), min_y),
+            Some(point(px(-40.), min_y))
+        );
+        assert_eq!(pending.advance(applied, px(-1.), min_y), None);
+        assert_eq!(
+            pending.advance(applied, px(10.), min_y),
+            Some(point(px(-40.), px(-90.)))
+        );
+
+        pending.clear();
+        // A later frame may have a different offset after Editor's own clamp
+        // or another input path. The next gesture starts from that actual state.
+        assert_eq!(
+            pending.advance(point(px(-8.), px(-60.)), px(10.), min_y),
+            Some(point(px(-8.), px(-50.)))
+        );
     }
 
     #[test]
