@@ -2,6 +2,91 @@
 
 This records local validation performed on September 7–8, 2026, with each stage tied to its exercised builds. The design and everyday Git workflow checks extend the historical history/comparison checks. Native interaction was exercised on macOS. Linux is a portability target, not a validated release platform; no CI or notarized distribution is claimed.
 
+## Current validation guidance
+
+The dated records below apply to their named builds, including the behavior and limitations those builds had. They do not establish native or package coverage for subsequent source changes. The [current feature overview](../README.md#current-source-features), [architecture and bounds](architecture.md), and [everyday-work implementation record](everyday-work-plan.md) distinguish implemented behavior from milestone evidence.
+
+For changes to the current workflows, use disposable repositories and local remotes for mutations, and select the relevant checks below. Record the exercised source/build identity and independently inspect Git results; the presence of a control or a passing core fixture does not by itself verify its native interaction.
+
+| Current workflow | Relevant validation |
+| --- | --- |
+| Precise staging and commits | Exercise hunk and changed-line stage/unstage with mixed index/worktree edits; verify unrelated index entries and working bytes. Check whole-file fallback explanations, exact Title/Description bytes, hook/signing failures, and worktree-specific draft retention through navigation and restart. |
+| Conflicts and integration | Inspect base and both named sides, rebase labels, manual and complete-side resolution, external edits, stale-save refusal, and editor handoff. Verify Continue's staged-path review, external operation detection, Abort preservation, and Keep files without losing HEAD/index/worktree state. |
+| Stashes and commit recovery | Inspect staged/unstaged/untracked saved content; restore with and without staged state; confirm the stash survives success and conflict until an explicit Drop. Check amend, eligible Undo, revert/cherry-pick and merge-parent choice, including stale targets, failures, and independent work. |
+| Branches and remotes | Review actual switch/create/integration targets, invalid rename names and destination collisions, tracking/upstream changes, safe deletion, and linked-worktree occupancy. Verify remote configuration separately from explicit fetch/pull/push. |
+| Search and file history | Find a match beyond loaded history, retain pinned scope across ref movement, cancel active work, and continue a bounded scan without claiming exhaustion. Cross file-history page and rename boundaries, inspect deletions/merge parents, and retain query, revision, selection, viewport, and focus through Compare/Back/Settings. |
+| Diff and refresh interactions | Inspect unified and split alignment, Find, copying without padding/gutter text, opposite-side scrolling, and partial selections. Make external file/ref changes, switch focus away and back, and verify coalesced local refresh retains context/drafts while invalidating stale selections. Exercise watcher errors and manual recovery. |
+
+Native checks should also cover narrow/wide layouts, long names, large lists, six themes, both densities, keyboard focus, hover/selection/disabled states, and empty/loading/error states for the affected controls. Existing image and package evidence remains scoped to its dated records. Final combined Rust/dependency gates and package checks follow [the project validation agreement](../AGENTS.md#validation); a docs-only update requires link and diff review, without rebuilding the app.
+
+The [September 8 everyday backend report](benchmarks/2026-09-08-everyday-workflows.md) records release core measurements for status, working previews, search, file history, and changed-file reads with/without renames. Its raw data and fixture checks establish the stated backend observations; they exclude native frames, writes, watcher behavior, and package verification.
+
+## Everyday workflows release review — September 8, 2026
+
+Source `f68bd2070d4c71eec00af02cb7f67b1be107e728` passed workspace tests, strict workspace Clippy, and a release build. The packaged executable has UUID `83F6445B-F09F-3AAC-A138-BA72E7D77CAF` and SHA-256 `672615cd826e9c7001e5ef774c08b90d350ee7d6935857668c336b7e315049b1`; package signature verification passed and its UUID matched the release executable. Native checks used that release on Apple M4 Max with 128 GiB memory and macOS 26.6.2. This is local macOS package evidence, without notarization or Linux validation.
+
+The rich disposable fixture at HEAD `bcf41e2d24ff5582a145be5d34ebbdca774c95b4` contained 653 commits, 91 local branches, 1,043 files in the selected commit, and 996 distinct working changes. All six themes—Midnight, Daylight, Graphite, Tokyo Night, Catppuccin Mocha, and Nord—were inspected in both Comfortable and Compact density at the minimum 1,000 × 680 content size. Full-window screenshots measured 1,000 × 712 including the title bar. Resizing to approximately 1,480 × 980 also exercised History and a Midnight image comparison. Narrow checks concentrated on Split, Find, and the composer; this is not a claim that every workflow was repeated in every theme, density, and wide layout.
+
+| Area | Observed behavior in `f68bd2` |
+| --- | --- |
+| Appearance and navigation | Inspected source colors, selected and hovered rows, focus transitions, disabled network controls when no remote was configured, status icons, and long nested Unicode paths. Find focus returned exactly after Settings and theme changes. |
+| Editor Find | Copying the query while all source text was selected copied the query. The exercised match changed from zero with case sensitivity enabled to one with it disabled. Enter, Shift+Enter, Escape, and Cmd+Shift+F routing worked in the exercised comparison. |
+| Working images | Added/untracked PNGs showed an absent Before side; modified transparent PNGs showed both sides at 100% with synchronized horizontal pan. Fit reset the view, and a deleted PNG showed an absent After side. |
+| Projects | A no-match search and Clear updated immediately. Canceling the native Create picker retained the name and `trunk` branch input. Create produced the empty, clean disposable `native-release-created-20260908` repository with exact `refs/heads/trunk` identity. Clone refused that populated destination without changing it, then cloned a local bare origin into `native-release-cloned-20260908` at `3c0324d5a9bb8bdbf4ddbf4b70934820d159ce47`. |
+| Identity settings | Native Save was exercised for repository-local name `Native Release QA` and email `native-release@example.invalid`. Direct `git config --local` inspection verified both exact values in the cloned fixture. |
+
+The minimum-height review exposed insufficient Working files space beneath the expanded Targets and composer. Density/viewport changes could leave the selected file offscreen, and leaving Repository for Settings or Projects discarded manually resized pane widths. Find highlighting over patch colors and an anonymous Projects clear control also needed correction. These changes are implemented in subsequent source `b20dddb6bdc40ea332872333e2a59db80c0a7b9f`, which passed workspace tests, strict workspace Clippy, and a release build. Its package and focused native checks are recorded below; the `f68bd2` matrix does not itself validate those corrections.
+
+Follow-up direct Git inspection completed the earlier debug branch checks from executable UUID `289AC96C-08CF-3C84-A839-125F76446075`. The native workflow removed only the local `main-native-renamed` branch, set the exact upstream `origin/release/stable`, and edited the origin URL to its intended trailing-slash form. Removing origin then removed its remote-tracking refs and upstream configuration while preserving HEAD `6f07fd3`, stash `64d6…`, and the mixed working changes. These results supplement that earlier debug workflow; they were not repeated as `f68bd2` native branch actions.
+
+### Focused release follow-up
+
+The `b20dddb` package passed signature/plist checks and launched with executable UUID `312A7611-5F59-33E8-9AD7-FFE389CBBFEB`, SHA-256 `5bcf7378e2b388f24d7c4d351684af2266a09a3e7abbadcba6b32828d44986d8`. The release executable and packaged UUID matched. Native checks used only disposable fixtures and the existing local bare remote.
+
+| Area | Observed behavior in `b20dddb` |
+| --- | --- |
+| Scoped recovery | Reverting `a304837` on `qa/scoped-recovery` created `541d9f4` while retaining that scope, its query, and the pinned old result. Restart showed the revert and original commit, excluding the matching unrelated branch commit `0213cb3`. |
+| Stash conflict | Restoring `9891d154` showed “Stash restoration produced conflicts. The stash remains saved.” Full Details retained Git output. Direct inspection verified the same stash OID, the saved untracked note, an unmerged file, and no merge/rebase/cherry-pick/revert operation metadata. |
+| Responsive layout | At minimum size with Targets open, Daylight Compact and Graphite Comfortable kept the selected working file visible with approximately four to five file rows and a multiline Description. Collapsing Targets increased list space. Manual inspector and navigator widths survived Settings/Back and Projects/Back; inspector width also survived History/Compare transitions. |
+| Find and project search | Unified active Find contrast over an added line passed. The accessible Projects “Clear project search” button cleared immediately and retained input focus, verified by typing the next filter without clicking the field. Split still showed intermittent background precedence defects; a subsequent correction is required. |
+| Large branch lists | The menu bounded its alternatives to forty. Searching `component-001` reached an entry beyond that initial list. `review/accessibility` appeared disabled and labeled as occupied by another worktree. The search command was buried beneath the unfiltered list; a subsequent presentation change moves it first. |
+| Local remote workflow | Explicit Fetch changed the clone from zero known commits behind to one; fast-forward Pull reached `4f8112a`. Native staging, Title/Description commit, and Push produced `7cffcf32` in both clone and bare remote. Raw commit bytes exactly preserved the title, blank line, and two-paragraph description. |
+| Divergence and merge | Explicit Fetch showed one local and one upstream commit. Pull refused fast-forward and retained visible Merge/Rebase choices. Prepared Merge named the branches and both differing paths; execution created `3483b47b` with exact parents `10ca8026` and `74c8187c`. Both disjoint files and earlier pushed/pulled files remained, with a clean index/worktree. |
+| Missing image and narrow Projects | A stored LFS pointer displayed its unavailable local object and stated that no download was attempted. At minimum size, the Projects Clone form retained readable fields and its lower action remained reachable by scrolling. |
+| Focus and external changes | With TextEdit active, an external fixture file was created. Returning to GitTurtle exposed that exact new file without manual Refresh; this exercises watcher/focus handling together, not an isolated focus-event latency measurement. |
+
+A complete before/after inventory of the rich fixture verified all 1,236 file/symlink entries, sizes, hashes, and modification times unchanged after these read-only checks, excluding immutable Git objects and access/directory metadata. Direct local-remote verification is retained in the disposable `native-final-remote-evidence.json` record. This pass also found a previous repository's error banner surviving a switch and a fast-forward failure headline dominated by Git's fetch progress. Their fixes, the Split highlight correction, and the branch-search ordering change require a subsequent package/native check; none is counted as verified here.
+
+### Final package verification
+
+Final application source `1eebcb2a54813c3d0c96e77e80d983234e7264ae` includes the native corrections above and the divergent Pull guidance from `d48d940`. Formatting, `cargo test --locked --workspace`, strict all-target workspace Clippy, and `cargo build --release --locked -p gitturtle` passed together on this source. The package was rebuilt with `--no-build` after closing the previous app. Plist and strict ad-hoc signature checks passed; the release and packaged executable UUIDs both equal `C81E4C94-08EB-3283-860E-BE6F84E69616` (arm64). The packaged executable SHA-256 is `01577ad8a2bd7ba162c17840de7fc75bbd9051b70dd9575baecb29b7ed099f2b`.
+
+The exact package launched and passed the focused correction checks:
+
+- Explicit Fetch showed two local and one upstream commit. Pull refused the fast-forward with “Branches have diverged; choose Merge or Rebase to continue.” The branch and merge HEAD `3483b47b` remained unchanged, as did the independent untracked focus-test note. Native invalid Rename retained `bad name` with an example and specific naming guidance, without reaching a write confirmation.
+- The operation error survived Projects/Back to the same repository, cleared when another repository opened, and did not return when the first repository reopened. The current-branch menu placed Find/Create immediately above its forty bounded alternatives.
+- Split Find on an added source line retained readable syntax, a distinct selected background, and an accent underline across all six themes at minimum size. Graphite was also checked before and after wide/minimum resizing. Closing Find restored the complete patch background; Unified Find highlighted both removed and added matches. Settings/theme/density changes retained Find focus, demonstrated by replacing the query without clicking its field. Selected-file visibility and the adaptive composer settled correctly after resizing.
+- Graphite and Comfortable density were restored, Targets remained expanded, and the package returned to the GitTurtle project's History page for passive inspection. The rich fixture's 1,236 protected file/symlink entries retained their recorded sizes, hashes, and modification times after the final checks.
+
+All artwork under `assets/` remains unchanged from the pre-goal `88153ce` revision; the rebuilt package continues to consume the same Icon Composer light/dark/clear sources and embedded turtle artwork. The dated Finder appearance evidence below remains attached to that unchanged artwork. The later documentation commit changes no executable source or dependencies, so it does not require another Rust build or package.
+
+These results complete the requested implementation and relevant local validation. The earlier native workflows and measurements retain their stated build identities and measurement boundaries. Linux, hosting-provider credential interaction, universal binaries, and notarized distribution are not claimed; the configured-helper failure fixtures and local-remote native workflows establish their narrower coverage.
+
+### Everyday release timing
+
+The `f68bd2` package measured twenty callbacks in each of four native selection paths on the rich fixture. [Raw samples, phase boundaries, environment, cache assumptions, and preservation checks](benchmarks/2026-09-08-everyday-native.json) are retained.
+
+| Interaction | Samples | Median | p95 | Maximum |
+| --- | ---: | ---: | ---: | ---: |
+| Commit to changed-file frame | 20 | 21.241 ms | 45.238 ms | 62.794 ms |
+| Immutable file to prepared text-preview frame | 20 | 4.898 ms | 7.428 ms | 13.216 ms |
+| Staged file to prepared working-preview frame | 20 | 21.838 ms | 21.947 ms | 22.043 ms |
+| Unstaged file to prepared working-preview frame | 20 | 23.248 ms | 24.800 ms | 24.838 ms |
+
+The fresh release process opened only the rich fixture. History, immutable-file, staged, and unstaged phases ran in that order with Daylight and Comfortable density. Initial activations were excluded, with no separate warmup series; filesystem caches were not flushed and return immutable selections could use the 32-entry preview cache. Mutable previews bypass that cache. History selection produced zero file-preview frames. No build, test, backend benchmark, or unrelated native interaction ran during the measured phases; other desktop applications remained open and OS load was uncontrolled.
+
+These timings span the input handler to its generation/mode-checked GPUI callback. They exclude input delivery before the handler, OS display presentation, and completed GPU work; working-preview measurements also exclude status refresh and writes. The 1,236 recorded fixture entries retained their kinds, sizes, hashes, and modification times after the phases, with no Git writes during timing. This small uncontrolled sample has no before/after baseline and establishes neither a speed improvement nor a latency guarantee. Watcher, cancellation, write, image, and memory performance are outside these measurements.
+
 ## Native icon appearances — September 8, 2026
 
 Source revision `174a68d` replaces the premasked tile with a layered Icon Composer document: the selected mint turtle on a full-bleed background, with macOS providing the final enclosure. The document was inspected and saved in Icon Composer from Xcode 26.6. Native renders verified [light](../assets/icon-previews/light.png), [dark](../assets/icon-previews/dark.png), [clear light](../assets/icon-previews/clear-light.png), and [clear dark](../assets/icon-previews/clear-dark.png); Mono also supplies tinted appearances. [The provenance record](../assets/app-icon.prompt.json) preserves both the original selection and foreground-extraction prompt.
@@ -99,7 +184,7 @@ The final arm64 macOS package was ad-hoc signed and verified. Its executable UUI
 | --- | --- |
 | History columns | Resized References from 140 to 219 px, then reset the layout; hid Author; set Graph to 415 px and confirmed that width after restarting. Dragging the horizontal scrollbar revealed SHA while keeping header and rows aligned. |
 | Appearance and settings | Exercised Daylight, Graphite, and Midnight, plus Compact and Comfortable density. Saved `trunk` as the default branch and used it for a new project. Repository identity edits updated repository-local configuration. |
-| Project opening and drafts | Opened a repository through its nested `src` folder using the native picker and retained the existing commit draft. Draft retention applies within the running session. |
+| Project opening and drafts | Opened a repository through its nested `src` folder using the native picker and retained the existing commit draft. At this build, draft retention applied within the running session. |
 | Create and first commit | Created an unborn repository on `trunk` and made its initial commit `cc69432`. |
 | Staging and comparisons | Staged and unstaged the same file and verified that selecting its two groups showed the different staged and unstaged content. Image checks exercised Before/After, Fit, 200% zoom, and dragging. |
 | Commit and push | Created commit `b54e318` on `main`, pushed to a local bare remote, and verified that the remote had the same OID. |
@@ -109,7 +194,7 @@ The final arm64 macOS package was ad-hoc signed and verified. Its executable UUI
 | Final Settings focus check | From a working-file preview, Command-, opened Settings. Switching to Graphite and pressing Escape restored the same README unified comparison and file-list focus; the editor remained read-only. |
 | Final commit feedback | Staged and committed `61828ae` with the message “Verify final native workflow.” The result displayed the short OID and summary on one line, cleared the commit message, and showed a clean working state. |
 
-Pull is fast-forward-only and Push does not force-update refs. These network-action checks used local remotes; remote authentication was not validated. Commit drafts are session-only. Linux interaction/builds, notarization, and remote credential flows remain outside this evidence.
+Pull was fast-forward-only and Push did not force-update refs. These network-action checks used local remotes; remote authentication was not validated. Commit drafts were session-only in `55e7f14`. Linux interaction/builds, notarization, and remote credential flows remain outside this evidence.
 
 The final application was also used for passive inspection of `world-of-claudecraft` with 500 commits loaded. Code-area scrolling kept the unified patch and old/new gutter aligned; Back retained the commit, selected file, and search query. Activating an image followed by Escape stayed in History. The final preferences were returned to Midnight, Comfortable density, default columns, and `main` for new repositories.
 
@@ -180,6 +265,8 @@ The generator also creates a linked worktree. It refuses nonempty destinations, 
 
 Initial backend observations, hardware/toolchain details, and the reproducible inspection command are recorded in the [Git service benchmark notes](../crates/git-core/README.md#initial-measurement-september-7-2026). The backend harness measures Git service work. It excludes UI dispatch, queuing, image decode, editor preparation, rendering, and presentation. Filesystem caches were not flushed, so those observations are not cold-disk results.
 
+The later [everyday backend report](benchmarks/2026-09-08-everyday-workflows.md) provides p50/p95/maximum values from two warmups and twenty measured calls per eligible series, with [reproduction instructions](benchmarks/everyday-bench.md). It records current costs without a baseline or speed-improvement claim. The rich fixture's two-page file-history sample retains a continuation; the project staged-preview series is skipped because it had no staged changes. Neither result may be represented as zero latency or exhaustive work that was not performed.
+
 The native app has a separate optional trace:
 
 ```sh
@@ -187,6 +274,8 @@ GITTURTLE_TRACE=1 target/release/gitturtle /path/to/repository
 ```
 
 `gitturtle.commit_files_frame_ms` now measures a History selection through its changed-file list frame. `gitturtle.file_preview_frame_ms` measures an explicit file activation through its prepared comparison frame. History selection does not eagerly prepare a file preview. Returning to History uses retained state without a new Git request. Both metrics start in the application handler and use a generation- and mode-checked GPUI callback; they exclude input delivery before the handler, OS presentation, and completed GPU execution. Superseded interactions emit no sample.
+
+`gitturtle.working_preview_frame_ms` measures working-file activation through the prepared-preview callback. It excludes the preceding status refresh or Git write. Working measurements must identify the staged/unstaged area and stable HEAD/index/worktree content; do not combine them with immutable-history preview samples or backend-only timings.
 
 The earlier `gitturtle.selection_frame_ms` trace, used for the historical measurements below, starts in the application selection handler. For a commit selection, it includes reading the changed-file list and preparing the chosen file preview; a direct file selection starts at that file's handler. The value is emitted at a GPUI frame-completion callback after the current preview is prepared, with a generation check to suppress superseded results. It does not measure input delivery before the handler, OS display presentation, or completed GPU execution. Interactions without a completed preview do not produce this sample.
 
@@ -223,13 +312,16 @@ The initial selection callback took 72.441 ms; that excludes repository discover
 
 Process RSS snapshots were about 142.3 MiB after the outbound traversal and 143.4 MiB after the return. These snapshots exclude GPU memory accounting and do not establish a memory-growth guarantee. The locally packaged app occupies about 30 MiB on disk.
 
-## Known limits and follow-up
+## Current limits and follow-up
 
-- The UI loads 500 commits initially and adds 500 per **Load more**, up to 10,000. It reloads the full prefix and restores the selected commit/preferred file when possible, centering the history selection. It does not retain an incremental history traversal cursor. Search covers loaded commits.
-- Refresh is manual and resolves the selected scope's current tip without fetching. Fetch, fast-forward Pull, and non-force Push require explicit actions; the current native checks use local remotes. Missing preview objects are reported without automatic downloads.
-- Staging is whole-file. Conflict resolution, merge/rebase editing, force push, and submodule management are not provided. Commit drafts survive navigation within a session but are not persisted across restarts.
-- Text uses a unified patch plus Before/After tabs. A separate old/new gutter accompanies unified patches; there is no aligned split view. Parent controls expose the first 128 parents of unusually large merge commits with an explicit count notice. The UI's initial file list omits rename detection, displaying additions and deletions instead.
+- Ordinary history loads 500 commits initially and adds 500 per **Load more**, up to 10,000, by rereading the prefix. Repository-wide search is separate: it pins local tips or selected ancestry, supports cancellation and explicit continuation, and retains up to 10,000 matches or 64 MiB of metadata. Scan, byte, and time stops do not establish exhaustion.
+- Local filesystem and regained-focus events request coalesced read-only refreshes; manual Refresh remains available. Active writes and foreground reads take priority, and failed watchers report a recovery action. No refresh fetches objects. Fetch, fast-forward Pull, and non-force Push require explicit actions; the dated native network checks used local remotes, not a hosting provider's credential flow.
+- Supported text changes allow hunk and changed-line staging/unstaging. Binary, oversized, filtered/normalized, renamed, and mode/type-changing files use whole-file actions; ambiguous missing-final-newline selections require a complete replacement or hunk. Commit Title/Description drafts are persisted per worktree, subject to the bounded preference file.
+- Unified and aligned split diffs coexist with Before/After source tabs. Text previews and manual conflict editors are bounded to 2 MiB and 100,000 lines per side. Parent controls expose the first 128 parents of unusually large merge commits with an explicit count notice. Rename detection uses a 1,000-candidate limit.
+- File history follows first-parent lineage with exact revision paths, rather than every ancestry route through a merge. UI pages contain 100 rows; the core replays the bounded rename-following prefix, which can reach its 32 MiB or 15-second limit on deep pages and require an older anchor.
+- Merge/rebase and conflict resolution support deliberate Continue, Abort, and Keep files actions. Abort refuses independent work it cannot safely preserve; rebase has a stricter dirty-work guard. External interactive rebase message-editor steps require external continuation. Elaborate interactive rewriting, force push, and submodule management remain outside the UI.
+- Stash restore keeps saved work until a separate Drop; prepared recovery actions refuse stale targets. Undo requires a named local tip with one parent and refuses known remote-tracking containment. Local refs cannot establish whether a commit is published on an unfetched remote. See [core recovery semantics and bounds](../crates/git-core/README.md#explicit-everyday-operations).
 - Images use a first-frame preview capped at a 1,600-pixel edge. Zoom percentages refer to that decoded preview; original dimensions and reduced preview dimensions are shown. SVG filters and embedded/external images are explicitly unsupported.
 - Graph preparation allows at most 128 simultaneous lanes, 200,000 edges, and 200,000 parent entries. Above the budget, the UI explains why connections are hidden and shows isolated nodes instead of incomplete ancestry lines.
-- The preview cache is limited to 32 entries and 128 MiB of retained CPU content allocations. UI-held references and GPU resources have separate lifetimes. Active decoder work stops at cooperative checkpoints; input and allocation limits are not a process sandbox or a hard end-to-end deadline.
+- The preview cache is limited to 32 entries and 128 MiB of retained CPU content allocations. UI-held references and GPU resources have separate lifetimes. Search and file history can terminate active Git processes; other reads/decodes retain their individual bounds and cancellation checkpoints. Input/allocation limits are not a process sandbox or a hard end-to-end deadline.
 - Native Linux builds and interactions, Linux packaging, automated CI, and notarized macOS distribution have not been validated or provided.

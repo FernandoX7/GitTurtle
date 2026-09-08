@@ -1,0 +1,422 @@
+{
+  "schema_version": 1,
+  "measurement_date": "2026-09-08",
+  "build": {
+    "revision": "f68bd2070d4c71eec00af02cb7f67b1be107e728",
+    "profile": "release",
+    "package_executable_uuid": "83F6445B-F09F-3AAC-A138-BA72E7D77CAF",
+    "package_executable_sha256": "672615cd826e9c7001e5ef774c08b90d350ee7d6935857668c336b7e315049b1"
+  },
+  "environment": {
+    "hardware_model": "Mac16,5",
+    "chip": "Apple M4 Max",
+    "memory_gib": 128,
+    "available_parallelism": 16,
+    "os": "macOS 26.6.2",
+    "rust": "1.98.0 (88d9e12ae 2026-08-18)",
+    "git": "2.50.1 (Apple Git-155)",
+    "architecture": "aarch64",
+    "theme": "Daylight",
+    "density": "Comfortable"
+  },
+  "fixture": {
+    "label": "rich-working-renames",
+    "head": "bcf41e2d24ff5582a145be5d34ebbdca774c95b4",
+    "commit_count_all": 653,
+    "changed_files_with_renames": 1043,
+    "working_status_entries": 996,
+    "staged_entries": 330,
+    "unstaged_entries": 668,
+    "conflicts": 0,
+    "local_manifest": ".local/rich-native-qa-20260908T172155Z-artifacts/manifest.json"
+  },
+  "trace": {
+    "local_path": ".local/everyday-release-native.trace",
+    "phase_manifest_local_path": ".local/native-release-phases.json",
+    "phase_manifest": {
+      "build": "f68bd20",
+      "history_start_byte": 39,
+      "history_start_time": 1788890525.213344,
+      "history_end_byte": 858,
+      "history_end_time": 1788890565.559638,
+      "file_start_byte": 896,
+      "file_end_byte": 1657,
+      "staged_start_byte": 1699,
+      "staged_end_byte": 2539,
+      "unstaged_start_byte": 2622,
+      "unstaged_end_byte": 3462
+    },
+    "captured_prefix_end_byte_exclusive": 3462,
+    "captured_prefix_sha256": "fde8ed448344589cd79bd3a658d059035023db4a4ecc720e6a940e787b56f52f",
+    "selection_rule": "Only the completed ranges specified by the phase manifest; later trace appends are excluded. Byte offsets are zero-based, start-inclusive and end-exclusive."
+  },
+  "conditions": {
+    "process": "Fresh release app process opened only this rich fixture. History, immutable-file, staged and unstaged phases ran in that order.",
+    "cache": "OS caches were not flushed or otherwise controlled. One retained repository/object reader. Return immutable file selections may use the 32-entry content cache. Staged and unstaged previews bypass that immutable cache. Initial activations and setup callbacks are retained separately and excluded from navigation statistics.",
+    "other_load": "No build, tests, backend benchmark or other native interaction ran during timing except the recorded inputs. Other desktop applications remained open; OS background activity was uncontrolled.",
+    "git_writes": "No Git writes were performed during these measurements.",
+    "sample_policy": "Twenty deliberate inputs and twenty measured callbacks per series; no additional warmup series. Retain every measured outlier."
+  },
+  "series": [
+    {
+      "name": "history",
+      "metric": "gitturtle.commit_files_frame_ms",
+      "trace_range": {
+        "start_byte_inclusive": 39,
+        "end_byte_exclusive": 858,
+        "sha256": "59a4979015325a1b3d9a4c63a578772c242a3d744acc029e8c12f6c951d11263"
+      },
+      "raw_trace": "gitturtle.commit_files_frame_ms=38.690\ngitturtle.commit_files_frame_ms=62.794\ngitturtle.commit_files_frame_ms=21.366\ngitturtle.commit_files_frame_ms=26.868\ngitturtle.commit_files_frame_ms=45.238\ngitturtle.commit_files_frame_ms=21.269\ngitturtle.commit_files_frame_ms=18.863\ngitturtle.commit_files_frame_ms=21.232\ngitturtle.commit_files_frame_ms=20.425\ngitturtle.commit_files_frame_ms=18.289\ngitturtle.commit_files_frame_ms=21.241\ngitturtle.commit_files_frame_ms=28.273\ngitturtle.commit_files_frame_ms=21.290\ngitturtle.commit_files_frame_ms=19.334\ngitturtle.commit_files_frame_ms=20.797\ngitturtle.commit_files_frame_ms=21.014\ngitturtle.commit_files_frame_ms=25.293\ngitturtle.commit_files_frame_ms=20.668\ngitturtle.commit_files_frame_ms=21.706\ngitturtle.commit_files_frame_ms=20.859\ngitturtle.commit_files_frame_ms=23.522\n",
+      "initial_target": "bcf41e2d24ff5582a145be5d34ebbdca774c95b4",
+      "input_sequence": "10 Down then 10 Up in History; return to the initial commit.",
+      "sample_targets_in_order": [
+        "354e5fc1897b5e04ccc5331daaa4022ea96e6200",
+        "e70e945ea3a89bc6e4acbd832a6a45c202b140d6",
+        "c04adbbf1e718161af89b10e483e4afcd3a7f5cf",
+        "c2fb2795ff8d12d44e1c68cbe57be49c8c441c70",
+        "16b04e54d77fa7da96dd53173d3940acc8ed588e",
+        "1451bae8ca8df009268ba64944d6a7e84064c091",
+        "1959dbf96b29a4bb1731f30817cd55e19ec27d56",
+        "4d2a7519c775665ecc4b64e4e1d19b48e3248e9b",
+        "a74774c64e2f8cb31c18c4b09ffce76d5c0286f2",
+        "99aac553addb52e67e8f499278e08d8aa0f31dba",
+        "a74774c64e2f8cb31c18c4b09ffce76d5c0286f2",
+        "4d2a7519c775665ecc4b64e4e1d19b48e3248e9b",
+        "1959dbf96b29a4bb1731f30817cd55e19ec27d56",
+        "1451bae8ca8df009268ba64944d6a7e84064c091",
+        "16b04e54d77fa7da96dd53173d3940acc8ed588e",
+        "c2fb2795ff8d12d44e1c68cbe57be49c8c441c70",
+        "c04adbbf1e718161af89b10e483e4afcd3a7f5cf",
+        "e70e945ea3a89bc6e4acbd832a6a45c202b140d6",
+        "354e5fc1897b5e04ccc5331daaa4022ea96e6200",
+        "bcf41e2d24ff5582a145be5d34ebbdca774c95b4"
+      ],
+      "target_identity_source": "Observed operator sequence; full history OIDs and staged order recovered from passive Git metadata after timing.",
+      "measured_inputs": 20,
+      "completed_callbacks": 20,
+      "excluded_samples": [
+        {
+          "metric": "gitturtle.commit_files_frame_ms",
+          "ms": 38.69,
+          "reason": "Initial click on the already selected HEAD row; excluded from navigation statistics.",
+          "index_in_phase": 0
+        }
+      ],
+      "samples_ms": [
+        62.794,
+        21.366,
+        26.868,
+        45.238,
+        21.269,
+        18.863,
+        21.232,
+        20.425,
+        18.289,
+        21.241,
+        28.273,
+        21.29,
+        19.334,
+        20.797,
+        21.014,
+        25.293,
+        20.668,
+        21.706,
+        20.859,
+        23.522
+      ],
+      "stats": {
+        "n": 20,
+        "p50_ms": 21.241,
+        "p95_ms": 45.238,
+        "max_ms": 62.794
+      },
+      "frame_counts_in_range": {
+        "gitturtle.commit_files_frame_ms": 21,
+        "gitturtle.file_preview_frame_ms": 0,
+        "gitturtle.working_preview_frame_ms": 0
+      }
+    },
+    {
+      "name": "file",
+      "metric": "gitturtle.file_preview_frame_ms",
+      "trace_range": {
+        "start_byte_inclusive": 896,
+        "end_byte_exclusive": 1657,
+        "sha256": "c9c782c0999ea88f1f807a3e4701e0072cab99e7b044ab0af30f5530dde7f54f"
+      },
+      "raw_trace": "gitturtle.file_preview_frame_ms=2.760\ngitturtle.file_preview_frame_ms=4.786\ngitturtle.file_preview_frame_ms=4.772\ngitturtle.file_preview_frame_ms=4.230\ngitturtle.file_preview_frame_ms=4.910\ngitturtle.file_preview_frame_ms=4.629\ngitturtle.file_preview_frame_ms=13.216\ngitturtle.file_preview_frame_ms=4.915\ngitturtle.file_preview_frame_ms=4.787\ngitturtle.file_preview_frame_ms=4.963\ngitturtle.file_preview_frame_ms=4.882\ngitturtle.file_preview_frame_ms=4.898\ngitturtle.file_preview_frame_ms=7.428\ngitturtle.file_preview_frame_ms=4.977\ngitturtle.file_preview_frame_ms=4.969\ngitturtle.file_preview_frame_ms=4.987\ngitturtle.file_preview_frame_ms=4.971\ngitturtle.file_preview_frame_ms=4.982\ngitturtle.file_preview_frame_ms=0.320\ngitturtle.file_preview_frame_ms=0.350\n",
+      "initial_target": "fixtures/review/additions/新增-000-comparison-notes.md",
+      "input_sequence": "10 Down then 10 Up through added text files in unified Diff; return may use immutable preview cache.",
+      "sample_targets_in_order": [
+        "fixtures/review/additions/新增-001-comparison-notes.md",
+        "fixtures/review/additions/新增-002-comparison-notes.md",
+        "fixtures/review/additions/新增-003-comparison-notes.md",
+        "fixtures/review/additions/新增-004-comparison-notes.md",
+        "fixtures/review/additions/新增-005-comparison-notes.md",
+        "fixtures/review/additions/新增-006-comparison-notes.md",
+        "fixtures/review/additions/新增-007-comparison-notes.md",
+        "fixtures/review/additions/新增-008-comparison-notes.md",
+        "fixtures/review/additions/新增-009-comparison-notes.md",
+        "fixtures/review/additions/新增-010-comparison-notes.md",
+        "fixtures/review/additions/新增-009-comparison-notes.md",
+        "fixtures/review/additions/新增-008-comparison-notes.md",
+        "fixtures/review/additions/新增-007-comparison-notes.md",
+        "fixtures/review/additions/新增-006-comparison-notes.md",
+        "fixtures/review/additions/新增-005-comparison-notes.md",
+        "fixtures/review/additions/新增-004-comparison-notes.md",
+        "fixtures/review/additions/新增-003-comparison-notes.md",
+        "fixtures/review/additions/新增-002-comparison-notes.md",
+        "fixtures/review/additions/新增-001-comparison-notes.md",
+        "fixtures/review/additions/新增-000-comparison-notes.md"
+      ],
+      "target_identity_source": "Observed operator sequence; full history OIDs and staged order recovered from passive Git metadata after timing.",
+      "measured_inputs": 20,
+      "completed_callbacks": 20,
+      "excluded_samples": [],
+      "samples_ms": [
+        2.76,
+        4.786,
+        4.772,
+        4.23,
+        4.91,
+        4.629,
+        13.216,
+        4.915,
+        4.787,
+        4.963,
+        4.882,
+        4.898,
+        7.428,
+        4.977,
+        4.969,
+        4.987,
+        4.971,
+        4.982,
+        0.32,
+        0.35
+      ],
+      "stats": {
+        "n": 20,
+        "p50_ms": 4.898,
+        "p95_ms": 7.428,
+        "max_ms": 13.216
+      },
+      "frame_counts_in_range": {
+        "gitturtle.commit_files_frame_ms": 0,
+        "gitturtle.file_preview_frame_ms": 20,
+        "gitturtle.working_preview_frame_ms": 0
+      }
+    },
+    {
+      "name": "staged",
+      "metric": "gitturtle.working_preview_frame_ms",
+      "trace_range": {
+        "start_byte_inclusive": 1699,
+        "end_byte_exclusive": 2539,
+        "sha256": "c4ad30fc9ff499b8f88de75b3f07b968668c992ba64f83b114b3a243dd62123e"
+      },
+      "raw_trace": "gitturtle.working_preview_frame_ms=18.963\ngitturtle.working_preview_frame_ms=20.899\ngitturtle.working_preview_frame_ms=21.128\ngitturtle.working_preview_frame_ms=21.931\ngitturtle.working_preview_frame_ms=19.954\ngitturtle.working_preview_frame_ms=15.657\ngitturtle.working_preview_frame_ms=21.930\ngitturtle.working_preview_frame_ms=21.838\ngitturtle.working_preview_frame_ms=21.918\ngitturtle.working_preview_frame_ms=21.830\ngitturtle.working_preview_frame_ms=21.889\ngitturtle.working_preview_frame_ms=21.905\ngitturtle.working_preview_frame_ms=21.883\ngitturtle.working_preview_frame_ms=21.569\ngitturtle.working_preview_frame_ms=22.043\ngitturtle.working_preview_frame_ms=21.826\ngitturtle.working_preview_frame_ms=21.924\ngitturtle.working_preview_frame_ms=19.090\ngitturtle.working_preview_frame_ms=21.902\ngitturtle.working_preview_frame_ms=21.947\n",
+      "initial_target": "fixtures/review/additions/新增-002-comparison-notes.md",
+      "input_sequence": "10 Down then 10 Up through the first eleven staged text paths in unified Diff; mutable previews bypass the immutable cache.",
+      "sample_targets_in_order": [
+        "fixtures/review/additions/新增-005-comparison-notes.md",
+        "fixtures/review/additions/新增-008-comparison-notes.md",
+        "fixtures/review/additions/新增-011-comparison-notes.md",
+        "fixtures/review/additions/新增-014-comparison-notes.md",
+        "fixtures/review/additions/新增-017-comparison-notes.md",
+        "fixtures/review/additions/新增-020-comparison-notes.md",
+        "fixtures/review/additions/新增-023-comparison-notes.md",
+        "fixtures/review/additions/新增-026-comparison-notes.md",
+        "fixtures/review/additions/新增-029-comparison-notes.md",
+        "fixtures/review/additions/新增-032-comparison-notes.md",
+        "fixtures/review/additions/新增-029-comparison-notes.md",
+        "fixtures/review/additions/新增-026-comparison-notes.md",
+        "fixtures/review/additions/新增-023-comparison-notes.md",
+        "fixtures/review/additions/新增-020-comparison-notes.md",
+        "fixtures/review/additions/新增-017-comparison-notes.md",
+        "fixtures/review/additions/新增-014-comparison-notes.md",
+        "fixtures/review/additions/新增-011-comparison-notes.md",
+        "fixtures/review/additions/新增-008-comparison-notes.md",
+        "fixtures/review/additions/新增-005-comparison-notes.md",
+        "fixtures/review/additions/新增-002-comparison-notes.md"
+      ],
+      "target_identity_source": "Observed operator sequence; full history OIDs and staged order recovered from passive Git metadata after timing.",
+      "measured_inputs": 20,
+      "completed_callbacks": 20,
+      "excluded_samples": [],
+      "samples_ms": [
+        18.963,
+        20.899,
+        21.128,
+        21.931,
+        19.954,
+        15.657,
+        21.93,
+        21.838,
+        21.918,
+        21.83,
+        21.889,
+        21.905,
+        21.883,
+        21.569,
+        22.043,
+        21.826,
+        21.924,
+        19.09,
+        21.902,
+        21.947
+      ],
+      "stats": {
+        "n": 20,
+        "p50_ms": 21.838,
+        "p95_ms": 21.947,
+        "max_ms": 22.043
+      },
+      "frame_counts_in_range": {
+        "gitturtle.commit_files_frame_ms": 0,
+        "gitturtle.file_preview_frame_ms": 0,
+        "gitturtle.working_preview_frame_ms": 20
+      }
+    },
+    {
+      "name": "unstaged",
+      "metric": "gitturtle.working_preview_frame_ms",
+      "trace_range": {
+        "start_byte_inclusive": 2622,
+        "end_byte_exclusive": 3462,
+        "sha256": "034d8ddec1b73cd2883386659ff86dacc77e8efb2669770ed04231263f1eede5"
+      },
+      "raw_trace": "gitturtle.working_preview_frame_ms=24.838\ngitturtle.working_preview_frame_ms=24.755\ngitturtle.working_preview_frame_ms=22.221\ngitturtle.working_preview_frame_ms=24.152\ngitturtle.working_preview_frame_ms=23.851\ngitturtle.working_preview_frame_ms=24.800\ngitturtle.working_preview_frame_ms=19.191\ngitturtle.working_preview_frame_ms=23.051\ngitturtle.working_preview_frame_ms=24.729\ngitturtle.working_preview_frame_ms=20.999\ngitturtle.working_preview_frame_ms=24.220\ngitturtle.working_preview_frame_ms=23.703\ngitturtle.working_preview_frame_ms=24.009\ngitturtle.working_preview_frame_ms=15.518\ngitturtle.working_preview_frame_ms=15.620\ngitturtle.working_preview_frame_ms=18.542\ngitturtle.working_preview_frame_ms=23.248\ngitturtle.working_preview_frame_ms=18.800\ngitturtle.working_preview_frame_ms=20.413\ngitturtle.working_preview_frame_ms=23.477\n",
+      "initial_target": "src/precise-commit-review.ts",
+      "input_sequence": "Ten alternating pairs of the two explicitly selected unstaged text paths, in unified Diff; mutable previews bypass the immutable cache.",
+      "sample_targets_in_order": [
+        "fixtures/review/batch-09/renamed-component-guidance/日本語-über-Δ/0969-long-filename-with-selection-focus-hover-and-disabled-state-review.md",
+        "src/precise-commit-review.ts",
+        "fixtures/review/batch-09/renamed-component-guidance/日本語-über-Δ/0969-long-filename-with-selection-focus-hover-and-disabled-state-review.md",
+        "src/precise-commit-review.ts",
+        "fixtures/review/batch-09/renamed-component-guidance/日本語-über-Δ/0969-long-filename-with-selection-focus-hover-and-disabled-state-review.md",
+        "src/precise-commit-review.ts",
+        "fixtures/review/batch-09/renamed-component-guidance/日本語-über-Δ/0969-long-filename-with-selection-focus-hover-and-disabled-state-review.md",
+        "src/precise-commit-review.ts",
+        "fixtures/review/batch-09/renamed-component-guidance/日本語-über-Δ/0969-long-filename-with-selection-focus-hover-and-disabled-state-review.md",
+        "src/precise-commit-review.ts",
+        "fixtures/review/batch-09/renamed-component-guidance/日本語-über-Δ/0969-long-filename-with-selection-focus-hover-and-disabled-state-review.md",
+        "src/precise-commit-review.ts",
+        "fixtures/review/batch-09/renamed-component-guidance/日本語-über-Δ/0969-long-filename-with-selection-focus-hover-and-disabled-state-review.md",
+        "src/precise-commit-review.ts",
+        "fixtures/review/batch-09/renamed-component-guidance/日本語-über-Δ/0969-long-filename-with-selection-focus-hover-and-disabled-state-review.md",
+        "src/precise-commit-review.ts",
+        "fixtures/review/batch-09/renamed-component-guidance/日本語-über-Δ/0969-long-filename-with-selection-focus-hover-and-disabled-state-review.md",
+        "src/precise-commit-review.ts",
+        "fixtures/review/batch-09/renamed-component-guidance/日本語-über-Δ/0969-long-filename-with-selection-focus-hover-and-disabled-state-review.md",
+        "src/precise-commit-review.ts"
+      ],
+      "target_identity_source": "Observed operator sequence; full history OIDs and staged order recovered from passive Git metadata after timing.",
+      "measured_inputs": 20,
+      "completed_callbacks": 20,
+      "excluded_samples": [],
+      "samples_ms": [
+        24.838,
+        24.755,
+        22.221,
+        24.152,
+        23.851,
+        24.8,
+        19.191,
+        23.051,
+        24.729,
+        20.999,
+        24.22,
+        23.703,
+        24.009,
+        15.518,
+        15.62,
+        18.542,
+        23.248,
+        18.8,
+        20.413,
+        23.477
+      ],
+      "stats": {
+        "n": 20,
+        "p50_ms": 23.248,
+        "p95_ms": 24.8,
+        "max_ms": 24.838
+      },
+      "frame_counts_in_range": {
+        "gitturtle.commit_files_frame_ms": 0,
+        "gitturtle.file_preview_frame_ms": 0,
+        "gitturtle.working_preview_frame_ms": 20
+      }
+    }
+  ],
+  "unmeasured_trace_segments": [
+    {
+      "reason": "Startup before History phase",
+      "start_byte_inclusive": 0,
+      "end_byte_exclusive": 39,
+      "raw_trace": "gitturtle.commit_files_frame_ms=65.682\n",
+      "callbacks": [
+        {
+          "metric": "gitturtle.commit_files_frame_ms",
+          "ms": 65.682
+        }
+      ]
+    },
+    {
+      "reason": "Initial immutable-file activation",
+      "start_byte_inclusive": 858,
+      "end_byte_exclusive": 896,
+      "raw_trace": "gitturtle.file_preview_frame_ms=0.648\n",
+      "callbacks": [
+        {
+          "metric": "gitturtle.file_preview_frame_ms",
+          "ms": 0.648
+        }
+      ]
+    },
+    {
+      "reason": "Initial staged-file activation",
+      "start_byte_inclusive": 1657,
+      "end_byte_exclusive": 1699,
+      "raw_trace": "gitturtle.working_preview_frame_ms=23.921\n",
+      "callbacks": [
+        {
+          "metric": "gitturtle.working_preview_frame_ms",
+          "ms": 23.921
+        }
+      ]
+    },
+    {
+      "reason": "Unstaged preparation before measured alternation",
+      "start_byte_inclusive": 2539,
+      "end_byte_exclusive": 2622,
+      "raw_trace": "gitturtle.working_preview_frame_ms=5.316\ngitturtle.working_preview_frame_ms=25.255\n",
+      "callbacks": [
+        {
+          "metric": "gitturtle.working_preview_frame_ms",
+          "ms": 5.316
+        },
+        {
+          "metric": "gitturtle.working_preview_frame_ms",
+          "ms": 25.255
+        }
+      ]
+    }
+  ],
+  "percentiles": "Nearest rank over each 20-sample measured series; p50 is sorted rank 10, p95 rank 19, maximum rank 20. No measured outliers discarded.",
+  "boundary": "Application selection/activation handler through the generation- and mode-checked GPUI callback after metadata or preview preparation; excludes input delivery before the handler, OS display presentation and completed GPU execution. Working preview frames exclude preceding status refresh or Git writes.",
+  "preservation": {
+    "baseline_local_path": ".local/rich-native-qa-20260908T172155Z-artifacts/state-before-readonly-checks.json",
+    "baseline_sha256": "e7a7521c7a591118d918ef336f620642a4d7fb7e3bb216ce541bf208dd3a918a",
+    "verification": "Post-phase read-only comparison of full path inventory, kind, byte size, SHA-256 and mtime_ns against the baseline. Regular files opened NOFOLLOW; symlinks hashed as stored target text.",
+    "verified_after_native_phases": true,
+    "expected_entries": 1236,
+    "actual_entries": 1236,
+    "regular_files": 1215,
+    "symlinks": 21,
+    "mismatches": [],
+    "excluded": "Immutable .git/objects storage, access times and directory metadata. The check is a before/after observation, not proof of atomic isolation during the run."
+  },
+  "limits": "Small uncontrolled native samples on one local fixture and one macOS host, not a comparative speedup, physical click-to-display measurement, latency guarantee or platform-wide result. No image decoding, writes, watcher latency, cancellation latency or memory-growth measurement."
+}
