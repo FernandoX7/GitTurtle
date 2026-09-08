@@ -341,6 +341,8 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 mod tests {
     use super::*;
 
+    static TEST_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
     struct TestDirectory(PathBuf);
 
     impl TestDirectory {
@@ -349,8 +351,11 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
+            // Concurrent tests can observe the same system-clock timestamp.
+            // A process-local sequence keeps their exclusive roots distinct.
+            let sequence = TEST_DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!(
-                "gitturtle-preferences-{}-{nonce}",
+                "gitturtle-preferences-{}-{nonce}-{sequence}",
                 std::process::id()
             ));
             fs::create_dir(&path).unwrap();

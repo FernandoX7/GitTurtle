@@ -1197,7 +1197,7 @@ impl GitTurtle {
         {
             empty(
                 "Working tree clean",
-                "Everything is up to date locally. Browse History to review your commits.",
+                "Add or edit files in your project, then review and stage them here.",
             )
         } else if file.is_none() {
             empty(

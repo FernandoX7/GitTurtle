@@ -478,6 +478,7 @@ impl ProjectHub {
                                         input.set_value("", window, cx);
                                         input.focus(window, cx);
                                     });
+                                    this.filter_recent(cx);
                                 })))),
                         )
                     })
