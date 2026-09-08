@@ -73,6 +73,23 @@ impl GitTurtle {
         cx.notify();
     }
 
+    fn finish_authentication_prompt(
+        &mut self,
+        prompt_id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.authentication.prompt_id != Some(prompt_id) {
+            return;
+        }
+        self.authentication.prompt_open = false;
+        self.authentication.prompt_id = None;
+        if let Some(focus) = self.authentication.return_focus.take() {
+            focus.focus(window, cx);
+        }
+        cx.notify();
+    }
+
     pub(super) fn operation_progress(&self) -> Option<String> {
         let control = self.authentication.control.as_ref()?;
         if control.is_cancelled() {
@@ -128,9 +145,14 @@ impl GitTurtle {
             let submit_control = submit_control.clone();
             let input = input.clone();
             let submit_input = input.clone();
+            let cancel_input = input.clone();
+            let close_input = input.clone();
             let submitted = Arc::clone(&submitted);
             let closed = Arc::clone(&submitted);
+            let cancel_control = close_control.clone();
             let close_control = close_control.clone();
+            let submit_owner = owner.clone();
+            let cancel_owner = owner.clone();
             let owner = owner.clone();
             let body = div().flex().flex_col().gap_3()
                 .child(div().text_size(px(13.)).child(prompt.message.clone()))
@@ -152,15 +174,27 @@ impl GitTurtle {
                     if !submit_control.answer(prompt_id, Some(response)) { return false; }
                     submitted.store(true, std::sync::atomic::Ordering::Release);
                     submit_input.update(cx, |input, cx| input.set_value("", window, cx));
+                    let _ = submit_owner.update(cx, |this, cx| {
+                        this.finish_authentication_prompt(prompt_id, window, cx);
+                    });
+                    true
+                })
+                // The pinned AlertDialog facade replaces its base button props
+                // while rendering, so its on_close callback can be lost. The
+                // explicit button callbacks also cover Enter and Escape.
+                .on_cancel(move |_, window, cx| {
+                    cancel_control.cancel();
+                    cancel_input.update(cx, |input, cx| input.set_value("", window, cx));
+                    let _ = cancel_owner.update(cx, |this, cx| {
+                        this.finish_authentication_prompt(prompt_id, window, cx);
+                    });
                     true
                 })
                 .on_close(move |_, window, cx| {
                     if !closed.load(std::sync::atomic::Ordering::Acquire) { close_control.cancel(); }
+                    close_input.update(cx, |input, cx| input.set_value("", window, cx));
                     let _ = owner.update(cx, |this, cx| {
-                        this.authentication.prompt_open = false;
-                        this.authentication.prompt_id = None;
-                        if let Some(focus) = this.authentication.return_focus.take() { focus.focus(window, cx); }
-                        cx.notify();
+                        this.finish_authentication_prompt(prompt_id, window, cx);
                     });
                 })
         });
