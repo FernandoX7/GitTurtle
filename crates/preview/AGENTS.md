@@ -11,9 +11,9 @@ These instructions supplement the root agreements for `crates/preview`. Decoder 
 
 ## App icon pipeline
 
-Use the selected project asset as the source for `render_icon`; it accepts the decoder's supported formats and requires square dimensions of at least 1024 pixels. Preserve its alpha. Generate the complete iconset in a disposable output directory, then use macOS `iconutil` to produce `assets/AppIcon.icns`. Keep the selected source in the workspace; app artwork and small monochrome UI marks may have different sources.
+The production app icon uses the layered `assets/AppIcon.icon` source and Xcode 26 or later. Follow the [asset conventions](../../assets/icons/README.md) and [render script](../../scripts/render-app-icon.sh) for static previews, embedded branding, and the fallback ICNS. `render_icon` remains a standalone decoder example that accepts square images of at least 1024 pixels and preserves alpha; it does not produce the native appearance catalog.
 
-The [package script](../../scripts/package-macos.sh) copies the existing ICNS; it does not regenerate it. After an icon change, inspect small and large rendered sizes and verify the packaged icon using the [native QA procedure](../../.agents/skills/gitturtle-native-qa/SKILL.md). Keep artwork regeneration scoped to asset changes.
+The [package script](../../scripts/package-macos.sh) compiles the layered source on every run, including `--no-build`, and ships the generated appearance catalog, fallback ICNS, and icon metadata. After an icon change, inspect small and large rendered sizes and verify the packaged appearances using the [native QA procedure](../../.agents/skills/gitturtle-native-qa/SKILL.md). Keep artwork regeneration scoped to asset changes.
 
 ## Verification
 

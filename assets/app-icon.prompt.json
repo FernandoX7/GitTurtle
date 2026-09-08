@@ -1,7 +1,28 @@
 {
-  "mode": "Built-in image_gen",
-  "source": "assets/app-icon.png",
-  "selection": "First generated turtle, selected by the user on September 8, 2026; original pixels retained.",
-  "sha256": "b40bbffd6d33be3981094f1886e953a114fada7ede83dcaa0393b415bd553209",
-  "prompt": "Use case: logo-brand\nAsset type: production macOS application icon for GitTurtle, a refined native Git client.\nPrimary request: Create one uniquely beautiful, exceptionally simple app icon: a friendly geometric turtle seen from above, its shell subtly incorporating a Git branch with three connected circular nodes in negative space. It must read clearly at 32 pixels.\nStyle/medium: precise polished vector-like geometry rendered as a premium raster icon, crisp curves, understated dimensional shading, minimal detail.\nComposition/framing: square 1024x1024 canvas; one centered rounded-square dark midnight navy icon tile occupying 88% of canvas, softly rounded macOS-style corners, a generous centered mint jade turtle emblem occupying 65% of tile. Clearly recognizable head and four tiny flippers, smooth solid shell. Transparent canvas outside the tile with restrained soft shadow. Clean balanced silhouette.\nColor palette: midnight navy tile (#151D29) and luminous mint jade emblem (#7ADFB4), very subtle teal depth.\nConstraints: exactly one icon; no lettering, no words, no border frame, no mockup, no watermark, no extra symbols, no busy circuits, no tortoise scales; do not imitate any existing app logo. The turtle and branch should form one cohesive symbol. Actual transparent background outside the rounded tile."
+  "mode": "Built-in image_gen foreground extraction, composed with Apple Icon Composer",
+  "source": "assets/AppIcon.icon",
+  "foreground": "assets/AppIcon.icon/Assets/turtle.png",
+  "foreground_sha256": "73262e257f69c3b474ad02356dc42d15e916183c539ebeb2ba5bb9c1e70bb9a1",
+  "rendered_preview": "assets/app-icon.png",
+  "rendered_preview_sha256": "0d11b0a1eb5e6fad7b07402bce8ec0953b678c404344dcd29ddbb98add3d42a9",
+  "selection": "Selected mint turtle identity; inset tile corrected September 8, 2026 with native light, dark, clear-light and clear-dark appearances.",
+  "original_selection": {
+    "revision": "9a2ae28",
+    "mode": "Built-in image_gen",
+    "source": "assets/app-icon.png",
+    "selection": "First generated turtle, selected by the user on September 8, 2026; original pixels retained.",
+    "sha256": "b40bbffd6d33be3981094f1886e953a114fada7ede83dcaa0393b415bd553209",
+    "prompt": "Use case: logo-brand\nAsset type: production macOS application icon for GitTurtle, a refined native Git client.\nPrimary request: Create one uniquely beautiful, exceptionally simple app icon: a friendly geometric turtle seen from above, its shell subtly incorporating a Git branch with three connected circular nodes in negative space. It must read clearly at 32 pixels.\nStyle/medium: precise polished vector-like geometry rendered as a premium raster icon, crisp curves, understated dimensional shading, minimal detail.\nComposition/framing: square 1024x1024 canvas; one centered rounded-square dark midnight navy icon tile occupying 88% of canvas, softly rounded macOS-style corners, a generous centered mint jade turtle emblem occupying 65% of tile. Clearly recognizable head and four tiny flippers, smooth solid shell. Transparent canvas outside the tile with restrained soft shadow. Clean balanced silhouette.\nColor palette: midnight navy tile (#151D29) and luminous mint jade emblem (#7ADFB4), very subtle teal depth.\nConstraints: exactly one icon; no lettering, no words, no border frame, no mockup, no watermark, no extra symbols, no busy circuits, no tortoise scales; do not imitate any existing app logo. The turtle and branch should form one cohesive symbol. Actual transparent background outside the rounded tile."
+  },
+  "prompt": "Extract the existing mint-green GitTurtle emblem from this app icon onto a genuinely transparent background. Return a PNG with a real alpha channel: outside the turtle must be fully transparent pixels, including the branching holes in its shell. Do not draw or simulate transparency with a checkerboard, gray grid, white background, or any other solid background. This is a production foreground asset for Icon Composer, not a preview or mockup. Keep the same turtle artwork, proportions, shading, face, shell pattern and Git cutout. Remove only the navy tile and its shadows. Turtle fully visible and centered, no cropping. Actual transparent PNG, no checkerboard.",
+  "composition": "One turtle foreground at scale 0.65 with -10pt vertical offset over a full-bleed navy gradient. Icon Composer supplies Dark and Mono backgrounds. Glass and specular enabled only in Mono; neutral shadow opacity 0.12.",
+  "renderer": "scripts/render-app-icon.sh",
+  "appearances": [
+    "Default",
+    "Dark",
+    "ClearLight",
+    "ClearDark",
+    "TintedLight",
+    "TintedDark"
+  ]
 }

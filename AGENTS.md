@@ -27,7 +27,7 @@ Read only the guidance and code needed for the task. Changes in a crate require 
 | Git reads and compatibility fixtures | `crates/git-core/src/lib.rs`, `crates/git-core/tests/repository.rs`; [Git service notes](crates/git-core/README.md) |
 | Status, staged/unstaged previews, Git writes and local-remote fixtures | `crates/git-core/src/work.rs`, `crates/git-core/tests/workflow.rs` |
 | Image decoding and limits | `crates/preview/src/lib.rs`; app worker handles render-image conversion |
-| App icon and control artwork | [Asset conventions](assets/icons/README.md), `assets/app-icon.png`, `assets/AppIcon.icns`, `crates/preview/examples/render_icon.rs` |
+| App icon and control artwork | [Asset conventions](assets/icons/README.md), `assets/AppIcon.icon`, `scripts/render-app-icon.sh`, `scripts/package-macos.sh` |
 | Native checks, packaging, timing evidence | [Validation](docs/validation.md), `scripts/package-macos.sh`, `docs/benchmarks/` |
 
 ## Architecture and non-negotiable behavior
@@ -49,7 +49,7 @@ Choose validation for the changed behavior:
 - Rust iteration: `cargo fmt --all -- --check`, `cargo check --locked -p gitturtle`, and relevant tests in `cargo test --locked -p gitturtle`, `-p gitturtle-core`, or `-p gitturtle-preview`; narrow by test name when useful.
 - Final combined Rust/dependency validation, after targeted iteration and integration: `cargo test --locked --workspace` and `cargo clippy --locked --workspace --all-targets -- -D warnings`. Build release for performance or packaged-app changes. Do not repeat a clean run on unchanged code.
 - Guidance/docs-only changes: check links, command/package names, skill frontmatter, and the diff. Do not rebuild the native app or rerun the Rust suite unless a code concern warrants it.
-- Artwork-only changes: verify the selected source and its actual consumers. Rebuild derived icon resources and check the package when affected; an existing release executable can be reused if its source identity is established and Rust/dependencies are unchanged. Embedded control SVG changes require an executable rebuild.
+- Artwork-only changes: verify the selected source and its actual consumers. Rebuild derived icon resources and check the package when affected; an existing release executable can be reused if its source identity is established and Rust/dependencies are unchanged. Embedded control SVG or branding PNG changes require an executable rebuild.
 
 `cargo run --locked -p gitturtle -- /path/to/repository` launches the app. Keep commands current rather than hard-coding historical test counts.
 

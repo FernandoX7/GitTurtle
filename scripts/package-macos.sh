@@ -55,12 +55,23 @@ if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][A-Za-z0-9.-]+)?$ ]]; then
   exit 1
 fi
 
+if ! xcrun --find actool >/dev/null 2>&1; then
+  echo "Xcode 26 or later is required to compile the native icon appearances." >&2
+  exit 1
+fi
+icon_build="$(mktemp -d "${TMPDIR:-/tmp}/gitturtle-icon.XXXXXX")"
+trap 'rm -rf "$icon_build"' EXIT
+xcrun actool "$project_root/assets/AppIcon.icon" \
+  --compile "$icon_build" --platform macosx --minimum-deployment-target 11.0 \
+  --app-icon AppIcon --output-partial-info-plist "$icon_build/icon-info.plist" \
+  --output-format human-readable-text --warnings --notices
+
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
 install -m 755 "$executable" "$bundle/Contents/MacOS/gitturtle"
-# A rebuild must also remove assets retired from the source tree.
+# UI artwork is embedded; ship only the compiled macOS icon resources.
 rm -rf "$bundle/Contents/Resources/assets"
-ditto "$project_root/assets" "$bundle/Contents/Resources/assets"
-install -m 644 "$project_root/assets/AppIcon.icns" "$bundle/Contents/Resources/AppIcon.icns"
+install -m 644 "$icon_build/AppIcon.icns" "$bundle/Contents/Resources/AppIcon.icns"
+install -m 644 "$icon_build/Assets.car" "$bundle/Contents/Resources/Assets.car"
 cat > "$bundle/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -70,7 +81,6 @@ cat > "$bundle/Contents/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key><string>GitTurtle</string>
   <key>CFBundleExecutable</key><string>gitturtle</string>
   <key>CFBundleIdentifier</key><string>com.gitturtle.desktop</string>
-  <key>CFBundleIconFile</key><string>AppIcon.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$version</string>
   <key>CFBundleVersion</key><string>$version</string>
@@ -80,6 +90,7 @@ cat > "$bundle/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+/usr/libexec/PlistBuddy -c "Merge $icon_build/icon-info.plist" "$bundle/Contents/Info.plist"
 plutil -lint "$bundle/Contents/Info.plist"
 codesign --force --deep --sign - "$bundle"
 codesign --verify --deep --strict "$bundle"
