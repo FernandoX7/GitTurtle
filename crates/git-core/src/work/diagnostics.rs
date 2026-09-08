@@ -38,7 +38,7 @@ pub(super) fn guidance(stderr: &[u8], stdout: &[u8], creates_commit: bool) -> Op
         || output.contains("no supported authentication methods")
     {
         Some(
-            "SSH did not accept an available key. Check the remote URL, configured SSH identity and agent, and your repository access. Unlock or load the intended key outside GitTurtle, then explicitly retry.",
+            "SSH did not accept an available key. Check the remote URL, configured SSH identity and agent, and your repository access. Respond to the configured agent or passphrase prompt, or load the intended key with ssh-add; macOS SSH can use Keychain when configured with UseKeychain and AddKeysToAgent. Then explicitly retry.",
         )
     } else if output.contains("credential-")
         && (output.contains("not a git command")
@@ -57,7 +57,7 @@ pub(super) fn guidance(stderr: &[u8], stdout: &[u8], creates_commit: bool) -> Op
         || output.contains("http 403")
     {
         Some(
-            "Check the remote URL and your access, then sign in through your configured Git credential helper outside GitTurtle. This app does not open terminal credential prompts. Once credentials are available, explicitly retry the operation.",
+            "Credentials may be expired or lack repository access. Check the remote URL and account permissions, then sign in with your configured Git credential helper (for example Git Credential Manager or macOS osxkeychain). GitTurtle can prompt when Git requests a username, token, or passphrase during an explicit operation. Refresh or remove only the expired credential through your helper, then explicitly retry.",
         )
     } else if output.contains("failed to sign")
         || output.contains("signing failed")
@@ -65,7 +65,7 @@ pub(super) fn guidance(stderr: &[u8], stdout: &[u8], creates_commit: bool) -> Op
         || output.contains("could not open a connection to your authentication agent")
     {
         Some(
-            "Git could not use the configured signing identity. Check user.signingkey, gpg.format and the configured signing program; unlock the intended key or agent outside GitTurtle. Signing remains enabled. Review the current staged work before explicitly retrying.",
+            "Git could not use the configured signing identity. Check user.signingkey, gpg.format and the configured signing program; unlock the intended key or agent outside GitTurtle. Signing remains enabled. Complete the configured signing program or pinentry prompt, then review the current staged work or tag before explicitly retrying.",
         )
     } else if output.contains("conflict") || output.contains("fix conflicts") {
         Some(

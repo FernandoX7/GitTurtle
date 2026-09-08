@@ -436,7 +436,8 @@ fn clone_fetch_fast_forward_pull_and_non_force_push_use_local_remote() {
         diagnostic.starts_with("Branches have diverged; choose Merge or Rebase to continue."),
         "{diagnostic}"
     );
-    assert!(diagnostic.contains("Git stderr:\nFrom "), "{diagnostic}");
+    assert!(diagnostic.contains("Git stderr:\n"), "{diagnostic}");
+    assert!(diagnostic.contains("\nFrom "), "{diagnostic}");
     assert!(
         diagnostic.contains("fatal: Not possible to fast-forward, aborting."),
         "{diagnostic}"

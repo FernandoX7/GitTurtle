@@ -6,7 +6,16 @@ mod integration;
 pub use integration::*;
 mod branches;
 pub use branches::*;
+mod authentication;
 mod diagnostics;
+pub use authentication::{
+    AuthenticationPrompt, OperationControl, redact_diagnostic, run_askpass_if_requested,
+    run_controlled,
+};
+mod tags;
+pub use tags::*;
+mod ignore;
+pub use ignore::*;
 mod recovery;
 pub use recovery::*;
 
@@ -143,6 +152,8 @@ struct PartialEdit {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WriteCommand {
+    Tag(Arc<TagCommand>),
+    Ignore(Arc<IgnorePlan>),
     Recovery(Arc<RecoveryCommand>),
     Branch(Arc<BranchCommand>),
     Integration(IntegrationCommand),
@@ -570,11 +581,19 @@ impl GitRepository {
     /// Must be called from the application's serialized explicit-operation worker.
     /// Never place this in a replaceable preview queue or automatically retry it.
     pub fn execute(&self, operation: &WriteCommand) -> Result<WriteOutcome> {
+        let mut outcome = self.execute_inner(operation)?;
+        outcome.message = authentication::redact_current(&outcome.message);
+        Ok(outcome)
+    }
+
+    fn execute_inner(&self, operation: &WriteCommand) -> Result<WriteOutcome> {
         ensure!(!self.bare, "Open a working copy to perform Git operations");
         let mut command = normal_command(&self.path);
         let mut input = None;
         let mut timeout = WRITE_TIMEOUT;
         match operation {
+            WriteCommand::Tag(command) => return self.execute_tag(command),
+            WriteCommand::Ignore(plan) => return self.execute_ignore(plan),
             WriteCommand::Recovery(command) => return self.execute_recovery(command),
             WriteCommand::Branch(command) => return self.execute_branch(command),
             WriteCommand::Integration(command) => return self.execute_integration(command),
@@ -671,6 +690,7 @@ impl GitRepository {
                 configure_network(&mut command, self)?;
                 command.args([
                     "fetch",
+                    "--progress",
                     "--no-recurse-submodules",
                     "--no-prune",
                     "--",
@@ -690,6 +710,7 @@ impl GitRepository {
                 configure_network(&mut command, self)?;
                 command.args([
                     "pull",
+                    "--progress",
                     "--ff-only",
                     "--no-rebase",
                     "--no-autostash",
@@ -734,6 +755,7 @@ impl GitRepository {
                     "-c",
                     "push.followTags=false",
                     "push",
+                    "--progress",
                     "--porcelain",
                     "--no-force",
                     "--no-force-with-lease",
@@ -809,6 +831,7 @@ impl GitRepository {
             "Enter a Git URL or local repository path"
         );
         ensure!(source.len() <= 16 * 1024, "Repository address is too long");
+        authentication::validate_clone_address(source)?;
         // ext transport runs arbitrary commands. Native Git's usual SSH/HTTPS,
         // file, and git transports remain available only on this explicit action.
         ensure!(
@@ -820,11 +843,21 @@ impl GitRepository {
             .parent()
             .context("Choose a destination inside an existing folder")?;
         let mut command = normal_command(parent);
+        authentication::configure_askpass(
+            &mut command,
+            normal_config_at(parent, "core.askPass")?.is_some(),
+        )?;
         if normal_config_at(parent, "core.sshCommand")?.is_none() {
             configure_default_network(&mut command);
         }
         command
-            .args(["clone", "--no-recurse-submodules", "--", source])
+            .args([
+                "clone",
+                "--progress",
+                "--no-recurse-submodules",
+                "--",
+                source,
+            ])
             .arg(&destination);
         checked_write_output(command, None, NETWORK_TIMEOUT)?;
         Self::open(destination)
@@ -1491,13 +1524,10 @@ fn normal_command(path: &Path) -> Command {
         .arg("-C")
         .arg(path)
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GCM_INTERACTIVE", "Never")
         .env("GIT_NO_LAZY_FETCH", "1")
-        .env("GIT_ASKPASS", "/usr/bin/false")
-        .env("SSH_ASKPASS", "/usr/bin/false")
-        .env("SSH_ASKPASS_REQUIRE", "force")
         .env("LC_ALL", "C")
         .stdin(Stdio::null());
+    authentication::configure_environment(&mut command);
     // Preserve identity, hooks, signing, filters, credential helpers, SSH settings,
     // includes, and normal system/global config, but never an inherited target.
     for key in [
@@ -1526,11 +1556,16 @@ fn configure_default_network(command: &mut Command) {
         // Configured core.sshCommand is checked by repository-aware caller.
         command.env(
             "GIT_SSH_COMMAND",
-            "ssh -o BatchMode=yes -o ConnectTimeout=15",
+            if authentication::is_controlled() {
+                "ssh -o ConnectTimeout=15"
+            } else {
+                "ssh -o BatchMode=yes -o ConnectTimeout=15"
+            },
         );
     }
 }
 fn configure_network(command: &mut Command, repo: &GitRepository) -> Result<()> {
+    authentication::configure_askpass(command, repo.normal_config("core.askPass")?.is_some())?;
     if repo.normal_config("core.sshCommand")?.is_none() {
         configure_default_network(command);
     }
@@ -1545,14 +1580,14 @@ fn checked_write_output(
     let creates_commit = command.get_args().any(|arg| {
         matches!(
             arg.to_str(),
-            Some("commit" | "merge" | "rebase" | "cherry-pick" | "revert")
+            Some("commit" | "merge" | "rebase" | "cherry-pick" | "revert" | "tag")
         )
     });
     let fast_forward_pull = command.get_args().any(|arg| arg == "pull")
         && command.get_args().any(|arg| arg == "--ff-only");
     let output = bounded_write_output(command, input, timeout)?;
-    let stderr = text(&output.stderr);
-    let stdout = text(&output.stdout);
+    let stderr = authentication::redact_current(&text(&output.stderr));
+    let stdout = authentication::redact_current(&text(&output.stdout));
     if !output.status.success()
         && let Some(headline) =
             diagnostics::pull_refusal_headline(&output.stderr, &output.stdout, fast_forward_pull)
@@ -1578,6 +1613,13 @@ fn checked_write_output(
     Ok(output)
 }
 
+#[cfg(unix)]
+fn make_pipe_nonblocking(pipe: &impl std::os::fd::AsFd) -> Result<()> {
+    let flags = rustix::fs::fcntl_getfl(pipe)?;
+    rustix::fs::fcntl_setfl(pipe, flags | rustix::fs::OFlags::NONBLOCK)?;
+    Ok(())
+}
+
 /// Drain pipes concurrently, retaining bounded output. Observe pipe completion as
 /// well as child exit so hooks/SSH descendants cannot hold the UI operation open.
 fn bounded_write_output(
@@ -1585,6 +1627,10 @@ fn bounded_write_output(
     input: Option<Vec<u8>>,
     timeout: Duration,
 ) -> Result<Output> {
+    let control = authentication::current_control();
+    if control.as_ref().is_some_and(OperationControl::is_cancelled) {
+        bail!("Git operation cancelled before starting. It was not retried.");
+    }
     isolate_process_group(&mut command);
     if input.is_some() {
         command.stdin(Stdio::piped());
@@ -1594,15 +1640,48 @@ fn bounded_write_output(
         .stderr(Stdio::piped())
         .spawn()
         .context("Unable to start Git; install Git and ensure it is on PATH")?;
-    let read = |mut pipe: Box<dyn Read + Send>| {
+    let stdout_pipe = child.stdout.take().expect("piped Git stdout");
+    let stderr_pipe = child.stderr.take().expect("piped Git stderr");
+    let stdin_pipe = child.stdin.take();
+    // A helper can create a new session and retain our pipe descriptors. Killing
+    // Git's process group then cannot close those descriptors. Nonblocking I/O
+    // lets every owned reader/writer observe shutdown and be joined promptly.
+    #[cfg(unix)]
+    if let Err(error) = (|| -> Result<()> {
+        make_pipe_nonblocking(&stdout_pipe)?;
+        make_pipe_nonblocking(&stderr_pipe)?;
+        if let Some(pipe) = &stdin_pipe {
+            make_pipe_nonblocking(pipe)?;
+        }
+        Ok(())
+    })() {
+        terminate_process_group(&child);
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error.context("Unable to configure bounded Git pipe I/O"));
+    }
+    let io_stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let read = |mut pipe: Box<dyn Read + Send>, progress: Option<OperationControl>| {
+        let stopped = Arc::clone(&io_stopped);
         thread::spawn(move || -> std::io::Result<(Vec<u8>, bool)> {
             let mut bytes = Vec::new();
             let mut overflow = false;
             let mut chunk = [0u8; 8192];
-            loop {
-                let count = pipe.read(&mut chunk)?;
+            while !stopped.load(std::sync::atomic::Ordering::Acquire) {
+                let count = match pipe.read(&mut chunk) {
+                    Ok(count) => count,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(2));
+                        continue;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) => return Err(error),
+                };
                 if count == 0 {
                     break;
+                }
+                if let Some(control) = &progress {
+                    control.update_progress(&chunk[..count]);
                 }
                 let keep = count.min(WRITE_OUTPUT_LIMIT.saturating_sub(bytes.len()));
                 bytes.extend_from_slice(&chunk[..keep]);
@@ -1611,11 +1690,27 @@ fn bounded_write_output(
             Ok((bytes, overflow))
         })
     };
-    let stdout = read(Box::new(child.stdout.take().context("Missing Git stdout")?));
-    let stderr = read(Box::new(child.stderr.take().context("Missing Git stderr")?));
+    let stdout = read(Box::new(stdout_pipe), None);
+    let stderr = read(Box::new(stderr_pipe), control.clone());
     let stdin = input.map(|bytes| {
-        let mut pipe = child.stdin.take().expect("piped stdin");
-        thread::spawn(move || pipe.write_all(&bytes))
+        let mut pipe = stdin_pipe.expect("piped Git stdin");
+        let stopped = Arc::clone(&io_stopped);
+        thread::spawn(move || -> std::io::Result<()> {
+            let mut written = 0;
+            while written < bytes.len() && !stopped.load(std::sync::atomic::Ordering::Acquire) {
+                let end = (written + 8192).min(bytes.len());
+                match pipe.write(&bytes[written..end]) {
+                    Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+                    Ok(count) => written += count,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(2))
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok(())
+        })
     });
     let start = Instant::now();
     let mut status = None;
@@ -1637,6 +1732,12 @@ fn bounded_write_output(
         {
             break;
         }
+        if control.as_ref().is_some_and(OperationControl::is_cancelled) {
+            failure = Some(anyhow::anyhow!(
+                "Git operation cancelled. Its result may have applied partially or remotely; inspect local state and explicitly check the remote before retrying. It was not retried."
+            ));
+            break;
+        }
         if start.elapsed() >= timeout {
             failure = Some(anyhow::anyhow!(
                 "Git operation exceeded its {} second time limit. Its result may have applied partially or remotely; refresh and inspect before retrying. It was not retried.",
@@ -1647,6 +1748,7 @@ fn bounded_write_output(
         thread::sleep(Duration::from_millis(2));
     }
     if failure.is_some() {
+        io_stopped.store(true, std::sync::atomic::Ordering::Release);
         terminate_process_group(&child);
         let _ = child.kill();
         let _ = child.wait();
@@ -1675,7 +1777,11 @@ fn bounded_write_output(
 }
 
 #[cfg(unix)]
-fn read_worktree_file(root: &Path, path: &Path, expected_mode: &str) -> Result<(String, Vec<u8>)> {
+pub(super) fn read_worktree_file(
+    root: &Path,
+    path: &Path,
+    expected_mode: &str,
+) -> Result<(String, Vec<u8>)> {
     use rustix::fs::{Mode, OFlags, open, openat, readlinkat};
     use std::os::unix::fs::PermissionsExt;
     validate_path(path)?;
@@ -1736,7 +1842,7 @@ fn read_worktree_file(root: &Path, path: &Path, expected_mode: &str) -> Result<(
     ))
 }
 #[cfg(not(unix))]
-fn read_worktree_file(
+pub(super) fn read_worktree_file(
     _root: &Path,
     _path: &Path,
     _expected_mode: &str,

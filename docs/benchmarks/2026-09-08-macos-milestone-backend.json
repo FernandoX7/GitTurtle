@@ -1,0 +1,453 @@
+{
+  "schema": 1,
+  "measured_at_utc": "2026-09-08T19:56:05Z",
+  "elapsed_seconds": 13.429221868515015,
+  "boundary": "Synchronous Git-core API return; excludes result validation/destruction, UI queueing, application presentation, native frame/display, and fixture setup",
+  "source": {
+    "head": "5e9a0de260412ace4a29a335cc22832e8f992f64",
+    "dirty_status": "M crates/app/AGENTS.md\n M crates/app/src/automatic_refresh.rs\n M crates/app/src/branch_actions.rs\n M crates/app/src/file_history.rs\n M crates/app/src/history_search.rs\n M crates/app/src/main.rs\n M crates/app/src/operations.rs\n M crates/app/src/preferences.rs\n M crates/app/src/recovery.rs\n M crates/app/src/settings.rs\n M crates/app/src/views.rs\n M crates/app/src/worker.rs\n M crates/app/src/workspace.rs\n M crates/git-core/README.md\n M crates/git-core/src/history.rs\n M crates/git-core/src/lib.rs\n M crates/git-core/src/work.rs\n M crates/git-core/src/work/diagnostics.rs\n M crates/git-core/tests/workflow.rs\n M docs/architecture.md\n M docs/design.md\n M docs/macos-milestone.md\n?? .github/workflows/quality.yml\n?? crates/app/src/authentication.rs\n?? crates/app/src/blame.rs\n?? crates/app/src/ignore.rs\n?? crates/app/src/image_compare.rs\n?? crates/app/src/platform_polish.rs\n?? crates/app/src/tags.rs\n?? crates/git-core/examples/macos_bench.rs\n?? crates/git-core/src/blame.rs\n?? crates/git-core/src/work/authentication.rs\n?? crates/git-core/src/work/ignore.rs\n?? crates/git-core/src/work/tags.rs\n?? crates/git-core/tests/authentication.rs\n?? crates/git-core/tests/blame.rs\n?? crates/git-core/tests/tags_ignore.rs\n?? docs/authentication.md\n?? docs/evidence/macos-milestone/glass-prototype-obscured-toolbar.png\n?? docs/experiments/native-glass-prototype.rs\n?? docs/liquid-glass-investigation.md\n?? docs/macos-features.md\n?? docs/macos-git-actions.md",
+    "files": {
+      "Cargo.toml": "ed7f94d82948fc8029f607445eeada3085d8087e510e876f698ae9ef369354cc",
+      "Cargo.lock": "5c0301bd941fb2ec03f1502c5dad129441c6c30e6845939bef0f47ec54532e6d",
+      "crates/git-core/Cargo.toml": "9c20b84ab0495e86518ffe36806cbd4bcb4ec1b4eddd53344ca2876d8160d8ca",
+      "crates/git-core/examples/macos_bench.rs": "2ca69a7abbd6f288456c80bba651fa5f506fd4ff686350633a7a1a8c8b31e1fc",
+      "crates/git-core/src/blame.rs": "0ece0e9ec09b59c845cf5295223d976d0959d5df094f86fde7abd8ce5613191b",
+      "crates/git-core/src/history.rs": "bd59d86cd308a1c0e4dc1db2f0714c10b6830cb3f47d1d5c7db0d4032c1834a3",
+      "crates/git-core/src/lib.rs": "9d0ab10a1b881777b1d9794a478e82a451c7a7754c86882d8c8ef95d5bbf91b3",
+      "crates/git-core/src/work/authentication.rs": "9f7e6c1621c88cb136e7e47904a9888c4e7900daedffe8a2ae2adedc1a910635",
+      "crates/git-core/src/work/branches.rs": "11643034e0681bc551301762da5f40db26652e9d5272b7179bedb76b10afec10",
+      "crates/git-core/src/work/diagnostics.rs": "8522775a5928ff6ba3a2335af65c0f2ac452ca10e982343c49b7c4cb960d3aec",
+      "crates/git-core/src/work/ignore.rs": "d22cd83fd12bc67b499d6c394c991efdceb2efdd8f522514ed092bf8fef48555",
+      "crates/git-core/src/work/integration.rs": "0eda911b059bc24d5d7572e66a7617582a3356b32f2abded3425030c7cb1e2a9",
+      "crates/git-core/src/work/recovery.rs": "259b332c1bd7f12037f360bf796ccd853816f9282642cb107897386a9ec96844",
+      "crates/git-core/src/work/tags.rs": "9e9b3f53b7853c1d57a807bcb5b8f8b2f9d3e54dab243933efb97def65276a1f",
+      "crates/git-core/src/work.rs": "e47470e45abaa78844869f7d11ce1035ab73c55832ad49a15c6d8ab8b9fecf83"
+    },
+    "combined_source_sha256": "6890b7e2892109b68b813bd001d3b1bc564d582c30ef3dc562170c0ae44e7464"
+  },
+  "source_unchanged_during_build_and_measurement": true,
+  "build": {
+    "command": "cargo build --locked --release -p gitturtle-core --example macos_bench",
+    "start_unix": 1788897365.142526,
+    "end_unix": 1788897365.29374,
+    "binary_sha256": "2250bc1de2a8fa7e89f1a73d52f2d9cf26e5bf8db207c2b695f559782ab9545a",
+    "profile": "release",
+    "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+    "git": "git version 2.50.1 (Apple Git-155)"
+  },
+  "hardware": {
+    "model": "Mac16,5",
+    "cpu": "Apple M4 Max",
+    "memory_bytes": 137438953472,
+    "logical_processors": 16,
+    "os": "ProductName:\t\tmacOS\nProductVersion:\t\t26.6.2\nBuildVersion:\t\t25G83",
+    "architecture": "arm64"
+  },
+  "load_before": {
+    "load_average": [
+      13.224609375,
+      13.24365234375,
+      14.01611328125
+    ],
+    "top_cpu_processes": [
+      {
+        "cpu_percent": 109.9,
+        "executable": "mediaanalysisd"
+      },
+      {
+        "cpu_percent": 101.9,
+        "executable": "node"
+      },
+      {
+        "cpu_percent": 100.5,
+        "executable": "node"
+      },
+      {
+        "cpu_percent": 99.7,
+        "executable": "node"
+      },
+      {
+        "cpu_percent": 98.5,
+        "executable": "node"
+      },
+      {
+        "cpu_percent": 98.5,
+        "executable": "node"
+      },
+      {
+        "cpu_percent": 98.3,
+        "executable": "node"
+      },
+      {
+        "cpu_percent": 97.6,
+        "executable": "node"
+      }
+    ]
+  },
+  "load_after": {
+    "load_average": [
+      13.1064453125,
+      13.21484375,
+      13.99169921875
+    ],
+    "top_cpu_processes": [
+      {
+        "cpu_percent": 144.7,
+        "executable": "mediaanalysisd"
+      },
+      {
+        "cpu_percent": 102.7,
+        "executable": "node"
+      },
+      {
+        "cpu_percent": 101.1,
+        "executable": "node"
+      },
+      {
+        "cpu_percent": 100.5,
+        "executable": "node"
+      },
+      {
+        "cpu_percent": 100.5,
+        "executable": "node"
+      },
+      {
+        "cpu_percent": 100.4,
+        "executable": "node"
+      },
+      {
+        "cpu_percent": 99.7,
+        "executable": "node"
+      },
+      {
+        "cpu_percent": 99.3,
+        "executable": "node"
+      }
+    ]
+  },
+  "fixture": {
+    "repository": "/private/tmp/milestone-backend-q1znnpjf/work",
+    "head": "d104b0b6027aa72c94a3619b464a5d0ce2f44e0d",
+    "commits": 129,
+    "tracked_files": 303,
+    "tags": 384,
+    "annotated_tags": 128,
+    "selected_committed_path": "src/renamed.rs",
+    "previous_path": "src/original.rs",
+    "rename_commit": "fd620d7ca244d283718df689cc468a6e10447478",
+    "selected_line": 64,
+    "committed_lines": 512,
+    "working_lines": 516,
+    "untracked_selected_path": "scratch/cache[1].tmp",
+    "status_porcelain": "1 M. N... 100644 100644 100644 842bb52b72377799cafc3bf00d9d9c7c2357fe40 9616ff1a4c47d7a3b2aa04ee60e6b32990bc59d3 files/group-00/item-000.txt\n1 M. N... 100644 100644 100644 778e4fccf8b8095823a9bb1b59a60f74d7754f56 fbe8a3ce46343915db6f710f9643507f595f851a files/group-00/item-001.txt\n1 M. N... 100644 100644 100644 1c92a22e45a17be38c3eb05c8ee25982c77e15f9 cdfb5ded629a02c16039ff6fd794c16f3be21667 files/group-00/item-002.txt\n1 M. N... 100644 100644 100644 3bae854d1a4dfaa34672c17e98ecfeec79ccf341 ada6200a44599be141f9e8aae833114112f15662 files/group-00/item-003.txt\n1 M. N... 100644 100644 100644 5e927dd4aa28ac7eee3baed1fa8037187456419a cb86c03fd7da270aef0ccff12e0a76b66f89ea94 files/group-00/item-004.txt\n1 M. N... 100644 100644 100644 6eb7a7d456032146fca469a14cf43115e72d55ca ada6a73dfd870560aacd8f68349c13770af5f192 files/group-00/item-005.txt\n1 M. N... 100644 100644 100644 d8829f64d3938179b47aa4b1fb1a504a94c9cc70 d3890f5a291d3cc64e8640c2c26084259c844878 files/group-00/item-006.txt\n1 M. N... 100644 100644 100644 5f6fd346aa1f692dcb31e75440f79dfa3a8fddf2 19c00b4b5d6d9a7ad7729d223583a79abadcad0b files/group-00/item-007.txt\n1 M. N... 100644 100644 100644 244057eac160c816599fb52aea00a9149640f0b9 4e5cbad9fec51c020c91ecced183a292486bb4a4 files/group-00/item-008.txt\n1 M. N... 100644 100644 100644 b02115a32fde967bbbc7b3eca5d14196193d0ac0 f8a65860c7c6cfd75d72756aace49ce1dfb99287 files/group-00/item-009.txt\n1 M. N... 100644 100644 100644 418e079d69936bab094baa97291b42dc112b1d72 5c0c73cf84c4cbfe00ba94038cfa868d13b9440f files/group-00/item-010.txt\n1 M. N... 100644 100644 100644 4915bdf7d47e8f572b97309bcd375dd4956b4720 849bc3f69f6f4d0b091ab3610d75bc7d3584c240 files/group-00/item-011.txt\n1 M. N... 100644 100644 100644 d376ca6f4e5930de90680db574b0f5df80bf349c 27b8388495a89a9eef9871ac8e9c183288610ac1 files/group-00/item-012.txt\n1 M. N... 100644 100644 100644 6b261ed9a645ff4b40d8cb82f5d1ccdc7592c3b2 ae554eb7531be84870b4120be15bb5a9766cd988 files/group-00/item-013.txt\n1 M. N... 100644 100644 100644 296511cd56348f34a1147994197c304da00ea0b0 7b719b823d98578efe6195851bfab415a9517994 files/group-00/item-014.txt\n1 MM N... 100644 100644 100644 7c5f173d148d36c83d5c51ab3eac4529d445fc84 26ee3a25f29baf249bf139c1ac4bbed29f85a479 files/group-00/item-015.txt\n1 MM N... 100644 100644 100644 c87373451391f54f541855f0020d1de09c3b0172 d04b5992a9d0771f534de8ed445e2feb0375bc22 files/group-00/item-016.txt\n1 MM N... 100644 100644 100644 6842c53609218518c115ffd0020cd6f7920b3a1a 207e83064d0881688fb003c516e7eab571102081 files/group-00/item-017.txt\n1 MM N... 100644 100644 100644 bdb81b2f62b14f7a90d4ddb41021599840c4075f 2d27fc780ca42b536536b3149a14193cff471371 files/group-00/item-018.txt\n1 MM N... 100644 100644 100644 4d8b097148e07f59d3046230a786ab3f37c5c133 b9b4e195cafd4514694411d5e7b65f5d7359cc9a files/group-00/item-019.txt\n1 MM N... 100644 100644 100644 733debd8c50c8cd76f142fa92c3dd3f5d82cc16a 889e1c326c2cbe6007c3e1fcabf2a5797437257d files/group-00/item-020.txt\n1 MM N... 100644 100644 100644 c82afc98648864f0dd26475424da4e9fb5b4a2c8 1b0f7a189394313483200c5b47e056c1f0966261 files/group-00/item-021.txt\n1 MM N... 100644 100644 100644 b943464e566ab3aa6bc92dbb9f777e94d3890a63 0cba90b71939dd4698b513eabe151bc337f9f400 files/group-00/item-022.txt\n1 MM N... 100644 100644 100644 f60a877d99266125d800ef17f7715a60cf063cec 132a66096d40084bc9e700d871d72962bfab2e18 files/group-00/item-023.txt\n1 MM N... 100644 100644 100644 f549b890a08f80a96b0b2c4dd427a8277efbdc5c aae749eee8dec792039021eb50895ca50c5e5a70 files/group-00/item-024.txt\n1 MM N... 100644 100644 100644 506fca3ec130a0468d77059214b3877e3d28f1c3 c8e9d7cc39379e6f04c0f0c65f52f91482b703e5 files/group-00/item-025.txt\n1 MM N... 100644 100644 100644 8e12757abb58a9d94335804e1e204487f9c0cab2 e387a86104d897b96dcf8cf5ff2e9e6da54ac6e3 files/group-00/item-026.txt\n1 MM N... 100644 100644 100644 1eeec89dae8fbaf9432169c90e94b2792c91ac5f bc627a4cc08db3d8c10638724d347e8c42d83ae1 files/group-00/item-027.txt\n1 MM N... 100644 100644 100644 bc28fc9219c57e609383737d2177954674439d53 f999ea53b334d3b533e7a71cf7e55f5ee9fda50c files/group-00/item-028.txt\n1 MM N... 100644 100644 100644 9cd4619842b9338ecebfd41b00feac7529005d61 97e26443f67523dfb228d7b0ad21064dd3c0f7bd files/group-00/item-029.txt\n1 .M N... 100644 100644 100644 22c482a304645ec0860f19b5f7d8e03f195016f0 22c482a304645ec0860f19b5f7d8e03f195016f0 files/group-01/item-030.txt\n1 .M N... 100644 100644 100644 73b100f54ef33499293cf926a71f8826b0dfbabc 73b100f54ef33499293cf926a71f8826b0dfbabc files/group-01/item-031.txt\n1 .M N... 100644 100644 100644 899e247f62f14eadbc5a21d70d378261204d7d8c 899e247f62f14eadbc5a21d70d378261204d7d8c files/group-01/item-032.txt\n1 .M N... 100644 100644 100644 eb1486541c52f0b9c4bb91def57dc44cd6c62d8c eb1486541c52f0b9c4bb91def57dc44cd6c62d8c files/group-01/item-033.txt\n1 .M N... 100644 100644 100644 a90a396dc60acdf60840620572eef533bf16369f a90a396dc60acdf60840620572eef533bf16369f files/group-01/item-034.txt\n1 .M N... 100644 100644 100644 165810a9657f5b32e8eb7dc451555cb14f297639 165810a9657f5b32e8eb7dc451555cb14f297639 files/group-01/item-035.txt\n1 .M N... 100644 100644 100644 b46bd90613ac092649857294585a5f5750ed7988 b46bd90613ac092649857294585a5f5750ed7988 files/group-01/item-036.txt\n1 .M N... 100644 100644 100644 1be1f71b4e49856ea043113e69c6a970fb721f0a 1be1f71b4e49856ea043113e69c6a970fb721f0a files/group-01/item-037.txt\n1 .M N... 100644 100644 100644 8560ff9976afc290e422859dce80162f17f5f8ce 8560ff9976afc290e422859dce80162f17f5f8ce files/group-01/item-038.txt\n1 .M N... 100644 100644 100644 b3a25d63f745cee9b96ae8494ef82bbbb733d838 b3a25d63f745cee9b96ae8494ef82bbbb733d838 files/group-01/item-039.txt\n1 .M N... 100644 100644 100644 93050f66722ca2ffb610450b60f3546fde2f355c 93050f66722ca2ffb610450b60f3546fde2f355c files/group-01/item-040.txt\n1 .M N... 100644 100644 100644 86548570e77e74afc6729ccdedd40f3c0667c97d 86548570e77e74afc6729ccdedd40f3c0667c97d files/group-01/item-041.txt\n1 .M N... 100644 100644 100644 b23d3803aa23c3cd07d7343d9c78a15b0e5f7304 b23d3803aa23c3cd07d7343d9c78a15b0e5f7304 files/group-01/item-042.txt\n1 .M N... 100644 100644 100644 a6f8495f81f28c5d30d80c0efc2f183074cf6f8d a6f8495f81f28c5d30d80c0efc2f183074cf6f8d files/group-01/item-043.txt\n1 .M N... 100644 100644 100644 10550fcce57a4ba97eea58f80fca51834513b92b 10550fcce57a4ba97eea58f80fca51834513b92b files/group-01/item-044.txt\n1 .M N... 100644 100644 100644 a53375ab2d3a2137ac1f1e9ab3eb133cd9d5ad16 a53375ab2d3a2137ac1f1e9ab3eb133cd9d5ad16 files/group-01/item-045.txt\n1 .M N... 100644 100644 100644 27d17889da08bc99afee630762a210440857a374 27d17889da08bc99afee630762a210440857a374 files/group-01/item-046.txt\n1 .M N... 100644 100644 100644 619578195adae5d15108c329d0f4630e45ffb7dd 619578195adae5d15108c329d0f4630e45ffb7dd files/group-01/item-047.txt\n1 .M N... 100644 100644 100644 2b4d02cd61ceac765bd738dc756b7bd490deb161 2b4d02cd61ceac765bd738dc756b7bd490deb161 files/group-01/item-048.txt\n1 .M N... 100644 100644 100644 93d826b377a29a7c824d74024ea330bcc7a56dc7 93d826b377a29a7c824d74024ea330bcc7a56dc7 files/group-01/item-049.txt\n1 .M N... 100644 100644 100644 9d3b04e408e48614923927b148adcce3724cba8f 9d3b04e408e48614923927b148adcce3724cba8f files/group-01/item-050.txt\n1 .M N... 100644 100644 100644 6131dc8d95797d8f5444ae9de99ec369b5957451 6131dc8d95797d8f5444ae9de99ec369b5957451 files/group-01/item-051.txt\n1 .M N... 100644 100644 100644 6c762822ee1e4dbeb546d9e496831f7a5e703fde 6c762822ee1e4dbeb546d9e496831f7a5e703fde files/group-01/item-052.txt\n1 .M N... 100644 100644 100644 bbfc4d0b7c4a5bf4a6f838c0690ca6d32930f591 bbfc4d0b7c4a5bf4a6f838c0690ca6d32930f591 files/group-01/item-053.txt\n1 .M N... 100644 100644 100644 3bfcfbbbdfb3c514a794822f90bdc413d3e5cf60 3bfcfbbbdfb3c514a794822f90bdc413d3e5cf60 files/group-01/item-054.txt\n1 .M N... 100644 100644 100644 6c1a97a2b10a39388dd69a7ba31d534e3be46549 6c1a97a2b10a39388dd69a7ba31d534e3be46549 files/group-01/item-055.txt\n1 .M N... 100644 100644 100644 21863f7f923a6eeec45b92d858a4058f3257d05b 21863f7f923a6eeec45b92d858a4058f3257d05b files/group-01/item-056.txt\n1 .M N... 100644 100644 100644 e2077634e3569020cee7eab9ef653ecd9aa575a7 e2077634e3569020cee7eab9ef653ecd9aa575a7 files/group-01/item-057.txt\n1 .M N... 100644 100644 100644 7c9b147e80c1d8c43866d1f633a1c7a0e6f28adb 7c9b147e80c1d8c43866d1f633a1c7a0e6f28adb files/group-01/item-058.txt\n1 .M N... 100644 100644 100644 25a06cf660e572ca46a1dfb9e17c0d54153d2b89 25a06cf660e572ca46a1dfb9e17c0d54153d2b89 files/group-01/item-059.txt\n1 MM N... 100644 100644 100644 0fc9402a4b985051f3703eb985cc49017900ebea 57af346a5c48fccb9599556f73bdfcaa615d72d7 src/renamed.rs\n? scratch/cache[0].tmp\n? scratch/cache[10].tmp\n? scratch/cache[11].tmp\n? scratch/cache[12].tmp\n? scratch/cache[13].tmp\n? scratch/cache[14].tmp\n? scratch/cache[15].tmp\n? scratch/cache[16].tmp\n? scratch/cache[17].tmp\n? scratch/cache[18].tmp\n? scratch/cache[19].tmp\n? scratch/cache[1].tmp\n? scratch/cache[20].tmp\n? scratch/cache[21].tmp\n? scratch/cache[22].tmp\n? scratch/cache[23].tmp\n? scratch/cache[24].tmp\n? scratch/cache[25].tmp\n? scratch/cache[26].tmp\n? scratch/cache[27].tmp\n? scratch/cache[28].tmp\n? scratch/cache[29].tmp\n? scratch/cache[2].tmp\n? scratch/cache[3].tmp\n? scratch/cache[4].tmp\n? scratch/cache[5].tmp\n? scratch/cache[6].tmp\n? scratch/cache[7].tmp\n? scratch/cache[8].tmp\n? scratch/cache[9].tmp",
+    "index_sha256": "8c4d8784c3e3b9287853327edda064fcd92c89f2f61dbdef8b3d82d9f46ca5a0",
+    "working_sha256": "4ec70a8d528d7b4ddcc7f783cc34a575747697f5ec87cf03d010f6ef6129d316",
+    "generator_sha256": "ea6f2c39275c84cee0d697762daac6ad579d65258295fbfad9e1507c6622d981"
+  },
+  "fixture_generator_python": "from pathlib import Path\nimport hashlib, json, os, subprocess, tempfile\nbase = Path(tempfile.mkdtemp(prefix='milestone-backend-', dir='/tmp')).resolve()\nrepo = base / 'work'\nrepo.mkdir()\ndef git(*args, date=None):\n    env = os.environ.copy()\n    env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=str(base / 'no-global-config'))\n    if date:\n        env.update(GIT_AUTHOR_DATE=date, GIT_COMMITTER_DATE=date)\n    return subprocess.run(['git', '-C', str(repo), *map(str, args)], env=env, check=True, capture_output=True, text=True).stdout.strip()\ngit('init', '-b', 'main')\nfor key, value in [('user.name', 'Milestone fixture'), ('user.email', 'fixture@example.invalid'), ('commit.gpgsign', 'false'), ('tag.gpgSign', 'false'), ('core.hooksPath', '.git/hooks'), ('core.autocrlf', 'false')]:\n    git('config', key, value)\n(repo / 'src').mkdir()\nlines = [f'pub const VALUE_{i:03}: usize = {i};\\n' for i in range(512)]\ntracked = Path('src/original.rs')\n(repo / tracked).write_text(''.join(lines))\nfor i in range(300):\n    file = repo / f'files/group-{i//30:02}/item-{i:03}.txt'\n    file.parent.mkdir(parents=True, exist_ok=True)\n    file.write_text(f'Baseline {i}\\n')\n(repo / 'scratch').mkdir()\n(repo / 'scratch/keep.txt').write_text('Tracked neighbor stays tracked\\n')\n(repo / '.gitignore').write_bytes(b'# Shared fixture rules\\r\\nignored-existing/\\r\\n')\ngit('add', '--all')\ngit('commit', '-m', 'Fixture baseline', date='2026-09-01T00:00:00+00:00')\ncommits = [git('rev-parse', 'HEAD')]\nfor n in range(1, 129):\n    if n == 64:\n        new = Path('src/renamed.rs')\n        git('mv', tracked, new)\n        tracked = new\n    selected = 63 if n % 2 == 0 else (n * 37) % 512\n    lines[selected] = f'pub const VALUE_{selected:03}: usize = {1000+n};\\n'\n    (repo / tracked).write_text(''.join(lines))\n    git('add', tracked)\n    git('commit', '-m', f'Fixture revision {n:03}', date=f'2026-09-01T00:{n//60:02}:{n%60:02}+00:00')\n    commits.append(git('rev-parse', 'HEAD'))\nfor n in range(256):\n    git('tag', f'fixture/light-{n:03}', commits[n % len(commits)])\nfor n in range(128):\n    git('tag', '-a', f'fixture/annotated-{n:03}', commits[n % len(commits)], '-m', f'Fixture annotated tag {n:03}', date='2026-09-02T00:00:00+00:00')\nlines[15] = 'pub const VALUE_015: usize = 9000;\\n'\n(repo / tracked).write_text(''.join(lines))\ngit('add', tracked)\nlines[31] = 'pub const VALUE_031: usize = 9001;\\n'\n(repo / tracked).write_text(''.join(lines) + '// Local addition one\\n// Local addition two\\n// Local addition three\\n// Local addition four\\n')\nfor n in range(60):\n    file = Path(f'files/group-{n//30:02}/item-{n:03}.txt')\n    (repo / file).write_text(f'Staged candidate {n}\\n')\n    if n < 30:\n        git('add', file)\n    if 15 <= n < 45:\n        (repo / file).write_text(f'Further working edit {n}\\n')\nfor n in range(30):\n    (repo / f'scratch/cache[{n}].tmp').write_text(f'Untracked {n}\\n')\nmanifest = {'repository': str(repo), 'head': commits[-1], 'commits': len(commits), 'tracked_files': len(git('ls-files').splitlines()), 'tags': 384, 'annotated_tags': 128, 'selected_committed_path': str(tracked), 'previous_path': 'src/original.rs', 'rename_commit': commits[64], 'selected_line': 64, 'committed_lines': 512, 'working_lines': 516, 'untracked_selected_path': 'scratch/cache[1].tmp', 'status_porcelain': git('status', '--porcelain=v2', '--untracked-files=all'), 'index_sha256': hashlib.sha256((repo / '.git/index').read_bytes()).hexdigest(), 'working_sha256': hashlib.sha256((repo / tracked).read_bytes()).hexdigest(), 'generator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}\n(base / 'fixture.json').write_text(json.dumps(manifest, indent=2) + '\\n')\nprint(base)\n",
+  "fixture_preservation": {
+    "entries": 2005,
+    "regular_files": 1729,
+    "directories": 276,
+    "symlinks": 0,
+    "before_sha256": "cc1ce7f5e67f85982b06cb9f1f26067b7167d38e5e39f9cad9c232ae79e9f11c",
+    "after_sha256": "cc1ce7f5e67f85982b06cb9f1f26067b7167d38e5e39f9cad9c232ae79e9f11c",
+    "changed_entries": [],
+    "scope": "Every fixture worktree and Git metadata/object entry; file kind, mode, exact bytes, mtime; ignores access time"
+  },
+  "cache_conditions": "One retained GitRepository/object reader; no app cache; filesystem caches not flushed; fixture generation, preflight status and full before snapshot warm filesystem caches; three untimed warmups per series",
+  "percentiles": "Median averages sorted ranks12 and13; nearest-rank p95 is rank23; maximum rank24; all measured values retained",
+  "series": [
+    {
+      "name": "committed_blame",
+      "warmup_ms": [
+        91.321833,
+        72.368125,
+        71.2445
+      ],
+      "samples_ms": [
+        71.389625,
+        71.64175,
+        73.951291,
+        72.074,
+        72.470791,
+        72.46275,
+        71.664958,
+        70.666083,
+        69.304625,
+        71.862458,
+        80.996,
+        73.985667,
+        79.22125,
+        72.210833,
+        71.5775,
+        71.337542,
+        71.686875,
+        72.041667,
+        72.596959,
+        72.5865,
+        73.596209,
+        76.155583,
+        73.484333,
+        72.217833
+      ],
+      "count": 24,
+      "median_ms": 72.214333,
+      "p95_ms": 79.22125,
+      "max_ms": 80.996,
+      "result": "lines=512;uncommitted=0;sha256=0a973b03325f7b39510dce942a41cfe39a366a0bed17ac2c8ba8c31f3d9e8d66",
+      "result_stable": true
+    },
+    {
+      "name": "working_blame",
+      "warmup_ms": [
+        132.666542,
+        132.195833,
+        139.875708
+      ],
+      "samples_ms": [
+        129.430458,
+        128.897667,
+        131.320417,
+        129.657417,
+        128.788208,
+        132.826958,
+        128.285667,
+        128.618209,
+        127.650792,
+        147.245125,
+        175.961458,
+        141.182458,
+        127.53625,
+        128.419458,
+        144.431833,
+        129.39425,
+        130.158959,
+        129.817667,
+        131.911041,
+        128.950666,
+        136.566709,
+        128.564458,
+        130.108084,
+        129.140125
+      ],
+      "count": 24,
+      "median_ms": 129.5439375,
+      "p95_ms": 147.245125,
+      "max_ms": 175.961458,
+      "result": "lines=516;uncommitted=6;sha256=a8ff0b73cb7062e28a47c21c5b188c366568db44398e0b2a423edac8ab7d68f0",
+      "result_stable": true
+    },
+    {
+      "name": "line_history",
+      "warmup_ms": [
+        52.643917,
+        51.059833,
+        52.347416
+      ],
+      "samples_ms": [
+        54.602083,
+        51.999625,
+        52.93925,
+        54.044292,
+        52.210583,
+        53.262667,
+        50.430333,
+        51.168458,
+        51.119791,
+        51.210292,
+        52.618167,
+        51.643083,
+        51.153959,
+        52.660083,
+        54.215084,
+        54.599417,
+        53.31725,
+        52.034583,
+        52.18875,
+        52.604167,
+        52.928667,
+        52.112208,
+        53.435167,
+        68.33275
+      ],
+      "count": 24,
+      "median_ms": 52.611166999999995,
+      "p95_ms": 54.602083,
+      "max_ms": 68.33275,
+      "result": "commits=65;truncated=false;sha256=11da230cc64519d29388907b74b6a0eed0e56cf4cf2908bbbc81b190aab8b8bd",
+      "result_stable": true
+    },
+    {
+      "name": "tag_list",
+      "warmup_ms": [
+        36.424375,
+        31.335666,
+        32.308583
+      ],
+      "samples_ms": [
+        32.560291,
+        52.967167,
+        49.644541,
+        32.655875,
+        33.789125,
+        33.362084,
+        32.537208,
+        32.479875,
+        32.266833,
+        31.266125,
+        31.604458,
+        32.271334,
+        31.2385,
+        32.619583,
+        33.164333,
+        31.4585,
+        35.129583,
+        32.627375,
+        32.627459,
+        32.715834,
+        31.319709,
+        33.931583,
+        33.509792,
+        32.594792
+      ],
+      "count": 24,
+      "median_ms": 32.623479,
+      "p95_ms": 49.644541,
+      "max_ms": 52.967167,
+      "result": "tags=384;annotated=128;truncated=false;sha256=2057d5fbf956470cbc60b99ab70a2bc7d1054b10dd5285627a18ef09d6e6bec5",
+      "result_stable": true
+    },
+    {
+      "name": "status",
+      "warmup_ms": [
+        43.145958,
+        43.032833,
+        44.229708
+      ],
+      "samples_ms": [
+        44.799042,
+        42.775125,
+        42.958417,
+        43.497166,
+        45.7835,
+        50.837,
+        49.705917,
+        50.050834,
+        46.781834,
+        44.799541,
+        43.02525,
+        42.50325,
+        42.897291,
+        42.836083,
+        42.758292,
+        42.831417,
+        43.356292,
+        45.2535,
+        42.839125,
+        44.176375,
+        43.03625,
+        44.008375,
+        42.940792,
+        43.274541
+      ],
+      "count": 24,
+      "median_ms": 43.3154165,
+      "p95_ms": 50.050834,
+      "max_ms": 50.837,
+      "result": "entries=91;sha256=4bae607f13eeebab1f867fc017a1a1d04d29b0185193bca36b4159d599814d1b",
+      "result_stable": true
+    },
+    {
+      "name": "ignore_file_shared_plan",
+      "warmup_ms": [
+        56.670875,
+        62.137167,
+        58.279667
+      ],
+      "samples_ms": [
+        57.885625,
+        57.614375,
+        56.765125,
+        57.029834,
+        56.4015,
+        57.078875,
+        58.371875,
+        57.173125,
+        57.846,
+        58.1435,
+        56.32375,
+        57.48375,
+        55.708583,
+        57.370292,
+        56.82325,
+        57.943375,
+        55.968708,
+        56.659166,
+        58.287459,
+        57.87425,
+        57.953333,
+        58.958167,
+        56.46825,
+        58.939625
+      ],
+      "count": 24,
+      "median_ms": 57.427020999999996,
+      "p95_ms": 58.939625,
+      "max_ms": 58.958167,
+      "result": "rule_bytes=23;tracked_paths=0;sha256=9874dcb062e67bb88f07422aecc0da52c6e2085b05f6499050b3a97a81da0fb1",
+      "result_stable": true
+    },
+    {
+      "name": "ignore_directory_local_plan",
+      "warmup_ms": [
+        83.537917,
+        83.457625,
+        85.250417
+      ],
+      "samples_ms": [
+        98.052125,
+        87.635417,
+        86.290375,
+        89.658916,
+        84.461458,
+        83.430375,
+        85.431542,
+        85.228417,
+        83.540542,
+        83.684416,
+        83.606125,
+        83.9555,
+        84.051958,
+        85.015125,
+        84.689,
+        85.160958,
+        87.521125,
+        84.512,
+        85.982166,
+        84.63125,
+        83.891542,
+        82.68025,
+        85.1275,
+        84.798416
+      ],
+      "count": 24,
+      "median_ms": 84.743708,
+      "p95_ms": 89.658916,
+      "max_ms": 98.052125,
+      "result": "rule_bytes=9;tracked_paths=1;sha256=288c33161b293b7b1fa919e94fe7e1c4ef299a7783b4d455c4ee449b35a1844c",
+      "result_stable": true
+    }
+  ],
+  "collection_runner_sha256": "bf14e8ff721044ab94924425c044463232b74c83d9ccfa66f5ffdfb823d04b9b",
+  "aborted_attempt": {
+    "included_in_statistics": false,
+    "fixture_location": ".local/milestone-backend-yp4u8jmz/work",
+    "result": "Terminated incomplete run after an openat stall during ignore preparation; no timings from it contribute to the completed report.",
+    "observed_stack": "macos_bench::measure<IgnorePlan> -> GitRepository::ignore_plan -> read_ignore_snapshot -> ignore_directory -> openat; object-reader worker idle",
+    "observed_descriptor": "The open traversal directory descriptor referenced /Users/fernando.",
+    "diagnosis": "Consistent with macOS Documents-folder access mediation for the standalone harness. Not a proven Git/object-reader deadlock: identical core and harness code completed using the /private/tmp fixture.",
+    "stack_sample_local": ".local/macos-backend-stall.txt",
+    "effects": "Only the stalled harness was terminated; its cat-file child exited. Fresh fixture used for completed run."
+  }
+}

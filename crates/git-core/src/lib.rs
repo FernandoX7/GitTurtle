@@ -5,8 +5,10 @@
 //! Clones share a persistent `cat-file` process; its lock only protects the wire
 //! protocol. Repository operations themselves do not take that lock.
 
+mod blame;
 mod history;
 mod work;
+pub use blame::*;
 pub use history::*;
 pub use work::*;
 

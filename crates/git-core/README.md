@@ -39,11 +39,11 @@ Text working previews can include a `PartialDiff` snapshot for explicit hunk or 
 
 `stash_create_plan` captures the included tracked/index work and optional untracked files; raw bytes, modes, index and path-list changes invalidate the plan. Ignored files remain outside the saved work. `stash_list` returns bounded pages whose entries carry a full bounded reflog identity. `stash_snapshot` compares separate base, index, worktree, and optional untracked trees. Apply validates the selected entry, optionally restores staged state, and always keeps the stash on success, conflict, or failure. Drop is a separate explicit command; changes anywhere in the captured stash reflog invalidate it, even when another entry has the same object ID, name, and timestamp. Shared stash storage does not change the selected worktree for create or apply.
 
-`GitRepository::init` and `clone_repository` accept only a fresh or empty destination in an existing parent folder. They preserve an occupied destination and do not remove partially created files after failure. Clone does not recurse into submodules. Explicit network operations use configured remotes, Git credentials and SSH configuration with terminal/askpass prompting disabled. Default SSH uses BatchMode and a connection timeout; custom SSH commands and credential/signing helpers remain subject to the operation deadline. Interactive authentication setup is performed outside this client; no credentials are stored by the core. Executable `ext` transport is disabled.
+`GitRepository::init` and `clone_repository` accept only a fresh or empty destination in an existing parent folder. They preserve an occupied destination and do not remove partially created files after failure. Clone does not recurse into submodules. Explicit network operations run with `OperationControl` through `run_controlled`: configured credential helpers (including macOS osxkeychain), SSH agents and external prompt programs remain available. When no askpass is configured, the app supplies a transient native username/token/passphrase or verified-host prompt over a private local socket. No credential is saved by GitTurtle; configured helpers retain their normal storage policy. Default SSH has a connection timeout; custom SSH, helpers and signing remain bounded by the operation deadline. Headless core calls without a control remain noninteractive. Clone refuses credential-bearing HTTP URLs. Executable `ext` transport is disabled. See [authentication behavior and fixtures](../../docs/authentication.md).
 
-Every write runs once with bounded input/output. A timeout terminates and reaps its process group and reports that local or remote effects may already have happened. There is no automatic retry. The UI must refresh after success **or** failure and let the user inspect the result before another action. Configured hooks and filters are executable user configuration, and their own side effects are not transactional.
+Every write runs once with bounded input/output. An explicit Cancel or timeout terminates and reaps its process group and reports that local or remote effects may already have happened. There is no automatic retry. The UI must refresh after success **or** failure and let the user inspect the result before another action. Configured hooks and filters are executable user configuration, and their own side effects are not transactional.
 
-Failure reports preserve Git's output and supplement recognized SSH, host verification, credential-helper, authentication, signing, conflict and divergence failures with next steps. Generic commit failures direct users to inspect configured hooks, identity and signing without asserting which failed. Guidance never changes configuration or disables verification. Disposable configured-SSH and local HTTP challenge fixtures cover this reporting; they do not verify a real hosting provider's sign-in flow.
+Failure reports redact URL credentials, query parameters, known prompt secrets and credential/header assignments from Git's output, then supplement recognized SSH, host verification, credential-helper, authentication, signing, conflict and divergence failures with next steps. Generic commit failures direct users to inspect configured hooks, identity and signing without asserting which failed. Guidance never changes configuration or disables verification. Disposable configured-SSH and local HTTP challenge fixtures cover this reporting; they do not verify a real hosting provider's sign-in flow.
 
 Primary references: [porcelain status](https://git-scm.com/docs/git-status), [staged restore](https://git-scm.com/docs/git-restore), [cached removal](https://git-scm.com/docs/git-rm), [commit and hooks](https://git-scm.com/docs/git-commit), [fast-forward-only pull](https://git-scm.com/docs/git-pull), [explicit push refspecs](https://git-scm.com/docs/git-push).
 
@@ -98,3 +98,42 @@ Hardware: Apple M4 Max; macOS 26.6.2; Apple Git 2.50.1; Rust 1.98.0; release pro
 Sample A: open 25.06 ms; branch/worktree reads 112.20 ms; 500-commit history 59.72 ms. Sample B ran while the native workspace was compiling: open 92.91 ms; branch/worktree reads 222.28 ms; history 164.22 ms; combined maximum 131.47 ms. System load was not controlled or quantitatively sampled, so these are observations, not a controlled comparison or a performance guarantee.
 
 The harness excludes input dispatch, the UI queue, rendering, image decode, syntax highlighting, and frame presentation. The combined metric covers backend file-list and text-preview work only. Native interaction latency and memory behavior require separate app measurements. Replacing the per-selection `rev-list` subprocess with raw commit reads removed one process startup; later work can investigate the remaining `diff-tree` subprocess only if integrated measurements justify it.
+
+### Tags and contextual ignore
+
+`tags` reads at most 10,000 local tag records and reports the boundary; `tag_details`
+loads a selected annotation up to 256 KiB. Lightweight tags identify their direct
+object; annotated tags expose their tag object, target type/ID, tagger, and original
+annotation/signature text. Discovery never fetches missing objects or contacts a
+remote. All calls belong off the UI thread.
+
+`create_tag_plan` resolves the chosen commit to an immutable OID before review.
+`TagCommand::Create` checks that the local name is still available and preserves
+Git's identity and signing behavior (`tag.gpgSign` and configured signing programs). When all tags must be signed, a lightweight request
+requires the user to choose an annotated tag rather than suppressing signing.
+Local deletion uses `update-ref` with the captured old OID under Git's ref lock.
+`TagCommand::Push` captures the tag and remote configuration, accepts only one push
+URL, and sends one explicit tag refspec without force, mirror, follow-tags, branch
+pushes, or submodule recursion. Remote tag deletion is not exposed. Ordinary branch
+Push retains its existing branch-only semantics.
+
+`ignore_plan` starts from a currently untracked byte-safe path and prepares either
+a literal anchored file rule or its containing-directory rule. Shared rules append
+to the worktree-root `.gitignore`; local rules append to the common Git directory's
+`info/exclude` (shared by linked worktrees). The plan exposes exact rule bytes,
+destination, and the count of already tracked paths that will remain tracked.
+Line-break/NUL filenames cannot be represented as single ignore rules and are
+refused. Existing bytes, CRLF/LF style, a missing final newline, and file permissions
+are preserved. A 1 MiB destination bound, descriptor-relative no-follow traversal,
+exclusive temporary file, repeated content/inode checks, and atomic replacement
+protect the explicit write. A changed selection, index status, destination, or
+parent directory requires another review. Ignore writes never stage, untrack, or
+delete content. As with Git itself, higher-priority or nested `.gitignore` rules can
+override a file rule; repository-local excludes have lower precedence than shared
+rules.
+
+`cargo test --locked -p gitturtle-core --test tags_ignore` exercises ref outcomes,
+signing failures without unsigned fallback, named local-remote push isolation,
+literal patterns, formatting, index/working-byte preservation, and stale/symbolic
+write refusal in disposable repositories. Raw non-UTF-8 working filenames have a
+Linux fixture because APFS rejects those names; that fixture is not macOS evidence.

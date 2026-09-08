@@ -1,0 +1,50 @@
+name: Quality
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+      GIT_CONFIG_NOSYSTEM: 1
+      GIT_CONFIG_GLOBAL: ${{ runner.temp }}/gitturtle-ci-gitconfig
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Install Linux native build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential clang cmake pkg-config libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev libvulkan-dev
+      - name: Install workspace Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.98.0
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Locked workspace tests
+        run: cargo test --locked --workspace
+      - name: Locked Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Locked release compilation
+        run: cargo build --release --locked -p gitturtle

@@ -345,7 +345,7 @@ impl GitRepository {
     }
 }
 
-fn history_command(path: &Path) -> Command {
+pub(super) fn history_command(path: &Path) -> Command {
     let mut command = git_command(path);
     command.arg("--literal-pathspecs").args([
         "-c",
@@ -364,7 +364,7 @@ fn history_command(path: &Path) -> Command {
     command
 }
 
-fn parse_commit_fields(fields: &[impl AsRef<[u8]>]) -> Result<Commit> {
+pub(super) fn parse_commit_fields(fields: &[impl AsRef<[u8]>]) -> Result<Commit> {
     ensure!(fields.len() == 6, "Malformed commit metadata from Git");
     let oid = text(fields[0].as_ref());
     validate_oid(&oid)?;
@@ -451,7 +451,7 @@ fn parse_file_history(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ReadEnd {
+pub(super) enum ReadEnd {
     Complete,
     Stopped,
     TimedOut,
@@ -466,7 +466,7 @@ enum ReadMessage {
 
 /// Drains both pipes through a bounded queue. Cancellation and the deadline
 /// cover the process and descendants which retain its pipes after it exits.
-fn stream_history(
+pub(super) fn stream_history(
     mut command: Command,
     input: Option<Vec<u8>>,
     cancellation: &HistoryCancellation,
