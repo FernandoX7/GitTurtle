@@ -5,6 +5,7 @@ mod columns;
 mod commit_drafts;
 mod conflicts;
 mod diff_view;
+mod editor_find;
 mod file_history;
 mod graph;
 mod history_search;
@@ -29,7 +30,7 @@ use gpui_kit::component::{
     Disableable, Icon, Root, Selectable, Sizable,
     button::{Button, ButtonVariants},
     input::{
-        Editor, EditorState, Input, InputEvent, InputState, TextDecorationCollection, Textarea,
+        EditorState, Input, InputEvent, InputState, TextDecorationCollection, Textarea,
         TextareaState,
     },
     resizable::{h_resizable, resizable_panel},

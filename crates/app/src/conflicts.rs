@@ -445,7 +445,7 @@ impl ConflictView {
             .child(div().px_3().py_2().flex().flex_col().gap_1().bg(rgb(p.panel))
                 .child(div().truncate().text_size(px(12.)).font_weight(FontWeight::MEDIUM).child(self.presentation.label(side)))
                 .child(div().truncate().text_size(px(10.)).text_color(rgb(p.muted)).child(description)))
-            .child(div().flex_1().min_h_0().children(self.readers[side].as_ref().map(|reader| Editor::new(reader).readonly(true).bordered(false).h(relative(1.)).text_size(px(12.)).aria_label(format!("Conflict version: {}", self.presentation.label(side))))))
+            .child(div().flex_1().min_h_0().children(self.readers[side].as_ref().map(|reader| crate::editor_find::Editor::new(reader).readonly(true).bordered(false).h(relative(1.)).text_size(px(12.)).aria_label(format!("Conflict version: {}", self.presentation.label(side))))))
             .when(self.readers[side].is_none(), |el| el.child(div().p_4().text_size(px(12.)).text_color(rgb(p.muted)).child(if versions[side].is_none() { "File absent in this version" } else { "Binary or large content · choose a complete version or use an external editor." })))
             .into_any_element()
     }

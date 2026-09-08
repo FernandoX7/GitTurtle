@@ -245,7 +245,7 @@ impl GitTurtle {
             let owner = cx.entity().downgrade();
             let repository = self.path.clone();
             window.open_alert_dialog(cx, move |dialog, _, _| {
-                dialog.title("Choose the mainline parent").w(px(560.))
+                dialog.title("Choose the mainline parent").width(px(560.))
                     .child(div().text_size(px(12.)).child(format!("{} is a merge commit. Choose the parent against which its change should be calculated.", short_oid(&commit.oid))))
                     .child(div().id("recovery-mainline-parents").max_h(px(320.)).overflow_y_scroll().flex().flex_col().gap_2()
                         .children(commit.parents.iter().enumerate().take(128).map(|(index, parent)| {
@@ -361,7 +361,7 @@ impl GitTurtle {
         window.open_alert_dialog(cx, move |dialog, _, _| {
             dialog
                 .title("Stashes")
-                .w(px(width))
+                .width(px(width))
                 .child(browser.clone())
                 .button_props(DialogButtonProps::default().ok_text("Close"))
         });
@@ -657,7 +657,7 @@ fn show_amend(form: Entity<AmendForm>, window: &mut Window, cx: &mut App) {
         let submit = form.clone();
         dialog
             .title("Amend last commit")
-            .w(px(580.))
+            .width(px(580.))
             .child(form.clone())
             .button_props(
                 DialogButtonProps::default()
@@ -737,7 +737,7 @@ fn show_stash_form(form: Entity<StashForm>, window: &mut Window, cx: &mut App) {
         let submit = form.clone();
         dialog
             .title("Save changes to stash")
-            .w(px(520.))
+            .width(px(520.))
             .child(form.clone())
             .button_props(
                 DialogButtonProps::default()
@@ -1205,7 +1205,7 @@ impl StashBrowser {
             Some(Content::Text { .. }) => self.editors[self.text_mode].as_ref().map_or_else(
                 || div().into_any_element(),
                 |editor| {
-                    Editor::new(editor)
+                    crate::editor_find::Editor::new(editor)
                         .readonly(true)
                         .size_full()
                         .aria_label("Saved stash file text")

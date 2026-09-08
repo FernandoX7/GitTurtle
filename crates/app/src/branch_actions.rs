@@ -463,7 +463,7 @@ impl GitTurtle {
                     let chooser_ok = chooser.clone();
                     dialog
                         .title(title.clone())
-                        .w(px(540.))
+                        .width(px(540.))
                         .child(chooser.clone())
                         .button_props(
                             DialogButtonProps::default()
@@ -484,7 +484,7 @@ impl GitTurtle {
                 window.open_alert_dialog(cx, move |dialog, _, _| {
                     dialog
                         .title("Remotes")
-                        .w(px(580.))
+                        .width(px(580.))
                         .child(manager.clone())
                         .button_props(DialogButtonProps::default().ok_text("Done"))
                 });
@@ -534,7 +534,7 @@ impl GitTurtle {
                 .child(div().text_size(px(12.)).text_color(rgb(p.muted)).child(metadata))
                 .child(div().text_size(px(12.)).child(deletion_note))
                 .child(actions);
-            dialog.title(plan.name.clone()).w(px(560.)).child(content)
+            dialog.title(plan.name.clone()).width(px(560.)).child(content)
                 .button_props(DialogButtonProps::default().ok_text("Done"))
         });
     }
@@ -611,7 +611,7 @@ impl GitTurtle {
                 .child(actions);
             dialog
                 .title(short_reference(&reference).to_owned())
-                .w(px(540.))
+                .width(px(540.))
                 .child(content)
                 .button_props(DialogButtonProps::default().ok_text("Done"))
         });
@@ -813,7 +813,7 @@ fn show_branch_form(form: Entity<BranchForm>, window: &mut Window, cx: &mut App)
         let submit = form.clone();
         dialog
             .title(title)
-            .w(px(520.))
+            .width(px(520.))
             .child(form.clone())
             .button_props(
                 DialogButtonProps::default()
@@ -837,7 +837,7 @@ fn show_remote_form(form: Entity<RemoteForm>, window: &mut Window, cx: &mut App)
         let submit = form.clone();
         dialog
             .title(title.clone())
-            .w(px(580.))
+            .width(px(580.))
             .child(form.clone())
             .button_props(
                 DialogButtonProps::default()

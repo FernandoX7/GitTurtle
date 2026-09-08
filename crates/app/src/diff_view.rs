@@ -17,7 +17,7 @@ use gpui_kit::{
         Disableable, Sizable, Theme,
         button::{Button, ButtonVariants},
         checkbox::Checkbox,
-        input::{Editor, EditorState},
+        input::EditorState,
     },
     div, fill, point, px, relative, rgb, size,
 };
@@ -52,6 +52,10 @@ pub struct DiffView {
 impl EventEmitter<DiffViewEvent> for DiffView {}
 
 impl DiffView {
+    pub fn find_header_height(&self, cx: &App) -> Pixels {
+        crate::editor_find::panel_height(&self.editor, cx)
+    }
+
     pub fn refresh(
         &mut self,
         presentation: &PatchPresentation,
@@ -187,7 +191,7 @@ impl Render for DiffView {
             // during paint; the later gutter canvas reads those same-frame
             // coordinates, avoiding a one-frame lag during wheel scrolling.
             .child(
-                Editor::new(&self.editor)
+                crate::editor_find::Editor::new(&self.editor)
                     .h(relative(1.))
                     .readonly(true)
                     .bordered(false)

@@ -1367,7 +1367,7 @@ impl GitTurtle {
                     {
                         div().size_full().child(view.clone()).into_any_element()
                     } else if let Some(editor) = editor {
-                        Editor::new(editor)
+                        crate::editor_find::Editor::new(editor)
                             .h(relative(1.))
                             .readonly(true)
                             .bordered(false)

@@ -22,9 +22,9 @@ impl GitTurtle {
             let full = Arc::clone(&full);
             dialog
                 .title("Git operation details")
-                .w(px(680.))
+                .width(px(680.))
                 .child(
-                    Editor::new(&editor)
+                    crate::editor_find::Editor::new(&editor)
                         .readonly(true)
                         .h(px(320.))
                         .aria_label("Git operation error details"),
@@ -60,7 +60,7 @@ impl GitTurtle {
             let command = Arc::clone(&command);
             dialog
                 .title(title.clone())
-                .w(px(520.))
+                .width(px(520.))
                 .child(
                     div()
                         .id("operation-consequences")

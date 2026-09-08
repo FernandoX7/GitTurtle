@@ -6,7 +6,7 @@ use crate::{
 };
 use gpui_kit::{
     App, AppContext, ClipboardItem, Context, Entity, HighlightStyle, InteractiveElement,
-    IntoElement, ParentElement, Pixels, Render, Styled, Subscription, Window, canvas,
+    IntoElement, ParentElement, Pixels, Render, Styled, Subscription, Window,
     component::input::{Copy, EditorState, TextDecoration, TextDecorationCollection},
     div, point, px, rgb,
 };
@@ -314,6 +314,15 @@ pub fn new(
                 }
             }));
         }
+        for (side, view) in views.iter().enumerate() {
+            subscriptions.push(cx.observe(view, move |this: &mut SplitView, view, cx| {
+                let height = view.read(cx).find_header_height(cx);
+                if (this.search_heights[side] - height).abs() > px(0.5) {
+                    this.search_heights[side] = height;
+                    cx.notify();
+                }
+            }));
+        }
         SplitView {
             initial_row: Some(presentation.first_change.saturating_sub(3)),
             presentation,
@@ -385,11 +394,8 @@ impl Render for SplitView {
         let p = palette(cx);
         let search_heights = self.search_heights;
         let reserved_height = search_heights[0].max(search_heights[1]);
-        let view = cx.entity().downgrade();
         div().size_full().flex().children((0..2).map(|side| {
             let editor = self.editors[side].clone();
-            let measured_editor = editor.clone();
-            let view = view.clone();
             let padding = reserved_height - search_heights[side];
             let presentation = Arc::clone(&self.presentation);
             div()
@@ -428,42 +434,7 @@ impl Render for SplitView {
                         .flex()
                         .flex_col()
                         .pt(padding)
-                        .child(div().flex_1().min_h_0().child(self.views[side].clone()))
-                        // Read the actual native search-panel geometry after
-                        // the editor paints; font/density changes need no
-                        // duplicated component-height constant. Subtract our
-                        // own padding so successive frames cannot feed back.
-                        .child(
-                            canvas(
-                                |_, _, _| (),
-                                move |bounds, _, _, cx| {
-                                    let state = measured_editor.read(cx);
-                                    let height = if state.search_session().open {
-                                        (state.input_bounds().origin.y - bounds.origin.y - padding)
-                                            .max(px(0.))
-                                    } else {
-                                        px(0.)
-                                    };
-                                    if (height - search_heights[side]).abs() > px(0.5) {
-                                        let view = view.clone();
-                                        cx.defer(move |cx| {
-                                            let _ = view.update(cx, |view, cx| {
-                                                if (view.search_heights[side] - height).abs()
-                                                    > px(0.5)
-                                                {
-                                                    view.search_heights[side] = height;
-                                                    cx.notify();
-                                                }
-                                            });
-                                        });
-                                    }
-                                },
-                            )
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .size_full(),
-                        ),
+                        .child(div().flex_1().min_h_0().child(self.views[side].clone())),
                 )
         }))
     }
