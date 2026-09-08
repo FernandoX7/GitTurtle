@@ -79,7 +79,7 @@ impl GitTurtle {
                         "commit",
                         self.page == AppPage::Repository && self.mode != WorkspaceMode::Working,
                     )
-                    .on_click(cx.listener(|this, _, window, cx| this.back_to_history(window, cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.show_history(window, cx))),
                 )
                 .child(
                     button(
@@ -1639,7 +1639,7 @@ impl Render for GitTurtle {
                 }),
             )
             .on_action(
-                cx.listener(|this, _: &ShowHistory, window, cx| this.back_to_history(window, cx)),
+                cx.listener(|this, _: &ShowHistory, window, cx| this.show_history(window, cx)),
             )
             .on_action(cx.listener(|this, _: &RevealRepository, _, cx| {
                 if let Some(repo) = &this.repository {

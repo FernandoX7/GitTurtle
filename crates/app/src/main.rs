@@ -985,6 +985,13 @@ impl GitTurtle {
         });
     }
 
+    /// An explicit History destination exits every retained inspection. Back
+    /// remains a one-level return so comparisons keep their navigation context.
+    fn show_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_inspections(window, cx);
+        self.back_to_history(window, cx);
+    }
+
     fn back_to_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.close_blame(window, cx) {
             return;
