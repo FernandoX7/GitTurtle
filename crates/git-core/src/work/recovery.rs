@@ -380,7 +380,11 @@ impl GitRepository {
                 creates_commit = true;
             }
         }
-        let output = checked_write_output(command, input, WRITE_TIMEOUT)?;
+        let output = if let RecoveryCommand::ApplyStash { plan } = operation {
+            self.checked_stash_apply_output(command, &plan.stash)?
+        } else {
+            checked_write_output(command, input, WRITE_TIMEOUT)?
+        };
         let message = format!("{}{}", text(&output.stdout), text(&output.stderr))
             .trim()
             .to_owned();
@@ -397,6 +401,49 @@ impl GitRepository {
             },
             commit_oid,
         })
+    }
+
+    fn checked_stash_apply_output(&self, command: Command, stash: &StashEntry) -> Result<Output> {
+        // Only a completed nonzero command can be classified here. A timeout,
+        // oversized output, or lost process result retains its existing error
+        // and uncertainty; none of these paths retries or changes the repository.
+        let output = bounded_write_output(command, None, WRITE_TIMEOUT)?;
+        if output.status.success() {
+            return Ok(output);
+        }
+        let conflicted = run_git(&self.path, &["ls-files", "--unmerged", "-z"])
+            .map(|entries| !entries.is_empty());
+        // Stash apply does not remove entries. Recheck the saved object rather
+        // than its old ordinal, since another worktree can add a stash meanwhile.
+        let retained = self
+            .recovery_stash_entries()
+            .map(|entries| entries.iter().any(|entry| entry.oid == stash.oid));
+        let summary = match &conflicted {
+            Ok(true) => "Stash restoration produced conflicts.",
+            Ok(false) => "Stash restoration did not complete.",
+            Err(_) => {
+                "Stash restoration did not complete; the conflict state could not be verified."
+            }
+        };
+        let saved = match retained {
+            Ok(true) => "The stash remains saved.",
+            Ok(false) => "The reviewed stash is no longer listed; review the saved stashes.",
+            Err(_) => "The saved stash could not be rechecked; review the saved stashes.",
+        };
+        let guidance = if matches!(conflicted, Ok(true)) {
+            "Resolve the conflicted files in Changes, then stage the resolved files. Stash restoration has no Continue or Abort operation."
+        } else {
+            "Review Git's diagnostics and the current files before taking another action."
+        };
+        // Keep both original streams, including stdout-only merge diagnostics.
+        // The leading sentence is suitable for the compact operation error bar;
+        // Details retains the full diagnostic content and actual exit status.
+        bail!(
+            "{summary} {saved}\n\n{guidance}\n\nGit result: {}\n\nGit stdout:\n{}\n\nGit stderr:\n{}",
+            output.status,
+            text(&output.stdout),
+            text(&output.stderr),
+        )
     }
 
     fn recovery_head(&self) -> Result<(RecoveryHead, RepositoryStatus)> {

@@ -1331,12 +1331,28 @@ fn path_input(paths: &[PathBuf]) -> Result<Vec<u8>> {
     Ok(input)
 }
 fn validate_branch_at(path: &Path, name: &str) -> Result<()> {
+    const INVALID_NAME: &str = "Invalid branch name. Use a name such as feature/my-change; avoid spaces, a leading '-' and Git-special characters.";
     ensure!(
-        !name.is_empty() && name.len() <= 1024 && !name.starts_with('-') && name != "HEAD",
-        "Enter a valid branch name"
+        !name.is_empty()
+            && name.len() <= 1024
+            && !name.starts_with('-')
+            && name != "HEAD"
+            && !name.contains('\0'),
+        INVALID_NAME
     );
-    run_git(path, &["check-ref-format", &format!("refs/heads/{name}")])
-        .context("Invalid branch name")?;
+    let output = run_git_output(path, &["check-ref-format", &format!("refs/heads/{name}")])
+        .context("Unable to validate the branch name")?;
+    if !output.status.success() {
+        let stderr = text(&output.stderr);
+        let stdout = text(&output.stdout);
+        let diagnostics = [stderr.trim(), stdout.trim()]
+            .into_iter()
+            .filter(|message| !message.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        ensure!(!diagnostics.is_empty(), INVALID_NAME);
+        bail!("{INVALID_NAME}\nGit: {diagnostics}");
+    }
     Ok(())
 }
 fn validate_remote_name(name: &str) -> Result<()> {

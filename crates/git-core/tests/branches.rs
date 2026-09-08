@@ -319,6 +319,7 @@ fn rename_review_rejects_invalid_destinations_and_stale_context_before_writing()
     let config = fs::read(f.root.join(".git/config")).unwrap();
     for name in [
         "bad name",
+        "bad..branch",
         "-option",
         "HEAD",
         "topic",
@@ -327,10 +328,15 @@ fn rename_review_rejects_invalid_destinations_and_stale_context_before_writing()
         "group",
         "group/child/nested",
     ] {
-        assert!(
-            repo.rename_branch_plan(&original, name).is_err(),
-            "Rename review accepted {name:?}"
-        );
+        let error = repo
+            .rename_branch_plan(&original, name)
+            .expect_err("Invalid rename review succeeded");
+        if matches!(name, "bad name" | "bad..branch") {
+            let message = format!("{error:#}");
+            assert!(message.contains("feature/my-change"), "{message}");
+            assert!(message.contains("spaces"), "{message}");
+            assert!(!message.ends_with(':'), "{message}");
+        }
     }
     assert_eq!(f.git(&["show-ref"]), refs);
     assert_eq!(f.index(), index);

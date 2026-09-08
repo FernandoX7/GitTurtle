@@ -5,7 +5,7 @@ use crate::{
     text::PatchPresentation,
 };
 use gpui_kit::{
-    App, AppContext, ClipboardItem, Context, Entity, HighlightStyle, InteractiveElement,
+    App, AppContext, ClipboardItem, Context, Entity, Focusable, HighlightStyle, InteractiveElement,
     IntoElement, ParentElement, Pixels, Render, Styled, Subscription, Window,
     component::input::{Copy, EditorState, TextDecoration, TextDecorationCollection},
     div, point, px, rgb,
@@ -406,7 +406,10 @@ impl Render for SplitView {
                 .flex_col()
                 .border_r_1()
                 .border_color(rgb(p.border))
-                .capture_action(move |_: &Copy, _, cx| {
+                .capture_action(move |_: &Copy, window, cx| {
+                    if !editor.read(cx).focus_handle(cx).is_focused(window) {
+                        return;
+                    }
                     let selection = editor.read(cx).selected_range();
                     if !selection.is_empty() {
                         cx.write_to_clipboard(ClipboardItem::new_string(

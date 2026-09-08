@@ -123,7 +123,24 @@ fn stash_conflict_preserves_saved_entry_and_unrelated_work() {
     f.write("independent.txt", "independent work\n");
     f.write("other.txt", "untracked work\n");
     let plan = f.repo().stash_apply_plan(&stash, false).unwrap();
-    assert!(f.recover(RecoveryCommand::ApplyStash { plan }).is_err());
+    let error = f.recover(RecoveryCommand::ApplyStash { plan }).unwrap_err();
+    let diagnostic = format!("{error:#}");
+    assert!(
+        diagnostic.starts_with("Stash restoration produced conflicts. The stash remains saved."),
+        "{diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("Git stdout:\nAuto-merging file.txt"),
+        "{diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("CONFLICT (content): Merge conflict in file.txt"),
+        "{diagnostic}"
+    );
+    assert!(diagnostic.contains("Git stderr:"), "{diagnostic}");
+    assert!(diagnostic.contains("has no Continue or Abort operation"));
+    assert!(!diagnostic.contains("then use Continue"));
+    assert!(f.repo().operation_state().unwrap().is_none());
     assert!(
         f.repo()
             .status()
@@ -138,6 +155,53 @@ fn stash_conflict_preserves_saved_entry_and_unrelated_work() {
     );
     assert_eq!(f.read("independent.txt"), b"independent work\n");
     assert_eq!(f.read("other.txt"), b"untracked work\n");
+}
+
+#[test]
+fn failed_stash_apply_reports_git_lock_failure_without_claiming_conflicts() {
+    let f = Fixture::new();
+    f.base();
+    f.write("file.txt", "saved changes\n");
+    let stash = create_stash(&f, "Retain on ordinary failure", false);
+    f.write("independent.txt", "independent work\n");
+    f.write("other.txt", "untracked work\n");
+    let plan = f.repo().stash_apply_plan(&stash, false).unwrap();
+    let head = f.head();
+    let index = f.index();
+    // Passive preparation can read the existing index while a different writer
+    // owns its lock. The actual stash write must fail and leave that lock alone.
+    f.write(".git/index.lock", "another writer owns this lock\n");
+    let error = f.recover(RecoveryCommand::ApplyStash { plan }).unwrap_err();
+    let diagnostic = format!("{error:#}");
+    assert!(
+        diagnostic.starts_with("Stash restoration did not complete. The stash remains saved."),
+        "{diagnostic}"
+    );
+    assert!(!diagnostic.contains("produced conflicts"));
+    assert!(diagnostic.contains("Git stderr:"));
+    assert!(diagnostic.contains("could not write index"), "{diagnostic}");
+    assert!(!diagnostic.contains("then use Continue"));
+    assert_eq!(f.head(), head);
+    assert_eq!(f.index(), index);
+    assert_eq!(f.read("file.txt"), b"base\n");
+    assert_eq!(f.read("independent.txt"), b"independent work\n");
+    assert_eq!(f.read("other.txt"), b"untracked work\n");
+    assert_eq!(
+        f.read(".git/index.lock"),
+        b"another writer owns this lock\n"
+    );
+    assert!(
+        !f.repo()
+            .status()
+            .unwrap()
+            .entries
+            .iter()
+            .any(|entry| entry.conflicted)
+    );
+    assert_eq!(
+        f.repo().stash_list(0, 20).unwrap().entries[0].oid,
+        stash.oid
+    );
 }
 
 #[test]

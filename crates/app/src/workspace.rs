@@ -723,24 +723,22 @@ impl GitTurtle {
     }
 
     fn refresh_after_write(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        if self.mode == WorkspaceMode::Working {
-            self.restore_commit = self
-                .selected_commit
-                .and_then(|index| self.commits.get(index).map(|commit| commit.oid.clone()));
-            self.retained_history_files = None;
-            self.request(
-                Job::Open {
-                    path,
-                    scope: self.scope.as_ref().map(|scope| scope.1.clone()),
-                    limit: self.limit,
-                },
-                "Refreshing repository…",
-                window,
-                cx,
-            );
-        } else {
-            self.open(path, None, window, cx);
+        if self.path.as_ref() != Some(&path) {
+            return;
         }
+        // A write changes repository state, not the user's browsing intent.
+        // Reopening discarded the selected scope and restarted a retained query
+        // over all refs. Quiet refresh resolves that same scope again while
+        // keeping pinned search results, immutable comparisons and scroll/focus.
+        self.queue_automatic_refresh(
+            local_refresh::LocalChange {
+                git: true,
+                worktree: true,
+                ..Default::default()
+            },
+            window,
+            cx,
+        );
     }
 
     pub(super) fn render_working_inspector(&self, cx: &mut Context<Self>) -> AnyElement {

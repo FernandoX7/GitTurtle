@@ -2119,6 +2119,148 @@ mod image_tests {
     }
 
     #[test]
+    fn scoped_recovery_refresh_updates_tip_without_broadening_pinned_search() {
+        let fixture = Fixture::new();
+        fixture.git(&["config", "user.name", "GitTurtle Test"], b"");
+        fixture.git(&["config", "user.email", "test@example.invalid"], b"");
+        fixture.git(&["config", "commit.gpgsign", "false"], b"");
+        fs::write(fixture.0.join("file.txt"), "base\n").unwrap();
+        fixture.git(&["add", "file.txt"], b"");
+        fixture.git(&["commit", "-qm", "Initial"], b"");
+        let base = fixture.git(&["rev-parse", "HEAD"], b"");
+        fixture.git(&["checkout", "-qb", "tracking/native-release"], b"");
+        fs::write(fixture.0.join("file.txt"), "published\n").unwrap();
+        fixture.git(&["commit", "-am", "Revision 125: published change"], b"");
+        let published = fixture.git(&["rev-parse", "HEAD"], b"");
+        fixture.git(
+            &["update-ref", "refs/remotes/origin/release", &published],
+            b"",
+        );
+        let tree = fixture.git(&["rev-parse", "HEAD^{tree}"], b"");
+        let unrelated = fixture.git(
+            &[
+                "commit-tree",
+                &tree,
+                "-p",
+                &base,
+                "-m",
+                "Revision 125: unrelated branch",
+            ],
+            b"",
+        );
+        fixture.git(&["update-ref", "refs/heads/unrelated", &unrelated], b"");
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let scope = Scope::Branch {
+            name: "tracking/native-release".into(),
+            remote: false,
+        };
+        let pinned = gitturtle_core::HistoryScope::FromCommit(published.clone());
+        let mut cache = PreviewCache::default();
+        let mut session = RepositorySession::default();
+        let search = |pinned, offset| Job::SearchHistory {
+            repo: repo.clone(),
+            scope: Some(scope.clone()),
+            pinned,
+            query: "Revision 125:".into(),
+            offset,
+            limit: 10,
+            previous: Vec::new(),
+            remaining_bytes: 1024 * 1024,
+        };
+        let Output::SearchHistory(before) =
+            execute(search(None, 0), &mut cache, &active(), &mut session).unwrap()
+        else {
+            panic!("expected search results")
+        };
+        assert_eq!(before.page.scope, pinned);
+        assert_eq!(before.page.commits.len(), 1);
+        assert_eq!(before.page.commits[0].oid, published);
+
+        let plan = repo
+            .recovery_plan(gitturtle_core::RecoveryKind::Revert, Some(&published), None)
+            .unwrap();
+        repo.execute(&gitturtle_core::WriteCommand::Recovery(
+            gitturtle_core::RecoveryCommand::Revert { plan }.into(),
+        ))
+        .unwrap();
+        let reverted = fixture.git(&["rev-parse", "HEAD"], b"");
+        let index = fs::read(fixture.0.join(".git/index")).unwrap();
+        for refreshed_scope in [
+            scope.clone(),
+            Scope::Worktree {
+                path: repo.path().to_owned(),
+            },
+        ] {
+            let Output::QuietRefresh(refresh) = execute(
+                Job::QuietRefresh {
+                    repo: repo.clone(),
+                    scope: Some(refreshed_scope),
+                    limit: 100,
+                    history: true,
+                    selected: None,
+                },
+                &mut cache,
+                &active(),
+                &mut session,
+            )
+            .unwrap() else {
+                panic!("expected quiet refresh")
+            };
+            assert_eq!(
+                refresh.working.status.head.as_deref(),
+                Some(reverted.as_str())
+            );
+            let QuietHistory::Refreshed(snapshot) = refresh.snapshot.unwrap().unwrap() else {
+                panic!("valid scope must refresh")
+            };
+            assert_eq!(snapshot.commits[0].oid, reverted);
+            assert!(
+                snapshot
+                    .commits
+                    .iter()
+                    .any(|commit| commit.oid == published)
+            );
+            assert!(
+                snapshot
+                    .commits
+                    .iter()
+                    .all(|commit| commit.oid != unrelated)
+            );
+        }
+        let Output::SearchHistory(continued) = execute(
+            search(Some(pinned.clone()), 1),
+            &mut cache,
+            &active(),
+            &mut session,
+        )
+        .unwrap() else {
+            panic!("expected pinned continuation")
+        };
+        assert_eq!(continued.page.scope, pinned);
+        assert!(continued.page.commits.is_empty());
+        let Output::SearchHistory(restarted) =
+            execute(search(None, 0), &mut cache, &active(), &mut session).unwrap()
+        else {
+            panic!("expected restarted search")
+        };
+        assert_eq!(
+            restarted.page.scope,
+            gitturtle_core::HistoryScope::FromCommit(reverted.clone())
+        );
+        assert_eq!(
+            restarted
+                .page
+                .commits
+                .iter()
+                .map(|commit| commit.oid.as_str())
+                .collect::<Vec<_>>(),
+            [reverted.as_str(), published.as_str()]
+        );
+        assert_eq!(fs::read(fixture.0.join(".git/index")).unwrap(), index);
+        assert_eq!(fs::read(fixture.0.join("file.txt")).unwrap(), b"base\n");
+    }
+
+    #[test]
     fn render_pixels_are_bgra_without_changing_source_alpha_or_rgba() {
         let preview = ImagePreview {
             width: 2,
