@@ -57,9 +57,15 @@ gpui_kit::actions!(
 #[derive(rust_embed::RustEmbed)]
 #[folder = "../../assets/icons/"]
 struct EmbeddedAssets;
+const APP_ICON_PATH: &str = "branding/app-icon.png";
 struct Assets;
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
+        if path == APP_ICON_PATH {
+            return Ok(Some(Cow::Borrowed(include_bytes!(
+                "../../../assets/branding/app-icon.png"
+            ))));
+        }
         if let Some(asset) = path.strip_prefix("icons/").and_then(EmbeddedAssets::get) {
             return Ok(Some(asset.data));
         }
@@ -71,6 +77,9 @@ impl AssetSource for Assets {
             .filter(|s| s.starts_with(path))
             .map(Into::into)
             .collect();
+        if APP_ICON_PATH.starts_with(path) {
+            result.push(APP_ICON_PATH.into());
+        }
         result.extend(gpui_kit::assets::Assets.list(path)?);
         Ok(result)
     }
@@ -1013,6 +1022,13 @@ impl GitTurtle {
         window.focus(&self.focus, cx);
         cx.notify();
     }
+}
+
+fn app_icon(dimension: f32) -> Img {
+    img(APP_ICON_PATH)
+        .size(px(dimension))
+        .object_fit(ObjectFit::Contain)
+        .flex_shrink_0()
 }
 
 fn icon(name: &str, dimension: f32, color: u32) -> Svg {

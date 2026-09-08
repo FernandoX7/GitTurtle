@@ -859,7 +859,7 @@ impl Render for ProjectHub {
                     .gap_3()
                     .border_b_1()
                     .border_color(colors.border)
-                    .child(hub_icon("turtle", 27., colors.primary))
+                    .child(crate::app_icon(32.))
                     .child(div().text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).child("GitTurtle"))
                     .child(div().w(px(1.)).h(px(18.)).bg(colors.border))
                     .child(div().text_size(px(12.)).text_color(colors.muted_foreground).child("Projects"))

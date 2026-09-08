@@ -18,7 +18,7 @@ impl GitTurtle {
             .bg(rgb(p.panel))
             .border_b_1()
             .border_color(rgb(p.border))
-            .child(icon("turtle", 28., p.accent))
+            .child(app_icon(32.))
             .child(
                 div()
                     .w(px(190.))
@@ -155,7 +155,7 @@ impl GitTurtle {
                     })),
             )
             .child(div().flex_1())
-            .child(icon("turtle", 18., colors.muted))
+            .child(app_icon(24.))
             .into_any_element()
     }
 

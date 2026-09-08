@@ -57,6 +57,8 @@ fi
 
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
 install -m 755 "$executable" "$bundle/Contents/MacOS/gitturtle"
+# A rebuild must also remove assets retired from the source tree.
+rm -rf "$bundle/Contents/Resources/assets"
 ditto "$project_root/assets" "$bundle/Contents/Resources/assets"
 install -m 644 "$project_root/assets/AppIcon.icns" "$bundle/Contents/Resources/AppIcon.icns"
 cat > "$bundle/Contents/Info.plist" <<PLIST
