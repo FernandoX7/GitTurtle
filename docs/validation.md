@@ -2,6 +2,14 @@
 
 This records local validation performed on September 7–8, 2026, with each stage tied to its exercised builds. The design and everyday Git workflow checks extend the historical history/comparison checks. Native interaction was exercised on macOS. Linux is a portability target, not a validated release platform; no CI or notarized distribution is claimed.
 
+## Consistent selected icon — September 8, 2026
+
+At `e8f7d42`, the repository header, Projects header, and collapsed sidebar switched from the old vector turtle to a shared 128-pixel PNG derived from the selected `assets/app-icon.png`. The original source remains byte-identical to its recorded SHA-256 `b40bbffd6d33be3981094f1886e953a114fada7ede83dcaa0393b415bd553209`. Regenerating all ten iconset sizes produced an ICNS byte-identical to the existing selected icon. The obsolete vector variants were removed; packaging now replaces its assets directory so retired files cannot linger.
+
+Both `dist/GitTurtle.app` and the older Launch Services–registered `.local/GitTurtle.app` were rebuilt from the final release executable and re-registered. Both passed plist and ad-hoc signature verification and have executable UUID `7C5A16FA-4C95-3FB6-BD17-94B01CED85E4`, matching the release build. Their icon, original artwork, and small branding PNG match the source assets byte-for-byte; neither contains the retired vector files. Formatting, `cargo check`, all **115 workspace tests**, strict workspace Clippy, release build, and packaging-script syntax checks passed.
+
+The exact `dist` package was relaunched. Native screenshots verified the selected turtle in both headers and the collapsed sidebar; Finder's icon view also displayed the selected artwork. History and the expanded sidebar were restored with the user's current Nord theme and repository. The Dock surface could not be captured through native automation, so Dock appearance itself is not claimed as a visual check; bundle resources and Launch Services registration were verified without resetting global icon caches. No repository write or network action was performed.
+
 ## Native refinement — September 8, 2026
 
 Final source revision `76f7d9a` passed formatting, **115 tests: 69 app, 34 core, and 12 preview**, strict workspace Clippy, and release packaging. The release and packaged arm64 executable have UUID `6B05721F-2BDD-3DE0-9927-93431CC12047`; plist and ad-hoc signature verification passed. The last source adjustment isolated parallel test fixture directories with an atomic sequence after a timestamp collision; it does not change the release executable. The existing app icon was retained, as requested.
