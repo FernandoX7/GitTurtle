@@ -7,6 +7,8 @@ pub use integration::*;
 mod branches;
 pub use branches::*;
 mod diagnostics;
+mod recovery;
+pub use recovery::*;
 
 const WRITE_TIMEOUT: Duration = Duration::from_secs(90);
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(180);
@@ -141,6 +143,7 @@ struct PartialEdit {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WriteCommand {
+    Recovery(Arc<RecoveryCommand>),
     Branch(Arc<BranchCommand>),
     Integration(IntegrationCommand),
     ApplyPartial {
@@ -572,6 +575,7 @@ impl GitRepository {
         let mut input = None;
         let mut timeout = WRITE_TIMEOUT;
         match operation {
+            WriteCommand::Recovery(command) => return self.execute_recovery(command),
             WriteCommand::Branch(command) => return self.execute_branch(command),
             WriteCommand::Integration(command) => return self.execute_integration(command),
             WriteCommand::ApplyPartial { diff, selection } => {
@@ -1529,14 +1533,20 @@ fn checked_write_output(
         )
     });
     let output = bounded_write_output(command, input, timeout)?;
+    let stderr = text(&output.stderr);
+    let stdout = text(&output.stdout);
     ensure!(
         output.status.success(),
         "Git operation failed: {}{}{}",
-        text(&output.stderr).trim(),
-        if output.stdout.is_empty() {
+        if stderr.trim().is_empty() {
+            stdout.trim()
+        } else {
+            stderr.trim()
+        },
+        if stdout.trim().is_empty() || stderr.trim().is_empty() {
             String::new()
         } else {
-            format!("\n{}", text(&output.stdout).trim())
+            format!("\n{}", stdout.trim())
         },
         diagnostics::guidance(&output.stderr, &output.stdout, creates_commit)
             .map_or(String::new(), |help| format!("\n\n{help}"))

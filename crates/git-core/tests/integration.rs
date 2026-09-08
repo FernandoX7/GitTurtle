@@ -164,6 +164,10 @@ fn merge_plan_reports_divergence_and_manual_resolution_preserves_unrelated_work(
     repo.execute_integration(&IntegrationCommand::Continue { expected })
         .unwrap();
     assert!(repo.operation_state().unwrap().is_none());
+    assert_eq!(
+        f.git(&["log", "-1", "--format=%s"]),
+        "Merge branch 'feature/beautiful-integration' into main"
+    );
     assert_ne!(f.git(&["rev-parse", "HEAD"]), before_head);
     assert_eq!(
         f.git(&["rev-list", "--parents", "-1", "HEAD"])

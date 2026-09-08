@@ -513,6 +513,16 @@ impl GitRepository {
                         &plan.target_oid,
                     ]);
                 } else {
+                    let message = format!(
+                        "Merge {} '{}' into {}",
+                        if plan.target_ref.starts_with("refs/remotes/") {
+                            "remote-tracking branch"
+                        } else {
+                            "branch"
+                        },
+                        plan.target_label,
+                        plan.branch
+                    );
                     command.args([
                         "merge",
                         "--no-edit",
@@ -520,6 +530,8 @@ impl GitRepository {
                         "--no-squash",
                         "--ff",
                         "--no-overwrite-ignore",
+                        "--message",
+                        &message,
                         "--",
                         &plan.target_oid,
                     ]);
@@ -557,7 +569,11 @@ impl GitRepository {
                                     .paths()
                                     .iter()
                                     .any(|path| !resolution_paths.contains(path))
-                                && (expected.kind != OperationKind::Merge || entry.staged.is_some())
+                                // Merge, cherry-pick and revert abort via
+                                // reset --merge, which retains independent
+                                // unstaged/untracked files. Rebase abort can
+                                // hard-reset them, so retains the wider guard.
+                                && (expected.kind == OperationKind::Rebase || entry.staged.is_some())
                         }),
                         "Save other changed files before aborting; Git may discard independent staged work or edits created during this operation. Stop and keep files preserves the current index and working files."
                     );
