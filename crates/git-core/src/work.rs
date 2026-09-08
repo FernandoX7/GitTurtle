@@ -6,6 +6,7 @@ mod integration;
 pub use integration::*;
 mod branches;
 pub use branches::*;
+mod diagnostics;
 
 const WRITE_TIMEOUT: Duration = Duration::from_secs(90);
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(180);
@@ -1521,16 +1522,24 @@ fn checked_write_output(
     input: Option<Vec<u8>>,
     timeout: Duration,
 ) -> Result<Output> {
+    let creates_commit = command.get_args().any(|arg| {
+        matches!(
+            arg.to_str(),
+            Some("commit" | "merge" | "rebase" | "cherry-pick" | "revert")
+        )
+    });
     let output = bounded_write_output(command, input, timeout)?;
     ensure!(
         output.status.success(),
-        "Git operation failed: {}{}",
+        "Git operation failed: {}{}{}",
         text(&output.stderr).trim(),
         if output.stdout.is_empty() {
             String::new()
         } else {
             format!("\n{}", text(&output.stdout).trim())
-        }
+        },
+        diagnostics::guidance(&output.stderr, &output.stdout, creates_commit)
+            .map_or(String::new(), |help| format!("\n\n{help}"))
     );
     Ok(output)
 }

@@ -314,6 +314,7 @@ fn configured_filters_and_hooks_are_preserved_only_for_explicit_writes() {
         })
         .unwrap_err();
     assert!(error.to_string().contains("fixture hook rejection"));
+    assert!(error.to_string().contains("configured hooks"));
     assert_eq!(f.git(&["rev-parse", "HEAD"]), before);
 }
 
@@ -551,12 +552,13 @@ fn configured_signing_failure_is_reported_instead_of_creating_unsigned_commit() 
     f.git(&["config", "commit.gpgsign", "true"]);
     f.git(&["config", "gpg.program", "/usr/bin/false"]);
     assert!(repo.profile().unwrap().signing);
-    assert!(
-        repo.execute(&WriteCommand::Commit {
-            message: "Must sign".into()
+    let error = repo
+        .execute(&WriteCommand::Commit {
+            message: "Must sign".into(),
         })
-        .is_err()
-    );
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("Signing remains enabled"), "{error}");
     assert!(repo.history(5).unwrap().is_empty());
     assert!(
         repo.status()
@@ -565,6 +567,115 @@ fn configured_signing_failure_is_reported_instead_of_creating_unsigned_commit() 
             .iter()
             .any(|e| e.staged.is_some())
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn ssh_failures_keep_configured_program_and_provide_safe_recovery_guidance() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    f.write("tracked", "base\n");
+    let head = f.commit("base");
+    f.write("tracked", "local work\n");
+    let program = f.temp.path().join("ssh-fixture");
+    f.git(&["config", "core.sshCommand", program.to_str().unwrap()]);
+    f.git(&[
+        "remote",
+        "add",
+        "origin",
+        "ssh://fixture.invalid/repository",
+    ]);
+    for (diagnostic, guidance) in [
+        (
+            "Permission denied (publickey).",
+            "configured SSH identity and agent",
+        ),
+        ("Host key verification failed.", "only after verification"),
+    ] {
+        fs::write(
+            &program,
+            format!("#!/bin/sh\nprintf '%s\\n' '{diagnostic}' >&2\nexit 1\n"),
+        )
+        .unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+        let error = f
+            .repo()
+            .execute(&WriteCommand::Fetch {
+                remote: "origin".into(),
+            })
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(diagnostic), "{error}");
+        assert!(error.contains(guidance), "{error}");
+        assert_eq!(f.git(&["rev-parse", "HEAD"]), head);
+        assert!(f.git(&["diff", "--cached"]).is_empty());
+        assert_eq!(fs::read(f.root.join("tracked")).unwrap(), b"local work\n");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn local_http_authentication_failure_reports_helper_recovery_without_prompting() {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::{Duration, Instant},
+    };
+    let f = Fixture::new();
+    f.write("tracked", "base\n");
+    let head = f.commit("base");
+    let server = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    server.set_nonblocking(true).unwrap();
+    let address = server.local_addr().unwrap();
+    let stopped = Arc::new(AtomicBool::new(false));
+    let stop = Arc::clone(&stopped);
+    let worker = std::thread::spawn(move || {
+        let start = Instant::now();
+        while !stop.load(Ordering::Relaxed) && start.elapsed() < Duration::from_secs(5) {
+            match server.accept() {
+                Ok((mut socket, _)) => {
+                    socket
+                        .set_read_timeout(Some(Duration::from_secs(1)))
+                        .unwrap();
+                    let _ = socket.read(&mut [0; 4096]);
+                    let _ = socket.write_all(b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=fixture\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5))
+                }
+                Err(error) => panic!("{error}"),
+            }
+        }
+    });
+    f.git(&["config", "credential.helper", ""]);
+    f.git(&["config", "http.proxy", ""]);
+    f.git(&[
+        "config",
+        "--add",
+        "credential.helper",
+        "gitturtle-fixture-missing-helper",
+    ]);
+    f.git(&[
+        "remote",
+        "add",
+        "origin",
+        &format!("http://{address}/repository"),
+    ]);
+    let result = f.repo().execute(&WriteCommand::Fetch {
+        remote: "origin".into(),
+    });
+    stopped.store(true, Ordering::Relaxed);
+    worker.join().unwrap();
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("credential.helper"), "{error}");
+    assert!(error.contains("could not run"), "{error}");
+    assert_eq!(f.git(&["rev-parse", "HEAD"]), head);
+    assert!(f.git(&["diff", "--cached"]).is_empty());
+    assert_eq!(fs::read(f.root.join("tracked")).unwrap(), b"base\n");
 }
 
 #[test]

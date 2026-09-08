@@ -31,6 +31,8 @@ Text working previews can include a `PartialDiff` snapshot for explicit hunk or 
 
 Every write runs once with bounded input/output. A timeout terminates and reaps its process group and reports that local or remote effects may already have happened. There is no automatic retry. The UI must refresh after success **or** failure and let the user inspect the result before another action. Configured hooks and filters are executable user configuration, and their own side effects are not transactional.
 
+Failure reports preserve Git's output and supplement recognized SSH, host verification, credential-helper, authentication, signing, conflict and divergence failures with next steps. Generic commit failures direct users to inspect configured hooks, identity and signing without asserting which failed. Guidance never changes configuration or disables verification. Disposable configured-SSH and local HTTP challenge fixtures cover this reporting; they do not verify a real hosting provider's sign-in flow.
+
 Primary references: [porcelain status](https://git-scm.com/docs/git-status), [staged restore](https://git-scm.com/docs/git-restore), [cached removal](https://git-scm.com/docs/git-rm), [commit and hooks](https://git-scm.com/docs/git-commit), [fast-forward-only pull](https://git-scm.com/docs/git-pull), [explicit push refspecs](https://git-scm.com/docs/git-push).
 
 ## Budgets and behavior
