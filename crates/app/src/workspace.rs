@@ -356,6 +356,20 @@ impl GitTurtle {
             WriteCommand::CreateBranch { name, .. } => Some(name.clone()),
             _ => None,
         };
+        let success_notice = match &command {
+            WriteCommand::Checkout { branch } => Some(format!("Switched to {branch}")),
+            WriteCommand::CreateBranch { name, .. } => {
+                Some(format!("Created and switched to {name}"))
+            }
+            WriteCommand::Fetch { remote } => Some(format!("Fetched {remote}")),
+            WriteCommand::Pull { remote, branch } => Some(format!("Pulled {remote}/{branch}")),
+            WriteCommand::Push {
+                remote,
+                local_branch,
+                remote_branch,
+            } => Some(format!("Pushed {local_branch} to {remote}/{remote_branch}")),
+            _ => None,
+        };
         let refresh_history = matches!(
             &command,
             WriteCommand::Commit { .. }
@@ -386,6 +400,8 @@ impl GitTurtle {
                     Ok(outcome) => {
                         this.operation_notice = Some(if let Some(oid) = outcome.commit_oid.as_ref() {
                             format!("Committed {} · {}", short_oid(oid), submitted_message.as_deref().unwrap_or_default().lines().next().unwrap_or_default())
+                        } else if let Some(notice) = &success_notice {
+                            notice.clone()
                         } else {
                             outcome.message.lines().find(|line| !line.trim().is_empty()).unwrap_or("Git operation completed").to_owned()
                         });
