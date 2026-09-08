@@ -82,6 +82,15 @@ impl SerialExecutor {
         self.submit_impl(operation, false)
     }
 
+    /// Attach explicit cancellation and in-memory askpass to one accepted write.
+    pub fn submit_controlled<T: Send + 'static>(
+        &self,
+        control: gitturtle_core::OperationControl,
+        operation: impl FnOnce() -> Result<T> + Send + 'static,
+    ) -> oneshot::Receiver<Result<T>> {
+        self.submit(move || gitturtle_core::run_controlled(control, operation))
+    }
+
     /// Superseded passive status reads may be skipped before they start. Explicit
     /// writes always use submit() and survive a dropped UI reply.
     pub fn submit_read<T: Send + 'static>(

@@ -137,15 +137,36 @@ impl GitTurtle {
             .as_ref()
             .is_some_and(|status| !status.entries.is_empty());
         let paused = self.integration_state.is_some();
+        let ignore_entry = self
+            .working_selected
+            .and_then(|(index, area)| {
+                (area == gitturtle_core::ChangeArea::Unstaged).then_some(index)
+            })
+            .and_then(|index| self.work_status.as_ref()?.entries.get(index))
+            .filter(|entry| entry.untracked)
+            .cloned();
         Button::new("working-recovery-menu")
             .small()
             .ghost()
             .label("Actions")
             .dropdown_caret(true)
             .accessibility_label("Working changes and recovery actions")
-            .tooltip("Stashes and last-commit actions")
+            .tooltip("Ignore selected untracked content, stashes, and last-commit actions")
             .disabled(self.operation_busy.is_some())
             .dropdown_menu(move |menu, _, _| {
+                let ignore_entry = ignore_entry.clone();
+                let menu = working_menu_item(
+                    menu,
+                    "Ignore selected untracked file…",
+                    ignore_entry.is_none(),
+                    &owner,
+                    &repository,
+                    move |this, window, cx| {
+                        if let Some(entry) = &ignore_entry {
+                            this.open_ignore(entry.clone(), window, cx);
+                        }
+                    },
+                );
                 let menu = working_menu_item(
                     menu,
                     "Save changes to stash…",

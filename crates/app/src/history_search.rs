@@ -102,7 +102,7 @@ impl GitTurtle {
         {
             return;
         }
-        self.close_file_history(window, cx);
+        self.close_inspections(window, cx);
         self.pause_history_search_for_read();
         if value.is_empty() {
             if !self.history_search_active() && self.history_search.normal.is_none() {

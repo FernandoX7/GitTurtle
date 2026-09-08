@@ -1,5 +1,6 @@
 use crate::*;
 use gitturtle_core::{ChangeArea, ChangeStatus, WriteCommand};
+use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder;
 use preferences::CommitDraft;
 
@@ -173,11 +174,13 @@ impl GitTurtle {
         self.operation_error = None;
         self.operation_notice = None;
         self.hub.update(cx, |hub, cx| hub.set_busy(true, cx));
-        let response = self.operations.submit(operation);
+        let control = self.begin_operation_control(window, cx);
+        let response = self.operations.submit_controlled(control, operation);
         self.operation_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response.await.unwrap_or_else(|_| Err(anyhow::anyhow!("Repository operation stopped without a result. Inspect the destination before retrying.")));
             let _ = this.update_in(cx, |this, window, cx| {
                 this.operation_busy = None;
+                this.finish_operation_control(window, cx);
                 this.hub.update(cx, |hub, cx| hub.set_busy(false, cx));
                 match result {
                     Ok(repo) => {
@@ -199,6 +202,7 @@ impl GitTurtle {
     }
 
     pub(super) fn show_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.end_image_drag();
         self.cancel_branch_action();
         self.cancel_recovery_read();
         if self.operation_busy.is_some() {
@@ -463,7 +467,7 @@ impl GitTurtle {
     }
 
     pub(super) fn show_working(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.close_file_history(window, cx);
+        self.close_inspections(window, cx);
         if self.operation_busy.is_some() {
             return;
         }
@@ -499,6 +503,7 @@ impl GitTurtle {
         if self.operation_busy.is_some() {
             return;
         }
+        self.close_blame(window, cx);
         let (Some(repo), Some(status)) = (&self.repository, &self.work_status) else {
             return;
         };
@@ -580,7 +585,7 @@ impl GitTurtle {
         if self.operation_busy.is_some() {
             return;
         }
-        self.close_file_history(window, cx);
+        self.close_inspections(window, cx);
         let Some(repo) = self.repository.clone() else {
             return;
         };
@@ -656,6 +661,11 @@ impl GitTurtle {
             } => Some(format!("Pushed {local_branch} to {remote}/{remote_branch}")),
             _ => None,
         };
+        let tag_command = if let WriteCommand::Tag(command) = &command {
+            Some(Arc::clone(command))
+        } else {
+            None
+        };
         let recovery = if let WriteCommand::Recovery(command) = &command {
             Some(Arc::clone(command))
         } else {
@@ -665,6 +675,7 @@ impl GitTurtle {
             &command,
             WriteCommand::Commit { .. }
                 | WriteCommand::Branch(_)
+                | WriteCommand::Tag(_)
                 | WriteCommand::Checkout { .. }
                 | WriteCommand::CreateBranch { .. }
                 | WriteCommand::Fetch { .. }
@@ -683,11 +694,15 @@ impl GitTurtle {
             self.files.clear();
             self.selected_file = None;
         }
-        let response = self.operations.submit(move || repo.execute(&command));
+        let control = self.begin_operation_control(window, cx);
+        let response = self
+            .operations
+            .submit_controlled(control, move || repo.execute(&command));
         self.operation_task = Some(cx.spawn_in(window, async move |this,cx| {
             let result=response.await.unwrap_or_else(|_|Err(anyhow::anyhow!("Operation ended without a result. Refresh before retrying; repository state may have changed.")));
             let _=this.update_in(cx,|this,window,cx| {
                 this.operation_busy=None;
+                this.finish_operation_control(window, cx);
                 let succeeded=result.is_ok();
                 match result {
                     Ok(outcome) => {
@@ -706,6 +721,7 @@ impl GitTurtle {
                         this.operation_error = Some(format!("{error:#}"));
                     }
                 }
+                if let Some(command) = &tag_command { this.finish_tag_write(&path, command, succeeded, cx); }
                 if let Some(command) = &recovery { this.finish_recovery_write(&path, command, succeeded, cx); }
                 if succeeded && ending_integration { this.conflict_drafts.retain(|(repository, _), _| repository != &path); }
                 if succeeded && let Some(resolved) = &resolved_path {
@@ -1032,6 +1048,9 @@ impl GitTurtle {
             WorkingRow::File(index, area) => {
                 let entry = &self.work_status.as_ref().unwrap().entries[index];
                 let paths = entry.paths();
+                let ignore_entry = entry.clone();
+                let ignore_owner = cx.entity().downgrade();
+                let ignore_repository = self.path.clone();
                 let name = entry
                     .path
                     .file_name()
@@ -1184,6 +1203,26 @@ impl GitTurtle {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.select_working(index, area, window, cx)
                     }))
+                    .context_menu(move |menu, _, _| {
+                        let owner = ignore_owner.clone();
+                        let repository = ignore_repository.clone();
+                        let entry = ignore_entry.clone();
+                        menu.item(
+                            PopupMenuItem::new(if entry.untracked {
+                                "Ignore…"
+                            } else {
+                                "Ignore applies to untracked files"
+                            })
+                            .disabled(busy || staged || !entry.untracked)
+                            .on_click(move |_, window, cx| {
+                                let _ = owner.update(cx, |this, cx| {
+                                    if this.path == repository {
+                                        this.open_ignore(entry.clone(), window, cx);
+                                    }
+                                });
+                            }),
+                        )
+                    })
                     .into_any_element()
             }
         }

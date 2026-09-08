@@ -22,6 +22,15 @@ impl GitTurtle {
             .child(app_icon(32.))
             .child(
                 div()
+                    .id("repository-heading")
+                    .tooltip({
+                        let path = self
+                            .path
+                            .as_ref()
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_else(|| "GitTurtle".into());
+                        move |window, cx| Tooltip::new(path.clone()).build(window, cx)
+                    })
                     .w(px(190.))
                     .min_w_0()
                     .flex()
@@ -96,8 +105,11 @@ impl GitTurtle {
                 div()
                     .text_size(px(11.))
                     .text_color(rgb(p.accent))
-                    .child(label)
+                    .child(self.operation_progress().unwrap_or_else(|| label.into()))
             }))
+            .when(busy, |header| {
+                header.child(self.render_operation_cancel(cx))
+            })
             .child(
                 button(
                     "profile",
@@ -1210,6 +1222,9 @@ impl GitTurtle {
             .into_any_element()
     }
     pub(super) fn render_preview(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.blame.is_visible() {
+            return self.render_blame(cx);
+        }
         let colors = palette(cx);
         let file = self.selected_file.and_then(|index| self.files.get(index));
         let path = file
@@ -1303,6 +1318,24 @@ impl GitTurtle {
                             }))
                     }),
             );
+        let blame_index = if self.mode == WorkspaceMode::Working {
+            self.working_selected.map(|(index, _)| index)
+        } else {
+            self.selected_file
+        };
+        if let Some(index) =
+            blame_index.filter(|_| matches!(self.content.as_deref(), Some(Content::Text { .. })))
+        {
+            toolbar = toolbar.child(
+                button("open-blame", "Blame", "", false)
+                    .tooltip(
+                        "Line attribution and history; working files include uncommitted lines",
+                    )
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.open_blame(index, window, cx)),
+                    ),
+            );
+        }
         let content = if let Some(error) = &self.error {
             empty("Preview unavailable", error)
         } else if file.is_none()
@@ -1378,31 +1411,7 @@ impl GitTurtle {
                         empty("Loading text…", "")
                     }
                 }
-                Content::Images { old, new } => {
-                    if self.zoom > 0. {
-                        toolbar = toolbar.child(
-                            div()
-                                .text_size(px(10.))
-                                .text_color(rgb(colors.muted))
-                                .child("Drag to pan"),
-                        );
-                    }
-                    for (name, zoom) in [("Fit", 0.), ("50%", 0.5), ("100%", 1.), ("200%", 2.)] {
-                        toolbar =
-                            toolbar.child(button(name, name, "", self.zoom == zoom).on_click(
-                                cx.listener(move |this, _, _, cx| {
-                                    this.zoom = zoom;
-                                    cx.notify();
-                                }),
-                            ));
-                    }
-                    div()
-                        .size_full()
-                        .flex()
-                        .child(self.render_image_side(0, old, cx))
-                        .child(self.render_image_side(1, new, cx))
-                        .into_any_element()
-                }
+                Content::Images { old, new } => self.render_image_comparison(old, new, cx),
                 Content::Conflict(_) => self.conflict_view.as_ref().map_or_else(
                     || empty("Loading conflict…", ""),
                     |view| div().size_full().child(view.clone()).into_any_element(),
@@ -1467,140 +1476,6 @@ impl GitTurtle {
                         file.new_oid.as_deref().map(short_oid).unwrap_or("—".into())
                     ))
             }))
-            .into_any_element()
-    }
-    pub(super) fn render_image_side(
-        &self,
-        index: usize,
-        side: &worker::ImageSide,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let colors = palette(cx);
-        let name = if index == 0 { "BEFORE" } else { "AFTER" };
-        let details = side
-            .image
-            .as_ref()
-            .map(|i| {
-                format!(
-                    "{} × {} · {} · {}{}",
-                    i.original_width,
-                    i.original_height,
-                    i.format,
-                    format_bytes(side.bytes),
-                    if i.width != i.original_width || i.height != i.original_height {
-                        format!(" · preview {} × {}", i.width, i.height)
-                    } else {
-                        String::new()
-                    }
-                )
-            })
-            .unwrap_or_default();
-        let view = if let Some(image) = &self.images[index] {
-            let preview = side.image.as_ref().unwrap();
-            if self.zoom == 0. {
-                div()
-                    .size_full()
-                    .p_4()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        img(image.clone())
-                            .max_w_full()
-                            .max_h_full()
-                            .object_fit(ObjectFit::Contain),
-                    )
-                    .into_any_element()
-            } else {
-                div()
-                    .id(("image-scroll", index))
-                    .size_full()
-                    .overflow_scroll()
-                    .track_scroll(&self.image_scroll)
-                    .cursor(if self.image_drag.is_some() {
-                        CursorStyle::ClosedHand
-                    } else {
-                        CursorStyle::OpenHand
-                    })
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                            this.image_drag = Some((event.position, this.image_scroll.offset()));
-                            cx.notify();
-                        }),
-                    )
-                    .child(
-                        div()
-                            .w(px(self
-                                .images
-                                .iter()
-                                .flatten()
-                                .map(|i| i.size(0).width.0)
-                                .max()
-                                .unwrap_or(preview.width as i32)
-                                as f32
-                                * self.zoom))
-                            .h(px(self
-                                .images
-                                .iter()
-                                .flatten()
-                                .map(|i| i.size(0).height.0)
-                                .max()
-                                .unwrap_or(preview.height as i32)
-                                as f32
-                                * self.zoom))
-                            .child(
-                                img(image.clone())
-                                    .w(px(preview.width as f32 * self.zoom))
-                                    .h(px(preview.height as f32 * self.zoom))
-                                    .object_fit(ObjectFit::Contain),
-                            ),
-                    )
-                    .into_any_element()
-            }
-        } else {
-            empty(
-                if side.message.is_some() {
-                    "Image unavailable"
-                } else if index == 0 {
-                    "Added image"
-                } else {
-                    "Deleted image"
-                },
-                side.message.as_deref().unwrap_or("This side has no image."),
-            )
-        };
-        div()
-            .flex_1()
-            .min_w_0()
-            .h_full()
-            .flex()
-            .flex_col()
-            .border_l_1()
-            .border_color(rgb(colors.border))
-            .child(
-                div()
-                    .h(px(40.))
-                    .flex_shrink_0()
-                    .px_3()
-                    .flex()
-                    .flex_col()
-                    .justify_center()
-                    .gap_1()
-                    .text_size(px(10.))
-                    .text_color(rgb(colors.muted))
-                    .child(name)
-                    .child(div().truncate().child(details)),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .relative()
-                    .overflow_hidden()
-                    .child(checkerboard(colors))
-                    .child(div().absolute().inset_0().child(view)),
-            )
             .into_any_element()
     }
 }
@@ -1687,6 +1562,11 @@ impl GitTurtle {
 impl Render for GitTurtle {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = palette(cx);
+        let menu_state = (self.repository.is_some(), self.operation_busy.is_some());
+        if self.menu_state != Some(menu_state) {
+            platform_polish::menus(menu_state.0, menu_state.1, cx);
+            self.menu_state = Some(menu_state);
+        }
         let body = match self.page {
             AppPage::Repository => self.render_repository(window, cx),
             AppPage::Projects => self.hub.clone().into_any_element(),
@@ -1706,6 +1586,7 @@ impl Render for GitTurtle {
             // Keep an active image drag continuous across the toolbar, inspector,
             // and either image viewport until the mouse is released.
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                this.move_image_drag(event, cx);
                 if let Some((id, start, width)) = this.column_drag {
                     if event.pressed_button == Some(MouseButton::Left) {
                         this.settings
@@ -1719,6 +1600,7 @@ impl Render for GitTurtle {
                     return;
                 };
                 if event.pressed_button != Some(MouseButton::Left) {
+                    this.end_image_drag();
                     if this.image_drag.take().is_some() {
                         cx.notify();
                     }
@@ -1738,6 +1620,7 @@ impl Render for GitTurtle {
                     if this.column_drag.take().is_some() {
                         this.save_preferences(window, cx);
                     }
+                    this.end_image_drag();
                     if this.image_drag.take().is_some() {
                         cx.notify();
                     }
@@ -1749,11 +1632,35 @@ impl Render for GitTurtle {
                     if this.column_drag.take().is_some() {
                         this.save_preferences(window, cx);
                     }
+                    this.end_image_drag();
                     if this.image_drag.take().is_some() {
                         cx.notify();
                     }
                 }),
             )
+            .on_action(
+                cx.listener(|this, _: &ShowHistory, window, cx| this.back_to_history(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &RevealRepository, _, cx| {
+                if let Some(repo) = &this.repository {
+                    cx.reveal_path(repo.path());
+                }
+            }))
+            .on_action(
+                cx.listener(|this, _: &OpenEditor, window, cx| {
+                    this.open_external_editor(window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &ShortcutHelp, window, cx| this.shortcut_help(window, cx)),
+            )
+            .on_action(cx.listener(|_, _: &MinimizeWindow, window, _| window.minimize_window()))
+            .on_action(cx.listener(|this, _: &CloseWindow, window, _| {
+                if this.operation_busy.is_none() {
+                    window.remove_window();
+                }
+            }))
+            .on_action(cx.listener(|_, _: &ZoomWindow, window, _| window.zoom_window()))
             .on_action(
                 cx.listener(|this, _: &ShowProjects, window, cx| this.show_projects(window, cx)),
             )
@@ -1785,6 +1692,10 @@ impl Render for GitTurtle {
                 }),
             )
             .on_action(cx.listener(|this, _: &NextPane, window, cx| {
+                if this.blame.owns_focus(window) {
+                    this.open_blame_commit(window, cx);
+                    return;
+                }
                 if this.mode == WorkspaceMode::Working {
                     return;
                 }
@@ -1804,7 +1715,27 @@ impl Render for GitTurtle {
                     cx.notify();
                 }
             }))
-            .child(self.render_header(cx))
+            .when(self.page != AppPage::Projects, |root| {
+                root.child(self.render_header(cx))
+            })
+            .when(
+                self.page == AppPage::Projects && self.operation_busy.is_some(),
+                |root| {
+                    root.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .p_3()
+                            .bg(rgb(colors.panel))
+                            .child(
+                                self.operation_progress()
+                                    .unwrap_or_else(|| "Working…".into()),
+                            )
+                            .child(self.render_operation_cancel(cx)),
+                    )
+                },
+            )
             .when(self.page == AppPage::Repository, |el| {
                 el.children(self.operation_error.as_ref().map(|error| {
                     div()
@@ -1819,6 +1750,9 @@ impl Render for GitTurtle {
                         .text_color(rgb(palette(cx).removed))
                         .child(
                             div()
+                                .id("operation-error-summary")
+                                .role(Role::Label)
+                                .aria_label(error.clone())
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
@@ -1862,6 +1796,9 @@ impl Render for GitTurtle {
                         .text_color(rgb(colors.accent))
                         .child(
                             div()
+                                .id("operation-notice-summary")
+                                .role(Role::Label)
+                                .aria_label(notice.clone())
                                 .flex_1()
                                 .truncate()
                                 .text_size(px(11.))

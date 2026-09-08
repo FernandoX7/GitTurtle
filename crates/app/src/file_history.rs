@@ -142,6 +142,8 @@ struct ReturnContext {
     after_editor: Option<Entity<EditorState>>,
     images: [Option<Arc<RenderImage>>; 2],
     image_scroll: ScrollHandle,
+    image_comparison: image_compare::State,
+    blame_visible: bool,
     zoom: f32,
     text_mode: TextMode,
     mode: WorkspaceMode,
@@ -159,14 +161,26 @@ pub(super) struct State {
     retained: Option<Box<ReturnContext>>,
     task: Option<Task<()>>,
     scroll: UniformListScrollHandle,
+    previous: Option<Box<State>>,
 }
 
 impl State {
+    fn depth(&self) -> usize {
+        usize::from(self.is_active())
+            + self
+                .previous
+                .as_ref()
+                .map_or(0, |previous| previous.depth())
+    }
+
     pub(super) fn is_active(&self) -> bool {
         self.retained.is_some()
     }
 
     pub(super) fn refresh_theme(&self, cx: &mut App) {
+        if let Some(previous) = &self.previous {
+            previous.refresh_theme(cx);
+        }
         let Some(retained) = &self.retained else {
             return;
         };
@@ -188,7 +202,8 @@ impl GitTurtle {
         let Some(lineage) = &self.file_history.lineage else {
             return;
         };
-        if self.page != AppPage::Repository || lineage.pending.is_some() {
+        if self.page != AppPage::Repository || self.blame.is_visible() || lineage.pending.is_some()
+        {
             return;
         }
         if let (Some(index), Some(entry)) = (lineage.selected, lineage.entry())
@@ -211,19 +226,48 @@ impl GitTurtle {
         {
             return;
         }
-        let (Some(repo), Some(commit), Some(file)) = (
-            self.repository.as_ref(),
+        let (Some(commit), Some(file)) = (
             self.selected_commit
                 .and_then(|index| self.commits.get(index)),
             self.files.get(index),
         ) else {
             return;
         };
-        let lineage = Lineage::new(
-            repo.path().to_owned(),
-            commit.oid.clone(),
-            file.path().to_owned(),
-        );
+        let anchor = commit.oid.clone();
+        let path = file.path().to_owned();
+        self.open_file_history_at(anchor, path, window, cx);
+    }
+
+    pub(super) fn file_history_blame_target(&self) -> Option<gitturtle_core::BlameTarget> {
+        let entry = self.file_history.lineage.as_ref()?.entry()?;
+        Some(gitturtle_core::BlameTarget::Committed {
+            oid: entry.commit.oid.clone(),
+            path: entry.change.path().to_owned(),
+        })
+    }
+
+    pub(super) fn open_file_history_at(
+        &mut self,
+        anchor: String,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.page != AppPage::Repository || self.operation_busy.is_some() {
+            return;
+        }
+        if self.file_history.depth() >= 4 {
+            self.error = Some(
+                "Four file-history comparisons are already open. Use Back before opening another."
+                    .into(),
+            );
+            cx.notify();
+            return;
+        }
+        let Some(repo) = &self.repository else {
+            return;
+        };
+        let lineage = Lineage::new(repo.path().to_owned(), anchor, path);
         self.invalidate_read();
         let retained = ReturnContext {
             files: std::mem::take(&mut self.files),
@@ -239,6 +283,8 @@ impl GitTurtle {
             after_editor: self.after_editor.take(),
             images: std::mem::take(&mut self.images),
             image_scroll: std::mem::take(&mut self.image_scroll),
+            image_comparison: self.image_comparison.clone(),
+            blame_visible: self.blame.is_visible(),
             zoom: self.zoom,
             text_mode: self.text_mode,
             mode: self.mode,
@@ -259,9 +305,15 @@ impl GitTurtle {
             status: self.status.clone(),
             error: self.error.take(),
         };
+        self.blame.hide();
         self.clear_preview();
+        let previous = self
+            .file_history
+            .is_active()
+            .then(|| Box::new(std::mem::take(&mut self.file_history)));
         self.file_history = State {
             lineage: Some(lineage),
+            previous,
             retained: Some(Box::new(retained)),
             ..Default::default()
         };
@@ -270,6 +322,21 @@ impl GitTurtle {
         self.pane = Pane::Files;
         window.focus(&self.file_focus, cx);
         self.load_file_history_page(0, Position::First, window, cx);
+    }
+
+    /// An explicit target change exits the entire transient navigation stack.
+    /// Back itself still pops one view, retaining the prior selection/viewport.
+    pub(super) fn close_inspections(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        loop {
+            if self.close_blame(window, cx) {
+                continue;
+            }
+            if self.close_file_history(window, cx) {
+                continue;
+            }
+            break;
+        }
+        self.blame = blame::State::default();
     }
 
     /// Returns true if Back handled a transient file-history context.
@@ -282,7 +349,12 @@ impl GitTurtle {
             return false;
         };
         self.invalidate_read();
-        self.file_history = State::default();
+        self.file_history = self
+            .file_history
+            .previous
+            .take()
+            .map(|previous| *previous)
+            .unwrap_or_default();
         self.clear_preview();
         let retained = *retained;
         self.files = retained.files;
@@ -298,6 +370,8 @@ impl GitTurtle {
         self.after_editor = retained.after_editor;
         self.images = retained.images;
         self.image_scroll = retained.image_scroll;
+        self.image_comparison = retained.image_comparison;
+        self.blame.set_visible(retained.blame_visible);
         self.zoom = retained.zoom;
         self.text_mode = retained.text_mode;
         self.mode = retained.mode;
@@ -310,6 +384,7 @@ impl GitTurtle {
             window.focus(&focus, cx);
         }
         if self.mode == WorkspaceMode::Compare
+            && !self.blame.is_visible()
             && self.content.is_none()
             && self.error.is_none()
             && let Some(index) = self.selected_file
@@ -404,6 +479,7 @@ impl GitTurtle {
     }
 
     fn select_file_revision(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_blame(window, cx);
         let Some(lineage) = self.file_history.lineage.as_mut() else {
             return;
         };
@@ -505,7 +581,7 @@ impl GitTurtle {
                                         "Close file history and restore previous view",
                                     )
                                     .on_click(cx.listener(|this, _, window, cx| {
-                                        this.close_file_history(window, cx);
+                                        this.back_to_history(window, cx);
                                     })),
                             ),
                     )

@@ -59,11 +59,19 @@ impl GitTurtle {
             let view = view.clone();
             let command = Arc::clone(&command);
             dialog
-                .title(title.clone())
+                .title(
+                    div()
+                        .id("operation-review-title")
+                        .role(Role::Label)
+                        .aria_label(title.clone())
+                        .child(title.clone()),
+                )
                 .width(px(520.))
                 .child(
                     div()
                         .id("operation-consequences")
+                        .role(Role::Label)
+                        .aria_label(explanation.clone())
                         .max_h(px(360.))
                         .overflow_y_scroll()
                         .text_size(px(13.))

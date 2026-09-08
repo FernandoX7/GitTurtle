@@ -80,6 +80,7 @@ enum MenuAction {
     Merge,
     Rebase,
     Remotes,
+    Tags,
 }
 
 impl GitTurtle {
@@ -240,13 +241,8 @@ impl GitTurtle {
                         &path,
                     );
                 }
-                add_menu_action(
-                    menu.separator(),
-                    "Manage remotes…",
-                    MenuAction::Remotes,
-                    &owner,
-                    &path,
-                )
+                menu = add_menu_action(menu.separator(), "Tags…", MenuAction::Tags, &owner, &path);
+                add_menu_action(menu, "Manage remotes…", MenuAction::Remotes, &owner, &path)
             })
             .into_any_element()
     }
@@ -276,6 +272,7 @@ impl GitTurtle {
                 self.choose_branch(ChoicePurpose::Integrate { rebase: true }, window, cx)
             }
             MenuAction::Remotes => self.open_remote_manager(window, cx),
+            MenuAction::Tags => self.open_tags(window, cx),
         }
     }
 

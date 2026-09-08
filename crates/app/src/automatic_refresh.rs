@@ -159,7 +159,8 @@ impl GitTurtle {
             self.operation_busy.is_some(),
             self.loading.is_some()
                 || self.history_search_pending()
-                || self.file_history.is_active(),
+                || self.file_history.is_active()
+                || self.blame.is_visible(),
             self.status_task.is_some(),
         ) {
             return;

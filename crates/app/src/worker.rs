@@ -109,6 +109,16 @@ pub enum Scope {
 }
 
 pub enum Job {
+    Blame {
+        repo: GitRepository,
+        target: gitturtle_core::BlameTarget,
+    },
+    LineHistory {
+        repo: GitRepository,
+        oid: String,
+        path: PathBuf,
+        line: usize,
+    },
     SearchHistory {
         repo: GitRepository,
         scope: Option<Scope>,
@@ -155,6 +165,8 @@ pub enum Job {
 }
 
 pub enum Output {
+    Blame(gitturtle_core::Blame),
+    LineHistory(gitturtle_core::LineHistory),
     SearchHistory(SearchResult),
     FileHistory(gitturtle_core::FileHistoryPage),
     QuietRefresh(Box<QuietRefresh>),
@@ -618,6 +630,21 @@ fn execute(
                 graph_notice,
                 retained_bytes,
             }))
+        }
+        Job::Blame { repo, target } => {
+            let blame = repo.blame(&target, &cancellation.history)?;
+            cancellation.check()?;
+            Ok(Output::Blame(blame))
+        }
+        Job::LineHistory {
+            repo,
+            oid,
+            path,
+            line,
+        } => {
+            let history = repo.line_history(&oid, &path, line, &cancellation.history)?;
+            cancellation.check()?;
+            Ok(Output::LineHistory(history))
         }
         Job::FileHistory {
             repo,

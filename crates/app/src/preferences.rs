@@ -24,6 +24,8 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[serde(default)]
 pub struct AppSettings {
     pub theme: ThemeChoice,
+    pub follow_system: bool,
+    pub external_editor: String,
     pub columns: ColumnSettings,
     pub density: Density,
     pub reopen_last: bool,
@@ -34,6 +36,8 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             theme: ThemeChoice::default(),
+            follow_system: false,
+            external_editor: String::new(),
             columns: ColumnSettings::default(),
             density: Density::default(),
             reopen_last: true,
@@ -43,6 +47,24 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
+    pub fn resolved_theme(&self, appearance: gpui_kit::WindowAppearance) -> ThemeChoice {
+        if !self.follow_system {
+            return self.theme;
+        }
+        match appearance {
+            gpui_kit::WindowAppearance::Light | gpui_kit::WindowAppearance::VibrantLight => {
+                ThemeChoice::Daylight
+            }
+            _ => {
+                if self.theme == ThemeChoice::Daylight {
+                    ThemeChoice::Midnight
+                } else {
+                    self.theme
+                }
+            }
+        }
+    }
+
     pub fn normalize(&mut self) {
         self.columns.normalize();
     }
@@ -50,6 +72,11 @@ impl AppSettings {
     /// Validate an explicit settings edit before persistence. This is only the
     /// preference boundary; Git operations still validate their actual targets.
     pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.external_editor.len() <= 4096
+                && !self.external_editor.contains(['\0', '\n', '\r']),
+            "Editor must be an application name or executable path of at most 4,096 bytes"
+        );
         let branch = &self.default_branch;
         ensure!(
             !branch.is_empty() && branch.len() <= 255,

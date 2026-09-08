@@ -20,6 +20,11 @@ impl GitTurtle {
                 _ => {}
             },
         ));
+        self.subscriptions.push(cx.subscribe_in(
+            &self.settings_editor,
+            window,
+            |_, _, _: &InputEvent, _, cx| cx.notify(),
+        ));
         for input in [&self.identity_name, &self.identity_email] {
             self.subscriptions.push(cx.subscribe_in(
                 input,
@@ -40,6 +45,7 @@ impl GitTurtle {
         self.column_menu = false;
         self.column_drag = None;
         self.image_drag = None;
+        self.end_image_drag();
         self.settings_branch.update(cx, |input, cx| {
             input.set_value(self.settings.default_branch.clone(), window, cx)
         });
@@ -117,22 +123,12 @@ impl GitTurtle {
     }
 
     fn choose_theme(&mut self, theme: ThemeChoice, window: &mut Window, cx: &mut Context<Self>) {
-        if self.settings.theme == theme {
+        if self.settings.theme == theme && !self.settings.follow_system {
             return;
         }
         self.settings.theme = theme;
-        theme.apply(Some(window), cx);
-        // Update concrete colors without replacing editors or their retained
-        // selection, viewport, find session, and keyboard focus.
-        if let (Some(collection), Some(Content::Text { presentation, .. })) =
-            (&self.patch_decoration, self.content.as_deref())
-        {
-            text::refresh_theme(collection, presentation, cx);
-        }
-        if let Some(split) = &self.split_view {
-            split.update(cx, |view, cx| view.refresh_theme(cx));
-        }
-        self.file_history.refresh_theme(cx);
+        self.settings.follow_system = false;
+        self.apply_appearance(window, cx);
         self.save_preferences(window, cx);
     }
 
@@ -271,6 +267,28 @@ impl GitTurtle {
                 .flex_col()
                 .gap_5()
                 .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_3()
+                        .child(setting_description(
+                            "Follow system appearance",
+                            "Daylight in Light Mode; your selected dark palette in Dark Mode.",
+                            cx,
+                        ))
+                        .child(
+                            Switch::new("follow-system")
+                                .checked(self.settings.follow_system)
+                                .label("Follow system appearance")
+                                .on_click(cx.listener(|this, checked, window, cx| {
+                                    this.settings.follow_system = *checked;
+                                    this.apply_appearance(window, cx);
+                                    this.save_preferences(window, cx);
+                                })),
+                        ),
+                )
+                .child(
                     div().flex().flex_col().gap_3().children(
                         ThemeChoice::ALL
                             .chunks(theme_columns)
@@ -278,7 +296,8 @@ impl GitTurtle {
                             .map(|(row, choices)| {
                                 div().flex().gap_3().children(
                                     choices.iter().copied().enumerate().map(|(column, choice)| {
-                                        let selected = self.settings.theme == choice;
+                                        let selected = !self.settings.follow_system
+                                            && self.settings.theme == choice;
                                         Button::new((
                                             "settings-theme",
                                             row * theme_columns + column,
@@ -370,6 +389,12 @@ impl GitTurtle {
             .flex()
             .flex_col()
             .gap_5()
+            .child(div().flex().flex_col().gap_2()
+                .child(setting_description("External editor", "Application name on macOS; executable path on Linux. File → Open Repository in Editor opens the current folder.", cx))
+                .child(Input::new(&self.settings_editor).aria_label("Preferred external editor"))
+                .child(button("save-external-editor", "Save editor", "", false)
+                    .disabled(self.settings_editor.read(cx).value().trim() == self.settings.external_editor)
+                    .on_click(cx.listener(|this, _, window, cx| { this.settings.external_editor = this.settings_editor.read(cx).value().trim().to_owned(); this.save_preferences(window, cx); }))))
             .child(
                 div()
                     .flex()

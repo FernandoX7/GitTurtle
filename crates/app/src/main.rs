@@ -1,5 +1,7 @@
 mod appearance;
+mod authentication;
 mod automatic_refresh;
+mod blame;
 mod branch_actions;
 mod columns;
 mod commit_drafts;
@@ -9,16 +11,20 @@ mod editor_find;
 mod file_history;
 mod graph;
 mod history_search;
+mod ignore;
+mod image_compare;
 mod integration;
 mod local_refresh;
 mod navigation;
 mod operations;
 mod partial_view;
+mod platform_polish;
 mod preferences;
 mod projects;
 mod recovery;
 mod settings;
 mod split_diff;
+mod tags;
 mod text;
 mod views;
 mod worker;
@@ -35,6 +41,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 use operations::SerialExecutor;
+use platform_polish::*;
 use preferences::{AppSettings, CommitDraft, Preferences};
 use std::{
     borrow::Cow,
@@ -143,6 +150,12 @@ enum NavMode {
 }
 
 struct GitTurtle {
+    authentication: authentication::State,
+    blame: blame::State,
+    tag_actions: tags::State,
+    ignore_actions: ignore::State,
+    menu_state: Option<(bool, bool)>,
+    settings_editor: Entity<InputState>,
     history_search: history_search::State,
     file_history: file_history::State,
     automatic: automatic_refresh::State,
@@ -225,6 +238,7 @@ struct GitTurtle {
     images: [Option<Arc<RenderImage>>; 2],
     text_mode: TextMode,
     zoom: f32,
+    image_comparison: image_compare::State,
     image_scroll: ScrollHandle,
     image_drag: Option<(Point<Pixels>, Point<Pixels>)>,
     search: Entity<InputState>,
@@ -286,7 +300,18 @@ impl GitTurtle {
         let remote_branch = cx.new(|cx| InputState::new(window, cx).placeholder("Remote branch"));
         let settings_branch =
             cx.new(|cx| InputState::new(window, cx).default_value(settings.default_branch.clone()));
+        let settings_editor = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(settings.external_editor.clone())
+                .placeholder("Visual Studio Code")
+        });
         let mut this = Self {
+            authentication: authentication::State::default(),
+            blame: blame::State::default(),
+            tag_actions: tags::State::default(),
+            ignore_actions: ignore::State::default(),
+            menu_state: None,
+            settings_editor,
             history_search: history_search::State::default(),
             file_history: file_history::State::default(),
             automatic: automatic_refresh::State::default(),
@@ -373,6 +398,7 @@ impl GitTurtle {
             images: [None, None],
             text_mode: TextMode::Unified,
             zoom: 0.,
+            image_comparison: image_compare::State::default(),
             image_scroll: ScrollHandle::new(),
             image_drag: None,
             search: search.clone(),
@@ -397,6 +423,12 @@ impl GitTurtle {
             interaction_started: None,
             details: false,
         };
+        this.subscriptions
+            .push(cx.observe_window_appearance(window, |this, window, cx| {
+                if this.settings.follow_system {
+                    this.apply_appearance(window, cx);
+                }
+            }));
         this.subscriptions.push(
             cx.subscribe_in(&search, window, |this, _, event, window, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -547,10 +579,14 @@ impl GitTurtle {
     ) {
         self.cancel_branch_action();
         self.cancel_recovery_read();
+        self.cancel_tag_action();
+        self.cancel_ignore_action();
         if self.operation_busy.is_some() {
             return;
         }
-        self.close_file_history(window, cx);
+        self.close_inspections(window, cx);
+        self.close_blame(window, cx);
+        self.blame = blame::State::default();
         self.discard_history_search();
         self.page_return_focus = None;
         self.restore_commit = if self.path.as_ref() == Some(&path) && self.scope == scope {
@@ -608,6 +644,7 @@ impl GitTurtle {
 
     fn clear_preview(&mut self) {
         self.image_drag = None;
+        self.image_comparison = image_compare::State::default();
         self.content = None;
         self.patch_editor = None;
         self.patch_decoration = None;
@@ -623,7 +660,10 @@ impl GitTurtle {
 
     fn receive(&mut self, output: Output, window: &mut Window, cx: &mut Context<Self>) {
         match output {
-            Output::SearchHistory(_) | Output::FileHistory(_) => {} // Applied by their own bounded subscriptions.
+            Output::Blame(_)
+            | Output::LineHistory(_)
+            | Output::SearchHistory(_)
+            | Output::FileHistory(_) => {} // Applied by their own bounded subscriptions.
             Output::QuietRefresh(_) => {} // Applied by the quiet-read subscription.
             Output::WorkingPreview(file, content, elapsed) => {
                 if self.mode != WorkspaceMode::Working {
@@ -747,6 +787,9 @@ impl GitTurtle {
     }
 
     fn ensure_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.blame.is_visible() {
+            return;
+        }
         let Some(content) = &self.content else {
             return;
         };
@@ -943,6 +986,9 @@ impl GitTurtle {
     }
 
     fn back_to_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.close_blame(window, cx) {
+            return;
+        }
         if self.close_file_history(window, cx) {
             return;
         }
@@ -984,7 +1030,8 @@ impl GitTurtle {
         cx.notify();
     }
     fn select_commit(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        self.close_file_history(window, cx);
+        self.close_blame(window, cx);
+        self.close_inspections(window, cx);
         if self.mode == WorkspaceMode::Working {
             self.mode = WorkspaceMode::History;
             self.working_selected = None;
@@ -1016,6 +1063,7 @@ impl GitTurtle {
         }
     }
     fn select_file(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_blame(window, cx);
         if index >= self.files.len() {
             return;
         }
@@ -1057,7 +1105,7 @@ impl GitTurtle {
         }
     }
     fn change_parent(&mut self, parent: usize, window: &mut Window, cx: &mut Context<Self>) {
-        self.close_file_history(window, cx);
+        self.close_inspections(window, cx);
         let (Some(index), Some(repo)) = (self.selected_commit, &self.repository) else {
             return;
         };
@@ -1074,7 +1122,7 @@ impl GitTurtle {
         self.request(job, "Reading comparison…", window, cx);
     }
     fn refresh(&mut self, _: &Refresh, window: &mut Window, cx: &mut Context<Self>) {
-        self.close_file_history(window, cx);
+        self.close_inspections(window, cx);
         if self.mode == WorkspaceMode::Working {
             self.refresh_worktree(window, cx);
         } else if let Some(path) = self.path.clone() {
@@ -1112,6 +1160,9 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.move_blame_line(direction, edge, window, cx) {
+            return;
+        }
         if self.move_file_history_revision(direction, edge, window, cx) {
             return;
         }
@@ -1352,6 +1403,9 @@ fn primary_label() -> &'static str {
 }
 
 fn main() {
+    if let Some(code) = gitturtle_core::run_askpass_if_requested() {
+        std::process::exit(code);
+    }
     let preferences = Preferences::load();
     let initial = std::env::args_os().nth(1).map(PathBuf::from).or_else(|| {
         preferences
@@ -1362,7 +1416,10 @@ fn main() {
     });
     gpui_kit::application().with_assets(Assets).run(move |cx| {
         gpui_kit::init(cx);
-        preferences.settings.theme.apply(None, cx);
+        preferences
+            .settings
+            .resolved_theme(cx.window_appearance())
+            .apply(None, cx);
         let primary = if cfg!(target_os = "macos") {
             "cmd"
         } else {
@@ -1370,6 +1427,16 @@ fn main() {
         };
         cx.bind_keys([
             KeyBinding::new(&format!("{primary}-q"), Quit, None),
+            KeyBinding::new(&format!("{primary}-1"), ShowHistory, Some("GitTurtle")),
+            KeyBinding::new(&format!("{primary}-m"), MinimizeWindow, Some("GitTurtle")),
+            KeyBinding::new(&format!("{primary}-w"), CloseWindow, Some("GitTurtle")),
+            KeyBinding::new(&format!("{primary}-h"), HideApplication, None),
+            KeyBinding::new(&format!("{primary}-alt-h"), HideOtherApplications, None),
+            KeyBinding::new(
+                &format!("{primary}-shift-/"),
+                ShortcutHelp,
+                Some("GitTurtle"),
+            ),
             KeyBinding::new(&format!("{primary}-,"), ShowSettings, Some("GitTurtle")),
             KeyBinding::new(
                 &format!("{primary}-shift-o"),
@@ -1382,6 +1449,11 @@ fn main() {
             KeyBinding::new(&format!("{primary}-f"), Search, Some("GitTurtleList")),
             KeyBinding::new(&format!("{primary}-b"), ToggleSidebar, Some("GitTurtle")),
             KeyBinding::new(&format!("{primary}-["), BackHistory, Some("GitTurtle")),
+            KeyBinding::new(
+                &format!("{primary}-c"),
+                gpui_kit::component::input::Copy,
+                Some("GitTurtleList"),
+            ),
             KeyBinding::new("down", NextRow, Some("GitTurtleList")),
             KeyBinding::new("up", PreviousRow, Some("GitTurtleList")),
             KeyBinding::new("home", FirstRow, Some("GitTurtleList")),
@@ -1390,19 +1462,10 @@ fn main() {
             KeyBinding::new("escape", ClearSearch, Some("GitTurtle")),
         ]);
         cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.set_menus(vec![Menu {
-            name: "GitTurtle".into(),
-            disabled: false,
-            items: vec![
-                MenuItem::action("Open Repository…", OpenRepository),
-                MenuItem::action("Projects…", ShowProjects),
-                MenuItem::action("Working Changes", ShowChanges),
-                MenuItem::action("Refresh Local State", Refresh),
-                MenuItem::action("Settings…", ShowSettings),
-                MenuItem::separator(),
-                MenuItem::action("Quit GitTurtle", Quit),
-            ],
-        }]);
+        cx.on_action(|_: &HideApplication, cx| cx.hide());
+        cx.on_action(|_: &HideOtherApplications, cx| cx.hide_other_apps());
+        cx.on_action(|_: &ShowAllApplications, cx| cx.unhide_other_apps());
+        platform_polish::menus(false, false, cx);
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();
