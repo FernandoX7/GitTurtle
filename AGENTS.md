@@ -13,14 +13,18 @@ GitTurtle is a beautiful, fast native Git client for history inspection and ever
 
 ## Find the relevant code
 
-Read only the guidance and code needed for the task. Before changing the app crate, read [its local instructions](crates/app/AGENTS.md), including when working from the repository root.
+Read only the guidance and code needed for the task. App and Git-core changes require their local instructions: [app](crates/app/AGENTS.md) or [Git core](crates/git-core/AGENTS.md), including when working from the repository root.
 
 | Concern | Entry points |
 | --- | --- |
-| Workspace state, selection, focus, layout | `crates/app/src/main.rs`, `views.rs`; [design](docs/design.md) |
-| Jobs, cancellation, repository session, cache | `crates/app/src/worker.rs`; [architecture](docs/architecture.md) |
+| Pages, repository modes, selection, focus, layout | `crates/app/src/main.rs`, `views.rs`; [design](docs/design.md) |
+| Replaceable reads, cancellation, repository session, cache | `crates/app/src/worker.rs`; [architecture](docs/architecture.md) |
+| Working status, mutable previews, drafts, explicit writes | `crates/app/src/workspace.rs`, `operations.rs` |
+| Project hub, settings, persistence | `crates/app/src/projects.rs`, `settings.rs`, `preferences.rs` |
+| Themes, density, history columns | `crates/app/src/appearance.rs`, `columns.rs`, `views.rs` |
 | Graph, branch folders, patch presentation | `crates/app/src/graph.rs`, `navigation.rs`, `text.rs`, `diff_view.rs` |
 | Git reads and compatibility fixtures | `crates/git-core/src/lib.rs`, `crates/git-core/tests/repository.rs`; [Git service notes](crates/git-core/README.md) |
+| Status, staged/unstaged previews, Git writes and local-remote fixtures | `crates/git-core/src/work.rs`, `crates/git-core/tests/workflow.rs` |
 | Image decoding and limits | `crates/preview/src/lib.rs`; app worker handles render-image conversion |
 | Native checks, packaging, timing evidence | [Validation](docs/validation.md), `scripts/package-macos.sh`, `docs/benchmarks/` |
 
@@ -48,6 +52,6 @@ Choose validation for the changed behavior:
 
 Test interaction changes in the real native app: scrolling, keyboard focus, selection/copy, errors and empty/loading states. Measure the affected path in release mode before claiming a speed improvement; record fixture, hardware, cache state, and tail latency. Broaden testing for a new failure/change/concern rather than repeating clean checks.
 
-Use [gitturtle-performance](.agents/skills/gitturtle-performance/SKILL.md) for scheduling, Git operations, cache, or preview hot paths. Use [gitturtle-native-qa](.agents/skills/gitturtle-native-qa/SKILL.md) to validate native interactions or a macOS package; it is unnecessary for docs-only work.
+Use [gitturtle-performance](.agents/skills/gitturtle-performance/SKILL.md) for scheduling, passive Git reads, caches, or preview hot paths. Routine Git-write semantics follow the core instructions and relevant fixtures. Use [gitturtle-native-qa](.agents/skills/gitturtle-native-qa/SKILL.md) to validate native interactions or a macOS package; it is unnecessary for docs-only work.
 
 Keep durable rules here, app details near the code, and repeatable procedures in focused skills. Update the relevant source when implementation changes; avoid duplicating rules or copying model prompt templates. The [Astra guidance audit](docs/agent-guidance.md) records sources and design choices. Official guidance: https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6-astra

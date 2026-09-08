@@ -1,6 +1,6 @@
 # Development agent guidance
 
-The original September 7, 2026 audit covered the implementation through `c1808d4` against the [GPT-6 Astra model guidance](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6-astra). The later authorized product scope adds everyday Git writes, Projects, Settings, themes, and configurable columns; the guidance below now routes those features while retaining the audit's instruction design. Application behavior and validation evidence remain in their existing documents. This update is not a new model audit or a claim that the expanded native workflows have passed validation.
+The September 7, 2026 follow-up audit checked the project through `7eef2c3`, including the final application changes in `55e7f14`, against freshly fetched [GPT-6 Astra model guidance](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6-astra). It covers development instructions for the expanded everyday Git workflow, Projects, Settings, themes, and configurable columns. The original audit covered `c1808d4`; this review updates that setup for the current code. Native behavior and measured timings remain tied to their exercised revisions in [validation](validation.md).
 
 ## Instruction layout
 
@@ -8,10 +8,11 @@ The original September 7, 2026 audit covered the implementation through `c1808d4
 | --- | --- |
 | [Root AGENTS.md](../AGENTS.md) | Product boundaries, authorized scope, code routing, delegation, commits, and proportionate validation |
 | [App AGENTS.md](../crates/app/AGENTS.md) | Native state transitions, explicit-operation routing, settings/columns, prepared presentation, and resource lifetimes |
+| [Git core AGENTS.md](../crates/git-core/AGENTS.md) | Passive versus normal Git command policy, byte-safe working previews, operation outcomes, and semantic fixture checks |
 | [gitturtle-performance](../.agents/skills/gitturtle-performance/SKILL.md) | On-demand review of passive reads, scheduling, caches, previews, and performance evidence |
 | [gitturtle-native-qa](../.agents/skills/gitturtle-native-qa/SKILL.md) | On-demand project/working/settings interaction and local package validation |
 
-This arrangement follows OpenAI's [customization guidance](https://learn.chatgpt.com/docs/customization/overview): keep persistent project rules small, place specialized contracts near their code, and load repeatable procedures as skills when relevant. The root explicitly routes app work to its nested instructions so a task started from the repository root can find them. See [instruction discovery](https://learn.chatgpt.com/docs/agent-configuration/agents-md) for Codex's directory-based loading behavior.
+This arrangement follows OpenAI's [customization guidance](https://learn.chatgpt.com/docs/customization/overview): keep persistent project rules small, place specialized contracts near their code, and load repeatable procedures as skills when relevant. The root explicitly routes app and Git-core work to their nested instructions so a task started from the repository root can find them. See [instruction discovery](https://learn.chatgpt.com/docs/agent-configuration/agents-md) for Codex's directory-based loading behavior.
 
 ## Astra guidance applied here
 
@@ -26,6 +27,16 @@ The official model guide emphasizes initiative within scope, clear instruction p
 
 These are project applications of the source guidance, not a verbatim model prompt or evidence that model quality has been benchmarked.
 
+## Findings from the expanded-code audit
+
+- Updated the root code map for working state, operation execution, project/settings forms, persistence, themes, columns, and Git workflow fixtures. Narrowed the performance-skill trigger to its actual scope.
+- Added local Git-core instructions for the two command policies, literal paths, mutable previews, retained Git hooks/signing/filter behavior, and uncertain outcomes. Local Refresh cannot verify whether a timed-out push reached its remote.
+- Corrected the blanket “Back performs no Git request” rule: Compare retains its file list, while returning from Working after history invalidation can reload changed-file metadata. Added root/list focus ownership, page guards for hidden editors, working-preview invalidation, canonical draft identity, and granular preference merging.
+- Updated the performance skill to cover the working-preview trace and reproducible HEAD/index/worktree state. Cache limits are looked up in code instead of copied into instructions.
+- Updated native QA for Settings/Projects return focus, working refresh races, draft identity, and uncertain pushes. A current development build is sufficient for ordinary interaction checks; release measurements and fresh packaging remain tied to those requests.
+
+The two existing skills remain focused and useful. The new core instructions supply the missing durable contract without adding a third workflow skill or fixed agent persona.
+
 ## Delegation and model settings
 
 Use task-specific subagents when there is independent work: Git/fixture review, worker/cache analysis, or native design review are useful boundaries. Give a worker the requested outcome, relevant paths, ownership, and checks; ask it to return changed files, evidence, and unresolved issues. Reviews can remain read-only while the coordinator edits. Avoid workers concurrently manipulating the shared Git index or desktop app.
@@ -38,4 +49,4 @@ GPT-6 Astra is the requested development model. Keep the user's selected model a
 
 Revise the closest contract when implementation changes, update skill routing when workflows change, and remove superseded instructions rather than accumulating duplicate rules. Keep changing limits and benchmark results in code and validation records; check them at use time. Recheck the official model guide when upgrading the development model or when observed behavior warrants a prompting change.
 
-The original audit checked file/symbol references, Cargo package names, local Markdown links, and both skill frontmatters. An independent code review checked the architectural fit; a separate scenario review checked task routing and validation choices. Those historical checks validate that instruction setup, not the new workflows, native runtime behavior, or model performance. Current implementation checks belong in the validation record with their exercised revision.
+The follow-up used independent code-contract and scenario reviews. The scenarios covered Settings/Escape focus, stale working previews after staging, uncertain push retries, a docs-only Astra audit, and another image format. They exposed routing and verification gaps before revision; they were instruction reviews, not executed product tests or a model-quality benchmark. Validation checked the six guidance files, 29 local links, Cargo package/command paths, 24 key code symbols, both skill frontmatters, and the final diff. No Rust suite, native checks, or benchmarks were rerun for these documentation changes. Runtime and performance evidence belongs in the validation record with its exercised revision.
