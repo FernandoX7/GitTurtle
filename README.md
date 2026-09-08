@@ -1,18 +1,32 @@
 # GitTurtle
 
-GitTurtle v0.1 is a native, read-only Git browser built with Rust and GPUI. It displays local history, branches, worktrees, code changes, and image comparisons. It uses the installed Git executable for repository reads, with no Electron runtime or AI features.
+GitTurtle is a native Git client built with Rust and GPUI for everyday Git work, history, code changes, and image comparisons. It uses your installed Git executable, with no Electron runtime or AI features. Browsing stays local; repository writes and network operations start from explicit actions.
 
 Native builds have been exercised on macOS; the [validation notes](docs/validation.md) identify the checked builds and limits. The shared Rust implementation is intended to support Linux, but Linux builds, packaging, and native interaction have not been validated. See [the design specification](docs/design.md) for the broader intended experience.
 
-## Available in v0.1
+## Current source features
 
+- A project hub with searchable recent repositories, native folder selection, clone, and create.
+- Working changes with staged/unstaged previews, whole-file staging and unstaging, and commits.
+- Explicit branch creation/switching, fetch, fast-forward pull, and push to a chosen remote branch.
 - Local and remote-tracking branches grouped into expandable folders, linked worktrees, and search within loaded history.
 - Full-height history with separate reference, graph, and commit-summary columns, alongside persistent commit details and changed files.
 - Full-height file comparison, root comparisons, and explicit merge-parent selection.
 - Selectable, read-only unified patches with syntax coloring and old/new line numbers, plus separate **Before** and **After** source tabs.
 - Before/after PNG, JPEG, WebP, GIF, and supported static SVG previews, transparency backgrounds, linked zoom, and drag-to-pan.
 - Local Git LFS image previews when the stored object passes size and SHA-256 verification; explicit messages for unavailable or unsupported content.
-- Native folder selection, remembered repository, resizable panes, and keyboard navigation.
+- Midnight, Graphite, and Daylight themes; comfortable/compact density; configurable history columns; recent-project and startup preferences.
+- Repository Git identity settings, resizable panes, and keyboard navigation.
+
+## Open a project and work with Git
+
+Use **Projects** to reopen a recent repository, choose an existing folder, clone a URL or local repository, or create a new repository. Clone and Create take a parent folder and project-folder name; the destination must be new or empty. Create also lets you choose the initial branch.
+
+**Working Changes** separates staged and unstaged files. Select either side to inspect it, stage or unstage individual files or the whole list, and enter a commit message to commit the staged changes. Previews remain read-only. A file can appear in both lists when it has staged and further unstaged edits.
+
+**Git actions** exposes branch switching and creation, plus the selected remote and target branch for network operations. Creating a branch also switches to it. Pull accepts fast-forward updates only; Push uses the current local branch and an explicit destination branch, without force. Branch selection in the history navigator still changes only the history scope.
+
+**Settings** controls the theme, density, startup behavior, default branch for new projects, and history column visibility. Drag header dividers to resize columns; narrow windows scroll horizontally without hiding your choices. The commit-message column stays visible. Git name/email edits are saved only after **Save repository identity** for the displayed repository.
 
 ## Browse history, then open a comparison
 
@@ -33,7 +47,7 @@ cargo run --locked -p gitturtle -- /path/to/repository
 cargo run --release --locked -p gitturtle -- /path/to/repository
 ```
 
-Open an existing clone or linked worktree. With no path argument, the app attempts to reopen the last remembered repository. Settings are stored separately from the inspected repository at `~/Library/Application Support/GitTurtle/preferences.json` on macOS. The Linux settings path is `$XDG_CONFIG_HOME/gitturtle/preferences.json`, falling back to `~/.config/gitturtle/preferences.json`.
+Open an existing clone or linked worktree. With no path argument, the app reopens the last remembered repository when that setting is enabled; otherwise it opens Projects. App settings are stored separately from repositories at `~/Library/Application Support/GitTurtle/preferences.json` on macOS. The Linux settings path is `$XDG_CONFIG_HOME/gitturtle/preferences.json`, falling back to `~/.config/gitturtle/preferences.json`.
 
 ## Package on macOS
 
@@ -58,6 +72,9 @@ The script produces a bundle for the build machine's architecture, includes the 
 | macOS shortcut | Action |
 | --- | --- |
 | Command-O | Open a repository |
+| Command-Shift-O | Open Projects |
+| Command-2 | Open Working Changes |
+| Command-, | Open Settings |
 | Command-[ | Back to History without clearing the query |
 | Command-R | Refresh the local snapshot |
 | Command-F in the history or file list | Focus loaded-history search |
@@ -71,16 +88,21 @@ The script produces a bundle for the build machine's architecture, includes the 
 
 The non-macOS key bindings use Control instead of Command; their native behavior has not been tested on Linux. Text previews support selection and copying without editing repository content.
 
-## Read-only behavior
+## Repository operations
 
-GitTurtle reads existing local objects, references, and worktrees. It does not stage, commit, checkout, fetch, push, repair, or run repository maintenance. Selecting a branch or worktree changes the view without changing the checkout.
+History, status, and previews read local objects, references, and files without changing the index or checkout. Passive reads disable external diff/text-conversion helpers and filters; working-file previews show raw content and do not follow stored symlinks.
 
-**Refresh rereads local state only.** It resolves the selected branch or worktree's current tip from the new snapshot. Remote-tracking branches reflect fetches performed by another tool. Missing partial-clone objects and LFS content are not downloaded. Repository hooks, external diff commands, text conversions, and LFS helpers are not run.
+**Refresh rereads local state only.** It resolves the selected branch or worktree's current tip from the new snapshot. Remote-tracking branches change after an explicit fetch in GitTurtle or another tool. Missing partial-clone objects and preview LFS content are not downloaded automatically.
 
-The [Git service documentation](crates/git-core/README.md) describes read safeguards, local LFS compatibility, and backend measurements. Those measurements exclude the native UI and are not interaction-latency guarantees.
+Staging, committing, switching branches, cloning, and network actions use a separate background executor. Real Git writes preserve configured hooks, identity, filters, signing, and credential helpers. Configure authentication through Git or an SSH agent beforehand; GitTurtle has no interactive credential dialog. Automatic maintenance and recursive submodule network operations are disabled.
+
+An operation runs once. A timeout or lost result can leave local or remote state changed; GitTurtle reports the uncertainty rather than retrying automatically. Refresh and inspect the affected repository before retrying. Identity writes use worktree configuration when enabled, otherwise repository-local configuration shared by linked worktrees; global identity is not changed.
+
+The [Git service documentation](crates/git-core/README.md) describes passive-read safeguards, explicit operations, local LFS compatibility, and backend measurements. Those measurements exclude the native UI and are not interaction-latency guarantees.
 
 ## Current limits
 
+- Staging operates on whole files, not individual hunks. Conflict resolution, rebase/merge editing, branch deletion, force push, and submodule management are not provided. Resolve conflicts with your editor/Git tools, then refresh and stage the resolved files.
 - History starts with 500 commits. **Load more** increases the loaded prefix by 500, up to 10,000. Each increase reloads that prefix; it restores the selected commit and preferred file when available and centers the selected history row. Back to history retains the existing prefix instead. Search covers only loaded commits. Refresh is manual.
 - Text comparisons use a unified patch and separate Before/After tabs. Aligned split diffs are not implemented. Text previews are limited to 2 MiB and 100,000 lines per side. Rename detection is disabled in the UI's initial file-list path, so renames appear as an addition and a deletion.
 - Images display the first frame. The app requests previews with a maximum edge of 1,600 pixels; **100% means decoded preview size**, which may be smaller than the source. Original dimensions and reduced preview dimensions are shown. Encoded input is limited to 32 MiB, with additional pixel and decoder limits. SVG filters and embedded/external images are unsupported and produce an explicit error.
@@ -104,4 +126,4 @@ GITTURTLE_TRACE=1 cargo run --release --locked -p gitturtle -- /path/to/reposito
 
 Tracing separates `gitturtle.commit_files_frame_ms`, from commit selection to a GPUI frame callback after its changed-file list arrives, and `gitturtle.file_preview_frame_ms`, from file activation to a frame callback after the visible preview is prepared. Generation and mode checks suppress superseded callbacks. These traces exclude input delivery before the handler, OS display presentation, and GPU completion. The status bar's **content read** timing measures worker work only. None is a complete physical click-to-display measurement. Existing native measurements in [the validation record](docs/validation.md) describe their recorded build and must not be treated as measurements of a later workspace revision.
 
-Repository reading, preview decoding, graph layout, and cache management run on a background worker. The worker retains the current worktree's Git session across local refreshes and scope changes, preserving its persistent object reader while rereading mutable refs and history. Lists render visible rows, and selection generations reject stale results. Project agreements and code routing are in [AGENTS.md](AGENTS.md). The [development agent guidance](docs/agent-guidance.md) explains the app-specific instructions, performance review skill, native validation skill, and GPT-6 Astra guidance audit.
+History reading, preview decoding, graph layout, and cache management run on a replaceable background read queue. Working status and explicit Git operations use a separate serialized executor; app preferences use their own serialized writer. The history worker retains the current worktree's Git session across local refreshes and scope changes, preserving its persistent object reader while rereading mutable refs and history. Lists render visible rows, and selection generations reject stale results. Project agreements and code routing are in [AGENTS.md](AGENTS.md). The [development agent guidance](docs/agent-guidance.md) explains the app-specific instructions, performance review skill, native validation skill, and GPT-6 Astra guidance audit.

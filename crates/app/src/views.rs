@@ -1,22 +1,26 @@
 use crate::*;
+use columns::ColumnId;
 use gpui_kit::base::ElementExt;
+use gpui_kit::prelude::FluentBuilder;
 
 impl GitTurtle {
     pub(super) fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx);
+        let busy = self.operation_busy.is_some();
         div()
-            .h(px(48.))
+            .h(px(52.))
             .flex_shrink_0()
             .flex()
             .items_center()
             .gap_3()
             .px_4()
-            .bg(rgb(PANEL))
+            .bg(rgb(p.panel))
             .border_b_1()
-            .border_color(rgb(BORDER))
-            .child(icon("turtle", 24., MINT))
+            .border_color(rgb(p.border))
+            .child(icon("turtle", 24., p.accent))
             .child(
                 div()
-                    .w(px(260.))
+                    .w(px(200.))
                     .min_w_0()
                     .flex()
                     .flex_col()
@@ -36,7 +40,7 @@ impl GitTurtle {
                     .child(
                         div()
                             .text_size(px(10.))
-                            .text_color(rgb(MUTED))
+                            .text_color(rgb(p.muted))
                             .truncate()
                             .child(
                                 self.path
@@ -47,37 +51,64 @@ impl GitTurtle {
                     ),
             )
             .child(
-                button("open", "Open", "folder", false).on_click(cx.listener(
-                    |this, _, window, cx| this.choose_repository(&OpenRepository, window, cx),
-                )),
+                button(
+                    "projects",
+                    "Projects",
+                    "folder",
+                    self.page == AppPage::Projects,
+                )
+                .disabled(busy)
+                .on_click(cx.listener(|this, _, _, cx| this.show_projects(cx))),
             )
+            .when(self.repository.is_some(), |el| {
+                el.child(
+                    button(
+                        "history-tab",
+                        "History",
+                        "commit",
+                        self.page == AppPage::Repository && self.mode != WorkspaceMode::Working,
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| this.back_to_history(window, cx))),
+                )
+                .child(
+                    button(
+                        "changes-tab",
+                        "Changes",
+                        "",
+                        self.page == AppPage::Repository && self.mode == WorkspaceMode::Working,
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| this.show_working(window, cx))),
+                )
+            })
             .child(div().flex_1())
-            .child(div().text_size(px(11.)).text_color(rgb(MUTED)).child(
-                if self.mode == WorkspaceMode::Compare {
-                    "File comparison"
-                } else {
-                    "Repository history"
-                },
-            ))
+            .children(self.operation_busy.map(|label| {
+                div()
+                    .text_size(px(11.))
+                    .text_color(rgb(p.accent))
+                    .child(label)
+            }))
             .child(
-                button("refresh", "Refresh", "refresh", false).on_click(
-                    cx.listener(|this, _, window, cx| this.refresh(&Refresh, window, cx)),
-                ),
+                button(
+                    "profile",
+                    self.profile
+                        .as_ref()
+                        .filter(|p| !p.name.is_empty())
+                        .map(|p| p.name.clone())
+                        .unwrap_or("Git identity".into()),
+                    "",
+                    self.page == AppPage::Settings,
+                )
+                .on_click(cx.listener(|this, _, window, cx| this.show_settings(window, cx))),
             )
             .child(
-                div()
-                    .text_size(px(10.))
-                    .text_color(rgb(MINT))
-                    .px_2()
-                    .py_1()
-                    .bg(rgb(SELECTED))
-                    .rounded(px(4.))
-                    .child("READ ONLY"),
+                button("settings", "Settings", "", false)
+                    .on_click(cx.listener(|this, _, window, cx| this.show_settings(window, cx))),
             )
             .into_any_element()
     }
 
     pub(super) fn render_rail(&self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = palette(cx);
         div()
             .w(px(44.))
             .h_full()
@@ -87,15 +118,15 @@ impl GitTurtle {
             .items_center()
             .py_3()
             .gap_3()
-            .bg(rgb(PANEL))
+            .bg(rgb(colors.panel))
             .border_r_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(colors.border))
             .child(
                 button("rail-history", "", "commit", true)
                     .accessibility_label("Back to history")
                     .tooltip("Back to history · Escape")
                     .on_click(cx.listener(|this, _, window, cx| {
-                        if this.mode == WorkspaceMode::Compare {
+                        if this.mode != WorkspaceMode::History {
                             this.back_to_history(window, cx);
                         } else {
                             this.sidebar = true;
@@ -113,18 +144,19 @@ impl GitTurtle {
                     })),
             )
             .child(div().flex_1())
-            .child(icon("turtle", 18., MUTED))
+            .child(icon("turtle", 18., colors.muted))
             .into_any_element()
     }
 
     pub(super) fn render_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = palette(cx);
         div()
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(PANEL))
+            .bg(rgb(colors.panel))
             .border_r_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(colors.border))
             .child(
                 div()
                     .h(px(40.))
@@ -175,15 +207,16 @@ impl GitTurtle {
                 div()
                     .p_3()
                     .text_size(px(10.))
-                    .text_color(rgb(MUTED))
+                    .text_color(rgb(colors.muted))
                     .border_t_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(rgb(colors.border))
                     .child("Remote branches reflect local refs.\nRefresh never fetches."),
             )
             .into_any_element()
     }
 
     pub(super) fn render_nav_row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
+        let colors = palette(cx);
         let row = self.nav_rows[index].clone();
         if let NavRow::Section(label, count) = &row {
             return div()
@@ -195,7 +228,7 @@ impl GitTurtle {
                 .items_center()
                 .justify_between()
                 .text_size(px(10.))
-                .text_color(rgb(MUTED))
+                .text_color(rgb(colors.muted))
                 .child(*label)
                 .child(count.to_string())
                 .into_any_element();
@@ -226,11 +259,11 @@ impl GitTurtle {
                 .items_center()
                 .gap_1()
                 .text_size(px(12.))
-                .text_color(rgb(MUTED))
+                .text_color(rgb(colors.muted))
                 .cursor_pointer()
-                .hover(|s| s.bg(rgb(HOVER)))
+                .hover(|s| s.bg(rgb(colors.hover)))
                 .child(div().w(px(12.)).child(if *expanded { "⌄" } else { "›" }))
-                .child(icon("folder", 14., MUTED))
+                .child(icon("folder", 14., colors.muted))
                 .child(div().flex_1().truncate().child(label.clone()))
                 .child(div().text_size(px(10.)).child(count.to_string()))
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -307,10 +340,18 @@ impl GitTurtle {
             .text_size(px(12.))
             .overflow_hidden()
             .cursor_pointer()
-            .bg(rgb(if active { SELECTED } else { PANEL }))
-            .hover(|s| s.bg(rgb(HOVER)))
-            .text_color(rgb(if active { MINT } else { TEXT }))
-            .child(icon(symbol, 15., if active { MINT } else { MUTED }))
+            .bg(rgb(if active {
+                colors.selected
+            } else {
+                colors.panel
+            }))
+            .hover(|s| s.bg(rgb(colors.hover)))
+            .text_color(rgb(if active { colors.accent } else { colors.text }))
+            .child(icon(
+                symbol,
+                15.,
+                if active { colors.accent } else { colors.muted },
+            ))
             .child(div().flex_1().truncate().child(name))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.limit = 500;
@@ -353,12 +394,13 @@ impl GitTurtle {
     }
 
     pub(super) fn render_history(&self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = palette(cx);
         let scope = self
             .scope
             .as_ref()
             .map(|s| s.0.clone())
             .unwrap_or("All history".into());
-        let columns = history_columns(self.history_width, self.graph_width);
+        let columns = self.settings.columns.layout(self.history_width - 26.);
         let history = if self.commits.is_empty() && self.error.is_some() {
             empty(
                 "Could not open repository",
@@ -396,46 +438,57 @@ impl GitTurtle {
             .into_any_element()
         };
         let view = cx.entity().downgrade();
-        let mut header = div()
-            .h(px(28.))
+        let header = div()
+            .h(px(30.))
             .flex_shrink_0()
             .flex()
             .items_center()
             .px_3()
             .border_l_2()
-            .border_color(rgb(CANVAS))
+            .border_color(rgb(colors.canvas))
             .border_b_1()
             .text_size(px(10.))
-            .text_color(rgb(MUTED))
-            .child(
+            .text_color(rgb(colors.muted))
+            .children(columns.columns.iter().map(|column| {
+                let id = column.id;
+                let width = column.width;
                 div()
-                    .w(px(columns.refs))
+                    .relative()
+                    .w(px(width))
+                    .h_full()
                     .flex_shrink_0()
-                    .child("BRANCH / REF"),
-            )
-            .child(div().w(px(columns.graph)).flex_shrink_0().child("GRAPH"))
-            .child(div().flex_1().min_w_0().child("COMMIT"));
-        if columns.author > 0. {
-            header = header.child(
-                div()
-                    .w(px(columns.author))
-                    .flex_shrink_0()
-                    .pl_3()
-                    .child("AUTHOR"),
-            );
-        }
-        if columns.date > 0. {
-            header = header.child(div().w(px(columns.date)).flex_shrink_0().child("DATE"));
-        }
-        if columns.hash > 0. {
-            header = header.child(div().w(px(columns.hash)).flex_shrink_0().child("SHA"));
-        }
+                    .flex()
+                    .items_center()
+                    .pr_2()
+                    .child(div().truncate().child(id.label().to_uppercase()))
+                    .child(
+                        div()
+                            .id(("column-resize", id as usize))
+                            .absolute()
+                            .right(px(0.))
+                            .top_0()
+                            .w(px(7.))
+                            .h_full()
+                            .cursor_col_resize()
+                            .border_r_1()
+                            .border_color(rgb(colors.border))
+                            .hover(|style| style.bg(rgb(colors.hover)))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                    this.column_drag = Some((id, event.position.x, width));
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                }),
+                            ),
+                    )
+            }));
         div()
             .size_full()
             .min_w_0()
             .flex()
             .flex_col()
-            .bg(rgb(CANVAS))
+            .bg(rgb(colors.canvas))
             .on_prepaint(move |bounds, _, cx| {
                 let _ = view.update(cx, |this, cx| {
                     let width = f32::from(bounds.size.width);
@@ -454,8 +507,8 @@ impl GitTurtle {
                     .px_3()
                     .gap_2()
                     .border_b_1()
-                    .border_color(rgb(BORDER))
-                    .child(icon("branch", 15., MINT))
+                    .border_color(rgb(colors.border))
+                    .child(icon("branch", 15., colors.accent))
                     .child(
                         div()
                             .max_w(px(190.))
@@ -466,10 +519,16 @@ impl GitTurtle {
                     .child(
                         div()
                             .text_size(px(10.))
-                            .text_color(rgb(MUTED))
+                            .text_color(rgb(colors.muted))
                             .child(format!("{} commits", self.visible.len())),
                     )
                     .child(div().flex_1())
+                    .child(button("columns", "Columns", "", self.column_menu).on_click(
+                        cx.listener(|this, _, _, cx| {
+                            this.column_menu = !this.column_menu;
+                            cx.notify();
+                        }),
+                    ))
                     .child(
                         button(
                             "load-more",
@@ -508,41 +567,70 @@ impl GitTurtle {
                     .px_3()
                     .py_1()
                     .text_size(px(10.))
-                    .text_color(rgb(MUTED))
+                    .text_color(rgb(colors.muted))
                     .child(notice.clone())
             }))
-            .child(header)
+            .when(self.column_menu, |el| {
+                el.child(
+                    div()
+                        .p_3()
+                        .border_b_1()
+                        .border_color(rgb(colors.border))
+                        .child(self.render_columns_controls(cx)),
+                )
+            })
             .child(
                 div()
-                    .id("history-pane")
-                    .role(Role::ListBox)
-                    .aria_label("Commit history")
-                    .tab_stop(true)
-                    .key_context("GitTurtleList")
-                    .track_focus(&self.focus)
+                    .id("history-horizontal")
                     .flex_1()
                     .min_h_0()
-                    .overflow_hidden()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _, window, cx| {
-                            this.pane = Pane::History;
-                            window.focus(&this.focus, cx);
-                        }),
-                    )
-                    .child(history),
+                    .min_w_0()
+                    .overflow_x_scroll()
+                    .track_scroll(&self.history_horizontal)
+                    .child(
+                        div()
+                            .w(px(columns.content_width + 26.))
+                            .h_full()
+                            .flex_shrink_0()
+                            .flex()
+                            .flex_col()
+                            .child(header)
+                            .child(
+                                div()
+                                    .id("history-pane")
+                                    .role(Role::ListBox)
+                                    .aria_label("Commit history")
+                                    .tab_stop(true)
+                                    .key_context("GitTurtleList")
+                                    .track_focus(&self.focus)
+                                    .flex_1()
+                                    .min_h_0()
+                                    .overflow_hidden()
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _, window, cx| {
+                                            this.pane = Pane::History;
+                                            window.focus(&this.focus, cx);
+                                        }),
+                                    )
+                                    .child(history),
+                            ),
+                    ),
             )
             .into_any_element()
     }
 
     pub(super) fn render_commit_row(&self, position: usize, cx: &mut Context<Self>) -> AnyElement {
+        let colors = palette(cx);
         let index = self.visible[position];
         let commit = &self.commits[index];
         let active = self.selected_commit == Some(index);
-        let columns = history_columns(self.history_width, self.graph_width);
-        let color = graph::COLORS[self.graph[index].color % graph::COLORS.len()];
+        let columns = self.settings.columns.layout(self.history_width - 26.);
+        let lane_colors = graph::colors(cx);
+        let color = lane_colors[self.graph[index].color % lane_colors.len()];
+        let refs_width = self.settings.columns.refs.width;
         let mut references = div()
-            .w(px(columns.refs))
+            .w(px(refs_width))
             .flex_shrink_0()
             .pr_2()
             .flex()
@@ -556,7 +644,7 @@ impl GitTurtle {
                     div()
                         .id(("refs", index))
                         .min_w_0()
-                        .max_w(px(columns.refs - 12.))
+                        .max_w(px(refs_width - 12.))
                         .truncate()
                         .px_1()
                         .py_0p5()
@@ -573,12 +661,14 @@ impl GitTurtle {
                     div()
                         .flex_shrink_0()
                         .text_size(px(10.))
-                        .text_color(rgb(MUTED))
+                        .text_color(rgb(colors.muted))
                         .child(format!("+{}", names.len() - 1)),
                 );
             }
         }
-        let mut row = div()
+        let references = references.into_any_element();
+        let mut references = Some(references);
+        let row = div()
             .id(("commit", index))
             .role(Role::ListBoxOption)
             .aria_label(format!(
@@ -589,82 +679,84 @@ impl GitTurtle {
             ))
             .aria_selected(active)
             .w_full()
-            .h(px(34.))
+            .h(px(self.settings.density.history_row_height()))
             .flex()
             .items_center()
             .px_3()
             .gap_0()
-            .bg(rgb(if active { SELECTED } else { CANVAS }))
+            .bg(rgb(if active {
+                colors.selected
+            } else {
+                colors.canvas
+            }))
             .border_l_2()
-            .border_color(rgb(if active { MINT } else { CANVAS }))
-            .hover(|s| s.bg(rgb(HOVER)))
+            .border_color(rgb(if active { colors.accent } else { colors.canvas }))
+            .hover(|s| s.bg(rgb(colors.hover)))
             .cursor_pointer()
-            .child(references)
-            .child(graph::render(
-                self.graph[index].clone(),
-                columns.graph,
-                self.graph_lanes,
-                active,
-                commit.parents.len() > 1,
-                self.visible.len() != self.commits.len() || self.graph_notice.is_some(),
-            ))
-            .child(
-                div()
-                    .flex_1()
+            .children(columns.columns.iter().map(|column| {
+                let cell = div()
+                    .w(px(column.width))
+                    .flex_shrink_0()
                     .min_w_0()
-                    .pr_2()
-                    .truncate()
-                    .text_size(px(13.))
-                    .child(commit.subject.clone()),
-            );
-        if columns.author > 0. {
-            row = row.child(
-                div()
-                    .w(px(columns.author))
-                    .flex_shrink_0()
-                    .pl_3()
-                    .pr_2()
-                    .truncate()
-                    .text_size(px(11.))
-                    .text_color(rgb(MUTED))
-                    .child(commit.author.clone()),
-            );
-        }
-        if columns.date > 0. {
-            row = row.child(
-                div()
-                    .w(px(columns.date))
-                    .flex_shrink_0()
-                    .text_size(px(11.))
-                    .text_color(rgb(MUTED))
-                    .child(short_date(commit.timestamp)),
-            );
-        }
-        if columns.hash > 0. {
-            row = row.child(
-                div()
-                    .w(px(columns.hash))
-                    .flex_shrink_0()
-                    .font_family(mono())
-                    .text_size(px(11.))
-                    .text_color(rgb(MUTED))
-                    .child(short_oid(&commit.oid)),
-            );
-        }
+                    .overflow_hidden();
+                match column.id {
+                    ColumnId::Refs => cell.children(references.take()).into_any_element(),
+                    ColumnId::Graph => cell
+                        .child(graph::render(
+                            self.graph[index].clone(),
+                            column.width,
+                            self.graph_lanes,
+                            self.settings.density.history_row_height(),
+                            active,
+                            commit.parents.len() > 1,
+                            self.visible.len() != self.commits.len() || self.graph_notice.is_some(),
+                        ))
+                        .into_any_element(),
+                    ColumnId::Subject => cell
+                        .pr_2()
+                        .truncate()
+                        .text_size(px(13.))
+                        .child(commit.subject.clone())
+                        .into_any_element(),
+                    ColumnId::Author => cell
+                        .pr_2()
+                        .truncate()
+                        .text_size(px(11.))
+                        .text_color(rgb(colors.muted))
+                        .child(commit.author.clone())
+                        .into_any_element(),
+                    ColumnId::Date => cell
+                        .pr_2()
+                        .truncate()
+                        .text_size(px(11.))
+                        .text_color(rgb(colors.muted))
+                        .child(short_date(commit.timestamp))
+                        .into_any_element(),
+                    ColumnId::Sha => cell
+                        .pr_2()
+                        .truncate()
+                        .font_family(mono())
+                        .text_size(px(11.))
+                        .text_color(rgb(colors.muted))
+                        .child(short_oid(&commit.oid))
+                        .into_any_element(),
+                }
+            }));
         row.on_click(cx.listener(move |this, _, window, cx| this.select_commit(index, window, cx)))
             .into_any_element()
     }
 
     pub(super) fn render_inspector(&self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = palette(cx);
         let Some(commit) = self
             .selected_commit
             .and_then(|index| self.commits.get(index))
         else {
             return div()
                 .size_full()
-                .bg(rgb(PANEL))
+                .bg(rgb(colors.panel))
                 .border_l_1()
-                .border_color(rgb(BORDER))
+                .border_color(rgb(colors.border))
                 .child(empty(
                     "Inspect a commit",
                     "Choose a commit in history to see its details and changed files.",
@@ -692,7 +784,7 @@ impl GitTurtle {
             parents = parents.child(
                 div()
                     .text_size(px(10.))
-                    .text_color(rgb(MUTED))
+                    .text_color(rgb(colors.muted))
                     .child(format!("Showing 128 of {} parents", commit.parents.len())),
             );
         }
@@ -700,7 +792,7 @@ impl GitTurtle {
             parents = parents.child(
                 div()
                     .text_size(px(10.))
-                    .text_color(rgb(MUTED))
+                    .text_color(rgb(colors.muted))
                     .child("Root commit · empty-tree comparison"),
             );
         }
@@ -709,9 +801,9 @@ impl GitTurtle {
             .min_w_0()
             .flex()
             .flex_col()
-            .bg(rgb(PANEL))
+            .bg(rgb(colors.panel))
             .border_l_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(colors.border))
             .child(
                 div()
                     .id("commit-metadata")
@@ -724,14 +816,14 @@ impl GitTurtle {
                     .flex_col()
                     .gap_2()
                     .border_b_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(rgb(colors.border))
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .justify_between()
                             .text_size(px(10.))
-                            .text_color(rgb(MUTED))
+                            .text_color(rgb(colors.muted))
                             .child("COMMIT DETAILS")
                             .child(
                                 button("copy-commit", short_oid(&commit.oid), "copy", false)
@@ -752,13 +844,13 @@ impl GitTurtle {
                     .child(
                         div()
                             .text_size(px(11.))
-                            .text_color(rgb(MUTED))
+                            .text_color(rgb(colors.muted))
                             .child(commit.author.clone()),
                     )
                     .child(
                         div()
                             .text_size(px(10.))
-                            .text_color(rgb(MUTED))
+                            .text_color(rgb(colors.muted))
                             .child(full_date(commit.timestamp)),
                     )
                     .child(parents)
@@ -778,7 +870,7 @@ impl GitTurtle {
                     .overflow_y_scroll()
                     .p_3()
                     .border_b_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(rgb(colors.border))
                     .text_size(px(12.))
                     .child(
                         button("copy-message", "Copy full message", "copy", false).on_click(
@@ -798,12 +890,13 @@ impl GitTurtle {
     }
 
     pub(super) fn render_files(&self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = palette(cx);
         div()
             .size_full()
             .flex()
             .flex_col()
             .border_r_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(colors.border))
             .child(
                 div()
                     .h(px(36.))
@@ -812,7 +905,7 @@ impl GitTurtle {
                     .flex()
                     .items_center()
                     .text_size(px(11.))
-                    .text_color(rgb(MUTED))
+                    .text_color(rgb(colors.muted))
                     .child(format!("CHANGED FILES   {}", self.files.len())),
             )
             .child(
@@ -855,14 +948,15 @@ impl GitTurtle {
             .into_any_element()
     }
     pub(super) fn render_file_row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
+        let colors = palette(cx);
         let file = &self.files[index];
         let active = self.selected_file == Some(index);
         let path = file.path();
         let color = match file.status.letter() {
-            "A" => MINT,
-            "D" => 0xf29aa2,
-            "R" => 0x9cb9f2,
-            _ => 0xe9c17e,
+            "A" => colors.accent,
+            "D" => colors.removed,
+            "R" => colors.hunk,
+            _ => colors.muted,
         };
         div()
             .id(("file", index))
@@ -870,15 +964,19 @@ impl GitTurtle {
             .aria_label(format!("{} · {}", path.display(), file.status.label()))
             .aria_selected(active)
             .w_full()
-            .h(px(44.))
+            .h(px(self.settings.density.file_row_height()))
             .flex()
             .items_center()
             .gap_2()
             .px_3()
-            .bg(rgb(if active { SELECTED } else { PANEL }))
+            .bg(rgb(if active {
+                colors.selected
+            } else {
+                colors.panel
+            }))
             .border_l_2()
-            .border_color(rgb(if active { MINT } else { PANEL }))
-            .hover(|s| s.bg(rgb(HOVER)))
+            .border_color(rgb(if active { colors.accent } else { colors.panel }))
+            .hover(|s| s.bg(rgb(colors.hover)))
             .cursor_pointer()
             .child(icon(
                 if gitturtle_preview::is_image_path(path) {
@@ -887,7 +985,7 @@ impl GitTurtle {
                     "code"
                 },
                 16.,
-                MUTED,
+                colors.muted,
             ))
             .child(
                 div()
@@ -908,7 +1006,7 @@ impl GitTurtle {
                         div()
                             .truncate()
                             .text_size(px(10.))
-                            .text_color(rgb(MUTED))
+                            .text_color(rgb(colors.muted))
                             .child(
                                 path.parent()
                                     .filter(|p| !p.as_os_str().is_empty())
@@ -927,6 +1025,7 @@ impl GitTurtle {
             .into_any_element()
     }
     pub(super) fn render_preview(&self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = palette(cx);
         let file = self.selected_file.and_then(|index| self.files.get(index));
         let path = file
             .map(|file| file.path().to_string_lossy().into_owned())
@@ -940,13 +1039,13 @@ impl GitTurtle {
             .gap_2()
             .px_3()
             .border_b_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(colors.border))
             .child(
                 button("back-history", "← History", "", false)
                     .accessibility_label("Back to history")
                     .on_click(cx.listener(|this, _, window, cx| this.back_to_history(window, cx))),
             )
-            .child(div().h(px(18.)).w(px(1.)).bg(rgb(BORDER)))
+            .child(div().h(px(18.)).w(px(1.)).bg(rgb(colors.border)))
             .child(
                 div()
                     .flex_1()
@@ -1013,7 +1112,7 @@ impl GitTurtle {
                         toolbar = toolbar.child(
                             div()
                                 .text_size(px(10.))
-                                .text_color(rgb(MUTED))
+                                .text_color(rgb(colors.muted))
                                 .child("Drag to pan"),
                         );
                     }
@@ -1043,7 +1142,7 @@ impl GitTurtle {
             .min_w_0()
             .flex()
             .flex_col()
-            .bg(rgb(CANVAS))
+            .bg(rgb(colors.canvas))
             .child(toolbar)
             .child(div().flex_1().min_h_0().overflow_hidden().child(content))
             .children(file.map(|file| {
@@ -1054,9 +1153,9 @@ impl GitTurtle {
                     .flex()
                     .items_center()
                     .text_size(px(10.))
-                    .text_color(rgb(MUTED))
+                    .text_color(rgb(colors.muted))
                     .border_t_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(rgb(colors.border))
                     .child(format!(
                         "{}   ·   {} → {}   ·   {} → {}",
                         file.status.label(),
@@ -1082,6 +1181,7 @@ impl GitTurtle {
         side: &worker::ImageSide,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let colors = palette(cx);
         let name = if index == 0 { "BEFORE" } else { "AFTER" };
         let details = side
             .image
@@ -1183,7 +1283,7 @@ impl GitTurtle {
             .flex()
             .flex_col()
             .border_l_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(colors.border))
             .child(
                 div()
                     .h(px(40.))
@@ -1194,7 +1294,7 @@ impl GitTurtle {
                     .justify_center()
                     .gap_1()
                     .text_size(px(10.))
-                    .text_color(rgb(MUTED))
+                    .text_color(rgb(colors.muted))
                     .child(name)
                     .child(details),
             )
@@ -1213,7 +1313,8 @@ impl GitTurtle {
 
 impl Render for GitTurtle {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let left = if self.mode == WorkspaceMode::Compare {
+        let colors = palette(cx);
+        let left = if self.mode != WorkspaceMode::History {
             div()
                 .size_full()
                 .flex()
@@ -1270,20 +1371,44 @@ impl Render for GitTurtle {
                     .size(px(320.))
                     .size_range(px(280.)..px(480.))
                     .flex_none()
-                    .child(self.render_inspector(cx)),
+                    .child(if self.mode == WorkspaceMode::Working {
+                        self.render_working_inspector(cx)
+                    } else {
+                        self.render_inspector(cx)
+                    }),
             );
+        let body = match self.page {
+            AppPage::Repository => div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(self.render_git_actions(cx))
+                .child(div().flex_1().min_h_0().child(workspace))
+                .into_any_element(),
+            AppPage::Projects => self.hub.clone().into_any_element(),
+            AppPage::Settings => self.render_settings(cx),
+        };
         div()
             .id("gitturtle")
             .key_context("GitTurtle")
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(CANVAS))
-            .text_color(rgb(TEXT))
+            .bg(rgb(colors.canvas))
+            .text_color(rgb(colors.text))
             .text_size(px(13.))
             // Keep an active image drag continuous across the toolbar, inspector,
             // and either image viewport until the mouse is released.
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if let Some((id, start, width)) = this.column_drag {
+                    if event.pressed_button == Some(MouseButton::Left) {
+                        this.settings
+                            .columns
+                            .set_width(id, width + f32::from(event.position.x - start));
+                        cx.notify();
+                    }
+                    return;
+                }
                 let Some((start, offset)) = this.image_drag else {
                     return;
                 };
@@ -1303,7 +1428,10 @@ impl Render for GitTurtle {
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
+                cx.listener(|this, _, window, cx| {
+                    if this.column_drag.take().is_some() {
+                        this.save_preferences(window, cx);
+                    }
                     if this.image_drag.take().is_some() {
                         cx.notify();
                     }
@@ -1311,11 +1439,21 @@ impl Render for GitTurtle {
             )
             .on_mouse_up_out(
                 MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
+                cx.listener(|this, _, window, cx| {
+                    if this.column_drag.take().is_some() {
+                        this.save_preferences(window, cx);
+                    }
                     if this.image_drag.take().is_some() {
                         cx.notify();
                     }
                 }),
+            )
+            .on_action(cx.listener(|this, _: &ShowProjects, _, cx| this.show_projects(cx)))
+            .on_action(
+                cx.listener(|this, _: &ShowSettings, window, cx| this.show_settings(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ShowChanges, window, cx| this.show_working(window, cx)),
             )
             .on_action(cx.listener(Self::choose_repository))
             .on_action(cx.listener(Self::refresh))
@@ -1339,6 +1477,9 @@ impl Render for GitTurtle {
                 }),
             )
             .on_action(cx.listener(|this, _: &NextPane, window, cx| {
+                if this.mode == WorkspaceMode::Working {
+                    return;
+                }
                 if let Some(index) = this.selected_file {
                     this.select_file(index, window, cx);
                 } else {
@@ -1347,7 +1488,7 @@ impl Render for GitTurtle {
                 }
             }))
             .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| {
-                if this.mode == WorkspaceMode::Compare {
+                if this.mode != WorkspaceMode::History {
                     this.back_to_history(window, cx);
                 } else {
                     this.sidebar = !this.sidebar;
@@ -1356,7 +1497,30 @@ impl Render for GitTurtle {
                 }
             }))
             .child(self.render_header(cx))
-            .child(div().flex_1().min_h_0().child(workspace))
+            .when(self.page != AppPage::Settings, |el| {
+                el.children(self.operation_error.as_ref().map(|error| {
+                    div()
+                        .max_h(px(100.))
+                        .overflow_hidden()
+                        .px_4()
+                        .py_2()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .bg(rgb(palette(cx).removed_background))
+                        .text_color(rgb(palette(cx).removed))
+                        .child(div().flex_1().text_size(px(11.)).child(error.clone()))
+                        .child(
+                            button("dismiss-operation-error", "Dismiss", "", false).on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.operation_error = None;
+                                    cx.notify();
+                                }),
+                            ),
+                        )
+                }))
+            })
+            .child(div().flex_1().min_h_0().child(body))
             .child(
                 div()
                     .h(px(26.))
@@ -1366,15 +1530,19 @@ impl Render for GitTurtle {
                     .px_3()
                     .gap_2()
                     .border_t_1()
-                    .border_color(rgb(BORDER))
-                    .bg(rgb(PANEL))
+                    .border_color(rgb(colors.border))
+                    .bg(rgb(colors.panel))
                     .text_size(px(10.))
-                    .text_color(rgb(MUTED))
+                    .text_color(rgb(colors.muted))
                     .child(
                         div()
                             .size(px(5.))
                             .rounded_full()
-                            .bg(rgb(if self.error.is_some() { 0xf29aa2 } else { MINT })),
+                            .bg(rgb(if self.error.is_some() {
+                                colors.removed
+                            } else {
+                                colors.accent
+                            })),
                     )
                     .child(
                         div().flex_1().truncate().child(
@@ -1393,37 +1561,5 @@ impl Render for GitTurtle {
                         )
                     }),
             )
-    }
-}
-
-#[derive(Clone, Copy)]
-struct HistoryColumns {
-    refs: f32,
-    graph: f32,
-    author: f32,
-    date: f32,
-    hash: f32,
-}
-
-fn history_columns(width: f32, graph_width: f32) -> HistoryColumns {
-    let width = width.max(320.);
-    HistoryColumns {
-        refs: if width < 620. {
-            108.
-        } else if width < 840. {
-            140.
-        } else {
-            160.
-        },
-        graph: graph_width.min(if width < 620. {
-            84.
-        } else if width < 840. {
-            112.
-        } else {
-            150.
-        }),
-        author: if width >= 780. { 110. } else { 0. },
-        date: if width >= 640. { 66. } else { 0. },
-        hash: if width >= 1020. { 64. } else { 0. },
     }
 }

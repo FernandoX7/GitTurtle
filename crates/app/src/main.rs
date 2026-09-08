@@ -1,21 +1,29 @@
+mod appearance;
+mod columns;
 mod diff_view;
 mod graph;
 mod navigation;
+mod operations;
 mod preferences;
+mod projects;
+mod settings;
 mod text;
 mod views;
 mod worker;
+mod workspace;
 
+use appearance::palette;
 use gitturtle_core::{Branch, Commit, FileChange, GitRepository, Worktree};
 use gpui_kit::component::{
-    Disableable, Icon, Root, Selectable, Sizable, Theme, ThemeMode,
+    Disableable, Icon, Root, Selectable, Sizable,
     button::{Button, ButtonVariants},
-    input::{Editor, EditorState, Input, InputEvent, InputState},
+    input::{Editor, EditorState, Input, InputEvent, InputState, Textarea, TextareaState},
     resizable::{h_resizable, resizable_panel},
     tooltip::Tooltip,
 };
 use gpui_kit::*;
-use preferences::Preferences;
+use operations::SerialExecutor;
+use preferences::{AppSettings, Preferences};
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
@@ -24,15 +32,6 @@ use std::{
     time::Instant,
 };
 use worker::{Content, Job, Output, Worker};
-
-const CANVAS: u32 = 0x0f171c;
-const PANEL: u32 = 0x121e24;
-const HOVER: u32 = 0x19272e;
-const BORDER: u32 = 0x293b43;
-const TEXT: u32 = 0xdee9ed;
-const MUTED: u32 = 0x9aaeb8;
-const MINT: u32 = 0x7adfb4;
-const SELECTED: u32 = 0x1c3b36;
 
 gpui_kit::actions!(
     gitturtle,
@@ -48,7 +47,10 @@ gpui_kit::actions!(
         NextPane,
         ClearSearch,
         ToggleSidebar,
-        BackHistory
+        BackHistory,
+        ShowProjects,
+        ShowSettings,
+        ShowChanges
     ]
 );
 
@@ -91,6 +93,13 @@ enum NavRow {
 enum WorkspaceMode {
     History,
     Compare,
+    Working,
+}
+#[derive(Clone, Copy, PartialEq)]
+enum AppPage {
+    Repository,
+    Projects,
+    Settings,
 }
 #[derive(Clone, Copy, PartialEq)]
 enum Pane {
@@ -111,6 +120,36 @@ enum NavMode {
 }
 
 struct GitTurtle {
+    retained_history_files: Option<(Vec<FileChange>, Option<usize>)>,
+    commit_drafts: HashMap<PathBuf, String>,
+    draft_repository: Option<PathBuf>,
+    settings: AppSettings,
+    preferences_writer: SerialExecutor,
+    operations: SerialExecutor,
+    operation_busy: Option<&'static str>,
+    operation_error: Option<String>,
+    operation_task: Option<Task<()>>,
+    status_task: Option<Task<()>>,
+    work_generation: u64,
+    work_status: Option<gitturtle_core::RepositoryStatus>,
+    profile: Option<gitturtle_core::GitProfile>,
+    remotes: Vec<gitturtle_core::Remote>,
+    working_rows: Vec<workspace::WorkingRow>,
+    working_selected: Option<(usize, gitturtle_core::ChangeArea)>,
+    working_scroll: UniformListScrollHandle,
+    page: AppPage,
+    hub: Entity<projects::ProjectHub>,
+    commit_message: Entity<TextareaState>,
+    identity_name: Entity<InputState>,
+    identity_email: Entity<InputState>,
+    branch_name: Entity<InputState>,
+    remote_name: Entity<InputState>,
+    remote_branch: Entity<InputState>,
+    settings_branch: Entity<InputState>,
+    column_drag: Option<(columns::ColumnId, Pixels, f32)>,
+    column_menu: bool,
+    git_actions_open: bool,
+    history_horizontal: ScrollHandle,
     worker: Worker,
     task: Option<Task<()>>,
     generation: u64,
@@ -168,13 +207,74 @@ struct GitTurtle {
 }
 
 impl GitTurtle {
-    fn new(initial: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        initial: Option<PathBuf>,
+        preferences: Preferences,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let search = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Search loaded commits, author, hash…")
         });
         let nav_search =
             cx.new(|cx| InputState::new(window, cx).placeholder("Filter branches & worktrees"));
+        let settings = preferences.settings.clone();
+        let hub = cx.new(|cx| {
+            projects::ProjectHub::new(
+                preferences.recent_repositories.clone(),
+                settings.default_branch.clone(),
+                window,
+                cx,
+            )
+        });
+        let commit_message = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .placeholder("Commit message")
+                .rows(3)
+        });
+        let identity_name = cx.new(|cx| InputState::new(window, cx).placeholder("Your name"));
+        let identity_email =
+            cx.new(|cx| InputState::new(window, cx).placeholder("you@example.com"));
+        let branch_name = cx.new(|cx| InputState::new(window, cx).placeholder("feature/my-change"));
+        let remote_name = cx.new(|cx| InputState::new(window, cx).placeholder("Remote"));
+        let remote_branch = cx.new(|cx| InputState::new(window, cx).placeholder("Remote branch"));
+        let settings_branch =
+            cx.new(|cx| InputState::new(window, cx).default_value(settings.default_branch.clone()));
         let mut this = Self {
+            retained_history_files: None,
+            commit_drafts: HashMap::new(),
+            draft_repository: None,
+            settings,
+            preferences_writer: SerialExecutor::new("gitturtle-preferences"),
+            operations: SerialExecutor::new("gitturtle-operations"),
+            operation_busy: None,
+            operation_error: None,
+            operation_task: None,
+            status_task: None,
+            work_generation: 0,
+            work_status: None,
+            profile: None,
+            remotes: Vec::new(),
+            working_rows: Vec::new(),
+            working_selected: None,
+            working_scroll: UniformListScrollHandle::new(),
+            page: if initial.is_some() {
+                AppPage::Repository
+            } else {
+                AppPage::Projects
+            },
+            hub: hub.clone(),
+            commit_message,
+            identity_name,
+            identity_email,
+            branch_name,
+            remote_name,
+            remote_branch,
+            settings_branch,
+            column_drag: None,
+            column_menu: false,
+            git_actions_open: false,
+            history_horizontal: ScrollHandle::new(),
             worker: Worker::new(),
             task: None,
             generation: 0,
@@ -246,6 +346,15 @@ impl GitTurtle {
                 }
             }),
         );
+        this.subscriptions
+            .push(cx.subscribe_in(&hub, window, |this, _, event, window, cx| {
+                this.project_event(event, window, cx);
+            }));
+        this.subscriptions.push(cx.subscribe_in(
+            &this.commit_message.clone(),
+            window,
+            |_, _, _, _, cx| cx.notify(),
+        ));
         window.focus(&this.focus, cx);
         if let Some(path) = initial {
             this.open(path, None, window, cx);
@@ -279,6 +388,13 @@ impl GitTurtle {
                     Err(error) => {
                         this.error = Some(format!("{error:#}"));
                         this.status = "Read could not complete".into();
+                        this.hub.update(cx, |hub, cx| {
+                            hub.set_busy(false, cx);
+                            hub.set_error(this.error.clone(), cx);
+                        });
+                        if this.repository.is_none() {
+                            this.page = AppPage::Projects;
+                        }
                     }
                 }
                 cx.notify();
@@ -294,13 +410,27 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.operation_busy.is_some() {
+            return;
+        }
         self.restore_commit = if self.path.as_ref() == Some(&path) && self.scope == scope {
             self.selected_commit.map(|i| self.commits[i].oid.clone())
         } else {
             None
         };
         if self.path.as_ref() != Some(&path) {
+            self.retained_history_files = None;
             self.repository = None;
+            self.work_generation += 1;
+            self.work_status = None;
+            self.profile = None;
+            self.remotes.clear();
+            self.working_rows.clear();
+            self.working_selected = None;
+            self.remote_name
+                .update(cx, |input, cx| input.set_value("", window, cx));
+            self.remote_branch
+                .update(cx, |input, cx| input.set_value("", window, cx));
             self.branches.clear();
             self.worktrees.clear();
             self.nav_rows.clear();
@@ -345,6 +475,14 @@ impl GitTurtle {
 
     fn receive(&mut self, output: Output, window: &mut Window, cx: &mut Context<Self>) {
         match output {
+            Output::WorkingPreview(file, content, elapsed) => {
+                if self.mode != WorkspaceMode::Working {
+                    return;
+                }
+                self.files = vec![file];
+                self.selected_file = Some(0);
+                self.receive(Output::Preview(content, elapsed), window, cx);
+            }
             Output::Snapshot(snapshot) => {
                 self.status = format!(
                     "Local snapshot · {:.0} ms · {} branches · {} worktrees",
@@ -364,8 +502,30 @@ impl GitTurtle {
                 self.graph_notice = snapshot.graph_notice;
                 self.graph_lanes = self.graph.iter().map(|r| r.width).max().unwrap_or(1);
                 self.graph_width = (self.graph_lanes as f32 * 12. + 24.).clamp(84., 230.);
+                let resolved = snapshot.repository.path().to_owned();
+                if self.draft_repository.as_ref() != Some(&resolved) {
+                    if let Some(previous) = self.draft_repository.take() {
+                        self.commit_drafts
+                            .insert(previous, self.commit_message.read(cx).value().to_string());
+                    }
+                    let draft = self
+                        .commit_drafts
+                        .get(&resolved)
+                        .cloned()
+                        .unwrap_or_default();
+                    self.commit_message
+                        .update(cx, |input, cx| input.set_value(draft, window, cx));
+                    self.draft_repository = Some(resolved);
+                }
                 self.path = Some(snapshot.repository.path().to_owned());
                 self.repository = Some(snapshot.repository);
+                self.hub.update(cx, |hub, cx| {
+                    hub.set_busy(false, cx);
+                    hub.set_error(None, cx);
+                    hub.set_can_go_back(true, cx);
+                });
+                self.remember_repository(window, cx);
+                self.refresh_worktree(window, cx);
                 self.rebuild_navigation(cx);
                 self.filter_history(cx);
                 self.history_scroll.scroll_to_item(0, ScrollStrategy::Top);
@@ -379,7 +539,9 @@ impl GitTurtle {
                             .find(|&i| self.commits[i].oid == oid)
                     })
                     .or_else(|| self.visible.first().copied());
-                if let Some(index) = selected {
+                if self.mode == WorkspaceMode::Working {
+                    self.selected_commit = selected;
+                } else if let Some(index) = selected {
                     self.select_commit(index, window, cx);
                     if let Some(position) = self.visible.iter().position(|&i| i == index) {
                         self.history_scroll
@@ -426,9 +588,19 @@ impl GitTurtle {
                     Content::Notice(_) => {}
                 }
                 self.content = Some(content);
-                if self.mode == WorkspaceMode::Compare {
+                if self.page == AppPage::Repository
+                    && matches!(self.mode, WorkspaceMode::Compare | WorkspaceMode::Working)
+                {
                     self.ensure_editor(window, cx);
-                    self.trace_frame("file_preview_frame_ms", window, cx);
+                    self.trace_frame(
+                        if self.mode == WorkspaceMode::Working {
+                            "working_preview_frame_ms"
+                        } else {
+                            "file_preview_frame_ms"
+                        },
+                        window,
+                        cx,
+                    );
                 }
             }
         }
@@ -572,16 +744,47 @@ impl GitTurtle {
     }
 
     fn back_to_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.mode == WorkspaceMode::Compare {
+        let was_working = self.mode == WorkspaceMode::Working;
+        if was_working {
+            self.invalidate_read();
+            self.clear_preview();
+            let (files, selected) = self.retained_history_files.take().unwrap_or_default();
+            self.files = files;
+            self.selected_file = selected;
+        }
+        if self.mode != WorkspaceMode::History {
             self.mode = WorkspaceMode::History;
             self.sidebar = self.history_sidebar;
         }
+        if was_working
+            && self.files.is_empty()
+            && let (Some(repo), Some(commit)) = (
+                &self.repository,
+                self.selected_commit.and_then(|i| self.commits.get(i)),
+            )
+        {
+            self.request(
+                Job::Changes {
+                    repo: repo.clone(),
+                    oid: commit.oid.clone(),
+                    parent: self.parent,
+                },
+                "Reading changed files…",
+                window,
+                cx,
+            );
+        }
+        self.page = AppPage::Repository;
         self.interaction_started = None;
         self.pane = Pane::History;
         window.focus(&self.focus, cx);
         cx.notify();
     }
     fn select_commit(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode == WorkspaceMode::Working {
+            self.mode = WorkspaceMode::History;
+            self.working_selected = None;
+        }
         if index >= self.commits.len() {
             return;
         }
@@ -666,7 +869,9 @@ impl GitTurtle {
         self.request(job, "Reading comparison…", window, cx);
     }
     fn refresh(&mut self, _: &Refresh, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(path) = self.path.clone() {
+        if self.mode == WorkspaceMode::Working {
+            self.refresh_worktree(window, cx);
+        } else if let Some(path) = self.path.clone() {
             self.open(path, self.scope.clone(), window, cx);
         }
     }
@@ -701,6 +906,10 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.mode == WorkspaceMode::Working {
+            self.move_working_selection(direction, edge, window, cx);
+            return;
+        }
         // Keyboard focus can arrive through Tab without a mouse-down handler.
         self.pane = if self.file_focus.is_focused(window) {
             Pane::Files
@@ -751,7 +960,19 @@ impl GitTurtle {
         window.focus(&self.search.read(cx).focus_handle(cx), cx);
     }
     fn clear_search(&mut self, _: &ClearSearch, window: &mut Window, cx: &mut Context<Self>) {
-        if self.mode == WorkspaceMode::Compare {
+        if self.page != AppPage::Repository {
+            self.page = if self.repository.is_some() {
+                AppPage::Repository
+            } else {
+                AppPage::Projects
+            };
+            if self.page == AppPage::Repository && self.mode != WorkspaceMode::History {
+                self.ensure_editor(window, cx);
+            }
+            cx.notify();
+            return;
+        }
+        if self.mode != WorkspaceMode::History {
             self.back_to_history(window, cx);
             return;
         }
@@ -804,18 +1025,13 @@ fn empty(title: &str, detail: &str) -> AnyElement {
         .justify_center()
         .p_6()
         .gap_2()
-        .child(
-            div()
-                .text_size(px(14.))
-                .text_color(rgb(TEXT))
-                .child(title.to_owned()),
-        )
+        .child(div().text_size(px(14.)).child(title.to_owned()))
         .child(
             div()
                 .max_w(px(600.))
                 .text_center()
                 .text_size(px(12.))
-                .text_color(rgb(MUTED))
+                .opacity(0.75)
                 .child(detail.to_owned()),
         )
         .into_any_element()
@@ -903,33 +1119,16 @@ fn primary_label() -> &'static str {
 
 fn main() {
     let preferences = Preferences::load();
-    let initial = std::env::args_os()
-        .nth(1)
-        .map(PathBuf::from)
-        .or_else(|| preferences.last_repository());
+    let initial = std::env::args_os().nth(1).map(PathBuf::from).or_else(|| {
+        preferences
+            .settings
+            .reopen_last
+            .then(|| preferences.last_repository())
+            .flatten()
+    });
     gpui_kit::application().with_assets(Assets).run(move |cx| {
         gpui_kit::init(cx);
-        Theme::change(ThemeMode::Dark, None, cx);
-        {
-            let theme = Theme::global_mut(cx);
-            theme.colors.background = rgb(CANVAS).into();
-            theme.colors.foreground = rgb(TEXT).into();
-            theme.colors.muted_foreground = rgb(MUTED).into();
-            theme.colors.primary = rgb(MINT).into();
-            theme.colors.border = rgb(BORDER).into();
-            theme.colors.input = rgb(BORDER).into();
-            theme.colors.selection = rgb(SELECTED).into();
-            let syntax = Arc::make_mut(&mut theme.highlight_theme);
-            syntax.style.editor_background = Some(rgb(CANVAS).into());
-            syntax.style.editor_gutter_background = Some(rgb(CANVAS).into());
-            syntax.style.editor_active_line = Some(rgb(PANEL).into());
-            syntax.style.editor_line_number = Some(rgb(0x8199a4).into());
-            syntax.style.editor_foreground = Some(rgb(TEXT).into());
-            theme.font_size = px(13.);
-            theme.mono_font_size = px(12.);
-            theme.radius = px(5.);
-        }
-        Theme::sync_base(cx);
+        preferences.settings.theme.apply(None, cx);
         let primary = if cfg!(target_os = "macos") {
             "cmd"
         } else {
@@ -937,6 +1136,13 @@ fn main() {
         };
         cx.bind_keys([
             KeyBinding::new(&format!("{primary}-q"), Quit, None),
+            KeyBinding::new(&format!("{primary}-,"), ShowSettings, Some("GitTurtle")),
+            KeyBinding::new(
+                &format!("{primary}-shift-o"),
+                ShowProjects,
+                Some("GitTurtle"),
+            ),
+            KeyBinding::new(&format!("{primary}-2"), ShowChanges, Some("GitTurtle")),
             KeyBinding::new(&format!("{primary}-o"), OpenRepository, Some("GitTurtle")),
             KeyBinding::new(&format!("{primary}-r"), Refresh, Some("GitTurtle")),
             KeyBinding::new(&format!("{primary}-f"), Search, Some("GitTurtleList")),
@@ -955,7 +1161,10 @@ fn main() {
             disabled: false,
             items: vec![
                 MenuItem::action("Open Repository…", OpenRepository),
+                MenuItem::action("Projects…", ShowProjects),
+                MenuItem::action("Working Changes", ShowChanges),
                 MenuItem::action("Refresh Local State", Refresh),
+                MenuItem::action("Settings…", ShowSettings),
                 MenuItem::separator(),
                 MenuItem::action("Quit GitTurtle", Quit),
             ],
@@ -981,7 +1190,7 @@ fn main() {
                     ..Default::default()
                 },
                 |window, cx| {
-                    let view = cx.new(|cx| GitTurtle::new(initial, window, cx));
+                    let view = cx.new(|cx| GitTurtle::new(initial, preferences, window, cx));
                     cx.new(|cx| Root::new(view, window, cx))
                 },
             )

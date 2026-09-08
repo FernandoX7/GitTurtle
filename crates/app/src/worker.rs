@@ -1,4 +1,4 @@
-use crate::{graph, preferences::Preferences, text::PatchPresentation};
+use crate::{graph, text::PatchPresentation};
 use anyhow::{Result, anyhow, ensure};
 use futures::channel::oneshot;
 use gitturtle_core::{Branch, Commit, FileChange, GitRepository, TextPreview, Worktree};
@@ -93,6 +93,11 @@ pub enum Scope {
 }
 
 pub enum Job {
+    WorkingPreview {
+        repo: GitRepository,
+        entry: gitturtle_core::StatusEntry,
+        area: gitturtle_core::ChangeArea,
+    },
     Open {
         path: PathBuf,
         scope: Option<Scope>,
@@ -110,6 +115,7 @@ pub enum Job {
 }
 
 pub enum Output {
+    WorkingPreview(FileChange, Arc<Content>, Duration),
     Snapshot(Snapshot),
     Changes(Vec<FileChange>, Duration),
     Preview(Arc<Content>, Duration),
@@ -231,6 +237,15 @@ impl Worker {
             state.startup_error = Some(format!("Cannot start repository worker: {error}"));
         }
         Self { queue, latest }
+    }
+
+    /// Invalidate mutable reads even when there is no replacement file to load.
+    /// Active work stops at its next checkpoint; queued work is dropped now.
+    pub fn cancel(&self) {
+        let (lock, _) = &*self.queue;
+        let mut state = lock.lock().unwrap_or_else(|error| error.into_inner());
+        self.latest.fetch_add(1, Ordering::AcqRel);
+        state.pending = None;
     }
 
     pub fn submit(&self, job: Job) -> oneshot::Receiver<Result<Output>> {
@@ -406,18 +421,71 @@ fn execute(
     let start = Instant::now();
     cancellation.check()?;
     match job {
+        Job::WorkingPreview { repo, entry, area } => {
+            let preview = repo.worktree_preview(&entry, area)?;
+            cancellation.check()?;
+            let file = preview.file;
+            let content = if image_change(&file) {
+                let old_name = file
+                    .old_path
+                    .as_deref()
+                    .unwrap_or(file.path())
+                    .to_string_lossy();
+                let new_name = file
+                    .new_path
+                    .as_deref()
+                    .unwrap_or(file.path())
+                    .to_string_lossy();
+                let old = working_image_side(
+                    &repo,
+                    preview.old,
+                    file.old_path.is_some(),
+                    &old_name,
+                    cancellation,
+                );
+                cancellation.check()?;
+                let new = working_image_side(
+                    &repo,
+                    preview.new,
+                    file.new_path.is_some(),
+                    &new_name,
+                    cancellation,
+                );
+                Content::Images { old, new }
+            } else {
+                match preview.preview {
+                    TextPreview::Patch(patch) => Content::Text {
+                        presentation: Arc::new(PatchPresentation::prepare(&patch)),
+                        patch,
+                        old: String::from_utf8(preview.old).unwrap_or_default(),
+                        new: String::from_utf8(preview.new).unwrap_or_default(),
+                    },
+                    TextPreview::Binary => {
+                        Content::Notice("Binary file · no text comparison is available.".into())
+                    }
+                    TextPreview::TooLarge {
+                        old_bytes,
+                        new_bytes,
+                    } => Content::Notice(format!(
+                        "Text preview exceeds the display budget · before {old_bytes} bytes · after {new_bytes} bytes."
+                    )),
+                    TextPreview::Submodule { old_oid, new_oid } => Content::Notice(format!(
+                        "Submodule · {} → {}",
+                        old_oid.as_deref().unwrap_or("absent"),
+                        new_oid.as_deref().unwrap_or("absent")
+                    )),
+                }
+            };
+            cancellation.check()?;
+            // Mutable worktree/index comparisons are deliberately not cached.
+            Ok(Output::WorkingPreview(
+                file,
+                Arc::new(content),
+                start.elapsed(),
+            ))
+        }
         Job::Open { path, scope, limit } => {
             let mut snapshot = read_snapshot(path, scope.as_ref(), limit, cancellation, session)?;
-            cancellation.check()?;
-            // This single worker serializes preference saves with successful
-            // opens. Refreshing a branch in the same repository needs no write.
-            let mut preferences = Preferences::load();
-            if preferences.last_repository().as_deref() != Some(snapshot.repository.path()) {
-                cancellation.check()?;
-                if let Err(error) = preferences.remember_repository(snapshot.repository.path()) {
-                    eprintln!("Preferences: {error:#}");
-                }
-            }
             cancellation.check()?;
             snapshot.elapsed = start.elapsed();
             Ok(Output::Snapshot(snapshot))
@@ -705,6 +773,52 @@ fn image_side(
     }
 }
 
+fn working_image_side(
+    repo: &GitRepository,
+    mut bytes: Vec<u8>,
+    present: bool,
+    name: &str,
+    cancellation: &Cancellation,
+) -> ImageSide {
+    if !present {
+        return ImageSide {
+            image: None,
+            render: None,
+            message: None,
+            bytes: 0,
+        };
+    }
+    let result = (|| -> Result<(ImagePreview, Arc<RenderImage>, usize)> {
+        cancellation.check()?;
+        ensure!(
+            bytes.len() <= MAX_INPUT_BYTES,
+            "Image exceeds the 32 MiB input limit"
+        );
+        if let Some(pointer) = detect_lfs_pointer(&bytes) {
+            bytes = repo.local_lfs_object(&pointer.oid, pointer.size, MAX_INPUT_BYTES)?.ok_or_else(|| anyhow!("Git LFS object is unavailable locally · {} bytes. No download was attempted.", pointer.size))?;
+        }
+        cancellation.check()?;
+        let decoded = decode_image(&bytes, name, PREVIEW_EDGE)?;
+        cancellation.check()?;
+        let render = render_image(&decoded)?;
+        Ok((decoded, render, bytes.len()))
+    })();
+    match result {
+        Ok((image, render, bytes)) => ImageSide {
+            image: Some(image),
+            render: Some(render),
+            message: None,
+            bytes,
+        },
+        Err(error) => ImageSide {
+            image: None,
+            render: None,
+            message: Some(format!("{error:#}")),
+            bytes: 0,
+        },
+    }
+}
+
 fn render_image(preview: &ImagePreview) -> Result<Arc<RenderImage>> {
     // GPUI RenderImage expects BGRA although image::Frame names the buffer RGBA.
     let mut bgra = preview.rgba.clone();
@@ -806,6 +920,26 @@ mod tests {
             started_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
             "third"
         );
+        assert!(started_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn explicit_cancel_invalidates_active_and_pending_without_replacement() {
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let worker = Worker::with_executor(move |_, _, cancellation| {
+            started_tx.send(())?;
+            release_rx.recv_timeout(Duration::from_secs(2))?;
+            cancellation.check()?;
+            Ok(notice("stale preview"))
+        });
+        let active = worker.submit(open_job("active"));
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let mut pending = worker.submit(open_job("pending"));
+        worker.cancel();
+        assert!(pending.try_recv().is_err());
+        release_tx.send(()).unwrap();
+        assert!(block_on(active).unwrap().is_err());
         assert!(started_rx.try_recv().is_err());
     }
 

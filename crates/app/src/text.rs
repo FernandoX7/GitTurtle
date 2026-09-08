@@ -1,3 +1,4 @@
+use crate::appearance::palette;
 use gpui_kit::{
     App, AppContext, Entity, FontWeight, HighlightStyle, Window,
     component::input::{EditorState, TextDecoration},
@@ -42,6 +43,7 @@ pub fn editor(
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<EditorState> {
+    let palette = palette(cx);
     cx.new(|cx| {
         let mut state = EditorState::new(window, cx)
             .language(language.to_owned())
@@ -56,17 +58,17 @@ pub fn editor(
                 .map(|decoration| {
                     let style = match decoration.kind {
                         Kind::Added => HighlightStyle {
-                            color: Some(rgb(0x7adfb4).into()),
-                            background_color: Some(rgb(0x152d26).into()),
+                            color: Some(rgb(palette.added).into()),
+                            background_color: Some(rgb(palette.added_background).into()),
                             ..Default::default()
                         },
                         Kind::Removed => HighlightStyle {
-                            color: Some(rgb(0xf29aa2).into()),
-                            background_color: Some(rgb(0x342329).into()),
+                            color: Some(rgb(palette.removed).into()),
+                            background_color: Some(rgb(palette.removed_background).into()),
                             ..Default::default()
                         },
                         Kind::Hunk => HighlightStyle {
-                            color: Some(rgb(0x8db7f6).into()),
+                            color: Some(rgb(palette.hunk).into()),
                             font_weight: Some(FontWeight::MEDIUM),
                             ..Default::default()
                         },

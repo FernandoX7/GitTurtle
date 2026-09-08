@@ -2,7 +2,7 @@
 //! The editor retains the exact patch, so selection, copying, and search never
 //! include presentation-only numbers. No Git reads happen in this component.
 
-use crate::{BORDER, MINT as ADDED, MUTED, PANEL as BACKGROUND, text::PatchPresentation};
+use crate::{appearance::palette, text::PatchPresentation};
 use gpui_kit::{
     App, AppContext, Bounds, ContentMask, Context, Entity, InteractiveElement, IntoElement,
     ParentElement, Pixels, Point, Render, SharedString, Styled, Subscription, TextAlign, TextRun,
@@ -15,7 +15,6 @@ use gpui_kit::{
 };
 use std::{cell::Cell, ops::Range, rc::Rc, sync::Arc};
 
-const REMOVED: u32 = 0xf29aa2;
 const FONT_SIZE: f32 = 12.;
 const CELL_PADDING: f32 = 9.;
 
@@ -197,14 +196,15 @@ fn paint_gutter(
     window: &mut Window,
     cx: &mut App,
 ) {
-    window.paint_quad(fill(bounds, rgb(BACKGROUND)));
+    let palette = palette(cx);
+    window.paint_quad(fill(bounds, rgb(palette.panel)));
     for x in [column_width, column_width * 2. - 1.] {
         window.paint_quad(fill(
             Bounds::new(
                 point(bounds.origin.x + px(x), bounds.origin.y),
                 size(px(1.), bounds.size.height),
             ),
-            rgb(BORDER),
+            rgb(palette.border),
         ));
     }
     let state = editor.read(cx);
@@ -240,9 +240,9 @@ fn paint_gutter(
             }
             let numbers = rows[row];
             let (color, background) = match (numbers.old, numbers.new) {
-                (Some(_), None) => (REMOVED, Some(0x342329)),
-                (None, Some(_)) => (ADDED, Some(0x152d26)),
-                _ => (MUTED, None),
+                (Some(_), None) => (palette.removed, Some(palette.removed_background)),
+                (None, Some(_)) => (palette.added, Some(palette.added_background)),
+                _ => (palette.line_number, None),
             };
             if let Some(background) = background {
                 window.paint_quad(fill(

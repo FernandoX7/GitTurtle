@@ -1,9 +1,9 @@
 ---
 name: gitturtle-performance
-description: Review or improve GitTurtle's commit browsing latency, read-only Git operations, scheduling, caches, and content previews. Apply to this project's hot paths, not unrelated Rust changes.
+description: Review or improve GitTurtle's browsing and working-preview latency, passive Git reads, scheduling, and caches. Apply to this project's hot paths, not unrelated Rust changes or routine Git writes.
 ---
 
-# GitTurtle performance and read-only behavior
+# GitTurtle performance and passive reads
 
 Use this workflow for the affected hot path. Start with the relevant code and existing evidence in [architecture](../../../docs/architecture.md) and [validation](../../../docs/validation.md); do not turn an ordinary change into an exhaustive audit.
 
@@ -17,9 +17,11 @@ Inspect `worker::PreviewKey` and `Content::bytes` when changing previews. Count 
 
 Review `Worker::submit`, `Cancellation`, and `execute` at the worker boundary. A generation check only discards stale output; verify queued work is replaced or cancelled and concurrency remains bounded. Checkpoints are cooperative, not immediate preemption of a decoder or blocking read. Cache keys need repository identity, both object IDs, byte-safe paths, modes, and relevant comparison/rendering options. `RepositorySession` may reuse the canonical worktree's object reader while Refresh rereads mutable state. Keep linked worktrees distinct even when their objects are shared. Missing local LFS content must remain retryable.
 
-Preserve one active request and one replaceable pending request, Git read deadlines, and worker panic recovery. Existing regression coverage lives in [worker tests](../../../crates/app/src/worker.rs), [Git fixtures](../../../crates/git-core/tests/repository.rs), and [decoder tests](../../../crates/preview/src/lib.rs); select the cases relevant to the change.
+In the history/preview worker, preserve one active read and one replaceable pending read, Git read deadlines, and panic recovery. Explicit writes use the separate serial executor in `operations.rs`; selection cancellation must not replace, interrupt, or retry an accepted mutation. Working-status replies check their repository/generation, and mutable working previews bypass the immutable cache. Settings and recent-project saves share their own serial writer.
 
-Verify read-only behavior with disposable Git fixtures that exercise roots, merges, byte-safe paths, worktrees, LFS/missing objects and configured helpers as relevant. No fixture command may target a user's repository. Read-only command flags are additional controls, not a complete proof; inspect actual operations and compare fixture state when changing the Git layer.
+Existing regression coverage lives in [worker tests](../../../crates/app/src/worker.rs), [Git read fixtures](../../../crates/git-core/tests/repository.rs), [working-copy fixtures](../../../crates/git-core/tests/workflow.rs), and [decoder tests](../../../crates/preview/src/lib.rs); select cases relevant to the change.
+
+Verify passive read behavior with disposable Git fixtures that exercise roots, merges, byte-safe paths, worktrees, LFS/missing objects and configured helpers as relevant. Status must not refresh the index or invoke clean/process filters; preview files are raw bounded reads. Preserve the separate write policy that retains real Git hooks, filters, identity, and signing. No fixture command may target a user's repository. Read-only command flags are additional controls, not a complete proof; inspect actual operations and compare fixture state when changing the Git layer.
 
 For performance claims, use release builds and repeatable navigation over the same immutable commit/file data. Record build revision, hardware, sample count, raw samples, median/tail/max, other load, and application versus filesystem cache conditions. Retain outliers; missing or superseded samples are not zero latency. Inspect resource growth under rapid selection when the change affects allocation or cancellation.
 

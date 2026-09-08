@@ -1,16 +1,33 @@
+use crate::appearance::{Palette, palette};
 use gitturtle_core::Commit;
 use gpui_kit::{
-    AnyElement, Bounds, IntoElement, ParentElement, PathBuilder, Styled, canvas, div, point, px,
-    quad, rgb, size,
+    AnyElement, App, Bounds, IntoElement, ParentElement, PathBuilder, Styled, canvas, div, point,
+    px, quad, rgb, size,
 };
 use std::collections::{HashMap, HashSet};
 
-pub const ROW_HEIGHT: f32 = 34.;
-const CANVAS: u32 = 0x0f171c;
-const TEXT: u32 = 0xdee9ed;
-pub(super) const COLORS: [u32; 6] = [0x7adfb4, 0x8db7f6, 0xc3a5f2, 0xe8be7a, 0xea9ca5, 0x72ccd8];
+const DARK_COLORS: [u32; 6] = [0x7adfb4, 0x8db7f6, 0xc3a5f2, 0xe8be7a, 0xea9ca5, 0x72ccd8];
+const LIGHT_COLORS: [u32; 6] = [0x146c53, 0x315da7, 0x7651aa, 0x8c5916, 0xa42d63, 0x156b7c];
 const NODE_MARGIN: f32 = 10.;
 const LANE_SPACING: f32 = 12.;
+
+/// Colors change with appearance; worker-prepared lane identities do not.
+pub(super) fn colors(cx: &App) -> [u32; 6] {
+    palette_colors(palette(cx))
+}
+
+fn palette_colors(palette: Palette) -> [u32; 6] {
+    // These themes use a light foreground on dark surfaces, or the inverse.
+    // Keep palette selection cheap for each visible row and paint callback.
+    let brightness = |color: u32| {
+        ((color >> 16) & 255) * 2126 + ((color >> 8) & 255) * 7152 + (color & 255) * 722
+    };
+    if brightness(palette.canvas) > brightness(palette.text) {
+        LIGHT_COLORS
+    } else {
+        DARK_COLORS
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Edge {
@@ -148,22 +165,25 @@ pub fn render(
     row: GraphRow,
     width: f32,
     lane_count: usize,
+    row_height: f32,
     active: bool,
     merge: bool,
     filtered: bool,
 ) -> AnyElement {
     div()
         .w(px(width))
-        .h(px(ROW_HEIGHT))
+        .h(px(row_height))
         .flex_shrink_0()
         .child(
             canvas(
                 |_, _, _| (),
-                move |bounds, _, window, _| {
+                move |bounds, _, window, cx| {
+                    let palette = palette(cx);
+                    let colors = palette_colors(palette);
                     let x = |lane| bounds.origin.x + px(lane_x(width, lane_count, lane));
                     let top = bounds.origin.y;
-                    let middle = top + px(ROW_HEIGHT / 2.);
-                    let bottom = top + px(ROW_HEIGHT);
+                    let middle = top + bounds.size.height / 2.;
+                    let bottom = top + bounds.size.height;
                     if !filtered {
                         // Curves meet adjacent rows at exact lane coordinates with
                         // vertical tangents, including collapsing lanes.
@@ -180,7 +200,7 @@ pub fn render(
                                 point(end.x, end.y - distance * 0.5),
                             );
                             if let Ok(path) = path.build() {
-                                window.paint_path(path, rgb(COLORS[edge.color % COLORS.len()]));
+                                window.paint_path(path, rgb(colors[edge.color % colors.len()]));
                             }
                         }
                         if row.incoming {
@@ -188,14 +208,14 @@ pub fn render(
                             path.move_to(point(x(row.lane), top));
                             path.line_to(point(x(row.lane), middle));
                             if let Ok(path) = path.build() {
-                                window.paint_path(path, rgb(COLORS[row.color % COLORS.len()]));
+                                window.paint_path(path, rgb(colors[row.color % colors.len()]));
                             }
                         }
                     }
                     // Search results are discontinuous history: isolated nodes do
                     // not imply parent relationships across hidden rows.
                     let center = point(x(if filtered { 0 } else { row.lane }), middle);
-                    let color = rgb(COLORS[row.color % COLORS.len()]);
+                    let color = rgb(colors[row.color % colors.len()]);
                     let radius = if active {
                         5.
                     } else if merge {
@@ -209,7 +229,15 @@ pub fn render(
                             size(px(radius * 2.), px(radius * 2.)),
                         ),
                         px(radius),
-                        if merge { rgb(CANVAS) } else { color },
+                        if merge {
+                            rgb(if active {
+                                palette.selected
+                            } else {
+                                palette.canvas
+                            })
+                        } else {
+                            color
+                        },
                         px(if merge {
                             1.8
                         } else if active {
@@ -217,7 +245,7 @@ pub fn render(
                         } else {
                             0.
                         }),
-                        if active { rgb(TEXT) } else { color },
+                        if active { rgb(palette.text) } else { color },
                         Default::default(),
                     ));
                 },
@@ -230,6 +258,37 @@ pub fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn graph_lanes_remain_visible_on_all_theme_surfaces_without_changing_identity() {
+        let luminance = |color: u32| {
+            let linear = |channel: u32| {
+                let value = f64::from(channel) / 255.;
+                if value <= 0.04045 {
+                    value / 12.92
+                } else {
+                    ((value + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * linear((color >> 16) & 255)
+                + 0.7152 * linear((color >> 8) & 255)
+                + 0.0722 * linear(color & 255)
+        };
+        for choice in crate::appearance::ThemeChoice::ALL {
+            let palette = choice.palette();
+            let colors = palette_colors(palette);
+            assert_eq!(colors.len(), DARK_COLORS.len());
+            for color in colors {
+                for background in [palette.canvas, palette.hover, palette.selected] {
+                    let foreground = luminance(color);
+                    let background = luminance(background);
+                    let contrast =
+                        (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05);
+                    assert!(contrast >= 3., "{choice:?}: {color:#x} contrast {contrast}");
+                }
+            }
+        }
+    }
 
     fn commit(id: &str, parents: &[&str]) -> Commit {
         Commit {
