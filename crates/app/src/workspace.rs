@@ -377,7 +377,11 @@ impl GitTurtle {
                 let succeeded=result.is_ok();
                 match result {
                     Ok(outcome) => {
-                        this.operation_notice = Some(outcome.message.clone());
+                        this.operation_notice = Some(if let Some(oid) = outcome.commit_oid.as_ref() {
+                            format!("Committed {} · {}", short_oid(oid), submitted_message.as_deref().unwrap_or_default().lines().next().unwrap_or_default())
+                        } else {
+                            outcome.message.lines().find(|line| !line.trim().is_empty()).unwrap_or("Git operation completed").to_owned()
+                        });
                         this.status = outcome.message;
                     }
                     Err(error) => {
