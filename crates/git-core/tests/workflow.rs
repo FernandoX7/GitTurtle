@@ -419,16 +419,40 @@ fn clone_fetch_fast_forward_pull_and_non_force_push_use_local_remote() {
     cloned.execute(&push).unwrap();
     f.write("local.txt", "diverging");
     f.commit("local three");
-    assert!(repo.execute(&push).is_err()); // No force and no silent retry.
+    let push_error = repo.execute(&push).unwrap_err().to_string(); // No force and no silent retry.
+    assert!(!push_error.starts_with("Branches have diverged"));
     let head = f.git(&["rev-parse", "HEAD"]);
-    assert!(
-        repo.execute(&WriteCommand::Pull {
+    let staged = f.git(&["ls-files", "--stage"]);
+    f.write("file.txt", "independent unstaged work\n");
+    f.write("untracked-note.txt", "independent untracked work\n");
+    let error = repo
+        .execute(&WriteCommand::Pull {
             remote: "origin".into(),
-            branch: "main".into()
+            branch: "main".into(),
         })
-        .is_err()
+        .unwrap_err();
+    let diagnostic = format!("{error:#}");
+    assert!(
+        diagnostic.starts_with("Branches have diverged; choose Merge or Rebase to continue."),
+        "{diagnostic}"
     );
+    assert!(diagnostic.contains("Git stderr:\nFrom "), "{diagnostic}");
+    assert!(
+        diagnostic.contains("fatal: Not possible to fast-forward, aborting."),
+        "{diagnostic}"
+    );
+    assert!(diagnostic.contains("Git stdout:"));
     assert_eq!(f.git(&["rev-parse", "HEAD"]), head);
+    assert_eq!(f.git(&["ls-files", "--stage"]), staged);
+    assert_eq!(
+        fs::read(f.root.join("file.txt")).unwrap(),
+        b"independent unstaged work\n"
+    );
+    assert_eq!(
+        fs::read(f.root.join("untracked-note.txt")).unwrap(),
+        b"independent untracked work\n"
+    );
+    assert!(repo.operation_state().unwrap().is_none());
     assert_eq!(git(&remote, &["log", "-1", "--format=%s"]), "clone three");
 }
 

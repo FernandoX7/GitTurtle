@@ -1548,9 +1548,17 @@ fn checked_write_output(
             Some("commit" | "merge" | "rebase" | "cherry-pick" | "revert")
         )
     });
+    let fast_forward_pull = command.get_args().any(|arg| arg == "pull")
+        && command.get_args().any(|arg| arg == "--ff-only");
     let output = bounded_write_output(command, input, timeout)?;
     let stderr = text(&output.stderr);
     let stdout = text(&output.stdout);
+    if !output.status.success()
+        && let Some(headline) =
+            diagnostics::pull_refusal_headline(&output.stderr, &output.stdout, fast_forward_pull)
+    {
+        bail!("{headline}\n\nGit stderr:\n{stderr}\n\nGit stdout:\n{stdout}");
+    }
     ensure!(
         output.status.success(),
         "Git operation failed: {}{}{}",

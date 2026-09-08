@@ -1,4 +1,26 @@
 //! Guidance supplements Git's original diagnostics; it never changes execution.
+/// A compact outcome headline only for the explicit fast-forward-only Pull.
+/// Match Git's terminal refusal line, not advisory text or a remote/path name.
+pub(super) fn pull_refusal_headline(
+    stderr: &[u8],
+    stdout: &[u8],
+    fast_forward_pull: bool,
+) -> Option<&'static str> {
+    if !fast_forward_pull {
+        return None;
+    }
+    [stderr, stdout]
+        .into_iter()
+        .any(|stream| {
+            String::from_utf8_lossy(stream).lines().any(|line| {
+                line.trim()
+                    .trim_end_matches('.')
+                    .eq_ignore_ascii_case("fatal: Not possible to fast-forward, aborting")
+            })
+        })
+        .then_some("Branches have diverged; choose Merge or Rebase to continue.")
+}
+
 pub(super) fn guidance(stderr: &[u8], stdout: &[u8], creates_commit: bool) -> Option<&'static str> {
     let output = format!(
         "{}\n{}",
@@ -60,5 +82,43 @@ pub(super) fn guidance(stderr: &[u8], stdout: &[u8], creates_commit: bool) -> Op
         )
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pull_refusal_headline;
+
+    #[test]
+    fn pull_refusal_uses_terminal_git_diagnostic_after_fetch_progress() {
+        let output = b"From /tmp/disposable/upstream\n * branch main -> FETCH_HEAD\nhint: Diverging branches cannot be fast-forwarded.\nfatal: Not possible to fast-forward, aborting.\n";
+        for (stderr, stdout) in [
+            (output.as_slice(), b"".as_slice()),
+            (b"".as_slice(), output.as_slice()),
+        ] {
+            assert_eq!(
+                pull_refusal_headline(stderr, stdout, true),
+                Some("Branches have diverged; choose Merge or Rebase to continue.")
+            );
+        }
+    }
+
+    #[test]
+    fn unrelated_errors_and_output_names_do_not_claim_pull_divergence() {
+        for output in [
+            "From /tmp/Not possible to fast-forward, aborting.\nfatal: Authentication failed\n",
+            "hint: Not possible to fast-forward, aborting.\nfatal: unable to access remote\n",
+            "error: failed to push some refs\n ! [rejected] main -> main (non-fast-forward)\n",
+        ] {
+            assert!(pull_refusal_headline(output.as_bytes(), b"", true).is_none());
+        }
+        assert!(
+            pull_refusal_headline(
+                b"fatal: Not possible to fast-forward, aborting.\n",
+                b"",
+                false
+            )
+            .is_none()
+        );
     }
 }
