@@ -10,7 +10,7 @@ Native builds have been exercised on macOS; the [validation notes](docs/validati
 - Full-height history with separate reference, graph, and commit-summary columns, alongside persistent commit details and changed files.
 - Full-height file comparison, root comparisons, and explicit merge-parent selection.
 - Selectable, read-only unified patches with syntax coloring and old/new line numbers, plus separate **Before** and **After** source tabs.
-- Before/after PNG, JPEG, WebP, GIF, and supported static SVG previews, transparency backgrounds, linked zoom, and panning.
+- Before/after PNG, JPEG, WebP, GIF, and supported static SVG previews, transparency backgrounds, linked zoom, and drag-to-pan.
 - Local Git LFS image previews when the stored object passes size and SHA-256 verification; explicit messages for unavailable or unsupported content.
 - Native folder selection, remembered repository, resizable panes, and keyboard navigation.
 
