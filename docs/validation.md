@@ -1,5 +1,7 @@
 # Validation notes
 
+Current milestone: [native verification and final build evidence](macos-native-verification.md).
+
 This records local validation performed on September 7–8, 2026, with each stage tied to its exercised builds. The design and everyday Git workflow checks extend the historical history/comparison checks. Native interaction was exercised on macOS. Linux remains a portability target. The [quality workflow](../.github/workflows/quality.yml) is configured, but hosted CI execution and Linux compilation/native interaction have not been verified here. Distribution is outside the current milestone.
 
 ## Current validation guidance

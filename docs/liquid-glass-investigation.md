@@ -4,7 +4,7 @@ The milestone retains an opaque navigation treatment. The native prototype expos
 
 ## Native prototype and observed failure
 
-The prototype instantiated the real macOS 26 `NSGlassEffectView` through runtime class lookup, sized it to the 56-point header and inserted it below other subviews of GPUI's native view. It enabled a transparent window and removed the app header's own opaque fill. After activating the app, the material sampled and blurred the GPUI toolbar labels themselves. [The captured prototype](evidence/macos-milestone/glass-prototype-obscured-toolbar.png) records this failed integration. The native material's inactive and accessibility fallbacks did not resolve the active-window compositing problem.
+The prototype instantiated the real macOS 26 `NSGlassEffectView` through runtime class lookup, sized it to the 56-point header and inserted it below other subviews of GPUI's native view. It enabled a transparent window and removed the app header's own opaque fill. After activating the app, the material sampled and blurred the GPUI toolbar labels themselves. [The captured prototype](evidence/macos-milestone/glass-prototype-obscured-toolbar.jpg) records this failed integration. The native material's inactive and accessibility fallbacks did not resolve the active-window compositing problem.
 
 `NSWindowOrderingMode::Below` orders sibling **subviews**; it cannot insert a child behind selected drawing primitives in its parent's Metal layer. GPUI draws the header controls, history, editors and comparisons into that same native surface. Moving the material into the parent as a sibling could avoid sampling the toolbar's parent layer, but it would still fail the supported Liquid Glass content relationship described below.
 
