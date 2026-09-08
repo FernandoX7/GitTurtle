@@ -2,6 +2,7 @@ use crate::*;
 use columns::ColumnId;
 use gpui_kit::base::ElementExt;
 use gpui_kit::base::{Scrollbar, ScrollbarMode};
+use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder;
 
 impl GitTurtle {
@@ -336,7 +337,16 @@ impl GitTurtle {
             }
             _ => unreachable!("section and folder rows handled above"),
         };
-        div()
+        let contextual_branch = match &row {
+            NavRow::Branch(index, _) => Some((
+                self.branches[*index].name.clone(),
+                self.branches[*index].remote,
+            )),
+            _ => None,
+        };
+        let branch_owner = cx.entity().downgrade();
+        let branch_repository = self.path.clone();
+        let element = div()
             .id(("nav", index))
             .role(Role::ListBoxOption)
             .aria_label(tooltip.clone())
@@ -402,8 +412,37 @@ impl GitTurtle {
                     }
                     _ => {}
                 }
-            }))
-            .into_any_element()
+            }));
+        if let Some((name, remote)) = contextual_branch {
+            element
+                .context_menu(move |menu, _, cx| {
+                    let owner = branch_owner.clone();
+                    let repository = branch_repository.clone();
+                    let name = name.clone();
+                    let disabled = owner
+                        .upgrade()
+                        .is_none_or(|owner| owner.read(cx).operation_busy.is_some());
+                    menu.label(name.clone()).item(
+                        PopupMenuItem::new("Branch actions…")
+                            .disabled(disabled)
+                            .on_click(move |_, window, cx| {
+                                let _ = owner.update(cx, |this, cx| {
+                                    if this.path == repository && this.page == AppPage::Repository {
+                                        this.open_contextual_branch(
+                                            name.clone(),
+                                            remote,
+                                            window,
+                                            cx,
+                                        );
+                                    }
+                                });
+                            }),
+                    )
+                })
+                .into_any_element()
+        } else {
+            element.into_any_element()
+        }
     }
 
     pub(super) fn render_history(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -419,6 +458,10 @@ impl GitTurtle {
                 "Could not open repository",
                 self.error.as_deref().unwrap_or_default(),
             )
+        } else if self.visible.is_empty()
+            && let Some((title, description)) = self.history_search_empty()
+        {
+            empty(title, &description)
         } else if self.visible.is_empty() {
             empty(
                 if self.loading.is_some() {
@@ -563,6 +606,7 @@ impl GitTurtle {
                         )
                         .disabled(
                             self.repository.is_none()
+                                || self.history_search_active()
                                 || self.commits.len() < self.limit
                                 || self.limit >= 10000,
                         )
@@ -583,6 +627,7 @@ impl GitTurtle {
                     .pt_1()
                     .child(Input::new(&self.search).text_size(px(12.))),
             )
+            .child(self.render_history_search_controls(cx))
             .children(self.graph_notice.as_ref().map(|notice| {
                 div()
                     .px_3()
@@ -774,11 +819,26 @@ impl GitTurtle {
                         .into_any_element(),
                 }
             }));
+        let recovery_owner = cx.entity().downgrade();
+        let recovery_repository = self.path.clone();
+        let recovery_commit = recovery::commit_target(commit);
         row.on_click(cx.listener(move |this, _, window, cx| this.select_commit(index, window, cx)))
+            .context_menu(move |menu, _, cx| {
+                GitTurtle::recovery_context_menu(
+                    menu,
+                    &recovery_owner,
+                    &recovery_repository,
+                    &recovery_commit,
+                    cx,
+                )
+            })
             .into_any_element()
     }
 
     pub(super) fn render_inspector(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.file_history.is_active() {
+            return self.render_file_history(cx);
+        }
         let colors = palette(cx);
         let Some(commit) = self
             .selected_commit
@@ -858,6 +918,7 @@ impl GitTurtle {
                             .text_color(rgb(colors.muted))
                             .font_weight(FontWeight::MEDIUM)
                             .child("Commit details")
+                            .child(self.render_commit_recovery_menu(commit, cx))
                             .child(
                                 button("copy-commit", short_oid(&commit.oid), "copy", false)
                                     .accessibility_label("Copy commit hash")
@@ -954,7 +1015,7 @@ impl GitTurtle {
                     .child(div().child(if commit.body.is_empty() {
                         "No extended commit message.".into()
                     } else {
-                        commit.body.chars().take(8192).collect::<String>()
+                        commit.body.clone()
                     }))
             }))
             .child(div().flex_1().min_h_0().child(self.render_files(cx)))
@@ -1037,6 +1098,13 @@ impl GitTurtle {
         let active = self.selected_file == Some(index);
         let path = file.path();
         let full_path = path.display().to_string();
+        let history_owner = cx.entity().downgrade();
+        let history_repository = self.path.clone();
+        let history_file = file.clone();
+        let history_commit = self
+            .selected_commit
+            .and_then(|index| self.commits.get(index))
+            .map(|commit| commit.oid.clone());
         let (symbol, color, label) = match file.status.letter() {
             "A" => ("file-added", colors.added, "New"),
             "D" => ("file-deleted", colors.removed, "Deleted"),
@@ -1116,6 +1184,29 @@ impl GitTurtle {
                     .child(label),
             )
             .on_click(cx.listener(move |this, _, window, cx| this.select_file(index, window, cx)))
+            .context_menu(move |menu, _, _| {
+                let owner = history_owner.clone();
+                let repository = history_repository.clone();
+                let file = history_file.clone();
+                let commit = history_commit.clone();
+                menu.item(
+                    PopupMenuItem::new("File history…").on_click(move |_, window, cx| {
+                        let _ = owner.update(cx, |this, cx| {
+                            if this.path == repository
+                                && this
+                                    .selected_commit
+                                    .and_then(|i| this.commits.get(i))
+                                    .map(|c| &c.oid)
+                                    == commit.as_ref()
+                                && let Some(index) =
+                                    this.files.iter().position(|candidate| candidate == &file)
+                            {
+                                this.open_file_history(index, window, cx);
+                            }
+                        });
+                    }),
+                )
+            })
             .into_any_element()
     }
     pub(super) fn render_preview(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1135,10 +1226,23 @@ impl GitTurtle {
             .border_b_1()
             .border_color(rgb(colors.border))
             .child(
-                button("back-history", "History", "arrow-left", false)
-                    .accessibility_label("Back to history")
-                    .tooltip("Back to history · Escape")
-                    .on_click(cx.listener(|this, _, window, cx| this.back_to_history(window, cx))),
+                button(
+                    "back-history",
+                    if self.file_history.is_active() {
+                        "Back"
+                    } else {
+                        "History"
+                    },
+                    "arrow-left",
+                    false,
+                )
+                .accessibility_label(if self.file_history.is_active() {
+                    "Back from file history"
+                } else {
+                    "Back to history"
+                })
+                .tooltip("Back · Escape")
+                .on_click(cx.listener(|this, _, window, cx| this.back_to_history(window, cx))),
             )
             .child(div().h(px(18.)).w(px(1.)).bg(rgb(colors.border)))
             .children(
@@ -1184,7 +1288,21 @@ impl GitTurtle {
                     .on_click(move |_, _, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(copy_path.clone()))
                     })
-            }));
+            }))
+            .children(
+                self.selected_file
+                    .filter(|_| {
+                        self.mode != WorkspaceMode::Working && !self.file_history.is_active()
+                    })
+                    .map(|index| {
+                        button("file-history", "", "clock", false)
+                            .accessibility_label("File history")
+                            .tooltip("File history · follow renames along the first parent")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_file_history(index, window, cx)
+                            }))
+                    }),
+            );
         let content = if let Some(error) = &self.error {
             empty("Preview unavailable", error)
         } else if file.is_none()
@@ -1216,6 +1334,7 @@ impl GitTurtle {
                         .bg(rgb(colors.panel));
                     for (mode, name) in [
                         (TextMode::Unified, "Diff"),
+                        (TextMode::Split, "Split"),
                         (TextMode::Before, "Before"),
                         (TextMode::After, "After"),
                     ] {
@@ -1231,17 +1350,22 @@ impl GitTurtle {
                     }
                     toolbar = toolbar.child(modes);
                     let editor = match self.text_mode {
+                        TextMode::Split => &None,
                         TextMode::Unified => &self.patch_editor,
                         TextMode::Before => &self.before_editor,
                         TextMode::After => &self.after_editor,
                     };
-                    if self.text_mode == TextMode::Unified && patch.is_empty() {
+                    if self.text_mode == TextMode::Split {
+                        self.split_view.as_ref().map_or_else(
+                            || empty("Loading split comparison…", ""),
+                            |view| div().size_full().child(view.clone()).into_any_element(),
+                        )
+                    } else if self.text_mode == TextMode::Unified && patch.is_empty() {
                         empty("Content unchanged", "Only the file mode or path changed.")
-                    } else if self.text_mode == TextMode::Unified && self.patch_view.is_some() {
-                        div()
-                            .size_full()
-                            .child(self.patch_view.as_ref().unwrap().clone())
-                            .into_any_element()
+                    } else if self.text_mode == TextMode::Unified
+                        && let Some(view) = &self.patch_view
+                    {
+                        div().size_full().child(view.clone()).into_any_element()
                     } else if let Some(editor) = editor {
                         Editor::new(editor)
                             .h(relative(1.))
@@ -1279,6 +1403,10 @@ impl GitTurtle {
                         .child(self.render_image_side(1, new, cx))
                         .into_any_element()
                 }
+                Content::Conflict(_) => self.conflict_view.as_ref().map_or_else(
+                    || empty("Loading conflict…", ""),
+                    |view| div().size_full().child(view.clone()).into_any_element(),
+                ),
                 Content::Notice(message) => empty("File information", message),
             }
         } else {
@@ -1292,6 +1420,25 @@ impl GitTurtle {
             .bg(rgb(colors.canvas))
             .child(toolbar)
             .child(div().flex_1().min_h_0().overflow_hidden().child(content))
+            .children(
+                self.content
+                    .as_ref()
+                    .and_then(|content| match content.as_ref() {
+                        Content::Text {
+                            partial_unavailable,
+                            ..
+                        } if self.mode == WorkspaceMode::Working => partial_unavailable.as_ref(),
+                        _ => None,
+                    })
+                    .map(|reason| {
+                        div()
+                            .px_3()
+                            .py_2()
+                            .text_size(px(11.))
+                            .text_color(rgb(colors.muted))
+                            .child(reason.clone())
+                    }),
+            )
             .children(file.map(|file| {
                 div()
                     .h(px(24.))
@@ -1528,6 +1675,7 @@ impl GitTurtle {
             .flex()
             .flex_col()
             .child(self.render_git_actions(cx))
+            .child(self.render_operation_state(cx))
             .child(div().flex_1().min_h_0().child(workspace))
             .into_any_element()
     }
@@ -1543,6 +1691,7 @@ impl Render for GitTurtle {
         };
         div()
             .id("gitturtle")
+            .relative()
             .track_focus(&self.app_focus)
             .key_context("GitTurtle")
             .size_full()
@@ -1665,7 +1814,29 @@ impl Render for GitTurtle {
                         .gap_3()
                         .bg(rgb(palette(cx).removed_background))
                         .text_color(rgb(palette(cx).removed))
-                        .child(div().flex_1().text_size(px(11.)).child(error.clone()))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(11.))
+                                .child(
+                                    error
+                                        .lines()
+                                        .next()
+                                        .unwrap_or(error)
+                                        .chars()
+                                        .take(220)
+                                        .collect::<String>(),
+                                ),
+                        )
+                        .child(
+                            button("operation-error-details", "Details…", "", false).on_click(
+                                cx.listener(|this, _, window, cx| {
+                                    this.show_operation_error(window, cx)
+                                }),
+                            ),
+                        )
                         .child(
                             button("dismiss-operation-error", "Dismiss", "", false).on_click(
                                 cx.listener(|this, _, _, cx| {
@@ -1752,5 +1923,6 @@ impl Render for GitTurtle {
                         },
                     }),
             )
+            .children(Root::render_dialog_layer(window, cx))
     }
 }

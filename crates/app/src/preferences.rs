@@ -9,7 +9,7 @@ use crate::{
 use anyhow::{Context, Result, anyhow, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -17,7 +17,7 @@ use std::{
 };
 
 const MAX_RECENT: usize = 10;
-const MAX_SETTINGS_BYTES: u64 = 1024 * 1024;
+const MAX_SETTINGS_BYTES: u64 = 8 * 1024 * 1024;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -74,10 +74,34 @@ impl AppSettings {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CommitDraft {
+    pub title: String,
+    pub description: String,
+}
+
+impl CommitDraft {
+    /// Only the separator is supplied by the application. Whitespace, comment
+    /// lines, Markdown, and trailing newlines belong to the user's message.
+    pub fn message(&self) -> String {
+        if self.description.is_empty() {
+            self.title.clone()
+        } else {
+            format!("{}\n\n{}", self.title, self.description)
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.title.is_empty() && self.description.is_empty()
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Preferences {
     pub recent_repositories: Vec<PathBuf>,
     pub settings: AppSettings,
+    pub commit_drafts: HashMap<PathBuf, CommitDraft>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -87,6 +111,14 @@ struct StoredPreferences {
     recent_repositories: Vec<StoredPath>,
     #[serde(default)]
     settings: AppSettings,
+    #[serde(default)]
+    commit_drafts: Vec<StoredDraft>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct StoredDraft {
+    worktree: StoredPath,
+    draft: CommitDraft,
 }
 
 // JSON strings keep ordinary settings readable. Unix filenames can contain
@@ -154,6 +186,26 @@ impl Preferences {
         Self::save_settings_at(settings, &settings_path()?)
     }
 
+    /// Keys must be canonical worktree roots resolved during repository
+    /// discovery. Do not key drafts by a branch, common Git directory, or the
+    /// initially requested folder: linked worktrees need independent drafts.
+    pub fn save_commit_drafts(drafts: &HashMap<PathBuf, CommitDraft>) -> Result<()> {
+        Self::save_commit_drafts_at(drafts, &settings_path()?)
+    }
+
+    fn save_commit_drafts_at(drafts: &HashMap<PathBuf, CommitDraft>, path: &Path) -> Result<()> {
+        let mut next = Self::load_for_write(path)?;
+        for (worktree, draft) in drafts {
+            ensure!(worktree.is_absolute(), "Draft worktree must be absolute");
+            if draft.is_empty() {
+                next.commit_drafts.remove(worktree);
+            } else {
+                next.commit_drafts.insert(worktree.clone(), draft.clone());
+            }
+        }
+        next.save_to(path)
+    }
+
     fn load_from(path: &Path) -> Result<Self> {
         let mut bytes = Vec::new();
         File::open(path)?
@@ -165,7 +217,7 @@ impl Preferences {
         );
         let stored: StoredPreferences = serde_json::from_slice(&bytes)?;
         ensure!(
-            matches!(stored.version, 1 | 2),
+            matches!(stored.version, 1..=3),
             "Unsupported settings version"
         );
         let mut seen = HashSet::new();
@@ -184,6 +236,14 @@ impl Preferences {
         Ok(Self {
             recent_repositories,
             settings,
+            commit_drafts: stored
+                .commit_drafts
+                .into_iter()
+                .filter_map(|stored| {
+                    let path = stored.worktree.into_path();
+                    (path.is_absolute() && !stored.draft.is_empty()).then_some((path, stored.draft))
+                })
+                .collect(),
         })
     }
 
@@ -228,6 +288,7 @@ impl Preferences {
         let next = Self {
             recent_repositories,
             settings: current.settings,
+            commit_drafts: current.commit_drafts,
         };
         next.save_to(settings)?;
         *self = next;
@@ -236,13 +297,25 @@ impl Preferences {
 
     fn save_to(&self, path: &Path) -> Result<()> {
         let stored = StoredPreferences {
-            version: 2,
+            version: 3,
             recent_repositories: self
                 .recent_repositories
                 .iter()
                 .map(|path| StoredPath::from_path(path))
                 .collect(),
             settings: self.settings.clone(),
+            commit_drafts: {
+                let mut entries: Vec<_> = self.commit_drafts.iter().collect();
+                entries.sort_by_key(|(path, _)| *path);
+                entries
+                    .into_iter()
+                    .filter(|(_, draft)| !draft.is_empty())
+                    .map(|(path, draft)| StoredDraft {
+                        worktree: StoredPath::from_path(path),
+                        draft: draft.clone(),
+                    })
+                    .collect()
+            },
         };
         let mut bytes = serde_json::to_vec_pretty(&stored)?;
         bytes.push(b'\n');
@@ -370,6 +443,114 @@ mod tests {
     }
 
     #[test]
+    fn commit_message_preserves_user_formatting_and_only_adds_the_separator() {
+        for (title, description, expected) in [
+            ("Fix preview", "", "Fix preview"),
+            ("  Keep title spacing  ", "", "  Keep title spacing  "),
+            (
+                "Fix preview",
+                "Why this matters.\n\n- Preserve indentation\n  and spacing.  \n# Keep comments\n",
+                "Fix preview\n\nWhy this matters.\n\n- Preserve indentation\n  and spacing.  \n# Keep comments\n",
+            ),
+            (
+                "Subject",
+                "\nLeading blank line\n",
+                "Subject\n\n\nLeading blank line\n",
+            ),
+            ("Subject", "   ", "Subject\n\n   "),
+        ] {
+            assert_eq!(
+                CommitDraft {
+                    title: title.into(),
+                    description: description.into(),
+                }
+                .message(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn drafts_survive_restart_settings_and_recents_with_separate_worktrees() {
+        let fixture = TestDirectory::new();
+        let path = fixture.0.join("preferences.json");
+        let main = fixture.0.join("main");
+        let linked = fixture.0.join("linked");
+        fs::create_dir(&main).unwrap();
+        fs::create_dir(&linked).unwrap();
+        let main = main.canonicalize().unwrap();
+        let linked = linked.canonicalize().unwrap();
+        // A version-two store is read without migration writes and gains a
+        // drafts section only after an explicit save.
+        let old = br#"{"version":2,"settings":{"theme":"daylight"}}"#;
+        fs::write(&path, old).unwrap();
+        assert!(
+            Preferences::load_from(&path)
+                .unwrap()
+                .commit_drafts
+                .is_empty()
+        );
+        assert_eq!(fs::read(&path).unwrap(), old);
+        let first = CommitDraft {
+            title: "Work on main".into(),
+            description: "Details\n\n  * Keep whitespace.\n".into(),
+        };
+        let second = CommitDraft {
+            title: "Independent linked work".into(),
+            description: "Different branch, same common Git directory.".into(),
+        };
+        let drafts = HashMap::from([(main.clone(), first), (linked.clone(), second)]);
+        Preferences::save_commit_drafts_at(&drafts, &path).unwrap();
+        let edited = AppSettings {
+            density: Density::Compact,
+            ..Default::default()
+        };
+        Preferences::save_settings_at(&edited, &path).unwrap();
+        let mut stale = Preferences::default();
+        stale.remember_at(&main, &path).unwrap();
+        let restarted = Preferences::load_from(&path).unwrap();
+        assert_eq!(restarted.commit_drafts, drafts);
+        assert_eq!(restarted.settings, edited);
+        assert_eq!(
+            restarted.recent_repositories.as_slice(),
+            std::slice::from_ref(&main)
+        );
+
+        Preferences::save_commit_drafts_at(
+            &HashMap::from([(main.clone(), CommitDraft::default())]),
+            &path,
+        )
+        .unwrap();
+        let cleared = Preferences::load_from(&path).unwrap();
+        assert!(!cleared.commit_drafts.contains_key(&main));
+        assert_eq!(cleared.commit_drafts.get(&linked), drafts.get(&linked));
+        assert_eq!(cleared.settings, edited);
+        assert_eq!(fs::read_dir(&main).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(&linked).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn invalid_draft_store_or_path_cannot_destroy_saved_text() {
+        let fixture = TestDirectory::new();
+        let path = fixture.0.join("preferences.json");
+        let draft = CommitDraft {
+            title: "Retain after failure".into(),
+            description: "Unsaved work".into(),
+        };
+        let valid = HashMap::from([(fixture.0.join("repository"), draft.clone())]);
+        Preferences::save_commit_drafts_at(&valid, &path).unwrap();
+        let saved = fs::read(&path).unwrap();
+        let invalid = HashMap::from([(PathBuf::from("relative/worktree"), draft)]);
+        assert!(Preferences::save_commit_drafts_at(&invalid, &path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), saved);
+        for original in [br#"{"version":99}"#.as_slice(), b"broken"] {
+            fs::write(&path, original).unwrap();
+            assert!(Preferences::save_commit_drafts_at(&valid, &path).is_err());
+            assert_eq!(fs::read(&path).unwrap(), original);
+        }
+    }
+
+    #[test]
     fn remembers_ten_unique_paths_and_atomically_replaces_settings() {
         let fixture = TestDirectory::new();
         let settings = fixture.0.join("settings/preferences.json");
@@ -418,7 +599,7 @@ mod tests {
         let saved = Preferences::save_settings_at(&loaded.settings, &path).unwrap();
         assert_eq!(saved.recent_repositories, loaded.recent_repositories);
         let encoded: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(encoded["version"], 2);
+        assert_eq!(encoded["version"], 3);
     }
 
     #[test]
@@ -538,12 +719,23 @@ mod tests {
         let settings = fixture.0.join("settings/preferences.json");
         Preferences {
             recent_repositories: vec![repository.clone()],
+            commit_drafts: HashMap::from([(
+                repository.clone(),
+                CommitDraft {
+                    title: "Byte-safe worktree".into(),
+                    description: String::new(),
+                },
+            )]),
             ..Default::default()
         }
         .save_to(&settings)
         .unwrap();
         let loaded = Preferences::load_from(&settings).unwrap();
         assert_eq!(loaded.recent_repositories, vec![repository]);
+        assert_eq!(
+            loaded.commit_drafts.values().next().unwrap().title,
+            "Byte-safe worktree"
+        );
     }
 
     #[cfg(unix)]

@@ -1,7 +1,7 @@
 use crate::*;
 use gitturtle_core::{ChangeArea, ChangeStatus, WriteCommand};
-use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder;
+use preferences::CommitDraft;
 
 #[derive(Clone, Copy)]
 pub(super) enum WorkingRow {
@@ -10,6 +10,100 @@ pub(super) enum WorkingRow {
 }
 
 impl GitTurtle {
+    pub(super) fn current_commit_draft(&self, cx: &App) -> CommitDraft {
+        CommitDraft {
+            title: self.commit_title.read(cx).value().to_string(),
+            description: self.commit_message.read(cx).value().to_string(),
+        }
+    }
+
+    pub(super) fn persist_commit_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(worktree) = self.draft_repository.clone() else {
+            return;
+        };
+        let draft = self.current_commit_draft(cx);
+        self.save_commit_draft(worktree, draft, window, cx);
+        cx.notify();
+    }
+
+    fn save_commit_draft(
+        &mut self,
+        worktree: PathBuf,
+        draft: CommitDraft,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if draft.is_empty() {
+            self.commit_drafts.remove(&worktree);
+        } else {
+            self.commit_drafts.insert(worktree.clone(), draft.clone());
+        }
+        let Some(response) = self
+            .draft_saver
+            .queue(&self.preferences_writer, worktree, draft)
+        else {
+            return;
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            let result = response
+                .await
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("Draft save ended without a result")));
+            let _ = this.update_in(cx, |this, _, cx| {
+                this.draft_save_error = result.err().map(|error| format!("{error:#}"));
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn restore_commit_draft(
+        &mut self,
+        worktree: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.draft_repository.as_ref() == Some(&worktree) {
+            return;
+        }
+        self.persist_commit_draft(window, cx);
+        let draft = self
+            .commit_drafts
+            .get(&worktree)
+            .cloned()
+            .unwrap_or_default();
+        self.draft_repository = Some(worktree);
+        self.commit_title
+            .update(cx, |input, cx| input.set_value(draft.title, window, cx));
+        self.commit_message.update(cx, |input, cx| {
+            input.set_value(draft.description, window, cx)
+        });
+    }
+
+    fn clear_committed_draft(
+        &mut self,
+        worktree: &PathBuf,
+        submitted_message: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.draft_repository.as_ref() == Some(worktree) {
+            if self.current_commit_draft(cx).message() != submitted_message {
+                return;
+            }
+            self.commit_title
+                .update(cx, |input, cx| input.set_value("", window, cx));
+            self.commit_message
+                .update(cx, |input, cx| input.set_value("", window, cx));
+        } else if self
+            .commit_drafts
+            .get(worktree)
+            .is_none_or(|draft| draft.message() != submitted_message)
+        {
+            return;
+        }
+        self.save_commit_draft(worktree.clone(), CommitDraft::default(), window, cx);
+    }
+
     pub(super) fn project_event(
         &mut self,
         event: &projects::ProjectEvent,
@@ -23,12 +117,15 @@ impl GitTurtle {
             projects::ProjectEvent::Open(path) => self.open(path.clone(), None, window, cx),
             projects::ProjectEvent::Back => {
                 self.page = AppPage::Repository;
+                self.resume_file_history(window, cx);
                 if matches!(self.mode, WorkspaceMode::Compare | WorkspaceMode::Working) {
                     self.ensure_editor(window, cx);
                     window.focus(&self.file_focus, cx);
                 } else {
                     window.focus(&self.focus, cx);
                 }
+                self.restore_page_return_focus(window, cx);
+                self.try_automatic_refresh(window, cx);
                 cx.notify();
             }
             projects::ProjectEvent::Clone {
@@ -97,9 +194,12 @@ impl GitTurtle {
     }
 
     pub(super) fn show_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_branch_action();
+        self.cancel_recovery_read();
         if self.operation_busy.is_some() {
             return;
         }
+        self.capture_page_return_focus(window, cx);
         self.page = AppPage::Projects;
         window.focus(&self.app_focus, cx);
         self.hub.update(cx, |hub, cx| {
@@ -138,6 +238,8 @@ impl GitTurtle {
     /// The UI generation rejects late replies, while the worker cancellation
     /// also bounds obsolete computation when no replacement preview is needed.
     pub(super) fn invalidate_read(&mut self) {
+        self.pause_history_search_for_read();
+        self.cancel_automatic_read();
         self.generation = self.generation.wrapping_add(1);
         self.worker.cancel();
         self.task = None;
@@ -148,6 +250,8 @@ impl GitTurtle {
         let Some(repo) = self.repository.clone() else {
             return;
         };
+        self.cancel_automatic_read();
+        self.ensure_local_watcher(true, window, cx);
         if self.mode == WorkspaceMode::Working {
             self.invalidate_read();
             self.clear_preview();
@@ -158,77 +262,203 @@ impl GitTurtle {
         let generation = self.work_generation;
         let path = repo.path().to_owned();
         self.status_task = None;
-        let response = self.operations.submit_read(move || {
-            // Profile/remote errors must not erase a successfully read file list.
-            Ok((repo.status()?, repo.profile(), repo.remotes()))
-        });
+        let response = self
+            .operations
+            .submit_read(move || worker::WorkingState::read(&repo));
         self.status_task = Some(cx.spawn_in(window, async move |this, cx| {
-            let result = response.await.unwrap_or_else(|_| Err(anyhow::anyhow!("Working-copy refresh ended without a result")));
+            let result = response.await.unwrap_or_else(|_| {
+                Err(anyhow::anyhow!(
+                    "Working-copy refresh ended without a result"
+                ))
+            });
             let _ = this.update_in(cx, |this, window, cx| {
-                if this.work_generation != generation || this.path.as_ref() != Some(&path) { return; }
+                if this.work_generation != generation || this.path.as_ref() != Some(&path) {
+                    return;
+                }
                 this.status_task = None;
                 match result {
-                    Ok((status, profile, remotes)) => {
-                        // Use the user's current selection, not the selection at
-                        // request dispatch; they may have navigated while reading.
-                        let preferred = this.working_selected.and_then(|(index, area)| this.work_status.as_ref()?.entries.get(index).map(|entry| (entry.path.clone(), area)));
-                        this.working_rows.clear();
-                        for area in [ChangeArea::Staged, ChangeArea::Unstaged] {
-                            let indices: Vec<_> = status.entries.iter().enumerate().filter_map(|(i, entry)| {
-                                let present = if area == ChangeArea::Staged { entry.staged.is_some() } else { entry.unstaged.is_some() || entry.untracked || entry.conflicted };
-                                present.then_some(i)
-                            }).collect();
-                            this.working_rows.push(WorkingRow::Heading(area, indices.len()));
-                            this.working_rows.extend(indices.into_iter().map(|i| WorkingRow::File(i, area)));
-                        }
-                        this.working_selected = preferred.as_ref().and_then(|(path, area)| {
-                            status.entries.iter().enumerate().find_map(|(i, entry)| {
-                                if &entry.path != path { return None; }
-                                retained_area(*area, entry.staged.is_some(), entry.unstaged.is_some() || entry.untracked || entry.conflicted).map(|area| (i, area))
-                            })
-                        });
-                        let remotes = match remotes {
-                            Ok(remotes) => remotes,
-                            Err(error) => { this.operation_error.get_or_insert_with(|| format!("Remote configuration: {error:#}")); Vec::new() }
-                        };
-                        let branch_changed = this.work_status.as_ref().is_none_or(|previous| previous.branch != status.branch || previous.upstream != status.upstream);
-                        let (default_remote, default_branch) = remote_defaults(&status, &remotes);
-                        if branch_changed || this.remote_name.read(cx).value().is_empty() {
-                            this.remote_name.update(cx, |input, cx| input.set_value(default_remote, window, cx));
-                        }
-                        if branch_changed || this.remote_branch.read(cx).value().is_empty() {
-                            this.remote_branch.update(cx, |input, cx| input.set_value(default_branch, window, cx));
-                        }
-                        this.profile = match profile {
-                            Ok(profile) => Some(profile),
-                            Err(error) => { this.operation_error.get_or_insert_with(|| format!("Git identity: {error:#}")); None }
-                        };
-                        this.work_status = Some(status); this.remotes = remotes;
-                        if this.mode == WorkspaceMode::Working {
-                            // Refreshing away the final path must also invalidate
-                            // a preview selected after the refresh began.
-                            this.invalidate_read();
-                            if let Some((index, area)) = this.working_selected {
-                                this.select_working(index, area, window, cx);
-                                if let Some(position) = this.working_rows.iter().position(|row| matches!(row, WorkingRow::File(i, a) if *i == index && *a == area)) {
-                                    this.working_scroll.scroll_to_item(position, ScrollStrategy::Center);
-                                }
-                            } else { this.clear_preview(); this.files.clear(); this.selected_file = None; }
-                        }
-                    }
+                    Ok(state) => this.apply_worktree_state(state, false, window, cx),
                     Err(error) => {
-                        this.work_status = None; this.working_rows.clear(); this.working_selected = None;
-                        if this.mode == WorkspaceMode::Working { this.invalidate_read(); this.clear_preview(); this.files.clear(); this.selected_file = None; }
-                        this.operation_error.get_or_insert_with(|| format!("Working tree: {error:#}"));
+                        this.work_status = None;
+                        this.integration_state = None;
+                        this.working_rows.clear();
+                        this.working_selected = None;
+                        if this.mode == WorkspaceMode::Working {
+                            this.invalidate_read();
+                            this.clear_preview();
+                            this.files.clear();
+                            this.selected_file = None;
+                        }
+                        this.operation_error
+                            .get_or_insert_with(|| format!("Working tree: {error:#}"));
                     }
                 }
+                this.try_automatic_refresh(window, cx);
                 cx.notify();
             });
         }));
         cx.notify();
     }
 
+    pub(super) fn apply_worktree_state(
+        &mut self,
+        state: worker::WorkingState,
+        quiet: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let worker::WorkingState {
+            status,
+            profile,
+            remotes,
+            operation,
+        } = state;
+        let path = self.path.clone();
+        self.integration_state = match operation {
+            Ok(state) => state,
+            Err(error) => {
+                self.operation_error
+                    .get_or_insert_with(|| format!("Operation state: {error:#}"));
+                None
+            }
+        };
+        let preferred = self.working_selected.and_then(|(index, area)| {
+            self.work_status
+                .as_ref()?
+                .entries
+                .get(index)
+                .map(|entry| (entry.path.clone(), area))
+        });
+        if !quiet {
+            self.conflict_drafts.retain(|(repository, file), _| {
+                Some(repository) != path.as_ref()
+                    || status
+                        .entries
+                        .iter()
+                        .any(|entry| entry.conflicted && &entry.path == file)
+            });
+        }
+        let entries_changed = self
+            .work_status
+            .as_ref()
+            .is_none_or(|previous| previous.entries != status.entries);
+        if entries_changed {
+            let offset = self.working_scroll.0.borrow().base_handle.offset();
+            let height = self.settings.density.file_row_height();
+            let top = ((-f32::from(offset.y)) / height).max(0.) as usize;
+            let anchor = self.working_rows.get(top).and_then(|row| match row {
+                WorkingRow::Heading(area, _) => Some((None, *area)),
+                WorkingRow::File(index, area) => self
+                    .work_status
+                    .as_ref()?
+                    .entries
+                    .get(*index)
+                    .map(|entry| (Some(entry.path.clone()), *area)),
+            });
+            self.working_rows.clear();
+            for area in [ChangeArea::Staged, ChangeArea::Unstaged] {
+                let indices: Vec<_> = status
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, entry)| {
+                        let present = if area == ChangeArea::Staged {
+                            entry.staged.is_some()
+                        } else {
+                            entry.unstaged.is_some() || entry.untracked || entry.conflicted
+                        };
+                        present.then_some(i)
+                    })
+                    .collect();
+                self.working_rows
+                    .push(WorkingRow::Heading(area, indices.len()));
+                self.working_rows
+                    .extend(indices.into_iter().map(|i| WorkingRow::File(i, area)));
+            }
+            self.working_selected = preferred.as_ref().and_then(|(path, area)| {
+                status.entries.iter().enumerate().find_map(|(i, entry)| {
+                    if &entry.path != path {
+                        return None;
+                    }
+                    retained_area(
+                        *area,
+                        entry.staged.is_some(),
+                        entry.unstaged.is_some() || entry.untracked || entry.conflicted,
+                    )
+                    .map(|area| (i, area))
+                })
+            });
+            if quiet
+                && let Some((anchor_path, anchor_area)) = anchor
+                && let Some(next_top) = self.working_rows.iter().position(|row| match row {
+                    WorkingRow::Heading(area, _) => anchor_path.is_none() && *area == anchor_area,
+                    WorkingRow::File(index, area) => {
+                        *area == anchor_area
+                            && anchor_path.as_ref() == Some(&status.entries[*index].path)
+                    }
+                })
+            {
+                self.working_scroll.0.borrow().base_handle.set_offset(point(
+                    offset.x,
+                    px(automatic_refresh::reanchor_offset(
+                        f32::from(offset.y),
+                        top,
+                        next_top,
+                        height,
+                    )),
+                ));
+            }
+        }
+        let remotes = match remotes {
+            Ok(remotes) => remotes,
+            Err(error) => {
+                self.operation_error
+                    .get_or_insert_with(|| format!("Remote configuration: {error:#}"));
+                Vec::new()
+            }
+        };
+        let branch_changed = self.work_status.as_ref().is_none_or(|previous| {
+            previous.branch != status.branch || previous.upstream != status.upstream
+        });
+        let (default_remote, default_branch) = remote_defaults(&status, &remotes);
+        if branch_changed || self.remote_name.read(cx).value().is_empty() {
+            self.remote_name
+                .update(cx, |input, cx| input.set_value(default_remote, window, cx));
+        }
+        if branch_changed || self.remote_branch.read(cx).value().is_empty() {
+            self.remote_branch
+                .update(cx, |input, cx| input.set_value(default_branch, window, cx));
+        }
+        self.profile = match profile {
+            Ok(profile) => Some(profile),
+            Err(error) => {
+                self.operation_error
+                    .get_or_insert_with(|| format!("Git identity: {error:#}"));
+                None
+            }
+        };
+        self.work_status = Some(status);
+        self.remotes = remotes;
+        if !quiet && self.mode == WorkspaceMode::Working {
+            self.invalidate_read();
+            if let Some((index, area)) = self.working_selected {
+                self.select_working(index, area, window, cx);
+                if let Some(position) = self.working_rows.iter().position(
+                    |row| matches!(row, WorkingRow::File(i, a) if *i == index && *a == area),
+                ) {
+                    self.working_scroll
+                        .scroll_to_item(position, ScrollStrategy::Center);
+                }
+            } else {
+                self.clear_preview();
+                self.files.clear();
+                self.selected_file = None;
+            }
+        }
+    }
+
     pub(super) fn show_working(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_file_history(window, cx);
         if self.operation_busy.is_some() {
             return;
         }
@@ -345,10 +575,25 @@ impl GitTurtle {
         if self.operation_busy.is_some() {
             return;
         }
+        self.close_file_history(window, cx);
         let Some(repo) = self.repository.clone() else {
             return;
         };
         let path = repo.path().to_owned();
+        let ending_integration = matches!(
+            &command,
+            WriteCommand::Integration(
+                gitturtle_core::IntegrationCommand::Abort { .. }
+                    | gitturtle_core::IntegrationCommand::Quit { .. }
+            )
+        );
+        let resolved_path = match &command {
+            WriteCommand::Integration(gitturtle_core::IntegrationCommand::Resolve {
+                expected,
+                ..
+            }) => Some(expected.path.clone()),
+            _ => None,
+        };
         let submitted_message = match &command {
             WriteCommand::Commit { message } => Some(message.clone()),
             _ => None,
@@ -359,6 +604,30 @@ impl GitTurtle {
             _ => None,
         };
         let success_notice = match &command {
+            WriteCommand::Integration(gitturtle_core::IntegrationCommand::Resolve {
+                expected,
+                ..
+            }) => Some(format!("Resolved and staged {}", expected.path.display())),
+            WriteCommand::Integration(gitturtle_core::IntegrationCommand::Continue {
+                expected,
+            }) => Some(format!(
+                "Continued {} on {}",
+                expected.kind.label().to_lowercase(),
+                expected.branch
+            )),
+            WriteCommand::Integration(gitturtle_core::IntegrationCommand::Abort { expected }) => {
+                Some(format!(
+                    "Aborted {} on {}",
+                    expected.kind.label().to_lowercase(),
+                    expected.branch
+                ))
+            }
+            WriteCommand::Integration(gitturtle_core::IntegrationCommand::Quit { expected }) => {
+                Some(format!(
+                    "Stopped {} and kept the current files",
+                    expected.kind.label().to_lowercase()
+                ))
+            }
             WriteCommand::Stage { paths } => Some(match paths.as_slice() {
                 [path] => format!("Staged {}", path.display()),
                 _ => "Staged selected changes".into(),
@@ -382,15 +651,22 @@ impl GitTurtle {
             } => Some(format!("Pushed {local_branch} to {remote}/{remote_branch}")),
             _ => None,
         };
+        let recovery = if let WriteCommand::Recovery(command) = &command {
+            Some(Arc::clone(command))
+        } else {
+            None
+        };
         let refresh_history = matches!(
             &command,
             WriteCommand::Commit { .. }
+                | WriteCommand::Branch(_)
                 | WriteCommand::Checkout { .. }
                 | WriteCommand::CreateBranch { .. }
                 | WriteCommand::Fetch { .. }
                 | WriteCommand::Pull { .. }
                 | WriteCommand::Push { .. }
-        );
+        ) || matches!(&command, WriteCommand::Integration(operation) if !matches!(operation, gitturtle_core::IntegrationCommand::Resolve { .. }))
+            || matches!(&command, WriteCommand::Recovery(command) if matches!(command.as_ref(), gitturtle_core::RecoveryCommand::Amend { .. } | gitturtle_core::RecoveryCommand::Undo { .. } | gitturtle_core::RecoveryCommand::Revert { .. } | gitturtle_core::RecoveryCommand::CherryPick { .. }));
         self.operation_busy = Some(label);
         self.operation_error = None;
         self.operation_notice = None;
@@ -410,8 +686,8 @@ impl GitTurtle {
                 let succeeded=result.is_ok();
                 match result {
                     Ok(outcome) => {
-                        let notice = if let Some(oid) = outcome.commit_oid.as_ref() {
-                            format!("Committed {} · {}", short_oid(oid), submitted_message.as_deref().unwrap_or_default().lines().next().unwrap_or_default())
+                        let notice = if let (Some(oid), Some(message)) = (outcome.commit_oid.as_ref(), submitted_message.as_deref()) {
+                            format!("Committed {} · {}", short_oid(oid), message.lines().next().unwrap_or_default())
                         } else if let Some(notice) = &success_notice {
                             notice.clone()
                         } else {
@@ -425,10 +701,15 @@ impl GitTurtle {
                         this.operation_error = Some(format!("{error:#}"));
                     }
                 }
+                if let Some(command) = &recovery { this.finish_recovery_write(&path, command, succeeded, cx); }
+                if succeeded && ending_integration { this.conflict_drafts.retain(|(repository, _), _| repository != &path); }
+                if succeeded && let Some(resolved) = &resolved_path {
+                    this.conflict_drafts.remove(&(path.clone(), resolved.clone()));
+                }
+                if succeeded && let Some(message) = &submitted_message {
+                    this.clear_committed_draft(&path, message, window, cx);
+                }
                 if this.path.as_ref()==Some(&path) {
-                    if succeeded && submitted_message.as_deref().is_some_and(|message| this.commit_message.read(cx).value().as_str() == message) {
-                        this.commit_message.update(cx,|input,cx|input.set_value("",window,cx));
-                    }
                     if succeeded && submitted_branch.as_deref().is_some_and(|branch| this.branch_name.read(cx).value().trim() == branch) {
                         this.branch_name.update(cx,|input,cx|input.set_value("",window,cx));
                     }
@@ -487,15 +768,7 @@ impl GitTurtle {
             .as_ref()
             .and_then(|s| s.branch.as_deref())
             .unwrap_or("detached HEAD");
-        let summary_length = self
-            .commit_message
-            .read(cx)
-            .value()
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .chars()
-            .count();
+        let summary_length = self.commit_title.read(cx).value().chars().count();
         let list = uniform_list(
             "working-files",
             self.working_rows.len(),
@@ -518,6 +791,7 @@ impl GitTurtle {
                         .text_size(px(11.)).text_color(rgb(p.muted)).child(total.to_string()))
                     .child(div().flex_1())
                     .when(refreshing, |el| el.child(div().text_size(px(10.)).text_color(rgb(p.muted)).child("Refreshing…")))
+                    .child(self.render_working_recovery_menu(cx))
                     .child(button("refresh-working", "", "refresh", false)
                         .accessibility_label("Refresh working changes").tooltip("Refresh working changes")
                         .disabled(busy || refreshing).on_click(cx.listener(|this, _, window, cx| this.refresh_worktree(window, cx)))),
@@ -542,7 +816,7 @@ impl GitTurtle {
                                     else { "Refresh to try reading this working tree again." })),
                     )),
             )
-            .child(
+            .when(self.work_status.as_ref().is_none_or(|status| status.operation.is_none()), |el| el.child(
                 div().flex_shrink_0().p_3().flex().flex_col().gap_2()
                     .bg(rgb(p.subtle)).border_t_1().border_color(rgb(p.border))
                     .child(div().flex().items_center().gap_2()
@@ -556,11 +830,30 @@ impl GitTurtle {
                     .child(div().flex().items_center().gap_1p5().min_w_0().text_size(px(11.))
                         .text_color(rgb(p.muted)).child(icon("branch", 13., p.muted))
                         .child(div().truncate().child(branch.to_owned())))
-                    .child(Textarea::new(&self.commit_message).readonly(busy).h(px(96.)).text_size(px(12.)))
-                    .child(div().flex().items_center().gap_2().text_size(px(10.)).text_color(rgb(p.muted))
-                        .child(div().flex_1().child(if staged == 0 { "Stage files to include in your commit" } else { "Only staged changes will be committed" }))
+                    .child(div().flex().items_center().gap_2().text_size(px(11.))
+                        .child(div().flex_1().font_weight(FontWeight::MEDIUM).child("Title"))
                         .child(div().text_color(rgb(if summary_length > 72 { p.warning } else { p.muted }))
-                            .child(format!("{summary_length}/72"))))
+                            .child(format!("{summary_length}/72 suggested"))))
+                    .child(Input::new(&self.commit_title).readonly(busy).aria_label("Commit title").text_size(px(12.)))
+                    .when(summary_length > 72, |el| el.child(
+                        div().text_size(px(10.)).text_color(rgb(p.muted)).child("A shorter title is easier to scan. This title is still valid."),
+                    ))
+                    .child(div().flex().items_center().gap_1().text_size(px(11.))
+                        .child(div().font_weight(FontWeight::MEDIUM).child("Description"))
+                        .child(div().text_color(rgb(p.muted)).child("· optional")))
+                    .child(Textarea::new(&self.commit_message).readonly(busy)
+                        .aria_label("Commit description, optional")
+                        .h(px(if self.settings.density == appearance::Density::Compact { 100. } else { 128. }))
+                        .text_size(px(12.)))
+                    .child(div().flex().items_center().gap_2().text_size(px(10.)).text_color(rgb(p.muted))
+                        .child(div().flex_1().child(if staged == 0 { "Stage files to include in your commit" } else { "Only staged changes will be committed" })))
+                    .when_some(self.draft_save_error.as_ref(), |el, error| el.child(
+                        div().flex().flex_col().gap_1().text_size(px(10.)).text_color(rgb(p.warning))
+                            .child("Draft could not be saved on this computer. Keep the app open and retry.")
+                            .child(button("retry-commit-draft", "Retry saving draft", "refresh", false)
+                                .tooltip(error.clone())
+                                .on_click(cx.listener(|this, _, window, cx| this.persist_commit_draft(window, cx)))),
+                    ))
                     .when(!identity_ready && status_ready, |el| el.child(
                         button("configure-identity", "Set your commit identity", "", false)
                             .on_click(cx.listener(|this, _, window, cx| this.show_settings(window, cx))),
@@ -583,20 +876,20 @@ impl GitTurtle {
                                 "Set your commit identity".to_owned()
                             } else if staged == 0 {
                                 "Stage files to commit".to_owned()
-                            } else if self.commit_message.read(cx).value().trim().is_empty() {
-                                "Write a commit message".to_owned()
+                            } else if self.commit_title.read(cx).value().trim().is_empty() {
+                                "Write a commit title".to_owned()
                             } else {
                                 format!("Commit {staged} {}", if staged == 1 { "file" } else { "files" })
                             })
                             .disabled(busy || staged == 0 || conflicted || !identity_ready
-                                || self.commit_message.read(cx).value().trim().is_empty())
+                                || self.commit_title.read(cx).value().trim().is_empty())
                             .tooltip(format!("Commit staged changes to {branch}"))
                             .on_click(cx.listener(|this, _, window, cx| {
-                                let message = this.commit_message.read(cx).value().to_string();
+                                let message = this.current_commit_draft(cx).message();
                                 this.write(WriteCommand::Commit { message }, "Creating commit…", window, cx);
                             })),
                     ),
-            )
+            ))
             .into_any_element()
     }
 
@@ -845,93 +1138,7 @@ impl GitTurtle {
         let target = format!("{selected_remote}/{selected_branch}");
         let branch_empty = self.branch_name.read(cx).value().trim().is_empty();
         let detached = self.work_status.as_ref().is_none_or(|s| s.branch.is_none());
-        let view = cx.entity().downgrade();
-        let branch_picker = action_button("current-branch", branch.clone(), "branch")
-            .max_w(px(280.))
-            .dropdown_caret(true)
-            .disabled(busy)
-            .accessibility_label(format!("Current branch: {branch}. Switch branch"))
-            .tooltip(format!("{branch} · Switch to a local branch"))
-            .dropdown_menu(move |mut menu, _, cx| {
-                let Some(view) = view.upgrade() else {
-                    return menu;
-                };
-                let this = view.read(cx);
-                let path = this.path.clone();
-                let query = this.branch_name.read(cx).value().trim().to_lowercase();
-                let current = this.work_status.as_ref().and_then(|s| s.branch.as_deref());
-                menu = menu
-                    .label(if query.is_empty() {
-                        "Switch branch".to_owned()
-                    } else {
-                        format!("Branches matching “{query}”")
-                    })
-                    .max_h(px(360.))
-                    .scrollable(true);
-                // Build this bounded list only when the menu opens, never on each frame.
-                let branches: Vec<_> = this
-                    .branches
-                    .iter()
-                    .filter(|branch| {
-                        !branch.remote
-                            && Some(branch.name.as_str()) != current
-                            && (query.is_empty() || branch.name.to_lowercase().contains(&query))
-                    })
-                    .take(41)
-                    .collect();
-                let current_branch = this
-                    .branches
-                    .iter()
-                    .find(|branch| !branch.remote && Some(branch.name.as_str()) == current);
-                for branch in current_branch
-                    .into_iter()
-                    .chain(branches.iter().take(40).copied())
-                {
-                    let name = branch.name.clone();
-                    let view = view.downgrade();
-                    let path = path.clone();
-                    let checked = Some(name.as_str()) == current;
-                    menu = menu.item(
-                        PopupMenuItem::new(name.clone())
-                            .checked(checked)
-                            .disabled(checked)
-                            .on_click(move |_, window, cx| {
-                                let _ = view.update(cx, |this, cx| {
-                                    if this.path == path {
-                                        this.write(
-                                            WriteCommand::Checkout {
-                                                branch: name.clone(),
-                                            },
-                                            "Switching branch…",
-                                            window,
-                                            cx,
-                                        );
-                                    }
-                                });
-                            }),
-                    );
-                }
-                if branches.is_empty() {
-                    menu = menu.label(if query.is_empty() {
-                        "No other local branches"
-                    } else {
-                        "No other matching branches"
-                    });
-                } else if branches.len() > 40 {
-                    menu = menu.label("Showing 40 branches · Find to narrow the list");
-                }
-                let view = view.downgrade();
-                menu.separator()
-                    .item(PopupMenuItem::new("Find or create a branch…").on_click(
-                        move |_, window, cx| {
-                            let _ = view.update(cx, |this, cx| {
-                                this.git_actions_open = true;
-                                this.branch_name.read(cx).focus_handle(cx).focus(window, cx);
-                                cx.notify();
-                            });
-                        },
-                    ))
-            });
+        let branch_picker = self.render_branch_picker(cx);
         div().flex().flex_col().flex_shrink_0().bg(rgb(p.panel)).border_b_1().border_color(rgb(p.border))
             .child(
                 div().min_h(px(54.)).px_4().py_2().flex().flex_wrap().items_center().gap_2()
@@ -1054,7 +1261,11 @@ fn action_field_label(label: &'static str, color: u32) -> impl IntoElement {
         .child(label)
 }
 
-fn retained_area(preferred: ChangeArea, staged: bool, unstaged: bool) -> Option<ChangeArea> {
+pub(super) fn retained_area(
+    preferred: ChangeArea,
+    staged: bool,
+    unstaged: bool,
+) -> Option<ChangeArea> {
     match preferred {
         ChangeArea::Staged if staged => Some(ChangeArea::Staged),
         ChangeArea::Unstaged if unstaged => Some(ChangeArea::Unstaged),
@@ -1089,7 +1300,7 @@ fn remote_defaults(
     (remote, status.branch.clone().unwrap_or_default())
 }
 
-fn display_remote_url(url: &str) -> String {
+pub(super) fn display_remote_url(url: &str) -> String {
     let without_query = url.split(['?', '#']).next().unwrap_or(url);
     if let Some((scheme, remainder)) = without_query.split_once("://") {
         let (authority, path) = remainder

@@ -2245,6 +2245,7 @@ dependencies = [
  "gitturtle-preview",
  "gpui-kit",
  "image",
+ "notify",
  "rust-embed",
  "serde",
  "serde_json",

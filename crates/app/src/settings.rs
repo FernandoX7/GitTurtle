@@ -34,6 +34,8 @@ impl GitTurtle {
     }
 
     pub(super) fn show_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.capture_page_return_focus(window, cx);
+        self.cancel_branch_action();
         self.page = AppPage::Settings;
         self.column_menu = false;
         self.column_drag = None;
@@ -44,6 +46,20 @@ impl GitTurtle {
         self.fill_identity_inputs(window, cx);
         window.focus(&self.app_focus, cx);
         cx.notify();
+    }
+
+    pub(super) fn capture_page_return_focus(&mut self, window: &Window, cx: &App) {
+        if self.page == AppPage::Repository {
+            self.page_return_focus = window.focused(cx);
+        }
+    }
+
+    pub(super) fn restore_page_return_focus(&mut self, window: &mut Window, cx: &mut App) {
+        if self.page == AppPage::Repository
+            && let Some(focus) = self.page_return_focus.take()
+        {
+            window.focus(&focus, cx);
+        }
     }
 
     fn fill_identity_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -106,15 +122,17 @@ impl GitTurtle {
         }
         self.settings.theme = theme;
         theme.apply(Some(window), cx);
-        // Existing decorations contain concrete colors. Preserve prepared
-        // content while recreating only the editor that is actually visible.
-        self.patch_editor = None;
-        self.patch_view = None;
-        self.before_editor = None;
-        self.after_editor = None;
-        if self.page == AppPage::Repository && self.mode != WorkspaceMode::History {
-            self.ensure_editor(window, cx);
+        // Update concrete colors without replacing editors or their retained
+        // selection, viewport, find session, and keyboard focus.
+        if let (Some(collection), Some(Content::Text { presentation, .. })) =
+            (&self.patch_decoration, self.content.as_deref())
+        {
+            text::refresh_theme(collection, presentation, cx);
         }
+        if let Some(split) = &self.split_view {
+            split.update(cx, |view, cx| view.refresh_theme(cx));
+        }
+        self.file_history.refresh_theme(cx);
         self.save_preferences(window, cx);
     }
 
@@ -533,6 +551,7 @@ impl GitTurtle {
                                 if this.page == AppPage::Repository
                                     && this.mode != WorkspaceMode::History
                                 {
+                                    this.resume_file_history(window, cx);
                                     this.ensure_editor(window, cx);
                                 }
                                 window.focus(
@@ -545,6 +564,8 @@ impl GitTurtle {
                                     },
                                     cx,
                                 );
+                                this.restore_page_return_focus(window, cx);
+                                this.try_automatic_refresh(window, cx);
                                 cx.notify();
                             },
                         )),

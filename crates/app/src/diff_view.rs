@@ -2,29 +2,96 @@
 //! The editor retains the exact patch, so selection, copying, and search never
 //! include presentation-only numbers. No Git reads happen in this component.
 
-use crate::{appearance::palette, text::PatchPresentation};
+use crate::{
+    appearance::palette,
+    partial_view::{PartialActions, PartialRow},
+    text::PatchPresentation,
+};
+use gitturtle_core::{ChangeArea, PartialDiff, PartialSelection};
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    App, AppContext, Bounds, ContentMask, Context, Entity, InteractiveElement, IntoElement,
-    ParentElement, Pixels, Point, Render, SharedString, Styled, Subscription, TextAlign, TextRun,
-    Window, canvas,
+    AnyElement, App, AppContext, Bounds, ClickEvent, ContentMask, Context, Entity, EventEmitter,
+    InteractiveElement, IntoElement, ParentElement, Pixels, Point, Render, SharedString, Styled,
+    Subscription, TextAlign, TextRun, Window, canvas,
     component::{
-        Theme,
+        Disableable, Sizable, Theme,
+        button::{Button, ButtonVariants},
+        checkbox::Checkbox,
         input::{Editor, EditorState},
     },
     div, fill, point, px, relative, rgb, size,
 };
-use std::{cell::Cell, ops::Range, rc::Rc, sync::Arc};
+use std::{cell::Cell, collections::BTreeSet, ops::Range, rc::Rc, sync::Arc};
 
 const FONT_SIZE: f32 = 12.;
 const CELL_PADDING: f32 = 9.;
+const ACTION_WIDTH: f32 = 28.;
+
+pub enum DiffViewEvent {
+    ApplyPartial {
+        diff: Arc<PartialDiff>,
+        selection: PartialSelection,
+    },
+}
 
 pub struct DiffView {
     editor: Entity<EditorState>,
     rows: Arc<[LineNumbers]>,
     column_width: f32,
+    single_column: bool,
+    label: SharedString,
+    partial: Option<Arc<PartialActions>>,
+    selection: LineSelection,
+    partial_busy: bool,
     viewport: Viewport,
     pending_scroll: Rc<PendingScroll>,
+    gutter_origin: Rc<Cell<Option<Point<Pixels>>>>,
     _subscription: Subscription,
+}
+
+impl EventEmitter<DiffViewEvent> for DiffView {}
+
+impl DiffView {
+    pub fn refresh(
+        &mut self,
+        presentation: &PatchPresentation,
+        partial: Option<Arc<PartialActions>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.refresh_numbered(
+            Arc::clone(&presentation.rows),
+            presentation.column_width,
+            cx,
+        );
+        self.partial = partial;
+        self.selection = LineSelection::default();
+        self.partial_busy = false;
+    }
+
+    pub fn refresh_numbered(
+        &mut self,
+        rows: Arc<[LineNumbers]>,
+        column_width: f32,
+        cx: &mut Context<Self>,
+    ) {
+        self.rows = rows;
+        self.column_width = column_width;
+        self.pending_scroll = Rc::default();
+        self.gutter_origin = Rc::default();
+        cx.notify();
+    }
+}
+
+pub fn new_partial(
+    editor: Entity<EditorState>,
+    presentation: &PatchPresentation,
+    partial: Arc<PartialActions>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<DiffView> {
+    let view = new(editor, presentation, window, cx);
+    view.update(cx, |view, _| view.partial = Some(partial));
+    view
 }
 
 /// Wrap an existing patch editor with metadata prepared for its unchanged text.
@@ -36,13 +103,31 @@ pub fn new(
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<DiffView> {
+    new_numbered(
+        editor,
+        Arc::clone(&presentation.rows),
+        presentation.column_width,
+        false,
+        "Read-only unified patch",
+        window,
+        cx,
+    )
+}
+
+pub fn new_numbered(
+    editor: Entity<EditorState>,
+    rows: Arc<[LineNumbers]>,
+    column_width: f32,
+    single_column: bool,
+    label: impl Into<SharedString>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<DiffView> {
     editor.update(cx, |state, cx| {
         state.set_line_number(false, window, cx);
         state.set_soft_wrap(false, window, cx);
         state.set_folding(false, window, cx);
     });
-    let rows = Arc::clone(&presentation.rows);
-    let column_width = presentation.column_width;
     cx.new(|cx| {
         let viewport = Viewport::read(editor.read(cx));
         let subscription = cx.observe(&editor, |this: &mut DiffView, editor, cx| {
@@ -58,8 +143,14 @@ pub fn new(
             editor,
             rows,
             column_width,
+            single_column,
+            label: label.into(),
+            partial: None,
+            selection: LineSelection::default(),
+            partial_busy: false,
             viewport,
             pending_scroll: Rc::default(),
+            gutter_origin: Rc::default(),
             _subscription: subscription,
         }
     })
@@ -71,12 +162,22 @@ impl Render for DiffView {
         let scroll_editor = self.editor.clone();
         let pending_scroll = Rc::clone(&self.pending_scroll);
         let painted_scroll = Rc::clone(&self.pending_scroll);
+        let gutter_origin = Rc::clone(&self.gutter_origin);
         let rows = Arc::clone(&self.rows);
         let row_count = rows.len();
         let column_width = self.column_width;
-        let width = column_width * 2.;
-        div()
+        let single_column = self.single_column;
+        let action_width = if self.partial.is_some() {
+            ACTION_WIDTH
+        } else {
+            0.
+        };
+        let width = action_width + column_width * if single_column { 1. } else { 2. };
+        let controls = self.render_partial_controls(width, cx);
+        let content = div()
             .size_full()
+            .flex_1()
+            .min_h_0()
             .relative()
             .overflow_hidden()
             .pl(px(width))
@@ -90,7 +191,7 @@ impl Render for DiffView {
                     .h(relative(1.))
                     .readonly(true)
                     .bordered(false)
-                    .aria_label("Read-only unified patch")
+                    .aria_label(self.label.clone())
                     .text_size(px(FONT_SIZE)),
             )
             .child(
@@ -133,12 +234,264 @@ impl Render for DiffView {
                                 // Editor has painted and applied its deferred offset.
                                 // Notifications alone do not mark that boundary.
                                 painted_scroll.clear();
-                                paint_gutter(&editor, &rows, column_width, bounds, window, cx);
+                                gutter_origin.set(Some(bounds.origin));
+                                if action_width > 0. {
+                                    window.paint_quad(fill(bounds, rgb(palette(cx).panel)));
+                                }
+                                let numbered_bounds = Bounds::new(
+                                    point(bounds.origin.x + px(action_width), bounds.origin.y),
+                                    size(bounds.size.width - px(action_width), bounds.size.height),
+                                );
+                                paint_gutter(
+                                    &editor,
+                                    &rows,
+                                    column_width,
+                                    single_column,
+                                    numbered_bounds,
+                                    window,
+                                    cx,
+                                );
                             },
                         )
                         .size_full(),
-                    ),
+                    )
+                    .children(controls),
+            );
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(content)
+            .when(!self.selection.ids.is_empty(), |el| {
+                el.child(self.render_partial_selection(cx))
+            })
+    }
+}
+
+impl DiffView {
+    fn apply_partial(&mut self, ids: Vec<usize>, cx: &mut Context<Self>) {
+        if self.partial_busy || ids.is_empty() {
+            return;
+        }
+        let Some(partial) = &self.partial else {
+            return;
+        };
+        let diff = Arc::clone(&partial.diff);
+        self.partial_busy = true;
+        cx.emit(DiffViewEvent::ApplyPartial {
+            diff,
+            selection: PartialSelection::Lines(ids),
+        });
+        cx.notify();
+    }
+
+    fn render_partial_controls(&self, width: f32, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let Some(partial) = &self.partial else {
+            return Vec::new();
+        };
+        let state = self.editor.read(cx);
+        let (Some(bounds), Some(line_height), Some(visible)) = (
+            state.text_bounds(),
+            state.line_height(),
+            state.visible_row_range(),
+        ) else {
+            return Vec::new();
+        };
+        let input = state.input_bounds();
+        let top = bounds.origin.y - input.origin.y;
+        let origin = self.gutter_origin.get().unwrap_or(input.origin);
+        let action = if partial.diff.area == ChangeArea::Staged {
+            "Unstage"
+        } else {
+            "Stage"
+        };
+        let mut elements = Vec::new();
+        for row in visible.start.min(partial.rows.len())..visible.end.min(partial.rows.len()) {
+            let y = top + line_height * row as f32;
+            match &partial.rows[row] {
+                PartialRow::None => {}
+                PartialRow::Hunk(ids) => {
+                    let ids = Arc::clone(ids);
+                    elements.push(
+                        div()
+                            .absolute()
+                            .top(y + px(1.))
+                            .left(px(2.))
+                            .w(px(width - 4.))
+                            .h(line_height - px(2.))
+                            .child(
+                                Button::new(("partial-hunk", row))
+                                    .small()
+                                    .w_full()
+                                    .h(line_height - px(2.))
+                                    .px_1()
+                                    .rounded(px(3.))
+                                    .text_size(px(10.))
+                                    .label(format!("{action} hunk"))
+                                    .accessibility_label(format!(
+                                        "{action} hunk at patch line {}",
+                                        row + 1
+                                    ))
+                                    .disabled(self.partial_busy)
+                                    .tooltip(format!(
+                                        "{action} all {} changed lines in this hunk",
+                                        ids.len()
+                                    ))
+                                    .on_click(cx.listener(move |this, event, _, cx| {
+                                        if this.click_matches_row(event, row, cx) {
+                                            this.apply_partial(ids.to_vec(), cx);
+                                        }
+                                    })),
+                            )
+                            .into_any_element(),
+                    );
+                }
+                PartialRow::Change { id, added, line } => {
+                    let id = *id;
+                    elements.push(
+                        div()
+                            .absolute()
+                            .top(y)
+                            .left(px(5.))
+                            .w(px(ACTION_WIDTH - 6.))
+                            .h(line_height)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                Checkbox::new(("partial-line", id))
+                                    .small()
+                                    .checked(self.selection.ids.contains(&id))
+                                    .disabled(self.partial_busy)
+                                    .accessibility_label(format!(
+                                        "Select {} line {line} for {}",
+                                        if *added { "added" } else { "removed" },
+                                        action.to_lowercase()
+                                    ))
+                                    .tooltip(
+                                        "Select this changed line. Shift-click selects a range.",
+                                    )
+                                    .on_click(cx.listener(move |this, checked, window, cx| {
+                                        if this.partial_busy {
+                                            return;
+                                        }
+                                        this.selection.toggle(
+                                            id,
+                                            *checked,
+                                            window.modifiers().shift,
+                                        );
+                                        cx.notify();
+                                    })),
+                            )
+                            .into_any_element(),
+                    );
+                }
+            }
+        }
+        // Match the input's clipping region, including when editor find moves
+        // the first visible source line down inside the outer comparison.
+        vec![
+            div()
+                .absolute()
+                .left_0()
+                .top(input.origin.y - origin.y)
+                .w(px(width))
+                .h(input.size.height)
+                .overflow_hidden()
+                .children(elements)
+                .into_any_element(),
+        ]
+    }
+
+    fn click_matches_row(&self, event: &ClickEvent, row: usize, cx: &App) -> bool {
+        if matches!(event, ClickEvent::Keyboard(_)) {
+            return true;
+        }
+        let state = self.editor.read(cx);
+        let (Some(bounds), Some(height)) = (state.text_bounds(), state.line_height()) else {
+            return false;
+        };
+        let y = event.position().y;
+        let top = bounds.origin.y + height * row as f32;
+        // Scroll offsets are applied while painting the editor. Reject a click
+        // delivered while a control from the previous geometry is relocating.
+        y >= top && y < top + height
+    }
+
+    fn render_partial_selection(&self, cx: &mut Context<Self>) -> AnyElement {
+        let palette = palette(cx);
+        let action = if self
+            .partial
+            .as_ref()
+            .is_some_and(|partial| partial.diff.area == ChangeArea::Staged)
+        {
+            "Unstage"
+        } else {
+            "Stage"
+        };
+        let count = self.selection.ids.len();
+        div()
+            .flex_shrink_0()
+            .px_3()
+            .py_2()
+            .flex()
+            .items_center()
+            .gap_2()
+            .bg(rgb(palette.panel))
+            .border_t_1()
+            .border_color(rgb(palette.border))
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(px(11.))
+                    .text_color(rgb(palette.muted))
+                    .child(format!(
+                        "{count} {} selected",
+                        if count == 1 { "line" } else { "lines" }
+                    )),
             )
+            .child(
+                Button::new("clear-partial-selection")
+                    .small()
+                    .label("Clear")
+                    .disabled(self.partial_busy)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.selection = LineSelection::default();
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("apply-partial-selection")
+                    .small()
+                    .primary()
+                    .label(format!("{action} selected lines"))
+                    .disabled(self.partial_busy)
+                    .tooltip("For a replacement, select both the removed and added lines.")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.apply_partial(this.selection.ids.iter().copied().collect(), cx)
+                    })),
+            )
+            .into_any_element()
+    }
+}
+
+#[derive(Default)]
+struct LineSelection {
+    ids: BTreeSet<usize>,
+    anchor: Option<usize>,
+}
+
+impl LineSelection {
+    fn toggle(&mut self, id: usize, checked: bool, extend: bool) {
+        let anchor = self.anchor.filter(|_| extend).unwrap_or(id);
+        for id in anchor.min(id)..=anchor.max(id) {
+            if checked {
+                self.ids.insert(id);
+            } else {
+                self.ids.remove(&id);
+            }
+        }
+        self.anchor = Some(id);
     }
 }
 
@@ -192,13 +545,17 @@ fn paint_gutter(
     editor: &Entity<EditorState>,
     rows: &[LineNumbers],
     column_width: f32,
+    single_column: bool,
     bounds: Bounds<Pixels>,
     window: &mut Window,
     cx: &mut App,
 ) {
     let palette = palette(cx);
     window.paint_quad(fill(bounds, rgb(palette.panel)));
-    for x in [column_width, column_width * 2. - 1.] {
+    for x in [column_width - 1., column_width * 2. - 1.]
+        .into_iter()
+        .take(if single_column { 1 } else { 2 })
+    {
         window.paint_quad(fill(
             Bounds::new(
                 point(bounds.origin.x + px(x), bounds.origin.y),
@@ -240,6 +597,7 @@ fn paint_gutter(
             }
             let numbers = rows[row];
             let (color, background) = match (numbers.old, numbers.new) {
+                _ if single_column => (palette.muted, None),
                 (Some(_), None) => (palette.removed, Some(palette.removed_background)),
                 (None, Some(_)) => (palette.added, Some(palette.added_background)),
                 _ => (palette.line_number, None),
@@ -253,7 +611,11 @@ fn paint_gutter(
                     rgb(background),
                 ));
             }
-            for (column, number) in [numbers.old, numbers.new].into_iter().enumerate() {
+            for (column, number) in [numbers.old, numbers.new]
+                .into_iter()
+                .take(if single_column { 1 } else { 2 })
+                .enumerate()
+            {
                 let Some(number) = number else {
                     continue;
                 };
@@ -402,6 +764,29 @@ fn parse_side(range: &str) -> Option<HunkSide> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changed_line_selection_supports_disjoint_edits_and_shift_ranges() {
+        let mut selection = LineSelection::default();
+        selection.toggle(2, true, false);
+        selection.toggle(5, true, true);
+        assert_eq!(
+            selection.ids.iter().copied().collect::<Vec<_>>(),
+            [2, 3, 4, 5]
+        );
+        selection.toggle(10, true, false);
+        assert_eq!(
+            selection.ids.iter().copied().collect::<Vec<_>>(),
+            [2, 3, 4, 5, 10]
+        );
+        selection.toggle(8, false, true);
+        assert_eq!(
+            selection.ids.iter().copied().collect::<Vec<_>>(),
+            [2, 3, 4, 5]
+        );
+        selection.toggle(3, false, false);
+        assert_eq!(selection.ids.iter().copied().collect::<Vec<_>>(), [2, 4, 5]);
+    }
 
     fn n(old: Option<u64>, new: Option<u64>) -> LineNumbers {
         LineNumbers { old, new }

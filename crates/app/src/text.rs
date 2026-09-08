@@ -1,7 +1,7 @@
 use crate::appearance::palette;
 use gpui_kit::{
     App, AppContext, Entity, FontWeight, HighlightStyle, Window,
-    component::input::{EditorState, TextDecoration},
+    component::input::{EditorState, TextDecoration, TextDecorationCollection},
     rgb,
 };
 use std::{mem::size_of, ops::Range, sync::Arc};
@@ -43,8 +43,18 @@ pub fn editor(
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<EditorState> {
-    let palette = palette(cx);
-    cx.new(|cx| {
+    editor_with_decorations(value, language, diff, window, cx).0
+}
+
+pub fn editor_with_decorations(
+    value: &str,
+    language: &str,
+    diff: Option<&PatchPresentation>,
+    window: &mut Window,
+    cx: &mut App,
+) -> (Entity<EditorState>, Option<TextDecorationCollection>) {
+    let mut collection = None;
+    let editor = cx.new(|cx| {
         let mut state = EditorState::new(window, cx)
             .language(language.to_owned())
             .line_number(diff.is_none())
@@ -52,36 +62,71 @@ pub fn editor(
             .soft_wrap(false)
             .default_value(value.to_owned());
         if let Some(presentation) = diff {
-            let decorations = presentation
-                .ranges
-                .iter()
-                .map(|decoration| {
-                    let style = match decoration.kind {
-                        Kind::Added => HighlightStyle {
-                            color: Some(rgb(palette.added).into()),
-                            background_color: Some(rgb(palette.added_background).into()),
-                            ..Default::default()
-                        },
-                        Kind::Removed => HighlightStyle {
-                            color: Some(rgb(palette.removed).into()),
-                            background_color: Some(rgb(palette.removed_background).into()),
-                            ..Default::default()
-                        },
-                        Kind::Hunk => HighlightStyle {
-                            color: Some(rgb(palette.hunk).into()),
-                            font_weight: Some(FontWeight::MEDIUM),
-                            ..Default::default()
-                        },
-                    };
-                    TextDecoration::new(decoration.range.clone(), style)
-                })
-                .collect();
+            let decorations = theme_decorations(presentation, cx);
             // Collections are retained by EditorState, not by the returned
             // handle, and disappear with this editor when selection changes.
-            state.create_decorations_collection(decorations, cx);
+            collection = Some(state.create_decorations_collection(decorations, cx));
         }
         state
-    })
+    });
+    (editor, collection)
+}
+
+/// Keep the native editor identity, find session, focus, selection, and scroll
+/// while a local filesystem change supplies new prepared text.
+pub fn refresh_editor(
+    editor: &Entity<EditorState>,
+    value: &str,
+    decorations: Option<(&TextDecorationCollection, &PatchPresentation)>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    editor.update(cx, |state, cx| {
+        let selection = state.selected_range();
+        let offset = state.scroll_offset();
+        state.set_value(value.to_owned(), window, cx);
+        state.set_selected_range(selection, cx);
+        state.set_scroll_offset(offset, cx);
+    });
+    if let Some((collection, presentation)) = decorations {
+        refresh_theme(collection, presentation, cx);
+    }
+}
+
+pub fn refresh_theme(
+    collection: &TextDecorationCollection,
+    presentation: &PatchPresentation,
+    cx: &mut App,
+) {
+    collection.set(theme_decorations(presentation, cx), cx);
+}
+
+fn theme_decorations(presentation: &PatchPresentation, cx: &App) -> Vec<TextDecoration> {
+    let palette = palette(cx);
+    presentation
+        .ranges
+        .iter()
+        .map(|decoration| {
+            let style = match decoration.kind {
+                Kind::Added => HighlightStyle {
+                    color: Some(rgb(palette.added).into()),
+                    background_color: Some(rgb(palette.added_background).into()),
+                    ..Default::default()
+                },
+                Kind::Removed => HighlightStyle {
+                    color: Some(rgb(palette.removed).into()),
+                    background_color: Some(rgb(palette.removed_background).into()),
+                    ..Default::default()
+                },
+                Kind::Hunk => HighlightStyle {
+                    color: Some(rgb(palette.hunk).into()),
+                    font_weight: Some(FontWeight::MEDIUM),
+                    ..Default::default()
+                },
+            };
+            TextDecoration::new(decoration.range.clone(), style)
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

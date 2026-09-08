@@ -1,12 +1,23 @@
 mod appearance;
+mod automatic_refresh;
+mod branch_actions;
 mod columns;
+mod commit_drafts;
+mod conflicts;
 mod diff_view;
+mod file_history;
 mod graph;
+mod history_search;
+mod integration;
+mod local_refresh;
 mod navigation;
 mod operations;
+mod partial_view;
 mod preferences;
 mod projects;
+mod recovery;
 mod settings;
+mod split_diff;
 mod text;
 mod views;
 mod worker;
@@ -17,13 +28,16 @@ use gitturtle_core::{Branch, Commit, FileChange, GitRepository, Worktree};
 use gpui_kit::component::{
     Disableable, Icon, Root, Selectable, Sizable,
     button::{Button, ButtonVariants},
-    input::{Editor, EditorState, Input, InputEvent, InputState, Textarea, TextareaState},
+    input::{
+        Editor, EditorState, Input, InputEvent, InputState, TextDecorationCollection, Textarea,
+        TextareaState,
+    },
     resizable::{h_resizable, resizable_panel},
     tooltip::Tooltip,
 };
 use gpui_kit::*;
 use operations::SerialExecutor;
-use preferences::{AppSettings, Preferences};
+use preferences::{AppSettings, CommitDraft, Preferences};
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
@@ -119,6 +133,7 @@ enum Pane {
 #[derive(Clone, Copy, PartialEq)]
 enum TextMode {
     Unified,
+    Split,
     Before,
     After,
 }
@@ -130,8 +145,16 @@ enum NavMode {
 }
 
 struct GitTurtle {
+    history_search: history_search::State,
+    file_history: file_history::State,
+    automatic: automatic_refresh::State,
+    branch_actions: branch_actions::State,
+    recovery: recovery::State,
+    page_return_focus: Option<FocusHandle>,
     retained_history_files: Option<(Vec<FileChange>, Option<usize>)>,
-    commit_drafts: HashMap<PathBuf, String>,
+    commit_drafts: HashMap<PathBuf, CommitDraft>,
+    draft_saver: commit_drafts::DraftSaver,
+    draft_save_error: Option<String>,
     draft_repository: Option<PathBuf>,
     settings: AppSettings,
     preferences_writer: SerialExecutor,
@@ -143,6 +166,8 @@ struct GitTurtle {
     status_task: Option<Task<()>>,
     work_generation: u64,
     work_status: Option<gitturtle_core::RepositoryStatus>,
+    integration_state: Option<gitturtle_core::OperationState>,
+    integration_task: Option<Task<()>>,
     profile: Option<gitturtle_core::GitProfile>,
     remotes: Vec<gitturtle_core::Remote>,
     working_rows: Vec<workspace::WorkingRow>,
@@ -150,6 +175,7 @@ struct GitTurtle {
     working_scroll: UniformListScrollHandle,
     page: AppPage,
     hub: Entity<projects::ProjectHub>,
+    commit_title: Entity<InputState>,
     commit_message: Entity<TextareaState>,
     identity_name: Entity<InputState>,
     identity_email: Entity<InputState>,
@@ -186,7 +212,13 @@ struct GitTurtle {
     files: Vec<FileChange>,
     content: Option<Arc<Content>>,
     patch_editor: Option<Entity<EditorState>>,
+    patch_decoration: Option<TextDecorationCollection>,
     patch_view: Option<Entity<diff_view::DiffView>>,
+    partial_subscription: Option<Subscription>,
+    split_view: Option<Entity<split_diff::SplitView>>,
+    conflict_view: Option<Entity<conflicts::ConflictView>>,
+    conflict_subscription: Option<Subscription>,
+    conflict_drafts: HashMap<(PathBuf, PathBuf), conflicts::Draft>,
     before_editor: Option<Entity<EditorState>>,
     after_editor: Option<Entity<EditorState>>,
     images: [Option<Arc<RenderImage>>; 2],
@@ -225,7 +257,7 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) -> Self {
         let search = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Search loaded commits, author, hash…")
+            InputState::new(window, cx).placeholder("Search repository history, author, hash…")
         });
         let nav_search =
             cx.new(|cx| InputState::new(window, cx).placeholder("Filter branches & worktrees"));
@@ -238,10 +270,12 @@ impl GitTurtle {
                 cx,
             )
         });
+        let commit_title =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Summarize the change"));
         let commit_message = cx.new(|cx| {
             TextareaState::new(window, cx)
-                .placeholder("Summarize your changes…\n\nAdd a description (optional)")
-                .rows(3)
+                .placeholder("Explain why this change is needed…")
+                .rows(5)
         });
         let identity_name = cx.new(|cx| InputState::new(window, cx).placeholder("Your name"));
         let identity_email =
@@ -252,8 +286,16 @@ impl GitTurtle {
         let settings_branch =
             cx.new(|cx| InputState::new(window, cx).default_value(settings.default_branch.clone()));
         let mut this = Self {
+            history_search: history_search::State::default(),
+            file_history: file_history::State::default(),
+            automatic: automatic_refresh::State::default(),
+            branch_actions: branch_actions::State::default(),
+            recovery: recovery::State::default(),
+            page_return_focus: None,
             retained_history_files: None,
-            commit_drafts: HashMap::new(),
+            commit_drafts: preferences.commit_drafts,
+            draft_saver: commit_drafts::DraftSaver::default(),
+            draft_save_error: None,
             draft_repository: None,
             settings,
             preferences_writer: SerialExecutor::new("gitturtle-preferences"),
@@ -265,6 +307,8 @@ impl GitTurtle {
             status_task: None,
             work_generation: 0,
             work_status: None,
+            integration_state: None,
+            integration_task: None,
             profile: None,
             remotes: Vec::new(),
             working_rows: Vec::new(),
@@ -276,6 +320,7 @@ impl GitTurtle {
                 AppPage::Projects
             },
             hub: hub.clone(),
+            commit_title,
             commit_message,
             identity_name,
             identity_email,
@@ -312,7 +357,13 @@ impl GitTurtle {
             files: vec![],
             content: None,
             patch_editor: None,
+            patch_decoration: None,
             patch_view: None,
+            partial_subscription: None,
+            split_view: None,
+            conflict_view: None,
+            conflict_subscription: None,
+            conflict_drafts: HashMap::new(),
             before_editor: None,
             after_editor: None,
             images: [None, None],
@@ -342,13 +393,14 @@ impl GitTurtle {
             interaction_started: None,
             details: false,
         };
-        this.subscriptions
-            .push(cx.subscribe_in(&search, window, |this, _, event, _, cx| {
+        this.subscriptions.push(
+            cx.subscribe_in(&search, window, |this, _, event, window, cx| {
                 if matches!(event, InputEvent::Change) {
-                    this.filter_history(cx);
+                    this.history_query_changed(window, cx);
                     cx.notify();
                 }
-            }));
+            }),
+        );
         this.subscriptions.push(
             cx.subscribe_in(&nav_search, window, |this, _, event, _, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -365,7 +417,22 @@ impl GitTurtle {
         this.subscriptions.push(cx.subscribe_in(
             &this.commit_message.clone(),
             window,
-            |_, _, _, _, cx| cx.notify(),
+            |this, _, event, window, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.persist_commit_draft(window, cx);
+                }
+                cx.notify();
+            },
+        ));
+        this.subscriptions.push(cx.subscribe_in(
+            &this.commit_title.clone(),
+            window,
+            |this, _, event, window, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.persist_commit_draft(window, cx);
+                }
+                cx.notify();
+            },
         ));
         for input in [&this.branch_name, &this.remote_name, &this.remote_branch] {
             this.subscriptions
@@ -376,6 +443,20 @@ impl GitTurtle {
                 }));
         }
         this.subscribe_settings_inputs(window, cx);
+        this.subscriptions
+            .push(cx.observe_window_activation(window, |this, window, cx| {
+                if window.is_window_active() && this.repository.is_some() {
+                    this.ensure_local_watcher(true, window, cx);
+                    this.queue_automatic_refresh(
+                        local_refresh::LocalChange {
+                            rescan: true,
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    );
+                }
+            }));
         window.focus(
             if initial.is_some() {
                 &this.focus
@@ -397,6 +478,8 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.pause_history_search_for_read();
+        self.cancel_automatic_read();
         self.generation += 1;
         let generation = self.generation;
         self.loading = Some(label);
@@ -411,6 +494,7 @@ impl GitTurtle {
                     return;
                 }
                 this.loading = None;
+                this.task = None;
                 match result {
                     Ok(output) => this.receive(output, window, cx),
                     Err(error) => {
@@ -425,6 +509,7 @@ impl GitTurtle {
                         }
                     }
                 }
+                this.try_automatic_refresh(window, cx);
                 cx.notify();
             });
         }));
@@ -438,20 +523,27 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.cancel_branch_action();
+        self.cancel_recovery_read();
         if self.operation_busy.is_some() {
             return;
         }
+        self.close_file_history(window, cx);
+        self.discard_history_search();
+        self.page_return_focus = None;
         self.restore_commit = if self.path.as_ref() == Some(&path) && self.scope == scope {
             self.selected_commit.map(|i| self.commits[i].oid.clone())
         } else {
             None
         };
         if self.path.as_ref() != Some(&path) {
+            self.automatic.reset();
             self.operation_notice = None;
             self.retained_history_files = None;
             self.repository = None;
             self.work_generation += 1;
             self.work_status = None;
+            self.integration_state = None;
             self.profile = None;
             self.remotes.clear();
             self.working_rows.clear();
@@ -469,6 +561,7 @@ impl GitTurtle {
             self.nav_scroll.scroll_to_item(0, ScrollStrategy::Top);
         }
         self.back_to_history(window, cx);
+        self.automatic.retained_commit = None;
         self.path = Some(path.clone());
         self.refs.clear();
         self.scope = scope;
@@ -496,7 +589,12 @@ impl GitTurtle {
         self.image_drag = None;
         self.content = None;
         self.patch_editor = None;
+        self.patch_decoration = None;
         self.patch_view = None;
+        self.partial_subscription = None;
+        self.split_view = None;
+        self.conflict_view = None;
+        self.conflict_subscription = None;
         self.before_editor = None;
         self.after_editor = None;
         self.images = [None, None];
@@ -504,6 +602,8 @@ impl GitTurtle {
 
     fn receive(&mut self, output: Output, window: &mut Window, cx: &mut Context<Self>) {
         match output {
+            Output::SearchHistory(_) | Output::FileHistory(_) => {} // Applied by their own bounded subscriptions.
+            Output::QuietRefresh(_) => {} // Applied by the quiet-read subscription.
             Output::WorkingPreview(file, content, elapsed) => {
                 if self.mode != WorkspaceMode::Working {
                     return;
@@ -531,22 +631,10 @@ impl GitTurtle {
                 self.graph_notice = snapshot.graph_notice;
                 self.graph_lanes = self.graph.iter().map(|r| r.width).max().unwrap_or(1);
                 let resolved = snapshot.repository.path().to_owned();
-                if self.draft_repository.as_ref() != Some(&resolved) {
-                    if let Some(previous) = self.draft_repository.take() {
-                        self.commit_drafts
-                            .insert(previous, self.commit_message.read(cx).value().to_string());
-                    }
-                    let draft = self
-                        .commit_drafts
-                        .get(&resolved)
-                        .cloned()
-                        .unwrap_or_default();
-                    self.commit_message
-                        .update(cx, |input, cx| input.set_value(draft, window, cx));
-                    self.draft_repository = Some(resolved);
-                }
+                self.restore_commit_draft(resolved, window, cx);
                 self.path = Some(snapshot.repository.path().to_owned());
                 self.repository = Some(snapshot.repository);
+                self.ensure_local_watcher(false, window, cx);
                 self.hub.update(cx, |hub, cx| {
                     hub.set_busy(false, cx);
                     hub.set_error(None, cx);
@@ -575,6 +663,9 @@ impl GitTurtle {
                         self.history_scroll
                             .scroll_to_item(position, ScrollStrategy::Center);
                     }
+                }
+                if !self.search.read(cx).value().is_empty() {
+                    self.history_query_changed(window, cx);
                 }
             }
             Output::Changes(files, elapsed) => {
@@ -613,7 +704,7 @@ impl GitTurtle {
                     Content::Images { old, new } => {
                         self.images = [old.render.clone(), new.render.clone()];
                     }
-                    Content::Notice(_) => {}
+                    Content::Notice(_) | Content::Conflict(_) => {}
                 }
                 self.content = Some(content);
                 if self.page == AppPage::Repository
@@ -638,11 +729,18 @@ impl GitTurtle {
         let Some(content) = &self.content else {
             return;
         };
+        if let Content::Conflict(presentation) = content.as_ref() {
+            self.ensure_conflict_view(Arc::clone(presentation), window, cx);
+            return;
+        }
         let Content::Text {
             patch,
             old,
             new,
             presentation,
+            split,
+            partial,
+            ..
         } = content.as_ref()
         else {
             return;
@@ -653,44 +751,93 @@ impl GitTurtle {
             .and_then(|s| s.to_str())
             .map(language_for)
             .unwrap_or("text");
+        if self.text_mode == TextMode::Split {
+            if self.split_view.is_none() {
+                self.split_view = Some(split_diff::new(Arc::clone(split), language, window, cx));
+            }
+            return;
+        }
         let (slot, value, language, diff) = match self.text_mode {
+            TextMode::Split => unreachable!(),
             TextMode::Unified => (&mut self.patch_editor, patch, "diff", true),
             TextMode::Before => (&mut self.before_editor, old, language, false),
             TextMode::After => (&mut self.after_editor, new, language, false),
         };
         if slot.is_none() {
-            *slot = Some(text::editor(
+            let (editor, decoration) = text::editor_with_decorations(
                 value,
                 language,
                 diff.then_some(presentation.as_ref()),
                 window,
                 cx,
-            ));
+            );
+            *slot = Some(editor);
+            if diff {
+                self.patch_decoration = decoration;
+            }
         }
-        if diff && self.patch_view.is_none() {
-            self.patch_view = self
-                .patch_editor
-                .as_ref()
-                .map(|editor| diff_view::new(editor.clone(), presentation, window, cx));
+        if diff
+            && self.patch_view.is_none()
+            && let Some(editor) = &self.patch_editor
+        {
+            let view = if let Some(partial) = partial {
+                diff_view::new_partial(
+                    editor.clone(),
+                    presentation,
+                    Arc::clone(partial),
+                    window,
+                    cx,
+                )
+            } else {
+                diff_view::new(editor.clone(), presentation, window, cx)
+            };
+            let generation = self.generation;
+            let path = self.path.clone();
+            self.partial_subscription =
+                Some(
+                    cx.subscribe_in(&view, window, move |this, _, event, window, cx| {
+                        if this.generation != generation
+                            || this.path != path
+                            || this.mode != WorkspaceMode::Working
+                        {
+                            return;
+                        }
+                        let diff_view::DiffViewEvent::ApplyPartial { diff, selection } = event;
+                        this.write(
+                            gitturtle_core::WriteCommand::ApplyPartial {
+                                diff: Arc::clone(diff),
+                                selection: selection.clone(),
+                            },
+                            if diff.area == gitturtle_core::ChangeArea::Unstaged {
+                                "Staging selected changes…"
+                            } else {
+                                "Unstaging selected changes…"
+                            },
+                            window,
+                            cx,
+                        );
+                    }),
+                );
+            self.patch_view = Some(view);
         }
     }
 
     fn filter_history(&mut self, cx: &App) {
-        let query = self.search.read(cx).value().to_lowercase();
+        self.filter_history_retaining_scroll(cx);
+        self.history_scroll.scroll_to_item(0, ScrollStrategy::Top);
+    }
+    fn filter_history_retaining_scroll(&mut self, _cx: &App) {
+        if self.history_search_active() {
+            self.visible = (0..self.commits.len()).collect();
+            return;
+        }
         self.visible = self
             .commits
             .iter()
             .enumerate()
-            .filter(|(_, c)| {
-                query.is_empty()
-                    || c.subject.to_lowercase().contains(&query)
-                    || c.author.to_lowercase().contains(&query)
-                    || c.oid.contains(&query)
-                    || c.body.to_lowercase().contains(&query)
-            })
+            .filter(|(index, _)| self.automatic.retained_commit != Some(*index))
             .map(|(i, _)| i)
             .collect();
-        self.history_scroll.scroll_to_item(0, ScrollStrategy::Top);
     }
     fn rebuild_navigation(&mut self, cx: &App) {
         let query = self.nav_search.read(cx).value().trim().to_lowercase();
@@ -775,6 +922,9 @@ impl GitTurtle {
     }
 
     fn back_to_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.close_file_history(window, cx) {
+            return;
+        }
         let was_working = self.mode == WorkspaceMode::Working;
         if was_working {
             self.invalidate_read();
@@ -809,9 +959,11 @@ impl GitTurtle {
         self.interaction_started = None;
         self.pane = Pane::History;
         window.focus(&self.focus, cx);
+        self.try_automatic_refresh(window, cx);
         cx.notify();
     }
     fn select_commit(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_file_history(window, cx);
         if self.mode == WorkspaceMode::Working {
             self.mode = WorkspaceMode::History;
             self.working_selected = None;
@@ -884,6 +1036,7 @@ impl GitTurtle {
         }
     }
     fn change_parent(&mut self, parent: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_file_history(window, cx);
         let (Some(index), Some(repo)) = (self.selected_commit, &self.repository) else {
             return;
         };
@@ -900,6 +1053,7 @@ impl GitTurtle {
         self.request(job, "Reading comparison…", window, cx);
     }
     fn refresh(&mut self, _: &Refresh, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_file_history(window, cx);
         if self.mode == WorkspaceMode::Working {
             self.refresh_worktree(window, cx);
         } else if let Some(path) = self.path.clone() {
@@ -937,6 +1091,9 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.move_file_history_revision(direction, edge, window, cx) {
+            return;
+        }
         if self.mode == WorkspaceMode::Working {
             self.move_working_selection(direction, edge, window, cx);
             return;
@@ -998,6 +1155,7 @@ impl GitTurtle {
                 AppPage::Projects
             };
             if self.page == AppPage::Repository && self.mode != WorkspaceMode::History {
+                self.resume_file_history(window, cx);
                 self.ensure_editor(window, cx);
             }
             window.focus(
@@ -1010,6 +1168,8 @@ impl GitTurtle {
                 },
                 cx,
             );
+            self.restore_page_return_focus(window, cx);
+            self.try_automatic_refresh(window, cx);
             cx.notify();
             return;
         }
@@ -1018,7 +1178,7 @@ impl GitTurtle {
             return;
         }
         self.search.update(cx, |s, cx| s.set_value("", window, cx));
-        self.filter_history(cx);
+        self.history_query_changed(window, cx);
         window.focus(&self.focus, cx);
         cx.notify();
     }

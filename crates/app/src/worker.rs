@@ -43,11 +43,15 @@ pub struct ImageSide {
 }
 
 pub enum Content {
+    Conflict(Arc<crate::conflicts::Presentation>),
     Text {
         patch: String,
         old: String,
         new: String,
         presentation: Arc<PatchPresentation>,
+        split: Arc<crate::split_diff::SplitPresentation>,
+        partial: Option<Arc<crate::partial_view::PartialActions>>,
+        partial_unavailable: Option<String>,
     },
     Images {
         old: ImageSide,
@@ -66,7 +70,18 @@ impl Content {
                 old,
                 new,
                 presentation,
-            } => patch.capacity() + old.capacity() + new.capacity() + presentation.retained_bytes(),
+                split,
+                partial,
+                partial_unavailable,
+            } => {
+                patch.capacity()
+                    + old.capacity()
+                    + new.capacity()
+                    + presentation.retained_bytes()
+                    + split.retained_bytes()
+                    + partial.as_ref().map_or(0, |p| p.bytes())
+                    + partial_unavailable.as_ref().map_or(0, String::capacity)
+            }
             Self::Images { old, new } => [old, new]
                 .iter()
                 .map(|side| {
@@ -81,6 +96,7 @@ impl Content {
                         + side.message.as_ref().map_or(0, String::capacity)
                 })
                 .sum(),
+            Self::Conflict(presentation) => presentation.bytes(),
             Self::Notice(message) => message.capacity(),
         }
     }
@@ -93,6 +109,30 @@ pub enum Scope {
 }
 
 pub enum Job {
+    SearchHistory {
+        repo: GitRepository,
+        scope: Option<Scope>,
+        pinned: Option<gitturtle_core::HistoryScope>,
+        query: String,
+        offset: usize,
+        limit: usize,
+        previous: Vec<(String, Vec<String>)>,
+        remaining_bytes: usize,
+    },
+    FileHistory {
+        repo: GitRepository,
+        anchor: String,
+        path: PathBuf,
+        offset: usize,
+        limit: usize,
+    },
+    QuietRefresh {
+        repo: GitRepository,
+        scope: Option<Scope>,
+        limit: usize,
+        history: bool,
+        selected: Option<WorkingSelection>,
+    },
     WorkingPreview {
         repo: GitRepository,
         entry: gitturtle_core::StatusEntry,
@@ -115,33 +155,112 @@ pub enum Job {
 }
 
 pub enum Output {
+    SearchHistory(SearchResult),
+    FileHistory(gitturtle_core::FileHistoryPage),
+    QuietRefresh(Box<QuietRefresh>),
     WorkingPreview(FileChange, Arc<Content>, Duration),
     Snapshot(Snapshot),
     Changes(Vec<FileChange>, Duration),
     Preview(Arc<Content>, Duration),
 }
 
+pub struct SearchResult {
+    pub page: gitturtle_core::HistorySearchPage,
+    pub graph: Vec<graph::GraphRow>,
+    pub graph_notice: Option<String>,
+    pub retained_bytes: usize,
+}
+
+pub struct WorkingState {
+    pub status: gitturtle_core::RepositoryStatus,
+    pub profile: Result<gitturtle_core::GitProfile>,
+    pub remotes: Result<Vec<gitturtle_core::Remote>>,
+    pub operation: Result<Option<gitturtle_core::OperationState>>,
+}
+
+impl WorkingState {
+    pub fn read(repo: &GitRepository) -> Result<Self> {
+        Self::read_with_checkpoint(repo, || Ok(()))
+    }
+
+    fn read_with_checkpoint(
+        repo: &GitRepository,
+        checkpoint: impl Fn() -> Result<()>,
+    ) -> Result<Self> {
+        checkpoint()?;
+        let status = repo.status()?;
+        checkpoint()?;
+        let profile = repo.profile();
+        checkpoint()?;
+        let remotes = repo.remotes();
+        checkpoint()?;
+        let operation = repo.operation_state();
+        checkpoint()?;
+        Ok(Self {
+            status,
+            profile,
+            remotes,
+            operation,
+        })
+    }
+}
+
+pub struct WorkingSelection {
+    pub path: PathBuf,
+    pub area: gitturtle_core::ChangeArea,
+    pub file: Option<FileChange>,
+    pub content: Option<Arc<Content>>,
+}
+
+pub struct QuietRefresh {
+    pub working: WorkingState,
+    pub snapshot: Option<Result<QuietHistory>>,
+    pub preview: Option<Result<QuietPreview>>,
+}
+
+pub enum QuietHistory {
+    Refreshed(Snapshot),
+    /// A branch/worktree scope can disappear externally. Its existing immutable
+    /// history remains usable while fresh branch and worktree metadata is shown.
+    Retained {
+        metadata: Snapshot,
+        error: String,
+    },
+}
+
+pub enum QuietPreview {
+    Unchanged,
+    Absent,
+    Changed {
+        file: FileChange,
+        content: Arc<Content>,
+    },
+}
+
 struct Request {
     job: Job,
     generation: u64,
     reply: oneshot::Sender<Result<Output>>,
+    cancellation: gitturtle_core::HistoryCancellation,
 }
 
 struct Queue {
     pending: Option<Request>,
     closed: bool,
     startup_error: Option<String>,
+    active: Option<gitturtle_core::HistoryCancellation>,
 }
 
 struct Cancellation {
     generation: u64,
     latest: Arc<AtomicU64>,
+    history: gitturtle_core::HistoryCancellation,
 }
 
 impl Cancellation {
     fn check(&self) -> Result<()> {
         ensure!(
-            self.latest.load(Ordering::Acquire) == self.generation,
+            self.latest.load(Ordering::Acquire) == self.generation && !self.history.is_cancelled(),
             "Repository request superseded by a newer selection"
         );
         Ok(())
@@ -150,7 +269,8 @@ impl Cancellation {
 
 /// One active read and one replaceable pending request. Replacement cancels a
 /// pending reply immediately; active work stops at the next bounded checkpoint.
-/// A decoder/Git call already in progress cannot be interrupted by this queue.
+/// History search/file-history Git processes are actively terminated; existing
+/// object reads and decoders retain their individual deadlines/checkpoints.
 /// The UI must retain its own generation checks before presenting responses.
 /// Dropping the worker never waits for an active filesystem or decoder call.
 pub struct Worker {
@@ -184,6 +304,7 @@ impl Worker {
                 pending: None,
                 closed: false,
                 startup_error: None,
+                active: None,
             }),
             Condvar::new(),
         ));
@@ -204,7 +325,9 @@ impl Worker {
                         if state.closed {
                             break;
                         }
-                        state.pending.take().expect("pending request checked above")
+                        let request = state.pending.take().expect("pending request checked above");
+                        state.active = Some(request.cancellation.clone());
+                        request
                     };
                     if request.reply.is_canceled() {
                         continue;
@@ -212,6 +335,7 @@ impl Worker {
                     let cancellation = Cancellation {
                         generation: request.generation,
                         latest: Arc::clone(&worker_latest),
+                        history: request.cancellation,
                     };
                     let result = catch_unwind(AssertUnwindSafe(|| {
                         cancellation.check()?;
@@ -245,6 +369,9 @@ impl Worker {
         let (lock, _) = &*self.queue;
         let mut state = lock.lock().unwrap_or_else(|error| error.into_inner());
         self.latest.fetch_add(1, Ordering::AcqRel);
+        if let Some(active) = state.active.take() {
+            active.cancel();
+        }
         state.pending = None;
     }
 
@@ -265,10 +392,14 @@ impl Worker {
         // Allocate the sequence while holding the queue lock, so concurrent
         // submitters cannot replace a newer request with an older sequence.
         let generation = self.latest.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
+        if let Some(active) = state.active.take() {
+            active.cancel();
+        }
         state.pending = Some(Request {
             job,
             generation,
             reply,
+            cancellation: gitturtle_core::HistoryCancellation::default(),
         });
         ready.notify_one();
         receiver
@@ -320,6 +451,9 @@ impl Drop for Worker {
         let (lock, ready) = &*self.queue;
         let mut state = lock.lock().unwrap_or_else(|error| error.into_inner());
         self.latest.fetch_add(1, Ordering::AcqRel);
+        if let Some(active) = state.active.take() {
+            active.cancel();
+        }
         state.closed = true;
         state.pending = None;
         ready.notify_one();
@@ -421,11 +555,185 @@ fn execute(
     let start = Instant::now();
     cancellation.check()?;
     match job {
+        Job::SearchHistory {
+            repo,
+            scope,
+            pinned,
+            query,
+            offset,
+            limit,
+            previous,
+            remaining_bytes,
+        } => {
+            let pinned = if let Some(pinned) = pinned {
+                pinned
+            } else {
+                let branches = repo.branches()?;
+                cancellation.check()?;
+                let worktrees = repo.worktrees()?;
+                cancellation.check()?;
+                match scope_oid(scope.as_ref(), &branches, &worktrees)? {
+                    Some(oid) if oid.bytes().all(|byte| byte == b'0') => {
+                        gitturtle_core::HistoryScope::PinnedRefs(Vec::new())
+                    }
+                    Some(oid) => gitturtle_core::HistoryScope::FromCommit(oid.to_owned()),
+                    None => gitturtle_core::HistoryScope::AllRefs,
+                }
+            };
+            let page =
+                repo.search_history(&pinned, &query, offset, limit, &cancellation.history)?;
+            cancellation.check()?;
+            let retained_bytes = page
+                .commits
+                .iter()
+                .map(commit_metadata_bytes)
+                .sum::<usize>();
+            ensure!(
+                retained_bytes <= remaining_bytes,
+                "Search results exceed the 64 MiB display budget. Narrow the query to inspect these matches."
+            );
+            let mut topology = previous
+                .into_iter()
+                .map(|(oid, parents)| Commit {
+                    oid,
+                    parents,
+                    author: String::new(),
+                    timestamp: 0,
+                    subject: String::new(),
+                    body: String::new(),
+                })
+                .collect::<Vec<_>>();
+            topology.extend(page.commits.iter().map(|commit| Commit {
+                oid: commit.oid.clone(),
+                parents: commit.parents.clone(),
+                author: String::new(),
+                timestamp: 0,
+                subject: String::new(),
+                body: String::new(),
+            }));
+            let (graph, graph_notice) = layout_graph(&topology, cancellation)?;
+            Ok(Output::SearchHistory(SearchResult {
+                page,
+                graph,
+                graph_notice,
+                retained_bytes,
+            }))
+        }
+        Job::FileHistory {
+            repo,
+            anchor,
+            path,
+            offset,
+            limit,
+        } => {
+            let page = repo.file_history(&anchor, &path, offset, limit, &cancellation.history)?;
+            cancellation.check()?;
+            Ok(Output::FileHistory(page))
+        }
+        Job::QuietRefresh {
+            repo,
+            scope,
+            limit,
+            history,
+            selected,
+        } => {
+            let working = WorkingState::read_with_checkpoint(&repo, || cancellation.check())?;
+            cancellation.check()?;
+            let snapshot = history.then(|| {
+                match read_snapshot(
+                    repo.path().to_owned(),
+                    scope.as_ref(),
+                    limit,
+                    cancellation,
+                    session,
+                ) {
+                    Ok(snapshot) => Ok(QuietHistory::Refreshed(snapshot)),
+                    Err(error) => {
+                        cancellation.check()?;
+                        // A zero-row unscoped snapshot reads current navigation
+                        // metadata without loading a replacement history page.
+                        let metadata =
+                            read_snapshot(repo.path().to_owned(), None, 0, cancellation, session)?;
+                        Ok(QuietHistory::Retained {
+                            metadata,
+                            error: format!("{error:#}"),
+                        })
+                    }
+                }
+            });
+            cancellation.check()?;
+            let preview = selected.map(
+                |WorkingSelection {
+                     path,
+                     area: previous_area,
+                     file: previous_file,
+                     content: previous_content,
+                 }| {
+                    let Some(entry) = working
+                        .status
+                        .entries
+                        .iter()
+                        .find(|entry| entry.path == path)
+                    else {
+                        return Ok(QuietPreview::Absent);
+                    };
+                    let area = crate::workspace::retained_area(
+                        previous_area,
+                        entry.staged.is_some(),
+                        entry.unstaged.is_some() || entry.untracked || entry.conflicted,
+                    );
+                    let Some(area) = area else {
+                        return Ok(QuietPreview::Absent);
+                    };
+                    let Output::WorkingPreview(file, content, _) = execute(
+                        Job::WorkingPreview {
+                            repo: repo.clone(),
+                            entry: entry.clone(),
+                            area,
+                        },
+                        cache,
+                        cancellation,
+                        session,
+                    )?
+                    else {
+                        unreachable!()
+                    };
+                    if area == previous_area
+                        && previous_file.as_ref() == Some(&file)
+                        && previous_content
+                            .as_ref()
+                            .is_some_and(|previous| content_unchanged(previous, &content))
+                    {
+                        Ok(QuietPreview::Unchanged)
+                    } else {
+                        Ok(QuietPreview::Changed { file, content })
+                    }
+                },
+            );
+            cancellation.check()?;
+            Ok(Output::QuietRefresh(Box::new(QuietRefresh {
+                working,
+                snapshot,
+                preview,
+            })))
+        }
         Job::WorkingPreview { repo, entry, area } => {
+            if entry.conflicted {
+                let presentation =
+                    crate::conflicts::Presentation::prepare(repo.conflict_preview(&entry.path)?);
+                cancellation.check()?;
+                return Ok(Output::WorkingPreview(
+                    presentation.file(),
+                    Arc::new(Content::Conflict(Arc::new(presentation))),
+                    start.elapsed(),
+                ));
+            }
             let preview = repo.worktree_preview(&entry, area)?;
             cancellation.check()?;
             let file = preview.file;
-            let content = if image_change(&file) {
+            let partial_diff = preview.partial;
+            let mut unavailable = preview.partial_unavailable;
+            let mut content = if image_change(&file) {
                 let old_name = file
                     .old_path
                     .as_deref()
@@ -454,12 +762,11 @@ fn execute(
                 Content::Images { old, new }
             } else {
                 match preview.preview {
-                    TextPreview::Patch(patch) => Content::Text {
-                        presentation: Arc::new(PatchPresentation::prepare(&patch)),
+                    TextPreview::Patch(patch) => prepared_text(
                         patch,
-                        old: String::from_utf8(preview.old).unwrap_or_default(),
-                        new: String::from_utf8(preview.new).unwrap_or_default(),
-                    },
+                        String::from_utf8(preview.old)?,
+                        String::from_utf8(preview.new)?,
+                    ),
                     TextPreview::Binary => {
                         Content::Notice("Binary file · no text comparison is available.".into())
                     }
@@ -477,6 +784,23 @@ fn execute(
                 }
             };
             cancellation.check()?;
+            if let Content::Text {
+                patch,
+                presentation,
+                partial,
+                partial_unavailable,
+                ..
+            } = &mut content
+            {
+                if let Some(diff) = partial_diff {
+                    match crate::partial_view::prepare(patch, presentation, Arc::new(diff)) {
+                        Ok(actions) => *partial = Some(Arc::new(actions)),
+                        Err(error) => unavailable = Some(error.to_string()),
+                    }
+                }
+                *partial_unavailable = unavailable;
+            }
+            cancellation.check()?;
             // Mutable worktree/index comparisons are deliberately not cached.
             Ok(Output::WorkingPreview(
                 file,
@@ -491,7 +815,7 @@ fn execute(
             Ok(Output::Snapshot(snapshot))
         }
         Job::Changes { repo, oid, parent } => {
-            let changes = repo.changes(&oid, parent)?;
+            let changes = repo.changes_with_renames(&oid, parent)?;
             cancellation.check()?;
             Ok(Output::Changes(changes, start.elapsed()))
         }
@@ -528,6 +852,15 @@ fn execute(
             Ok(Output::Preview(content, start.elapsed()))
         }
     }
+}
+
+fn commit_metadata_bytes(commit: &Commit) -> usize {
+    std::mem::size_of::<Commit>()
+        + commit.oid.capacity()
+        + commit.parents.iter().map(String::capacity).sum::<usize>()
+        + commit.author.capacity()
+        + commit.subject.capacity()
+        + commit.body.capacity()
 }
 
 fn read_snapshot(
@@ -682,6 +1015,77 @@ fn image_change(file: &FileChange) -> bool {
             .any(is_image_path)
 }
 
+fn prepared_text(patch: String, old: String, new: String) -> Content {
+    let presentation = Arc::new(PatchPresentation::prepare(&patch));
+    let split = Arc::new(crate::split_diff::SplitPresentation::prepare(
+        &old,
+        &new,
+        &presentation,
+    ));
+    Content::Text {
+        patch,
+        old,
+        new,
+        presentation,
+        split,
+        partial: None,
+        partial_unavailable: None,
+    }
+}
+
+/// Compare prepared mutable content off UI before deciding whether native
+/// editors, image views, or partial selection snapshots need replacement.
+fn content_unchanged(previous: &Content, next: &Content) -> bool {
+    match (previous, next) {
+        (
+            Content::Text {
+                patch: a,
+                old: ao,
+                new: an,
+                partial_unavailable: au,
+                partial: ap,
+                ..
+            },
+            Content::Text {
+                patch: b,
+                old: bo,
+                new: bn,
+                partial_unavailable: bu,
+                partial: bp,
+                ..
+            },
+        ) => {
+            a == b
+                && ao == bo
+                && an == bn
+                && au == bu
+                && ap.as_ref().map(|partial| &partial.diff)
+                    == bp.as_ref().map(|partial| &partial.diff)
+        }
+        (Content::Notice(a), Content::Notice(b)) => a == b,
+        (Content::Conflict(a), Content::Conflict(b)) => a.snapshot == b.snapshot,
+        (Content::Images { old: ao, new: an }, Content::Images { old: bo, new: bn }) => {
+            [ao, an].into_iter().zip([bo, bn]).all(|(a, b)| {
+                a.bytes == b.bytes
+                    && a.message == b.message
+                    && match (&a.image, &b.image) {
+                        (None, None) => true,
+                        (Some(a), Some(b)) => {
+                            a.width == b.width
+                                && a.height == b.height
+                                && a.original_width == b.original_width
+                                && a.original_height == b.original_height
+                                && a.format == b.format
+                                && a.rgba == b.rgba
+                        }
+                        _ => false,
+                    }
+            })
+        }
+        _ => false,
+    }
+}
+
 fn text_content(
     repo: &GitRepository,
     file: &FileChange,
@@ -690,14 +1094,7 @@ fn text_content(
     let sources = repo.text_preview_with_sources(file)?;
     cancellation.check()?;
     Ok(match sources.preview {
-        TextPreview::Patch(patch) => Content::Text {
-            presentation: Arc::new(PatchPresentation::prepare(&patch)),
-            patch,
-            // The core only produces a patch after UTF-8 validation. Move the
-            // source buffers into the UI response without another Git read.
-            old: String::from_utf8(sources.old)?,
-            new: String::from_utf8(sources.new)?,
-        },
+        TextPreview::Patch(patch) => prepared_text(patch, String::from_utf8(sources.old)?, String::from_utf8(sources.new)?),
         TextPreview::Binary => Content::Notice(
             "Binary or non-UTF-8 file changed. Raw object IDs and file metadata are available above.".into(),
         ),
@@ -999,12 +1396,20 @@ mod tests {
         let new = "new\n".to_owned();
         let source_bytes = patch.capacity() + old.capacity() + new.capacity();
         let presentation = Arc::new(PatchPresentation::prepare(&patch));
-        let metadata_bytes = presentation.retained_bytes();
+        let split = Arc::new(crate::split_diff::SplitPresentation::prepare(
+            &old,
+            &new,
+            &presentation,
+        ));
+        let metadata_bytes = presentation.retained_bytes() + split.retained_bytes();
         let content = Arc::new(Content::Text {
             patch,
             old,
             new,
             presentation,
+            split,
+            partial: None,
+            partial_unavailable: None,
         });
         assert_eq!(content.bytes(), source_bytes + metadata_bytes);
 
@@ -1147,6 +1552,45 @@ mod tests {
         Cancellation {
             generation: 1,
             latest: Arc::new(AtomicU64::new(1)),
+            history: gitturtle_core::HistoryCancellation::default(),
+        }
+    }
+
+    #[test]
+    fn replacement_and_explicit_cancel_signal_an_active_core_history_token() {
+        for replace in [true, false] {
+            let (started, start) = mpsc::channel();
+            let worker = Worker::with_executor(move |job, _, cancellation| {
+                if job_name(job) == "active" {
+                    started.send(()).unwrap();
+                    let deadline = Instant::now() + Duration::from_secs(2);
+                    while !cancellation.history.is_cancelled() && Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    ensure!(
+                        cancellation.history.is_cancelled(),
+                        "Active core read was never cancelled"
+                    );
+                    Ok(notice("cancelled"))
+                } else {
+                    Ok(notice("replacement"))
+                }
+            });
+            let active = worker.submit(open_job("active"));
+            start.recv_timeout(Duration::from_secs(1)).unwrap();
+            let replacement = if replace {
+                Some(worker.submit(open_job("replacement")))
+            } else {
+                worker.cancel();
+                None
+            };
+            assert_eq!(message(block_on(active).unwrap().unwrap()), "cancelled");
+            if let Some(replacement) = replacement {
+                assert_eq!(
+                    message(block_on(replacement).unwrap().unwrap()),
+                    "replacement"
+                );
+            }
         }
     }
 
@@ -1298,7 +1742,380 @@ mod image_tests {
         Cancellation {
             generation: 1,
             latest: Arc::new(AtomicU64::new(1)),
+            history: gitturtle_core::HistoryCancellation::default(),
         }
+    }
+
+    fn working_fixture() -> (Fixture, GitRepository, FileChange, Arc<Content>) {
+        let fixture = Fixture::new();
+        fs::write(fixture.0.join("file.txt"), "base\n").unwrap();
+        fixture.git(&["add", "file.txt"], b"");
+        fixture.git(
+            &["-c", "commit.gpgsign=false", "commit", "-qm", "Initial"],
+            b"",
+        );
+        fs::write(fixture.0.join("file.txt"), "ours\n").unwrap();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let entry = repo.status().unwrap().entries.remove(0);
+        let Output::WorkingPreview(file, content, _) = execute(
+            Job::WorkingPreview {
+                repo: repo.clone(),
+                entry,
+                area: gitturtle_core::ChangeArea::Unstaged,
+            },
+            &mut PreviewCache::default(),
+            &active(),
+            &mut RepositorySession::default(),
+        )
+        .unwrap() else {
+            panic!("expected working preview")
+        };
+        (fixture, repo, file, content)
+    }
+
+    #[test]
+    fn history_search_resolves_live_branch_and_worktree_scopes_and_prepares_graph() {
+        let fixture = Fixture::new();
+        let tree = fixture.git(&["mktree"], b"");
+        let first = fixture.git(&["commit-tree", &tree, "-m", "first target"], b"");
+        let next = fixture.git(
+            &["commit-tree", &tree, "-p", &first, "-m", "new target"],
+            b"",
+        );
+        fixture.git(&["update-ref", "refs/heads/main", &first], b"");
+        fixture.git(&["symbolic-ref", "HEAD", "refs/heads/main"], b"");
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let stale = repo.branches().unwrap();
+        fixture.git(&["update-ref", "refs/heads/main", &next], b"");
+        assert_eq!(
+            stale
+                .iter()
+                .find(|branch| branch.name == "main")
+                .unwrap()
+                .oid,
+            first
+        );
+        for scope in [
+            Scope::Branch {
+                name: "main".into(),
+                remote: false,
+            },
+            Scope::Worktree {
+                path: repo.path().to_owned(),
+            },
+        ] {
+            let Output::SearchHistory(result) = execute(
+                Job::SearchHistory {
+                    repo: repo.clone(),
+                    scope: Some(scope),
+                    pinned: None,
+                    query: "target".into(),
+                    offset: 0,
+                    limit: 20,
+                    previous: Vec::new(),
+                    remaining_bytes: 1024 * 1024,
+                },
+                &mut PreviewCache::default(),
+                &active(),
+                &mut RepositorySession::default(),
+            )
+            .unwrap() else {
+                panic!("expected search output");
+            };
+            assert_eq!(
+                result
+                    .page
+                    .commits
+                    .iter()
+                    .map(|commit| &commit.oid)
+                    .collect::<Vec<_>>(),
+                vec![&next, &first]
+            );
+            assert_eq!(
+                result.page.scope,
+                gitturtle_core::HistoryScope::FromCommit(next.clone())
+            );
+            assert_eq!(result.graph.len(), 2);
+            assert!(result.retained_bytes > 0);
+        }
+        let error = execute(
+            Job::SearchHistory {
+                repo,
+                scope: Some(Scope::Branch {
+                    name: "deleted".into(),
+                    remote: false,
+                }),
+                pinned: None,
+                query: "target".into(),
+                offset: 0,
+                limit: 20,
+                previous: Vec::new(),
+                remaining_bytes: 1024,
+            },
+            &mut PreviewCache::default(),
+            &active(),
+            &mut RepositorySession::default(),
+        )
+        .err()
+        .expect("missing branch must fail");
+        assert!(error.to_string().contains("branch"));
+    }
+
+    #[test]
+    fn changed_files_preserve_detected_rename_paths_for_preview_identity() {
+        let fixture = Fixture::new();
+        fs::write(fixture.0.join("before.txt"), b"one\ntwo\nthree\n").unwrap();
+        fixture.git(&["add", "before.txt"], b"");
+        fixture.git(
+            &["-c", "commit.gpgsign=false", "commit", "-qm", "base"],
+            b"",
+        );
+        fixture.git(&["mv", "before.txt", "after.txt"], b"");
+        fixture.git(
+            &["-c", "commit.gpgsign=false", "commit", "-qm", "rename"],
+            b"",
+        );
+        let oid = fixture.git(&["rev-parse", "HEAD"], b"");
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let Output::Changes(files, _) = execute(
+            Job::Changes {
+                repo: repo.clone(),
+                oid,
+                parent: 0,
+            },
+            &mut PreviewCache::default(),
+            &active(),
+            &mut RepositorySession::default(),
+        )
+        .unwrap() else {
+            panic!("expected changed files");
+        };
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].status, ChangeStatus::Renamed);
+        assert_eq!(files[0].old_path.as_deref(), Some(Path::new("before.txt")));
+        assert_eq!(files[0].new_path.as_deref(), Some(Path::new("after.txt")));
+        assert_eq!(
+            PreviewKey::new(repo.path(), &files[0]).old_path.as_deref(),
+            Some(Path::new("before.txt"))
+        );
+    }
+
+    #[test]
+    fn search_continuation_keeps_pinned_scope_after_ref_moves_and_bounds_retained_metadata() {
+        let fixture = Fixture::new();
+        let tree = fixture.git(&["mktree"], b"");
+        let first = fixture.git(&["commit-tree", &tree, "-m", "first"], b"");
+        let next = fixture.git(&["commit-tree", &tree, "-p", &first, "-m", "next"], b"");
+        fixture.git(&["update-ref", "refs/heads/main", &next], b"");
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let run = |pinned, offset, previous, remaining_bytes| {
+            execute(
+                Job::SearchHistory {
+                    repo: repo.clone(),
+                    scope: None,
+                    pinned,
+                    query: "".into(),
+                    offset,
+                    limit: 1,
+                    previous,
+                    remaining_bytes,
+                },
+                &mut PreviewCache::default(),
+                &active(),
+                &mut RepositorySession::default(),
+            )
+        };
+        let Output::SearchHistory(page) = run(None, 0, Vec::new(), 1024 * 1024).unwrap() else {
+            panic!("expected search");
+        };
+        fixture.git(&["update-ref", "refs/heads/main", &first], b"");
+        let previous = page
+            .page
+            .commits
+            .iter()
+            .map(|commit| (commit.oid.clone(), commit.parents.clone()))
+            .collect();
+        let Output::SearchHistory(rest) = run(
+            Some(page.page.scope),
+            page.page.next_offset.unwrap(),
+            previous,
+            1024 * 1024,
+        )
+        .unwrap() else {
+            panic!("expected continuation");
+        };
+        assert_eq!(rest.page.commits[0].oid, first);
+        assert_eq!(rest.graph.len(), 2);
+        assert!(
+            run(None, 0, Vec::new(), 0)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("display budget")
+        );
+    }
+
+    fn quiet_preview(
+        repo: &GitRepository,
+        file: &FileChange,
+        content: &Arc<Content>,
+        history: bool,
+    ) -> QuietRefresh {
+        let mut cache = PreviewCache::default();
+        let Output::QuietRefresh(result) = execute(
+            Job::QuietRefresh {
+                repo: repo.clone(),
+                scope: None,
+                limit: 100,
+                history,
+                selected: Some(WorkingSelection {
+                    path: "file.txt".into(),
+                    area: gitturtle_core::ChangeArea::Unstaged,
+                    file: Some(file.clone()),
+                    content: Some(Arc::clone(content)),
+                }),
+            },
+            &mut cache,
+            &active(),
+            &mut RepositorySession::default(),
+        )
+        .unwrap() else {
+            panic!("expected quiet refresh")
+        };
+        assert!(
+            cache.entries.is_empty(),
+            "mutable previews must bypass the immutable cache"
+        );
+        *result
+    }
+
+    #[test]
+    fn quiet_status_changes_keep_identical_preview_and_read_only_metadata() {
+        let (fixture, repo, file, content) = working_fixture();
+        let index = fixture.0.join(".git/index");
+        let before = fs::read(&index).unwrap();
+        let modified = fs::metadata(&index).unwrap().modified().unwrap();
+        fs::write(fixture.0.join("note.txt"), "unrelated local edit\n").unwrap();
+        let refresh = quiet_preview(&repo, &file, &content, false);
+        assert_eq!(refresh.working.status.entries.len(), 2);
+        assert!(refresh.snapshot.is_none());
+        assert!(matches!(refresh.preview, Some(Ok(QuietPreview::Unchanged))));
+        assert_eq!(fs::read(&index).unwrap(), before);
+        assert_eq!(fs::metadata(index).unwrap().modified().unwrap(), modified);
+        assert_eq!(fs::read(fixture.0.join("file.txt")).unwrap(), b"ours\n");
+    }
+
+    #[test]
+    fn quiet_refresh_replaces_same_length_edits_and_removes_vanished_selection() {
+        let (fixture, repo, file, content) = working_fixture();
+        fs::write(fixture.0.join("file.txt"), "next\n").unwrap();
+        let refresh = quiet_preview(&repo, &file, &content, false);
+        let Some(Ok(QuietPreview::Changed { file, content })) = refresh.preview else {
+            panic!("expected changed text")
+        };
+        let Content::Text { new, .. } = content.as_ref() else {
+            panic!("expected text")
+        };
+        assert_eq!(new, "next\n");
+        fs::write(fixture.0.join("file.txt"), "base\n").unwrap();
+        let refresh = quiet_preview(&repo, &file, &content, false);
+        assert!(matches!(refresh.preview, Some(Ok(QuietPreview::Absent))));
+        assert!(refresh.working.status.entries.is_empty());
+    }
+
+    #[test]
+    fn quiet_git_refresh_follows_external_staging_and_new_head() {
+        let (fixture, repo, file, content) = working_fixture();
+        fixture.git(&["add", "file.txt"], b"");
+        let refresh = quiet_preview(&repo, &file, &content, true);
+        let Some(Ok(QuietPreview::Changed {
+            content: staged, ..
+        })) = refresh.preview
+        else {
+            panic!("expected staged preview")
+        };
+        let Content::Text {
+            partial: Some(partial),
+            ..
+        } = staged.as_ref()
+        else {
+            panic!("expected staged partial actions")
+        };
+        assert_eq!(partial.diff.area, gitturtle_core::ChangeArea::Staged);
+        let QuietHistory::Refreshed(snapshot) = refresh.snapshot.unwrap().unwrap() else {
+            panic!("expected refreshed history")
+        };
+        assert_eq!(snapshot.commits[0].subject, "Initial");
+        fixture.git(
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "External commit",
+            ],
+            b"",
+        );
+        let refresh = quiet_preview(&repo, &file, &content, true);
+        assert!(matches!(refresh.preview, Some(Ok(QuietPreview::Absent))));
+        let QuietHistory::Refreshed(snapshot) = refresh.snapshot.unwrap().unwrap() else {
+            panic!("expected refreshed history")
+        };
+        assert_eq!(snapshot.commits[0].subject, "External commit");
+        assert!(refresh.working.status.entries.is_empty());
+    }
+
+    #[test]
+    fn quiet_deleted_scope_keeps_history_context_but_updates_navigation_metadata() {
+        let (fixture, repo, _, _) = working_fixture();
+        fixture.git(&["branch", "departing"], b"");
+        assert!(
+            repo.branches()
+                .unwrap()
+                .iter()
+                .any(|branch| branch.name == "departing")
+        );
+        fixture.git(&["branch", "-d", "departing"], b"");
+        let Output::QuietRefresh(refresh) = execute(
+            Job::QuietRefresh {
+                repo,
+                scope: Some(Scope::Branch {
+                    name: "departing".into(),
+                    remote: false,
+                }),
+                limit: 100,
+                history: true,
+                selected: None,
+            },
+            &mut PreviewCache::default(),
+            &active(),
+            &mut RepositorySession::default(),
+        )
+        .unwrap() else {
+            panic!("expected quiet refresh")
+        };
+        let QuietHistory::Retained { metadata, error } = refresh.snapshot.unwrap().unwrap() else {
+            panic!("missing scopes must retain displayed history")
+        };
+        assert!(error.contains("departing"));
+        assert!(
+            metadata
+                .branches
+                .iter()
+                .all(|branch| branch.name != "departing")
+        );
+        assert!(
+            metadata
+                .refs
+                .values()
+                .flatten()
+                .all(|name| name != "departing")
+        );
+        assert_eq!(metadata.worktrees.len(), 1);
+        assert!(
+            metadata.commits.is_empty(),
+            "metadata fallback must not load another history page"
+        );
     }
 
     #[test]
