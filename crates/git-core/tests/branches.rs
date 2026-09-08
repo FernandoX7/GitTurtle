@@ -305,6 +305,73 @@ fn rename_refuses_collisions_stale_tips_and_branches_in_other_worktrees() {
 }
 
 #[test]
+fn rename_review_rejects_invalid_destinations_and_stale_context_before_writing() {
+    let f = Fixture::new();
+    f.git(&["branch", "topic"]);
+    f.git(&["branch", "group/child"]);
+    let repo = f.repo();
+    let original = repo.branch_plan("topic").unwrap();
+    f.write("file.txt", "local staged work\n");
+    f.git(&["add", "file.txt"]);
+    f.write("file.txt", "later unstaged work\n");
+    let index = f.index();
+    let refs = f.git(&["show-ref"]);
+    let config = fs::read(f.root.join(".git/config")).unwrap();
+    for name in [
+        "bad name",
+        "-option",
+        "HEAD",
+        "topic",
+        "main",
+        "main/nested",
+        "group",
+        "group/child/nested",
+    ] {
+        assert!(
+            repo.rename_branch_plan(&original, name).is_err(),
+            "Rename review accepted {name:?}"
+        );
+    }
+    assert_eq!(f.git(&["show-ref"]), refs);
+    assert_eq!(f.index(), index);
+    assert_eq!(fs::read(f.root.join(".git/config")).unwrap(), config);
+    assert_eq!(
+        fs::read(f.root.join("file.txt")).unwrap(),
+        b"later unstaged work\n"
+    );
+    let reviewed = repo
+        .rename_branch_plan(&original, "reviewed/topic")
+        .unwrap();
+    f.execute(BranchCommand::Rename {
+        plan: reviewed,
+        new_name: "reviewed/topic".into(),
+    });
+    assert_eq!(
+        repo.branch_plan("reviewed/topic").unwrap().oid,
+        original.oid
+    );
+    assert_eq!(f.index(), index);
+    assert!(repo.rename_branch_plan(&original, "stale").is_err());
+    let current = repo.branch_plan("reviewed/topic").unwrap();
+    let other = Fixture::new();
+    assert!(
+        other
+            .repo()
+            .rename_branch_plan(&current, "wrong-repository")
+            .is_err()
+    );
+    f.git(&["worktree", "add", "../linked", "reviewed/topic"]);
+    assert!(repo.rename_branch_plan(&current, "stale-worktree").is_err());
+    let occupied = repo.branch_plan("reviewed/topic").unwrap();
+    assert!(
+        repo.rename_branch_plan(&occupied, "occupied")
+            .unwrap_err()
+            .to_string()
+            .contains("another worktree")
+    );
+}
+
+#[test]
 fn safe_delete_protects_unmerged_current_and_worktree_branches() {
     let f = Fixture::new();
     f.git(&["branch", "merged"]);

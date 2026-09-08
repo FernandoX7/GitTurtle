@@ -205,6 +205,42 @@ impl GitRepository {
         })
     }
 
+    /// Validate the proposed destination before presenting Rename for review.
+    /// Execution repeats the same checks against the original branch snapshot.
+    pub fn rename_branch_plan(&self, expected: &BranchPlan, new_name: &str) -> Result<BranchPlan> {
+        self.validate_branch(new_name)?;
+        self.check_branch_plan(expected)?;
+        ensure!(
+            expected.name != new_name,
+            "This branch is already named '{new_name}'; choose a different name."
+        );
+        ensure!(
+            !expected
+                .checked_out_in
+                .iter()
+                .any(|path| path != &self.path),
+            "This branch is checked out in another worktree; rename it there."
+        );
+        let destination = format!("refs/heads/{new_name}");
+        let source = format!("refs/heads/{}", expected.name);
+        for reference in self.management_refs("refs/heads/")? {
+            if reference.name == source {
+                continue;
+            }
+            ensure!(
+                reference.name != destination,
+                "A branch named '{new_name}' already exists; choose a different name."
+            );
+            ensure!(
+                !reference.name.starts_with(&format!("{destination}/"))
+                    && !destination.starts_with(&format!("{}/", reference.name)),
+                "The destination '{new_name}' conflicts with the existing branch '{}'; choose a different name.",
+                reference.name.trim_start_matches("refs/heads/")
+            );
+        }
+        Ok(expected.clone())
+    }
+
     pub fn upstream_plan(&self, branch: &str, upstream_ref: Option<&str>) -> Result<UpstreamPlan> {
         let branch = self.branch_plan(branch)?;
         let upstream_oid = if let Some(reference) = upstream_ref {
@@ -357,17 +393,7 @@ impl GitRepository {
                 )
             }
             BranchCommand::Rename { plan, new_name } => {
-                self.check_branch_plan(plan)?;
-                self.validate_branch(new_name)?;
-                ensure!(
-                    !plan.checked_out_in.iter().any(|path| path != &self.path),
-                    "This branch is checked out in another worktree; rename it there."
-                );
-                ensure!(
-                    self.management_ref(&format!("refs/heads/{new_name}"))?
-                        .is_none(),
-                    "A branch named '{new_name}' already exists; choose a different name."
-                );
+                self.rename_branch_plan(plan, new_name)?;
                 command.args(["branch", "--move", "--", &plan.name, new_name]);
                 format!("Renamed '{}' to '{new_name}'", plan.name)
             }
