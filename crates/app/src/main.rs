@@ -187,6 +187,7 @@ struct GitTurtle {
     search: Entity<InputState>,
     nav_search: Entity<InputState>,
     subscriptions: Vec<Subscription>,
+    app_focus: FocusHandle,
     focus: FocusHandle,
     file_focus: FocusHandle,
     pane: Pane,
@@ -312,6 +313,7 @@ impl GitTurtle {
             search: search.clone(),
             nav_search: nav_search.clone(),
             subscriptions: vec![],
+            app_focus: cx.focus_handle(),
             focus: cx.focus_handle(),
             file_focus: cx.focus_handle(),
             pane: Pane::History,
@@ -355,7 +357,14 @@ impl GitTurtle {
             window,
             |_, _, _, _, cx| cx.notify(),
         ));
-        window.focus(&this.focus, cx);
+        window.focus(
+            if initial.is_some() {
+                &this.focus
+            } else {
+                &this.app_focus
+            },
+            cx,
+        );
         if let Some(path) = initial {
             this.open(path, None, window, cx);
         }
@@ -969,6 +978,16 @@ impl GitTurtle {
             if self.page == AppPage::Repository && self.mode != WorkspaceMode::History {
                 self.ensure_editor(window, cx);
             }
+            window.focus(
+                if self.page != AppPage::Repository {
+                    &self.app_focus
+                } else if self.mode == WorkspaceMode::History {
+                    &self.focus
+                } else {
+                    &self.file_focus
+                },
+                cx,
+            );
             cx.notify();
             return;
         }

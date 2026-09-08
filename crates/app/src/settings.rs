@@ -16,7 +16,7 @@ impl GitTurtle {
             input.set_value(self.settings.default_branch.clone(), window, cx)
         });
         self.fill_identity_inputs(window, cx);
-        window.focus(&self.focus, cx);
+        window.focus(&self.app_focus, cx);
         cx.notify();
     }
 
@@ -513,7 +513,7 @@ impl GitTurtle {
                         "folder",
                         false,
                     )
-                    .on_click(cx.listener(|this, _, _, cx| this.show_projects(cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.show_projects(window, cx))),
                 )
                 .into_any_element()
         };
@@ -548,7 +548,16 @@ impl GitTurtle {
                                 {
                                     this.ensure_editor(window, cx);
                                 }
-                                window.focus(&this.focus, cx);
+                                window.focus(
+                                    if this.page != AppPage::Repository {
+                                        &this.app_focus
+                                    } else if this.mode == WorkspaceMode::History {
+                                        &this.focus
+                                    } else {
+                                        &this.file_focus
+                                    },
+                                    cx,
+                                );
                                 cx.notify();
                             },
                         )),

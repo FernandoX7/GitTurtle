@@ -59,7 +59,7 @@ impl GitTurtle {
                     self.page == AppPage::Projects,
                 )
                 .disabled(busy)
-                .on_click(cx.listener(|this, _, _, cx| this.show_projects(cx))),
+                .on_click(cx.listener(|this, _, window, cx| this.show_projects(window, cx))),
             )
             .when(self.repository.is_some(), |el| {
                 el.child(
@@ -1407,6 +1407,7 @@ impl Render for GitTurtle {
         };
         div()
             .id("gitturtle")
+            .track_focus(&self.app_focus)
             .key_context("GitTurtle")
             .size_full()
             .flex()
@@ -1465,7 +1466,9 @@ impl Render for GitTurtle {
                     }
                 }),
             )
-            .on_action(cx.listener(|this, _: &ShowProjects, _, cx| this.show_projects(cx)))
+            .on_action(
+                cx.listener(|this, _: &ShowProjects, window, cx| this.show_projects(window, cx)),
+            )
             .on_action(
                 cx.listener(|this, _: &ShowSettings, window, cx| this.show_settings(window, cx)),
             )

@@ -95,11 +95,12 @@ impl GitTurtle {
         cx.notify();
     }
 
-    pub(super) fn show_projects(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn show_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.operation_busy.is_some() {
             return;
         }
         self.page = AppPage::Projects;
+        window.focus(&self.app_focus, cx);
         self.hub.update(cx, |hub, cx| {
             hub.set_busy(false, cx);
             hub.set_error(None, cx);
@@ -229,7 +230,7 @@ impl GitTurtle {
             return;
         }
         if self.repository.is_none() {
-            self.show_projects(cx);
+            self.show_projects(window, cx);
             return;
         }
         if self.mode != WorkspaceMode::Working {
