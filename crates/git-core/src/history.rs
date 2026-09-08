@@ -264,6 +264,8 @@ impl GitRepository {
     /// commits are represented by their merge. This explicit lineage avoids
     /// Git --follow's ambiguous path tracking across non-linear history.
     /// Paths are literal repository-relative bytes, including deleted paths.
+    /// Paging replays the prefix to track skipped renames, within the same
+    /// 32 MiB/15 second limits; deep histories can require an older anchor.
     pub fn file_history(
         &self,
         oid: &str,
@@ -286,6 +288,10 @@ impl GitRepository {
             "Expected a literal repository-relative file path"
         );
         cancellation.check()?;
+        let prefix_count = offset
+            .checked_add(limit)
+            .and_then(|count| count.checked_add(1))
+            .context("File-history offset overflow")?;
         let mut command = history_command(&self.path);
         command
             .args([
@@ -298,8 +304,10 @@ impl GitRepository {
                 "--find-renames=50%",
                 "-l1000",
             ])
-            .arg(format!("--skip={offset}"))
-            .arg(format!("--max-count={}", limit + 1))
+            // --skip suppresses a rename before --follow can update its path,
+            // losing all revisions under the older name. Read the bounded
+            // prefix and remove earlier rows only after following the lineage.
+            .arg(format!("--max-count={prefix_count}"))
             .arg(oid)
             .arg("--")
             .arg(path);
@@ -307,16 +315,17 @@ impl GitRepository {
         let end = stream_history(command, None, cancellation, GIT_TIMEOUT, |chunk| {
             ensure!(
                 bytes.len().saturating_add(chunk.len()) <= MAX_FILE_HISTORY_BYTES,
-                "File history exceeds its 32 MiB limit; request a smaller page"
+                "File-history prefix exceeds its 32 MiB limit. Open an older revision as the history anchor, or request a smaller page"
             );
             bytes.extend_from_slice(chunk);
             Ok(true)
         })?;
         ensure!(
             end != ReadEnd::TimedOut,
-            "File history exceeded its 15 second time limit"
+            "File-history prefix exceeded its 15 second time limit. Retry, or open an older revision as the history anchor"
         );
         let mut entries = parse_file_history(&bytes, cancellation)?;
+        entries.drain(..offset.min(entries.len()));
         let next_offset = if entries.len() > limit {
             entries.truncate(limit);
             Some(

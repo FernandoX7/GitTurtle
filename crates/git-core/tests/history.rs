@@ -335,6 +335,55 @@ fn merge_file_history_uses_real_first_parent_and_keeps_all_parent_choices() {
         page.entries[0].change.new_path.as_deref(),
         Some(Path::new("new"))
     );
+    let older = fixture
+        .repo()
+        .file_history(
+            &merge,
+            Path::new("new"),
+            1,
+            1,
+            &HistoryCancellation::default(),
+        )
+        .unwrap();
+    assert_eq!(older.entries.len(), 1);
+    assert_eq!(older.entries[0].commit.oid, root);
+    assert_eq!(
+        older.entries[0].change.new_path.as_deref(),
+        Some(Path::new("old"))
+    );
+}
+
+#[test]
+fn a_page_after_a_pure_rename_retains_history_under_the_previous_name() {
+    let fixture = Fixture::new();
+    fixture.write("alpha.txt", "unchanged stored content\n");
+    let initial = fixture.commit("Initial");
+    fixture.git(&["mv", "alpha.txt", "beta.txt"]);
+    let renamed = fixture.commit("Rename");
+    let repo = fixture.repo();
+    let cancel = HistoryCancellation::default();
+    let first = repo
+        .file_history(&renamed, Path::new("beta.txt"), 0, 1, &cancel)
+        .unwrap();
+    assert_eq!(first.entries.len(), 1);
+    assert_eq!(first.entries[0].commit.oid, renamed);
+    assert_eq!(first.next_offset, Some(1));
+    let second = repo
+        .file_history(
+            &renamed,
+            Path::new("beta.txt"),
+            first.next_offset.unwrap(),
+            1,
+            &cancel,
+        )
+        .unwrap();
+    assert_eq!(second.entries.len(), 1);
+    assert_eq!(second.entries[0].commit.oid, initial);
+    assert_eq!(
+        second.entries[0].change.new_path.as_deref(),
+        Some(Path::new("alpha.txt"))
+    );
+    assert_eq!(second.next_offset, None);
 }
 
 #[cfg(unix)]
