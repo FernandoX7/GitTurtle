@@ -14,7 +14,11 @@ These instructions supplement the root agreements for `crates/git-core`. The [se
 
 Keep arguments structured and paths byte-safe through porcelain parsing, `StatusEntry::paths`, and literal NUL-delimited path input. Renames can require both paths; unstaging must handle an unborn HEAD and leave working bytes intact. Display text is never an operation target.
 
+The shared `BatchReader` must discard its process after a failed or oversized request so unread protocol bytes cannot corrupt the next response. Preserve object type/size checks and explicit missing-object errors. `history_from_page` pins paging to an immutable OID; `history_page` follows mutable refs. Resolve branch/worktree identities again when refreshing rather than treating a retained tip as current.
+
 Staged previews compare HEAD to the index snapshot; unstaged previews compare the index snapshot to bounded raw working bytes. Working content has no immutable object ID: use side paths to distinguish absence, and report missing or oversized content explicitly. Preserve descriptor-relative no-follow traversal for working files and local LFS objects; symlinks display their stored target text.
+
+`local_lfs_object` accepts only locally present content that matches the pointer's size and SHA-256 digest within both the caller's limit and the core blob limit. Distinguish a missing object from corrupt or unsafe content. LFS storage is mutable, so a missing object is not a permanent property of the pointer's immutable Git blob. Decode limits remain the preview crate's responsibility.
 
 Keep checkout's protection of local changes and other worktrees, fast-forward-only pull without rebase/autostash, and non-force push to one visible branch destination. Identity edits stay in repository config or existing private-worktree config. Init/clone preserve occupied destinations and partial results on failure. Changes to these semantics require a matching user-facing target and behavior, not just a new command flag.
 

@@ -1,52 +1,45 @@
 # Development agent guidance
 
-The September 7, 2026 follow-up audit checked the project through `7eef2c3`, including the final application changes in `55e7f14`, against freshly fetched [GPT-6 Astra model guidance](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6-astra). It covers development instructions for the expanded everyday Git workflow, Projects, Settings, themes, and configurable columns. The original audit covered `c1808d4`; this review updates that setup for the current code. Native behavior and measured timings remain tied to their exercised revisions in [validation](validation.md).
+The September 8, 2026 audit checked the project through `2073aeb`, including the design and performance changes in `b8b5799` and action feedback in `ca8d805`, against freshly fetched [GPT-6 Astra guidance](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6-astra). It updates the September 7 audit for the larger native client. This concerns agents developing GitTurtle; the application itself has no model integration. Runtime and timing evidence remains tied to its exercised revision in [validation](validation.md).
 
 ## Instruction layout
 
 | Source | Purpose |
 | --- | --- |
-| [Root AGENTS.md](../AGENTS.md) | Product boundaries, authorized scope, code routing, delegation, commits, and proportionate validation |
-| [App AGENTS.md](../crates/app/AGENTS.md) | Native state transitions, explicit-operation routing, settings/columns, prepared presentation, and resource lifetimes |
-| [Git core AGENTS.md](../crates/git-core/AGENTS.md) | Passive versus normal Git command policy, byte-safe working previews, operation outcomes, and semantic fixture checks |
-| [gitturtle-performance](../.agents/skills/gitturtle-performance/SKILL.md) | On-demand review of passive reads, scheduling, caches, previews, and performance evidence |
-| [gitturtle-native-qa](../.agents/skills/gitturtle-native-qa/SKILL.md) | On-demand project/working/settings interaction and local package validation |
+| [Root AGENTS.md](../AGENTS.md) | Product boundaries, code routing, delegation and model inheritance, commits, and proportionate validation |
+| [App AGENTS.md](../crates/app/AGENTS.md) | Native state transitions, operation targets, theme tokens, shared layout, prepared presentation, and resource lifetimes |
+| [Git core AGENTS.md](../crates/git-core/AGENTS.md) | Passive versus normal Git policy, byte-safe paths, object-reader recovery, local LFS, and operation outcomes |
+| [Preview AGENTS.md](../crates/preview/AGENTS.md) | Bounded decoding, alpha/orientation, SVG resource restrictions, and icon generation |
+| [gitturtle-performance](../.agents/skills/gitturtle-performance/SKILL.md) | On-demand review of passive reads, scheduling, caches, previews, and measured performance |
+| [gitturtle-native-qa](../.agents/skills/gitturtle-native-qa/SKILL.md) | On-demand native interaction and local package validation |
 
-This arrangement follows OpenAI's [customization guidance](https://learn.chatgpt.com/docs/customization/overview): keep persistent project rules small, place specialized contracts near their code, and load repeatable procedures as skills when relevant. The root explicitly routes app and Git-core work to their nested instructions so a task started from the repository root can find them. See [instruction discovery](https://learn.chatgpt.com/docs/agent-configuration/agents-md) for Codex's directory-based loading behavior.
+This follows OpenAI's [customization guidance](https://learn.chatgpt.com/docs/customization/overview): keep persistent rules small, place specialized contracts close to their code, and use skills for repeatable procedures. Codex's [instruction discovery](https://learn.chatgpt.com/docs/agent-configuration/agents-md) walks from the repository root to the working directory. The root therefore explicitly routes work into each crate's instructions even when the task starts at the root. The two skills remain in the discoverable repository `.agents/skills` directory, with focused descriptions and references loaded as needed, consistent with [skill guidance](https://learn.chatgpt.com/docs/build-skills).
 
-## Astra guidance applied here
+## Changes from this audit
 
-The official model guide emphasizes initiative within scope, clear instruction priority, deliberate delegation, concise communication, and testing calibrated to the change. The audit translates these into project decisions:
+- Added preview-local guidance for supplied-byte decoding, independent bounds, straight RGBA, alpha-aware resizing, orientation, and self-contained SVG handling. The icon pipeline now states that packaging copies ICNS and does not regenerate it.
+- Updated app contracts for constructing only the active page, persistent Git actions with optional Targets fields, lazy bounded branch choices, and checkout callbacks bound to their opening repository. Preserved the distinction between browsing a branch's history and checking it out.
+- Recorded the theme failure found during native work: GPUI Kit control backgrounds use resolved tokens, so updating colors also requires rebuilding tokens before syncing the base theme. Added semantic status labels/icons, aligned column insets, and stable inspector identity.
+- Added core guidance for discarding a desynchronized shared object-reader process, paging from immutable OIDs versus mutable refs, and local LFS size/digest checks with retryable missing content.
+- Updated the performance procedure for per-row graph cancellation, scratch reuse, lazy hidden pages, bounded menus, and the distinction between an isolated graph harness and native frame measurements.
+- Updated native QA for actual button foreground/background colors, branch target and filter behavior, and selected icon resources. Artwork-only packaging can reuse a verified existing executable; embedded control SVGs require a rebuild. Documentation-only work still does not trigger Rust or native checks.
 
-- Distinguish passive inspection from user-triggered writes. The original read-only product boundary has been superseded by the user's everyday Git scope; development tests still mutate only disposable fixtures, and normal GitTurtle engineering commits remain authorized.
-- Preserve the active objective and completed work when the user steers or resumes a task. Raise material decisions after preparing authorized, reviewable work.
-- Assign bounded parallel work with explicit ownership and useful evidence. Keep Git-index integration and the shared native app under a single owner.
-- Give agents current entry points instead of requiring every document to be loaded. Keep replaceable preview reads, accepted explicit operations, and app preference persistence distinct; describe their contracts beside the code.
-- Distinguish app, Git-core, and decoder tests; use native checks for rendered behavior. Documentation edits validate instructions and links without triggering a release build. Stop after relevant checks pass unless a concrete concern remains.
-- Keep historical benchmarks tied to their measured revisions and metrics. A small local sample is not a guarantee or a controlled before/after comparison.
+Existing contracts for accepted writes, uncertain outcomes, stale preview replies, canonical draft identity, granular preference merging, and literal patch copying remain applicable. The audit removes duplicated validation commands and replaces stale instructions rather than introducing another copy of the model prompt.
 
-These are project applications of the source guidance, not a verbatim model prompt or evidence that model quality has been benchmarked.
+## Delegation and model choices
 
-## Findings from the expanded-code audit
+The [Astra guide](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6-astra) calls for initiative within scope, clear instruction priority, useful delegation, concise communication, and testing calibrated to the change. Here that means completing authorized work, incorporating user steering, raising only material questions, and explaining the exact instruction if a skill causes a pause. Once relevant checks pass, additional review needs a concrete unresolved concern.
 
-- Updated the root code map for working state, operation execution, project/settings forms, persistence, themes, columns, and Git workflow fixtures. Narrowed the performance-skill trigger to its actual scope.
-- Added local Git-core instructions for the two command policies, literal paths, mutable previews, retained Git hooks/signing/filter behavior, and uncertain outcomes. Local Refresh cannot verify whether a timed-out push reached its remote.
-- Corrected the blanket “Back performs no Git request” rule: Compare retains its file list, while returning from Working after history invalidation can reload changed-file metadata. Added root/list focus ownership, page guards for hidden editors, working-preview invalidation, canonical draft identity, and granular preference merging.
-- Updated the performance skill to cover the working-preview trace and reproducible HEAD/index/worktree state. Cache limits are looked up in code instead of copied into instructions.
-- Updated native QA for Settings/Projects return focus, working refresh races, draft identity, and uncertain pushes. A current development build is sufficient for ordinary interaction checks; release measurements and fresh packaging remain tied to those requests.
+Use independent subagents for useful boundaries such as Git semantics/fixtures, worker/graph analysis, and native presentation. Give each worker an outcome, owned files or read-only scope, and expected evidence; have it return concise findings, changed files, checks, and unresolved issues. The coordinator integrates results and owns the Git index. One owner operates the shared desktop app and packages it. These boundaries match the code and reduce competing edits and duplicate expensive checks.
 
-The two existing skills remain focused and useful. The new core instructions supply the missing durable contract without adding a third workflow skill or fixed agent persona.
+[OpenAI's subagent documentation](https://learn.chatgpt.com/docs/agent-configuration/subagents) describes model/effort inheritance and the additional token cost of parallel workers. Preserve the user's selected model and reasoning effort, including explicit cost limits. GPT-6 Astra is the model requested for this guidance; generic examples naming another model do not replace that choice. Do not force Ultra, a fixed worker count, or automatic effort changes. When the user requests a different configuration, use the host's supported model/effort combinations and assess task quality, latency, and cost. The Astra guide does not support `none`; its API migration advice for `none`/`minimal` starts at `low`, rather than silently increasing all work to maximum effort.
 
-## Delegation and model settings
+No persistent custom agent configurations exist in this repository. Task-specific delegation and the two skills cover the demonstrated workflows, so this audit adds no fixed personas, project model overrides, or third design skill. Design intent belongs in [design.md](design.md), implementation contracts beside the code, and rendered verification in native QA. A custom role is warranted later if recurring work requires a distinct tool, permission, or context boundary. No global configuration or installed skills were changed. API migration flags, async tools, and model routing are not application features to add to this native Git client.
 
-Use task-specific subagents when there is independent work: Git/fixture review, worker/cache analysis, or native design review are useful boundaries. Give a worker the requested outcome, relevant paths, ownership, and checks; ask it to return changed files, evidence, and unresolved issues. Reviews can remain read-only while the coordinator edits. Avoid workers concurrently manipulating the shared Git index or desktop app.
+## Validation and maintenance
 
-There are no persistent role configurations to migrate. The current crate boundaries and focused skills supply the reusable guidance; fixed personas, a second orchestration framework, or mandatory multi-agent review on every edit would add maintenance without a demonstrated need. Add a custom role later if a repeated task needs distinct tools, permissions, or context that these skills do not provide.
+Independent workers traced app, core/decoder, and skill contracts to current code. Review scenarios included changing a theme without refreshing button tokens; switching repositories with a branch menu open; cancelling graph layout; adding an image format; replacing only the packaged icon; and doing another documentation-only audit. These are instruction and code-contract reviews, not a model-quality benchmark or newly executed product workflows.
 
-GPT-6 Astra is the requested development model. Keep the user's selected model and reasoning settings in the host rather than installing project overrides that silently replace them. This audit adds no `.codex/config.toml`, changes no global skills/settings, and introduces no model calls into GitTurtle. The guide's API migration parameters concern API-backed software; this native Git client has no such integration.
+Validation resolved 54 local links across nine guidance/asset/validation documents, checked named code symbols and all three Cargo packages, and passed both skills through `quick_validate.py`. The integrated instructions passed a final review of documentation-only, bundle-resource, and embedded-asset routing, plus the diff check. The accompanying user-selected icon change has separate package evidence in [validation](validation.md); earlier Rust tests and timings were not rerun or attributed to this documentation revision.
 
-## Maintaining the guidance
-
-Revise the closest contract when implementation changes, update skill routing when workflows change, and remove superseded instructions rather than accumulating duplicate rules. Keep changing limits and benchmark results in code and validation records; check them at use time. Recheck the official model guide when upgrading the development model or when observed behavior warrants a prompting change.
-
-The follow-up used independent code-contract and scenario reviews. The scenarios covered Settings/Escape focus, stale working previews after staging, uncertain push retries, a docs-only Astra audit, and another image format. They exposed routing and verification gaps before revision; they were instruction reviews, not executed product tests or a model-quality benchmark. Validation checked the six guidance files, 29 local links, Cargo package/command paths, 24 key code symbols, both skill frontmatters, and the final diff. No Rust suite, native checks, or benchmarks were rerun for these documentation changes. Runtime and performance evidence belongs in the validation record with its exercised revision.
+Update the closest contract when implementation changes, keep changing limits in code and raw timings in benchmark records, and recheck the official model guide when the development model changes or observed agent behavior warrants a correction.

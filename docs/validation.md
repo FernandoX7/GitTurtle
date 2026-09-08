@@ -1,6 +1,12 @@
 # Validation notes
 
-This records local validation performed on September 7, 2026, with each stage tied to its exercised builds. The design and everyday Git workflow checks extend the historical history/comparison checks. Native interaction was exercised on macOS. Linux is a portability target, not a validated release platform; no CI or notarized distribution is claimed.
+This records local validation performed on September 7–8, 2026, with each stage tied to its exercised builds. The design and everyday Git workflow checks extend the historical history/comparison checks. Native interaction was exercised on macOS. Linux is a portability target, not a validated release platform; no CI or notarized distribution is claimed.
+
+## Selected icon package — September 8, 2026
+
+At `9a2ae28`, the user selected the first generated turtle. `assets/app-icon.png` preserves that output byte-for-byte; [its record](../assets/app-icon.prompt.json) retains the original built-in ImageGen prompt and SHA-256. The RGBA source is 1254 × 1254 pixels. The existing `render_icon` example generated all ten iconset representations from 16 to 1024 pixels, and `iconutil` rebuilt the ICNS. The source and 32-pixel rendering were visually inspected.
+
+No Rust source or dependencies changed from the tested `ca8d805` build. The existing release executable and previous package had matching UUID `567C6E63-F6C9-36D2-AF6F-6CF34C028A53`; the app was closed before repackaging with `--no-build`. The new bundle passed plist and ad-hoc signature verification, retained that UUID, and contained an ICNS byte-identical to the selected asset. The packaged app launched successfully. This validates the resource update; it does not rerun or replace the native workflow and performance evidence below.
 
 ## Design and interaction validation
 
