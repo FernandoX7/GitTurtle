@@ -1,9 +1,12 @@
-//! A read-only Git service. Every Git command is constructed as arguments, and
+//! Git inspection and explicitly requested working-copy operations. Every command uses arguments, and
 //! object reads never invoke external diff drivers, textconv, hooks, or fetch.
 //!
 //! Methods are blocking and belong on a worker thread, never a UI render thread.
 //! Clones share a persistent `cat-file` process; its lock only protects the wire
 //! protocol. Repository operations themselves do not take that lock.
+
+mod work;
+pub use work::*;
 
 use anyhow::{Context, Result, bail, ensure};
 use sha2::{Digest, Sha256};

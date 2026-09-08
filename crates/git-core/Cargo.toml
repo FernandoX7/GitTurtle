@@ -3,7 +3,7 @@ name = "gitturtle-core"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "Read-only Git repository inspection for GitTurtle"
+description = "Git inspection and explicit everyday repository operations for GitTurtle"
 
 [dependencies]
 anyhow = "1.0"
