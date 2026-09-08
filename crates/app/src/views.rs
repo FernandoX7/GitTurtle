@@ -1,6 +1,7 @@
 use crate::*;
 use columns::ColumnId;
 use gpui_kit::base::ElementExt;
+use gpui_kit::base::{Scrollbar, ScrollbarMode};
 use gpui_kit::prelude::FluentBuilder;
 
 impl GitTurtle {
@@ -419,6 +420,8 @@ impl GitTurtle {
                 },
                 if self.repository.is_none() {
                     "Open a Git repository to explore branches, worktrees and changes."
+                } else if self.commits.is_empty() {
+                    "Add files to your project, then open Changes to make your first commit."
                 } else {
                     "Search applies to the loaded history."
                 },
@@ -484,6 +487,7 @@ impl GitTurtle {
                     )
             }));
         div()
+            .relative()
             .size_full()
             .min_w_0()
             .flex()
@@ -617,6 +621,7 @@ impl GitTurtle {
                             ),
                     ),
             )
+            .child(Scrollbar::horizontal(&self.history_horizontal).mode(ScrollbarMode::Always))
             .into_any_element()
     }
 
@@ -1061,6 +1066,18 @@ impl GitTurtle {
             }));
         let content = if let Some(error) = &self.error {
             empty("Preview unavailable", error)
+        } else if file.is_none()
+            && self.mode == WorkspaceMode::Working
+            && self.loading.is_none()
+            && self
+                .work_status
+                .as_ref()
+                .is_some_and(|status| status.entries.is_empty())
+        {
+            empty(
+                "Working tree clean",
+                "Everything is up to date locally. Browse History to review your commits.",
+            )
         } else if file.is_none() {
             empty(
                 self.loading.unwrap_or("Choose a file"),
@@ -1497,7 +1514,7 @@ impl Render for GitTurtle {
                 }
             }))
             .child(self.render_header(cx))
-            .when(self.page != AppPage::Settings, |el| {
+            .when(self.page == AppPage::Repository, |el| {
                 el.children(self.operation_error.as_ref().map(|error| {
                     div()
                         .max_h(px(100.))
@@ -1514,6 +1531,33 @@ impl Render for GitTurtle {
                             button("dismiss-operation-error", "Dismiss", "", false).on_click(
                                 cx.listener(|this, _, _, cx| {
                                     this.operation_error = None;
+                                    cx.notify();
+                                }),
+                            ),
+                        )
+                }))
+            })
+            .when(self.operation_error.is_none(), |el| {
+                el.children(self.operation_notice.as_ref().map(|notice| {
+                    div()
+                        .px_4()
+                        .py_2()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .bg(rgb(colors.selected))
+                        .text_color(rgb(colors.accent))
+                        .child(
+                            div()
+                                .flex_1()
+                                .truncate()
+                                .text_size(px(11.))
+                                .child(notice.clone()),
+                        )
+                        .child(
+                            button("dismiss-operation-notice", "Dismiss", "", false).on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.operation_notice = None;
                                     cx.notify();
                                 }),
                             ),

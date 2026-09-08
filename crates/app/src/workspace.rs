@@ -68,6 +68,7 @@ impl GitTurtle {
     ) {
         self.operation_busy = Some(label);
         self.operation_error = None;
+        self.operation_notice = None;
         self.hub.update(cx, |hub, cx| hub.set_busy(true, cx));
         let response = self.operations.submit(operation);
         self.operation_task = Some(cx.spawn_in(window, async move |this, cx| {
@@ -76,11 +77,16 @@ impl GitTurtle {
                 this.operation_busy = None;
                 this.hub.update(cx, |hub, cx| hub.set_busy(false, cx));
                 match result {
-                    Ok(repo) => { this.limit = 500; this.open(repo.path().to_owned(), None, window, cx); }
+                    Ok(repo) => {
+                        let message = format!("{} · {}", if label.starts_with("Cloning") { "Repository cloned" } else { "Repository created" }, repo.name());
+                        this.limit = 500; this.open(repo.path().to_owned(), None, window, cx);
+                        this.operation_notice = Some(message);
+                    }
                     Err(error) => {
                         let message = format!("{error:#}");
                         this.hub.update(cx, |hub, cx| hub.set_error(Some(message.clone()), cx));
                         this.operation_error = Some(message);
+                        this.operation_notice = None;
                     }
                 }
                 cx.notify();
@@ -354,6 +360,7 @@ impl GitTurtle {
         );
         self.operation_busy = Some(label);
         self.operation_error = None;
+        self.operation_notice = None;
         self.work_generation = self.work_generation.wrapping_add(1);
         self.status_task = None;
         if self.mode == WorkspaceMode::Working {
@@ -368,7 +375,16 @@ impl GitTurtle {
             let _=this.update_in(cx,|this,window,cx| {
                 this.operation_busy=None;
                 let succeeded=result.is_ok();
-                match result { Ok(outcome)=>this.status=outcome.message, Err(error)=>this.operation_error=Some(format!("{error:#}")) }
+                match result {
+                    Ok(outcome) => {
+                        this.operation_notice = Some(outcome.message.clone());
+                        this.status = outcome.message;
+                    }
+                    Err(error) => {
+                        this.operation_notice = None;
+                        this.operation_error = Some(format!("{error:#}"));
+                    }
+                }
                 if this.path.as_ref()==Some(&path) {
                     if succeeded && submitted_message.as_deref().is_some_and(|message| this.commit_message.read(cx).value().as_str() == message) {
                         this.commit_message.update(cx,|input,cx|input.set_value("",window,cx));
@@ -546,6 +562,7 @@ impl GitTurtle {
             WorkingRow::Heading(area, count) => {
                 let staged = area == ChangeArea::Staged;
                 div()
+                    .w_full()
                     .h(px(self.settings.density.file_row_height()))
                     .px_3()
                     .flex()
@@ -750,6 +767,17 @@ impl GitTurtle {
                             .truncate()
                             .text_size(px(12.))
                             .child(branch),
+                    )
+                    .children(
+                        self.work_status
+                            .as_ref()
+                            .and_then(|status| status.operation.as_ref())
+                            .map(|operation| {
+                                div()
+                                    .text_size(px(10.))
+                                    .text_color(rgb(p.accent))
+                                    .child(format!("{operation} in progress"))
+                            }),
                     )
                     .children(self.work_status.as_ref().map(|s| {
                         div()

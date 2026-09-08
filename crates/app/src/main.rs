@@ -128,6 +128,7 @@ struct GitTurtle {
     operations: SerialExecutor,
     operation_busy: Option<&'static str>,
     operation_error: Option<String>,
+    operation_notice: Option<String>,
     operation_task: Option<Task<()>>,
     status_task: Option<Task<()>>,
     work_generation: u64,
@@ -166,7 +167,6 @@ struct GitTurtle {
     commits: Vec<Commit>,
     visible: Vec<usize>,
     graph: Vec<graph::GraphRow>,
-    graph_width: f32,
     graph_lanes: usize,
     graph_notice: Option<String>,
     refs: HashMap<String, Vec<String>>,
@@ -249,6 +249,7 @@ impl GitTurtle {
             operations: SerialExecutor::new("gitturtle-operations"),
             operation_busy: None,
             operation_error: None,
+            operation_notice: None,
             operation_task: None,
             status_task: None,
             work_generation: 0,
@@ -291,7 +292,6 @@ impl GitTurtle {
             commits: vec![],
             visible: vec![],
             graph: vec![],
-            graph_width: 112.,
             graph_lanes: 1,
             graph_notice: None,
             refs: HashMap::new(),
@@ -419,6 +419,7 @@ impl GitTurtle {
             None
         };
         if self.path.as_ref() != Some(&path) {
+            self.operation_notice = None;
             self.retained_history_files = None;
             self.repository = None;
             self.work_generation += 1;
@@ -501,7 +502,6 @@ impl GitTurtle {
                 self.graph = snapshot.graph;
                 self.graph_notice = snapshot.graph_notice;
                 self.graph_lanes = self.graph.iter().map(|r| r.width).max().unwrap_or(1);
-                self.graph_width = (self.graph_lanes as f32 * 12. + 24.).clamp(84., 230.);
                 let resolved = snapshot.repository.path().to_owned();
                 if self.draft_repository.as_ref() != Some(&resolved) {
                     if let Some(previous) = self.draft_repository.take() {
