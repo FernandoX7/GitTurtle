@@ -1,10 +1,45 @@
 # Validation notes
 
-This records the v0.1 validation performed on September 7, 2026. Native interaction was exercised on macOS. Linux is a portability target, not a validated release platform. These checks are local; no CI or notarized distribution is claimed.
+This records local validation performed on September 7, 2026, with each stage tied to its exercised builds. The everyday Git workflow checks below extend the historical history/comparison checks. Native interaction was exercised on macOS. Linux is a portability target, not a validated release platform; no CI or notarized distribution is claimed.
 
-## Automated and build checks
+## Everyday Git workflow validation
 
-The completed workspace run passed **73 tests**, strict workspace Clippy, and a release build. Tests use disposable repositories for operations that create Git objects, refs, or worktrees.
+Final source revision `55e7f14` passed formatting, **113 tests: 67 app, 34 core, and 12 preview**, strict workspace Clippy, and a release build. Native checks exercised packaged revisions `ba0ccb7`, `ceea5d9`, `2742212`, and the final `55e7f14` on Apple M4 Max with 128 GB memory and macOS 26.6.2. Only generated `.local` fixtures and local remotes were mutated during development validation.
+
+The final arm64 macOS package was ad-hoc signed and verified. Its executable UUID, `984A3FEA-07EF-3446-93E4-7CE0412C5C87`, matched `target/release/gitturtle`.
+
+| Area | Observed behavior |
+| --- | --- |
+| History columns | Resized References from 140 to 219 px, then reset the layout; hid Author; set Graph to 415 px and confirmed that width after restarting. Dragging the horizontal scrollbar revealed SHA while keeping header and rows aligned. |
+| Appearance and settings | Exercised Daylight, Graphite, and Midnight, plus Compact and Comfortable density. Saved `trunk` as the default branch and used it for a new project. Repository identity edits updated repository-local configuration. |
+| Project opening and drafts | Opened a repository through its nested `src` folder using the native picker and retained the existing commit draft. Draft retention applies within the running session. |
+| Create and first commit | Created an unborn repository on `trunk` and made its initial commit `cc69432`. |
+| Staging and comparisons | Staged and unstaged the same file and verified that selecting its two groups showed the different staged and unstaged content. Image checks exercised Before/After, Fit, 200% zoom, and dragging. |
+| Commit and push | Created commit `b54e318` on `main`, pushed to a local bare remote, and verified that the remote had the same OID. |
+| Fetch and pull | A fixture peer created `0d6cbaa`; Fetch showed the local branch one commit behind, and fast-forward Pull updated HEAD to the peer commit. |
+| Branch actions | Created/switched to `qa/native-workflow`, then switched to `main`; the remote-branch input tracked the selected local branch. |
+| Clone and failures | Refused a nonempty destination. A missing-LFS smudge failure surfaced the normal Git error and preserved the partial destination. After the fixture peer removed the intentionally missing pointer, a complete clone into `native-clone-ready` succeeded. |
+| Final Settings focus check | From a working-file preview, Command-, opened Settings. Switching to Graphite and pressing Escape restored the same README unified comparison and file-list focus; the editor remained read-only. |
+| Final commit feedback | Staged and committed `61828ae` with the message “Verify final native workflow.” The result displayed the short OID and summary on one line, cleared the commit message, and showed a clean working state. |
+
+Pull is fast-forward-only and Push does not force-update refs. These network-action checks used local remotes; remote authentication was not validated. Commit drafts are session-only. Linux interaction/builds, notarization, and remote credential flows remain outside this evidence.
+
+The final application was also used for passive inspection of `world-of-claudecraft` with 500 commits loaded. Code-area scrolling kept the unified patch and old/new gutter aligned; Back retained the commit, selected file, and search query. Activating an image followed by Escape stayed in History. The final preferences were returned to Midnight, Comfortable density, default columns, and `main` for new repositories.
+
+### Final release timing check
+
+Release `55e7f14` used the hardware and package above. Twenty History selections (ten Down, ten Up from `69ffdab`) produced zero file-preview frames. A separate forty-selection code traversal in `1e11554` started at `headless/gathering_goal_protocol.ts`, moved twenty files down to `src/sim/professions/material_goal_projection.ts`, and returned. Each action was followed by a native accessibility observation.
+
+| Interaction | Samples | Median | p95 | Maximum |
+| --- | ---: | ---: | ---: | ---: |
+| Commit to changed-file frame | 20 | 23.671 ms | 26.119 ms | 48.195 ms |
+| File to prepared text-preview frame | 40 | 5.508 ms | 7.646 ms | 8.057 ms |
+
+The initial selection and file activation were excluded. Filesystem caches were not flushed; the process had already inspected disposable fixtures, and return selections can use the 32-entry preview cache. Other desktop applications and development work remained running. These are application-handler-to-frame-callback measurements, excluding pre-handler input delivery, OS presentation, and completed GPU work. The small uncontrolled sample is not a speedup claim or latency guarantee. Raw values and conditions are in [the everyday-workflow timing record](benchmarks/2026-09-07-everyday-workflow.json). Historical measurements below remain tied to their original builds.
+
+## Historical automated and build checks
+
+The earlier history/comparison workspace run passed **73 tests**, strict workspace Clippy, and a release build. Tests used disposable repositories for operations that created Git objects, refs, or worktrees.
 
 ```sh
 cargo fmt --all -- --check
@@ -17,11 +52,11 @@ Coverage includes repository roots and merge parents, branches and linked worktr
 
 A local macOS `.app` can be built with [the packaging script](../scripts/package-macos.sh). It is signed ad-hoc for local use, not notarized. The script's `--debug` option packages a debug build, while the default uses release; `--no-build` reuses the selected profile's existing executable.
 
-## Column layout update
+## Historical column layout update
 
 The updated release has a full-height history table and persistent right-hand commit/file inspector. Explicit file activation opens a full-height comparison; Back returns to retained history. Local and remote references are grouped into branch folders. Unified patches now have a separately painted old/new line-number gutter, preserving the literal editor text.
 
-The final 73-test run (44 app, 17 core, 12 preview), strict workspace Clippy, and release packaging passed after these changes. Native checks resumed after the Mac was unlocked. On the demonstration repository, the full-height history/comparison layout, separately aligned old/new gutter, read-only typing, literal patch copying, keyboard activation, and Back navigation were exercised. The right inspector retained its dragged width across mode changes. Branch-folder expansion, temporary search expansion, branch scoping, merge-parent changes in both modes, added/modified/deleted images, and missing-LFS messages behaved as expected. Opening a non-repository folder cleared previous navigation and content and displayed the error.
+The final run for this historical layout passed 73 tests (44 app, 17 core, 12 preview), strict workspace Clippy, and release packaging. Native checks resumed after the Mac was unlocked. On the demonstration repository, the full-height history/comparison layout, separately aligned old/new gutter, read-only typing, literal patch copying, keyboard activation, and Back navigation were exercised. The right inspector retained its dragged width across mode changes. Branch-folder expansion, temporary search expansion, branch scoping, merge-parent changes in both modes, added/modified/deleted images, and missing-LFS messages behaved as expected. Opening a non-repository folder cleared previous navigation and content and displayed the error.
 
 The final scrolling pass verified linked drag-to-pan on both axes at 200%, reversal to the origin, and dragging across the preview toolbar. The CUA horizontal wheel gesture emitted a zero x/y delta during diagnostic tracing despite a positive horizontal scroll range, so horizontal trackpad behavior remains unverified by that tool. Vertical wheel panning was verified.
 
@@ -29,7 +64,7 @@ On `world-of-claudecraft`, both code-area and gutter wheel scrolling kept a 114-
 
 At `3053ac9`, patch gutter rows, width, and decoration ranges moved to the repository worker, with their retained allocations counted in the preview cache. The packaged release was checked again: gutter/code scrolling remained aligned, Before was empty for an added file, After displayed syntax-highlighted source, and Back retained the selected commit and file.
 
-## Initial native macOS checks (before column layout)
+## Historical initial native macOS checks (before column layout)
 
 The application was opened against the locally available `world-of-claudecraft` repository containing **5,577 branches and 130 worktrees**, and against a generated demonstration repository.
 
@@ -72,7 +107,7 @@ The status bar's **content read** duration covers worker processing, including a
 
 Native trace samples should be reported with the build profile, repository, selected content, sample count, system load, and cache conditions. No frame-latency or memory guarantee is established by the current checks.
 
-## Column-layout native measurements
+## Historical column-layout native measurements
 
 On Apple M4 Max / macOS 26.6.2, release `9b47e08` opened `world-of-claudecraft` with 500 commits loaded. Twenty Down actions followed by twenty Up actions produced 40 changed-file-list frames and **zero file-preview frames** during History navigation. A separate 40-selection text/code traversal inspected commit `1e11554`.
 
@@ -88,7 +123,7 @@ Filesystem caches were not flushed, and other desktop applications and developme
 
 RSS after outbound/return traversal was approximately 129.9/130.0 MiB for History and 140.3/140.6 MiB for text comparisons at `9b47e08`; the final text run at `3053ac9` recorded 133.1/128.1 MiB. These are process snapshots, excluding separate GPU accounting. Raw samples, initial-frame exclusions, cache conditions, and boundaries are saved in [the column-layout record](benchmarks/2026-09-07-columns.json) and [the final prepared-diff record](benchmarks/2026-09-07-prepared-diffs.json).
 
-## Initial optimized native measurements (before column layout)
+## Historical initial optimized native measurements (before column layout)
 
 On Apple M4 Max / macOS 26.6.2, the release build at `8b0799e` opened `world-of-claudecraft` with 500 loaded commits. We sent 25 Down actions and then 25 Up actions, observing the native accessibility state after each. The OS filesystem cache was not flushed; other desktop applications and development activity remained running. This is a small first measurement, not a comparative benchmark or latency guarantee.
 
@@ -104,7 +139,8 @@ Process RSS snapshots were about 142.3 MiB after the outbound traversal and 143.
 ## Known limits and follow-up
 
 - The UI loads 500 commits initially and adds 500 per **Load more**, up to 10,000. It reloads the full prefix and restores the selected commit/preferred file when possible, centering the history selection. It does not retain an incremental history traversal cursor. Search covers loaded commits.
-- Refresh is manual and resolves the selected scope's current tip. Another tool is responsible for fetches. Missing objects are reported without automatic downloads.
+- Refresh is manual and resolves the selected scope's current tip without fetching. Fetch, fast-forward Pull, and non-force Push require explicit actions; the current native checks use local remotes. Missing preview objects are reported without automatic downloads.
+- Staging is whole-file. Conflict resolution, merge/rebase editing, force push, and submodule management are not provided. Commit drafts survive navigation within a session but are not persisted across restarts.
 - Text uses a unified patch plus Before/After tabs. A separate old/new gutter accompanies unified patches; there is no aligned split view. Parent controls expose the first 128 parents of unusually large merge commits with an explicit count notice. The UI's initial file list omits rename detection, displaying additions and deletions instead.
 - Images use a first-frame preview capped at a 1,600-pixel edge. Zoom percentages refer to that decoded preview; original dimensions and reduced preview dimensions are shown. SVG filters and embedded/external images are explicitly unsupported.
 - Graph preparation allows at most 128 simultaneous lanes, 200,000 edges, and 200,000 parent entries. Above the budget, the UI explains why connections are hidden and shows isolated nodes instead of incomplete ancestry lines.
