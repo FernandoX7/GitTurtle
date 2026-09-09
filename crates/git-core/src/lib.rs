@@ -6,10 +6,14 @@
 //! protocol. Repository operations themselves do not take that lock.
 
 mod blame;
+mod conflict_blocks;
 mod history;
+mod inspection;
 mod work;
 pub use blame::*;
+pub use conflict_blocks::*;
 pub use history::*;
+pub use inspection::*;
 pub use work::*;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -644,38 +648,7 @@ impl GitRepository {
         if expected_size == 0 && oid == format!("{:x}", Sha256::digest([])) {
             return Ok(Some(Vec::new()));
         }
-        let common = run_git(
-            &self.path,
-            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-        )?;
-        let common = path_from_bytes(trim_line(&common));
-        let configured = run_git_output(
-            &self.path,
-            &["config", "--null", "--path", "--get", "lfs.storage"],
-        )?;
-        let storage = if configured.status.success() {
-            let value = configured
-                .stdout
-                .strip_suffix(&[0])
-                .unwrap_or(&configured.stdout);
-            if value.is_empty() {
-                common.join("lfs")
-            } else {
-                let path = path_from_bytes(value);
-                if path.is_absolute() {
-                    path
-                } else {
-                    common.join(path)
-                }
-            }
-        } else if configured.status.code() == Some(1) {
-            common.join("lfs")
-        } else {
-            bail!(
-                "Unable to read local LFS storage configuration: {}",
-                text(&configured.stderr).trim()
-            );
-        };
+        let storage = self.preview_lfs_storage()?;
         let Some(mut file) = open_local_lfs(&storage, &oid)? else {
             return Ok(None);
         };
@@ -701,6 +674,39 @@ impl GitRepository {
             "Local LFS object failed SHA-256 verification"
         );
         Ok(Some(bytes))
+    }
+
+    fn preview_lfs_storage(&self) -> Result<PathBuf> {
+        let common = run_git(
+            &self.path,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        )?;
+        let common = path_from_bytes(trim_line(&common));
+        let configured = work::lfs_storage_config(&self.path)?;
+        let storage = if configured.status.success() {
+            let value = configured
+                .stdout
+                .strip_suffix(&[0])
+                .unwrap_or(&configured.stdout);
+            if value.is_empty() {
+                common.join("lfs")
+            } else {
+                let path = path_from_bytes(value);
+                if path.is_absolute() {
+                    path
+                } else {
+                    common.join(path)
+                }
+            }
+        } else if configured.status.code() == Some(1) {
+            common.join("lfs")
+        } else {
+            bail!(
+                "Unable to read local LFS storage configuration: {}",
+                text(&configured.stderr).trim()
+            );
+        };
+        Ok(storage)
     }
 
     pub fn diff(&self, file: &FileChange) -> Result<String> {
@@ -838,6 +844,7 @@ fn run_git_output(path: &Path, args: &[&str]) -> Result<Output> {
 }
 
 fn bounded_output(mut command: Command, timeout: Duration) -> Result<Output> {
+    ensure!(!work::inspection_cancelled(), "Repository inspection cancelled");
     isolate_process_group(&mut command);
     let mut child = command
         .stdout(Stdio::piped())
@@ -857,6 +864,12 @@ fn bounded_output(mut command: Command, timeout: Duration) -> Result<Output> {
     let stderr = read(Box::new(stderr), 128 * 1024);
     let start = Instant::now();
     let status = loop {
+        if work::inspection_cancelled() {
+            terminate_process_group(&child);
+            let _ = child.kill();
+            let _ = child.wait();
+            break Err(anyhow::anyhow!("Repository inspection cancelled"));
+        }
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
             Ok(None) if start.elapsed() < timeout => thread::sleep(Duration::from_millis(1)),

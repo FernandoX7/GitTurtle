@@ -93,6 +93,8 @@ pub struct ConflictPreview {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConflictResolution {
+    /// Save the reviewed draft without staging or marking the conflict resolved.
+    Save { bytes: Vec<u8> },
     /// Save exactly these UTF-8 bytes, then stage only this path using Git's
     /// configured filters. Only regular files support the inline editor.
     Manual {
@@ -156,6 +158,7 @@ impl GitRepository {
             "rebase-merge/message",
             "rebase-merge/message-squash",
             "rebase-merge/message-fixup",
+            "rebase-merge/gitturtle-message-edit",
             "rebase-apply/head-name",
             "rebase-apply/onto",
             "rebase-apply/orig-head",
@@ -647,7 +650,7 @@ impl GitRepository {
     /// ignored files while resetting to the rebase destination. Inspect only
     /// paths introduced by the destination or a replayed commit; unrelated
     /// ignored directories such as build outputs need no recursive traversal.
-    fn protect_untracked_rebase_paths(&self, plan: &IntegrationPlan) -> Result<()> {
+    pub(super) fn protect_untracked_rebase_paths(&self, plan: &IntegrationPlan) -> Result<()> {
         use std::collections::HashSet;
         let tracked = run_git(&self.path, &["ls-files", "-z"])?;
         let tracked: HashSet<PathBuf> = tracked
@@ -860,17 +863,24 @@ impl GitRepository {
     ) -> Result<WriteOutcome> {
         self.validate_conflict(expected)?;
         match resolution {
-            ConflictResolution::Manual { bytes } => {
+            ConflictResolution::Manual { bytes } | ConflictResolution::Save { bytes } => {
                 ensure!(
                     bytes.len() <= MAX_DIFF_BYTES
                         && !bytes.contains(&0)
                         && std::str::from_utf8(bytes).is_ok(),
                     "Manual resolution requires UTF-8 text of at most 2 MiB without NUL bytes"
                 );
+                if matches!(resolution, ConflictResolution::Manual { .. }) {
+                    let source = std::str::from_utf8(bytes)?;
+                    ensure!(text_conflict_blocks(source)?.is_empty(), "Resolve the remaining conflict blocks before staging. Save draft writes the partial result without marking it resolved.");
+                }
                 write_conflict_file(&self.path, &expected.path, expected.working.as_ref(), bytes)
                     .context(
                     "Unable to save the resolution; inspect the working file before retrying",
                 )?;
+                if matches!(resolution, ConflictResolution::Save { .. }) {
+                    return Ok(WriteOutcome { message: "Saved the conflict draft. The file remains unresolved in the index until you explicitly stage it.".into(), commit_oid: expected.head.clone() });
+                }
             }
             ConflictResolution::Current | ConflictResolution::Incoming => {
                 let side = if matches!(resolution, ConflictResolution::Current) {
@@ -908,7 +918,16 @@ impl GitRepository {
                     return integration_outcome(self, output);
                 }
             }
-            ConflictResolution::MarkResolved => {}
+            ConflictResolution::MarkResolved => {
+                if let Some(working) = &expected.working
+                    && matches!(working.mode.as_str(), "100644" | "100755")
+                    && working.bytes.len() <= MAX_DIFF_BYTES
+                    && !working.bytes.contains(&0)
+                    && let Ok(source) = std::str::from_utf8(&working.bytes)
+                {
+                    ensure!(text_conflict_blocks(source)?.is_empty(), "The reviewed working file still has conflict blocks. Resolve and save them before marking the file resolved.");
+                }
+            }
         }
         let mut command = normal_command(&self.path);
         command.args([
@@ -930,7 +949,7 @@ impl GitRepository {
     }
 }
 
-fn integration_outcome(repo: &GitRepository, output: Output) -> Result<WriteOutcome> {
+pub(super) fn integration_outcome(repo: &GitRepository, output: Output) -> Result<WriteOutcome> {
     let message = format!("{}{}", text(&output.stdout), text(&output.stderr))
         .trim()
         .to_owned();
@@ -957,7 +976,7 @@ fn rebase_line_needs_editor(line: &str) -> bool {
     }
 }
 
-fn operation_directory(root: &Path, path: &str) -> Result<bool> {
+pub(super) fn operation_directory(root: &Path, path: &str) -> Result<bool> {
     match std::fs::symlink_metadata(root.join(path)) {
         Ok(metadata) => {
             ensure!(
@@ -971,7 +990,7 @@ fn operation_directory(root: &Path, path: &str) -> Result<bool> {
     }
 }
 
-fn operation_file(root: &Path, path: &Path) -> Result<Option<Vec<u8>>> {
+pub(super) fn operation_file(root: &Path, path: &Path) -> Result<Option<Vec<u8>>> {
     match std::fs::symlink_metadata(root.join(path)) {
         Ok(metadata) => {
             ensure!(

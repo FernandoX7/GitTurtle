@@ -18,6 +18,14 @@ mod ignore;
 pub use ignore::*;
 mod recovery;
 pub use recovery::*;
+mod worktrees;
+pub use worktrees::*;
+mod reflog;
+pub use reflog::*;
+mod lfs_download;
+pub use lfs_download::*;
+mod interactive_rebase;
+pub use interactive_rebase::*;
 
 const WRITE_TIMEOUT: Duration = Duration::from_secs(90);
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(180);
@@ -152,6 +160,10 @@ struct PartialEdit {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WriteCommand {
+    DownloadLfs(Arc<LfsDownloadPlan>),
+    Worktree(Arc<WorktreeCommand>),
+    RecoverReflog(Arc<ReflogRecoveryPlan>),
+    InteractiveRebase(Arc<InteractiveRebaseCommand>),
     Tag(Arc<TagCommand>),
     Ignore(Arc<IgnorePlan>),
     Recovery(Arc<RecoveryCommand>),
@@ -592,6 +604,10 @@ impl GitRepository {
         let mut input = None;
         let mut timeout = WRITE_TIMEOUT;
         match operation {
+            WriteCommand::DownloadLfs(plan) => return self.execute_lfs_download(plan),
+            WriteCommand::Worktree(command) => return self.execute_worktree(command),
+            WriteCommand::RecoverReflog(plan) => return self.execute_reflog_recovery(plan),
+            WriteCommand::InteractiveRebase(command) => return self.execute_interactive_rebase(command),
             WriteCommand::Tag(command) => return self.execute_tag(command),
             WriteCommand::Ignore(plan) => return self.execute_ignore(plan),
             WriteCommand::Recovery(command) => return self.execute_recovery(command),

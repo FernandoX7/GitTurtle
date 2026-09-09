@@ -511,7 +511,7 @@ impl GitRepository {
         Ok(())
     }
 
-    fn recovery_commit(&self, oid: &str) -> Result<RecoveryCommit> {
+    pub(super) fn recovery_commit(&self, oid: &str) -> Result<RecoveryCommit> {
         validate_oid(oid)?;
         let bytes = self.read_object(oid, "commit")?;
         let separator = bytes

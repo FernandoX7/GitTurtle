@@ -12,6 +12,8 @@ These instructions supplement the root agreements for `crates/git-core`. The [se
 | Status, previews, staging, commit, checkout, init/clone, fetch/pull/push | `src/work.rs` | `tests/workflow.rs` |
 | Hunk/line staging, index snapshots and publication | `src/work.rs` | `tests/partial_staging.rs` |
 | Merge/rebase, conflict resolution, Continue/Abort/Quit | `src/work/integration.rs` | `tests/integration.rs` |
+| Interactive linear rebase and native message continuation | `src/work/interactive_rebase.rs` | `tests/interactive_rebase.rs` |
+| Conflict block parsing, draft decisions and save-only resolution | `src/conflict_blocks.rs`, `src/work/integration.rs` | module unit tests, `tests/conflict_blocks.rs` |
 | Amend/undo/revert/cherry-pick and stash | `src/work/recovery.rs` | `tests/recovery.rs` |
 | Branch/upstream management and remote configuration | `src/work/branches.rs` | `tests/branches.rs` |
 | Tags and literal ignore rules | `src/work/tags.rs`, `src/work/ignore.rs` | `tests/tags_ignore.rs` |
