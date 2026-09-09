@@ -100,6 +100,22 @@ The same child-summary counting rule and three ignored-test limits apply. Valida
 
 All task containers exited and were removed after the identity check; the task-name-filtered running-container list was empty. Linux native window interaction, X11/Wayland behavior, Cocoa Edit menu behavior and hosted CI are not established by these checks. Earlier source/build records above remain separate evidence.
 
+### Repository-switch correction Linux validation
+
+The final source `66fe451c390a9073bcc2c9759cde181db30906dd` additionally clears the previous repository's branch filter and selected branch target after a successful canonical repository switch. Its immutable `git archive` SHA-256 is `8f7a1c706f4581a247d2270b4e2463de513645006229132f0c5bc9eb427d66aa`. The complete gates ran against that read-only snapshot without an overlay, using the same isolated caches, six-CPU/12-GiB limits, Ubuntu 24.04/aarch64 QA image, Rust 1.98.0 / LLVM 22.1.8, Git 2.43.0 and Linux `7.0.12-linuxkit` environment.
+
+| Exact command | Executed result on `66fe451` |
+| --- | --- |
+| `cargo fetch --locked` | Passed, 0.58 s; dependency preparation only. |
+| `cargo fmt --all -- --check` | Passed, 1.21 s. |
+| `cargo test --locked --offline --workspace --no-fail-fast` | Passed: 452 unique tests, zero failures, three ignored; 19.49 s. App: 196 passed/one ignored; core unit: 21 passed; core integration: 198 passed/two ignored; preview: 37 passed. |
+| `cargo clippy --locked --offline --workspace --all-targets -- -D warnings` | Passed, 3.93 s. |
+| `cargo build --release --locked --offline -p gitturtle` | Passed, 64.99 s. |
+
+The repository-switch regression is included in the app suite. Counts retain only each Cargo target's final summary, avoiding the nested Mermaid child-process duplicate. The three ignored tests and platform limits remain as described above. Every validation command after dependency fetch ran with `--network none`; reported durations include container startup and incremental compilation, not application latency.
+
+The release executable SHA-256 is `f965883e028bbe336e26d29bc722851512269bb1b969dc5153dfc1799febafe7`. `readelf -h` confirms ELF64 little-endian AArch64 PIE, and `ldd` resolves every listed dynamic dependency in the QA image. All task-owned containers exited and were removed after the release identity check; the task-filtered `docker ps` result was empty. No native Linux window, macOS UI, packaging or hosted workflow was exercised in this run. Prior source/build records are retained separately above.
+
 ## Hosted and native limits
 
 `git remote` returned no configured source remote. No authorized hosted repository/destination was identified by this check, no hosted workflow was started, and no hosted run URL/result exists. The inspected quality workflow targets `macos-15` and `ubuntu-24.04`, uses read-only checkout credentials and has no publishing step; configuration is distinct from execution.

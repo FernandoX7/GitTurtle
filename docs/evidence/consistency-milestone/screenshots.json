@@ -43,5 +43,131 @@
     "file": "rewrite-stale-lease-refused.jpeg",
     "build": "75daadc",
     "sha256": "c33ed76ad1cad6ed8b8236b18e0c940a6148b01dbae7ed77c2f810208ea5db16"
+  },
+  {
+    "file": "mermaid-class-bounded.jpeg",
+    "build": "06dad49fc61fee3b0bd786f2b4a8cf8661817b30",
+    "uuid": "7BA32F76-D1AD-3A16-AD33-3B4F47C03F6B",
+    "sha256": "7d74fff3ca33c9cd54c437f1c91da71526dda897f485677ae9826ae8e73cd539"
+  },
+  {
+    "file": "model-bounded.jpeg",
+    "build": "06dad49fc61fee3b0bd786f2b4a8cf8661817b30",
+    "uuid": "7BA32F76-D1AD-3A16-AD33-3B4F47C03F6B",
+    "sha256": "09dd0a38ffc0e4e935b52751aeadf2ab0018bffd0887f6250266aa965616e995"
+  },
+  {
+    "file": "auth-fetch-result.jpeg",
+    "build": "06dad49fc61fee3b0bd786f2b4a8cf8661817b30",
+    "uuid": "7BA32F76-D1AD-3A16-AD33-3B4F47C03F6B",
+    "sha256": "6b8d3d1ec1b01ddffb0f358cd585f546d86bb315da7c60b3369952c6b6b006d9"
+  },
+  {
+    "file": "create-nonempty-refusal.jpeg",
+    "build": "06dad49fc61fee3b0bd786f2b4a8cf8661817b30",
+    "uuid": "7BA32F76-D1AD-3A16-AD33-3B4F47C03F6B",
+    "sha256": "40165c4e86492b413218998f8f5d99cd0e8551a5732339a7daedb4ed62e17a5c"
+  },
+  {
+    "file": "projects-created.jpeg",
+    "build": "06dad49fc61fee3b0bd786f2b4a8cf8661817b30",
+    "uuid": "7BA32F76-D1AD-3A16-AD33-3B4F47C03F6B",
+    "sha256": "57557cd3879e6600a482575a752192cc300093977e87f8d5747cece55ab8e7de"
+  },
+  {
+    "file": "large-columns-resized.jpeg",
+    "build": "06dad49fc61fee3b0bd786f2b4a8cf8661817b30",
+    "uuid": "7BA32F76-D1AD-3A16-AD33-3B4F47C03F6B",
+    "sha256": "7371b32fbcff560bd7cedd74939afeff0cfd5be6664a713500019724300c6735"
+  },
+  {
+    "file": "palette-large-minimum.jpeg",
+    "build": "06dad49fc61fee3b0bd786f2b4a8cf8661817b30",
+    "uuid": "7BA32F76-D1AD-3A16-AD33-3B4F47C03F6B",
+    "sha256": "8f0fadcd3ff7b41e101b50365ff43cd7ace4e954ca4075a74486369557d06e57"
+  },
+  {
+    "file": "system-light-braden.jpeg",
+    "build": "06dad49fc61fee3b0bd786f2b4a8cf8661817b30",
+    "uuid": "7BA32F76-D1AD-3A16-AD33-3B4F47C03F6B",
+    "sha256": "cb4ac11565d9865aad1ea24e963f71d24804d36731eba2734654b4a514c818b8"
+  },
+  {
+    "file": "large-code-contrast.jpeg",
+    "build": "06dad49fc61fee3b0bd786f2b4a8cf8661817b30",
+    "uuid": "7BA32F76-D1AD-3A16-AD33-3B4F47C03F6B",
+    "sha256": "23a57e1f26d68320c0edbed449341c39d3c95e6e96513902ab3b1c291e5974a3"
+  },
+  {
+    "file": "rewritten-series-final-layout.jpeg",
+    "build": "06dad49fc61fee3b0bd786f2b4a8cf8661817b30",
+    "uuid": "7BA32F76-D1AD-3A16-AD33-3B4F47C03F6B",
+    "sha256": "686c656ad9e9f3d17688fbff92491bf8d54bb1dcf8c3cb303b106ca4bf0b5f0c"
+  },
+  {
+    "file": "recovery-browser-final-layout.jpeg",
+    "build": "06dad49fc61fee3b0bd786f2b4a8cf8661817b30",
+    "uuid": "7BA32F76-D1AD-3A16-AD33-3B4F47C03F6B",
+    "sha256": "771c660fed6f206e9304c68ed926ae6b2ef3182e9c7b15ce5aaecba3931fe326"
+  },
+  {
+    "file": "rebase-untouched-exact-key-status.jpeg",
+    "build": "06dad49fc61fee3b0bd786f2b4a8cf8661817b30",
+    "uuid": "7BA32F76-D1AD-3A16-AD33-3B4F47C03F6B",
+    "sha256": "52e44974609adbaf5c6a13239285dffb0a7dae62582dc24ba0daa262135184cc"
+  },
+  {
+    "file": "rebase-save-failure.jpeg",
+    "build": "06dad49fc61fee3b0bd786f2b4a8cf8661817b30",
+    "uuid": "7BA32F76-D1AD-3A16-AD33-3B4F47C03F6B",
+    "sha256": "83bcd785d24032324660177a89554094eba04a3a5a9ccb7130f380473de2307f"
+  },
+  {
+    "file": "recovery-retry-result.jpeg",
+    "build": "06dad49fc61fee3b0bd786f2b4a8cf8661817b30",
+    "uuid": "7BA32F76-D1AD-3A16-AD33-3B4F47C03F6B",
+    "sha256": "8d2cb4b0a0a18d27f665ba08ce3b8263def28c6281ff1e935bd6beb8aa9d3a42"
+  },
+  {
+    "file": "working-mermaid-literal-patch.jpeg",
+    "build": "06dad49fc61fee3b0bd786f2b4a8cf8661817b30",
+    "uuid": "7BA32F76-D1AD-3A16-AD33-3B4F47C03F6B",
+    "sha256": "da9a8802faeb5b80f22af67fa06b4e0274b486041e38bdb877bc5c6474186a5b"
+  },
+  {
+    "file": "warm-model-quick-open.jpeg",
+    "build": "06dad49fc61fee3b0bd786f2b4a8cf8661817b30",
+    "uuid": "7BA32F76-D1AD-3A16-AD33-3B4F47C03F6B",
+    "sha256": "976817b405c9e400f663f3d4e8a99ec1aff7335b63789f301b847b6d6efc4c20"
+  },
+  {
+    "file": "branch-inputs-same-repo-retained.jpeg",
+    "build": "66fe451c390a9073bcc2c9759cde181db30906dd",
+    "uuid": "0271911C-6EFF-33CB-9345-F3E6EB1CEB56",
+    "sha256": "1f19e7aa425c158d39c337cb6d68dd44ca5623c0c700529afe413125a9b902e1"
+  },
+  {
+    "file": "branch-inputs-different-repo-reset.jpeg",
+    "build": "66fe451c390a9073bcc2c9759cde181db30906dd",
+    "uuid": "0271911C-6EFF-33CB-9345-F3E6EB1CEB56",
+    "sha256": "84e08d126cee4f725c372669437ddd0e9fa00a262524acc9dd933c1ffcf612e3"
+  },
+  {
+    "file": "settings-return-retains-drafts.jpeg",
+    "build": "66fe451c390a9073bcc2c9759cde181db30906dd",
+    "uuid": "0271911C-6EFF-33CB-9345-F3E6EB1CEB56",
+    "sha256": "e3c9000f631185609ca4db03ab7400a06d990bad1ebbb029ed76eb0ebb248220"
+  },
+  {
+    "file": "installed-braden.jpeg",
+    "build": "66fe451c390a9073bcc2c9759cde181db30906dd",
+    "uuid": "0271911C-6EFF-33CB-9345-F3E6EB1CEB56",
+    "sha256": "2fb9b6bf4e3739899a8fd3d70acb09b5c9153ad27b99338efa1e2f2e9c546846"
+  },
+  {
+    "file": "installed-mermaid.jpeg",
+    "build": "66fe451c390a9073bcc2c9759cde181db30906dd",
+    "uuid": "0271911C-6EFF-33CB-9345-F3E6EB1CEB56",
+    "sha256": "bc71b5b453e6c618a8a13c1740726782317fc6f1b287c29c9974cb54ccec34db"
   }
 ]
