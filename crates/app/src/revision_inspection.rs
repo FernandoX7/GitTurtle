@@ -900,6 +900,13 @@ impl Render for QuickForm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         let count = self.page.as_ref().map_or(0, |page| page.entries.len());
+        let desired_height = appearance::ui_size(if count == 0 {
+            78.
+        } else {
+            34. * count.min(10) as f32 + 2.
+        });
+        let available_height = (window.viewport_size().height - appearance::ui_size(300.))
+            .max(appearance::ui_size(78.));
         let list = uniform_list(
             "quick-file-list",
             count,
@@ -948,7 +955,7 @@ impl Render for QuickForm {
             .child(Input::new(&self.query))
             .child(div().text_color(rgb(p.muted)).child(if self.busy{"Searching local tracked paths…".into()}else{format!("{count} matches · ↑/↓ select · Return opens · Escape cancels{}",self.page.as_ref().filter(|page|page.truncated).map_or("",|_|" · Limit reached; narrow the query"))}))
             .children(self.error.as_ref().map(|error|div().text_color(rgb(p.removed)).child(error.clone())))
-            .child(div().id("quick-open-results").role(Role::ListBox).aria_label("Matching tracked files").h(px(320.)).border_1().border_color(rgb(p.border)).overflow_hidden().when(count>0,|el|el.child(list)).when(count==0&&!self.busy,|el|el.child(div().p_3().child("No matching tracked files. Untracked files are available in Working Changes."))))
+            .child(div().id("quick-open-results").role(Role::ListBox).aria_label("Matching tracked files").h(desired_height.min(available_height)).border_1().border_color(rgb(p.border)).overflow_hidden().when(count>0,|el|el.child(list)).when(count==0&&!self.busy,|el|el.child(div().p_3().child("No matching tracked files. Untracked files are available in Working Changes."))))
             .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("File History and Blame are available after opening. Worktree reads show raw current bytes; a chosen revision is pinned to its resolved commit.")))
     }
 }

@@ -65,10 +65,12 @@ pub(super) fn menus(repository: bool, busy: bool, cx: &mut App) {
             MenuItem::action("Undo", Undo),
             MenuItem::action("Redo", Redo),
             MenuItem::separator(),
-            MenuItem::action("Cut", Cut),
-            MenuItem::action("Copy", Copy),
-            MenuItem::action("Paste", Paste),
-            MenuItem::action("Select All", SelectAll),
+            // Standard selectors reach Cocoa file-panel fields first; GPUI's
+            // native delegate retains these same actions as its fallback.
+            MenuItem::os_action("Cut", Cut, OsAction::Cut),
+            MenuItem::os_action("Copy", Copy, OsAction::Copy),
+            MenuItem::os_action("Paste", Paste, OsAction::Paste),
+            MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
         ]),
         Menu::new("View").items([
             MenuItem::action("Command Palette…", ShowCommandPalette),

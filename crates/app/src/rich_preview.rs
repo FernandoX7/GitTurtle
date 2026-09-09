@@ -1,7 +1,6 @@
 //! Captured-byte document and media information, with static native PDF pages.
 use crate::*;
 use gitturtle_preview::{MAX_INPUT_BYTES, metadata};
-use gpui_kit::prelude::FluentBuilder;
 use std::{
     path::Path,
     sync::atomic::{AtomicUsize, Ordering},
@@ -318,13 +317,19 @@ pub(super) fn render_comparison<T: 'static>(
             if let Some(page)=side.pages.get(selected) {
                 if let Some(caption)=&page.caption { body=body.child(div().text_size(appearance::ui_text(12.)).child(caption.clone())); }
                 if let Some(render)=&page.render {
-                    // PDF pages stay width-readable and scroll naturally. A
-                    // diagram/model instead fits the bounded side body without
-                    // enlarging small decoded images to the whole pane width.
-                    let fit=matches!(side.page_kind,"Diagram"|"View");
-                    body=body.child(div().w_full().aspect_ratio(page.width as f32/page.height as f32).bg(rgb(0xffffff))
-                        .when(fit,|frame|frame.max_w(px(page.width as f32)).max_h(relative(0.7)).flex_shrink_0().bg(rgb(colors.panel)))
-                        .child(img(render.clone()).size_full().object_fit(ObjectFit::Contain)));
+                    if matches!(side.page_kind,"Diagram"|"View") {
+                        // Explicit natural height avoids aspect-ratio layout
+                        // retaining a pre-clamp height. Canvas containment uses
+                        // the final frame bounds, so metadata stays below it.
+                        body=body.child(div().w_full().max_w(px(page.width as f32))
+                            .h(px(page.height as f32)).max_h(relative(0.7))
+                            .flex_shrink_0().self_center().overflow_hidden()
+                            .child(crate::gif_playback::static_image(render.clone())));
+                    } else {
+                        // PDF pages remain width-readable with natural scrolling.
+                        body=body.child(div().w_full().aspect_ratio(page.width as f32/page.height as f32).bg(rgb(0xffffff))
+                            .child(img(render.clone()).size_full().object_fit(ObjectFit::Contain)));
+                    }
                 }
                 if let Some(error)=&page.error { body=body.child(div().text_color(rgb(colors.modified)).text_size(appearance::ui_text(12.)).child(error.clone())); }
             }
