@@ -91,6 +91,7 @@ pub(super) struct State {
     entries: HashMap<Key, Draft>,
     saver: commit_drafts::CoalescingSaver<Key, Option<Draft>>,
     pub error: Option<String>,
+    browser: Option<WeakEntity<RecoveryList>>,
 }
 #[derive(Serialize, Deserialize)]
 struct Store {
@@ -110,6 +111,29 @@ fn now() -> u64 {
 }
 
 impl State {
+    fn rows(&self) -> Vec<RecoveryRow> {
+        let mut rows: Vec<_> = self
+            .entries
+            .values()
+            .map(|draft| RecoveryRow {
+                key: draft.key.clone(),
+                bytes: draft.text.len(),
+                updated: draft.updated,
+            })
+            .collect();
+        rows.sort_by_key(|row| std::cmp::Reverse(row.updated));
+        rows
+    }
+    fn next_timestamp(&self) -> u64 {
+        now().max(
+            self.entries
+                .values()
+                .map(|draft| draft.updated)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1),
+        )
+    }
     /// Invoked before GPUI starts. Loading never creates directories or writes.
     pub(super) fn load() -> Self {
         match store_path().and_then(|path| read(&path)) {
@@ -145,12 +169,29 @@ impl State {
     }
 }
 
-fn validate(entries: &HashMap<Key, Draft>) -> Result<()> {
+fn validate_budget(entries: &HashMap<Key, Draft>) -> Result<()> {
     ensure!(
         entries.len() <= MAX_ENTRIES,
         "Recovery storage holds at most 256 drafts. Copy and discard older drafts to free space"
     );
-    let mut total = 0usize;
+    ensure!(
+        entries.values().all(|draft| draft.text.len() <= MAX_TEXT),
+        "Recovery text exceeds 2 MiB"
+    );
+    let total = entries.values().fold(0usize, |total, draft| {
+        total.saturating_add(draft.text.len())
+    });
+    ensure!(
+        total <= MAX_BYTES,
+        "Recovery storage is full. Copy and discard older drafts to free space"
+    );
+    Ok(())
+}
+
+/// Full source validation stays on the persistence worker. Typing only checks
+/// entry counts and recorded byte lengths, never rescans other drafts' text.
+fn validate(entries: &HashMap<Key, Draft>) -> Result<()> {
+    validate_budget(entries)?;
     for draft in entries.values() {
         ensure!(
             path_from_bytes(&draft.key.worktree).is_absolute(),
@@ -167,12 +208,7 @@ fn validate(entries: &HashMap<Key, Draft>) -> Result<()> {
             draft.text.len() <= MAX_TEXT && !draft.text.contains('\0'),
             "Recovery text exceeds 2 MiB or contains NUL bytes"
         );
-        total = total.saturating_add(draft.text.len());
     }
-    ensure!(
-        total <= MAX_BYTES,
-        "Recovery storage is full. Copy and discard older drafts to free space"
-    );
     Ok(())
 }
 
@@ -273,7 +309,7 @@ impl GitTurtle {
         let draft = Draft {
             key: key.clone(),
             text,
-            updated: now(),
+            updated: self.recovery_drafts.next_timestamp(),
         };
         self.recovery_drafts
             .entries
@@ -293,7 +329,7 @@ impl GitTurtle {
         let draft = text.map(|text| Draft {
             key: key.clone(),
             text,
-            updated: now(),
+            updated: self.recovery_drafts.next_timestamp(),
         });
         if let Some(draft) = &draft {
             // Do not silently evict old or stale recoverable text when full.
@@ -301,13 +337,14 @@ impl GitTurtle {
                 .recovery_drafts
                 .entries
                 .insert(key.clone(), draft.clone());
-            if let Err(error) = validate(&self.recovery_drafts.entries) {
+            if let Err(error) = validate_budget(&self.recovery_drafts.entries) {
                 if let Some(old) = old {
                     self.recovery_drafts.entries.insert(key, old);
                 } else {
                     self.recovery_drafts.entries.remove(&key);
                 }
                 self.recovery_drafts.error = Some(format!("{error:#}"));
+                self.refresh_recovery_status(cx);
                 cx.notify();
                 return;
             }
@@ -328,68 +365,201 @@ impl GitTurtle {
                     .unwrap_or_else(|_| Err(anyhow::anyhow!("Save ended without confirmation")));
                 let _ = this.update_in(cx, |this, window, cx| {
                     this.recovery_drafts.error = result.err().map(|error| format!("{error:#}"));
-                    if let Some(view) = &this.conflict_view {
-                        view.update(cx, |view, cx| {
-                            view.durable_status = this.recovery_drafts.status();
-                            cx.notify();
-                        });
-                    }
-                    this.refresh_rebase_message(cx);
+                    this.refresh_recovery_status(cx);
                     window.refresh();
                     cx.notify();
                 });
             })
             .detach();
         }
+        self.refresh_recovery_status(cx);
+        cx.notify();
+    }
+
+    fn refresh_recovery_status(&self, cx: &mut Context<Self>) {
         if let Some(view) = &self.conflict_view {
-            view.update(cx, |view, cx| {
-                view.durable_status = self.recovery_drafts.status();
-                cx.notify();
+            let view = view.downgrade();
+            let status = self.recovery_drafts.status();
+            cx.defer(move |cx| {
+                let _ = view.update(cx, |view, cx| {
+                    view.durable_status = status;
+                    cx.notify();
+                });
             });
         }
-        cx.notify();
+        self.refresh_rebase_message(cx);
+        if let Some(browser) = self
+            .recovery_drafts
+            .browser
+            .as_ref()
+            .and_then(WeakEntity::upgrade)
+        {
+            let rows = self.recovery_drafts.rows();
+            let status = self.recovery_drafts.status();
+            let browser = browser.downgrade();
+            cx.defer(move |cx| {
+                let _ = browser.update(cx, |browser, cx| {
+                    browser.rows = rows;
+                    browser.status = status;
+                    cx.notify();
+                });
+            });
+        }
     }
 
     pub(super) fn open_recovery_drafts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let owner = cx.entity().downgrade();
-        let form = cx.new(|_| RecoveryList { owner });
+        let rows = self.recovery_drafts.rows();
+        let status = self.recovery_drafts.status();
+        let return_focus = self.app_focus.clone();
+        let form = cx.new(|_| RecoveryList {
+            owner,
+            rows,
+            status,
+            return_focus,
+            scroll: UniformListScrollHandle::new(),
+        });
+        self.recovery_drafts.browser = Some(form.downgrade());
         window.open_alert_dialog(cx, move |dialog, _, _| {
+            let close = form.clone();
+            let cancel = form.clone();
             dialog
                 .title("Saved recovery drafts")
                 .width(px(720.))
                 .child(form.clone())
-                .footer(DialogFooter::new())
+                .footer(DialogFooter::new().child(
+                    button("close-saved-recovery", "Close", "", false).on_click(
+                        move |_, window, cx| close.update(cx, |form, cx| form.close(window, cx)),
+                    ),
+                ))
+                .on_cancel(move |_, window, cx| {
+                    cancel.update(cx, |form, cx| form.close(window, cx));
+                    false
+                })
         });
     }
 }
 
 struct RecoveryList {
     owner: WeakEntity<GitTurtle>,
+    scroll: UniformListScrollHandle,
+    rows: Vec<RecoveryRow>,
+    status: String,
+    return_focus: FocusHandle,
+}
+
+struct RecoveryRow {
+    key: Key,
+    bytes: usize,
+    updated: u64,
+}
+
+impl RecoveryList {
+    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        window.close_dialog(cx);
+        self.return_focus.focus(window, cx);
+        window.refresh();
+    }
+    fn row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
+        let Some(row) = self.rows.get(index) else {
+            return div().into_any_element();
+        };
+        let p = palette(cx);
+        let key = &row.key;
+        let bytes = row.bytes;
+        let copy = key.clone();
+        let retry = key.clone();
+        let discard = key.clone();
+        div()
+            .h(appearance::ui_size(110.))
+            .p_3()
+            .border_b_1()
+            .border_color(rgb(p.border))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .truncate()
+                    .text_size(appearance::ui_text(12.))
+                    .child(key.description()),
+            )
+            .child(
+                div()
+                    .text_size(appearance::ui_text(11.))
+                    .text_color(rgb(p.muted))
+                    .child(format!("{bytes} bytes · source {}", &key.source[..12])),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(
+                        button(("copy-recovery", index), "Copy exact text", "", false).on_click(
+                            cx.listener(move |this, _, _, cx| {
+                                if let Some(owner) = this.owner.upgrade() {
+                                    let text = owner
+                                        .read(cx)
+                                        .recovery_drafts
+                                        .entries
+                                        .get(&copy)
+                                        .map(|draft| draft.text.clone());
+                                    if let Some(text) = text {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                                    }
+                                }
+                            }),
+                        ),
+                    )
+                    .child(
+                        button(("retry-recovery", index), "Retry save", "", false).on_click(
+                            cx.listener(move |this, _, window, cx| {
+                                let _ = this.owner.update(cx, |owner, cx| {
+                                    let text = owner
+                                        .recovery_drafts
+                                        .entries
+                                        .get(&retry)
+                                        .map(|draft| draft.text.clone());
+                                    if let Some(text) = text {
+                                        owner.persist_recovery_draft(
+                                            retry.clone(),
+                                            Some(text),
+                                            window,
+                                            cx,
+                                        );
+                                    }
+                                });
+                            }),
+                        ),
+                    )
+                    .child(
+                        button(
+                            ("discard-recovery", index),
+                            "Discard saved draft",
+                            "",
+                            false,
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                let _ = this.owner.update(cx, |owner, cx| {
+                                    owner.persist_recovery_draft(discard.clone(), None, window, cx)
+                                });
+                            },
+                        )),
+                    ),
+            )
+            .into_any_element()
+    }
 }
 impl Render for RecoveryList {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
-        let Some(owner) = self.owner.upgrade() else {
-            return div();
-        };
-        let mut drafts: Vec<_> = owner
-            .read(cx)
-            .recovery_drafts
-            .entries
-            .values()
-            .cloned()
-            .collect();
-        drafts.sort_by_key(|draft| std::cmp::Reverse(draft.updated));
-        let status = owner.read(cx).recovery_drafts.status();
+        let count = self.rows.len();
+        let status = self.status.clone();
         div().flex().flex_col().gap_3().child("Draft text is retained until you discard it, including completed, aborted, moved or removed worktrees. Copying never stages or continues an operation. Open the matching conflict or rebase message to check whether restoration is safe.")
             .child(div().text_color(rgb(p.muted)).child(status))
-            .child(div().id("saved-recovery-list").max_h((window.viewport_size().height - px(280.)).max(px(120.))).overflow_y_scroll().flex().flex_col().gap_2().children(drafts.into_iter().enumerate().map(|(index, draft)| {
-                let copy = draft.text.clone(); let retry = draft.clone(); let discard = draft.key.clone();
-                div().p_3().border_1().border_color(rgb(p.border)).rounded(px(6.)).child(div().text_size(crate::appearance::ui_text(12.)).child(draft.key.description())).child(div().text_color(rgb(p.muted)).child(format!("{} bytes · source {}", draft.text.len(), &draft.key.source[..12])))
-                    .child(div().flex().gap_2().child(button(("copy-recovery", index), "Copy exact text", "", false).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
-                    .child(button(("retry-recovery", index), "Retry save", "", false).on_click(cx.listener(move |this, _, window, cx| { let _ = this.owner.update(cx, |owner, cx| owner.persist_recovery_draft(retry.key.clone(), Some(retry.text.clone()), window, cx)); cx.notify(); })))
-                    .child(button(("discard-recovery", index), "Discard saved draft", "", false).on_click(cx.listener(move |this, _, window, cx| { let _ = this.owner.update(cx, |owner, cx| owner.persist_recovery_draft(discard.clone(), None, window, cx)); cx.notify(); }))))
-            })))
+            .child(div().h((window.viewport_size().height - px(300.)).clamp(px(120.), px(560.))).border_1().border_color(rgb(p.border)).rounded(px(6.)).overflow_hidden().child(uniform_list("saved-recovery-list", count, cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| this.row(index, cx)).collect::<Vec<_>>() )).size_full().track_scroll(&self.scroll)))
     }
 }
 

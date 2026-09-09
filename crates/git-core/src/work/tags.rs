@@ -136,7 +136,7 @@ impl GitRepository {
                 "An annotated tag needs a message up to 256 KiB without NUL bytes."
             );
         }
-        let signing = self.tag_signing()?;
+        let signing = self.tag_signing(annotation.is_some())?;
         ensure!(
             annotation.is_some() || !signing,
             "Git is configured to sign tags. Choose Annotated and enter a message so that signing remains enabled."
@@ -167,7 +167,11 @@ impl GitRepository {
                 );
                 command.arg("tag");
                 if let Some(annotation) = &plan.annotation {
-                    command.args(["--annotate", "--cleanup=verbatim", "--file=-"]);
+                    command.args([
+                        if plan.signing { "--sign" } else { "--annotate" },
+                        "--cleanup=verbatim",
+                        "--file=-",
+                    ]);
                     let mut bytes = annotation.as_bytes().to_vec();
                     // With verbatim cleanup Git appends the signature directly.
                     // Its marker must start on a fresh line to be verifiable.
@@ -247,16 +251,23 @@ impl GitRepository {
         })
     }
 
-    fn tag_signing(&self) -> Result<bool> {
-        let mut command = normal_command(&self.path);
-        command.args(["config", "--bool", "--get", "tag.gpgSign"]);
-        let output = bounded_write_output(command, None, GIT_TIMEOUT)?;
-        ensure!(
-            output.status.success() || output.status.code() == Some(1),
-            "Unable to read tag signing configuration: {}",
-            text(&output.stderr)
-        );
-        Ok(trim_line(&output.stdout) == b"true")
+    fn tag_signing(&self, annotated: bool) -> Result<bool> {
+        let mut signing = false;
+        for key in ["tag.gpgSign"]
+            .into_iter()
+            .chain(annotated.then_some("tag.forceSignAnnotated"))
+        {
+            let mut command = normal_command(&self.path);
+            command.args(["config", "--bool", "--get", key]);
+            let output = bounded_write_output(command, None, GIT_TIMEOUT)?;
+            ensure!(
+                output.status.success() || output.status.code() == Some(1),
+                "Unable to read tag signing configuration: {}",
+                text(&output.stderr)
+            );
+            signing |= trim_line(&output.stdout) == b"true";
+        }
+        Ok(signing)
     }
 
     fn validate_tag_name(&self, name: &str) -> Result<()> {

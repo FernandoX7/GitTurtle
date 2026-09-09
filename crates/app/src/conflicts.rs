@@ -128,6 +128,7 @@ impl Presentation {
 
     pub fn bytes(&self) -> usize {
         std::mem::size_of::<Self>()
+            + self.identity.durable.capacity()
             + self.labels.iter().map(String::capacity).sum::<usize>()
             + self
                 .sources

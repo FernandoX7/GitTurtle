@@ -48,7 +48,7 @@ mod worktrees;
 use appearance::palette;
 use gitturtle_core::{Branch, Commit, FileChange, GitRepository, Worktree};
 use gpui_kit::component::{
-    Disableable, Icon, Root, Selectable, Sizable,
+    Disableable, Icon, Root, Selectable, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     input::{EditorState, Input, InputEvent, InputState, Textarea, TextareaState},
     resizable::{ResizableState, h_resizable, resizable_panel},
@@ -1351,6 +1351,9 @@ impl GitTurtle {
         window.focus(&self.search.read(cx).focus_handle(cx), cx);
     }
     fn clear_search(&mut self, _: &ClearSearch, window: &mut Window, cx: &mut Context<Self>) {
+        if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
+            return;
+        }
         if self.column_menu {
             self.column_menu = false;
             cx.notify();
@@ -1360,8 +1363,13 @@ impl GitTurtle {
             self.return_from_page(window, cx);
             return;
         }
-        if self.mode != WorkspaceMode::History {
+        if self.mode != WorkspaceMode::History
+            || self.blame.is_visible()
+            || self.file_history.is_active()
+            || self.revision_inspection.is_active()
+        {
             self.back_to_history(window, cx);
+            self.repaint_page(window, cx);
             return;
         }
         self.search.update(cx, |s, cx| s.set_value("", window, cx));
@@ -1494,11 +1502,12 @@ fn full_date(timestamp: i64) -> String {
 fn language_for(extension: &str) -> &'static str {
     match extension.to_ascii_lowercase().as_str() {
         "rs" => "rust",
-        "ts" | "tsx" => "typescript",
-        "js" | "jsx" | "mjs" => "javascript",
-        "json" => "json",
+        "ts" | "mts" | "cts" => "typescript",
+        "tsx" => "tsx",
+        "js" | "jsx" | "mjs" | "cjs" => "javascript",
+        "json" | "jsonc" => "json",
         "css" => "css",
-        "md" => "markdown",
+        "md" | "markdown" | "mdx" => "markdown",
         "yaml" | "yml" => "yaml",
         "toml" => "toml",
         "html" | "htm" => "html",

@@ -834,9 +834,12 @@ impl GitTurtle {
                             self.graph_lanes,
                             f32::from(self.settings.graph_spacing) * appearance::ui_scale(),
                             self.settings.density.history_row_height(),
-                            active,
-                            commit.parents.len() > 1,
-                            self.visible.len() != self.commits.len() || self.graph_notice.is_some(),
+                            graph::RowStyle {
+                                active,
+                                merge: commit.parents.len() > 1,
+                                filtered: self.visible.len() != self.commits.len()
+                                    || self.graph_notice.is_some(),
+                            },
                         ))
                         .into_any_element(),
                     ColumnId::Subject => cell

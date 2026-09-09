@@ -477,7 +477,6 @@ impl GitTurtle {
                                     .p(px(2.))
                                     .border_1()
                                     .border_color(rgb(if selected { p.accent } else { p.border }))
-                                    .hover(move |style| style.border_color(rgb(p.accent)))
                                     .rounded(px(10.))
                                     .overflow_hidden()
                                     .child(theme_preview(
@@ -867,6 +866,11 @@ fn theme_preview(
     div()
         .size_full()
         .rounded(px(7.))
+        .border_1()
+        .border_color(gpui_kit::transparent_black())
+        .group_hover("settings-theme-choice", move |style| {
+            style.border_color(rgb(active_accent))
+        })
         .overflow_hidden()
         .flex()
         .flex_col()

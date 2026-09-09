@@ -189,16 +189,25 @@ fn lane_x(width: f32, lane_count: usize, lane: usize, lane_spacing: f32) -> f32 
     NODE_MARGIN.min(width / 2.) + lane as f32 * spacing
 }
 
+pub struct RowStyle {
+    pub active: bool,
+    pub merge: bool,
+    pub filtered: bool,
+}
+
 pub fn render(
     row: GraphRow,
     width: f32,
     lane_count: usize,
     lane_spacing: f32,
     row_height: f32,
-    active: bool,
-    merge: bool,
-    filtered: bool,
+    style: RowStyle,
 ) -> AnyElement {
+    let RowStyle {
+        active,
+        merge,
+        filtered,
+    } = style;
     div()
         .w(px(width))
         .h(px(row_height))

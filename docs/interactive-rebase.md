@@ -4,7 +4,7 @@ Open the current branch menu and choose **Edit local commits…**. Enter the exc
 
 Select a row and choose Pick, Reword, Squash, Fixup, or Drop. **Move up/down** provides a keyboard-accessible alternative to dragging. In the focused sequence, arrow keys select, Option-Up/Down reorders, and P/R/S/F/D sets the action. Squash combines with the preceding kept commit and pauses to review the resulting message; Fixup retains that commit's message. Every reviewed commit remains represented exactly once, including explicit Drop rows. The final confirmation previews the complete ordered plan before writing.
 
-A remote-tracking containment warning requires explicit acknowledgment when locally known remote references include affected commits. These reads do not fetch, and absence of a warning cannot prove commits were never published. No rebase action pushes or broadens ordinary non-force Push.
+A remote-tracking containment warning requires explicit acknowledgment when locally known remote references include affected commits. These reads do not fetch, and absence of a warning cannot prove commits were never published. No rebase action pushes or broadens ordinary non-force Push. A separate [rewritten-series review and exact-lease publication](rewritten-series.md) captures original identities before Start and remains available after restart.
 
 ## Safety and native recovery
 

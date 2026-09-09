@@ -1,4 +1,5 @@
 //! Publication fixtures use local disposable remotes only.
+use gitturtle_core::PublicationInspection;
 use gitturtle_core::{
     GitRepository, InteractiveRebaseCommand, LeasedPublishPlan, OperationControl, RebaseAction,
     RewriteReview, SeriesChange, WriteCommand, run_controlled,
@@ -267,6 +268,122 @@ fn cancellation_before_network_write_preserves_remote_and_never_retries() {
             .contains("cancelled")
     );
     assert_eq!(fixture.remote_head(), fixture.original);
+}
+
+#[test]
+fn remote_movement_requires_fetched_objects_then_a_separate_new_series_and_lease_review() {
+    let fixture = Fixture::new();
+    let review = fixture.rewrite();
+    let tree = git(
+        &fixture.remote,
+        &["rev-parse", &format!("{}^{{tree}}", fixture.original)],
+    );
+    let moved = git(
+        &fixture.remote,
+        &[
+            "commit-tree",
+            &tree,
+            "-p",
+            &fixture.original,
+            "-m",
+            "new remote work to review",
+        ],
+    );
+    git(
+        &fixture.remote,
+        &["update-ref", "refs/heads/main", &moved, &fixture.original],
+    );
+    let error = fixture
+        .repo()
+        .inspect_rewrite_publication(&review, "origin", "main")
+        .unwrap_err();
+    assert!(error.to_string().contains("Explicitly Fetch"), "{error:#}");
+    assert_eq!(fixture.remote_head(), moved);
+    git(&fixture.root, &["fetch", "--no-tags", "origin"]);
+    let PublicationInspection::RemoteChanged(changed) = fixture
+        .repo()
+        .inspect_rewrite_publication(&review, "origin", "main")
+        .unwrap()
+    else {
+        panic!("Remote movement must produce a new series review, not publication permission");
+    };
+    assert_eq!(changed.original_head, moved);
+    assert_eq!(fixture.remote_head(), moved);
+    let PublicationInspection::Ready(plan) = fixture
+        .repo()
+        .inspect_rewrite_publication(&changed, "origin", "main")
+        .unwrap()
+    else {
+        panic!("Separately reviewed new series should prepare a fresh lease");
+    };
+    assert_eq!(plan.expected_remote_oid, moved);
+    fixture.repo().execute_leased_publish(&plan).unwrap();
+    assert!(matches!(
+        fixture
+            .repo()
+            .inspect_rewrite_publication(&changed, "origin", "main")
+            .unwrap(),
+        PublicationInspection::AlreadyPublished { .. }
+    ));
+}
+
+#[test]
+fn missing_original_objects_are_explicit_and_never_fetched_by_local_review() {
+    let fixture = Fixture::new();
+    let review = fixture.rewrite();
+    let object = fixture
+        .root
+        .join(".git/objects")
+        .join(&fixture.original[..2])
+        .join(&fixture.original[2..]);
+    fs::remove_file(&object).unwrap();
+    let error = fixture
+        .repo()
+        .rewrite_review(&fixture.base, &fixture.original, "main")
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("Original series is unavailable"),
+        "{error:#}"
+    );
+    assert!(!object.exists());
+    assert_eq!(fixture.remote_head(), fixture.original);
+    assert_eq!(
+        git(&fixture.root, &["rev-parse", "HEAD"]),
+        review.rewritten_head
+    );
+}
+
+#[test]
+fn message_only_and_whitespace_changes_remain_changed_even_with_the_same_patch_fingerprint() {
+    let fixture = Fixture::new();
+    fixture.rewrite();
+    git(
+        &fixture.root,
+        &["commit", "--amend", "-m", "Reworded first note"],
+    );
+    let review = fixture
+        .repo()
+        .rewrite_review(&fixture.base, &fixture.original, "main")
+        .unwrap();
+    assert!(
+        review
+            .rows
+            .iter()
+            .any(|row| row.change == SeriesChange::Changed)
+    );
+    fs::write(fixture.root.join("one"), "one  \n").unwrap();
+    git(&fixture.root, &["add", "one"]);
+    git(&fixture.root, &["commit", "--amend", "-m", "one"]);
+    let review = fixture
+        .repo()
+        .rewrite_review(&fixture.base, &fixture.original, "main")
+        .unwrap();
+    assert!(
+        review
+            .rows
+            .iter()
+            .any(|row| row.change == SeriesChange::Changed)
+    );
 }
 
 #[cfg(unix)]

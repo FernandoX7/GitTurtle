@@ -150,25 +150,27 @@ impl Comparison {
     }
 }
 
-impl GitTurtle {
-    pub(super) fn render_rich_preview(
-        &self,
-        preview: &Comparison,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let colors = palette(cx);
-        let quick = self.is_quick_source();
-        div().size_full().min_w_0().flex().children([("Before",&preview.old),(if quick {"Source"}else{"After"},&preview.new)].into_iter().enumerate().filter(|(index,_)|!quick||*index==1).map(|(index,(label,side))| {
+/// Render only supplied content. A dialog child must not borrow its parent
+/// entity while that parent is already rendering the dialog layer.
+pub(super) fn render_comparison<T: 'static>(
+    preview: &Comparison,
+    quick: bool,
+    owner: WeakEntity<GitTurtle>,
+    cx: &mut Context<T>,
+) -> AnyElement {
+    let colors = palette(cx);
+    div().size_full().min_w_0().flex().children([("Before",&preview.old),(if quick {"Source"}else{"After"},&preview.new)].into_iter().enumerate().filter(|(index,_)|!quick||*index==1).map(|(index,(label,side))| {
             let selected=side.selected_page.load(Ordering::Relaxed).min(side.pages.len().saturating_sub(1));
             let mut header=div().flex().items_center().flex_wrap().gap_2().px_3().py_2().border_b_1().border_color(rgb(colors.border)).child(div().text_size(appearance::ui_text(12.)).font_weight(FontWeight::SEMIBOLD).child(label)).child(div().text_size(appearance::ui_text(11.)).text_color(rgb(colors.muted)).child(side.metadata.format.clone()));
             if side.captured.is_some() {
                 let captured=Arc::clone(side);
-                header=header.child(button(("system-preview",index),"System preview","external-link",false).tooltip("Inspect an isolated copy of these captured revision bytes").on_click(cx.listener(move |this,_,window,cx|this.open_captured_preview(Arc::clone(&captured),window,cx))));
+                let target=owner.clone();
+                header=header.child(button(("system-preview",index),"System preview","external-link",false).tooltip("Inspect an isolated copy of these captured revision bytes").on_click(move |_,window,cx| { let _=target.update(cx,|this,cx|this.open_captured_preview(Arc::clone(&captured),window,cx)); window.refresh(); }));
             }
             if !side.pages.is_empty() {
                 for (name,delta,disabled) in [("Previous page",-1isize,selected==0),("Next page",1isize,selected+1>=side.pages.len())] {
                     let side=Arc::clone(side);
-                    header=header.child(button((if delta<0 {"pdf-previous"}else{"pdf-next"},index),"",if delta<0 {"chevron-left"}else{"chevron-right"},false).accessibility_label(format!("{label}: {name}")).tooltip(name).disabled(disabled).on_click(cx.listener(move|_,_,_,cx| { let next=side.selected_page.load(Ordering::Relaxed).saturating_add_signed(delta).min(side.pages.len().saturating_sub(1)); side.selected_page.store(next,Ordering::Relaxed); cx.notify(); })));
+                    header=header.child(button((if delta<0 {"pdf-previous"}else{"pdf-next"},index),"",if delta<0 {"chevron-left"}else{"chevron-right"},false).accessibility_label(format!("{label}: {name}")).tooltip(name).disabled(disabled).on_click(cx.listener(move|_,_,window,cx| { let next=side.selected_page.load(Ordering::Relaxed).saturating_add_signed(delta).min(side.pages.len().saturating_sub(1)); side.selected_page.store(next,Ordering::Relaxed); window.refresh(); cx.notify(); })));
                 }
                 header=header.child(div().text_size(appearance::ui_text(11.)).child(format!("Page {} / {}{}",selected+1,side.page_count,if side.pages.len()<side.page_count {" · first 8 available"}else{""})));
             }
@@ -186,6 +188,15 @@ impl GitTurtle {
             }
             div().flex_1().min_w_0().h_full().flex().flex_col().border_r_1().border_color(rgb(colors.border)).child(header).child(body)
         })).into_any_element()
+}
+
+impl GitTurtle {
+    pub(super) fn render_rich_preview(
+        &self,
+        preview: &Comparison,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        render_comparison(preview, self.is_quick_source(), cx.entity().downgrade(), cx)
     }
 
     fn open_captured_preview(

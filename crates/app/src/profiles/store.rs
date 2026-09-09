@@ -23,6 +23,8 @@ pub(crate) struct Signing {
     pub format: Option<String>,
     pub commits: bool,
     pub tags: bool,
+    #[serde(default)]
+    pub annotated_tags: bool,
 }
 impl Signing {
     pub fn capture(profile: &GitProfile) -> Self {
@@ -31,6 +33,7 @@ impl Signing {
             format: profile.signing_format.clone(),
             commits: profile.signing,
             tags: profile.tag_signing,
+            annotated_tags: profile.annotated_tag_signing,
         }
     }
 }
@@ -44,6 +47,7 @@ impl Definition {
                 format: s.format.clone(),
                 commits: s.commits,
                 tags: s.tags,
+                annotated_tags: s.annotated_tags,
             }),
         }
     }

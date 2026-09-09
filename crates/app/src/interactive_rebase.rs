@@ -58,7 +58,14 @@ fn close_rebase_dialog(
 impl GitTurtle {
     pub(super) fn refresh_rebase_message(&self, cx: &mut Context<Self>) {
         if let Some(message) = &self.interactive_rebase.message {
-            message.update(cx, |_, cx| cx.notify());
+            let status = self.recovery_drafts.status();
+            let message = message.downgrade();
+            cx.defer(move |cx| {
+                let _ = message.update(cx, |message, cx| {
+                    message.durable_status = status;
+                    cx.notify();
+                });
+            });
         }
     }
     pub(super) fn cancel_interactive_rebase_action(&mut self) {
@@ -223,7 +230,11 @@ impl GitTurtle {
                     } else {
                         cx.new(|cx| MessageForm::new(owner, expected, key, recovered, window, cx))
                     };
-                    form.update(cx, |form, _| form.closed = false);
+                    let status = this.recovery_drafts.status();
+                    form.update(cx, |form, _| {
+                        form.closed = false;
+                        form.durable_status = status;
+                    });
                     this.interactive_rebase.message = Some(form.clone());
                     window.open_alert_dialog(cx, move |dialog, _, _| {
                         let close = form.clone();
@@ -579,6 +590,7 @@ struct MessageForm {
     key: recovery_drafts::Key,
     recovered: Option<recovery_drafts::Draft>,
     accepted: String,
+    durable_status: String,
     _subscription: Option<Subscription>,
 }
 impl MessageForm {
@@ -613,6 +625,7 @@ impl MessageForm {
         Self {
             owner,
             accepted: expected.message.clone().unwrap_or_default(),
+            durable_status: "Edits save automatically outside the repository".into(),
             expected,
             key,
             recovered,
@@ -689,10 +702,7 @@ impl MessageForm {
 impl Render for MessageForm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
-        let durable_status = self
-            .owner
-            .upgrade()
-            .map(|owner| owner.read(cx).recovery_drafts.status());
+        let durable_status = self.durable_status.clone();
         div().id("rebase-message-scroll")
             .max_h((window.viewport_size().height - px(240.)).max(px(160.)))
             .overflow_y_scroll()
@@ -712,7 +722,7 @@ impl Render for MessageForm {
                         .child(button("restore-rebase-draft", "Restore saved message", "", false).disabled(!valid || self.editor.is_none()).on_click(cx.listener(move |this, _, window, cx| { if valid { if let Some(editor) = &this.editor { editor.update(cx, |editor, cx| editor.set_value(recovered.text.clone(), window, cx)); } this.recovered = None; cx.notify(); } })))))
             })
             .when_some(self.editor.as_ref(), |element, editor| element.child(Textarea::new(editor).h(px(240.)).aria_label("Rebase commit message")))
-            .children(durable_status.map(|status| label("rebase-draft-save-status", status).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))))
+            .child(label("rebase-draft-save-status", durable_status).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
             .when(self.editor.is_none(), |element| element.child(label("rebase-no-message", "No message is pending. Continue will replay the next planned step and pause if a message or conflict needs attention.").text_size(crate::appearance::ui_text(12.))))
             .children(self.error.as_ref().map(|error| label("rebase-message-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
             .child(button("review-rebase-continue", "Review Continue…", "", true).on_click(cx.listener(|this, _, window, cx| this.submit(window, cx)))))

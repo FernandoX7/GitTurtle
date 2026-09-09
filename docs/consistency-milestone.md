@@ -39,6 +39,9 @@ Original complete application-data directory (two files), SHA-256 manifest, and 
 | N4 / P2 | Projects and Settings retain repository status/controls; Settings duplicates its heading. | Page-specific headers/status, coherent Projects hub, single Settings heading | Native verification pending |
 | N5 / P2 | Worktree selection has no clear row highlight; compact controls have uneven padding. | Shared minimum control geometry and selected/hover worktree row border/background | Native verification pending |
 
+| N6 / P0 | Open Command palette in first debug integration: dialog footer reads GitTurtle while GitTurtle renders dialog layer, causing entity-borrow panic. Profile/recovery/rich modal review found related render-time parent access. | Owned presentation snapshots updated from notifications; revalidation stays in action handlers; generic supplied-content rich renderer | First native retry pending; compile and focused tests pass |
+| N7 / P0 | Open Settings in first debug integration: theme Button installs custom hover while toolkit adds its own unselected hover, triggering debug assertion. Same pattern in worktree rows. | Theme preview child uses group hover; selected worktree rows alone add custom hover, unselected rows use toolkit hover | First native retry pending |
+
 ## Implementation checkpoint
 
 The first integrated implementation includes the ten-theme picker with compatible `daylight` storage, adjustable graph lane spacing and persisted pane widths, navigation context fixes, named profiles, additional supplied-byte raster/PDF decoding and metadata, exact draft recovery, bounded rewritten-series review and explicit leased publication, and the native command palette. Canonical design guidance is now [DESIGN.md](../DESIGN.md). This is implementation evidence, not a claim of final native acceptance.
@@ -54,3 +57,5 @@ Baseline release: History commit selection and explicit file comparison visually
 Coordinator owns navigation, shared styling/themes/graph, palette, canonical design, integration, Git index/commits, native interaction, packaging and installation. Independent workers own profiles, previews, and durable recovery/rewritten branches. Shared app integration edits are coordinated; final gates run once after integration, with repeats only after relevant fixes.
 
 No source remote is configured. One optional request for a specifically authorized disposable hosted repository/account is pending; local work continues. Hosted CI/live-provider, actual Keychain unlock, hardware-backed signing and Linux execution must be recorded individually if unavailable, never marked passed from fixture evidence.
+
+Second integration preparation: full installed bundle backed up as `OriginalGitTurtle.app` alongside app-state backup, executable hash verified identical. Disposable native fixtures now include the 653-commit/91-branch/995-working-path large history, 21-format preview repository, signed/unsigned/private/shared profile repositories, and conflict/rebase/local-remote series cases. Two debug crashes are recorded above; neither is labeled verified until the fixed artifact is exercised.

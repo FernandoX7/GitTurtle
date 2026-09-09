@@ -591,6 +591,9 @@ mod tests {
             density: Density::Compact,
             interface_text_size: 16,
             code_text_size: 19,
+            graph_spacing: 28,
+            navigation_width: 275.,
+            inspector_width: 410.,
             ..Default::default()
         };
         Preferences::save_settings_at(&edited, &path).unwrap();

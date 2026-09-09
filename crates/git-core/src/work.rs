@@ -84,6 +84,7 @@ pub struct GitProfile {
     pub email: String,
     pub signing: bool,
     pub tag_signing: bool,
+    pub annotated_tag_signing: bool,
     pub signing_key: Option<String>,
     pub signing_format: Option<String>,
     pub private_worktree: bool,

@@ -295,6 +295,31 @@ fn matches(query: &str) -> Vec<usize> {
         .take(40)
         .collect()
 }
+#[derive(Clone, Default, PartialEq, Eq)]
+struct FileScope {
+    commit: Option<String>,
+    file: Option<FileChange>,
+    working: Option<(gitturtle_core::StatusEntry, gitturtle_core::ChangeArea)>,
+}
+impl FileScope {
+    fn label(&self) -> String {
+        if let Some((entry, _)) = &self.working {
+            format!("Working file: {}", entry.path.display())
+        } else if let Some(file) = &self.file {
+            format!("Selected file: {}", file.path().display())
+        } else {
+            "No file selected".into()
+        }
+    }
+}
+
+#[derive(Clone)]
+struct PaletteContext {
+    availability: Availability,
+    path: Option<PathBuf>,
+    label: String,
+}
+
 #[derive(Default)]
 struct Selection {
     index: usize,
@@ -316,6 +341,47 @@ impl Selection {
     }
 }
 impl GitTurtle {
+    fn palette_context(&self) -> PaletteContext {
+        PaletteContext {
+            availability: self.palette_availability(),
+            path: self.path.clone(),
+            label: self
+                .repository
+                .as_ref()
+                .map(|repo| {
+                    format!(
+                        "{} · {}",
+                        repo.name(),
+                        if self.page == AppPage::Repository {
+                            "current workspace"
+                        } else {
+                            "retained repository"
+                        }
+                    )
+                })
+                .unwrap_or_else(|| "Application · no repository open".into()),
+        }
+    }
+    fn palette_file_scope(&self) -> FileScope {
+        FileScope {
+            commit: self
+                .selected_commit
+                .and_then(|index| self.commits.get(index))
+                .map(|commit| commit.oid.clone()),
+            file: self
+                .selected_file
+                .and_then(|index| self.files.get(index))
+                .cloned(),
+            working: self.working_selected.and_then(|(index, area)| {
+                self.work_status
+                    .as_ref()?
+                    .entries
+                    .get(index)
+                    .cloned()
+                    .map(|entry| (entry, area))
+            }),
+        }
+    }
     fn palette_availability(&self) -> Availability {
         Availability {
             repository: self.repository.is_some(),
@@ -341,7 +407,10 @@ impl GitTurtle {
         let owner = cx.entity().downgrade();
         let path = self.path.clone();
         let return_focus = window.focused(cx);
-        let form = cx.new(|cx| Palette::new(owner, path, return_focus, window, cx));
+        let file_scope = self.palette_file_scope();
+        let context = self.palette_context();
+        let form =
+            cx.new(|cx| Palette::new(owner, path, file_scope, context, return_focus, window, cx));
         let focus_form = form.downgrade();
         window.open_alert_dialog(cx, move |dialog, _, cx| {
             let cancel = form.clone();
@@ -363,7 +432,7 @@ impl GitTurtle {
                         )
                         .child(
                             button("run-palette-command", "Open command", "", true)
-                                .disabled(!form.read(cx).can_activate(cx))
+                                .disabled(!form.read(cx).can_activate())
                                 .on_click(move |_, window, cx| {
                                     activate.update(cx, |form, cx| form.activate(window, cx))
                                 }),
@@ -455,6 +524,9 @@ impl GitTurtle {
 struct Palette {
     owner: WeakEntity<GitTurtle>,
     path: Option<PathBuf>,
+    file_scope: FileScope,
+    context: PaletteContext,
+    _owner_subscription: Option<Subscription>,
     return_focus: Option<FocusHandle>,
     query: Entity<InputState>,
     results: Vec<usize>,
@@ -467,6 +539,8 @@ impl Palette {
     fn new(
         owner: WeakEntity<GitTurtle>,
         path: Option<PathBuf>,
+        file_scope: FileScope,
+        context: PaletteContext,
         return_focus: Option<FocusHandle>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -487,9 +561,23 @@ impl Palette {
                 InputEvent::PressEnter { .. } => this.activate(window, cx),
                 _ => {}
             });
+        // Notifications run after the owner update has ended. Rendering only
+        // reads this owned snapshot because the dialog layer itself is rendered
+        // while GitTurtle is mutably borrowed.
+        let owner_subscription = owner.upgrade().map(|owner| {
+            cx.observe(&owner, |this, owner, cx| {
+                if !this.selection.closed {
+                    this.context = owner.read(cx).palette_context();
+                    cx.notify();
+                }
+            })
+        });
         Self {
             owner,
             path,
+            file_scope,
+            context,
+            _owner_subscription: owner_subscription,
             return_focus,
             query,
             results: matches(""),
@@ -499,17 +587,15 @@ impl Palette {
             _subscription: subscription,
         }
     }
-    fn can_activate(&self, cx: &App) -> bool {
-        self.results.get(self.selection.index).is_some_and(|index| {
-            self.owner.upgrade().is_some_and(|owner| {
-                let owner = owner.read(cx);
-                self.path == owner.path
-                    && COMMANDS[*index]
-                        .id
-                        .reason(&owner.palette_availability())
-                        .is_none()
+    fn can_activate(&self) -> bool {
+        !self.selection.closed
+            && self.path == self.context.path
+            && self.results.get(self.selection.index).is_some_and(|index| {
+                COMMANDS[*index]
+                    .id
+                    .reason(&self.context.availability)
+                    .is_none()
             })
-        })
     }
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.selection.claim(true) {
@@ -535,6 +621,10 @@ impl Palette {
                     Some("The repository changed. Close and reopen the command palette.".into());
                 return;
             }
+            if command.selected_file() && owner.palette_file_scope() != self.file_scope {
+                self.error = Some("The selected file changed. Close and reopen the palette to review its current target.".into());
+                return;
+            }
             if let Some(reason) = command.reason(&owner.palette_availability()) {
                 self.error = Some(reason.into());
                 return;
@@ -556,42 +646,22 @@ impl Render for Palette {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         let count = self.results.len();
-        let context = self
-            .owner
-            .upgrade()
-            .map(|owner| owner.read(cx).palette_availability())
-            .unwrap_or_default();
-        let scope = self
-            .owner
-            .upgrade()
-            .map(|owner| {
-                let owner = owner.read(cx);
-                owner
-                    .repository
-                    .as_ref()
-                    .map(|repo| {
-                        format!(
-                            "{} · {}",
-                            repo.name(),
-                            if owner.page == AppPage::Repository {
-                                "current workspace"
-                            } else {
-                                "retained repository"
-                            }
-                        )
-                    })
-                    .unwrap_or_else(|| "Application · no repository open".into())
-            })
-            .unwrap_or_default();
+        let context = self.context.availability.clone();
+        let selected_file_command = self
+            .results
+            .get(self.selection.index)
+            .is_some_and(|index| COMMANDS[*index].id.selected_file());
+        let scope = self.context.label.clone();
+        let scope = if selected_file_command {
+            format!("{scope} · {}", self.file_scope.label())
+        } else {
+            scope
+        };
         let list = uniform_list(
             "command-palette-list",
             count,
             cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                let context = this
-                    .owner
-                    .upgrade()
-                    .map(|owner| owner.read(cx).palette_availability())
-                    .unwrap_or_default();
+                let context = this.context.availability.clone();
                 range
                     .map(|index| {
                         let colors = palette(cx);

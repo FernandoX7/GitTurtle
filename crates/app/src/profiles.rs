@@ -186,22 +186,26 @@ impl GitTurtle {
             return;
         }
         let owner = cx.entity().downgrade();
+        let path = self.path.clone();
+        let target = self.repository.as_ref().filter(|_| self.page != AppPage::Projects).map(|repo| format!("Target: {}\n{}", repo.name(), repo.path().display())).unwrap_or_else(|| "Choose a repository to apply a profile. Saved profiles are available in every project.".into());
+        let store = self.profiles.store.clone();
+        let error = self.profiles.error.clone();
+        let can_apply = self.repository.is_some() && self.page != AppPage::Projects;
         window.open_alert_dialog(cx, move |dialog, _, cx| {
-            let p = palette(cx); let Some(view) = owner.upgrade() else { return dialog; }; let this = view.read(cx);
-            let path = this.path.clone(); let create_owner = owner.clone();
+            let p = palette(cx); let create_owner = owner.clone();
             let content = div().id("profile-manager-content").max_h(px(430.)).overflow_y_scroll().flex().flex_col().gap_3()
-                .child(label("profiles-context", this.repository.as_ref().filter(|_| this.page != AppPage::Projects).map(|repo| format!("Target: {}\n{}", repo.name(), repo.path().display())).unwrap_or_else(|| "Choose a repository to apply a profile. Saved profiles are available in every project.".into())).text_size(crate::appearance::ui_text(12.)))
+                .child(label("profiles-context", target.clone()).text_size(crate::appearance::ui_text(12.)))
                 .child(label("profiles-purpose", "Profiles choose Git author identity. Provider sign-in, credential helpers and private keys stay separate. Editing or deleting a definition does not change Git configuration.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
-                .children(this.profiles.error.as_ref().map(|error| label("profiles-error", error.clone()).text_color(rgb(p.warning))))
-                .child(button("new-git-profile", "New profile…", "plus", false).disabled(this.profiles.store.is_none()).on_click(move |_, window, cx| { let _ = create_owner.update(cx, |this, cx| { window.close_dialog(cx); this.edit_profile(None, window, cx); }); }))
-                .children(this.profiles.store.iter().flat_map(|store| &store.definitions).enumerate().map(|(index, profile)| {
+                .children(error.as_ref().map(|error| label("profiles-error", error.clone()).text_color(rgb(p.warning))))
+                .child(button("new-git-profile", "New profile…", "plus", false).disabled(store.is_none()).on_click(move |_, window, cx| { let _ = create_owner.update(cx, |this, cx| { window.close_dialog(cx); this.edit_profile(None, window, cx); }); }))
+                .children(store.iter().flat_map(|store| &store.definitions).enumerate().map(|(index, profile)| {
                     let apply_owner = owner.clone(); let edit_owner = owner.clone(); let delete_owner = owner.clone();
                     let apply_profile = profile.clone(); let edit_profile = profile.clone(); let delete_profile = profile.clone(); let path = path.clone();
                     div().p_3().rounded(px(8.)).border_1().border_color(rgb(p.border)).flex().flex_col().gap_2()
                         .child(div().text_size(crate::appearance::ui_text(13.)).font_weight(FontWeight::SEMIBOLD).child(profile.label.clone()))
                         .child(div().text_size(crate::appearance::ui_text(12.)).child(format!("{} <{}>", profile.name, profile.email)))
                         .child(div().flex().gap_2()
-                            .child(button(("apply-profile", index), "Apply…", "", false).disabled(this.repository.is_none() || this.page == AppPage::Projects).on_click(move |_, window, cx| { let _ = apply_owner.update(cx, |this, cx| { if this.path == path { window.close_dialog(cx); this.prepare_profile(apply_profile.clone(), window, cx); } }); }))
+                            .child(button(("apply-profile", index), "Apply…", "", false).disabled(!can_apply).on_click(move |_, window, cx| { let _ = apply_owner.update(cx, |this, cx| { if this.path == path { window.close_dialog(cx); this.prepare_profile(apply_profile.clone(), window, cx); } }); }))
                             .child(button(("edit-profile", index), "Edit…", "", false).on_click(move |_, window, cx| { let _ = edit_owner.update(cx, |this, cx| { window.close_dialog(cx); this.edit_profile(Some(edit_profile.clone()), window, cx); }); }))
                             .child(button(("delete-profile", index), "Delete…", "", false).on_click(move |_, window, cx| { let _ = delete_owner.update(cx, |this, cx| { window.close_dialog(cx); this.delete_profile(delete_profile.clone(), window, cx); }); })))
                 }));
@@ -235,7 +239,7 @@ impl GitTurtle {
                 match result {
                     Ok(plan) => {
                         let scope = if plan.private_worktree { "Only this worktree's existing private Git configuration will change." } else { "Repository configuration is shared with every linked worktree. Other worktrees inheriting these keys will also use this identity; private worktree overrides remain effective." };
-                        let signing = definition.signing.as_ref().map(|s| format!("Existing signing reference: {}\nFormat: {} · Require signed commits: {} · Require signed tags: {}.\nExisting signing requirements are never disabled.", s.key.as_deref().unwrap_or("keep configured key"), s.format.as_deref().unwrap_or("keep configured format"), s.commits, s.tags)).unwrap_or_else(|| "All existing signing settings and requirements remain inherited.".into());
+                        let signing = definition.signing.as_ref().map(|s| format!("Existing signing reference: {}\nFormat: {} · Require signed commits: {} · Require signed tags: {} · Signed annotated tags: {}.\nExisting signing requirements are never disabled.", s.key.as_deref().unwrap_or("keep configured key"), s.format.as_deref().unwrap_or("keep configured format"), s.commits, s.tags, s.annotated_tags)).unwrap_or_else(|| "All existing signing settings and requirements remain inherited.".into());
                         let explanation = format!("Apply '{}' as {} <{}>\n\nWorktree: {}\nConfiguration: {}\n\n{scope}\n\n{signing}\n\nThis explicit action affects subsequent Git commits and annotated tags. Global configuration, hooks and credentials are preserved. Reopening a repository never reapplies a profile.", definition.label, definition.name, definition.email, plan.worktree.display(), plan.config_path.display());
                         this.profiles.prepared = Some(definition.clone());
                         this.confirm_git_write(format!("Apply {} profile", definition.label), explanation, "Apply profile", WriteCommand::ApplyProfile(Arc::new(plan)), window, cx);
@@ -321,7 +325,7 @@ impl GitTurtle {
                     Err(error) => {
                         let error = format!("{error:#}");
                         this.profiles.error = Some(error.clone());
-                        this.profiles.failed = Some(mutation);
+                        this.profiles.failed = if form.is_some() { None } else { Some(mutation) };
                         this.operation_error = Some(format!("Profile persistence: {error}"));
                         if let Some(form) = &form {
                             let _ = form.update(cx, |form, cx| {
@@ -423,6 +427,7 @@ struct ProfileForm {
     name: Entity<InputState>,
     email: Entity<InputState>,
     signing: Signing,
+    current_signing: Signing,
     capture_signing: bool,
     pending: bool,
     visible: bool,
@@ -490,6 +495,7 @@ impl ProfileForm {
                 .as_ref()
                 .and_then(|p| p.signing.clone())
                 .unwrap_or_else(|| Signing::capture(&effective)),
+            current_signing: Signing::capture(&effective),
             capture_signing: previous.as_ref().is_some_and(|p| p.signing.is_some()),
             previous,
             pending: false,
@@ -543,7 +549,8 @@ impl Render for ProfileForm {
             .child(label("profile-author-label", "Git author name").text_size(crate::appearance::ui_text(12.))).child(Input::new(&self.name).aria_label("Profile Git author name").disabled(self.pending))
             .child(label("profile-email-label", "Git author email").text_size(crate::appearance::ui_text(12.))).child(Input::new(&self.email).aria_label("Profile Git author email").disabled(self.pending))
             .child(Checkbox::new("profile-capture-signing").label("Include the existing signing configuration").checked(self.capture_signing).disabled(self.pending).on_click(cx.listener(|this, checked: &bool, _, cx| { this.capture_signing = *checked; cx.notify(); })))
-            .when(self.capture_signing, |element| element.child(label("profile-signing-reference", format!("Key reference: {}\nFormat: {} · Commit signing: {} · Tag signing: {}", self.signing.key.as_deref().unwrap_or("Keep repository key"), self.signing.format.as_deref().unwrap_or("Keep repository format"), self.signing.commits, self.signing.tags)).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))))
+            .child(button("profile-use-current-signer", "Use current repository signing settings", "", false).disabled(self.pending).on_click(cx.listener(|this, _, _, cx| { this.signing = this.current_signing.clone(); this.capture_signing = true; cx.notify(); })))
+            .when(self.capture_signing, |element| element.child(label("profile-signing-reference", format!("Key reference: {}\nFormat: {} · Commit signing: {} · Tag signing: {} · Annotated signing: {}", self.signing.key.as_deref().unwrap_or("Keep repository key"), self.signing.format.as_deref().unwrap_or("Keep repository format"), self.signing.commits, self.signing.tags, self.signing.annotated_tags)).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))))
             .child(label("profile-save-explanation", "Save creates or edits this reusable profile. Apply it separately to a reviewed repository. Existing signing requirements remain enabled; unavailable keys produce Git errors without an unsigned fallback.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
             .when(self.pending, |element| element.child(label("profile-save-pending", "Saving profile…").text_color(rgb(p.accent))))
             .children(self.error.as_ref().map(|error| label("profile-form-error", error.clone()).text_color(rgb(p.warning))))

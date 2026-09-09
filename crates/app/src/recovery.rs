@@ -1198,7 +1198,7 @@ impl StashBrowser {
             .into_any_element()
     }
 
-    fn render_content(&self, cx: &App) -> AnyElement {
+    fn render_content(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         if let Some(error) = &self.preview_error {
             return div()
@@ -1217,6 +1217,9 @@ impl StashBrowser {
                 .into_any_element();
         }
         match self.content.as_deref() {
+            Some(Content::Rich(preview)) => {
+                crate::rich_preview::render_comparison(preview, false, self.owner.clone(), cx)
+            }
             Some(Content::Text { .. }) if self.text_mode == 0 => {
                 self.patch_view.as_ref().map_or_else(
                     || div().into_any_element(),

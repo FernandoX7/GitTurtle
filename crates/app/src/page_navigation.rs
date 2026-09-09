@@ -59,6 +59,9 @@ impl GitTurtle {
     }
 
     pub(super) fn navigate_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
+            return;
+        }
         if self.page != AppPage::Repository {
             self.return_from_page(window, cx);
         } else if self.mode == WorkspaceMode::History

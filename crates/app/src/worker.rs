@@ -1263,6 +1263,33 @@ fn nontext_history_content(
             }),
         );
     }
+    if image_change(file)
+        || [old.as_ref().ok(), new.as_ref().ok()]
+            .into_iter()
+            .flatten()
+            .any(|bytes| metadata::is_image(bytes))
+    {
+        let side = |bytes: Result<Vec<u8>>, path: Option<&Path>| {
+            let name = path.unwrap_or(file.path()).to_string_lossy();
+            match bytes {
+                Ok(bytes) => working_image_side(repo, bytes, path.is_some(), &name, cancellation),
+                Err(error) => ImageSide {
+                    image: None,
+                    render: None,
+                    message: Some(format!("{error:#}")),
+                    bytes: 0,
+                    lfs_pointer: None,
+                    captured: None,
+                    literal_source: None,
+                },
+            }
+        };
+        let old = side(old, file.old_path.as_deref());
+        cancellation.check()?;
+        let new = side(new, file.new_path.as_deref());
+        cancellation.check()?;
+        return Ok(Some((Content::Images { old, new }, false)));
+    }
     // Keep readable and missing sides independent; a missing historical object
     // never substitutes a working file and is never cached as permanently absent.
     let side = |bytes: Result<Vec<u8>>,
@@ -2730,6 +2757,23 @@ mod image_tests {
         file.new_mode = "120000".into();
         let preview = captured_preview(&repo, file);
         assert!(matches!(&*preview,Content::Text {new,..} if new.as_bytes()==target));
+    }
+
+    #[test]
+    fn missing_image_object_keeps_the_readable_side_rendered() {
+        let fixture = Fixture::new();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let mut file = added_file(&fixture, "image.svg", SVG);
+        file.old_path = Some("image.svg".into());
+        file.old_mode = "100644".into();
+        file.old_oid = Some("f".repeat(40));
+        let preview = captured_preview(&repo, file);
+        let Content::Images { old, new } = &*preview else {
+            panic!("expected independent image sides")
+        };
+        assert!(old.message.is_some());
+        assert!(new.render.is_some());
+        assert_eq!(new.captured.as_deref(), Some(SVG));
     }
 
     #[test]

@@ -275,12 +275,12 @@ impl GitTurtle {
         }
         let scale_notice = if source {
             format!(
-                "100% = {:.1}% of source size",
+                "First image/frame · 100% = {:.1}% of source size",
                 self.image_geometry().source_scale * 100.
             )
         } else {
             format!(
-                "100% = {:.1}% of source size · Both versions share the same scale",
+                "First image/frame · 100% = {:.1}% of source size · Both versions share the same scale",
                 self.image_geometry().source_scale * 100.
             )
         };

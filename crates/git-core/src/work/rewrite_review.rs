@@ -64,6 +64,19 @@ pub struct LeasedPublishPlan {
     pub remote_url: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PublicationInspection {
+    Ready(LeasedPublishPlan),
+    /// New locally available remote history requires another user review and
+    /// explicit destination check. It is never a replacement push approval.
+    RemoteChanged(RewriteReview),
+    AlreadyPublished {
+        remote: String,
+        remote_ref: String,
+        oid: String,
+    },
+}
+
 fn check_cancelled() -> Result<()> {
     ensure!(
         !authentication::current_control().is_some_and(|control| control.is_cancelled()),
@@ -279,11 +292,48 @@ impl GitRepository {
         remote: &str,
         remote_branch: &str,
     ) -> Result<LeasedPublishPlan> {
-        self.check_review_tip(&review.root, &review.branch, &review.rewritten_head)?;
         ensure!(
             review.original_head != review.rewritten_head,
             "This branch has no rewritten tip to publish"
         );
+        let plan = self.publication_snapshot(review, remote, remote_branch)?;
+        ensure!(
+            plan.expected_remote_oid == review.original_head,
+            "The remote branch no longer points at the captured original tip. Review its new history before publishing; no force push was attempted"
+        );
+        Ok(plan)
+    }
+
+    pub fn inspect_rewrite_publication(
+        &self,
+        review: &RewriteReview,
+        remote: &str,
+        remote_branch: &str,
+    ) -> Result<PublicationInspection> {
+        let plan = self.publication_snapshot(review, remote, remote_branch)?;
+        if plan.expected_remote_oid == plan.new_oid {
+            return Ok(PublicationInspection::AlreadyPublished {
+                remote: plan.remote,
+                remote_ref: plan.remote_ref,
+                oid: plan.new_oid,
+            });
+        }
+        if plan.expected_remote_oid != review.original_head {
+            let changed = self.rewrite_review(&review.base, &plan.expected_remote_oid, &review.branch)
+                .context("The remote moved. Its new series cannot be reviewed from available local objects. Explicitly Fetch this named remote, then check the destination again; merge or unrelated history may require Git's tools")?;
+            self.check_review_tip(&review.root, &review.branch, &review.rewritten_head)?;
+            return Ok(PublicationInspection::RemoteChanged(changed));
+        }
+        Ok(PublicationInspection::Ready(plan))
+    }
+
+    fn publication_snapshot(
+        &self,
+        review: &RewriteReview,
+        remote: &str,
+        remote_branch: &str,
+    ) -> Result<LeasedPublishPlan> {
+        self.check_review_tip(&review.root, &review.branch, &review.rewritten_head)?;
         self.validate_branch(remote_branch)?;
         let remote_url = self.single_push_url(remote)?;
         let remote_ref = format!("refs/heads/{remote_branch}");
@@ -304,10 +354,6 @@ impl GitRepository {
         ensure!(
             reference == remote_ref,
             "Remote returned a different branch"
-        );
-        ensure!(
-            expected == review.original_head,
-            "The remote branch no longer points at the captured original tip. Review its new history before publishing; no force push was attempted"
         );
         self.check_review_tip(&review.root, &review.branch, &review.rewritten_head)?;
         ensure!(
@@ -478,7 +524,7 @@ fn correspond(original: &[SeriesCommit], rewritten: &[SeriesCommit]) -> Vec<Seri
             });
         }
     }
-    for old in 0..original.len() {
+    for (old, commit) in original.iter().enumerate() {
         if !used.contains(&old) {
             rows.push(SeriesRow {
                 original: Some(old),
@@ -486,11 +532,45 @@ fn correspond(original: &[SeriesCommit], rewritten: &[SeriesCommit]) -> Vec<Seri
                 change: SeriesChange::Dropped,
                 reordered: false,
                 ambiguous: rewritten.iter().any(|new| {
-                    (original[old].patch_id.is_some() && original[old].patch_id == new.patch_id)
-                        || original[old].commit.subject == new.commit.subject
+                    (commit.patch_id.is_some() && commit.patch_id == new.patch_id)
+                        || commit.commit.subject == new.commit.subject
                 }),
             });
         }
     }
     rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn commit(oid: char, patch: Option<&str>, subject: &str) -> SeriesCommit {
+        SeriesCommit {
+            commit: RecoveryCommit {
+                oid: oid.to_string().repeat(40),
+                parents: vec!["f".repeat(40)],
+                subject: subject.into(),
+                message: format!("{subject}\n"),
+            },
+            patch_id: patch.map(str::to_owned),
+            patch_digest: "digest".into(),
+            author: b"same author".to_vec(),
+        }
+    }
+    #[test]
+    fn repeated_patches_and_empty_commits_do_not_invent_correspondence() {
+        for patch in [Some("same-patch"), None] {
+            let old = [
+                commit('a', patch, "Repeated subject"),
+                commit('b', patch, "Repeated subject"),
+            ];
+            let new = [
+                commit('c', patch, "Repeated subject"),
+                commit('d', patch, "Repeated subject"),
+            ];
+            let rows = correspond(&old, &new);
+            assert_eq!(rows.len(), 4);
+            assert!(rows.iter().all(|row| row.ambiguous && (row.original.is_none() || row.rewritten.is_none())));
+        }
+    }
 }

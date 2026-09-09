@@ -1,6 +1,6 @@
 # Image preview guidance
 
-These instructions supplement the root agreements for `crates/preview`. Decoder code and focused fixtures live in [src/lib.rs](src/lib.rs); [examples/render_icon.rs](examples/render_icon.rs) builds macOS iconset PNGs through the same decoder.
+These instructions supplement the root agreements for `crates/preview`. Raster/SVG decoding and focused fixtures live in [src/lib.rs](src/lib.rs), supplied-byte native ImageIO/PDF rendering in [src/native.rs](src/native.rs), and bounded container/encoding metadata in [src/metadata.rs](src/metadata.rs). The [support matrix](../../docs/file-previews.md) distinguishes rendered, source, metadata and external support. [examples/render_icon.rs](examples/render_icon.rs) builds macOS iconset PNGs through the same decoder.
 
 ## Decoder contracts
 
@@ -8,6 +8,7 @@ These instructions supplement the root agreements for `crates/preview`. Decoder 
 - Keep source-byte, source-dimension, decoded-allocation, and output-dimension limits independent. Reject unreasonable headers before decoding pixels and validate SVG complexity before rendering. Codec allocation limits are best effort, not a process-memory sandbox or wall-clock deadline. Run decoding on bounded background workers.
 - `ImagePreview.rgba` is straight RGBA8. Preserve transparency, premultiply while resizing to prevent invisible colors bleeding into edges, then return straight alpha. Keep aspect ratio, never enlarge previews, apply raster orientation before reporting original dimensions, and retain GIF's first-frame behavior. GPUI's BGRA conversion belongs to [the app worker](../app/src/worker.rs).
 - SVG previews are static and self-contained. Preserve explicit refusals for DTDs, linked or embedded image resources, nonfragment `href` values, and filters; disabling `resources_dir` alone does not prevent absolute-path reads. Keep both image resolvers disabled and load system fonts once, only when text appears. Adding unsupported features requires bounded behavior and honest preview results.
+- Native ImageIO and CoreGraphics references remain on one worker stack and consume supplied CFData only. Return owned pixels; never send native document references to the UI. PDF pages are capped independently from source bytes and pixel bounds, with cancellation between pages. Container inspection never decompresses archives, installs fonts or executes document actions. Decoded UTF-16 is explicitly transformed source and never a Git patch.
 
 ## App icon pipeline
 

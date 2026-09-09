@@ -13,7 +13,7 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let temp = TempDir::new().unwrap();
-        let repo = GitRepository::init(&temp.path().join("main"), "main").unwrap();
+        let repo = GitRepository::init(temp.path().join("main"), "main").unwrap();
         let result = Self { temp, repo };
         for (key, value) in [
             ("user.name", "Original"),
@@ -223,6 +223,7 @@ fn two_ssh_signing_profiles_sign_commits_and_tags_and_missing_key_never_falls_ba
             format: Some("ssh".into()),
             commits: true,
             tags: true,
+            annotated_tags: false,
         });
         f.apply(profile);
         assert!(
@@ -246,6 +247,22 @@ fn two_ssh_signing_profiles_sign_commits_and_tags_and_missing_key_never_falls_ba
             "hook-ran"
         );
     }
+    // Preserve annotated-only signing without converting lightweight tags into
+    // signed annotated ones, and do not let --annotate override this policy.
+    f.git(&["config", "tag.gpgSign", "false"]);
+    f.git(&["config", "tag.forceSignAnnotated", "true"]);
+    let effective = f.repo.profile().unwrap();
+    assert!(!effective.tag_signing && effective.annotated_tag_signing);
+    f.tag("annotated-only");
+    f.git(&["verify-tag", "annotated-only"]);
+    let lightweight = f.repo.create_tag_plan("lightweight", "HEAD", None).unwrap();
+    assert!(!lightweight.signing);
+    f.repo
+        .execute(&WriteCommand::Tag(Arc::new(TagCommand::Create(
+            lightweight,
+        ))))
+        .unwrap();
+    assert_eq!(f.git(&["cat-file", "-t", "lightweight"]), "commit");
     let head = f.git(&["rev-parse", "HEAD"]);
     fs::remove_file(&keys[1]).unwrap();
     fs::write(f.repo.path().join("file"), "unsigned must fail").unwrap();

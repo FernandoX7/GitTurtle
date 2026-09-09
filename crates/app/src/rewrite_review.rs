@@ -1,6 +1,8 @@
 //! A retained native commit-series inspector and a separate reviewed lease push.
 use crate::*;
-use gitturtle_core::{LeasedPublishPlan, OperationControl, RewriteReview, WriteCommand};
+use gitturtle_core::{
+    LeasedPublishPlan, OperationControl, PublicationInspection, RewriteReview, WriteCommand,
+};
 use gpui_kit::component::{WindowExt, dialog::DialogFooter};
 use gpui_kit::prelude::FluentBuilder;
 
@@ -51,6 +53,8 @@ struct SeriesBrowser {
     rows_scroll: UniformListScrollHandle,
     files_scroll: UniformListScrollHandle,
     inspecting: bool,
+    messages: Option<[Option<Entity<EditorState>>; 2]>,
+    notice: Option<String>,
     inspect_label: String,
     files: Vec<FileChange>,
     selected_file: Option<usize>,
@@ -64,6 +68,7 @@ struct SeriesBrowser {
     remote: Entity<InputState>,
     remote_branch: Entity<InputState>,
     publication: Option<LeasedPublishPlan>,
+    _subscriptions: Vec<Subscription>,
     closed: bool,
 }
 
@@ -101,6 +106,8 @@ impl SeriesBrowser {
             rows_scroll: UniformListScrollHandle::new(),
             files_scroll: UniformListScrollHandle::new(),
             inspecting: false,
+            messages: None,
+            notice: None,
             inspect_label: String::new(),
             files: vec![],
             selected_file: None,
@@ -122,8 +129,17 @@ impl SeriesBrowser {
                     .placeholder("Remote branch")
             }),
             publication: None,
+            _subscriptions: vec![],
             closed: false,
         };
+        for input in [this.remote.clone(), this.remote_branch.clone()] {
+            this._subscriptions.push(cx.subscribe_in(&input, window, |this, _, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    if this.publication.take().is_some() { this.notice = Some("Destination changed. Check the named remote branch again before publishing.".into()); }
+                    cx.notify();
+                }
+            }));
+        }
         this.load(window, cx);
         this
     }
@@ -178,6 +194,7 @@ impl SeriesBrowser {
         self.clear_content();
         self.review = None;
         self.publication = None;
+        self.notice = None;
         self.error = None;
         self.pending = true;
         self.control = OperationControl::default();
@@ -249,6 +266,7 @@ impl SeriesBrowser {
         self.cancel_read();
         self.clear_content();
         self.inspecting = true;
+        self.messages = None;
         self.files.clear();
         self.error = None;
         self.pending = true;
@@ -266,6 +284,28 @@ impl SeriesBrowser {
                 match result { Ok(Ok(Output::Changes(files, _))) => { this.files = files; this.files_scroll.scroll_to_item(0, ScrollStrategy::Top); }, Ok(Err(error)) => this.error = Some(format!("{error:#}")), _ => this.error = Some("Changed-file read was interrupted. Return to the series and select the commit again.".into()) }
                 cx.notify();
             });
+        }));
+        cx.notify();
+    }
+    fn inspect_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(review) = &self.review else {
+            return;
+        };
+        let Some(row) = review.rows.get(self.selected) else {
+            return;
+        };
+        let messages = [
+            row.original
+                .map(|index| review.original[index].commit.message.clone()),
+            row.rewritten
+                .map(|index| review.rewritten[index].commit.message.clone()),
+        ];
+        self.cancel_read();
+        self.clear_content();
+        self.inspecting = true;
+        self.inspect_label = "Original and rewritten commit messages".into();
+        self.messages = Some(messages.map(|message| {
+            message.map(|message| text::editor(&message, "text", None, window, cx))
         }));
         cx.notify();
     }
@@ -342,15 +382,21 @@ impl SeriesBrowser {
             if owner.operation_busy.is_some() { return; }
             owner.operation_busy = Some("Checking rewrite publication destination…");
             let control = owner.begin_operation_control(window, cx); self.network_control = Some(control.clone()); self.network_pending = true; self.publication = None; self.error = None;
-            let response = owner.operations.submit_controlled(control, move || repo.leased_publish_plan(&review, &remote, &branch));
+            let response = owner.operations.submit_controlled(control, move || repo.inspect_rewrite_publication(&review, &remote, &branch));
             owner.operation_task = Some(cx.spawn_in(window, async move |owner, cx| {
                 let result = response.await.unwrap_or_else(|_| Err(anyhow::anyhow!("Remote inspection ended without a result. Check it again explicitly before publishing")));
                 let _ = owner.update_in(cx, |owner, window, cx| {
                     owner.operation_busy = None; owner.finish_operation_control(window, cx);
+                    let path = owner.path.clone(); let page = owner.page;
                     if let Some(form) = form.upgrade() { form.update(cx, |form, cx| {
                         form.network_pending = false; form.network_control = None;
-                        if !form.current(cx) { return; }
-                        match result { Ok(plan) => form.publication = Some(plan), Err(error) => form.error = Some(format!("{error:#}")) }
+                        if form.closed || page != AppPage::Repository || path.as_deref() != Some(form.repo.path()) { return; }
+                        match result {
+                            Ok(PublicationInspection::Ready(plan)) => { form.publication = Some(plan); form.notice = None; },
+                            Ok(PublicationInspection::RemoteChanged(review)) => { form.review = Some(Arc::new(review)); form.selected = 0; form.publication = None; form.notice = Some("The remote changed. Original now shows its newly inspected series. Review these commits and files, then check the destination again to prepare a fresh lease.".into()); },
+                            Ok(PublicationInspection::AlreadyPublished { remote, remote_ref, oid }) => { form.publication = None; form.notice = Some(format!("{remote} · {remote_ref} already points to {oid}. No publication is needed.")); },
+                            Err(error) => form.error = Some(format!("{error:#}"))
+                        }
                         cx.notify();
                     }); }
                     cx.notify();
@@ -384,6 +430,46 @@ impl SeriesBrowser {
         });
     }
     fn render_content(&self, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(messages) = &self.messages {
+            return div()
+                .size_full()
+                .flex()
+                .gap_2()
+                .children(messages.iter().enumerate().map(|(side, editor)| {
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .p_2()
+                        .child(if side == 0 {
+                            "Original message"
+                        } else {
+                            "Rewritten message"
+                        })
+                        .child(editor.as_ref().map_or_else(
+                            || {
+                                div()
+                                    .child("Commit absent in this series")
+                                    .into_any_element()
+                            },
+                            |editor| {
+                                editor_find::Editor::new(editor)
+                                    .readonly(true)
+                                    .size_full()
+                                    .aria_label(if side == 0 {
+                                        "Original commit message"
+                                    } else {
+                                        "Rewritten commit message"
+                                    })
+                                    .into_any_element()
+                            },
+                        ))
+                }))
+                .into_any_element();
+        }
         match self.content.as_deref() {
             Some(Content::Text { .. }) if self.text_mode == 0 => self.patch.as_ref().map_or_else(
                 || div().into_any_element(),
@@ -399,10 +485,9 @@ impl SeriesBrowser {
                         .into_any_element()
                 },
             ),
-            Some(Content::Rich(preview)) => self
-                .owner
-                .update(cx, |owner, cx| owner.render_rich_preview(preview, cx))
-                .unwrap_or_else(|_| div().into_any_element()),
+            Some(Content::Rich(preview)) => {
+                rich_preview::render_comparison(preview, false, self.owner.clone(), cx)
+            }
             Some(Content::Images { old, new }) => div()
                 .size_full()
                 .flex()
@@ -537,7 +622,7 @@ impl Render for SeriesBrowser {
                 && plan.remote_ref
                     == format!("refs/heads/{}", self.remote_branch.read(cx).value().trim())
         });
-        div().id("rewrite-review-body").h(px(height)).flex().flex_col().gap_2()
+        div().id("rewrite-review-body").h(px(height)).overflow_y_scroll().flex().flex_col().gap_2()
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.back(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| { this.back(window, cx); cx.stop_propagation(); }))
             .when(!self.inspecting, |element| element
@@ -547,14 +632,17 @@ impl Render for SeriesBrowser {
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| { match event.keystroke.key.as_str() { "up" => this.select(this.selected.saturating_sub(1), window, cx), "down" => this.select(this.selected + 1, window, cx), "enter" => this.inspect(false, window, cx), _ => return } cx.stop_propagation(); }))
                     .child(uniform_list("rewrite-series-list", self.review.as_ref().map_or(0, |review| review.rows.len()), cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| this.row(index, cx)).collect::<Vec<_>>())).size_full().track_scroll(&self.rows_scroll)))
                 .child(div().flex().flex_wrap().gap_2()
+                    .child(button("inspect-series-messages", "Review messages", "", false).disabled(selected.is_none()).on_click(cx.listener(|this, _, window, cx| this.inspect_messages(window, cx))))
                     .child(button("inspect-original-commit", "Inspect original files", "", false).disabled(selected.as_ref().is_none_or(|row| row.original.is_none())).on_click(cx.listener(|this, _, window, cx| this.inspect(true, window, cx))))
                     .child(button("inspect-rewritten-commit", "Inspect rewritten files", "", false).disabled(selected.as_ref().is_none_or(|row| row.rewritten.is_none())).on_click(cx.listener(|this, _, window, cx| this.inspect(false, window, cx))))
                     .child(button("reload-series", "Refresh series", "", false).disabled(self.pending || self.network_pending).on_click(cx.listener(|this, _, window, cx| this.load(window, cx)))))
                 .child(div().flex().flex_wrap().items_center().gap_2()
                     .child(div().w(px(150.)).child(Input::new(&self.remote).aria_label("Publication remote").disabled(self.network_pending)))
                     .child(div().w(px(170.)).child(Input::new(&self.remote_branch).aria_label("Publication remote branch").disabled(self.network_pending)))
-                    .child(button("inspect-publication-remote", if self.network_pending { "Checking remote…" } else { "Check publication destination…" }, "", false).disabled(self.review.is_none() || self.network_pending || self.pending).on_click(cx.listener(|this, _, window, cx| this.check_remote(window, cx)))))
-                .when_some(self.publication.as_ref(), |element, plan| element.child(div().p_3().flex().flex_col().gap_2().border_1().border_color(rgb(p.warning)).rounded(px(6.))
+                    .child(button("inspect-publication-remote", if self.network_pending { "Checking remote…" } else { "Check publication destination…" }, "", false).disabled(self.review.is_none() || self.network_pending || self.pending).on_click(cx.listener(|this, _, window, cx| this.check_remote(window, cx))))
+                    .when(self.network_pending, |element| element.child(button("cancel-remote-inspection", "Cancel remote check", "", false).on_click(cx.listener(|this, _, _, cx| { if let Some(control) = &this.network_control { control.cancel(); } cx.notify(); })))))
+                .when_some(self.notice.as_ref(), |element, notice| element.child(div().text_size(appearance::ui_text(12.)).text_color(rgb(p.warning)).child(notice.clone())))
+                .when_some(self.publication.as_ref(), |element, plan| element.child(div().p_3().flex_shrink_0().flex().flex_col().gap_2().border_1().border_color(rgb(p.warning)).rounded(px(6.))
                     .child(div().text_size(appearance::ui_text(12.)).child(format!("Publish to {} · {}\n{}\nExpected remote: {}\nReviewed replacement: {}", plan.remote, plan.remote_ref, workspace::display_remote_url(&plan.remote_url), plan.expected_remote_oid, plan.new_oid)))
                     .child(div().text_size(appearance::ui_text(11.)).child("This replaces the named remote branch's history. Collaborators may need to update their local branches. The exact lease refuses intervening remote updates; failures and uncertain outcomes are never retried automatically."))
                     .child(div().flex().gap_2().child(button("publish-reviewed-rewrite", "Publish with exact lease", "", true).disabled(!publication_valid || self.network_pending).on_click(cx.listener(|this, _, window, cx| this.publish(window, cx))))
@@ -562,9 +650,9 @@ impl Render for SeriesBrowser {
             )
             .when(self.inspecting, |element| element
                 .child(div().flex().flex_wrap().items_center().gap_2().child(button("back-rewrite-series", "Back to series", "arrow-left", false).on_click(cx.listener(|this, _, window, cx| this.back(window, cx)))).child(div().text_size(appearance::ui_text(12.)).child(self.inspect_label.clone())))
-                .child(div().h(px(130.)).border_1().border_color(rgb(p.border)).rounded(px(6.)).overflow_hidden().child(uniform_list("series-files", self.files.len(), cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| {
+                .when(self.messages.is_none(), |element| element.child(div().h(px(130.)).flex_shrink_0().border_1().border_color(rgb(p.border)).rounded(px(6.)).overflow_hidden().child(uniform_list("series-files", self.files.len(), cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| {
                     let file = &this.files[index]; button(("series-file", index), file.path().to_string_lossy().into_owned(), "", this.selected_file == Some(index)).w_full().h(appearance::ui_size(30.)).on_click(cx.listener(move |this, _, window, cx| this.file(index, window, cx))).into_any_element()
-                }).collect::<Vec<_>>())).size_full().track_scroll(&self.files_scroll)))
+                }).collect::<Vec<_>>())).size_full().track_scroll(&self.files_scroll))))
                 .when(matches!(self.content.as_deref(), Some(Content::Text { .. })), |element| element.child(div().flex().gap_2().children(["Patch", "Before source", "After source"].into_iter().enumerate().map(|(mode, label)| button(("series-text-mode", mode), label, "", self.text_mode == mode).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.prepare_editor(window, cx); cx.notify(); }))))))
                 .child(div().flex_1().min_h(px(100.)).border_1().border_color(rgb(p.border)).overflow_hidden().child(self.render_content(cx))))
             .when(self.pending, |element| element.child(div().text_color(rgb(p.muted)).child("Reading captured local history…")))

@@ -15,6 +15,7 @@ pub struct ProfileSigning {
     /// Profiles may require signing, but never disable an existing requirement.
     pub commits: bool,
     pub tags: bool,
+    pub annotated_tags: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,6 +60,9 @@ impl ProfileIdentity {
                     })
                     && (!signing.commits || effective.signing)
                     && (!signing.tags || effective.tag_signing)
+                    && (!signing.annotated_tags
+                        || effective.tag_signing
+                        || effective.annotated_tag_signing)
             })
     }
 }
@@ -78,7 +82,7 @@ impl GitRepository {
     /// and worktree overrides retain Git's normal last-value precedence.
     pub(super) fn profile_config(&self) -> Result<GitProfile> {
         let mut command = normal_command(&self.path);
-        command.env("GIT_OPTIONAL_LOCKS", "0").args(["config", "--null", "--get-regexp", "^(user\\.(name|email|signingkey)|commit\\.gpgsign|tag\\.gpgsign|gpg\\.format|extensions\\.worktreeconfig)$"]);
+        command.env("GIT_OPTIONAL_LOCKS", "0").args(["config", "--null", "--get-regexp", "^(user\\.(name|email|signingkey)|commit\\.gpgsign|tag\\.(gpgsign|forcesignannotated)|gpg\\.format|extensions\\.worktreeconfig)$"]);
         let output = bounded_write_output(command, None, GIT_TIMEOUT)?;
         ensure!(
             output.status.success() || output.status.code() == Some(1),
@@ -103,6 +107,9 @@ impl GitRepository {
                 "gpg.format" => profile.signing_format = Some(value),
                 "commit.gpgsign" => profile.signing = config_bool(Some(&value)),
                 "tag.gpgsign" => profile.tag_signing = config_bool(Some(&value)),
+                "tag.forcesignannotated" => {
+                    profile.annotated_tag_signing = config_bool(Some(&value))
+                }
                 "extensions.worktreeconfig" => profile.private_worktree = config_bool(Some(&value)),
                 _ => {}
             }
@@ -185,6 +192,9 @@ impl GitRepository {
             }
             if signing.tags {
                 values.push(("tag.gpgsign", "true".into()));
+            }
+            if signing.annotated_tags {
+                values.push(("tag.forceSignAnnotated", "true".into()));
             }
         }
         // Remove direct values first, then append explicit overrides after any
