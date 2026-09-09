@@ -16,6 +16,8 @@ Projects and Settings are pages separate from the retained repository modes. Con
 
 Capture the current focus handle when leaving Repository for Projects or Settings and restore it once after the retained content is visible. Preserve an editor or Find field's exact focus rather than substituting generic file-list focus. Keep file-history editors alive across these page transitions; opening another repository clears the old return focus. Theme changes update retained file-history and split-editor decorations in place. Retained inspection state must not retain live drag gestures.
 
+Branch/worktree filtering and the branch Switch/Create target belong to the last successfully resolved canonical worktree. Clear both when a generation-accepted Open snapshot changes that worktree; preserve them on same-repository page visits, ordinary refresh, alias opens and failed opens. Commit drafts retain their independent per-worktree storage and restoration.
+
 Quick Open's source inspector owns `file_focus` while the changed-file list is absent. Modal activation restores that visible destination after the dialog closes. Native editor Escape bubbles to the app's Back handler when Find and editor popovers have not consumed it; closing Find alone keeps the source inspection open.
 
 ## Search and retained inspections

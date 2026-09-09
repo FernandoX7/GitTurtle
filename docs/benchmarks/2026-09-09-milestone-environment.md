@@ -84,6 +84,22 @@ The expanded Linux release executable SHA-256 is `257753576a1f2008c3bccd6243f932
 
 All task-owned validation containers exited and were removed after the release identity check; a subsequent task-name-filtered `docker ps` returned no running container. Task-owned build caches were retained without a running container. Existing user containers and repositories were not changed.
 
+### Final candidate Linux validation
+
+Source `06dad49fc61fee3b0bd786f2b4a8cf8661817b30` integrates immediate query focus, bounded rich-preview painting, adaptive Quick Open height and standard Edit OS actions. An immutable `git archive` snapshot (SHA-256 `84e486760f1fab587cd904a9c10ab5612eef2773d2b594a3aa3ad2ec785f6908`) passed the complete Linux gates without source changes or overlays. The read-only mount, isolated caches, six-CPU/12-GiB limits and Ubuntu 24.04/aarch64 QA image are unchanged; Rust is 1.98.0 / LLVM 22.1.8, Git is 2.43.0 and the kernel is `7.0.12-linuxkit`.
+
+| Exact command | Executed result on `06dad49` |
+| --- | --- |
+| `cargo fetch --locked` | Passed, 0.56 s; dependency preparation only. |
+| `cargo fmt --all -- --check` | Passed, 1.31 s. |
+| `cargo test --locked --offline --workspace --no-fail-fast` | Passed: 451 unique tests, zero failures, three ignored; 22.36 s. App: 195 passed/one ignored; core unit: 21 passed; core integration: 198 passed/two ignored; preview: 37 passed. |
+| `cargo clippy --locked --offline --workspace --all-targets -- -D warnings` | Passed, 3.61 s. |
+| `cargo build --release --locked --offline -p gitturtle` | Passed, 76.64 s. |
+
+The same child-summary counting rule and three ignored-test limits apply. Validation after fetch used `--network none`; durations include container startup and incremental compilation, not native application latency. The release SHA-256 is `185a0bba4b30fcbb723593814b4324177c7ea7484c031da1bf7974077e0f4538`. `readelf -h` confirms ELF64 AArch64 PIE, and `ldd` resolves all listed libraries in the QA image.
+
+All task containers exited and were removed after the identity check; the task-name-filtered running-container list was empty. Linux native window interaction, X11/Wayland behavior, Cocoa Edit menu behavior and hosted CI are not established by these checks. Earlier source/build records above remain separate evidence.
+
 ## Hosted and native limits
 
 `git remote` returned no configured source remote. No authorized hosted repository/destination was identified by this check, no hosted workflow was started, and no hosted run URL/result exists. The inspected quality workflow targets `macos-15` and `ubuntu-24.04`, uses read-only checkout credentials and has no publishing step; configuration is distinct from execution.

@@ -175,6 +175,25 @@ enum NavMode {
     Worktrees,
 }
 
+/// Branch filters and write targets belong to the last successfully opened
+/// worktree, which can differ from an in-flight requested path or its alias.
+#[derive(Default)]
+struct BranchInputScope {
+    repository: Option<PathBuf>,
+}
+
+impl BranchInputScope {
+    /// Called only for a successful, generation-accepted Open snapshot.
+    fn opened(&mut self, repository: &std::path::Path) -> bool {
+        let changed = self
+            .repository
+            .as_deref()
+            .is_some_and(|previous| previous != repository);
+        self.repository = Some(repository.to_owned());
+        changed
+    }
+}
+
 struct GitTurtle {
     activity: activity::State,
     working_selection: working_selection::Selection,
@@ -236,6 +255,7 @@ struct GitTurtle {
     identity_name: Entity<InputState>,
     identity_email: Entity<InputState>,
     branch_name: Entity<InputState>,
+    branch_input_scope: BranchInputScope,
     remote_name: Entity<InputState>,
     remote_branch: Entity<InputState>,
     settings_branch: Entity<InputState>,
@@ -427,6 +447,7 @@ impl GitTurtle {
             identity_name,
             identity_email,
             branch_name,
+            branch_input_scope: BranchInputScope::default(),
             remote_name,
             remote_branch,
             settings_branch,
@@ -807,6 +828,12 @@ impl GitTurtle {
                 self.graph_notice = snapshot.graph_notice;
                 self.graph_lanes = self.graph.iter().map(|r| r.width).max().unwrap_or(1);
                 let resolved = snapshot.repository.path().to_owned();
+                if self.branch_input_scope.opened(&resolved) {
+                    self.nav_search
+                        .update(cx, |input, cx| input.set_value("", window, cx));
+                    self.branch_name
+                        .update(cx, |input, cx| input.set_value("", window, cx));
+                }
                 self.restore_commit_draft(resolved, window, cx);
                 self.path = Some(snapshot.repository.path().to_owned());
                 self.repository = Some(snapshot.repository);
@@ -1687,4 +1714,43 @@ fn main() {
         })
         .detach();
     });
+}
+
+#[cfg(test)]
+mod repository_branch_input_tests {
+    use super::{BranchInputScope, GitRepository};
+
+    #[test]
+    fn branch_inputs_reset_on_canonical_switch_but_survive_aliases_and_failed_opens() {
+        let fixture = tempfile::tempdir().unwrap();
+        let first = GitRepository::init(fixture.path().join("first"), "main").unwrap();
+        let second = GitRepository::init(fixture.path().join("second"), "main").unwrap();
+        let nested = first.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let mut scope = BranchInputScope::default();
+
+        assert!(!scope.opened(first.path()));
+        // Refresh and a nested/aliased request resolve to the existing worktree.
+        assert!(!scope.opened(GitRepository::open(first.path()).unwrap().path()));
+        assert!(!scope.opened(GitRepository::open(&nested).unwrap().path()));
+        #[cfg(unix)]
+        {
+            let alias = fixture.path().join("alias");
+            std::os::unix::fs::symlink(first.path(), &alias).unwrap();
+            assert!(!scope.opened(GitRepository::open(alias).unwrap().path()));
+        }
+
+        // Failed discovery has no accepted snapshot and must not change scope.
+        let failed = GitRepository::open(fixture.path().join("missing"));
+        assert!(
+            failed
+                .map(|repository| scope.opened(repository.path()))
+                .is_err()
+        );
+        assert!(!scope.opened(first.path()));
+
+        assert!(scope.opened(second.path()));
+        assert!(!scope.opened(second.path()));
+        assert!(scope.opened(first.path()));
+    }
 }
