@@ -31,6 +31,8 @@ Keep addition/deletion backgrounds quiet in diffs and status tiles. Color never 
 
 ## Typography and density
 
+The dimensions below describe the default 13 px interface and 12 px code sizes. Settings independently adjusts interface text from 11–18 and code text from 10–24, with separate reset controls. Scale relevant row/control heights and editor gutters with their text; retain selection, focus and viewports when changing sizes. Larger sizes must keep the minimum 1,000 × 680 content window usable through appropriate scrolling.
+
 - UI: system sans serif, 13 px regular; 13 px medium for selected labels and panel headings. macOS uses the platform UI font; Linux uses its available system sans family.
 - Code, hashes, and aligned numerical data: system monospace, 12 px, code line height 20 px. Code text must support selection and copying.
 - Main repository title: 14 px medium. Commit summary in the right inspector: 15 px medium, wrapping to two or three lines before explicit expansion. Avoid large display typography in repository views.
@@ -56,7 +58,7 @@ Search shows the matching count against all recents and offers Clear search when
 
 ### Settings
 
-Group appearance, history columns, startup/default branch, and repository Git identity. The six theme choices appear in a 3 × 2 grid with native miniature workspace previews, palette swatches, short descriptions, and an active checkmark. Density offers Comfortable and Compact. Apply changes across controls, previews, gutters, and selected rows, then persist app preferences outside repositories. Show failed saves clearly.
+Group appearance, independent interface/code text sizes, history columns, startup/default branch, and repository Git identity. The six theme choices appear in a 3 × 2 grid with native miniature workspace previews, palette swatches, short descriptions, and an active checkmark. Density offers Comfortable and Compact. Apply changes across controls, previews, gutters, and selected rows, then persist app preferences outside repositories. Show failed saves clearly.
 
 Column controls affect visibility and widths, preserve the commit-message column, and offer a layout reset. Git identity is a separate, explicit save for the displayed repository; show the current identity and signing state without implying that app appearance settings alter Git configuration.
 
@@ -162,7 +164,7 @@ Find matches use a selection tint in place of the patch background while preserv
 
 Image comparison defaults to side-by-side Before/After on a subtle checkerboard. Show dimensions and byte sizes beside the labels, with Added/Deleted state replacing the absent image when appropriate. Fit is the default; 100%, zoom in/out, and fit controls are small and familiar. Link zoom and pan across both images. Overlay and Wipe share the same source coordinates and linked pan/zoom, with keyboard controls for opacity and divider position. Preserve aspect ratio, avoid upscaling by default, and keep checkerboard contrast below the artwork. SVG is a static image; never execute embedded content. A Git LFS pointer without available local content must be identified as such rather than presented as a broken image.
 
-The transparency grid uses the current palette's canvas and subtle surfaces, including Daylight, and image metadata truncates within its own pane.
+The transparency grid uses the current palette's canvas and subtle surfaces, including Daylight, and image metadata truncates within its own pane. Missing LFS text or image content offers a separate reviewed download that names the selected object, source and known size. Keep transfer progress/cancellation visible and explain tooling, credential, unavailable-object and integrity errors. Browsing remains passive; decoding starts only after verified local content is available. See [LFS preview semantics](lfs-previews.md).
 
 ## Keyboard contract
 
@@ -172,21 +174,30 @@ Use `Cmd` on macOS and `Ctrl` on Linux for the primary modifier. The [README](..
 | --- | --- |
 | Primary + O | Open repository |
 | Primary + Shift + O | Open Projects |
+| Primary + P | Quick Open a tracked file in the shown worktree/revision scope |
+| Primary + Shift + C | Compare local revisions |
+| Primary + Shift + A | Open local GitTurtle operation activity |
 | Primary + 2 | Open Working Changes |
 | Primary + , | Open Settings |
 | Primary + F | Focus commit search in History; use editor find while reading text in Compare |
 | Escape | Dismiss the active transient UI first; otherwise return from Compare to History; clear a focused nonempty history search before moving focus |
-| Primary + [ | Back to history from Compare without clearing its query |
+| Primary + [ | Return through the retained inspection stack, then to History without clearing its query |
 | Up / Down | Select previous/next row in the focused list |
 | Home / End | First/last loaded row in the focused list |
 | Page Up / Page Down | Move through the focused list by viewport |
 | Left / Right | Collapse/expand a focused navigation section |
 | Return | Open the highlighted file in Compare from either history or the file list |
+| Option/Alt + Up / Down in text | Previous/next change |
+| Option/Alt + Up / Down in the rebase sequence | Reorder the selected commit |
+| P / R / S / F / D in the rebase sequence | Pick / Reword / Squash / Fixup / Drop |
+| Primary + Option/Alt + Up / Down in conflicts | Previous/next unresolved block |
+| Primary + click / Shift + click in Working Changes | Toggle a file / extend the selection range |
+| Shift + Up / Down; Primary + A in Working Changes | Extend the range; select visible file rows |
 | Tab / Shift + Tab | Traverse controls and panes in visual order |
 | Primary + R | Refresh local repository state |
 | Primary + C | Copy selected text; explicit copy buttons handle commit hash/path |
 | Primary + B | Toggle expanded repository navigation in History |
-| Primary + / | Show shortcut help, when implemented |
+| Primary + Shift + / | Open Keyboard Shortcuts |
 
 The graph and file list must scroll the selected row into view during keyboard navigation. Search keystrokes should not trigger list navigation. Native text selection/copy behavior takes precedence in diff content. Escape in an editor find box closes that box before a subsequent Escape returns to History. Back to history preserves the history query; it is not a Clear search action. Primary + Q retains platform quit behavior.
 
@@ -199,3 +210,15 @@ Choose checks for the affected surface. History/comparison checks use merges, lo
 The [everyday feature semantics](macos-features.md) describe attribution, source-aligned image overlay/wipe, system appearance, native menus and local editor/Finder handoff. [Tags and contextual ignore](macos-git-actions.md) use captured review dialogs and the existing operation feedback. [Authentication](authentication.md) preserves configured Git mechanisms with transient native prompts and cancellation. Projects uses its own single header; repository context returns through Back.
 
 The [Liquid Glass prototype](liquid-glass-investigation.md) exposed a pinned-renderer compositing limitation. The finished navigation stays opaque in all six themes; no ordinary transparency is labelled native glass. The [milestone record](macos-milestone.md) ties review findings and native evidence to the actual builds.
+
+## Review and recovery controls
+
+The current-branch menu and native View menu expose occasional comparison, Quick Open, activity, worktree and reflog workflows. Keep explicit Before → After labels and resolved commit identities visible. Since-branching comparisons identify the merge base; unavailable or ambiguous ancestry needs an actionable explanation. Quick Open presents a tracked source file without synthetic Added/Diff status and returns to its preceding inspection. Both modal searches accept keyboard input immediately, suppress duplicate acceptance, cancel obsolete reads and restore destination focus after closing.
+
+Diff review controls remain together above text: whitespace suppression, bounded context, reset, and previous/next change. Active review variants explicitly disable partial staging; code/source copying stays literal. Interface and code sizes have independent reset controls in Settings. Scale text, gutters and relevant rows together while preserving each pane's scroll and selected content.
+
+Working Changes names the count and area of selected files. Command-toggle and Shift-range selection use visible paths. Filtering/grouping clears selection predictably; all-files actions are disabled while a path query is active. Optional directory labels help large lists without creating implicit selected subtrees.
+
+Worktree creation/removal and recovery branch creation review their exact target and consequences. Distinguish worktree removal from branch deletion and report retained branches after partial checkout failures. Activity shows local operation outcomes and controlled concise explanations, with explicit next actions and no automatic retry. See [parallel work and reflog recovery](parallel-work-recovery.md).
+
+[Conflict blocks](conflict-blocks.md) expose current/incoming/base meaning, unresolved counts, navigation, both-side choices and a manual result. **Save draft** leaves the index conflicted; **Save and stage result** requires a reviewed result without recognized unresolved markers. [Interactive rebase](interactive-rebase.md) reviews an exclusive base and at most 100 linear commits, with native message editing and focused keyboard reorder/action controls. Label the stable rebase base separately from the replayed original commit. Git message pauses and conflicts remain distinct, and the interface must explain unsupported histories and uncertain intermediate outcomes.
