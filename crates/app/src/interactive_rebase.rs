@@ -4,7 +4,7 @@ use gitturtle_core::{
     InteractiveRebaseCommand, InteractiveRebasePlan, InteractiveRebaseResume, RebaseAction,
     RebaseStep, WriteCommand,
 };
-use gpui_kit::component::{WindowExt, dialog::DialogButtonProps};
+use gpui_kit::component::{WindowExt, dialog::DialogFooter};
 use gpui_kit::prelude::FluentBuilder;
 
 const PREPARING: &str = "Reading rebase sequence…";
@@ -33,6 +33,26 @@ fn label(id: &'static str, value: impl Into<SharedString>) -> Stateful<Div> {
         .role(Role::Label)
         .aria_label(value.clone())
         .child(value)
+}
+
+fn close_rebase_dialog(
+    owner: &WeakEntity<GitTurtle>,
+    path: Option<&std::path::Path>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    // Close synchronously so the dialog cannot later restore focus to the
+    // branch-menu item that opened it and has since left the rendered tree.
+    window.close_dialog(cx);
+    // GitTurtle embeds the modal layer, so closing Root's dialog must also
+    // invalidate the workspace's cached painted elements.
+    window.refresh();
+    let _ = owner.update(cx, |this, cx| {
+        if this.path.as_deref() == path && this.page == AppPage::Repository {
+            this.cancel_interactive_rebase_action();
+            this.app_focus.focus(window, cx);
+        }
+    });
 }
 
 impl GitTurtle {
@@ -75,34 +95,35 @@ impl GitTurtle {
                 })
             });
         self.interactive_rebase.draft = Some(draft.clone());
-        draft.update(cx, |draft, _| draft.pending = false);
+        draft.update(cx, |draft, _| {
+            draft.pending = false;
+            draft.closed = false;
+        });
         window.open_alert_dialog(cx, move |dialog, _, _| {
             let close = draft.clone();
             let cancel = draft.clone();
+            let button_close = draft.clone();
             dialog
                 .title(label("interactive-rebase-title", "Edit local commits"))
                 .width(px(720.))
                 .child(draft.clone())
-                .button_props(DialogButtonProps::default().ok_text("Close"))
-                .on_ok(move |_, _, cx| {
-                    close.update(cx, |form, cx| {
-                        form.pending = false;
-                        let _ = form
-                            .owner
-                            .update(cx, |this, _| this.cancel_interactive_rebase_action());
-                    });
-                    true
+                .footer(DialogFooter::new().child(
+                    button("close-rebase-plan", "Close", "", false).on_click(
+                        move |_, window, cx| {
+                            button_close.update(cx, |form, cx| form.close(window, cx))
+                        },
+                    ),
+                ))
+                .on_ok(move |_, window, cx| {
+                    close.update(cx, |form, cx| form.close(window, cx));
+                    false
                 })
-                .on_cancel(move |_, _, cx| {
-                    cancel.update(cx, |form, cx| {
-                        form.pending = false;
-                        let _ = form
-                            .owner
-                            .update(cx, |this, _| this.cancel_interactive_rebase_action());
-                    });
-                    true
+                .on_cancel(move |_, window, cx| {
+                    cancel.update(cx, |form, cx| form.close(window, cx));
+                    false
                 })
         });
+        window.refresh();
     }
 
     fn read_rebase<T: Send + 'static>(
@@ -175,14 +196,33 @@ impl GitTurtle {
                     } else {
                         cx.new(|cx| MessageForm::new(owner, expected, window, cx))
                     };
+                    form.update(cx, |form, _| form.closed = false);
                     this.interactive_rebase.message = Some(form.clone());
                     window.open_alert_dialog(cx, move |dialog, _, _| {
+                        let close = form.clone();
+                        let cancel = form.clone();
+                        let button_close = form.clone();
                         dialog
                             .title(label("rebase-message-title", "Continue rebase"))
                             .width(px(640.))
                             .child(form.clone())
-                            .button_props(DialogButtonProps::default().ok_text("Close"))
+                            .footer(DialogFooter::new().child(
+                                button("close-rebase-message", "Close", "", false).on_click(
+                                    move |_, window, cx| {
+                                        button_close.update(cx, |form, cx| form.close(window, cx))
+                                    },
+                                ),
+                            ))
+                            .on_ok(move |_, window, cx| {
+                                close.update(cx, |form, cx| form.close(window, cx));
+                                false
+                            })
+                            .on_cancel(move |_, window, cx| {
+                                cancel.update(cx, |form, cx| form.close(window, cx));
+                                false
+                            })
                     });
+                    window.refresh();
                 }
                 Err(error) => this.operation_error = Some(format!("{error:#}")),
             },
@@ -203,6 +243,7 @@ struct RebaseForm {
     scroll: UniformListScrollHandle,
     acknowledged: bool,
     pending: bool,
+    closed: bool,
     error: Option<String>,
 }
 
@@ -229,12 +270,22 @@ impl RebaseForm {
             scroll: UniformListScrollHandle::new(),
             acknowledged: false,
             pending: false,
+            closed: false,
             error: None,
         }
     }
 
+    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.closed {
+            return;
+        }
+        self.closed = true;
+        self.pending = false;
+        close_rebase_dialog(&self.owner, self.path.as_deref(), window, cx);
+    }
+
     fn load(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.pending {
+        if self.pending || self.closed {
             return;
         }
         let base = self.base.read(cx).value().trim().to_owned();
@@ -251,6 +302,9 @@ impl RebaseForm {
                     move |repo| repo.interactive_rebase_plan(&base),
                     move |result, _, window, cx| {
                         let _ = form.update(cx, |form, cx| {
+                            if form.closed {
+                                return;
+                            }
                             form.pending = false;
                             match result {
                                 Ok(plan) => {
@@ -303,6 +357,9 @@ impl RebaseForm {
     }
 
     fn review(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.closed {
+            return;
+        }
         let Some(plan) = self.plan.clone() else {
             self.error = Some("Load and review the affected commits first.".into());
             cx.notify();
@@ -364,7 +421,9 @@ impl RebaseForm {
         let path = self.path.clone();
         let _ = self.owner.update(cx, |this, cx| {
             if this.path == path && this.operation_busy.is_none() {
+                self.closed = true;
                 window.close_dialog(cx);
+                this.app_focus.focus(window, cx);
                 this.confirm_git_write(
                     "Start interactive rebase".into(),
                     explanation,
@@ -373,6 +432,7 @@ impl RebaseForm {
                     window,
                     cx,
                 );
+                window.refresh();
             }
         });
     }
@@ -446,6 +506,9 @@ impl Render for RebaseForm {
         .size_full()
         .track_scroll(&self.scroll);
         div().flex().flex_col().gap_3()
+            .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.close(window, cx); cx.stop_propagation(); }))
+            .on_action(cx.listener(|this, _: &ClearSearch, window, cx| { this.close(window, cx); cx.stop_propagation(); }))
+            .on_action(cx.listener(|this, _: &gpui_kit::component::dialog::Cancel, window, cx| { this.close(window, cx); cx.stop_propagation(); }))
             .child(label("rebase-base-explanation", "Base stays unchanged. Review up to 100 commits after it on the current branch. Merge-preserving and root rewrites are unsupported.").text_size(crate::appearance::ui_text(12.)))
             .child(div().flex().gap_2().items_center().child(div().flex_1().child(Input::new(&self.base).aria_label("Exclusive base revision")))
                 .child(button("load-rebase-commits", if self.pending { "Loading…" } else { "Load commits" }, "", false).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.load(window, cx)))))
@@ -482,6 +545,7 @@ struct MessageForm {
     expected: InteractiveRebaseResume,
     editor: Option<Entity<TextareaState>>,
     error: Option<String>,
+    closed: bool,
 }
 impl MessageForm {
     fn new(
@@ -502,9 +566,22 @@ impl MessageForm {
             expected,
             editor,
             error: None,
+            closed: false,
         }
     }
+
+    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.closed {
+            return;
+        }
+        self.closed = true;
+        close_rebase_dialog(&self.owner, Some(&self.expected.root), window, cx);
+    }
+
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.closed {
+            return;
+        }
         let message = self
             .editor
             .as_ref()
@@ -537,7 +614,9 @@ impl MessageForm {
         );
         let _ = self.owner.update(cx, |this, cx| {
             if this.path.as_ref() == Some(&path) && this.operation_busy.is_none() {
+                self.closed = true;
                 window.close_dialog(cx);
+                this.app_focus.focus(window, cx);
                 this.confirm_git_write(
                     "Continue interactive rebase".into(),
                     explanation,
@@ -549,6 +628,7 @@ impl MessageForm {
                     window,
                     cx,
                 );
+                window.refresh();
             }
         });
     }
@@ -557,6 +637,9 @@ impl Render for MessageForm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         div().flex().flex_col().gap_3()
+            .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.close(window, cx); cx.stop_propagation(); }))
+            .on_action(cx.listener(|this, _: &ClearSearch, window, cx| { this.close(window, cx); cx.stop_propagation(); }))
+            .on_action(cx.listener(|this, _: &gpui_kit::component::dialog::Cancel, window, cx| { this.close(window, cx); cx.stop_propagation(); }))
             .child(label("rebase-resume-state", format!("{} · Base: {} · {} staged paths", self.expected.operation.branch, self.expected.operation.target_label, self.expected.operation.staged_paths.len())).text_size(crate::appearance::ui_text(12.)))
             .when_some(self.expected.operation.commit.as_ref(), |element, commit| element.child(label("rebase-resume-commit", format!("Replaying original commit {commit}")).text_size(crate::appearance::ui_text(12.))))
             .child(label("rebase-message-explanation", "Review Git's pending commit message. Git uses its configured cleanup rules for comments and whitespace, hooks, author identity, and signing. Your edited draft is retained when this dialog closes.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))

@@ -24,6 +24,9 @@ fn cancel_modal_read(
     }
     reader.cancel();
     window.close_dialog(cx);
+    // The workspace embeds Root's dialog layer; invalidating Root alone can
+    // leave its previously painted layer cached in the workspace view.
+    window.refresh();
     if let Some(focus) = return_focus {
         focus.focus(window, cx);
     }
@@ -134,6 +137,7 @@ impl GitTurtle {
                     false // cancel closes directly; do not pop another dialog.
                 })
         });
+        window.refresh();
         window.on_next_frame(move |window, cx| {
             let _ = focus_form.update(cx, |form, cx| {
                 if !form.closed.load(Ordering::Acquire) {
@@ -200,6 +204,7 @@ impl GitTurtle {
                     false
                 })
         });
+        window.refresh();
         window.on_next_frame(move |window, cx| {
             let _ = focus_form.update(cx, |form, cx| {
                 if !form.closed.load(Ordering::Acquire) {
@@ -650,6 +655,7 @@ impl CompareForm {
                                 this.closed.store(true, Ordering::Release);
                                 this.worker.cancel();
                                 window.close_dialog(cx);
+                                window.refresh();
                                 owner.show_revision_comparison(comparison, window, cx);
                                 owner.defer_inspection_focus(window, cx);
                             }
@@ -675,9 +681,11 @@ impl CompareForm {
                         });
                     });
                 }
+                window.refresh();
                 cx.notify();
             });
         }));
+        window.refresh();
         cx.notify();
     }
 }
@@ -800,6 +808,7 @@ impl QuickForm {
         self.generation += 1;
         let generation = self.generation;
         self.worker.cancel();
+        let was_busy = self.busy;
         self.busy = true;
         self.error = None;
         let timer = cx
@@ -827,7 +836,7 @@ impl QuickForm {
                 return;
             };
             let result = response.await;
-            let _ = this.update_in(cx, |this, _, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 if generation != this.generation || this.closed.load(Ordering::Acquire) {
                     return;
                 }
@@ -844,9 +853,13 @@ impl QuickForm {
                         this.error = Some("File search cancelled. Edit the query to retry.".into())
                     }
                 }
+                window.refresh();
                 cx.notify();
             });
         }));
+        if !was_busy {
+            window.refresh();
+        }
         cx.notify();
     }
     fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -870,6 +883,7 @@ impl QuickForm {
                 self.closed.store(true, Ordering::Release);
                 self.worker.cancel();
                 window.close_dialog(cx);
+                window.refresh();
                 owner.show_tracked_file(scope, entry, window, cx);
                 owner.defer_inspection_focus(window, cx);
             }
