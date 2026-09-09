@@ -74,6 +74,17 @@ pub(super) fn menus(repository: bool, busy: bool, cx: &mut App) {
             action("History", Box::new(ShowHistory), repository),
             action("Working Changes", Box::new(ShowChanges), repository),
             action(
+                "Quick Open File…",
+                Box::new(QuickOpenFile),
+                repository && !busy,
+            ),
+            action(
+                "Compare Revisions…",
+                Box::new(CompareRevisions),
+                repository && !busy,
+            ),
+            MenuItem::action("GitTurtle Activity…", ShowActivity),
+            action(
                 "Refresh Local State",
                 Box::new(Refresh),
                 repository && !busy,
@@ -97,6 +108,12 @@ impl GitTurtle {
     }
     pub(super) fn apply_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.effective_theme(cx).apply(Some(window), cx);
+        appearance::apply_text_sizes(
+            self.settings.interface_text_size,
+            self.settings.code_text_size,
+            window,
+            cx,
+        );
         if let (Some(collection), Some(Content::Text { presentation, .. })) =
             (&self.patch_decoration, self.content.as_deref())
         {
@@ -106,6 +123,7 @@ impl GitTurtle {
             split.update(cx, |view, cx| view.refresh_theme(cx));
         }
         self.file_history.refresh_theme(cx);
+        self.revision_inspection.refresh_theme(cx);
         cx.notify();
     }
     pub(super) fn open_external_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {

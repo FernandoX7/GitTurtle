@@ -267,7 +267,7 @@ impl GitTurtle {
             let repository = self.path.clone();
             window.open_alert_dialog(cx, move |dialog, _, _| {
                 dialog.title("Choose the mainline parent").width(px(560.))
-                    .child(div().text_size(px(12.)).child(format!("{} is a merge commit. Choose the parent against which its change should be calculated.", short_oid(&commit.oid))))
+                    .child(div().text_size(crate::appearance::ui_text(12.)).child(format!("{} is a merge commit. Choose the parent against which its change should be calculated.", short_oid(&commit.oid))))
                     .child(div().id("recovery-mainline-parents").max_h(px(320.)).overflow_y_scroll().flex().flex_col().gap_2()
                         .children(commit.parents.iter().enumerate().take(128).map(|(index, parent)| {
                             let owner = owner.clone(); let repository = repository.clone(); let oid = commit.oid.clone();
@@ -635,7 +635,7 @@ impl Render for AmendForm {
             .gap_3()
             .child(
                 div()
-                    .text_size(px(12.))
+                    .text_size(crate::appearance::ui_text(12.))
                     .text_color(rgb(p.muted))
                     .child(format!(
                         "{} · {} · {} staged paths",
@@ -666,7 +666,7 @@ impl Render for AmendForm {
             )
             .child(
                 div()
-                    .text_size(px(11.))
+                    .text_size(crate::appearance::ui_text(11.))
                     .text_color(rgb(p.muted))
                     .child("The next step reviews the staged snapshot and the effect on history."),
             )
@@ -746,7 +746,7 @@ impl Render for StashForm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         div().flex().flex_col().gap_3()
-            .child(div().text_size(px(12.)).text_color(rgb(p.muted)).child("Pause the current work and keep a named snapshot you can inspect before restoring."))
+            .child(div().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child("Pause the current work and keep a named snapshot you can inspect before restoring."))
             .child(div().flex().flex_col().gap_1().child("Stash name").child(Input::new(&self.name).aria_label("Stash name")))
             .child(Checkbox::new("stash-include-untracked").label("Include untracked files").checked(self.include_untracked)
                 .on_click(cx.listener(|this, checked, _, cx| { this.include_untracked = *checked; cx.notify(); })))
@@ -774,7 +774,7 @@ fn form_error(error: &str, cx: &App) -> AnyElement {
         .id("recovery-form-error")
         .max_h(px(130.))
         .overflow_y_scroll()
-        .text_size(px(12.))
+        .text_size(crate::appearance::ui_text(12.))
         .text_color(rgb(palette(cx).warning))
         .child(error.to_owned())
         .into_any_element()
@@ -1125,7 +1125,7 @@ impl StashBrowser {
             .role(Role::ListBoxOption)
             .aria_selected(selected)
             .aria_label(format!("{} · {}", stash.name, stash.selector))
-            .h(px(58.))
+            .h(crate::appearance::ui_size(58.))
             .w_full()
             .px_3()
             .py_2()
@@ -1139,14 +1139,14 @@ impl StashBrowser {
             .child(
                 div()
                     .truncate()
-                    .text_size(px(12.))
+                    .text_size(crate::appearance::ui_text(12.))
                     .font_weight(FontWeight::MEDIUM)
                     .child(stash.name.clone()),
             )
             .child(
                 div()
                     .truncate()
-                    .text_size(px(10.))
+                    .text_size(crate::appearance::ui_text(10.))
                     .text_color(rgb(p.muted))
                     .child(format!(
                         "{} · {} · {}",
@@ -1170,7 +1170,7 @@ impl StashBrowser {
             .role(Role::ListBoxOption)
             .aria_selected(selected)
             .aria_label(format!("{} · {}", self.area.label(), file.path().display()))
-            .h(px(28.))
+            .h(crate::appearance::ui_size(28.))
             .w_full()
             .px_2()
             .flex()
@@ -1185,12 +1185,12 @@ impl StashBrowser {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(px(11.))
+                    .text_size(crate::appearance::ui_text(11.))
                     .child(file.path().display().to_string()),
             )
             .child(
                 div()
-                    .text_size(px(10.))
+                    .text_size(crate::appearance::ui_text(10.))
                     .text_color(rgb(p.muted))
                     .child(format!("{:?}", file.status)),
             )
@@ -1203,7 +1203,7 @@ impl StashBrowser {
         if let Some(error) = &self.preview_error {
             return div()
                 .p_3()
-                .text_size(px(12.))
+                .text_size(crate::appearance::ui_text(12.))
                 .text_color(rgb(p.warning))
                 .child(error.clone())
                 .into_any_element();
@@ -1211,7 +1211,7 @@ impl StashBrowser {
         if self.preview_task.is_some() {
             return div()
                 .p_4()
-                .text_size(px(12.))
+                .text_size(crate::appearance::ui_text(12.))
                 .text_color(rgb(p.muted))
                 .child("Reading saved file…")
                 .into_any_element();
@@ -1251,7 +1251,7 @@ impl StashBrowser {
                                 .p_2()
                                 .child(
                                     div()
-                                        .text_size(px(11.))
+                                        .text_size(crate::appearance::ui_text(11.))
                                         .text_color(rgb(p.muted))
                                         .child(label),
                                 )
@@ -1272,7 +1272,7 @@ impl StashBrowser {
                                         .when(side.render.is_none(), |element| {
                                             element.child(
                                                 div()
-                                                    .text_size(px(11.))
+                                                    .text_size(crate::appearance::ui_text(11.))
                                                     .text_color(rgb(p.muted))
                                                     .child(
                                                         side.message
@@ -1287,13 +1287,13 @@ impl StashBrowser {
                 .into_any_element(),
             Some(Content::Notice(message)) => div()
                 .p_4()
-                .text_size(px(12.))
+                .text_size(crate::appearance::ui_text(12.))
                 .text_color(rgb(p.muted))
                 .child(message.clone())
                 .into_any_element(),
             _ => div()
                 .p_4()
-                .text_size(px(12.))
+                .text_size(crate::appearance::ui_text(12.))
                 .text_color(rgb(p.muted))
                 .child("Select a saved file to inspect its exact comparison.")
                 .into_any_element(),
@@ -1333,8 +1333,8 @@ impl Render for StashBrowser {
         div().h(px(height)).flex().gap_3().when(narrow, |element| element.flex_col())
             .child(div().w(px(255.)).min_w_0().flex_shrink_0().h_full().flex().flex_col().border_1().border_color(rgb(p.border)).rounded(px(7.)).overflow_hidden()
                 .when(narrow, |element| element.w_full().h(px(140.)))
-                .child(div().h(px(38.)).flex().items_center().px_2().gap_1().border_b_1().border_color(rgb(p.border))
-                    .child(div().flex_1().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).child("Saved work"))
+                .child(div().h(crate::appearance::ui_size(38.)).flex().items_center().px_2().gap_1().border_b_1().border_color(rgb(p.border))
+                    .child(div().flex_1().text_size(crate::appearance::ui_text(11.)).font_weight(FontWeight::SEMIBOLD).child("Saved work"))
                     .child(button("refresh-stashes", "", "refresh", false).accessibility_label("Refresh saved stashes").disabled(busy).on_click(cx.listener(|this, _, window, cx| this.load_page(0, window, cx)))))
                 .child(div().id("stash-list-focus").role(Role::ListBox).aria_label("Saved stashes").tab_stop(true).track_focus(&self.stash_focus).flex_1().min_h_0()
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
@@ -1345,17 +1345,17 @@ impl Render for StashBrowser {
                         }
                     }))
                     .when(self.page.as_ref().is_some_and(|page| !page.entries.is_empty()), |element| element.child(list))
-                    .when(self.page.as_ref().is_some_and(|page| page.entries.is_empty()), |element| element.child(div().p_4().text_size(px(12.)).text_color(rgb(p.muted)).child("No saved stashes. Save current changes from the Actions menu in Changes."))))
-                .child(div().h(px(36.)).flex().items_center().justify_between().px_2().border_t_1().border_color(rgb(p.border))
+                    .when(self.page.as_ref().is_some_and(|page| page.entries.is_empty()), |element| element.child(div().p_4().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child("No saved stashes. Save current changes from the Actions menu in Changes."))))
+                .child(div().h(crate::appearance::ui_size(36.)).flex().items_center().justify_between().px_2().border_t_1().border_color(rgb(p.border))
                     .child(button("previous-stashes", "Previous", "", false).disabled(busy || self.offset == 0).on_click(cx.listener(|this, _, window, cx| this.load_page(this.offset.saturating_sub(STASH_PAGE_SIZE), window, cx))))
                     .child(button("next-stashes", "More", "", false).disabled(busy || self.page.as_ref().and_then(|page| page.next_offset).is_none()).on_click(cx.listener(|this, _, window, cx| { if let Some(offset) = this.page.as_ref().and_then(|page| page.next_offset) { this.load_page(offset, window, cx); } })))))
             .child(div().flex_1().min_w_0().min_h_0().flex().flex_col().gap_2()
-                .children(self.loading.map(|loading| div().text_size(px(12.)).text_color(rgb(p.muted)).child(loading)))
+                .children(self.loading.map(|loading| div().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(loading)))
                 .children(self.error.as_ref().map(|error| form_error(error, cx)))
                 .when_some(snapshot, |element, snapshot| element
                     .child(div().flex().flex_col().gap_1()
-                        .child(div().truncate().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child(snapshot.stash.name.clone()))
-                        .child(div().text_size(px(10.)).text_color(rgb(p.muted)).child(format!("{} · base {} · saved index {}", short_oid(&snapshot.stash.oid), short_oid(&snapshot.base_oid), short_oid(&snapshot.index_oid)))))
+                        .child(div().truncate().text_size(crate::appearance::ui_text(14.)).font_weight(FontWeight::SEMIBOLD).child(snapshot.stash.name.clone()))
+                        .child(div().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)).child(format!("{} · base {} · saved index {}", short_oid(&snapshot.stash.oid), short_oid(&snapshot.base_oid), short_oid(&snapshot.index_oid)))))
                     .child(div().flex().flex_wrap().items_center().gap_1().children([StashArea::Staged, StashArea::Unstaged, StashArea::Untracked].into_iter().map(|area| {
                         button(("stash-area", area as usize), format!("{} ({})", area.label(), area.files(&snapshot).len()), "", self.area == area).on_click(cx.listener(move |this, _, _, cx| this.choose_area(area, cx)))
                     })))
@@ -1368,7 +1368,7 @@ impl Render for StashBrowser {
                             }
                         }))
                         .when(!self.files().is_empty(), |element| element.child(files))
-                        .when(self.files().is_empty(), |element| element.child(div().p_3().text_size(px(11.)).text_color(rgb(p.muted)).child("No saved files in this group."))))
+                        .when(self.files().is_empty(), |element| element.child(div().p_3().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("No saved files in this group."))))
                     .child(div().flex().items_center().gap_1().children(["Diff", "Before", "After"].into_iter().enumerate().map(|(mode, label)| {
                         button(("stash-text-mode", mode), label, "", self.text_mode == mode).disabled(!matches!(self.content.as_deref(), Some(Content::Text { .. }))).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.ensure_editor(window, cx); cx.notify(); }))
                     })))
@@ -1378,8 +1378,8 @@ impl Render for StashBrowser {
                         .child(div().flex_1())
                         .child(button("drop-saved-stash", "Drop…", "", false).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.drop_stash(window, cx))))
                         .child(Button::new("restore-saved-stash").primary().small().label("Review restore…").disabled(busy).on_click(cx.listener(|this, _, window, cx| this.restore(window, cx)))))
-                    .child(div().text_size(px(10.)).text_color(rgb(p.muted)).child("Restoring keeps this stash saved. Drop it separately after checking the restored work.")))
-                .when(self.snapshot.is_none() && self.loading.is_none() && self.error.is_none(), |element| element.child(div().flex_1().flex().items_center().justify_center().p_5().text_size(px(12.)).text_color(rgb(p.muted)).child("Choose a stash to inspect its staged, unstaged and untracked files."))))
+                    .child(div().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)).child("Restoring keeps this stash saved. Drop it separately after checking the restored work.")))
+                .when(self.snapshot.is_none() && self.loading.is_none() && self.error.is_none(), |element| element.child(div().flex_1().flex().items_center().justify_center().p_5().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child("Choose a stash to inspect its staged, unstaged and untracked files."))))
     }
 }
 

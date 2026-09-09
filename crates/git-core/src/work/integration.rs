@@ -94,7 +94,9 @@ pub struct ConflictPreview {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConflictResolution {
     /// Save the reviewed draft without staging or marking the conflict resolved.
-    Save { bytes: Vec<u8> },
+    Save {
+        bytes: Vec<u8>,
+    },
     /// Save exactly these UTF-8 bytes, then stage only this path using Git's
     /// configured filters. Only regular files support the inline editor.
     Manual {
@@ -872,7 +874,10 @@ impl GitRepository {
                 );
                 if matches!(resolution, ConflictResolution::Manual { .. }) {
                     let source = std::str::from_utf8(bytes)?;
-                    ensure!(text_conflict_blocks(source)?.is_empty(), "Resolve the remaining conflict blocks before staging. Save draft writes the partial result without marking it resolved.");
+                    ensure!(
+                        text_conflict_blocks(source)?.is_empty(),
+                        "Resolve the remaining conflict blocks before staging. Save draft writes the partial result without marking it resolved."
+                    );
                 }
                 write_conflict_file(&self.path, &expected.path, expected.working.as_ref(), bytes)
                     .context(
@@ -925,7 +930,10 @@ impl GitRepository {
                     && !working.bytes.contains(&0)
                     && let Ok(source) = std::str::from_utf8(&working.bytes)
                 {
-                    ensure!(text_conflict_blocks(source)?.is_empty(), "The reviewed working file still has conflict blocks. Resolve and save them before marking the file resolved.");
+                    ensure!(
+                        text_conflict_blocks(source)?.is_empty(),
+                        "The reviewed working file still has conflict blocks. Resolve and save them before marking the file resolved."
+                    );
                 }
             }
         }

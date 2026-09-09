@@ -143,6 +143,7 @@ impl GitTurtle {
         self.selected_commit = None;
         self.selected_file = None;
         self.files.clear();
+        self.file_paths.reset();
         self.clear_preview();
         self.parent = 0;
         self.history_scroll.scroll_to_item(0, ScrollStrategy::Top);
@@ -190,6 +191,7 @@ impl GitTurtle {
         self.graph_lanes = self.graph.iter().map(|row| row.width).max().unwrap_or(1);
         self.selected_commit = normal.selected_commit;
         self.files = normal.files;
+        self.refresh_file_filter(cx);
         self.selected_file = normal.selected_file;
         self.parent = normal.parent;
         self.preferred_file = normal.preferred_file;
@@ -377,7 +379,7 @@ impl GitTurtle {
             .flex()
             .flex_col()
             .gap_1()
-            .text_size(px(10.))
+            .text_size(crate::appearance::ui_text(10.))
             .text_color(rgb(colors.muted))
             .child(
                 div()

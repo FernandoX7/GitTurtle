@@ -844,7 +844,10 @@ fn run_git_output(path: &Path, args: &[&str]) -> Result<Output> {
 }
 
 fn bounded_output(mut command: Command, timeout: Duration) -> Result<Output> {
-    ensure!(!work::inspection_cancelled(), "Repository inspection cancelled");
+    ensure!(
+        !work::inspection_cancelled(),
+        "Repository inspection cancelled"
+    );
     isolate_process_group(&mut command);
     let mut child = command
         .stdout(Stdio::piped())

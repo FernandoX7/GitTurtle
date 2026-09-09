@@ -28,6 +28,8 @@ pub struct AppSettings {
     pub external_editor: String,
     pub columns: ColumnSettings,
     pub density: Density,
+    pub interface_text_size: u8,
+    pub code_text_size: u8,
     pub reopen_last: bool,
     pub default_branch: String,
 }
@@ -40,6 +42,8 @@ impl Default for AppSettings {
             external_editor: String::new(),
             columns: ColumnSettings::default(),
             density: Density::default(),
+            interface_text_size: crate::appearance::DEFAULT_INTERFACE_TEXT_SIZE,
+            code_text_size: crate::appearance::DEFAULT_CODE_TEXT_SIZE,
             reopen_last: true,
             default_branch: "main".into(),
         }
@@ -67,11 +71,24 @@ impl AppSettings {
 
     pub fn normalize(&mut self) {
         self.columns.normalize();
+        self.interface_text_size = self.interface_text_size.clamp(
+            *crate::appearance::INTERFACE_TEXT_RANGE.start(),
+            *crate::appearance::INTERFACE_TEXT_RANGE.end(),
+        );
+        self.code_text_size = self.code_text_size.clamp(
+            *crate::appearance::CODE_TEXT_RANGE.start(),
+            *crate::appearance::CODE_TEXT_RANGE.end(),
+        );
     }
 
     /// Validate an explicit settings edit before persistence. This is only the
     /// preference boundary; Git operations still validate their actual targets.
     pub fn validate(&self) -> Result<()> {
+        ensure!(
+            crate::appearance::INTERFACE_TEXT_RANGE.contains(&self.interface_text_size)
+                && crate::appearance::CODE_TEXT_RANGE.contains(&self.code_text_size),
+            "Choose interface text from 11 to 18 points and code text from 10 to 24 points"
+        );
         ensure!(
             self.external_editor.len() <= 4096
                 && !self.external_editor.contains(['\0', '\n', '\r']),
@@ -360,7 +377,7 @@ fn absolute_environment_path(name: &str) -> Option<PathBuf> {
         .filter(|path| path.is_absolute())
 }
 
-fn settings_path() -> Result<PathBuf> {
+pub(super) fn settings_path() -> Result<PathBuf> {
     #[cfg(target_os = "macos")]
     let directory = absolute_environment_path("HOME")
         .map(|home| home.join("Library/Application Support/GitTurtle"));
@@ -383,7 +400,7 @@ impl Drop for PendingFile {
     }
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(super) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let directory = path
         .parent()
         .context("Settings path has no parent directory")?;
@@ -440,6 +457,31 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_sizes_migrate_independently_and_reject_unsupported_values() {
+        let old: AppSettings =
+            serde_json::from_str(r#"{"theme":"nord","density":"compact"}"#).unwrap();
+        assert_eq!((old.interface_text_size, old.code_text_size), (13, 12));
+        let mut changed = old.clone();
+        changed.interface_text_size = 18;
+        changed.code_text_size = 24;
+        changed.validate().unwrap();
+        let loaded: AppSettings =
+            serde_json::from_str(&serde_json::to_string(&changed).unwrap()).unwrap();
+        assert_eq!(loaded, changed);
+        assert_eq!(loaded.theme, ThemeChoice::Nord);
+        assert_eq!(loaded.density, Density::Compact);
+        changed.interface_text_size = 0;
+        changed.code_text_size = 255;
+        assert!(changed.validate().is_err());
+        changed.normalize();
+        assert_eq!(
+            (changed.interface_text_size, changed.code_text_size),
+            (11, 24)
+        );
+        changed.validate().unwrap();
+    }
 
     static TEST_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -530,6 +572,8 @@ mod tests {
         Preferences::save_commit_drafts_at(&drafts, &path).unwrap();
         let edited = AppSettings {
             density: Density::Compact,
+            interface_text_size: 16,
+            code_text_size: 19,
             ..Default::default()
         };
         Preferences::save_settings_at(&edited, &path).unwrap();

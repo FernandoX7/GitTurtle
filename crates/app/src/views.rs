@@ -10,7 +10,7 @@ impl GitTurtle {
         let p = palette(cx);
         let busy = self.operation_busy.is_some();
         div()
-            .h(px(56.))
+            .h(crate::appearance::ui_size(56.))
             .flex_shrink_0()
             .flex()
             .items_center()
@@ -38,7 +38,7 @@ impl GitTurtle {
                     .gap_0p5()
                     .child(
                         div()
-                            .text_size(px(14.))
+                            .text_size(crate::appearance::ui_text(14.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .truncate()
                             .child(
@@ -50,7 +50,7 @@ impl GitTurtle {
                     )
                     .child(
                         div()
-                            .text_size(px(11.))
+                            .text_size(crate::appearance::ui_text(11.))
                             .text_color(rgb(p.muted))
                             .truncate()
                             .child(
@@ -103,7 +103,7 @@ impl GitTurtle {
             .child(div().flex_1())
             .children(self.operation_busy.map(|label| {
                 div()
-                    .text_size(px(11.))
+                    .text_size(crate::appearance::ui_text(11.))
                     .text_color(rgb(p.accent))
                     .child(self.operation_progress().unwrap_or_else(|| label.into()))
             }))
@@ -183,7 +183,7 @@ impl GitTurtle {
             .border_color(rgb(colors.border))
             .child(
                 div()
-                    .h(px(40.))
+                    .h(crate::appearance::ui_size(40.))
                     .flex_shrink_0()
                     .flex()
                     .items_center()
@@ -211,7 +211,7 @@ impl GitTurtle {
                 div()
                     .px_3()
                     .pb_3()
-                    .child(Input::new(&self.nav_search).text_size(px(11.))),
+                    .child(Input::new(&self.nav_search).text_size(crate::appearance::ui_text(11.))),
             )
             .child(
                 uniform_list(
@@ -230,7 +230,7 @@ impl GitTurtle {
             .child(
                 div()
                     .p_3()
-                    .text_size(px(10.))
+                    .text_size(crate::appearance::ui_text(10.))
                     .text_color(rgb(colors.muted))
                     .border_t_1()
                     .border_color(rgb(colors.border))
@@ -245,13 +245,13 @@ impl GitTurtle {
         if let NavRow::Section(label, count) = &row {
             return div()
                 .w_full()
-                .h(px(30.))
+                .h(crate::appearance::ui_size(30.))
                 .px_3()
                 .pt_2()
                 .flex()
                 .items_center()
                 .justify_between()
-                .text_size(px(10.))
+                .text_size(crate::appearance::ui_text(10.))
                 .text_color(rgb(colors.muted))
                 .child(*label)
                 .child(count.to_string())
@@ -269,6 +269,7 @@ impl GitTurtle {
             return div()
                 .id(("nav-folder", index))
                 .role(Role::Button)
+                .aria_expanded(*expanded)
                 .aria_label(format!(
                     "{} {} · {} branches",
                     if *expanded { "Collapse" } else { "Expand" },
@@ -276,13 +277,13 @@ impl GitTurtle {
                     count
                 ))
                 .w_full()
-                .h(px(30.))
+                .h(crate::appearance::ui_size(30.))
                 .pl(px(12. + *depth as f32 * 12.))
                 .pr_3()
                 .flex()
                 .items_center()
                 .gap_1()
-                .text_size(px(12.))
+                .text_size(crate::appearance::ui_text(12.))
                 .text_color(rgb(colors.muted))
                 .cursor_pointer()
                 .hover(|s| s.bg(rgb(colors.hover)).text_color(rgb(colors.text)))
@@ -290,7 +291,11 @@ impl GitTurtle {
                 .child(div().w(px(12.)).child(if *expanded { "⌄" } else { "›" }))
                 .child(icon("folder", 14., colors.muted))
                 .child(div().flex_1().truncate().child(label.clone()))
-                .child(div().text_size(px(10.)).child(count.to_string()))
+                .child(
+                    div()
+                        .text_size(crate::appearance::ui_text(10.))
+                        .child(count.to_string()),
+                )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if !this.expanded_folders.remove(&key) {
                         this.expanded_folders.insert(key.clone());
@@ -365,13 +370,13 @@ impl GitTurtle {
             .aria_selected(active)
             .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
             .w_full()
-            .h(px(30.))
+            .h(crate::appearance::ui_size(30.))
             .pl(px(12. + depth as f32 * 12.))
             .pr_3()
             .flex()
             .items_center()
             .gap_2()
-            .text_size(px(12.))
+            .text_size(crate::appearance::ui_text(12.))
             .overflow_hidden()
             .cursor_pointer()
             .bg(rgb(if active {
@@ -509,7 +514,7 @@ impl GitTurtle {
         };
         let view = cx.entity().downgrade();
         let header = div()
-            .h(px(34.))
+            .h(crate::appearance::ui_size(34.))
             .flex_shrink_0()
             .flex()
             .items_center()
@@ -518,7 +523,7 @@ impl GitTurtle {
             .border_color(rgb(colors.canvas))
             .border_b_1()
             .bg(rgb(colors.panel))
-            .text_size(px(11.))
+            .text_size(crate::appearance::ui_text(11.))
             .font_weight(FontWeight::MEDIUM)
             .text_color(rgb(colors.muted))
             .children(columns.columns.iter().map(|column| {
@@ -574,7 +579,7 @@ impl GitTurtle {
             })
             .child(
                 div()
-                    .h(px(40.))
+                    .h(crate::appearance::ui_size(40.))
                     .flex_shrink_0()
                     .flex()
                     .items_center()
@@ -592,7 +597,7 @@ impl GitTurtle {
                     )
                     .child(
                         div()
-                            .text_size(px(10.))
+                            .text_size(crate::appearance::ui_text(10.))
                             .text_color(rgb(colors.muted))
                             .child(format!("{} commits", self.visible.len())),
                     )
@@ -632,19 +637,19 @@ impl GitTurtle {
             )
             .child(
                 div()
-                    .h(px(38.))
+                    .h(crate::appearance::ui_size(38.))
                     .flex_shrink_0()
                     .px_3()
                     .pb_2()
                     .pt_1()
-                    .child(Input::new(&self.search).text_size(px(12.))),
+                    .child(Input::new(&self.search).text_size(crate::appearance::ui_text(12.))),
             )
             .child(self.render_history_search_controls(cx))
             .children(self.graph_notice.as_ref().map(|notice| {
                 div()
                     .px_3()
                     .py_1()
-                    .text_size(px(10.))
+                    .text_size(crate::appearance::ui_text(10.))
                     .text_color(rgb(colors.muted))
                     .child(notice.clone())
             }))
@@ -681,6 +686,9 @@ impl GitTurtle {
                                     .tab_stop(true)
                                     .key_context("GitTurtleList")
                                     .track_focus(&self.focus)
+                                    .border_1()
+                                    .border_color(rgb(colors.border))
+                                    .focus_visible(|style| style.border_color(rgb(colors.accent)))
                                     .flex_1()
                                     .min_h_0()
                                     .overflow_hidden()
@@ -733,7 +741,7 @@ impl GitTurtle {
                         .px_1()
                         .py_0p5()
                         .rounded(px(3.))
-                        .text_size(px(10.))
+                        .text_size(crate::appearance::ui_text(10.))
                         .text_color(rgb(color))
                         .bg(rgba((color << 8) | 0x1e))
                         .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
@@ -744,7 +752,7 @@ impl GitTurtle {
                 references = references.child(
                     div()
                         .flex_shrink_0()
-                        .text_size(px(10.))
+                        .text_size(crate::appearance::ui_text(10.))
                         .text_color(rgb(colors.muted))
                         .child(format!("+{}", names.len() - 1)),
                 );
@@ -801,14 +809,14 @@ impl GitTurtle {
                         .pl(px(10.))
                         .pr_3()
                         .truncate()
-                        .text_size(px(13.))
+                        .text_size(crate::appearance::ui_text(13.))
                         .child(commit.subject.clone())
                         .into_any_element(),
                     ColumnId::Author => cell
                         .pl(px(10.))
                         .pr_3()
                         .truncate()
-                        .text_size(px(11.))
+                        .text_size(crate::appearance::ui_text(11.))
                         .text_color(rgb(colors.muted))
                         .child(commit.author.clone())
                         .into_any_element(),
@@ -816,7 +824,7 @@ impl GitTurtle {
                         .pl(px(10.))
                         .pr_3()
                         .truncate()
-                        .text_size(px(11.))
+                        .text_size(crate::appearance::ui_text(11.))
                         .text_color(rgb(colors.muted))
                         .child(short_date(commit.timestamp))
                         .into_any_element(),
@@ -825,7 +833,7 @@ impl GitTurtle {
                         .pr_3()
                         .truncate()
                         .font_family(mono())
-                        .text_size(px(11.))
+                        .text_size(crate::appearance::ui_text(11.))
                         .text_color(rgb(colors.muted))
                         .child(short_oid(&commit.oid))
                         .into_any_element(),
@@ -850,6 +858,9 @@ impl GitTurtle {
     pub(super) fn render_inspector(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.file_history.is_active() {
             return self.render_file_history(cx);
+        }
+        if self.revision_inspection.is_active() {
+            return self.render_revision_inspector(cx);
         }
         let colors = palette(cx);
         let Some(commit) = self
@@ -887,7 +898,7 @@ impl GitTurtle {
         if commit.parents.len() > 128 {
             parents = parents.child(
                 div()
-                    .text_size(px(10.))
+                    .text_size(crate::appearance::ui_text(10.))
                     .text_color(rgb(colors.muted))
                     .child(format!("Showing 128 of {} parents", commit.parents.len())),
             );
@@ -895,7 +906,7 @@ impl GitTurtle {
         if commit.parents.is_empty() {
             parents = parents.child(
                 div()
-                    .text_size(px(10.))
+                    .text_size(crate::appearance::ui_text(10.))
                     .text_color(rgb(colors.muted))
                     .child("Root commit · empty-tree comparison"),
             );
@@ -926,7 +937,7 @@ impl GitTurtle {
                             .flex()
                             .items_center()
                             .justify_between()
-                            .text_size(px(10.))
+                            .text_size(crate::appearance::ui_text(10.))
                             .text_color(rgb(colors.muted))
                             .font_weight(FontWeight::MEDIUM)
                             .child("Commit details")
@@ -944,7 +955,7 @@ impl GitTurtle {
                     )
                     .child(
                         div()
-                            .text_size(px(15.))
+                            .text_size(crate::appearance::ui_text(15.))
                             .line_height(relative(1.35))
                             .font_weight(FontWeight::MEDIUM)
                             .child(commit.subject.clone()),
@@ -965,7 +976,7 @@ impl GitTurtle {
                                     .justify_center()
                                     .bg(rgba((colors.hunk << 8) | 0x22))
                                     .text_color(rgb(colors.hunk))
-                                    .text_size(px(11.))
+                                    .text_size(crate::appearance::ui_text(11.))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(
                                         commit
@@ -987,12 +998,12 @@ impl GitTurtle {
                                     .child(
                                         div()
                                             .truncate()
-                                            .text_size(px(12.))
+                                            .text_size(crate::appearance::ui_text(12.))
                                             .child(commit.author.clone()),
                                     )
                                     .child(
                                         div()
-                                            .text_size(px(11.))
+                                            .text_size(crate::appearance::ui_text(11.))
                                             .text_color(rgb(colors.muted))
                                             .child(full_date(commit.timestamp)),
                                     ),
@@ -1016,7 +1027,7 @@ impl GitTurtle {
                     .p_3()
                     .border_b_1()
                     .border_color(rgb(colors.border))
-                    .text_size(px(12.))
+                    .text_size(crate::appearance::ui_text(12.))
                     .child(
                         button("copy-message", "Copy full message", "copy", false).on_click(
                             move |_, _, cx| {
@@ -1036,6 +1047,7 @@ impl GitTurtle {
 
     pub(super) fn render_files(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
+        let visible = self.filtered_file_indices(cx);
         div()
             .size_full()
             .flex()
@@ -1044,12 +1056,12 @@ impl GitTurtle {
             .border_color(rgb(colors.border))
             .child(
                 div()
-                    .h(px(36.))
+                    .h(crate::appearance::ui_size(36.))
                     .flex_shrink_0()
                     .px_3()
                     .flex()
                     .items_center()
-                    .text_size(px(11.))
+                    .text_size(crate::appearance::ui_text(11.))
                     .text_color(rgb(colors.muted))
                     .font_weight(FontWeight::MEDIUM)
                     .gap_2()
@@ -1061,9 +1073,15 @@ impl GitTurtle {
                             .py_0p5()
                             .rounded(px(4.))
                             .bg(rgb(colors.hover))
-                            .text_size(px(10.))
+                            .text_size(crate::appearance::ui_text(10.))
                             .child(self.files.len().to_string()),
                     ),
+            )
+            .child(
+                div()
+                    .px_3()
+                    .pb_2()
+                    .child(Input::new(&self.file_filter).text_size(appearance::ui_text(12.))),
             )
             .child(
                 div()
@@ -1073,6 +1091,9 @@ impl GitTurtle {
                     .tab_stop(true)
                     .key_context("GitTurtleList")
                     .track_focus(&self.file_focus)
+                    .border_1()
+                    .border_color(rgb(colors.border))
+                    .focus_visible(|style| style.border_color(rgb(colors.accent)))
                     .flex_1()
                     .min_h_0()
                     .on_mouse_down(
@@ -1082,17 +1103,33 @@ impl GitTurtle {
                             window.focus(&this.file_focus, cx);
                         }),
                     )
-                    .child(if self.files.is_empty() {
+                    .child(if visible.is_empty() {
                         empty(
-                            self.loading.unwrap_or("No file changes"),
-                            "Compared against the selected parent.",
+                            if self.file_paths.pending {
+                                "Filtering changed paths…"
+                            } else if self.file_paths.error.is_some() {
+                                "Path filter unavailable"
+                            } else {
+                                self.loading.unwrap_or("No file changes")
+                            },
+                            self.file_paths.error.as_deref().unwrap_or(
+                                if self.file_paths.pending {
+                                    "Matching the current file snapshot."
+                                } else if self.file_filter.read(cx).value().is_empty() {
+                                    "No changes between the displayed targets."
+                                } else {
+                                    "No matching paths. Clear the path filter to see all files."
+                                },
+                            ),
                         )
                     } else {
                         uniform_list(
                             "files",
-                            self.files.len(),
+                            visible.len(),
                             cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+                                let visible = this.filtered_file_indices(cx);
                                 range
+                                    .filter_map(|i| visible.get(i).copied())
                                     .map(|i| this.render_file_row(i, cx))
                                     .collect::<Vec<_>>()
                             }),
@@ -1165,17 +1202,20 @@ impl GitTurtle {
                     .flex_col()
                     .gap_1()
                     .child(
-                        div().truncate().text_size(px(12.)).child(
-                            path.file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .into_owned(),
-                        ),
+                        div()
+                            .truncate()
+                            .text_size(crate::appearance::ui_text(12.))
+                            .child(
+                                path.file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .into_owned(),
+                            ),
                     )
                     .child(
                         div()
                             .truncate()
-                            .text_size(px(10.))
+                            .text_size(crate::appearance::ui_text(10.))
                             .text_color(rgb(colors.muted))
                             .child(
                                 path.parent()
@@ -1191,7 +1231,7 @@ impl GitTurtle {
                     .px_1()
                     .py_0p5()
                     .rounded(px(3.))
-                    .text_size(px(10.))
+                    .text_size(crate::appearance::ui_text(10.))
                     .text_color(rgb(color))
                     .child(label),
             )
@@ -1226,13 +1266,14 @@ impl GitTurtle {
             return self.render_blame(cx);
         }
         let colors = palette(cx);
+        let quick_source = self.is_quick_source();
         let file = self.selected_file.and_then(|index| self.files.get(index));
         let path = file
             .map(|file| file.path().to_string_lossy().into_owned())
             .unwrap_or("File comparison".into());
         let copy_path = path.clone();
         let mut toolbar = div()
-            .h(px(42.))
+            .h(crate::appearance::ui_size(42.))
             .flex_shrink_0()
             .flex()
             .items_center()
@@ -1243,7 +1284,7 @@ impl GitTurtle {
             .child(
                 button(
                     "back-history",
-                    if self.file_history.is_active() {
+                    if self.file_history.is_active() || self.revision_inspection.is_active() {
                         "Back"
                     } else {
                         "History"
@@ -1253,13 +1294,20 @@ impl GitTurtle {
                 )
                 .accessibility_label(if self.file_history.is_active() {
                     "Back from file history"
+                } else if self.revision_inspection.is_active() {
+                    "Back to previous inspection"
                 } else {
                     "Back to history"
                 })
                 .tooltip("Back · Escape")
                 .on_click(cx.listener(|this, _, window, cx| this.back_to_history(window, cx))),
             )
-            .child(div().h(px(18.)).w(px(1.)).bg(rgb(colors.border)))
+            .child(
+                div()
+                    .h(crate::appearance::ui_size(18.))
+                    .w(px(1.))
+                    .bg(rgb(colors.border)),
+            )
             .children(
                 self.working_selected
                     .filter(|_| self.mode == WorkspaceMode::Working)
@@ -1270,7 +1318,7 @@ impl GitTurtle {
                             .px_2()
                             .py_1()
                             .rounded(px(4.))
-                            .text_size(px(10.))
+                            .text_size(crate::appearance::ui_text(10.))
                             .text_color(rgb(if staged {
                                 colors.added
                             } else {
@@ -1290,7 +1338,7 @@ impl GitTurtle {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(px(11.))
+                    .text_size(crate::appearance::ui_text(11.))
                     .tooltip(move |window, cx| Tooltip::new(path.clone()).build(window, cx))
                     .child(
                         file.map(|file| file.path().display().to_string())
@@ -1371,6 +1419,9 @@ impl GitTurtle {
                         (TextMode::Before, "Before"),
                         (TextMode::After, "After"),
                     ] {
+                        if quick_source {
+                            continue;
+                        }
                         modes = modes.child(
                             button(name, name, "", self.text_mode == mode)
                                 .toggled(self.text_mode == mode)
@@ -1382,6 +1433,10 @@ impl GitTurtle {
                         );
                     }
                     toolbar = toolbar.child(modes);
+                    if quick_source {
+                        toolbar = toolbar
+                            .child(div().text_size(appearance::ui_text(12.)).child("Source"));
+                    }
                     let editor = match self.text_mode {
                         TextMode::Split => &None,
                         TextMode::Unified => &self.patch_editor,
@@ -1394,7 +1449,14 @@ impl GitTurtle {
                             |view| div().size_full().child(view.clone()).into_any_element(),
                         )
                     } else if self.text_mode == TextMode::Unified && patch.is_empty() {
-                        empty("Content unchanged", "Only the file mode or path changed.")
+                        if self.review.options.hide_whitespace {
+                            empty(
+                                "No visible changes",
+                                "Whitespace-only differences are hidden. Source tabs retain the exact content.",
+                            )
+                        } else {
+                            empty("Content unchanged", "Only the file mode or path changed.")
+                        }
                     } else if self.text_mode == TextMode::Unified
                         && let Some(view) = &self.patch_view
                     {
@@ -1404,8 +1466,12 @@ impl GitTurtle {
                             .h(relative(1.))
                             .readonly(true)
                             .bordered(false)
-                            .aria_label("Read-only file comparison")
-                            .text_size(px(12.))
+                            .aria_label(if quick_source {
+                                "Read-only tracked source file"
+                            } else {
+                                "Read-only file comparison"
+                            })
+                            .text_size(crate::appearance::code_text())
                             .into_any_element()
                     } else {
                         empty("Loading text…", "")
@@ -1428,6 +1494,13 @@ impl GitTurtle {
             .flex_col()
             .bg(rgb(colors.canvas))
             .child(toolbar)
+            .child(self.render_lfs_download_actions(cx))
+            .when(
+                matches!(self.content.as_deref(), Some(Content::Text { .. }))
+                    && !self.blame.is_visible()
+                    && !quick_source,
+                |el| el.child(self.render_text_review(cx)),
+            )
             .child(div().flex_1().min_h_0().overflow_hidden().child(content))
             .children(
                 self.content
@@ -1443,38 +1516,42 @@ impl GitTurtle {
                         div()
                             .px_3()
                             .py_2()
-                            .text_size(px(11.))
+                            .text_size(crate::appearance::ui_text(11.))
                             .text_color(rgb(colors.muted))
                             .child(reason.clone())
                     }),
             )
             .children(file.map(|file| {
                 div()
-                    .h(px(24.))
+                    .h(crate::appearance::ui_size(24.))
                     .flex_shrink_0()
                     .px_3()
                     .flex()
                     .items_center()
-                    .text_size(px(10.))
+                    .text_size(crate::appearance::ui_text(10.))
                     .text_color(rgb(colors.muted))
                     .border_t_1()
                     .border_color(rgb(colors.border))
-                    .child(format!(
-                        "{}   ·   {} → {}   ·   {} → {}",
-                        file.status.label(),
-                        if file.old_mode == "000000" {
-                            "absent"
-                        } else {
-                            &file.old_mode
-                        },
-                        if file.new_mode == "000000" {
-                            "absent"
-                        } else {
-                            &file.new_mode
-                        },
-                        file.old_oid.as_deref().map(short_oid).unwrap_or("—".into()),
-                        file.new_oid.as_deref().map(short_oid).unwrap_or("—".into())
-                    ))
+                    .child(if quick_source {
+                        format!("Tracked source · mode {}", file.new_mode)
+                    } else {
+                        format!(
+                            "{}   ·   {} → {}   ·   {} → {}",
+                            file.status.label(),
+                            if file.old_mode == "000000" {
+                                "absent"
+                            } else {
+                                &file.old_mode
+                            },
+                            if file.new_mode == "000000" {
+                                "absent"
+                            } else {
+                                &file.new_mode
+                            },
+                            file.old_oid.as_deref().map(short_oid).unwrap_or("—".into()),
+                            file.new_oid.as_deref().map(short_oid).unwrap_or("—".into())
+                        )
+                    })
             }))
             .into_any_element()
     }
@@ -1582,7 +1659,7 @@ impl Render for GitTurtle {
             .flex_col()
             .bg(rgb(colors.canvas))
             .text_color(rgb(colors.text))
-            .text_size(px(13.))
+            .text_size(crate::appearance::ui_text(13.))
             // Keep an active image drag continuous across the toolbar, inspector,
             // and either image viewport until the mouse is released.
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
@@ -1638,6 +1715,26 @@ impl Render for GitTurtle {
                     }
                 }),
             )
+            .on_action(cx.listener(|this, _: &ExtendNextWorking, window, cx| {
+                if this.mode == WorkspaceMode::Working {
+                    this.extend_working_selection(true, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ExtendPreviousWorking, window, cx| {
+                if this.mode == WorkspaceMode::Working {
+                    this.extend_working_selection(false, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &SelectAllWorking, _, cx| this.select_all_working(cx)))
+            .on_action(
+                cx.listener(|this, _: &ShowActivity, window, cx| this.open_activity(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &QuickOpenFile, window, cx| this.open_quick_file(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &CompareRevisions, window, cx| {
+                this.open_revision_comparison(window, cx)
+            }))
             .on_action(
                 cx.listener(|this, _: &ShowHistory, window, cx| this.show_history(window, cx)),
             )
@@ -1674,9 +1771,22 @@ impl Render for GitTurtle {
             .on_action(cx.listener(Self::refresh))
             .on_action(cx.listener(Self::search))
             .on_action(cx.listener(Self::clear_search))
+            // Editor Escape is a distinct action from the list binding. Find
+            // and native editor popovers consume it first; otherwise it is Back.
+            .on_action(
+                cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| {
+                    this.clear_search(&ClearSearch, window, cx);
+                }),
+            )
             .on_action(
                 cx.listener(|this, _: &BackHistory, window, cx| this.back_to_history(window, cx)),
             )
+            .on_action(cx.listener(|this, _: &NextTextChange, window, cx| {
+                this.navigate_text_change(true, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &PreviousTextChange, window, cx| {
+                this.navigate_text_change(false, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &NextRow, window, cx| {
                 this.move_selection(1, false, window, cx)
             }))
@@ -1756,7 +1866,7 @@ impl Render for GitTurtle {
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .text_size(px(11.))
+                                .text_size(crate::appearance::ui_text(11.))
                                 .child(
                                     error
                                         .lines()
@@ -1801,7 +1911,7 @@ impl Render for GitTurtle {
                                 .aria_label(notice.clone())
                                 .flex_1()
                                 .truncate()
-                                .text_size(px(11.))
+                                .text_size(crate::appearance::ui_text(11.))
                                 .child(notice.clone()),
                         )
                         .child(
@@ -1817,7 +1927,7 @@ impl Render for GitTurtle {
             .child(div().flex_1().min_h_0().child(body))
             .child(
                 div()
-                    .h(px(26.))
+                    .h(crate::appearance::ui_size(26.))
                     .flex_shrink_0()
                     .flex()
                     .items_center()
@@ -1826,7 +1936,7 @@ impl Render for GitTurtle {
                     .border_t_1()
                     .border_color(rgb(colors.border))
                     .bg(rgb(colors.panel))
-                    .text_size(px(10.))
+                    .text_size(crate::appearance::ui_text(10.))
                     .text_color(rgb(colors.muted))
                     .child(
                         div()

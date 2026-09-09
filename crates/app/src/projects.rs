@@ -376,7 +376,7 @@ impl ProjectHub {
             .into_owned();
         Button::new(("recent-project", index))
             .ghost()
-            .h(px(76.))
+            .h(crate::appearance::ui_size(76.))
             .w_full()
             .px_4()
             .rounded(px(12.))
@@ -411,14 +411,14 @@ impl ProjectHub {
                             .text_left()
                             .child(
                                 div()
-                                    .text_size(px(14.))
+                                    .text_size(crate::appearance::ui_text(14.))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .truncate()
                                     .child(name),
                             )
                             .child(
                                 div()
-                                    .text_size(px(11.))
+                                    .text_size(crate::appearance::ui_text(11.))
                                     .text_color(colors.muted_foreground)
                                     .truncate()
                                     .child(location),
@@ -452,11 +452,11 @@ impl ProjectHub {
                     .child(
                         div().flex().items_center().gap_2()
                             .child(hub_icon("clock", 16., colors.muted_foreground))
-                            .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child("Recently opened")),
+                            .child(div().text_size(crate::appearance::ui_text(15.)).font_weight(FontWeight::SEMIBOLD).child("Recently opened")),
                     )
                     .child(
                         div().px_2().py_0p5().rounded(px(6.))
-                            .bg(colors.secondary).text_size(px(11.))
+                            .bg(colors.secondary).text_size(crate::appearance::ui_text(11.))
                             .text_color(colors.muted_foreground)
                             .child(if searching { format!("{} of {}", self.filtered.len(), self.recent.len()) } else { self.recent.len().to_string() }),
                     ),
@@ -492,8 +492,8 @@ impl ProjectHub {
                                 .gap_3()
                                 .text_center()
                                 .child(hub_icon("folder", 28., colors.muted_foreground))
-                                .child(div().text_size(px(15.)).font_weight(FontWeight::MEDIUM).child(if self.recent.is_empty() { "Your next project starts here" } else { "No matching projects" }))
-                                .child(div().max_w(px(240.)).text_size(px(12.)).line_height(relative(1.5)).text_color(colors.muted_foreground).child(if self.recent.is_empty() { "Open, clone, or create a repository. It will be waiting here next time." } else { "Try another project name or folder." }))
+                                .child(div().text_size(crate::appearance::ui_text(15.)).font_weight(FontWeight::MEDIUM).child(if self.recent.is_empty() { "Your next project starts here" } else { "No matching projects" }))
+                                .child(div().max_w(px(240.)).text_size(crate::appearance::ui_text(12.)).line_height(relative(1.5)).text_color(colors.muted_foreground).child(if self.recent.is_empty() { "Open, clone, or create a repository. It will be waiting here next time." } else { "Try another project name or folder." }))
                                 .when(searching, |empty| empty.child(Button::new("hub-clear-search").label("Clear search").disabled(self.unavailable()).on_click(cx.listener(|this, _, window, cx| this.clear_search(window, cx))))),
                         )
                     })
@@ -517,7 +517,7 @@ impl ProjectHub {
             .gap_2()
             .child(
                 div()
-                    .text_size(px(12.))
+                    .text_size(crate::appearance::ui_text(12.))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(Theme::global(cx).colors.foreground)
                     .child(label),
@@ -579,7 +579,7 @@ impl ProjectHub {
                             Button::new(label)
                                 .ghost()
                                 .flex_1()
-                                .h(px(32.))
+                                .h(crate::appearance::ui_size(32.))
                                 .rounded(px(7.))
                                 .label(label)
                                 .icon(
@@ -622,14 +622,14 @@ impl ProjectHub {
                             )
                             .child(
                                 div()
-                                    .text_size(px(19.))
+                                    .text_size(crate::appearance::ui_text(19.))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(title),
                             ),
                     )
                     .child(
                         div()
-                            .text_size(px(12.))
+                            .text_size(crate::appearance::ui_text(12.))
                             .line_height(relative(1.55))
                             .text_color(colors.muted_foreground)
                             .child(description),
@@ -640,7 +640,7 @@ impl ProjectHub {
                     .child(
                         Button::new("hub-open-folder")
                             .primary()
-                            .h(px(40.))
+                            .h(crate::appearance::ui_size(40.))
                             .w_full()
                             .label(if self.busy {
                                 self.busy_label()
@@ -656,7 +656,7 @@ impl ProjectHub {
                     )
                     .child(
                         div()
-                            .text_size(px(11.))
+                            .text_size(crate::appearance::ui_text(11.))
                             .text_color(colors.muted_foreground)
                             .child("You can also open any project from the recent list."),
                     )
@@ -696,13 +696,13 @@ impl ProjectHub {
                                                 .gap_1()
                                                 .child(
                                                     div()
-                                                        .text_size(px(12.))
+                                                        .text_size(crate::appearance::ui_text(12.))
                                                         .font_weight(FontWeight::MEDIUM)
                                                         .child(title),
                                                 )
                                                 .child(
                                                     div()
-                                                        .text_size(px(11.))
+                                                        .text_size(crate::appearance::ui_text(11.))
                                                         .line_height(relative(1.5))
                                                         .text_color(colors.muted_foreground)
                                                         .child(detail),
@@ -734,7 +734,7 @@ impl ProjectHub {
                                     .gap_2()
                                     .child(
                                         div()
-                                            .text_size(px(12.))
+                                            .text_size(crate::appearance::ui_text(12.))
                                             .font_weight(FontWeight::MEDIUM)
                                             .child("Parent folder"),
                                     )
@@ -796,18 +796,23 @@ impl ProjectHub {
                                         .gap_1()
                                         .child(
                                             div()
-                                                .text_size(px(10.))
+                                                .text_size(crate::appearance::ui_text(10.))
                                                 .text_color(colors.muted_foreground)
                                                 .child("New repository folder"),
                                         )
-                                        .child(div().text_size(px(11.)).truncate().child(display)),
+                                        .child(
+                                            div()
+                                                .text_size(crate::appearance::ui_text(11.))
+                                                .truncate()
+                                                .child(display),
+                                        ),
                                 ),
                         )
                     })
                     .child(
                         Button::new("hub-submit")
                             .primary()
-                            .h(px(40.))
+                            .h(crate::appearance::ui_size(40.))
                             .w_full()
                             .icon(
                                 Icon::default()
@@ -839,7 +844,7 @@ impl ProjectHub {
                         .bg(rgb(palette.removed_background))
                         .p_3()
                         .line_height(relative(1.5))
-                        .text_size(px(12.))
+                        .text_size(crate::appearance::ui_text(12.))
                         .text_color(colors.danger)
                         .child(error.clone()),
                 )
@@ -865,7 +870,7 @@ impl Render for ProjectHub {
             .flex_col()
             .child(
                 div()
-                    .h(px(62.))
+                    .h(crate::appearance::ui_size(62.))
                     .px_6()
                     .when(narrow, |header| header.px_4())
                     .flex_shrink_0()
@@ -875,9 +880,9 @@ impl Render for ProjectHub {
                     .border_b_1()
                     .border_color(colors.border)
                     .child(crate::app_icon(32.))
-                    .child(div().text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).child("GitTurtle"))
-                    .child(div().w(px(1.)).h(px(18.)).bg(colors.border))
-                    .child(div().text_size(px(12.)).text_color(colors.muted_foreground).child("Projects"))
+                    .child(div().text_size(crate::appearance::ui_text(16.)).font_weight(FontWeight::SEMIBOLD).child("GitTurtle"))
+                    .child(div().w(px(1.)).h(crate::appearance::ui_size(18.)).bg(colors.border))
+                    .child(div().text_size(crate::appearance::ui_text(12.)).text_color(colors.muted_foreground).child("Projects"))
                     .child(div().flex_1())
                     .when(self.can_go_back, |header| {
                         header.child(Button::new("hub-back").ghost().label("Back to repository").icon(Icon::default().path("icons/arrow-left.svg").size(px(15.))).disabled(self.unavailable()).on_click(cx.listener(|this, _, _, cx| {
@@ -912,8 +917,8 @@ impl Render for ProjectHub {
                                     .flex()
                                     .flex_col()
                                     .gap_2()
-                                    .child(div().text_size(px(32.)).font_weight(FontWeight::SEMIBOLD).child("Your projects"))
-                                    .child(div().text_size(px(14.)).text_color(colors.muted_foreground).child("Pick up where you left off, or start something new.")),
+                                    .child(div().text_size(crate::appearance::ui_text(32.)).font_weight(FontWeight::SEMIBOLD).child("Your projects"))
+                                    .child(div().text_size(crate::appearance::ui_text(14.)).text_color(colors.muted_foreground).child("Pick up where you left off, or start something new.")),
                             )
                             .child(
                                 div()

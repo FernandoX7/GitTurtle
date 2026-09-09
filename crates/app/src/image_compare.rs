@@ -1,5 +1,6 @@
 //! GPU composition over bounded worker-decoded images. No pixels are copied on drag.
 use crate::*;
+use gpui_kit::prelude::FluentBuilder;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum Mode {
@@ -169,6 +170,7 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let p = palette(cx);
+        let source = self.is_quick_source();
         let state = &self.image_comparison;
         let both = self.images.iter().all(Option::is_some);
         let mut modes = div().flex().gap_1();
@@ -215,7 +217,7 @@ impl GitTurtle {
             };
             adjust = adjust.child(
                 div()
-                    .text_size(px(11.))
+                    .text_size(crate::appearance::ui_text(11.))
                     .text_color(rgb(p.muted))
                     .child(format!("{label} · {:.0}%", state.amount * 100.)),
             );
@@ -271,11 +273,20 @@ impl GitTurtle {
                 );
             }
         }
-        let scale_notice = format!(
-            "100% = {:.1}% of source size · Both versions share the same scale",
-            self.image_geometry().source_scale * 100.
-        );
-        let guidance = if !both {
+        let scale_notice = if source {
+            format!(
+                "100% = {:.1}% of source size",
+                self.image_geometry().source_scale * 100.
+            )
+        } else {
+            format!(
+                "100% = {:.1}% of source size · Both versions share the same scale",
+                self.image_geometry().source_scale * 100.
+            )
+        };
+        let guidance = if source {
+            "Source image · Drag or scroll to pan · Use the zoom controls for keyboard adjustment"
+        } else if !both {
             "An absent or unavailable side stays empty. The available image is shown at full opacity."
         } else if state.mode == Mode::Wipe {
             "Drag the divider · Before on the left, After on the right · Tab to controls for keyboard adjustment"
@@ -298,9 +309,9 @@ impl GitTurtle {
                     .bg(rgb(p.panel))
                     .border_b_1()
                     .border_color(rgb(p.border))
-                    .child(modes)
+                    .when(!source, |element| element.child(modes))
                     .child(zooms)
-                    .child(adjust),
+                    .when(!source, |element| element.child(adjust)),
             )
             .child(
                 div()
@@ -309,7 +320,7 @@ impl GitTurtle {
                     .aria_label(scale_notice.clone())
                     .px_3()
                     .py_1()
-                    .text_size(px(10.))
+                    .text_size(crate::appearance::ui_text(10.))
                     .text_color(rgb(p.muted))
                     .child(scale_notice),
             )
@@ -318,45 +329,66 @@ impl GitTurtle {
                     .flex()
                     .border_b_1()
                     .border_color(rgb(p.border))
-                    .children([old, new].into_iter().enumerate().map(|(i, side)| {
-                        let name = if i == 0 { "Before" } else { "After" };
-                        let details = side
-                            .image
-                            .as_ref()
-                            .map(|image| {
-                                format!(
-                                    "{} × {} · {}{}",
-                                    image.original_width,
-                                    image.original_height,
-                                    image.format,
-                                    if image.width != image.original_width
-                                        || image.height != image.original_height
-                                    {
-                                        format!(" · preview {} × {}", image.width, image.height)
-                                    } else {
-                                        String::new()
-                                    }
-                                )
-                            })
-                            .unwrap_or_else(|| {
-                                side.message
-                                    .clone()
-                                    .unwrap_or_else(|| "No image on this side".into())
-                            });
-                        div()
-                            .id(("image-side-description", i))
-                            .role(Role::Label)
-                            .aria_label(format!("{name}: {details}"))
-                            .flex_1()
-                            .min_w_0()
-                            .px_3()
-                            .py_2()
-                            .text_size(px(11.))
-                            .child(div().font_weight(FontWeight::MEDIUM).child(name))
-                            .child(div().text_color(rgb(p.muted)).child(details))
-                    })),
+                    .children(
+                        [old, new]
+                            .into_iter()
+                            .enumerate()
+                            .filter(|(index, _)| !source || *index == 1)
+                            .map(|(i, side)| {
+                                let name = if source {
+                                    "Source"
+                                } else if i == 0 {
+                                    "Before"
+                                } else {
+                                    "After"
+                                };
+                                let details = side
+                                    .image
+                                    .as_ref()
+                                    .map(|image| {
+                                        format!(
+                                            "{} × {} · {}{}",
+                                            image.original_width,
+                                            image.original_height,
+                                            image.format,
+                                            if image.width != image.original_width
+                                                || image.height != image.original_height
+                                            {
+                                                format!(
+                                                    " · preview {} × {}",
+                                                    image.width, image.height
+                                                )
+                                            } else {
+                                                String::new()
+                                            }
+                                        )
+                                    })
+                                    .unwrap_or_else(|| {
+                                        side.message
+                                            .clone()
+                                            .unwrap_or_else(|| "No image on this side".into())
+                                    });
+                                div()
+                                    .id(("image-side-description", i))
+                                    .role(Role::Label)
+                                    .aria_label(format!("{name}: {details}"))
+                                    .flex_1()
+                                    .min_w_0()
+                                    .px_3()
+                                    .py_2()
+                                    .text_size(crate::appearance::ui_text(11.))
+                                    .child(div().font_weight(FontWeight::MEDIUM).child(name))
+                                    .child(div().text_color(rgb(p.muted)).child(details))
+                            }),
+                    ),
             )
-            .child(if state.mode == Mode::SideBySide {
+            .child(if source {
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.image_canvas(Some(1), cx))
+                    .into_any_element()
+            } else if state.mode == Mode::SideBySide {
                 div()
                     .flex_1()
                     .min_h_0()
@@ -378,7 +410,7 @@ impl GitTurtle {
                     .aria_label(guidance)
                     .px_3()
                     .py_1()
-                    .text_size(px(10.))
+                    .text_size(crate::appearance::ui_text(10.))
                     .text_color(rgb(p.muted))
                     .child(guidance),
             )
@@ -511,7 +543,7 @@ impl GitTurtle {
                             .top(relative(0.5))
                             .left(px(-8.))
                             .w(px(28.))
-                            .h(px(40.))
+                            .h(crate::appearance::ui_size(40.))
                             .rounded(px(8.))
                             .bg(rgb(colors.accent))
                             .text_color(rgb(colors.accent_foreground))

@@ -607,7 +607,9 @@ impl GitRepository {
             WriteCommand::DownloadLfs(plan) => return self.execute_lfs_download(plan),
             WriteCommand::Worktree(command) => return self.execute_worktree(command),
             WriteCommand::RecoverReflog(plan) => return self.execute_reflog_recovery(plan),
-            WriteCommand::InteractiveRebase(command) => return self.execute_interactive_rebase(command),
+            WriteCommand::InteractiveRebase(command) => {
+                return self.execute_interactive_rebase(command);
+            }
             WriteCommand::Tag(command) => return self.execute_tag(command),
             WriteCommand::Ignore(plan) => return self.execute_ignore(plan),
             WriteCommand::Recovery(command) => return self.execute_recovery(command),

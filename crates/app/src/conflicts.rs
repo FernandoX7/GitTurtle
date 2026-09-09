@@ -1,7 +1,8 @@
 use crate::*;
 use gitturtle_core::{
-    ConflictContent, ConflictPreview, ConflictResolution, IntegrationCommand, MAX_DIFF_BYTES,
-    MAX_DIFF_LINES, OperationKind, OperationState, WriteCommand,
+    ConflictBlockChoice, ConflictContent, ConflictPreview, ConflictResolution, IntegrationCommand,
+    MAX_DIFF_BYTES, MAX_DIFF_LINES, OperationKind, OperationState, TextConflictBlock, WriteCommand,
+    choose_conflict_block, text_conflict_blocks,
 };
 use gpui_kit::component::input::Paste;
 use gpui_kit::prelude::FluentBuilder;
@@ -67,6 +68,8 @@ pub struct Presentation {
     labels: [String; 3],
     result: Option<String>,
     identity: ConflictIdentity,
+    blocks: Vec<TextConflictBlock>,
+    block_issue: Option<String>,
 }
 
 impl Presentation {
@@ -109,7 +112,7 @@ impl Presentation {
                 "Incoming version".into(),
             ],
         };
-        let labels = [&snapshot.base, &snapshot.current, &snapshot.incoming]
+        let mut labels: [String; 3] = [&snapshot.base, &snapshot.current, &snapshot.incoming]
             .into_iter()
             .zip(absent)
             .map(|(side, absent)| {
@@ -121,12 +124,32 @@ impl Presentation {
             .collect::<Vec<_>>()
             .try_into()
             .expect("three conflict labels");
+        if snapshot.operation.is_none()
+            && result.as_deref().is_some_and(|source| {
+                source.lines().any(|line| {
+                    line.starts_with(">>>>>>>")
+                        && line.trim_start_matches('>').trim() == "Stashed changes"
+                })
+            })
+        {
+            labels[1] = "Updated upstream · current worktree".into();
+            labels[2] = "Stashed changes · incoming".into();
+        }
+        let (blocks, block_issue) = result.as_deref().map_or_else(
+            || (Vec::new(), None),
+            |source| match text_conflict_blocks(source) {
+                Ok(blocks) => (blocks, None),
+                Err(error) => (Vec::new(), Some(error.to_string())),
+            },
+        );
         Self {
             identity: ConflictIdentity::from(&snapshot),
             snapshot: Arc::new(snapshot),
             sources,
             labels,
             result,
+            blocks,
+            block_issue,
         }
     }
 
@@ -140,6 +163,8 @@ impl Presentation {
                 .map(String::capacity)
                 .sum::<usize>()
             + self.result.as_ref().map_or(0, String::capacity)
+            + self.blocks.capacity() * std::mem::size_of::<TextConflictBlock>()
+            + self.block_issue.as_ref().map_or(0, String::capacity)
             + [
                 &self.snapshot.base,
                 &self.snapshot.current,
@@ -296,6 +321,15 @@ pub struct ConflictView {
     accepted_draft: String,
     accepted_selection: Range<usize>,
     draft_error: Option<DraftIssue>,
+    blocks: Vec<TextConflictBlock>,
+    block_source: String,
+    block_issue: Option<String>,
+    block_selected: usize,
+    block_mode: bool,
+    block_pending: bool,
+    block_generation: u64,
+    block_task: Option<Task<()>>,
+    block_executor: SerialExecutor,
 }
 
 impl EventEmitter<ConflictEvent> for ConflictView {}
@@ -309,6 +343,15 @@ impl ConflictView {
         cx: &mut Context<Self>,
     ) -> Self {
         let mut this = Self {
+            blocks: presentation.blocks.clone(),
+            block_source: presentation.result.clone().unwrap_or_default(),
+            block_issue: presentation.block_issue.clone(),
+            block_selected: 0,
+            block_mode: !presentation.blocks.is_empty(),
+            block_pending: false,
+            block_generation: 0,
+            block_task: None,
+            block_executor: SerialExecutor::new("conflict-block-review"),
             presentation,
             readers: [None, None, None],
             resolution: None,
@@ -321,8 +364,11 @@ impl ConflictView {
             draft_error: None,
         };
         this.prepare_readers(window, cx);
-        if this.initial_draft.is_some() {
+        if this.initial_draft.is_some() || this.block_mode {
             this.open_resolution_editor(window, cx);
+            if this.initial_draft.is_some() {
+                this.schedule_blocks(window, cx);
+            }
         }
         this
     }
@@ -379,6 +425,7 @@ impl ConflictView {
                             this.accepted_selection = editor.read(cx).selected_range();
                             this.draft_error = None;
                             cx.emit(ConflictEvent::Draft(this.accepted_draft.clone()));
+                            this.schedule_blocks(window, cx);
                         }
                         cx.notify();
                     }),
@@ -416,10 +463,132 @@ impl ConflictView {
     fn prepare_readers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         for side in if self.base { vec![0] } else { vec![1, 2] } {
             if self.readers[side].is_none()
-                && let Some(source) = &self.presentation.sources[side]
+                && let Some(source) = self.reader_source(side)
             {
                 self.readers[side] = Some(text::editor(source, "text", None, window, cx));
             }
+        }
+    }
+
+    fn reader_source(&self, side: usize) -> Option<&str> {
+        if self.block_mode {
+            let block = self.blocks.get(self.block_selected)?;
+            let range = match side {
+                0 => block.base.clone()?,
+                1 => block.current.clone(),
+                _ => block.incoming.clone(),
+            };
+            self.block_source.get(range)
+        } else {
+            self.presentation.sources[side].as_deref()
+        }
+    }
+
+    fn schedule_blocks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.block_generation = self.block_generation.wrapping_add(1);
+        self.block_task = None;
+        let generation = self.block_generation;
+        let source = self.accepted_draft.clone();
+        self.block_pending = true;
+        let response = self.block_executor.submit_read(move || {
+            let blocks = text_conflict_blocks(&source).map_err(|error| error.to_string());
+            Ok((source, blocks))
+        });
+        self.block_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = response.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.block_generation != generation { return; }
+                this.block_pending = false;
+                match result {
+                    Ok(Ok((source, blocks))) => {
+                        this.block_source = source;
+                        match blocks { Ok(blocks) => { this.blocks = blocks; this.block_issue = None; }, Err(issue) => { this.blocks.clear(); this.block_issue = Some(issue); } }
+                        this.block_selected = this.block_selected.min(this.blocks.len().saturating_sub(1));
+                    }
+                    _ => { this.blocks.clear(); this.block_issue = Some("Block review was interrupted. Edit the result to retry, or save the draft and refresh.".into()); }
+                }
+                if this.block_mode {
+                    this.readers = [None, None, None];
+                    this.prepare_readers(window, cx);
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    fn select_block(&mut self, previous: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.block_pending || self.blocks.is_empty() {
+            return;
+        }
+        self.block_selected = if previous {
+            self.block_selected.saturating_sub(1)
+        } else {
+            (self.block_selected + 1).min(self.blocks.len() - 1)
+        };
+        self.block_mode = true;
+        self.readers = [None, None, None];
+        self.prepare_readers(window, cx);
+        self.open_resolution_editor(window, cx);
+        if let Some(block) = self.blocks.get(self.block_selected)
+            && let Some(editor) = &self.resolution
+        {
+            let range = block.range.clone();
+            editor.update(cx, |editor, cx| editor.set_selected_range(range, cx));
+        }
+        cx.notify();
+    }
+
+    fn accept_block(
+        &mut self,
+        choice: ConflictBlockChoice,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.block_pending || self.block_source != self.accepted_draft {
+            return;
+        }
+        let Some(block) = self.blocks.get(self.block_selected) else {
+            return;
+        };
+        let start = block.range.start;
+        match choose_conflict_block(&self.block_source, block, choice) {
+            Ok(value) => {
+                if let Some(issue) = draft_issue(value.as_bytes(), self.draft_limit) {
+                    self.draft_error = Some(issue);
+                    cx.notify();
+                    return;
+                }
+                self.accepted_draft = value.clone();
+                self.accepted_selection = start..start;
+                if let Some(editor) = &self.resolution {
+                    editor.update(cx, |editor, cx| {
+                        editor.set_value(value.clone(), window, cx);
+                        editor.set_selected_range(start..start, cx);
+                    });
+                }
+                cx.emit(ConflictEvent::Draft(value));
+                self.schedule_blocks(window, cx);
+            }
+            Err(error) => {
+                self.block_issue = Some(error.to_string());
+                cx.notify();
+            }
+        }
+    }
+
+    pub(super) fn rescale_code(&mut self, ratio: f32, cx: &mut Context<Self>) {
+        for reader in self.readers.iter().flatten() {
+            reader.update(cx, |reader, cx| {
+                let scroll = reader.scroll_offset();
+                reader.set_scroll_offset(point(scroll.x * ratio, scroll.y * ratio), cx);
+            });
+        }
+        if let Some(editor) = &self.resolution {
+            editor.update(cx, |editor, cx| {
+                let scroll = editor.scroll_offset();
+                editor.set_scroll_offset(point(scroll.x * ratio, scroll.y * ratio), cx);
+            });
         }
     }
 
@@ -430,7 +599,19 @@ impl ConflictView {
             &self.presentation.snapshot.current,
             &self.presentation.snapshot.incoming,
         ];
-        let description =
+        let description = if self.block_mode {
+            self.blocks.get(self.block_selected).map_or_else(
+                || "No unresolved blocks".into(),
+                |block| {
+                    format!(
+                        "Block {} of {} · result line {}",
+                        self.block_selected + 1,
+                        self.blocks.len(),
+                        block.first_line
+                    )
+                },
+            )
+        } else {
             versions[side]
                 .as_ref()
                 .map_or("This version has no file.".into(), |version| {
@@ -440,13 +621,15 @@ impl ConflictView {
                         format_bytes(version.content.bytes.len()),
                         version.content.mode
                     )
-                });
+                })
+        };
         div().flex_1().min_w_0().h_full().flex().flex_col().border_r_1().border_color(rgb(p.border))
             .child(div().px_3().py_2().flex().flex_col().gap_1().bg(rgb(p.panel))
-                .child(div().truncate().text_size(px(12.)).font_weight(FontWeight::MEDIUM).child(self.presentation.label(side)))
-                .child(div().truncate().text_size(px(10.)).text_color(rgb(p.muted)).child(description)))
-            .child(div().flex_1().min_h_0().children(self.readers[side].as_ref().map(|reader| crate::editor_find::Editor::new(reader).readonly(true).bordered(false).h(relative(1.)).text_size(px(12.)).aria_label(format!("Conflict version: {}", self.presentation.label(side))))))
-            .when(self.readers[side].is_none(), |el| el.child(div().p_4().text_size(px(12.)).text_color(rgb(p.muted)).child(if versions[side].is_none() { "File absent in this version" } else { "Binary or large content · choose a complete version or use an external editor." })))
+                .child(div().truncate().text_size(crate::appearance::ui_text(12.)).font_weight(FontWeight::MEDIUM).child(self.presentation.label(side)))
+                .child(div().truncate().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)).child(description)))
+            .child(div().flex_1().min_h_0().children(self.readers[side].as_ref().filter(|_| !self.block_mode || !self.block_pending).map(|reader| crate::editor_find::Editor::new(reader).readonly(true).bordered(false).h(relative(1.)).text_size(crate::appearance::code_text()).aria_label(format!("Conflict version: {}", self.presentation.label(side))))))
+            .when(self.block_mode && self.block_pending, |el| el.child(div().p_4().text_size(crate::appearance::ui_text(12.)).child("Updating conflict blocks…")))
+            .when(self.readers[side].is_none(), |el| el.child(div().p_4().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(if self.block_mode && self.blocks.is_empty() { "No unresolved blocks remain. Review the result, then explicitly save or stage it." } else if self.block_mode && side == 0 { "This marker style does not include a base block. Choose Whole file to inspect the full common ancestor." } else if versions[side].is_none() { "File absent in this version" } else { "Binary or large content · choose a complete version or use an external editor." })))
             .into_any_element()
     }
 }
@@ -456,31 +639,69 @@ impl Render for ConflictView {
         let p = palette(cx);
         let current = self.presentation.label(1);
         let incoming = self.presentation.label(2);
-        div().size_full().flex().flex_col()
-            .child(div().px_3().py_2().flex().items_center().gap_2().border_b_1().border_color(rgb(p.border))
+        let blocked = self.block_pending || self.block_issue.is_some() || self.blocks.is_empty();
+        let cannot_stage_draft =
+            self.block_pending || self.block_issue.is_some() || !self.blocks.is_empty();
+        let cannot_stage_working =
+            !self.presentation.blocks.is_empty() || self.presentation.block_issue.is_some();
+        let status = if self.block_pending {
+            "Updating conflict blocks…".into()
+        } else if self.block_issue.is_some() {
+            "Block decisions unavailable · edit the result or use a whole-file resolution".into()
+        } else if self.blocks.is_empty() {
+            "No unresolved blocks in the result".into()
+        } else {
+            format!(
+                "{} unresolved blocks · selected {} · result line {}",
+                self.blocks.len(),
+                self.block_selected + 1,
+                self.blocks[self.block_selected].first_line
+            )
+        };
+        div().id("conflict-review").size_full().flex().flex_col()
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.modifiers.platform && event.keystroke.modifiers.alt && matches!(event.keystroke.key.as_str(), "up" | "down") {
+                    this.select_block(event.keystroke.key == "up", window, cx); cx.stop_propagation();
+                }
+            }))
+            .child(div().px_3().py_2().flex().flex_wrap().items_center().gap_2().border_b_1().border_color(rgb(p.border))
                 .child(button("conflict-branches", "Both sides", "", !self.base).on_click(cx.listener(|this, _, window, cx| { this.base = false; this.prepare_readers(window, cx); cx.notify(); })))
                 .child(button("conflict-base", "Base", "", self.base).on_click(cx.listener(|this, _, window, cx| { this.base = true; this.prepare_readers(window, cx); cx.notify(); })))
+                .child(button("conflict-block-mode", "Selected block", "", self.block_mode).disabled(self.blocks.is_empty()).on_click(cx.listener(|this, _, window, cx| { this.block_mode = true; this.readers = [None, None, None]; this.prepare_readers(window, cx); cx.notify(); })))
+                .child(button("conflict-whole-mode", "Whole file", "", !self.block_mode).on_click(cx.listener(|this, _, window, cx| { this.block_mode = false; this.readers = [None, None, None]; this.prepare_readers(window, cx); cx.notify(); })))
                 .child(div().flex_1())
                 .child(button("external-conflict-editor", "Open in editor", "", false).tooltip("Open the working file with its default application. Refresh after saving, then stage the resolved file.")
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(ConflictEvent::OpenEditor)))))
+            .when(self.presentation.result.is_some(), |element| element.child(div().px_3().py_2().flex().flex_col().gap_2().border_b_1().border_color(rgb(p.border))
+                .child(div().id("conflict-block-status").role(Role::Label).aria_label(status.clone()).text_size(crate::appearance::ui_text(12.)).child(status))
+                .child(div().flex().flex_wrap().gap_2().items_center()
+                    .child(button("previous-conflict-block", "Previous", "", false).tooltip("Previous conflict · Command-Option-Up").disabled(blocked || self.block_selected == 0).on_click(cx.listener(|this, _, window, cx| this.select_block(true, window, cx))))
+                    .child(button("next-conflict-block", "Next", "", false).tooltip("Next conflict · Command-Option-Down").disabled(blocked || self.block_selected + 1 >= self.blocks.len()).on_click(cx.listener(|this, _, window, cx| this.select_block(false, window, cx))))
+                    .child(button("accept-current-block", "Accept current", "", false).tooltip(format!("Use only this block from {current} in the result draft")).disabled(blocked).on_click(cx.listener(|this, _, window, cx| this.accept_block(ConflictBlockChoice::Current, window, cx))))
+                    .child(button("accept-incoming-block", "Accept incoming", "", false).tooltip(format!("Use only this block from {incoming} in the result draft")).disabled(blocked).on_click(cx.listener(|this, _, window, cx| this.accept_block(ConflictBlockChoice::Incoming, window, cx))))
+                    .child(button("accept-both-block", "Accept both", "", false).tooltip("Keep current, then incoming, for this block; review ordering in the result draft").disabled(blocked).on_click(cx.listener(|this, _, window, cx| this.accept_block(ConflictBlockChoice::Both, window, cx)))))
+                .children(self.block_issue.as_ref().map(|issue| div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning)).child(issue.clone())))))
             .child(div().flex_1().min_h(px(100.)).flex().children(if self.base { vec![self.render_side(0, cx)] } else { vec![self.render_side(1, cx), self.render_side(2, cx)] }))
             .child(div().px_3().py_2().flex().flex_col().gap_2().bg(rgb(p.subtle)).border_t_1().border_color(rgb(p.border))
-                .child(div().text_size(px(11.)).text_color(rgb(p.muted)).child("Choose a complete version, or edit the resolution and stage this file."))
-                .child(div().flex().items_center().gap_2()
-                    .child(button("resolve-current", format!("Use {current}…"), "", false).max_w(px(240.)).tooltip("Replace the working file with this complete version and stage it")
+                .child(div().flex().flex_wrap().items_center().gap_2()
+                    .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Whole-file actions:"))
+                    .child(button("resolve-current", "Use current file…", "", false).tooltip(format!("Replace and stage the entire file with {current}"))
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(ConflictEvent::Resolve(ConflictResolution::Current)))))
-                    .child(button("resolve-incoming", format!("Use {incoming}…"), "", false).max_w(px(240.)).tooltip("Replace the working file with this complete version and stage it")
+                    .child(button("resolve-incoming", "Use incoming file…", "", false).tooltip(format!("Replace and stage the entire file with {incoming}"))
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(ConflictEvent::Resolve(ConflictResolution::Incoming)))))
                     .child(div().flex_1())
-                    .child(button("manual-resolution", "Edit resolution", "", self.resolution.is_some()).disabled(self.presentation.result.is_none())
+                    .child(button("manual-resolution", "Edit result", "", self.resolution.is_some()).disabled(self.presentation.result.is_none())
                         .on_click(cx.listener(|this, _, window, cx| this.open_resolution_editor(window, cx)))))
                 .children(self.resolution.as_ref().map(|editor| div().capture_action(cx.listener(Self::check_paste))
-                    .child(Textarea::new(editor).h(px(180.)).text_size(px(12.)).aria_label("Manual conflict resolution"))))
-                .children(self.draft_error.map(|issue| div().text_size(px(11.)).text_color(rgb(p.warning)).child(issue.explanation())))
-                .child(div().flex().items_center().gap_2()
-                    .child(div().flex_1().text_size(px(11.)).text_color(rgb(p.muted)).child("After external editing, refresh this file before staging."))
-                    .child(button("mark-conflict-resolved", "Stage edited file…", "", false).on_click(cx.listener(|_, _, _, cx| cx.emit(ConflictEvent::Resolve(ConflictResolution::MarkResolved)))))
-                    .children(self.resolution.as_ref().map(|_| button("save-conflict-resolution", "Save and stage resolution…", "", false).on_click(cx.listener(|this, _, _, cx| {
+                    .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Result draft · block choices and manual edits stay here until you explicitly save"))
+                    .child(Textarea::new(editor).h(px(160.)).text_size(crate::appearance::code_text()).aria_label("Manual conflict resolution result"))))
+                .children(self.draft_error.map(|issue| div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning)).child(issue.explanation())))
+                .child(div().flex().flex_wrap().items_center().gap_2()
+                    .child(button("mark-conflict-resolved", "Stage edited file…", "", false).disabled(cannot_stage_working).tooltip("Stage the saved working file. Refresh after external editing.").on_click(cx.listener(|_, _, _, cx| cx.emit(ConflictEvent::Resolve(ConflictResolution::MarkResolved)))))
+                    .children(self.resolution.as_ref().map(|_| button("save-conflict-draft", "Save draft…", "", false).on_click(cx.listener(|this, _, _, cx| {
+                        cx.emit(ConflictEvent::Resolve(ConflictResolution::Save { bytes: this.accepted_draft.as_bytes().to_vec() }));
+                    }))))
+                    .children(self.resolution.as_ref().map(|_| button("save-conflict-resolution", "Save and stage result…", "", false).disabled(cannot_stage_draft).on_click(cx.listener(|this, _, _, cx| {
                         cx.emit(ConflictEvent::Resolve(ConflictResolution::Manual { bytes: this.accepted_draft.as_bytes().to_vec() }));
                     }))))))
     }
@@ -534,11 +755,13 @@ impl GitTurtle {
                 ConflictEvent::Resolve(resolution) => {
                     let file = snapshot.path.to_string_lossy();
                     let effect = match resolution {
+                        ConflictResolution::Save { .. } => "Save the result draft to the working file without staging it. The file remains unresolved in the index.",
                         ConflictResolution::Manual { .. } => "Save the text you entered and stage this file.",
                         ConflictResolution::Current | ConflictResolution::Incoming => "Replace the working file with the selected complete version and stage it. Choosing an absent version deletes the file.",
                         ConflictResolution::MarkResolved => "Stage the working file exactly as reviewed. Ensure all conflict markers have been resolved.",
                     };
-                    this.confirm_git_write(format!("Resolve {file}"), format!("{effect}\n\nOnly {file} is staged. A newer edit or operation state will require a fresh review."), "Resolve file",
+                    let save_only = matches!(resolution, ConflictResolution::Save { .. });
+                    this.confirm_git_write(format!("{} {file}", if save_only { "Save draft for" } else { "Resolve" }), format!("{effect}\n\nOnly {file} is affected. A newer edit or operation state will require a fresh review."), if save_only { "Save draft" } else { "Resolve file" },
                         WriteCommand::Integration(IntegrationCommand::Resolve { expected: Arc::clone(&snapshot), resolution: resolution.clone() }), window, cx);
                 }
                 ConflictEvent::OpenEditor => {
@@ -613,6 +836,30 @@ mod tests {
             large
         );
         assert_eq!(presentation.snapshot.working.as_ref().unwrap().bytes, large);
+    }
+
+    #[test]
+    fn prepared_blocks_and_stash_labels_describe_the_exact_working_result() {
+        let mut preview = snapshot();
+        preview.working.as_mut().unwrap().bytes = b"<<<<<<< Updated upstream\ncurrent\n||||||| base\nbase\n=======\nstashed\n>>>>>>> Stashed changes\n".to_vec();
+        let presentation = Presentation::prepare(preview);
+        assert_eq!(presentation.blocks.len(), 1);
+        assert!(presentation.blocks[0].base.is_some());
+        assert_eq!(presentation.label(1), "Updated upstream · current worktree");
+        assert_eq!(presentation.label(2), "Stashed changes · incoming");
+        let result = presentation.result.as_ref().unwrap();
+        let chosen =
+            choose_conflict_block(result, &presentation.blocks[0], ConflictBlockChoice::Both)
+                .unwrap();
+        assert_eq!(chosen, "current\nstashed\n");
+        let draft = Draft {
+            identity: presentation.identity.clone(),
+            text: chosen,
+        };
+        assert!(draft.matches(&presentation.snapshot));
+        let mut moved = presentation.snapshot.as_ref().clone();
+        moved.current.as_mut().unwrap().oid = "9".repeat(40);
+        assert!(!draft.matches(&moved));
     }
 
     #[test]

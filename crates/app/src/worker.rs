@@ -40,6 +40,9 @@ pub struct ImageSide {
     pub render: Option<Arc<RenderImage>>,
     pub message: Option<String>,
     pub bytes: usize,
+    /// Retain only a bounded missing pointer so an explicit download can review
+    /// the exact object. Normal preview construction remains entirely passive.
+    pub lfs_pointer: Option<Vec<u8>>,
 }
 
 pub enum Content {
@@ -94,6 +97,7 @@ impl Content {
                             .and_then(|render| render.as_bytes(0))
                             .map_or(0, <[u8]>::len)
                         + side.message.as_ref().map_or(0, String::capacity)
+                        + side.lfs_pointer.as_ref().map_or(0, Vec::capacity)
                 })
                 .sum(),
             Self::Conflict(presentation) => presentation.bytes(),
@@ -109,6 +113,29 @@ pub enum Scope {
 }
 
 pub enum Job {
+    ReviewText {
+        content: Arc<Content>,
+        options: crate::text_review::Options,
+    },
+    CompareRevisions {
+        repo: GitRepository,
+        before: String,
+        after: String,
+        mode: gitturtle_core::ComparisonMode,
+    },
+    RevisionTargets {
+        repo: GitRepository,
+    },
+    TrackedPaths {
+        repo: GitRepository,
+        scope: gitturtle_core::PathScope,
+        query: String,
+    },
+    TrackedPreview {
+        repo: GitRepository,
+        entry: gitturtle_core::TrackedPath,
+        scope: gitturtle_core::PathScope,
+    },
     Blame {
         repo: GitRepository,
         target: gitturtle_core::BlameTarget,
@@ -165,6 +192,10 @@ pub enum Job {
 }
 
 pub enum Output {
+    ReviewText(Arc<Content>, Duration),
+    RevisionComparison(gitturtle_core::RevisionComparison),
+    RevisionTargets(Vec<String>),
+    TrackedPaths(gitturtle_core::TrackedPaths),
     Blame(gitturtle_core::Blame),
     LineHistory(gitturtle_core::LineHistory),
     SearchHistory(SearchResult),
@@ -567,6 +598,81 @@ fn execute(
     let start = Instant::now();
     cancellation.check()?;
     match job {
+        Job::ReviewText { content, options } => {
+            let content = crate::text_review::prepare(&content, options, || cancellation.check())?;
+            Ok(Output::ReviewText(content, start.elapsed()))
+        }
+        Job::CompareRevisions {
+            repo,
+            before,
+            after,
+            mode,
+        } => {
+            let result = repo.compare_revisions(&before, &after, mode, &cancellation.history)?;
+            cancellation.check()?;
+            Ok(Output::RevisionComparison(result))
+        }
+        Job::RevisionTargets { repo } => {
+            gitturtle_core::run_cancellable_inspection(cancellation.history.clone(), || {
+                let mut targets = vec!["HEAD".into()];
+                targets.extend(repo.branches()?.into_iter().take(10_000).map(|b| {
+                    format!(
+                        "refs/{}/{}",
+                        if b.remote { "remotes" } else { "heads" },
+                        b.name
+                    )
+                }));
+                cancellation.check()?;
+                targets.extend(
+                    repo.tags()?
+                        .tags
+                        .into_iter()
+                        .map(|tag| format!("refs/tags/{}", tag.name)),
+                );
+                cancellation.check()?;
+                Ok(Output::RevisionTargets(targets))
+            })
+        }
+        Job::TrackedPaths { repo, scope, query } => Ok(Output::TrackedPaths(
+            repo.search_tracked_paths(&scope, &query, &cancellation.history)?,
+        )),
+        Job::TrackedPreview { repo, entry, scope } => {
+            let mut file = repo.tracked_path_change(&entry);
+            if matches!(scope, gitturtle_core::PathScope::Revision(_)) {
+                return execute(Job::Preview { repo, file }, cache, cancellation, session);
+            }
+            let (mode, bytes) = repo.read_tracked_working_file(&entry)?;
+            cancellation.check()?;
+            file.new_mode = mode;
+            let content = if image_change(&file) {
+                let old = working_image_side(&repo, vec![], false, "", cancellation);
+                let new = working_image_side(
+                    &repo,
+                    bytes,
+                    true,
+                    &entry.path.to_string_lossy(),
+                    cancellation,
+                );
+                Content::Images { old, new }
+            } else if let Some(content) = resolved_lfs_text_content(&repo, &file, &[], &bytes)? {
+                content
+            } else if bytes.len() > gitturtle_core::MAX_DIFF_BYTES
+                || bytes.iter().filter(|b| **b == b'\n').count() > gitturtle_core::MAX_DIFF_LINES
+            {
+                Content::Notice("File exceeds the 2 MiB / 100,000-line text preview limit. File history remains available.".into())
+            } else if bytes.contains(&0) || std::str::from_utf8(&bytes).is_err() {
+                Content::Notice(
+                    "Binary or non-UTF-8 working file. File history remains available.".into(),
+                )
+            } else {
+                let source = String::from_utf8(bytes)?;
+                // Quick Open is a source inspection, so no synthetic staged
+                // patch or selected-edit actions are manufactured.
+                prepared_text(String::new(), String::new(), source)
+            };
+            cancellation.check()?;
+            Ok(Output::Preview(Arc::new(content), start.elapsed()))
+        }
         Job::SearchHistory {
             repo,
             scope,
@@ -758,7 +864,7 @@ fn execute(
             let preview = repo.worktree_preview(&entry, area)?;
             cancellation.check()?;
             let file = preview.file;
-            let partial_diff = preview.partial;
+            let mut partial_diff = preview.partial;
             let mut unavailable = preview.partial_unavailable;
             let mut content = if image_change(&file) {
                 let old_name = file
@@ -787,6 +893,12 @@ fn execute(
                     cancellation,
                 );
                 Content::Images { old, new }
+            } else if let Some(content) =
+                resolved_lfs_text_content(&repo, &file, &preview.old, &preview.new)?
+            {
+                partial_diff = None;
+                unavailable = Some("This view shows verified LFS object content. Partial staging is unavailable because Git stages the underlying pointer; use whole-file staging.".into());
+                content
             } else {
                 match preview.preview {
                     TextPreview::Patch(patch) => prepared_text(
@@ -869,7 +981,9 @@ fn execute(
                     image_side(&repo, file.new_oid.as_deref(), &new_name, cancellation);
                 (Content::Images { old, new }, old_cacheable && new_cacheable)
             } else {
-                (text_content(&repo, &file, cancellation)?, true)
+                let content = text_content(&repo, &file, cancellation)?;
+                let cacheable = !matches!(&content, Content::Text { old, new, .. } if [old, new].iter().any(|source| detect_lfs_pointer(source.as_bytes()).is_some()));
+                (content, cacheable)
             };
             cancellation.check()?;
             let content = Arc::new(content);
@@ -1120,6 +1234,9 @@ fn text_content(
 ) -> Result<Content> {
     let sources = repo.text_preview_with_sources(file)?;
     cancellation.check()?;
+    if let Some(content) = resolved_lfs_text_content(repo, file, &sources.old, &sources.new)? {
+        return Ok(content);
+    }
     Ok(match sources.preview {
         TextPreview::Patch(patch) => prepared_text(patch, String::from_utf8(sources.old)?, String::from_utf8(sources.new)?),
         TextPreview::Binary => Content::Notice(
@@ -1133,6 +1250,23 @@ fn text_content(
             old_oid.as_deref().unwrap_or("Absent"), new_oid.as_deref().unwrap_or("Absent")
         )),
     })
+}
+
+fn resolved_lfs_text_content(
+    repo: &GitRepository,
+    file: &FileChange,
+    old: &[u8],
+    new: &[u8],
+) -> Result<Option<Content>> {
+    let Some(sources) = repo.resolved_lfs_text(file, old, new)? else {
+        return Ok(None);
+    };
+    Ok(Some(match sources.preview {
+        TextPreview::Patch(patch) => prepared_text(patch, String::from_utf8(sources.old)?, String::from_utf8(sources.new)?),
+        TextPreview::Binary => Content::Notice("Verified LFS object downloaded. Its content is binary or not UTF-8 and has no text preview.".into()),
+        TextPreview::TooLarge { old_bytes, new_bytes } => Content::Notice(format!("Verified LFS content exceeds the text display limit · {old_bytes} → {new_bytes} bytes.")),
+        TextPreview::Submodule { .. } => Content::Notice("Submodules do not have an LFS text preview.".into()),
+    }))
 }
 
 /// Never cache an unavailable preview: the local object may appear before
@@ -1151,10 +1285,12 @@ fn image_side(
                 render: None,
                 message: None,
                 bytes: 0,
+                lfs_pointer: None,
             },
             true,
         );
     };
+    let mut missing_pointer = None;
     let result = (|| -> Result<(ImagePreview, Arc<RenderImage>, usize)> {
         cancellation.check()?;
         let size = repo.blob_size(oid)?;
@@ -1166,9 +1302,11 @@ fn image_side(
         let mut bytes = repo.blob(oid)?;
         cancellation.check()?;
         if let Some(pointer) = detect_lfs_pointer(&bytes) {
-            bytes = repo
-                .local_lfs_object(&pointer.oid, pointer.size, MAX_INPUT_BYTES)?
-                .ok_or_else(|| anyhow!(
+            let local = repo.local_lfs_object(&pointer.oid, pointer.size, MAX_INPUT_BYTES)?;
+            if local.is_none() {
+                missing_pointer = Some(bytes.clone());
+            }
+            bytes = local.ok_or_else(|| anyhow!(
                     "Git LFS object is unavailable in the local store · {} bytes\nNo download was attempted.\n{}",
                     pointer.size,
                     pointer.oid
@@ -1187,6 +1325,7 @@ fn image_side(
                 render: Some(render),
                 message: None,
                 bytes,
+                lfs_pointer: None,
             },
             true,
         ),
@@ -1196,6 +1335,7 @@ fn image_side(
                 render: None,
                 message: Some(format!("{error:#}")),
                 bytes: 0,
+                lfs_pointer: missing_pointer,
             },
             false,
         ),
@@ -1215,8 +1355,10 @@ fn working_image_side(
             render: None,
             message: None,
             bytes: 0,
+            lfs_pointer: None,
         };
     }
+    let mut missing_pointer = None;
     let result = (|| -> Result<(ImagePreview, Arc<RenderImage>, usize)> {
         cancellation.check()?;
         ensure!(
@@ -1224,7 +1366,16 @@ fn working_image_side(
             "Image exceeds the 32 MiB input limit"
         );
         if let Some(pointer) = detect_lfs_pointer(&bytes) {
-            bytes = repo.local_lfs_object(&pointer.oid, pointer.size, MAX_INPUT_BYTES)?.ok_or_else(|| anyhow!("Git LFS object is unavailable locally · {} bytes. No download was attempted.", pointer.size))?;
+            let local = repo.local_lfs_object(&pointer.oid, pointer.size, MAX_INPUT_BYTES)?;
+            if local.is_none() {
+                missing_pointer = Some(bytes.clone());
+            }
+            bytes = local.ok_or_else(|| {
+                anyhow!(
+                    "Git LFS object is unavailable locally · {} bytes. No download was attempted.",
+                    pointer.size
+                )
+            })?;
         }
         cancellation.check()?;
         let decoded = decode_image(&bytes, name, PREVIEW_EDGE)?;
@@ -1238,12 +1389,14 @@ fn working_image_side(
             render: Some(render),
             message: None,
             bytes,
+            lfs_pointer: None,
         },
         Err(error) => ImageSide {
             image: None,
             render: None,
             message: Some(format!("{error:#}")),
             bytes: 0,
+            lfs_pointer: missing_pointer,
         },
     }
 }
@@ -2310,12 +2463,14 @@ mod image_tests {
                 render: Some(rendered),
                 message: None,
                 bytes: 8,
+                lfs_pointer: None,
             },
             new: ImageSide {
                 image: None,
                 render: None,
                 message: None,
                 bytes: 0,
+                lfs_pointer: None,
             },
         };
         assert_eq!(content.bytes(), expected_bytes);
@@ -2398,6 +2553,59 @@ mod image_tests {
         // if a separate client prunes its LFS store after our successful read.
         let cached = preview(1);
         assert!(Arc::ptr_eq(&available, &cached));
+    }
+
+    #[test]
+    fn lfs_text_preview_retries_missing_pointer_and_displays_verified_content() {
+        let fixture = Fixture::new();
+        let pointer = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{LFS_OID}\nsize {}\n",
+            SVG.len()
+        );
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let file = FileChange {
+            old_path: None,
+            new_path: Some("source.txt".into()),
+            old_oid: None,
+            new_oid: Some(fixture.blob(pointer.as_bytes())),
+            status: ChangeStatus::Added,
+            old_mode: "000000".into(),
+            new_mode: "100644".into(),
+        };
+        let mut cache = PreviewCache::default();
+        let mut session = RepositorySession::default();
+        let missing = execute(
+            Job::Preview {
+                repo: repo.clone(),
+                file: file.clone(),
+            },
+            &mut cache,
+            &active(),
+            &mut session,
+        )
+        .unwrap();
+        assert!(
+            matches!(missing, Output::Preview(content, _) if matches!(content.as_ref(), Content::Text { new, .. } if new == &pointer))
+        );
+        assert!(cache.entries.is_empty());
+        let directory = fixture
+            .0
+            .join(".git/lfs/objects")
+            .join(&LFS_OID[..2])
+            .join(&LFS_OID[2..4]);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join(LFS_OID), SVG).unwrap();
+        let available = execute(
+            Job::Preview { repo, file },
+            &mut cache,
+            &active(),
+            &mut session,
+        )
+        .unwrap();
+        assert!(
+            matches!(available, Output::Preview(content, _) if matches!(content.as_ref(), Content::Text { new, partial, .. } if new.as_bytes() == SVG && partial.is_none()))
+        );
+        assert_eq!(cache.entries.len(), 1);
     }
 
     #[test]

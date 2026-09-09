@@ -1,0 +1,13 @@
+# Conflict review by block
+
+Working Changes keeps the full-file conflict viewer and adds selected-block review for bounded UTF-8 text. Initial block parsing runs on the read worker. Draft edits use a bounded background parser with generation checks; outdated replies cannot apply decisions to newer text.
+
+The toolbar shows the unresolved count and selected result line. **Previous/Next**, or Command-Option-Up/Down in the viewer, selects a block and reveals it in the result editor. Source panels show that block's Current and Incoming content; **Base** shows its base section when Git's diff3 or zdiff3 markers include one. **Whole file** retains the original sources and full common ancestor. During rebase, Current is the updated base and Incoming is the replayed commit. Stash markers identify the updated worktree and stashed content.
+
+**Accept current**, **Accept incoming**, and **Accept both** change only the selected block in the result draft. Both keeps Current followed by Incoming without synthesizing line breaks. Manual editing remains available. Parsing preserves UTF-8 byte boundaries and line endings, handles empty sides and custom marker widths, and rejects incomplete, mismatched or nested markers instead of guessing. Limits are 2 MiB, 100,000 lines and 4,096 blocks.
+
+**Save draft** writes the result without staging; the index still marks the file conflicted. **Save and stage result** becomes available after all recognized blocks are resolved. **Stage edited file** stages a separately reviewed working file; refresh after external edits. Both save and stage revalidate the operation, stage identities and working bytes and preserve unrelated index entries. Partial drafts survive file selection, view changes and unrelated refreshes in the existing bounded per-worktree draft store.
+
+Binary, oversized, deleted, symlink and unsupported-marker content retain whole-file and external-editor fallbacks. Whole-file decisions remain separately confirmed. Continue, Abort and Keep files retain their existing operation-specific guards.
+
+`cargo test --locked -p gitturtle-core --lib conflict_blocks` covers parser bounds, malformed input, Unicode, CRLF, absent final newline, empty sides and custom markers. `cargo test --locked -p gitturtle-core --test conflict_blocks` verifies merge/diff3/zdiff3 decisions, refusal to stage remaining markers, save-only index preservation, stale-source refusal and unrelated staged content. The app's `conflicts::tests` covers prepared labels and retained draft identities alongside existing allocation and paste guards. Native evidence belongs in the milestone verification record.

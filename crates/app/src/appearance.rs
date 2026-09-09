@@ -1,9 +1,58 @@
 //! Native presentation choices shared by history, previews, and settings.
 
 use gpui_kit::component::{Theme, ThemeMode};
-use gpui_kit::{App, Global, Window, px, rgb};
+use gpui_kit::{App, Global, Pixels, Window, px, rgb};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU8, Ordering},
+};
+
+pub const DEFAULT_INTERFACE_TEXT_SIZE: u8 = 13;
+pub const DEFAULT_CODE_TEXT_SIZE: u8 = 12;
+pub const INTERFACE_TEXT_RANGE: std::ops::RangeInclusive<u8> = 11..=18;
+pub const CODE_TEXT_RANGE: std::ops::RangeInclusive<u8> = 10..=24;
+
+// One application appearance applies to every native window. Pixel helpers are
+// also usable by canvas geometry and pure row-height consumers without a UI
+// context. No preference writes or repository work happen through these reads.
+static INTERFACE_TEXT_SIZE: AtomicU8 = AtomicU8::new(DEFAULT_INTERFACE_TEXT_SIZE);
+static CODE_TEXT_SIZE: AtomicU8 = AtomicU8::new(DEFAULT_CODE_TEXT_SIZE);
+
+pub fn ui_scale() -> f32 {
+    f32::from(INTERFACE_TEXT_SIZE.load(Ordering::Relaxed)) / f32::from(DEFAULT_INTERFACE_TEXT_SIZE)
+}
+pub fn ui_size(base: f32) -> Pixels {
+    px(base * ui_scale())
+}
+pub fn ui_text(base: f32) -> Pixels {
+    ui_size(base)
+}
+pub fn code_text() -> Pixels {
+    px(f32::from(CODE_TEXT_SIZE.load(Ordering::Relaxed)))
+}
+pub fn code_scale() -> f32 {
+    f32::from(code_text()) / f32::from(DEFAULT_CODE_TEXT_SIZE)
+}
+
+pub fn apply_text_sizes(interface: u8, code: u8, window: &mut Window, cx: &mut App) {
+    INTERFACE_TEXT_SIZE.store(
+        interface.clamp(*INTERFACE_TEXT_RANGE.start(), *INTERFACE_TEXT_RANGE.end()),
+        Ordering::Relaxed,
+    );
+    CODE_TEXT_SIZE.store(
+        code.clamp(*CODE_TEXT_RANGE.start(), *CODE_TEXT_RANGE.end()),
+        Ordering::Relaxed,
+    );
+    let theme = Theme::global_mut(cx);
+    theme.font_size = ui_text(13.);
+    theme.mono_font_size = code_text();
+    Theme::sync_base(cx);
+    // Root uses font_size for rem geometry, so native control padding and
+    // heights grow together with explicit app text and custom canvas rows.
+    window.set_rem_size(ui_text(13.));
+    window.refresh();
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -359,8 +408,8 @@ impl ThemeChoice {
         syntax.style.editor_active_line = Some(rgb(palette.panel).into());
         syntax.style.editor_line_number = Some(rgb(palette.line_number).into());
         syntax.style.editor_foreground = Some(rgb(palette.text).into());
-        theme.font_size = px(13.);
-        theme.mono_font_size = px(12.);
+        theme.font_size = ui_text(13.);
+        theme.mono_font_size = code_text();
         theme.radius = px(7.);
         theme.radius_lg = px(12.);
         // GPUI Kit 0.6 paints component backgrounds from resolved ThemeTokens,
@@ -390,17 +439,19 @@ impl Density {
     }
 
     pub fn history_row_height(self) -> f32 {
-        match self {
-            Self::Comfortable => 34.,
-            Self::Compact => 28.,
-        }
+        ui_scale()
+            * match self {
+                Self::Comfortable => 34.,
+                Self::Compact => 28.,
+            }
     }
 
     pub fn file_row_height(self) -> f32 {
-        match self {
-            Self::Comfortable => 44.,
-            Self::Compact => 34.,
-        }
+        ui_scale()
+            * match self {
+                Self::Comfortable => 44.,
+                Self::Compact => 34.,
+            }
     }
 }
 

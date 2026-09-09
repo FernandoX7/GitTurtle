@@ -1,0 +1,25 @@
+# Interactive rebase
+
+Open the current branch menu and choose **Edit local commits…**. Enter the exclusive base (a local branch, tag, commit ID, or revision such as `HEAD~3`), then **Load commits**. GitTurtle resolves the base and branch tip, reads the original messages, and lists at most 100 commits from oldest to newest. The range must form one linear chain directly after the base; choose a base after the last merge. Root rewrites and merge-preserving rewrites are outside this implementation.
+
+Select a row and choose Pick, Reword, Squash, Fixup, or Drop. **Move up/down** provides a keyboard-accessible alternative to dragging. In the focused sequence, arrow keys select, Option-Up/Down reorders, and P/R/S/F/D sets the action. Squash combines with the preceding kept commit and pauses to review the resulting message; Fixup retains that commit's message. Every reviewed commit remains represented exactly once, including explicit Drop rows. The final confirmation previews the complete ordered plan before writing.
+
+A remote-tracking containment warning requires explicit acknowledgment when locally known remote references include affected commits. These reads do not fetch, and absence of a warning cannot prove commits were never published. No rebase action pushes or broadens ordinary non-force Push.
+
+## Safety and native recovery
+
+Start revalidates the worktree, branch tip, base revision, remote containment, and plan. Staged or tracked working edits require an explicit commit or stash first. No automatic stash is created. The shared integration preflight protects untracked and ignored paths introduced by the base or intermediate replayed commits, and a branch occupied by another worktree is refused. Git performs the rewrite through its normal sequencer with configured identity, hooks, cleanup, filters, and signing; there is no unsigned or hook-bypassing fallback. Originally empty commits and commits made empty by replay are retained unless explicitly dropped.
+
+Reword and Squash stop when Git requests a message. A transient editor response allows one reviewed message per explicit Continue; a later request pauses again. GitTurtle records a small HEAD checkpoint inside the private `rebase-merge` directory, included in the stale-operation token. This distinguishes a failed message edit on an already replayed commit from a conflict awaiting its first commit. Git removes this state when the rebase completes or aborts. Original commit messages and Git's pending templates remain the source of message content.
+
+Use the existing operation bar's **Continue** to review the pending message and exact staged paths. Drafts survive closing and reopening the native message dialog and unrelated refreshes while their source operation is unchanged. Cancellation closes the dialog without continuing. During an accepted write, the operation's separate Cancel control stops the process; failure or cancellation does not imply that nothing changed. After restarting GitTurtle, refresh the worktree and use Continue again to recover the pending Git message. Unsaved native message edits are retained in memory only; Git's pending template persists across application restarts.
+
+Conflicts use Working Changes and the existing conflict resolver. Saving and staging a resolution remain explicit, followed by a separately reviewed Continue. **Abort** and **Keep files** reuse existing operation-specific preservation guards. Hooks or signing can fail after intermediate commits; GitTurtle surfaces the failure and retains the sequencer for a deliberate next action. A changed staged snapshot or Git message refuses the old Continue confirmation.
+
+Externally started merge-backend rebases can resume when Git records sufficient message state. An ambiguous interrupted external reword is refused instead of skipping its edit. Apply-backend rebases and non-UTF-8 messages require the configured Git editor for Continue; Abort/Keep files remain available.
+
+## Evidence and limits
+
+`cargo test --locked -p gitturtle-core --test interactive_rebase` exercises reorder/drop/fixup, repeated native reword/squash pauses and reopen, stale branch/base/remote/Continue plans, dirty-work protection, invalid merge ranges, ignored intermediate-path collisions, conflict Continue/Abort, signing and message-hook refusal, and cancellation inside a message hook. Fixtures assert HEAD, index and working content, not only process exits. All mutation fixtures are disposable local repositories.
+
+Native interaction, accessibility, integrated release checks, packaging and installed executable identity are recorded in the milestone validation record by the native QA owner. Core fixture results alone do not establish native interaction or hosted-provider coverage.

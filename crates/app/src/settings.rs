@@ -41,6 +41,7 @@ impl GitTurtle {
     pub(super) fn show_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.capture_page_return_focus(window, cx);
         self.cancel_branch_action();
+        self.cancel_interactive_rebase_action();
         self.page = AppPage::Settings;
         self.column_menu = false;
         self.column_drag = None;
@@ -122,6 +123,174 @@ impl GitTurtle {
         cx.notify();
     }
 
+    fn choose_text_size(
+        &mut self,
+        code: bool,
+        size: u8,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let old_code = self.settings.code_text_size;
+        let old_interface = self.settings.interface_text_size;
+        if code {
+            self.settings.code_text_size = size;
+        } else {
+            self.settings.interface_text_size = size;
+        }
+        self.settings.normalize();
+        if (old_code, old_interface)
+            == (
+                self.settings.code_text_size,
+                self.settings.interface_text_size,
+            )
+        {
+            return;
+        }
+        if old_code != self.settings.code_text_size {
+            let ratio = f32::from(self.settings.code_text_size) / f32::from(old_code);
+            for editor in [&self.patch_editor, &self.before_editor, &self.after_editor]
+                .into_iter()
+                .flatten()
+            {
+                text::rescale_editor(editor, ratio, cx);
+            }
+            if let Some(view) = &self.split_view {
+                view.update(cx, |view, cx| view.rescale_code(ratio, cx));
+            }
+            self.file_history.rescale_code(ratio, cx);
+            self.revision_inspection.rescale_code(ratio, cx);
+            if let Some(view) = &self.conflict_view {
+                view.update(cx, |view, cx| view.rescale_code(ratio, cx));
+            }
+        }
+        if old_interface != self.settings.interface_text_size {
+            let ratio = f32::from(self.settings.interface_text_size) / f32::from(old_interface);
+            for scroll in [
+                &self.history_scroll,
+                &self.file_scroll,
+                &self.working_scroll,
+                &self.nav_scroll,
+            ] {
+                let handle = &scroll.0.borrow().base_handle;
+                let offset = handle.offset();
+                handle.set_offset(point(offset.x, offset.y * ratio));
+            }
+        }
+        appearance::apply_text_sizes(
+            self.settings.interface_text_size,
+            self.settings.code_text_size,
+            window,
+            cx,
+        );
+        self.save_preferences(window, cx);
+    }
+
+    fn render_text_size_setting(&self, code: bool, cx: &mut Context<Self>) -> AnyElement {
+        let (label, explanation, value, bounds, default) = if code {
+            (
+                "Code text size",
+                "Diffs, source, gutters, and conflict content.",
+                self.settings.code_text_size,
+                appearance::CODE_TEXT_RANGE,
+                appearance::DEFAULT_CODE_TEXT_SIZE,
+            )
+        } else {
+            (
+                "Interface text size",
+                "Lists, controls, dialogs, and navigation.",
+                self.settings.interface_text_size,
+                appearance::INTERFACE_TEXT_RANGE,
+                appearance::DEFAULT_INTERFACE_TEXT_SIZE,
+            )
+        };
+        let p = palette(cx);
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_3()
+            .child(div().flex_1().min_w(px(180.)).child(setting_description(
+                label,
+                explanation,
+                cx,
+            )))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        Button::new(("text-size-decrease", usize::from(code)))
+                            .small()
+                            .ghost()
+                            .label("−")
+                            .accessibility_label(format!("Decrease {}", label.to_lowercase()))
+                            .disabled(value <= *bounds.start())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.choose_text_size(code, value.saturating_sub(1), window, cx)
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id(("text-size-value", usize::from(code)))
+                            .role(Role::Label)
+                            .aria_label(format!("{label}, {value} points"))
+                            .min_w(appearance::ui_size(42.))
+                            .text_center()
+                            .text_size(appearance::ui_text(12.))
+                            .child(format!("{value} pt")),
+                    )
+                    .child(
+                        Button::new(("text-size-increase", usize::from(code)))
+                            .small()
+                            .ghost()
+                            .label("+")
+                            .accessibility_label(format!("Increase {}", label.to_lowercase()))
+                            .disabled(value >= *bounds.end())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.choose_text_size(code, value.saturating_add(1), window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new(("text-size-reset", usize::from(code)))
+                            .small()
+                            .ghost()
+                            .label("Reset")
+                            .accessibility_label(format!(
+                                "Reset {} to {default} points",
+                                label.to_lowercase()
+                            ))
+                            .disabled(value == default)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.choose_text_size(code, default, window, cx)
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .p_3()
+                    .rounded(px(6.))
+                    .bg(rgb(p.canvas))
+                    .text_color(rgb(p.text))
+                    .when(code, |el| {
+                        el.font_family(
+                            gpui_kit::component::Theme::global(cx)
+                                .mono_font_family
+                                .clone(),
+                        )
+                        .text_size(appearance::code_text())
+                    })
+                    .when(!code, |el| el.text_size(appearance::ui_text(12.)))
+                    .child(if code {
+                        "let changes = repository.status();  // 🐢"
+                    } else {
+                        "Review changes · Keep your place · Find files"
+                    }),
+            )
+            .into_any_element()
+    }
+
     fn choose_theme(&mut self, theme: ThemeChoice, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings.theme == theme && !self.settings.follow_system {
             return;
@@ -192,7 +361,7 @@ impl GitTurtle {
             .gap_3()
             .child(
                 div()
-                    .text_size(px(12.))
+                    .text_size(crate::appearance::ui_text(12.))
                     .line_height(relative(1.5))
                     .text_color(rgb(p.muted))
                     .child("Choose what appears in history. Drag a column divider to resize; scroll horizontally when your columns need more room."),
@@ -203,7 +372,7 @@ impl GitTurtle {
                     .flex()
                     .items_center()
                     .gap_3()
-                    .min_h(px(32.))
+                    .min_h(crate::appearance::ui_size(32.))
                     .child(
                         Checkbox::new(("history-column", index))
                             .label(id.label())
@@ -223,7 +392,7 @@ impl GitTurtle {
                             .py_1()
                             .rounded(px(5.))
                             .bg(rgb(p.canvas))
-                            .text_size(px(11.))
+                            .text_size(crate::appearance::ui_text(11.))
                             .text_color(rgb(p.muted))
                             .child(if id == ColumnId::Subject {
                                 "Always shown".to_owned()
@@ -251,8 +420,8 @@ impl GitTurtle {
     pub(super) fn render_settings(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         let busy = self.operation_busy.is_some();
-        let compact = window.viewport_size().width < px(1060.);
-        let narrow = window.viewport_size().width < px(720.);
+        let compact = window.viewport_size().width < appearance::ui_size(1060.);
+        let narrow = window.viewport_size().width < appearance::ui_size(720.);
         let theme_columns = if narrow { 2 } else { 3 };
         let branch_edited =
             self.settings_branch.read(cx).value().as_ref() != self.settings.default_branch.as_str();
@@ -340,6 +509,8 @@ impl GitTurtle {
                             }),
                     ),
                 )
+                .child(self.render_text_size_setting(false, cx))
+                .child(self.render_text_size_setting(true, cx))
                 .child(
                     div()
                         .flex()
@@ -466,13 +637,13 @@ impl GitTurtle {
                         .flex()
                         .flex_col()
                         .gap_2()
-                        .child(div().flex().items_center().gap_2().child(icon("folder", 14., p.accent)).child(div().min_w_0().truncate().text_size(px(12.)).font_weight(FontWeight::MEDIUM).child(repository_name)))
+                        .child(div().flex().items_center().gap_2().child(icon("folder", 14., p.accent)).child(div().min_w_0().truncate().text_size(crate::appearance::ui_text(12.)).font_weight(FontWeight::MEDIUM).child(repository_name)))
                         .child(
-                            div().text_size(px(11.)).text_color(rgb(p.muted)).overflow_hidden().child(
+                            div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).overflow_hidden().child(
                                 self.path.as_ref().map(|path| path.display().to_string()).unwrap_or_default(),
                             ),
                         )
-                        .child(div().text_size(px(11.)).line_height(relative(1.5)).text_color(rgb(p.muted)).child(
+                        .child(div().text_size(crate::appearance::ui_text(11.)).line_height(relative(1.5)).text_color(rgb(p.muted)).child(
                             match &self.profile {
                                 Some(profile) if !profile.name.is_empty() && !profile.email.is_empty() => {
                                     format!("Current identity: {} <{}>", profile.name, profile.email)
@@ -486,7 +657,7 @@ impl GitTurtle {
                 .child(settings_field("Email", &self.identity_email, busy, cx))
                 .child(
                     div()
-                        .text_size(px(11.))
+                        .text_size(crate::appearance::ui_text(11.))
                         .line_height(relative(1.5))
                         .text_color(rgb(p.muted))
                         .child(match self.profile.as_ref() {
@@ -515,7 +686,7 @@ impl GitTurtle {
                                 .on_click(cx.listener(|this, _, window, cx| this.fill_identity_inputs(window, cx))),
                         ),
                 )
-                .child(div().text_size(px(11.)).line_height(relative(1.5)).text_color(rgb(p.muted)).child("Name and email are saved to this repository’s Git configuration."))
+                .child(div().text_size(crate::appearance::ui_text(11.)).line_height(relative(1.5)).text_color(rgb(p.muted)).child("Name and email are saved to this repository’s Git configuration."))
                 .into_any_element()
         } else {
             div()
@@ -526,12 +697,12 @@ impl GitTurtle {
                 .child(icon("commit", 28., p.muted))
                 .child(
                     div()
-                        .text_size(px(13.))
+                        .text_size(crate::appearance::ui_text(13.))
                         .child("Open a project to set its Git identity."),
                 )
                 .child(
                     div()
-                        .text_size(px(12.))
+                        .text_size(crate::appearance::ui_text(12.))
                         .line_height(relative(1.5))
                         .text_color(rgb(p.muted))
                         .child("Your Git name, email, and signing preference will appear here."),
@@ -556,7 +727,7 @@ impl GitTurtle {
             .text_color(rgb(p.text))
             .child(
                 div()
-                    .h(px(54.))
+                    .h(crate::appearance::ui_size(54.))
                     .flex_shrink_0()
                     .px_6()
                     .flex()
@@ -595,17 +766,17 @@ impl GitTurtle {
                             },
                         )),
                     )
-                    .child(div().h(px(18.)).w(px(1.)).bg(rgb(p.border)))
+                    .child(div().h(crate::appearance::ui_size(18.)).w(px(1.)).bg(rgb(p.border)))
                     .child(
                         div()
-                            .text_size(px(14.))
+                            .text_size(crate::appearance::ui_text(14.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("Settings"),
                     )
                     .child(div().flex_1())
                     .child(
                         div()
-                            .text_size(px(11.))
+                            .text_size(crate::appearance::ui_text(11.))
                             .text_color(rgb(p.muted))
                             .child("Make GitTurtle yours"),
                     ),
@@ -631,7 +802,7 @@ impl GitTurtle {
                                     .flex()
                                     .items_center()
                                     .gap_2()
-                                    .text_size(px(12.))
+                                    .text_size(crate::appearance::ui_text(12.))
                                     .text_color(rgb(p.muted))
                                     .child(icon("check", 14., p.accent))
                                     .child("Appearance and layout save automatically."),
@@ -643,7 +814,7 @@ impl GitTurtle {
                                         .rounded(px(8.))
                                         .bg(rgb(p.removed_background))
                                         .text_color(rgb(p.removed))
-                                        .text_size(px(12.))
+                                        .text_size(crate::appearance::ui_text(12.))
                                         .flex()
                                         .items_center()
                                         .gap_3()
@@ -730,7 +901,7 @@ fn theme_preview(
         .bg(rgb(p.canvas))
         .child(
             div()
-                .h(px(25.))
+                .h(crate::appearance::ui_size(25.))
                 .flex_shrink_0()
                 .px_2()
                 .flex()
@@ -827,7 +998,7 @@ fn theme_preview(
         .child(
             div()
                 .id("theme-preview-caption")
-                .h(px(70.))
+                .h(crate::appearance::ui_size(70.))
                 .flex_shrink_0()
                 .px_3()
                 .py_2()
@@ -845,7 +1016,7 @@ fn theme_preview(
                         .items_center()
                         .justify_between()
                         .gap_1()
-                        .text_size(px(12.))
+                        .text_size(crate::appearance::ui_text(12.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(rgb(p.text))
                         .child(div().min_w_0().truncate().child(choice.label()))
@@ -864,7 +1035,7 @@ fn theme_preview(
                 )
                 .child(
                     div()
-                        .text_size(px(10.))
+                        .text_size(crate::appearance::ui_text(10.))
                         .font_weight(FontWeight::NORMAL)
                         .text_color(rgb(p.muted))
                         .truncate()
@@ -890,13 +1061,13 @@ fn setting_description(title: &'static str, description: &'static str, cx: &App)
         .gap_1()
         .child(
             div()
-                .text_size(px(12.))
+                .text_size(crate::appearance::ui_text(12.))
                 .font_weight(FontWeight::MEDIUM)
                 .child(title),
         )
         .child(
             div()
-                .text_size(px(11.))
+                .text_size(crate::appearance::ui_text(11.))
                 .line_height(relative(1.5))
                 .text_color(rgb(p.muted))
                 .child(description),
@@ -914,7 +1085,7 @@ fn settings_field(
         .flex()
         .flex_col()
         .gap_2()
-        .text_size(px(12.))
+        .text_size(crate::appearance::ui_text(12.))
         .text_color(rgb(palette(cx).text))
         .child(label)
         .child(Input::new(input).disabled(disabled))
@@ -965,13 +1136,13 @@ fn settings_section(
                         .gap_1()
                         .child(
                             div()
-                                .text_size(px(15.))
+                                .text_size(crate::appearance::ui_text(15.))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child(title),
                         )
                         .child(
                             div()
-                                .text_size(px(11.))
+                                .text_size(crate::appearance::ui_text(11.))
                                 .line_height(relative(1.5))
                                 .text_color(rgb(p.muted))
                                 .child(description),

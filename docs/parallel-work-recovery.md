@@ -1,0 +1,25 @@
+# Parallel work and reflog recovery
+
+The current-branch menu opens **Worktrees…** and **Local reflog & recovery…**. These native dialogs retain the repository browsing context. Their metadata, status, and commit reads run on separate serial readers; closing, cancelling, or replacing a read cancels an active Git subprocess. Accepted mutations use the application's existing serialized operation executor and are never replayed automatically.
+
+## Worktrees
+
+Create from an available local branch, or name a new branch starting at a local branch, tag, or commit. The native folder picker retains the actual parent path, including filename bytes; enter one new folder name. Review the resolved commit, branch, and absolute destination before creation. Destinations must be absent and their parent must exist. Creation preserves Git checkout hooks and filters. Git initializes private configuration according to its worktree semantics; later per-worktree configuration and GitTurtle commit drafts remain independently scoped.
+
+Selecting a worktree reads its current branch, HEAD, folder availability, dirty/untracked count, and ignored content. Status is loaded for one selected worktree rather than scanning every folder on list refresh. Search filters the full loaded list; the native dialog renders at most 100 matches at a time. Creation offers GitTurtle, Finder/file-manager, and configured-editor handoff; these actions also remain available in the manager.
+
+Removal reviews one captured linked-worktree identity. GitTurtle refuses the main worktree, the currently open worktree, locked or missing worktrees, active integration/conflict state, changed/untracked files, and ignored files. It rechecks identity and content immediately before invoking ordinary `git worktree remove`, with no force. The branch remains available. Missing-folder repair, pruning metadata, and force deletion are deliberately unavailable; GitTurtle never deletes user directories to repair Git metadata.
+
+## Reflog
+
+The browser initially reads this worktree's private `HEAD` log. Enter a local branch name or exact `refs/heads/…` reference to inspect its shared log. Git reflog entries include reference movements made by other tools, but they expire and may outlive their commit objects. The browser is bounded to the newest 1,000 records within a 4 MiB tail and explicitly identifies a truncated or empty result. Raw reflog records remain visible when their objects have disappeared. Symlinked reflog files/directories are refused.
+
+Select an entry to inspect its available commit, message, timestamp, parent count, and changed paths against the first parent (or empty tree for a root). At most 100 changed paths are shown. Copying its full object ID is explicit. **Review recovery branch…** prepares a new local branch pointing to the selected commit. Confirmation revalidates the log snapshot, commit, repository directories, and unused branch name. It does not checkout, reset, alter the index, change working files, contact a remote, or stop an active Git operation. Changed or expired entries require a refreshed review. Missing objects cannot be recreated from a reflog entry alone.
+
+## Evidence
+
+`cargo test --locked -p gitturtle-core --test worktrees_reflog` passed six behavioral fixtures covering source index/work preservation; independent worktree configuration; existing/new branch creation; occupied branches/destinations; stale refs; dirty, ignored, locked, main and missing worktree refusal; branch retention after removal; a failed checkout hook with observed retained branch and no cleanup/retry; recovery with staged and unstaged work; stale reflog rejection; bounded missing-object logs; private/shared reflogs; and symlink refusal.
+
+`cargo test --locked -p gitturtle-core cancelling_inspection --lib` passed the active-process cancellation and scope-restoration regression. `cargo check --locked -p gitturtle` passed with the registered dialogs. These are backend/build checks; actual native interaction and final installed-package evidence belong to the milestone's combined verification record.
+
+The [release backend measurements](benchmarks/review-bench.md) cover worktree listing/selected details, a 1,000-entry HEAD reflog, and missing-LFS plan preparation with raw samples and read-only fixture fingerprints. They are absolute backend observations, not a before/after speed improvement claim.

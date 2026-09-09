@@ -7,6 +7,7 @@ use preferences::CommitDraft;
 #[derive(Clone, Copy)]
 pub(super) enum WorkingRow {
     Heading(ChangeArea, usize),
+    Directory(usize, ChangeArea),
     File(usize, ChangeArea),
 }
 
@@ -142,6 +143,7 @@ impl GitTurtle {
                 let destination = destination.clone();
                 self.create_project(
                     "Cloning repository…",
+                    destination.clone(),
                     move || GitRepository::clone_repository(&source, &destination),
                     window,
                     cx,
@@ -155,6 +157,7 @@ impl GitTurtle {
                 let branch = branch.clone();
                 self.create_project(
                     "Creating repository…",
+                    destination.clone(),
                     move || GitRepository::init(&destination, &branch),
                     window,
                     cx,
@@ -166,6 +169,7 @@ impl GitTurtle {
     fn create_project(
         &mut self,
         label: &'static str,
+        destination: PathBuf,
         operation: impl FnOnce() -> anyhow::Result<GitRepository> + Send + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -174,11 +178,19 @@ impl GitTurtle {
         self.operation_error = None;
         self.operation_notice = None;
         self.hub.update(cx, |hub, cx| hub.set_busy(true, cx));
+        let activity_id =
+            self.activity
+                .begin(&destination, label, &destination.display().to_string());
+        self.save_activity(window, cx);
         let control = self.begin_operation_control(window, cx);
+        let activity_control = control.clone();
         let response = self.operations.submit_controlled(control, operation);
         self.operation_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response.await.unwrap_or_else(|_| Err(anyhow::anyhow!("Repository operation stopped without a result. Inspect the destination before retrying.")));
             let _ = this.update_in(cx, |this, window, cx| {
+                let explanation = result.as_ref().map(|_| "Repository operation completed.".into()).unwrap_or_else(|error| format!("{error:#}"));
+                this.activity.finish(activity_id, result.is_ok(), activity_control.is_cancelled(), explanation.contains("without a result") || explanation.contains("timed out"), &explanation);
+                this.save_activity(window, cx);
                 this.operation_busy = None;
                 this.finish_operation_control(window, cx);
                 this.hub.update(cx, |hub, cx| hub.set_busy(false, cx));
@@ -204,6 +216,7 @@ impl GitTurtle {
     pub(super) fn show_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.end_image_drag();
         self.cancel_branch_action();
+        self.cancel_interactive_rebase_action();
         self.cancel_recovery_read();
         if self.operation_busy.is_some() {
             return;
@@ -265,6 +278,7 @@ impl GitTurtle {
             self.invalidate_read();
             self.clear_preview();
             self.files.clear();
+            self.file_paths.reset();
             self.selected_file = None;
         }
         self.work_generation = self.work_generation.wrapping_add(1);
@@ -289,6 +303,7 @@ impl GitTurtle {
                     Ok(state) => this.apply_worktree_state(state, false, window, cx),
                     Err(error) => {
                         this.work_status = None;
+                        this.working_paths.reset();
                         this.integration_state = None;
                         this.working_rows.clear();
                         this.working_selected = None;
@@ -296,6 +311,7 @@ impl GitTurtle {
                             this.invalidate_read();
                             this.clear_preview();
                             this.files.clear();
+                            this.file_paths.reset();
                             this.selected_file = None;
                         }
                         this.operation_error
@@ -351,39 +367,13 @@ impl GitTurtle {
             .work_status
             .as_ref()
             .is_none_or(|previous| previous.entries != status.entries);
+        let working_anchor = if entries_changed && quiet {
+            self.working_scroll_anchor()
+        } else {
+            None
+        };
         if entries_changed {
-            let offset = self.working_scroll.0.borrow().base_handle.offset();
-            let height = self.settings.density.file_row_height();
-            let top = ((-f32::from(offset.y)) / height).max(0.) as usize;
-            let anchor = self.working_rows.get(top).and_then(|row| match row {
-                WorkingRow::Heading(area, _) => Some((None, *area)),
-                WorkingRow::File(index, area) => self
-                    .work_status
-                    .as_ref()?
-                    .entries
-                    .get(*index)
-                    .map(|entry| (Some(entry.path.clone()), *area)),
-            });
-            self.working_rows.clear();
-            for area in [ChangeArea::Staged, ChangeArea::Unstaged] {
-                let indices: Vec<_> = status
-                    .entries
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, entry)| {
-                        let present = if area == ChangeArea::Staged {
-                            entry.staged.is_some()
-                        } else {
-                            entry.unstaged.is_some() || entry.untracked || entry.conflicted
-                        };
-                        present.then_some(i)
-                    })
-                    .collect();
-                self.working_rows
-                    .push(WorkingRow::Heading(area, indices.len()));
-                self.working_rows
-                    .extend(indices.into_iter().map(|i| WorkingRow::File(i, area)));
-            }
+            self.working_paths.reset();
             self.working_selected = preferred.as_ref().and_then(|(path, area)| {
                 status.entries.iter().enumerate().find_map(|(i, entry)| {
                     if &entry.path != path {
@@ -397,26 +387,6 @@ impl GitTurtle {
                     .map(|area| (i, area))
                 })
             });
-            if quiet
-                && let Some((anchor_path, anchor_area)) = anchor
-                && let Some(next_top) = self.working_rows.iter().position(|row| match row {
-                    WorkingRow::Heading(area, _) => anchor_path.is_none() && *area == anchor_area,
-                    WorkingRow::File(index, area) => {
-                        *area == anchor_area
-                            && anchor_path.as_ref() == Some(&status.entries[*index].path)
-                    }
-                })
-            {
-                self.working_scroll.0.borrow().base_handle.set_offset(point(
-                    offset.x,
-                    px(automatic_refresh::reanchor_offset(
-                        f32::from(offset.y),
-                        top,
-                        next_top,
-                        height,
-                    )),
-                ));
-            }
         }
         let remotes = match remotes {
             Ok(remotes) => remotes,
@@ -446,7 +416,10 @@ impl GitTurtle {
                 None
             }
         };
-        self.work_status = Some(status);
+        self.work_status = Some(Arc::new(status));
+        if entries_changed {
+            self.schedule_working_filter(working_anchor, !quiet, cx);
+        }
         self.remotes = remotes;
         if !quiet && self.mode == WorkspaceMode::Working {
             self.invalidate_read();
@@ -461,6 +434,7 @@ impl GitTurtle {
             } else {
                 self.clear_preview();
                 self.files.clear();
+                self.file_paths.reset();
                 self.selected_file = None;
             }
         }
@@ -520,6 +494,7 @@ impl GitTurtle {
             self.working_selected = None;
             self.clear_preview();
             self.files.clear();
+            self.file_paths.reset();
             self.selected_file = None;
             return;
         }
@@ -528,6 +503,7 @@ impl GitTurtle {
         self.working_selected = Some((index, area));
         self.clear_preview();
         self.files.clear();
+        self.file_paths.reset();
         self.selected_file = None;
         self.zoom = 0.;
         self.image_scroll.set_offset(point(px(0.), px(0.)));
@@ -570,7 +546,7 @@ impl GitTurtle {
             (current as i32 + direction).clamp(0, files.len() as i32 - 1) as usize
         };
         let (position, index, area) = files[next];
-        self.select_working(index, area, window, cx);
+        self.choose_working_selection(index, area, false, false, window, cx);
         self.working_scroll
             .scroll_to_item(position, ScrollStrategy::Center);
     }
@@ -585,7 +561,18 @@ impl GitTurtle {
         if self.operation_busy.is_some() {
             return;
         }
-        self.close_inspections(window, cx);
+        let downloading_lfs = matches!(&command, WriteCommand::DownloadLfs(_));
+        let lfs_selection = if downloading_lfs {
+            self.selected_file
+                .and_then(|index| self.files.get(index))
+                .cloned()
+                .map(|file| (file, self.mode, self.generation))
+        } else {
+            None
+        };
+        if !downloading_lfs {
+            self.close_inspections(window, cx);
+        }
         let Some(repo) = self.repository.clone() else {
             return;
         };
@@ -601,7 +588,16 @@ impl GitTurtle {
             WriteCommand::Integration(gitturtle_core::IntegrationCommand::Resolve {
                 expected,
                 ..
-            }) => Some(expected.path.clone()),
+            }) if !matches!(
+                &command,
+                WriteCommand::Integration(gitturtle_core::IntegrationCommand::Resolve {
+                    resolution: gitturtle_core::ConflictResolution::Save { .. },
+                    ..
+                })
+            ) =>
+            {
+                Some(expected.path.clone())
+            }
             _ => None,
         };
         let submitted_message = match &command {
@@ -614,6 +610,13 @@ impl GitTurtle {
             _ => None,
         };
         let success_notice = match &command {
+            WriteCommand::Integration(gitturtle_core::IntegrationCommand::Resolve {
+                expected,
+                resolution: gitturtle_core::ConflictResolution::Save { .. },
+            }) => Some(format!(
+                "Saved {} · remains unresolved until explicitly staged",
+                expected.path.display()
+            )),
             WriteCommand::Integration(gitturtle_core::IntegrationCommand::Resolve {
                 expected,
                 ..
@@ -666,6 +669,11 @@ impl GitTurtle {
         } else {
             None
         };
+        let worktree_command = if let WriteCommand::Worktree(command) = &command {
+            Some(Arc::clone(command))
+        } else {
+            None
+        };
         let recovery = if let WriteCommand::Recovery(command) = &command {
             Some(Arc::clone(command))
         } else {
@@ -674,6 +682,9 @@ impl GitTurtle {
         let refresh_history = matches!(
             &command,
             WriteCommand::Commit { .. }
+                | WriteCommand::InteractiveRebase(_)
+                | WriteCommand::Worktree(_)
+                | WriteCommand::RecoverReflog(_)
                 | WriteCommand::Branch(_)
                 | WriteCommand::Tag(_)
                 | WriteCommand::Checkout { .. }
@@ -688,19 +699,37 @@ impl GitTurtle {
         self.operation_notice = None;
         self.work_generation = self.work_generation.wrapping_add(1);
         self.status_task = None;
-        if self.mode == WorkspaceMode::Working {
+        if self.mode == WorkspaceMode::Working && !downloading_lfs {
             self.invalidate_read();
             self.clear_preview();
             self.files.clear();
+            self.file_paths.reset();
             self.selected_file = None;
         }
+        let target = activity::target(
+            &command,
+            self.work_status
+                .as_ref()
+                .and_then(|s| s.branch.as_deref())
+                .unwrap_or("Current worktree"),
+        );
+        let activity_id = self.activity.begin(&path, label, &target);
+        self.save_activity(window, cx);
         let control = self.begin_operation_control(window, cx);
+        let activity_control = control.clone();
         let response = self
             .operations
             .submit_controlled(control, move || repo.execute(&command));
         self.operation_task = Some(cx.spawn_in(window, async move |this,cx| {
             let result=response.await.unwrap_or_else(|_|Err(anyhow::anyhow!("Operation ended without a result. Refresh before retrying; repository state may have changed.")));
             let _=this.update_in(cx,|this,window,cx| {
+                let (success, explanation) = match &result {
+                    Ok(_) => (true, "Git reported that the operation completed.".to_owned()),
+                    Err(error) => (false, format!("{error:#}")),
+                };
+                let uncertain = explanation.contains("without a result") || explanation.contains("timed out") || explanation.contains("deadline") || explanation.contains("exceeded");
+                this.activity.finish(activity_id, success, activity_control.is_cancelled(), uncertain, &explanation);
+                this.save_activity(window, cx);
                 this.operation_busy=None;
                 this.finish_operation_control(window, cx);
                 let succeeded=result.is_ok();
@@ -722,6 +751,7 @@ impl GitTurtle {
                     }
                 }
                 if let Some(command) = &tag_command { this.finish_tag_write(&path, command, succeeded, cx); }
+                if let Some(command) = &worktree_command { this.finish_worktree_write(&path, command, succeeded, window, cx); }
                 if let Some(command) = &recovery { this.finish_recovery_write(&path, command, succeeded, cx); }
                 if succeeded && ending_integration { this.conflict_drafts.retain(|(repository, _), _| repository != &path); }
                 if succeeded && let Some(resolved) = &resolved_path {
@@ -735,7 +765,13 @@ impl GitTurtle {
                         this.branch_name.update(cx,|input,cx|input.set_value("",window,cx));
                     }
                     if refresh_history { this.refresh_after_write(path, window, cx); }
-                    else { this.refresh_worktree(window,cx); }
+                    else if downloading_lfs {
+                        if succeeded && lfs_selection.as_ref().is_some_and(|(file, mode, generation)| this.mode == *mode && this.generation == *generation && this.selected_file.and_then(|index| this.files.get(index)) == Some(file)) {
+                            if this.mode == WorkspaceMode::Working {
+                                if let Some((index, area)) = this.working_selected { this.select_working(index, area, window, cx); }
+                            } else if !this.reload_tracked_inspection(window, cx) && let Some(index) = this.selected_file { this.load_file(index, window, cx); }
+                        }
+                    } else { this.refresh_worktree(window,cx); }
                 }
                 cx.notify();
             });
@@ -806,24 +842,21 @@ impl GitTurtle {
             self.working_scroll
                 .scroll_to_item(selected, ScrollStrategy::Nearest);
         }
-        let staged = self.work_status.as_ref().map_or(0, |status| {
-            status.entries.iter().filter(|e| e.staged.is_some()).count()
-        });
+        let staged = self.working_paths.staged_count;
         let total = self
             .work_status
             .as_ref()
             .map_or(0, |status| status.entries.len());
-        let conflicted = self
-            .work_status
-            .as_ref()
-            .is_some_and(|s| s.entries.iter().any(|e| e.conflicted));
+        let conflicted = self.working_paths.conflicted;
         let identity_ready = self
             .profile
             .as_ref()
             .is_some_and(|p| !p.name.is_empty() && !p.email.is_empty());
         let busy = self.operation_busy.is_some();
         let refreshing = self.status_task.is_some();
-        let status_ready = self.work_status.is_some();
+        let status_ready = self.work_status.is_some()
+            && !self.working_paths.pending
+            && self.working_paths.error.is_none();
         let branch = self
             .work_status
             .as_ref()
@@ -843,6 +876,7 @@ impl GitTurtle {
         .track_scroll(&self.working_scroll);
         div()
             .size_full().min_h_0().relative().flex().flex_col().bg(rgb(p.panel))
+            .child(self.render_working_selection(cx))
             .child(canvas(|_, _, _| (), move |bounds, _, _, cx| {
                 layout.update(cx, |layout, cx| {
                     if layout.height != bounds.size.height {
@@ -855,11 +889,11 @@ impl GitTurtle {
                 div().h(px(header_height)).flex_shrink_0().px_4().flex().items_center().gap_2()
                     .border_b_1().border_color(rgb(p.border))
                     .child(icon("commit", 17., p.accent))
-                    .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child("Changes"))
+                    .child(div().text_size(crate::appearance::ui_text(13.)).font_weight(FontWeight::SEMIBOLD).child("Changes"))
                     .child(div().px_2().py_0p5().rounded(px(5.)).bg(rgb(p.hover))
-                        .text_size(px(11.)).text_color(rgb(p.muted)).child(total.to_string()))
+                        .text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(total.to_string()))
                     .child(div().flex_1())
-                    .when(refreshing, |el| el.child(div().text_size(px(10.)).text_color(rgb(p.muted)).child("Refreshing…")))
+                    .when(refreshing, |el| el.child(div().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)).child("Refreshing…")))
                     .child(self.render_working_recovery_menu(cx))
                     .child(button("refresh-working", "", "refresh", false)
                         .accessibility_label("Refresh working changes").tooltip("Refresh working changes")
@@ -868,6 +902,7 @@ impl GitTurtle {
             .child(
                 div().id("working-pane").role(Role::ListBox).aria_label("Working tree files")
                     .tab_stop(true).key_context("GitTurtleList").track_focus(&self.file_focus)
+                    .border_1().border_color(rgb(p.border)).focus_visible(|style| style.border_color(rgb(p.accent)))
                     .relative().flex_1().min_h_0().overflow_hidden()
                     .when(total > 0, |el| el.child(list))
                     .when(total == 0, |el| el.child(
@@ -877,9 +912,9 @@ impl GitTurtle {
                                 .flex().items_center().justify_center()
                                 .child(icon(if status_ready { "check" } else if refreshing { "refresh" } else { "changes" },
                                     22., if status_ready { p.added } else { p.muted })))
-                            .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM)
+                            .child(div().text_size(crate::appearance::ui_text(13.)).font_weight(FontWeight::MEDIUM)
                                 .child(if status_ready { "Working tree clean" } else if refreshing { "Reading working tree…" } else { "Changes unavailable" }))
-                            .child(div().max_w(px(220.)).text_center().text_size(px(11.)).text_color(rgb(p.muted))
+                            .child(div().max_w(px(220.)).text_center().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))
                                 .child(if status_ready { "No staged changes or local edits. Your next changes will appear here." }
                                     else if refreshing { "Checking staged changes and local edits." }
                                     else { "Refresh to try reading this working tree again." })),
@@ -904,35 +939,35 @@ impl GitTurtle {
                     .when(short, |el| el.gap_1().p_2())
                     .child(div().flex().items_center().gap_2()
                         .child(icon("commit", 16., p.accent))
-                        .child(div().id("commit-composer-heading").flex_1().min_w_0().truncate().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD)
+                        .child(div().id("commit-composer-heading").flex_1().min_w_0().truncate().text_size(crate::appearance::ui_text(13.)).font_weight(FontWeight::SEMIBOLD)
                             .tooltip({ let branch = branch.to_owned(); move |window, cx| Tooltip::new(format!("Commit to {branch}")).build(window, cx) })
                             .child(if short { format!("Commit to {branch}") } else { "Create a commit".into() }))
                         .child(div().px_1p5().py_0p5().rounded(px(4.))
                             .bg(rgb(if staged > 0 { p.added_background } else { p.hover }))
-                            .text_size(px(10.)).text_color(rgb(if staged > 0 { p.added } else { p.muted }))
+                            .text_size(crate::appearance::ui_text(10.)).text_color(rgb(if staged > 0 { p.added } else { p.muted }))
                             .child(format!("{staged} staged"))))
-                    .when(!short, |el| el.child(div().flex().items_center().gap_1p5().min_w_0().text_size(px(11.))
+                    .when(!short, |el| el.child(div().flex().items_center().gap_1p5().min_w_0().text_size(crate::appearance::ui_text(11.))
                         .text_color(rgb(p.muted)).child(icon("branch", 13., p.muted))
                         .child(div().truncate().child(branch.to_owned()))))
-                    .child(div().flex().items_center().gap_2().text_size(px(11.))
+                    .child(div().flex().items_center().gap_2().text_size(crate::appearance::ui_text(11.))
                         .child(div().flex_1().font_weight(FontWeight::MEDIUM).child("Title"))
                         .child(div().text_color(rgb(if summary_length > 72 { p.warning } else { p.muted }))
                             .child(format!("{summary_length}/72 suggested"))))
-                    .child(Input::new(&self.commit_title).readonly(busy).aria_label("Commit title").text_size(px(12.)))
+                    .child(Input::new(&self.commit_title).readonly(busy).aria_label("Commit title").text_size(crate::appearance::ui_text(12.)))
                     .when(summary_length > 72, |el| el.child(
-                        div().text_size(px(10.)).text_color(rgb(p.muted)).child("A shorter title is easier to scan. This title is still valid."),
+                        div().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)).child("A shorter title is easier to scan. This title is still valid."),
                     ))
-                    .child(div().flex().items_center().gap_1().text_size(px(11.))
+                    .child(div().flex().items_center().gap_1().text_size(crate::appearance::ui_text(11.))
                         .child(div().font_weight(FontWeight::MEDIUM).child("Description"))
                         .child(div().text_color(rgb(p.muted)).child("· optional")))
                     .child(Textarea::new(&self.commit_message).readonly(busy)
                         .aria_label("Commit description, optional")
                         .h(px(description_height))
-                        .text_size(px(12.)))
-                    .child(div().flex().items_center().gap_2().text_size(px(10.)).text_color(rgb(p.muted))
+                        .text_size(crate::appearance::ui_text(12.)))
+                    .child(div().flex().items_center().gap_2().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted))
                         .child(div().flex_1().child(if staged == 0 { "Stage files to include in your commit" } else { "Only staged changes will be committed" })))
                     .when_some(self.draft_save_error.as_ref(), |el, error| el.child(
-                        div().flex().flex_col().gap_1().text_size(px(10.)).text_color(rgb(p.warning))
+                        div().flex().flex_col().gap_1().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.warning))
                             .child("Draft could not be saved on this computer. Keep the app open and retry.")
                             .child(button("retry-commit-draft", "Retry saving draft", "refresh", false)
                                 .tooltip(error.clone())
@@ -943,17 +978,17 @@ impl GitTurtle {
                             .on_click(cx.listener(|this, _, window, cx| this.show_settings(window, cx))),
                     ))
                     .when(conflicted, |el| el.child(
-                        div().flex().items_center().gap_2().text_size(px(11.)).text_color(rgb(p.warning))
+                        div().flex().items_center().gap_2().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning))
                             .child(icon("file-conflict", 15., p.warning))
                             .child("Resolve conflicted files before committing."),
                     ))))
                     .child(div().flex_shrink_0().px_3().pb_3().when(short, |el| el.px_2().pb_2()).child(
-                        Button::new("commit-staged").primary().w_full().h(px(36.))
+                        Button::new("commit-staged").primary().w_full().h(crate::appearance::ui_size(36.))
                             .icon(Icon::default().path("icons/commit.svg").size(px(16.)))
                             .label(if busy {
                                 "Working…".to_owned()
                             } else if !status_ready {
-                                if refreshing { "Reading working changes…" } else { "Changes unavailable" }.to_owned()
+                                if self.working_paths.pending { "Filtering working paths…" } else if refreshing { "Reading working changes…" } else { "Changes unavailable" }.to_owned()
                             } else if conflicted {
                                 "Resolve conflicts to commit".to_owned()
                             } else if !identity_ready {
@@ -965,7 +1000,7 @@ impl GitTurtle {
                             } else {
                                 format!("Commit {staged} {}", if staged == 1 { "file" } else { "files" })
                             })
-                            .disabled(busy || staged == 0 || conflicted || !identity_ready
+                            .disabled(busy || !status_ready || staged == 0 || conflicted || !identity_ready
                                 || self.commit_title.read(cx).value().trim().is_empty())
                             .tooltip(format!("Commit staged changes to {branch}"))
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -981,6 +1016,24 @@ impl GitTurtle {
         let p = palette(cx);
         let busy = self.operation_busy.is_some();
         match self.working_rows[position] {
+            WorkingRow::Directory(index, _) => {
+                let parent = self
+                    .work_status
+                    .as_ref()
+                    .and_then(|s| s.entries.get(index))
+                    .and_then(|entry| entry.path.parent())
+                    .filter(|path| !path.as_os_str().is_empty())
+                    .map_or("Repository root".into(), |path| path.display().to_string());
+                div()
+                    .h(px(self.settings.density.file_row_height()))
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .text_size(crate::appearance::ui_text(11.))
+                    .text_color(rgb(p.muted))
+                    .child(parent)
+                    .into_any_element()
+            }
             WorkingRow::Heading(area, count) => {
                 let staged = area == ChangeArea::Staged;
                 div()
@@ -1000,13 +1053,13 @@ impl GitTurtle {
                     ))
                     .child(
                         div()
-                            .text_size(px(12.))
+                            .text_size(crate::appearance::ui_text(12.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(if staged { "Staged" } else { "Unstaged" }),
                     )
                     .child(
                         div()
-                            .text_size(px(11.))
+                            .text_size(crate::appearance::ui_text(11.))
                             .text_color(rgb(p.muted))
                             .child(count.to_string()),
                     )
@@ -1018,7 +1071,12 @@ impl GitTurtle {
                             if staged { "minus" } else { "plus" },
                             false,
                         )
-                        .disabled(busy || count == 0)
+                        .disabled(
+                            busy || count == 0
+                                || self.working_paths.pending
+                                || self.working_paths.error.is_some()
+                                || !self.working_filter.read(cx).value().is_empty(),
+                        )
                         .tooltip(if staged {
                             "Remove all staged changes from the next commit"
                         } else {
@@ -1063,7 +1121,7 @@ impl GitTurtle {
                     .map(|p| p.to_string_lossy().into_owned())
                     .filter(|p| !p.is_empty())
                     .unwrap_or("Repository root".into());
-                let active = self.working_selected == Some((index, area));
+                let active = self.working_is_selected(index, area);
                 let staged = area == ChangeArea::Staged;
                 let path_detail = entry.original_path.as_ref().map_or_else(
                     || entry.path.display().to_string(),
@@ -1147,14 +1205,14 @@ impl GitTurtle {
                             .child(
                                 div()
                                     .truncate()
-                                    .text_size(px(12.))
+                                    .text_size(crate::appearance::ui_text(12.))
                                     .font_weight(FontWeight::MEDIUM)
                                     .child(name),
                             )
                             .child(
                                 div()
                                     .truncate()
-                                    .text_size(px(10.))
+                                    .text_size(crate::appearance::ui_text(10.))
                                     .text_color(rgb(p.muted))
                                     .child(parent),
                             ),
@@ -1162,7 +1220,7 @@ impl GitTurtle {
                     .child(
                         div()
                             .flex_shrink_0()
-                            .text_size(px(10.))
+                            .text_size(crate::appearance::ui_text(10.))
                             .text_color(rgb(color))
                             .child(status_label),
                     )
@@ -1200,8 +1258,16 @@ impl GitTurtle {
                             },
                         )),
                     )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.select_working(index, area, window, cx)
+                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                        let modifiers = event.modifiers();
+                        this.choose_working_selection(
+                            index,
+                            area,
+                            modifiers.platform,
+                            modifiers.shift,
+                            window,
+                            cx,
+                        )
                     }))
                     .context_menu(move |menu, _, _| {
                         let owner = ignore_owner.clone();
@@ -1248,14 +1314,14 @@ impl GitTurtle {
         let branch_picker = self.render_branch_picker(cx);
         div().flex().flex_col().flex_shrink_0().bg(rgb(p.panel)).border_b_1().border_color(rgb(p.border))
             .child(
-                div().min_h(px(54.)).px_4().py_2().flex().flex_wrap().items_center().gap_2()
+                div().min_h(crate::appearance::ui_size(54.)).px_4().py_2().flex().flex_wrap().items_center().gap_2()
                     .child(branch_picker)
                     .children(self.work_status.as_ref().map(|status| {
                         let tooltip = status.upstream.as_ref().map_or_else(
                             || "No upstream is configured. Choose a remote and branch in Targets to push.".to_owned(),
                             |upstream| format!("Compared with local {upstream}. Fetch to update remote information."),
                         );
-                        div().id("branch-sync-state").flex().items_center().gap_2().px_2().text_size(px(11.))
+                        div().id("branch-sync-state").flex().items_center().gap_2().px_2().text_size(crate::appearance::ui_text(11.))
                             .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
                             .when(status.upstream.is_some(), |el| el
                                 .child(div().flex().items_center().gap_1()
@@ -1269,7 +1335,7 @@ impl GitTurtle {
                             .when(status.upstream.is_none(), |el| el.child(div().text_color(rgb(p.muted)).child("No upstream")))
                     }))
                     .children(self.work_status.as_ref().and_then(|s| s.operation.as_ref()).map(|operation| {
-                        div().px_2().py_1().rounded(px(5.)).bg(rgb(p.hover)).text_size(px(11.))
+                        div().px_2().py_1().rounded(px(5.)).bg(rgb(p.hover)).text_size(crate::appearance::ui_text(11.))
                             .text_color(rgb(p.warning)).child(format!("{operation} in progress"))
                     }))
                     .child(div().flex_1())
@@ -1314,7 +1380,7 @@ impl GitTurtle {
                         .child(div().flex().flex_col().gap_1()
                             .child(action_field_label("Find or create a branch", p.muted))
                             .child(div().flex().items_center().gap_1()
-                                .child(div().w(px(170.)).child(Input::new(&self.branch_name).text_size(px(12.)).disabled(busy)))
+                                .child(div().w(px(170.)).child(Input::new(&self.branch_name).text_size(crate::appearance::ui_text(12.)).disabled(busy)))
                                 .child(button("checkout-branch", "Switch", "branch", false).disabled(busy || branch_empty)
                                     .tooltip("Switch to the named local branch")
                                     .on_click(cx.listener(|this, _, window, cx| {
@@ -1327,14 +1393,14 @@ impl GitTurtle {
                                         let name = this.branch_name.read(cx).value().trim().to_owned();
                                         this.write(WriteCommand::CreateBranch { name, start_point: None }, "Creating branch…", window, cx);
                                     })))))
-                        .child(div().w(px(1.)).h(px(32.)).mx_1().bg(rgb(p.border)))
+                        .child(div().w(px(1.)).h(crate::appearance::ui_size(32.)).mx_1().bg(rgb(p.border)))
                         .child(div().w(px(120.)).flex().flex_col().gap_1()
                             .child(action_field_label("Remote", p.muted))
-                            .child(Input::new(&self.remote_name).text_size(px(12.)).disabled(busy)))
+                            .child(Input::new(&self.remote_name).text_size(crate::appearance::ui_text(12.)).disabled(busy)))
                         .child(div().w(px(200.)).flex().flex_col().gap_1()
                             .child(action_field_label("Remote branch", p.muted))
-                            .child(Input::new(&self.remote_branch).text_size(px(12.)).disabled(busy))))
-                    .child(div().flex().items_center().gap_1p5().text_size(px(11.)).text_color(rgb(p.muted))
+                            .child(Input::new(&self.remote_branch).text_size(crate::appearance::ui_text(12.)).disabled(busy))))
+                    .child(div().flex().items_center().gap_1p5().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))
                         .child(icon("remote", 12., p.muted))
                         .child(div().min_w_0().truncate().child(remote.map_or_else(
                             || "No remote configured · branch and commit actions are available locally".to_owned(),
@@ -1348,9 +1414,9 @@ impl GitTurtle {
 fn action_button(id: impl Into<ElementId>, label: impl Into<SharedString>, symbol: &str) -> Button {
     Button::new(id)
         .secondary()
-        .h(px(34.))
+        .h(crate::appearance::ui_size(34.))
         .px_3()
-        .text_size(px(12.))
+        .text_size(crate::appearance::ui_text(12.))
         .font_weight(FontWeight::MEDIUM)
         .label(label)
         .icon(
@@ -1362,7 +1428,7 @@ fn action_button(id: impl Into<ElementId>, label: impl Into<SharedString>, symbo
 
 fn action_field_label(label: &'static str, color: u32) -> impl IntoElement {
     div()
-        .text_size(px(10.))
+        .text_size(crate::appearance::ui_text(10.))
         .text_color(rgb(color))
         .font_weight(FontWeight::MEDIUM)
         .child(label)

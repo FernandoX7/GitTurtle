@@ -227,7 +227,7 @@ impl Editor {
     pub fn new(state: &Entity<EditorState>) -> Self {
         Self {
             state: state.clone(),
-            native: NativeEditor::new(state),
+            native: NativeEditor::new(state).text_size(crate::appearance::code_text()),
             height: relative(1.),
             label: "File text".into(),
         }
@@ -562,7 +562,7 @@ impl Render for FindBar {
             .border_b_1()
             .border_color(rgb(colors.border))
             .text_color(rgb(colors.text))
-            .text_size(px(11.))
+            .text_size(crate::appearance::ui_text(11.))
             .capture_action(move |action: &Enter, _, cx| {
                 if action.secondary {
                     return;

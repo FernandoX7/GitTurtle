@@ -155,8 +155,8 @@ impl GitTurtle {
             let cancel_owner = owner.clone();
             let owner = owner.clone();
             let body = div().flex().flex_col().gap_3()
-                .child(div().text_size(px(13.)).child(prompt.message.clone()))
-                .child(div().text_size(px(12.)).child(if confirmation {
+                .child(div().text_size(crate::appearance::ui_text(13.)).child(prompt.message.clone()))
+                .child(div().text_size(crate::appearance::ui_text(12.)).child(if confirmation {
                     "Verify this host and fingerprint through a trusted source before continuing. Accepting lets SSH update its configured known-hosts file."
                 } else {
                     "Requested by the Git operation you started. Your configured credential helper may save this response, including in macOS Keychain. GitTurtle does not save it."

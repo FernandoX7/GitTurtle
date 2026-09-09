@@ -37,6 +37,8 @@ pub enum DiffViewEvent {
 pub struct DiffView {
     editor: Entity<EditorState>,
     rows: Arc<[LineNumbers]>,
+    change_rows: Arc<[usize]>,
+    change_index: Option<usize>,
     column_width: f32,
     single_column: bool,
     label: SharedString,
@@ -52,6 +54,33 @@ pub struct DiffView {
 impl EventEmitter<DiffViewEvent> for DiffView {}
 
 impl DiffView {
+    pub fn suspend_partial(&mut self, cx: &mut Context<Self>) {
+        self.partial_busy = true;
+        self.selection = LineSelection::default();
+        cx.notify();
+    }
+
+    pub fn navigate_change(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let state = self.editor.read(cx);
+        let visible = state.visible_row_range().map_or(0, |range| range.start);
+        let Some(index) =
+            crate::text_review::next_change(&self.change_rows, self.change_index, visible, forward)
+        else {
+            return;
+        };
+        let Some(height) = state.line_height() else {
+            return;
+        };
+        self.change_index = Some(index);
+        let offset = point(
+            state.scroll_offset().x,
+            -height * self.change_rows[index].saturating_sub(2) as f32,
+        );
+        self.editor
+            .update(cx, |state, cx| state.set_scroll_offset(offset, cx));
+        cx.notify();
+    }
+
     pub fn find_header_height(&self, cx: &App) -> Pixels {
         crate::editor_find::panel_height(&self.editor, cx)
     }
@@ -67,6 +96,8 @@ impl DiffView {
             presentation.column_width,
             cx,
         );
+        self.change_rows = Arc::clone(&presentation.change_rows);
+        self.change_index = None;
         self.partial = partial;
         self.selection = LineSelection::default();
         self.partial_busy = false;
@@ -107,7 +138,7 @@ pub fn new(
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<DiffView> {
-    new_numbered(
+    let view = new_numbered(
         editor,
         Arc::clone(&presentation.rows),
         presentation.column_width,
@@ -115,7 +146,11 @@ pub fn new(
         "Read-only unified patch",
         window,
         cx,
-    )
+    );
+    view.update(cx, |view, _| {
+        view.change_rows = Arc::clone(&presentation.change_rows)
+    });
+    view
 }
 
 pub fn new_numbered(
@@ -146,6 +181,8 @@ pub fn new_numbered(
         DiffView {
             editor,
             rows,
+            change_rows: Arc::from([]),
+            change_index: None,
             column_width,
             single_column,
             label: label.into(),
@@ -169,10 +206,10 @@ impl Render for DiffView {
         let gutter_origin = Rc::clone(&self.gutter_origin);
         let rows = Arc::clone(&self.rows);
         let row_count = rows.len();
-        let column_width = self.column_width;
+        let column_width = self.column_width * crate::appearance::code_scale();
         let single_column = self.single_column;
         let action_width = if self.partial.is_some() {
-            ACTION_WIDTH
+            f32::from(crate::appearance::ui_size(ACTION_WIDTH))
         } else {
             0.
         };
@@ -186,7 +223,7 @@ impl Render for DiffView {
             .overflow_hidden()
             .pl(px(width))
             .font_family(Theme::global(cx).mono_font_family.clone())
-            .text_size(px(FONT_SIZE))
+            .text_size(crate::appearance::code_text())
             // Paint the editor first. It records its current scrolled bounds
             // during paint; the later gutter canvas reads those same-frame
             // coordinates, avoiding a one-frame lag during wheel scrolling.
@@ -196,7 +233,7 @@ impl Render for DiffView {
                     .readonly(true)
                     .bordered(false)
                     .aria_label(self.label.clone())
-                    .text_size(px(FONT_SIZE)),
+                    .text_size(crate::appearance::code_text()),
             )
             .child(
                 div()
@@ -330,7 +367,7 @@ impl DiffView {
                                     .h(line_height - px(2.))
                                     .px_1()
                                     .rounded(px(3.))
-                                    .text_size(px(10.))
+                                    .text_size(crate::appearance::ui_text(10.))
                                     .label(format!("{action} hunk"))
                                     .accessibility_label(format!(
                                         "{action} hunk at patch line {}",
@@ -357,7 +394,7 @@ impl DiffView {
                             .absolute()
                             .top(y)
                             .left(px(5.))
-                            .w(px(ACTION_WIDTH - 6.))
+                            .w(crate::appearance::ui_size(ACTION_WIDTH - 6.))
                             .h(line_height)
                             .flex()
                             .items_center()
@@ -447,7 +484,7 @@ impl DiffView {
             .child(
                 div()
                     .flex_1()
-                    .text_size(px(11.))
+                    .text_size(crate::appearance::ui_text(11.))
                     .text_color(rgb(palette.muted))
                     .child(format!(
                         "{count} {} selected",
@@ -632,10 +669,15 @@ fn paint_gutter(
                     underline: None,
                     strikethrough: None,
                 };
-                let line = window
-                    .text_system()
-                    .shape_line(label, px(FONT_SIZE), &[run], None);
-                let right = bounds.origin.x + px(column_width * (column + 1) as f32 - CELL_PADDING);
+                let line = window.text_system().shape_line(
+                    label,
+                    crate::appearance::code_text(),
+                    &[run],
+                    None,
+                );
+                let right = bounds.origin.x
+                    + px(column_width * (column + 1) as f32
+                        - CELL_PADDING * crate::appearance::code_scale());
                 let _ = line.paint(
                     point(right - line.width(), y),
                     line_height,

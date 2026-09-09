@@ -160,6 +160,7 @@ impl GitTurtle {
             self.loading.is_some()
                 || self.history_search_pending()
                 || self.file_history.is_active()
+                || self.revision_inspection.is_active()
                 || self.blame.is_visible(),
             self.status_task.is_some(),
         ) {
@@ -279,6 +280,7 @@ impl GitTurtle {
                     } else {
                         self.clear_preview();
                         self.files.clear();
+                        self.file_paths.reset();
                         self.selected_file = None;
                     }
                 }
@@ -314,6 +316,7 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.review = crate::text_review::State::default();
         let same_text = matches!(self.content.as_deref(), Some(Content::Text { .. }))
             && matches!(content.as_ref(), Content::Text { .. });
         if same_text {
@@ -357,6 +360,7 @@ impl GitTurtle {
             self.clear_preview();
         }
         self.files = vec![file];
+        self.refresh_file_filter(cx);
         self.selected_file = Some(0);
         if let Content::Images { old, new } = content.as_ref() {
             self.images = [old.render.clone(), new.render.clone()];

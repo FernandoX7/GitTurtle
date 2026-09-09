@@ -128,11 +128,14 @@ impl Lineage {
 
 /// Holds the existing editors and scroll handles, so closing revision history
 /// restores selection and viewport without rebuilding the previous preview.
-struct ReturnContext {
+pub(super) struct ReturnContext {
     files: Vec<FileChange>,
+    file_filter: String,
     selected_file: Option<usize>,
     preferred_file: Option<PathBuf>,
     content: Option<Arc<Content>>,
+    conflict_view: Option<Entity<conflicts::ConflictView>>,
+    conflict_subscription: Option<Subscription>,
     patch_editor: Option<Entity<EditorState>>,
     patch_decoration: Option<editor_find::PatchDecorations>,
     patch_view: Option<Entity<diff_view::DiffView>>,
@@ -146,6 +149,7 @@ struct ReturnContext {
     blame_visible: bool,
     zoom: f32,
     text_mode: TextMode,
+    review: crate::text_review::State,
     mode: WorkspaceMode,
     pane: Pane,
     sidebar: bool,
@@ -177,25 +181,142 @@ impl State {
         self.retained.is_some()
     }
 
+    pub(super) fn rescale_code(&self, ratio: f32, cx: &mut App) {
+        if let Some(previous) = &self.previous {
+            previous.rescale_code(ratio, cx);
+        }
+        if let Some(retained) = &self.retained {
+            retained.rescale_code(ratio, cx);
+        }
+    }
+
     pub(super) fn refresh_theme(&self, cx: &mut App) {
         if let Some(previous) = &self.previous {
             previous.refresh_theme(cx);
         }
-        let Some(retained) = &self.retained else {
-            return;
-        };
+        if let Some(retained) = &self.retained {
+            retained.refresh_theme(cx);
+        }
+    }
+}
+
+impl ReturnContext {
+    pub(super) fn rescale_code(&self, ratio: f32, cx: &mut App) {
+        for editor in [&self.patch_editor, &self.before_editor, &self.after_editor]
+            .into_iter()
+            .flatten()
+        {
+            text::rescale_editor(editor, ratio, cx);
+        }
+        if let Some(view) = &self.split_view {
+            view.update(cx, |view, cx| view.rescale_code(ratio, cx));
+        }
+        if let Some(view) = &self.conflict_view {
+            view.update(cx, |view, cx| view.rescale_code(ratio, cx));
+        }
+    }
+    pub(super) fn refresh_theme(&self, cx: &mut App) {
         if let (Some(collection), Some(Content::Text { presentation, .. })) =
-            (&retained.patch_decoration, retained.content.as_deref())
+            (&self.patch_decoration, self.content.as_deref())
         {
             text::refresh_theme(collection, presentation, cx);
         }
-        if let Some(split) = &retained.split_view {
+        if let Some(split) = &self.split_view {
             split.update(cx, |view, cx| view.refresh_theme(cx));
         }
     }
 }
 
 impl GitTurtle {
+    pub(super) fn take_inspection_context(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> ReturnContext {
+        ReturnContext {
+            files: std::mem::take(&mut self.files),
+            file_filter: self.file_filter.read(cx).value().to_string(),
+            selected_file: self.selected_file.take(),
+            preferred_file: self.preferred_file.take(),
+            content: self.content.take(),
+            conflict_view: self.conflict_view.take(),
+            conflict_subscription: self.conflict_subscription.take(),
+            patch_editor: self.patch_editor.take(),
+            patch_decoration: self.patch_decoration.take(),
+            patch_view: self.patch_view.take(),
+            partial_subscription: self.partial_subscription.take(),
+            split_view: self.split_view.take(),
+            before_editor: self.before_editor.take(),
+            after_editor: self.after_editor.take(),
+            images: std::mem::take(&mut self.images),
+            image_scroll: std::mem::take(&mut self.image_scroll),
+            image_comparison: self.image_comparison.clone(),
+            blame_visible: self.blame.is_visible(),
+            zoom: self.zoom,
+            text_mode: self.text_mode,
+            review: std::mem::take(&mut self.review),
+            mode: self.mode,
+            pane: self.pane,
+            sidebar: self.sidebar,
+            history_sidebar: self.history_sidebar,
+            focus: if self.app_focus.contains_focused(window, cx) {
+                window.focused(cx)
+            } else {
+                // A contextual popup owns temporary focus outside the app's
+                // tree; retain the underlying list instead of that popup.
+                Some(if self.pane == Pane::Files {
+                    self.file_focus.clone()
+                } else {
+                    self.focus.clone()
+                })
+            },
+            status: self.status.clone(),
+            error: self.error.take(),
+        }
+    }
+
+    pub(super) fn restore_inspection_context(
+        &mut self,
+        retained: ReturnContext,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.file_filter.update(cx, |input, cx| {
+            input.set_value(retained.file_filter.clone(), window, cx)
+        });
+        self.files = retained.files;
+        self.refresh_file_filter(cx);
+        self.selected_file = retained.selected_file;
+        self.preferred_file = retained.preferred_file;
+        self.content = retained.content;
+        self.conflict_view = retained.conflict_view;
+        self.conflict_subscription = retained.conflict_subscription;
+        self.patch_editor = retained.patch_editor;
+        self.patch_decoration = retained.patch_decoration;
+        self.patch_view = retained.patch_view;
+        self.partial_subscription = retained.partial_subscription;
+        self.split_view = retained.split_view;
+        self.before_editor = retained.before_editor;
+        self.after_editor = retained.after_editor;
+        self.images = retained.images;
+        self.image_scroll = retained.image_scroll;
+        self.image_comparison = retained.image_comparison;
+        self.blame.set_visible(retained.blame_visible);
+        self.zoom = retained.zoom;
+        self.text_mode = retained.text_mode;
+        self.review = retained.review;
+        self.rebind_text_partial(window, cx);
+        self.mode = retained.mode;
+        self.pane = retained.pane;
+        self.sidebar = retained.sidebar;
+        self.history_sidebar = retained.history_sidebar;
+        self.status = retained.status;
+        self.error = retained.error;
+        if let Some(focus) = retained.focus {
+            window.focus(&focus, cx);
+        }
+    }
+
     /// A page may finish while Settings or Projects is visible. Accept its
     /// metadata then, but construct/focus the selected preview only on return.
     pub(super) fn resume_file_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -224,6 +345,19 @@ impl GitTurtle {
             || self.file_history.is_active()
             || self.operation_busy.is_some()
         {
+            return;
+        }
+        if self.revision_inspection.is_active() {
+            if let Some((anchor, path)) = self.inspection_history_target(index) {
+                self.open_file_history_at(anchor, path, window, cx);
+            } else {
+                self.error = Some(if self.is_quick_source() {
+                    "The current HEAD is unavailable. Refresh Working Changes before opening this tracked file's history."
+                } else {
+                    "This file is absent on the selected comparison side. Choose its existing side to inspect history."
+                }.into());
+                cx.notify();
+            }
             return;
         }
         let (Some(commit), Some(file)) = (
@@ -269,42 +403,7 @@ impl GitTurtle {
         };
         let lineage = Lineage::new(repo.path().to_owned(), anchor, path);
         self.invalidate_read();
-        let retained = ReturnContext {
-            files: std::mem::take(&mut self.files),
-            selected_file: self.selected_file.take(),
-            preferred_file: self.preferred_file.take(),
-            content: self.content.take(),
-            patch_editor: self.patch_editor.take(),
-            patch_decoration: self.patch_decoration.take(),
-            patch_view: self.patch_view.take(),
-            partial_subscription: self.partial_subscription.take(),
-            split_view: self.split_view.take(),
-            before_editor: self.before_editor.take(),
-            after_editor: self.after_editor.take(),
-            images: std::mem::take(&mut self.images),
-            image_scroll: std::mem::take(&mut self.image_scroll),
-            image_comparison: self.image_comparison.clone(),
-            blame_visible: self.blame.is_visible(),
-            zoom: self.zoom,
-            text_mode: self.text_mode,
-            mode: self.mode,
-            pane: self.pane,
-            sidebar: self.sidebar,
-            history_sidebar: self.history_sidebar,
-            focus: if self.app_focus.contains_focused(window, cx) {
-                window.focused(cx)
-            } else {
-                // A contextual popup owns temporary focus outside the app's
-                // tree; retain the underlying list instead of that popup.
-                Some(if self.pane == Pane::Files {
-                    self.file_focus.clone()
-                } else {
-                    self.focus.clone()
-                })
-            },
-            status: self.status.clone(),
-            error: self.error.take(),
-        };
+        let retained = self.take_inspection_context(window, cx);
         self.blame.hide();
         self.clear_preview();
         let previous = self
@@ -334,6 +433,9 @@ impl GitTurtle {
             if self.close_file_history(window, cx) {
                 continue;
             }
+            if self.close_revision_inspection(window, cx) {
+                continue;
+            }
             break;
         }
         self.blame = blame::State::default();
@@ -357,36 +459,12 @@ impl GitTurtle {
             .unwrap_or_default();
         self.clear_preview();
         let retained = *retained;
-        self.files = retained.files;
-        self.selected_file = retained.selected_file;
-        self.preferred_file = retained.preferred_file;
-        self.content = retained.content;
-        self.patch_editor = retained.patch_editor;
-        self.patch_decoration = retained.patch_decoration;
-        self.patch_view = retained.patch_view;
-        self.partial_subscription = retained.partial_subscription;
-        self.split_view = retained.split_view;
-        self.before_editor = retained.before_editor;
-        self.after_editor = retained.after_editor;
-        self.images = retained.images;
-        self.image_scroll = retained.image_scroll;
-        self.image_comparison = retained.image_comparison;
-        self.blame.set_visible(retained.blame_visible);
-        self.zoom = retained.zoom;
-        self.text_mode = retained.text_mode;
-        self.mode = retained.mode;
-        self.pane = retained.pane;
-        self.sidebar = retained.sidebar;
-        self.history_sidebar = retained.history_sidebar;
-        self.status = retained.status;
-        self.error = retained.error;
-        if let Some(focus) = retained.focus {
-            window.focus(&focus, cx);
-        }
+        self.restore_inspection_context(retained, window, cx);
         if self.mode == WorkspaceMode::Compare
             && !self.blame.is_visible()
             && self.content.is_none()
             && self.error.is_none()
+            && !self.reload_tracked_inspection(window, cx)
             && let Some(index) = self.selected_file
         {
             self.load_file(index, window, cx);
@@ -500,6 +578,7 @@ impl GitTurtle {
             .scroll
             .scroll_to_item(index, ScrollStrategy::Center);
         self.files = vec![change];
+        self.refresh_file_filter(cx);
         self.selected_file = None;
         self.pane = Pane::Files;
         window.focus(&self.file_focus, cx);
@@ -571,7 +650,7 @@ impl GitTurtle {
                             .justify_between()
                             .child(
                                 div()
-                                    .text_size(px(12.))
+                                    .text_size(crate::appearance::ui_text(12.))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child("File history"),
                             )
@@ -590,7 +669,7 @@ impl GitTurtle {
                             .id("file-history-anchor-path")
                             .min_w_0()
                             .truncate()
-                            .text_size(px(12.))
+                            .text_size(crate::appearance::ui_text(12.))
                             .font_weight(FontWeight::MEDIUM)
                             .tooltip(move |window, cx| Tooltip::new(path.clone()).build(window, cx))
                             .child(copy_path.clone()),
@@ -603,7 +682,7 @@ impl GitTurtle {
                             .child(
                                 div()
                                     .flex_1()
-                                    .text_size(px(10.))
+                                    .text_size(crate::appearance::ui_text(10.))
                                     .text_color(rgb(p.muted))
                                     .child(format!(
                                         "From {} · first-parent lineage",
@@ -622,7 +701,7 @@ impl GitTurtle {
                     )
                     .child(
                         div()
-                            .text_size(px(10.))
+                            .text_size(crate::appearance::ui_text(10.))
                             .text_color(rgb(p.muted))
                             .child("Follows renames and the first parent of each merge."),
                     )
@@ -650,7 +729,7 @@ impl GitTurtle {
                             .child(
                                 div()
                                     .flex_1()
-                                    .text_size(px(10.))
+                                    .text_size(crate::appearance::ui_text(10.))
                                     .text_color(rgb(p.muted))
                                     .child(lineage.selected.map_or(String::new(), |index| {
                                         format!("Revision {}", lineage.offset + index + 1)
@@ -673,7 +752,7 @@ impl GitTurtle {
                             .id("file-history-error")
                             .max_h(px(100.))
                             .overflow_y_scroll()
-                            .text_size(px(11.))
+                            .text_size(crate::appearance::ui_text(11.))
                             .text_color(rgb(p.warning))
                             .child(error.clone()),
                     )
@@ -737,7 +816,7 @@ impl GitTurtle {
                     .gap_2()
                     .child(
                         div()
-                            .text_size(px(10.))
+                            .text_size(crate::appearance::ui_text(10.))
                             .text_color(rgb(p.muted))
                             .child(if busy {
                                 "Reading the requested page…".into()
@@ -820,7 +899,7 @@ impl GitTurtle {
             .border_color(rgb(p.border))
             .child(
                 div()
-                    .text_size(px(13.))
+                    .text_size(crate::appearance::ui_text(13.))
                     .font_weight(FontWeight::MEDIUM)
                     .child(entry.commit.subject.clone()),
             )
@@ -838,14 +917,14 @@ impl GitTurtle {
                     )
                     .child(
                         div()
-                            .text_size(px(10.))
+                            .text_size(crate::appearance::ui_text(10.))
                             .text_color(rgb(p.muted))
                             .child(entry.change.status.label()),
                     ),
             )
             .child(
                 div()
-                    .text_size(px(11.))
+                    .text_size(crate::appearance::ui_text(11.))
                     .text_color(rgb(p.muted))
                     .child(format!(
                         "{} · {}",
@@ -853,17 +932,24 @@ impl GitTurtle {
                         full_date(entry.commit.timestamp)
                     )),
             )
-            .child(div().text_size(px(10.)).text_color(rgb(p.muted)).child(
-                entry.parent_oid.as_ref().map_or(
-                    "Root revision · compared with an empty tree".into(),
-                    |parent| format!("Compared with first parent {}", short_oid(parent)),
-                ),
-            ))
-            .child(div().text_size(px(11.)).child(if before == after {
-                before
-            } else {
-                format!("Before: {before}\nAfter: {after}")
-            }))
+            .child(
+                div()
+                    .text_size(crate::appearance::ui_text(10.))
+                    .text_color(rgb(p.muted))
+                    .child(entry.parent_oid.as_ref().map_or(
+                        "Root revision · compared with an empty tree".into(),
+                        |parent| format!("Compared with first parent {}", short_oid(parent)),
+                    )),
+            )
+            .child(
+                div()
+                    .text_size(crate::appearance::ui_text(11.))
+                    .child(if before == after {
+                        before
+                    } else {
+                        format!("Before: {before}\nAfter: {after}")
+                    }),
+            )
             .into_any_element()
     }
 
@@ -895,7 +981,7 @@ impl GitTurtle {
             .aria_selected(active)
             .aria_label(format!("{} · {}", entry.commit.subject, detail))
             .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-            .h(px(68.))
+            .h(crate::appearance::ui_size(68.))
             .w_full()
             .px_3()
             .py_2()
@@ -911,21 +997,21 @@ impl GitTurtle {
             .child(
                 div()
                     .truncate()
-                    .text_size(px(12.))
+                    .text_size(crate::appearance::ui_text(12.))
                     .font_weight(FontWeight::MEDIUM)
                     .child(entry.commit.subject.clone()),
             )
             .child(
                 div()
                     .truncate()
-                    .text_size(px(10.))
+                    .text_size(crate::appearance::ui_text(10.))
                     .text_color(rgb(p.muted))
                     .child(detail),
             )
             .child(
                 div()
                     .truncate()
-                    .text_size(px(10.))
+                    .text_size(crate::appearance::ui_text(10.))
                     .text_color(rgb(p.muted))
                     .child(path),
             )

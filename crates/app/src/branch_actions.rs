@@ -79,8 +79,14 @@ enum MenuAction {
     Track,
     Merge,
     Rebase,
+    InteractiveRebase,
     Remotes,
     Tags,
+    Worktrees,
+    CompareRevisions,
+    QuickFile,
+    Activity,
+    Reflog,
 }
 
 impl GitTurtle {
@@ -102,10 +108,10 @@ impl GitTurtle {
         let owner = cx.entity().downgrade();
         Button::new("current-branch")
             .secondary()
-            .h(px(34.))
+            .h(crate::appearance::ui_size(34.))
             .px_3()
             .max_w(px(280.))
-            .text_size(px(12.))
+            .text_size(crate::appearance::ui_text(12.))
             .font_weight(FontWeight::MEDIUM)
             .label(branch.clone())
             .icon(Icon::default().path("icons/branch.svg").size(px(16.)))
@@ -240,8 +246,44 @@ impl GitTurtle {
                         &owner,
                         &path,
                     );
+                    menu = add_menu_action(
+                        menu,
+                        "Edit local commits…",
+                        MenuAction::InteractiveRebase,
+                        &owner,
+                        &path,
+                    );
                 }
                 menu = add_menu_action(menu.separator(), "Tags…", MenuAction::Tags, &owner, &path);
+                menu = add_menu_action(
+                    menu,
+                    "GitTurtle activity…",
+                    MenuAction::Activity,
+                    &owner,
+                    &path,
+                );
+                menu = add_menu_action(
+                    menu,
+                    "Compare revisions…",
+                    MenuAction::CompareRevisions,
+                    &owner,
+                    &path,
+                );
+                menu = add_menu_action(
+                    menu,
+                    "Quick Open File…",
+                    MenuAction::QuickFile,
+                    &owner,
+                    &path,
+                );
+                menu = add_menu_action(menu, "Worktrees…", MenuAction::Worktrees, &owner, &path);
+                menu = add_menu_action(
+                    menu,
+                    "Local reflog & recovery…",
+                    MenuAction::Reflog,
+                    &owner,
+                    &path,
+                );
                 add_menu_action(menu, "Manage remotes…", MenuAction::Remotes, &owner, &path)
             })
             .into_any_element()
@@ -271,8 +313,14 @@ impl GitTurtle {
             MenuAction::Rebase => {
                 self.choose_branch(ChoicePurpose::Integrate { rebase: true }, window, cx)
             }
+            MenuAction::InteractiveRebase => self.open_interactive_rebase(None, window, cx),
             MenuAction::Remotes => self.open_remote_manager(window, cx),
             MenuAction::Tags => self.open_tags(window, cx),
+            MenuAction::Activity => self.open_activity(window, cx),
+            MenuAction::CompareRevisions => self.open_revision_comparison(window, cx),
+            MenuAction::QuickFile => self.open_quick_file(window, cx),
+            MenuAction::Worktrees => self.open_worktree_manager(window, cx),
+            MenuAction::Reflog => self.open_reflog_browser(window, cx),
         }
     }
 
@@ -526,8 +574,8 @@ impl GitTurtle {
             } else if let Some(target) = &plan.merge_target { format!("All commits are retained by {}.", short_reference(&target.name)) } else { "No retained target is available to verify safe deletion. Create or select a branch that contains these commits first.".into() };
             let metadata = format!("{}{} · {}", if current { "Current branch · " } else { "" }, short_oid(&plan.oid), plan.upstream.as_deref().map_or("No upstream".into(), |upstream| format!("Tracks {}", short_reference(upstream))));
             let content = div().flex().flex_col().gap_3()
-                .child(div().text_size(px(12.)).text_color(rgb(p.muted)).child(metadata))
-                .child(div().text_size(px(12.)).child(deletion_note))
+                .child(div().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(metadata))
+                .child(div().text_size(crate::appearance::ui_text(12.)).child(deletion_note))
                 .child(actions);
             dialog.title(plan.name.clone()).width(px(560.)).child(content)
                 .button_props(DialogButtonProps::default().ok_text("Done"))
@@ -596,7 +644,7 @@ impl GitTurtle {
                 .gap_3()
                 .child(
                     div()
-                        .text_size(px(12.))
+                        .text_size(crate::appearance::ui_text(12.))
                         .text_color(rgb(p.muted))
                         .child(format!(
                             "Locally available remote branch · {}",
@@ -792,7 +840,7 @@ fn append_names<'a>(text: &mut String, label: &str, names: impl Iterator<Item = 
 
 fn field_label(label: &'static str, cx: &App) -> AnyElement {
     div()
-        .text_size(px(12.))
+        .text_size(crate::appearance::ui_text(12.))
         .font_weight(FontWeight::MEDIUM)
         .text_color(rgb(palette(cx).text))
         .child(label)
@@ -954,22 +1002,22 @@ impl Render for BranchChooser {
             }
         };
         div().flex().flex_col().gap_3()
-            .child(div().text_size(px(12.)).text_color(rgb(p.muted)).child(detail))
+            .child(div().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(detail))
             .child(Input::new(&self.query).cleanable(true).prefix(Icon::default().path("icons/search.svg").size(px(14.))))
             .child(div().id("branch-chooser-list").max_h(px(330.)).overflow_y_scroll().track_scroll(&self.scroll).flex().flex_col().gap_1()
                 .children(matching.iter().take(CHOICE_LIMIT).map(|index| {
                     let index = *index;
                     let choice = &self.choices[index];
-                    Button::new(("branch-choice", index)).ghost().w_full().h(px(34.))
-                        .text_size(px(12.)).accessibility_label(choice.name.clone())
+                    Button::new(("branch-choice", index)).ghost().w_full().h(crate::appearance::ui_size(34.))
+                        .text_size(crate::appearance::ui_text(12.)).accessibility_label(choice.name.clone())
                         .child(div().w_full().min_w_0().flex().items_center().justify_start().gap_2()
                             .child(Icon::default().path(if choice.remote { "icons/remote.svg" } else { "icons/branch.svg" }).size(px(14.)))
                             .child(div().flex_1().min_w_0().truncate().child(choice.name.clone())))
                         .tooltip(format!("{} · {}", choice.reference, short_oid(&choice.oid)))
                         .on_click(cx.listener(move |this, _, window, cx| this.activate(index, window, cx)))
                 }))
-                .when(matching.is_empty(), |element| element.child(div().p_3().text_size(px(12.)).text_color(rgb(p.muted)).child(if self.choices.is_empty() { "No branches are available for this action. Fetch explicitly to update remote branches." } else { "No branches match this search." }))))
-            .when(matching.len() > CHOICE_LIMIT, |element| element.child(div().text_size(px(11.)).text_color(rgb(p.muted)).child("Showing 40 matches. Narrow the search to find another branch.")))
+                .when(matching.is_empty(), |element| element.child(div().p_3().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(if self.choices.is_empty() { "No branches are available for this action. Fetch explicitly to update remote branches." } else { "No branches match this search." }))))
+            .when(matching.len() > CHOICE_LIMIT, |element| element.child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Showing 40 matches. Narrow the search to find another branch.")))
     }
 }
 
@@ -1078,7 +1126,7 @@ impl Render for BranchForm {
             .gap_3()
             .child(
                 div()
-                    .text_size(px(12.))
+                    .text_size(crate::appearance::ui_text(12.))
                     .text_color(rgb(p.muted))
                     .child(target),
             )
@@ -1103,7 +1151,7 @@ impl Render for BranchForm {
             })
             .children(self.error.as_ref().map(|error| {
                 div()
-                    .text_size(px(12.))
+                    .text_size(crate::appearance::ui_text(12.))
                     .text_color(rgb(p.warning))
                     .child(error.clone())
             }))
@@ -1160,7 +1208,7 @@ impl Render for RemoteManager {
             .child(div().flex().items_center().gap_2()
                 .child(div().flex_1().child(Input::new(&self.query).cleanable(true)))
                 .child(dialog_action("add-remote", "Add remote…", &self.owner, &self.path, false, |this, window, cx| this.open_remote_form(None, window, cx))))
-            .child(div().text_size(px(12.)).text_color(rgb(p.muted)).child("Configure local destinations. Network activity starts only when you explicitly fetch, pull, or push."))
+            .child(div().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child("Configure local destinations. Network activity starts only when you explicitly fetch, pull, or push."))
             .child(div().id("remote-manager-list").max_h(px(360.)).overflow_y_scroll().track_scroll(&self.scroll).flex().flex_col().gap_2()
                 .children(matches.iter().take(CHOICE_LIMIT).map(|(index, choice)| {
                     let edit = Arc::clone(&choice.config);
@@ -1170,9 +1218,9 @@ impl Render for RemoteManager {
                     let remote = &choice.config;
                     div().id(("managed-remote", *index)).p_3().rounded(px(8.)).border_1().border_color(rgb(p.border)).flex().items_center().gap_3()
                         .child(div().flex_1().min_w_0().flex().flex_col().gap_1()
-                            .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).child(remote.name.clone()))
-                            .child(div().truncate().text_size(px(11.)).text_color(rgb(p.muted)).child(remote.urls.first().map_or("No fetch URL configured".into(), |url| workspace::display_remote_url(url))))
-                            .child(div().text_size(px(11.)).text_color(rgb(p.muted)).child(format!("{} fetch URLs · {} upstream branches", remote.urls.len(), remote.upstream_branches.len()))))
+                            .child(div().text_size(crate::appearance::ui_text(13.)).font_weight(FontWeight::MEDIUM).child(remote.name.clone()))
+                            .child(div().truncate().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(remote.urls.first().map_or("No fetch URL configured".into(), |url| workspace::display_remote_url(url))))
+                            .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(format!("{} fetch URLs · {} upstream branches", remote.urls.len(), remote.upstream_branches.len()))))
                         .child(button(("edit-remote", *index), "Edit…", "", false).on_click(move |_, window, cx| {
                             let _ = owner.update(cx, |this, cx| { if this.path == path && this.page == AppPage::Repository && this.operation_busy.is_none() { window.close_dialog(cx); this.open_remote_form(Some(Arc::clone(&edit)), window, cx); } });
                         }))
@@ -1180,8 +1228,8 @@ impl Render for RemoteManager {
                             let _ = remove_owner.update(cx, |this, cx| { if this.path == remove_path && this.page == AppPage::Repository && this.operation_busy.is_none() { window.close_dialog(cx); this.prepare_remote_remove(Arc::clone(&remove), window, cx); } });
                         }))
                 }))
-                .when(matches.is_empty(), |element| element.child(div().p_3().text_size(px(12.)).text_color(rgb(p.muted)).child(if self.remotes.is_empty() { "No remotes configured. Add a destination to fetch or publish your work." } else { "No remotes match this search." }))))
-            .when(matches.len() > CHOICE_LIMIT, |element| element.child(div().text_size(px(11.)).text_color(rgb(p.muted)).child("Showing 40 matches. Narrow the search to find another remote.")))
+                .when(matches.is_empty(), |element| element.child(div().p_3().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(if self.remotes.is_empty() { "No remotes configured. Add a destination to fetch or publish your work." } else { "No remotes match this search." }))))
+            .when(matches.len() > CHOICE_LIMIT, |element| element.child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Showing 40 matches. Narrow the search to find another remote.")))
     }
 }
 
@@ -1330,24 +1378,24 @@ impl Render for RemoteForm {
         div().flex().flex_col().gap_3()
             .child(div().flex().flex_col().gap_1().child(field_label("Remote name", cx)).child(Input::new(&self.name).disabled(self.expected.is_some())))
             .children(self.expected.as_ref().map(|remote| {
-                div().text_size(px(11.)).text_color(rgb(p.muted)).child(format!("Current fetch: {}", remote.urls.iter().map(|url| workspace::display_remote_url(url)).collect::<Vec<_>>().join(" · ")))
+                div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(format!("Current fetch: {}", remote.urls.iter().map(|url| workspace::display_remote_url(url)).collect::<Vec<_>>().join(" · ")))
             }))
             .child(div().flex().flex_col().gap_1().child(field_label(if self.expected.is_some() { "New fetch URLs" } else { "Fetch URLs" }, cx))
-                .child(Textarea::new(&self.fetch).h(px(70.)).aria_label("Fetch URLs, one per line"))
-                .child(div().text_size(px(11.)).text_color(rgb(p.muted)).child(if self.expected.is_some() { "One URL per line. Leave blank to preserve the existing URLs." } else { "One URL or local repository path per line." })))
+                .child(Textarea::new(&self.fetch).h(crate::appearance::ui_size(70.)).aria_label("Fetch URLs, one per line"))
+                .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(if self.expected.is_some() { "One URL per line. Leave blank to preserve the existing URLs." } else { "One URL or local repository path per line." })))
             .child(Checkbox::new("remote-push-inherits-fetch").label("Use fetch URLs for push").checked(self.inherit_push)
                 .on_click(cx.listener(|this, checked, _, cx| { this.inherit_push = *checked; cx.notify(); })))
             .when(!self.inherit_push, |element| element.child(div().flex().flex_col().gap_1().child(field_label("Push URLs", cx))
-                .children(self.expected.as_ref().filter(|remote| !remote.push_urls.is_empty()).map(|remote| div().text_size(px(11.)).text_color(rgb(p.muted)).child(format!("Current: {}", remote.push_urls.iter().map(|url| workspace::display_remote_url(url)).collect::<Vec<_>>().join(" · ")))))
-                .child(Textarea::new(&self.push).h(px(70.)).aria_label("Push URLs, one per line"))))
+                .children(self.expected.as_ref().filter(|remote| !remote.push_urls.is_empty()).map(|remote| div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(format!("Current: {}", remote.push_urls.iter().map(|url| workspace::display_remote_url(url)).collect::<Vec<_>>().join(" · ")))))
+                .child(Textarea::new(&self.push).h(crate::appearance::ui_size(70.)).aria_label("Push URLs, one per line"))))
             .child(button("remote-advanced-settings", if self.advanced { "Hide fetch rules" } else { "Fetch rules…" }, "", false)
                 .on_click(cx.listener(|this, _, _, cx| { this.advanced = !this.advanced; cx.notify(); })))
             .when(self.advanced, |element| element.child(div().flex().flex_col().gap_2()
                 .child(Checkbox::new("remote-store-tracking-refs").label("Store fetched branches as remote-tracking references").checked(self.store_refs)
                     .on_click(cx.listener(|this, checked, _, cx| { this.store_refs = *checked; cx.notify(); })))
                 .when(self.store_refs, |element| element.child(Textarea::new(&self.rules).h(px(90.)).aria_label("Git fetch refspecs, one per line")))
-                .child(div().text_size(px(11.)).text_color(rgb(p.muted)).child("Advanced Git refspecs, one per line. The standard mapping tracks every remote branch under this remote's name."))))
-            .children(self.error.as_ref().map(|error| div().text_size(px(12.)).text_color(rgb(p.warning)).child(error.clone())))
+                .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Advanced Git refspecs, one per line. The standard mapping tracks every remote branch under this remote's name."))))
+            .children(self.error.as_ref().map(|error| div().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning)).child(error.clone())))
     }
 }
 

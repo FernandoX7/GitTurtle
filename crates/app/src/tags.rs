@@ -124,11 +124,11 @@ impl GitTurtle {
             let deletion = tag.clone(); let delete_owner = owner.clone(); let delete_path = path.clone();
             let oid = tag.oid.clone();
             let content = div().flex().flex_col().gap_3()
-                .child(static_text("tag-target-identity", format!("{} · {} {}", if tag.annotated { "Annotated tag" } else { "Lightweight tag" }, tag.target_kind, tag.target_oid)).text_size(px(12.)).text_color(rgb(p.muted)))
-                .child(static_text("tag-object-identity", format!("Tag object: {}", tag.oid)).text_size(px(11.)))
-                .when(!tag.tagger.is_empty(), |element| element.child(static_text("tag-author", format!("Tagged by {}", tag.tagger)).text_size(px(12.))))
+                .child(static_text("tag-target-identity", format!("{} · {} {}", if tag.annotated { "Annotated tag" } else { "Lightweight tag" }, tag.target_kind, tag.target_oid)).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
+                .child(static_text("tag-object-identity", format!("Tag object: {}", tag.oid)).text_size(crate::appearance::ui_text(11.)))
+                .when(!tag.tagger.is_empty(), |element| element.child(static_text("tag-author", format!("Tagged by {}", tag.tagger)).text_size(crate::appearance::ui_text(12.))))
                 .when_some(annotation.as_ref(), |element, annotation| element.child(crate::editor_find::Editor::new(annotation).readonly(true).h(px(160.)).aria_label("Tag annotation and signature, if present")))
-                .when_some(details.annotation_unavailable.as_ref(), |element, message| element.child(static_text("tag-annotation-unavailable", message.clone()).text_size(px(12.)).text_color(rgb(p.warning))))
+                .when_some(details.annotation_unavailable.as_ref(), |element, message| element.child(static_text("tag-annotation-unavailable", message.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
                 .child(div().flex().gap_2()
                     .child(button("copy-tag-oid", "Copy object ID", "", false).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(oid.clone()))))
                     .child(button("delete-local-tag", "Delete local tag…", "", false).on_click(move |_, window, cx| {
@@ -139,8 +139,8 @@ impl GitTurtle {
                             }
                         });
                     })))
-                .child(static_text("tag-push-heading", "Push this tag").text_size(px(12.)).font_weight(FontWeight::MEDIUM))
-                .child(static_text("tag-push-consequences", "Choose one remote, then review. No other tags or branches are pushed. Existing remote tags are never replaced.").text_size(px(11.)).text_color(rgb(p.muted)))
+                .child(static_text("tag-push-heading", "Push this tag").text_size(crate::appearance::ui_text(12.)).font_weight(FontWeight::MEDIUM))
+                .child(static_text("tag-push-consequences", "Choose one remote, then review. No other tags or branches are pushed. Existing remote tags are never replaced.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
                 .child(div().id("tag-remote-list").max_h(px(160.)).overflow_y_scroll().flex().flex_col().gap_1().children(remotes.iter().enumerate().map(|(index, remote)| {
                     let remote = remote.clone(); let tag = tag.clone(); let owner = owner.clone(); let path = path.clone();
                     button(("push-tag-remote", index), format!("Push to {}…", remote.name), "", false).on_click(move |_, window, cx| {
@@ -153,7 +153,7 @@ impl GitTurtle {
                             }
                         });
                     })
-                })).when(remotes.is_empty(), |element| element.child(static_text("tag-remotes-empty", "No remotes configured. Add a remote from the branch menu to push a tag.").text_size(px(12.)).text_color(rgb(p.muted)))));
+                })).when(remotes.is_empty(), |element| element.child(static_text("tag-remotes-empty", "No remotes configured. Add a remote from the branch menu to push a tag.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))));
             dialog.title(static_text("tag-inspector-title", details.tag.name.clone())).width(px(640.)).child(content).button_props(DialogButtonProps::default().ok_text("Done"))
         });
     }
@@ -289,13 +289,13 @@ impl Render for TagBrowser {
             .child(div().flex().gap_2().child(div().flex_1().child(Input::new(&self.query).aria_label("Filter local tags").cleanable(true))).child(button("create-tag", "Create tag…", "plus", false).on_click(cx.listener(|this, _, window, cx| {
                 let _ = this.owner.update(cx, |owner, cx| { if owner.path == this.path && owner.operation_busy.is_none() { window.close_dialog(cx); owner.open_create_tag(window, cx); } });
             }))))
-            .child(static_text("tag-list-summary", format!("{} local tags · Select to inspect, delete locally, or push one named tag.", self.list.tags.len())).text_size(px(11.)).text_color(rgb(p.muted)))
+            .child(static_text("tag-list-summary", format!("{} local tags · Select to inspect, delete locally, or push one named tag.", self.list.tags.len())).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
             .child(div().id("tags-list").max_h(px(360.)).overflow_y_scroll().flex().flex_col().gap_1().children(matches.iter().take(100).enumerate().map(|(index, tag)| {
                 let tag = (*tag).clone(); let label = format!("{} · {} · {}", tag.name, if tag.annotated { "Annotated" } else { "Lightweight" }, short_oid(&tag.target_oid));
-                Button::new(("tag-row", index)).ghost().w_full().h(px(34.)).label(label.clone()).accessibility_label(label).on_click(cx.listener(move |this, _, window, cx| this.activate(tag.clone(), window, cx)))
-            })).when(matches.is_empty(), |element| element.child(static_text("tag-list-empty", if self.list.tags.is_empty() { "No local tags yet. Create a tag to name a commit." } else { "No tags match this filter." }).p_3().text_size(px(12.)).text_color(rgb(p.muted)))))
-            .when(matches.len() > 100, |element| element.child(static_text("tag-list-match-limit", "Showing 100 matches. Narrow the filter to find another tag.").text_size(px(11.)).text_color(rgb(p.muted))))
-            .when(self.list.truncated, |element| element.child(static_text("tag-list-load-limit", "Loaded the first 10,000 local tags by name. Additional tags are outside this bounded browser.").text_size(px(11.)).text_color(rgb(p.warning))))
+                Button::new(("tag-row", index)).ghost().w_full().h(crate::appearance::ui_size(34.)).label(label.clone()).accessibility_label(label).on_click(cx.listener(move |this, _, window, cx| this.activate(tag.clone(), window, cx)))
+            })).when(matches.is_empty(), |element| element.child(static_text("tag-list-empty", if self.list.tags.is_empty() { "No local tags yet. Create a tag to name a commit." } else { "No tags match this filter." }).p_3().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))))
+            .when(matches.len() > 100, |element| element.child(static_text("tag-list-match-limit", "Showing 100 matches. Narrow the filter to find another tag.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))))
+            .when(self.list.truncated, |element| element.child(static_text("tag-list-load-limit", "Loaded the first 10,000 local tags by name. Additional tags are outside this bounded browser.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning))))
     }
 }
 
@@ -367,12 +367,12 @@ impl Render for TagForm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         div().flex().flex_col().gap_3()
-            .child(static_text("tag-name-label", "Tag name").text_size(px(12.))).child(Input::new(&self.name).aria_label("Tag name"))
-            .child(static_text("tag-target-label", "Target commit (selected commit by default)").text_size(px(12.))).child(Input::new(&self.target).aria_label("Target commit for tag"))
+            .child(static_text("tag-name-label", "Tag name").text_size(crate::appearance::ui_text(12.))).child(Input::new(&self.name).aria_label("Tag name"))
+            .child(static_text("tag-target-label", "Target commit (selected commit by default)").text_size(crate::appearance::ui_text(12.))).child(Input::new(&self.target).aria_label("Target commit for tag"))
             .child(div().flex().gap_2().children([(false, "Lightweight"), (true, "Annotated")].map(|(annotated, label)| button(label, label, "", self.annotated == annotated).toggled(self.annotated == annotated).disabled(self.pending).on_click(cx.listener(move |this, _, _, cx| { this.annotated = annotated; this.error = None; cx.notify(); })))))
             .when(self.annotated, |element| element.child(Textarea::new(&self.message).aria_label("Tag annotation")))
-            .child(static_text("tag-signing-explanation", "Signing follows Git configuration. Signing failures are reported without an unsigned fallback.").text_size(px(11.)).text_color(rgb(p.muted)))
-            .when(self.pending, |element| element.child(static_text("tag-preparation-status", "Preparing exact target and signing settings…").text_size(px(12.))))
-            .children(self.error.as_ref().map(|error| static_text("tag-preparation-error", error.clone()).text_size(px(12.)).text_color(rgb(p.warning))))
+            .child(static_text("tag-signing-explanation", "Signing follows Git configuration. Signing failures are reported without an unsigned fallback.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
+            .when(self.pending, |element| element.child(static_text("tag-preparation-status", "Preparing exact target and signing settings…").text_size(crate::appearance::ui_text(12.))))
+            .children(self.error.as_ref().map(|error| static_text("tag-preparation-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
     }
 }

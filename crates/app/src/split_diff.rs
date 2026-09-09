@@ -13,16 +13,17 @@ use gpui_kit::{
 use std::{mem::size_of, ops::Range, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Row {
-    old: Option<usize>,
-    new: Option<usize>,
-    changed: bool,
+pub(crate) struct Row {
+    pub(crate) old: Option<usize>,
+    pub(crate) new: Option<usize>,
+    pub(crate) changed: bool,
 }
 
 pub struct SplitSide {
     text: String,
     numbers: Arc<[LineNumbers]>,
     changes: Vec<Range<usize>>,
+    words: Vec<Range<usize>>,
     // Only real source bytes participate in copying; alignment blanks do not.
     source_spans: Vec<Range<usize>>,
 }
@@ -30,6 +31,7 @@ pub struct SplitSide {
 pub struct SplitPresentation {
     sides: [SplitSide; 2],
     first_change: usize,
+    change_rows: Arc<[usize]>,
 }
 
 impl SplitPresentation {
@@ -38,88 +40,39 @@ impl SplitPresentation {
             old.split_inclusive('\n').collect::<Vec<_>>(),
             new.split_inclusive('\n').collect::<Vec<_>>(),
         ];
-        let mut rows = Vec::new();
-        let mut cursor = [0, 0];
-        let mut removed = Vec::new();
-        let mut added = Vec::new();
-        let flush = |rows: &mut Vec<Row>, removed: &mut Vec<usize>, added: &mut Vec<usize>| {
-            for i in 0..removed.len().max(added.len()) {
-                rows.push(Row {
-                    old: removed.get(i).copied(),
-                    new: added.get(i).copied(),
-                    changed: true,
-                });
-            }
-            removed.clear();
-            added.clear();
-        };
-        for numbers in patch.rows.iter() {
-            let numbers = [
-                numbers.old.map(|n| n as usize - 1),
-                numbers.new.map(|n| n as usize - 1),
-            ];
-            if numbers == [None, None] {
-                continue;
-            }
-            if numbers.iter().all(Option::is_some)
-                || numbers
-                    .iter()
-                    .enumerate()
-                    .any(|(side, number)| number.is_some_and(|n| n > cursor[side]))
-            {
-                flush(&mut rows, &mut removed, &mut added);
-            }
-            if removed.is_empty() && added.is_empty() {
-                let gap = numbers
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(side, number)| number.map(|n| n.saturating_sub(cursor[side])))
-                    .min()
-                    .unwrap_or(0);
-                for _ in 0..gap {
-                    rows.push(Row {
-                        old: (cursor[0] < sources[0].len()).then_some(cursor[0]),
-                        new: (cursor[1] < sources[1].len()).then_some(cursor[1]),
-                        changed: false,
-                    });
-                    cursor[0] += 1;
-                    cursor[1] += 1;
-                }
-            }
-            match numbers {
-                [Some(old), Some(new)] => rows.push(Row {
-                    old: Some(old),
-                    new: Some(new),
-                    changed: false,
-                }),
-                [Some(old), None] => removed.push(old),
-                [None, Some(new)] => added.push(new),
-                _ => unreachable!(),
-            }
-            for side in 0..2 {
-                if let Some(number) = numbers[side] {
-                    cursor[side] = number + 1;
-                }
-            }
-        }
-        flush(&mut rows, &mut removed, &mut added);
-        while cursor[0] < sources[0].len() || cursor[1] < sources[1].len() {
-            rows.push(Row {
-                old: (cursor[0] < sources[0].len()).then_some(cursor[0]),
-                new: (cursor[1] < sources[1].len()).then_some(cursor[1]),
-                changed: false,
-            });
-            cursor[0] += 1;
-            cursor[1] += 1;
-        }
+        let rows = align_rows(&sources, patch);
+        Self::from_rows(&sources, &rows)
+    }
+
+    pub(crate) fn from_rows(sources: &[Vec<&str>; 2], rows: &[Row]) -> Self {
+        let mut budget = crate::text::WordBudget::default();
+        let word_rows = rows
+            .iter()
+            .map(|row| match (row.old, row.new) {
+                (Some(old), Some(new)) if row.changed => crate::text::word_changes(
+                    sources[0].get(old).unwrap_or(&""),
+                    sources[1].get(new).unwrap_or(&""),
+                    &mut budget,
+                ),
+                _ => Default::default(),
+            })
+            .collect::<Vec<_>>();
+        let change_rows = rows
+            .iter()
+            .enumerate()
+            .filter_map(|(i, row)| (row.changed && (i == 0 || !rows[i - 1].changed)).then_some(i))
+            .collect::<Vec<_>>()
+            .into();
         Self {
+            change_rows,
             first_change: rows.iter().position(|row| row.changed).unwrap_or(0),
             sides: std::array::from_fn(|side| {
                 let mut text = String::new();
                 let mut numbers = Vec::new();
                 let mut changes = Vec::new();
+                let mut words = Vec::new();
                 let mut source_spans = Vec::new();
-                for row in &rows {
+                for (row_index, row) in rows.iter().enumerate() {
                     let number = if side == 0 { row.old } else { row.new };
                     let start = text.len();
                     if let Some(number) = number {
@@ -135,6 +88,11 @@ impl SplitPresentation {
                     }
                     if row.changed {
                         changes.push(start..text.len());
+                        words.extend(
+                            word_rows[row_index][side]
+                                .iter()
+                                .map(|range| (start + range.start)..(start + range.end)),
+                        );
                     }
                     numbers.push(LineNumbers {
                         old: number.map(|n| n as u64 + 1),
@@ -146,6 +104,7 @@ impl SplitPresentation {
                     text,
                     numbers: numbers.into(),
                     changes,
+                    words,
                     source_spans,
                 }
             }),
@@ -154,6 +113,8 @@ impl SplitPresentation {
 
     pub fn retained_bytes(&self) -> usize {
         size_of::<Self>()
+            + std::mem::size_of_val(self.change_rows.as_ref())
+            + 2 * size_of::<usize>()
             + self
                 .sides
                 .iter()
@@ -161,30 +122,136 @@ impl SplitPresentation {
                     side.text.capacity()
                         + std::mem::size_of_val(side.numbers.as_ref())
                         + 2 * size_of::<usize>()
-                        + (side.changes.capacity() + side.source_spans.capacity())
+                        + (side.changes.capacity()
+                            + side.words.capacity()
+                            + side.source_spans.capacity())
                             * size_of::<Range<usize>>()
                 })
                 .sum::<usize>()
     }
 }
 
+pub(crate) fn align_rows(sources: &[Vec<&str>; 2], patch: &PatchPresentation) -> Vec<Row> {
+    let mut rows = Vec::new();
+    let mut cursor = [0, 0];
+    let mut removed = Vec::new();
+    let mut added = Vec::new();
+    let flush = |rows: &mut Vec<Row>, removed: &mut Vec<usize>, added: &mut Vec<usize>| {
+        for i in 0..removed.len().max(added.len()) {
+            rows.push(Row {
+                old: removed.get(i).copied(),
+                new: added.get(i).copied(),
+                changed: true,
+            });
+        }
+        removed.clear();
+        added.clear();
+    };
+    for numbers in patch.rows.iter() {
+        let numbers = [
+            numbers.old.map(|n| n as usize - 1),
+            numbers.new.map(|n| n as usize - 1),
+        ];
+        if numbers == [None, None] {
+            continue;
+        }
+        if numbers.iter().all(Option::is_some)
+            || numbers
+                .iter()
+                .enumerate()
+                .any(|(side, number)| number.is_some_and(|n| n > cursor[side]))
+        {
+            flush(&mut rows, &mut removed, &mut added);
+        }
+        if removed.is_empty() && added.is_empty() {
+            let gap = numbers
+                .iter()
+                .enumerate()
+                .filter_map(|(side, number)| number.map(|n| n.saturating_sub(cursor[side])))
+                .min()
+                .unwrap_or(0);
+            for _ in 0..gap {
+                rows.push(Row {
+                    old: (cursor[0] < sources[0].len()).then_some(cursor[0]),
+                    new: (cursor[1] < sources[1].len()).then_some(cursor[1]),
+                    changed: false,
+                });
+                cursor[0] += 1;
+                cursor[1] += 1;
+            }
+        }
+        match numbers {
+            [Some(old), Some(new)] => rows.push(Row {
+                old: Some(old),
+                new: Some(new),
+                changed: false,
+            }),
+            [Some(old), None] => removed.push(old),
+            [None, Some(new)] => added.push(new),
+            _ => unreachable!(),
+        }
+        for side in 0..2 {
+            if let Some(number) = numbers[side] {
+                cursor[side] = number + 1;
+            }
+        }
+    }
+    flush(&mut rows, &mut removed, &mut added);
+    while cursor[0] < sources[0].len() || cursor[1] < sources[1].len() {
+        rows.push(Row {
+            old: (cursor[0] < sources[0].len()).then_some(cursor[0]),
+            new: (cursor[1] < sources[1].len()).then_some(cursor[1]),
+            changed: false,
+        });
+        cursor[0] += 1;
+        cursor[1] += 1;
+    }
+    rows
+}
+
 impl SplitSide {
-    fn decorations(&self, color: u32) -> Vec<TextDecoration> {
+    fn decorations(&self, color: u32, foreground: u32) -> Vec<TextDecoration> {
         let style = HighlightStyle {
             background_color: Some(rgb(color).into()),
             ..Default::default()
         };
-        self.changes
-            .iter()
-            .map(|range| TextDecoration::new(range.clone(), style))
-            .collect()
+        let emphasized = HighlightStyle {
+            background_color: Some(rgb(crate::text::strong_tint(color, foreground)).into()),
+            ..Default::default()
+        };
+        let mut result = Vec::new();
+        let mut words = self.words.iter().peekable();
+        for range in &self.changes {
+            let mut cursor = range.start;
+            while let Some(word) = words.peek() {
+                if word.start >= range.end {
+                    break;
+                }
+                let word = words.next().unwrap();
+                if cursor < word.start {
+                    result.push(TextDecoration::new(cursor..word.start, style));
+                }
+                result.push(TextDecoration::new(word.clone(), emphasized));
+                cursor = word.end;
+            }
+            if cursor < range.end {
+                result.push(TextDecoration::new(cursor..range.end, style));
+            }
+        }
+        result
     }
 
     fn source_selection(&self, selection: Range<usize>) -> String {
         let mut text = String::new();
         for span in &self.source_spans {
-            let start = selection.start.max(span.start);
-            let end = selection.end.min(span.end);
+            let mut start = selection.start.max(span.start);
+            let mut end = selection.end.min(span.end);
+            while start < end && !self.text.is_char_boundary(start) {
+                start += 1;
+            }
+            while end > start && !self.text.is_char_boundary(end) {
+                end -= 1;
+            }
             if start < end {
                 text.push_str(&self.text[start..end]);
             }
@@ -204,6 +271,7 @@ pub struct SplitView {
     search_heights: [Pixels; 2],
     scroll: LinkedScroll,
     initial_row: Option<usize>,
+    change_index: Option<usize>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -264,7 +332,14 @@ pub fn new(
         };
         crate::editor_find::patch_decorations(
             &editors[side],
-            presentation.sides[side].decorations(color),
+            presentation.sides[side].decorations(
+                color,
+                if side == 0 {
+                    colors.removed
+                } else {
+                    colors.added
+                },
+            ),
             cx,
         )
     });
@@ -330,6 +405,7 @@ pub fn new(
         }
         SplitView {
             initial_row: Some(presentation.first_change.saturating_sub(3)),
+            change_index: None,
             presentation,
             editors,
             views,
@@ -342,13 +418,58 @@ pub fn new(
 }
 
 impl SplitView {
+    pub fn rescale_code(&mut self, ratio: f32, cx: &mut Context<Self>) {
+        self.initial_row = None;
+        self.scroll.pending =
+            std::array::from_fn(|side| Some(self.editors[side].read(cx).scroll_offset().y * ratio));
+        for editor in &self.editors {
+            crate::text::rescale_editor(editor, ratio, cx);
+        }
+        cx.notify();
+    }
+
+    pub fn navigate_change(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let state = self.editors[0].read(cx);
+        let visible = state.visible_row_range().map_or(0, |range| range.start);
+        let Some(index) = crate::text_review::next_change(
+            &self.presentation.change_rows,
+            self.change_index,
+            visible,
+            forward,
+        ) else {
+            return;
+        };
+        let Some(height) = state.line_height() else {
+            return;
+        };
+        self.change_index = Some(index);
+        self.initial_row = None;
+        let y = -height * self.presentation.change_rows[index].saturating_sub(2) as f32;
+        self.scroll.pending = [Some(y); 2];
+        for editor in &self.editors {
+            let x = editor.read(cx).scroll_offset().x;
+            editor.update(cx, |state, cx| state.set_scroll_offset(point(x, y), cx));
+        }
+        cx.notify();
+    }
+
     pub fn refresh_theme(&mut self, cx: &mut Context<Self>) {
         let colors = palette(cx);
         for (side, color) in [colors.removed_background, colors.added_background]
             .into_iter()
             .enumerate()
         {
-            self.decorations[side].set(self.presentation.sides[side].decorations(color), cx);
+            self.decorations[side].set(
+                self.presentation.sides[side].decorations(
+                    color,
+                    if side == 0 {
+                        colors.removed
+                    } else {
+                        colors.added
+                    },
+                ),
+                cx,
+            );
         }
         cx.notify();
     }
@@ -363,6 +484,7 @@ impl SplitView {
     ) {
         let colors = palette(cx);
         self.initial_row = None;
+        self.change_index = None;
         for side in 0..2 {
             crate::text::refresh_editor(
                 &self.editors[side],
@@ -376,7 +498,17 @@ impl SplitView {
             } else {
                 colors.added_background
             };
-            self.decorations[side].set(presentation.sides[side].decorations(color), cx);
+            self.decorations[side].set(
+                presentation.sides[side].decorations(
+                    color,
+                    if side == 0 {
+                        colors.removed
+                    } else {
+                        colors.added
+                    },
+                ),
+                cx,
+            );
             let numbers = Arc::clone(&presentation.sides[side].numbers);
             let digits = numbers
                 .iter()
@@ -425,12 +557,12 @@ impl Render for SplitView {
                 })
                 .child(
                     div()
-                        .h(px(30.))
+                        .h(crate::appearance::ui_size(30.))
                         .px_3()
                         .flex()
                         .items_center()
                         .bg(rgb(p.panel))
-                        .text_size(px(11.))
+                        .text_size(crate::appearance::ui_text(11.))
                         .text_color(rgb(p.muted))
                         .child(if side == 0 { "Before" } else { "After" }),
                 )

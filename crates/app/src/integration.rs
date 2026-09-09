@@ -74,7 +74,7 @@ impl GitTurtle {
                         .aria_label(explanation.clone())
                         .max_h(px(360.))
                         .overflow_y_scroll()
-                        .text_size(px(13.))
+                        .text_size(crate::appearance::ui_text(13.))
                         .child(explanation.clone()),
                 )
                 .button_props(
@@ -143,6 +143,10 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if operation.kind == OperationKind::Rebase {
+            self.prepare_interactive_rebase_continue(window, cx);
+            return;
+        }
         let mut staged = operation
             .staged_paths
             .iter()
@@ -219,7 +223,7 @@ impl GitTurtle {
                 let upstream = status.upstream.clone().unwrap_or_default();
                 let merge = "@{upstream}".to_owned();
                 div().px_3().py_2().flex().items_center().gap_2().bg(rgb(p.subtle)).border_b_1().border_color(rgb(p.border))
-                    .child(div().flex_1().text_size(px(11.)).child(format!("Branches diverged · {} local and {} upstream commits. Choose how to integrate {}.", status.ahead, status.behind, upstream)))
+                    .child(div().flex_1().text_size(crate::appearance::ui_text(11.)).child(format!("Branches diverged · {} local and {} upstream commits. Choose how to integrate {}.", status.ahead, status.behind, upstream)))
                     .child(button("merge-upstream", "Merge…", "", false).disabled(self.operation_busy.is_some()).on_click(cx.listener(move |this, _, window, cx| this.prepare_integration(merge.clone(), false, window, cx))))
                     .child(button("rebase-upstream", "Rebase…", "", false).disabled(self.operation_busy.is_some()).on_click(cx.listener(move |this, _, window, cx| this.prepare_integration("@{upstream}".into(), true, window, cx))))
             })).into_any_element();
@@ -260,7 +264,7 @@ impl GitTurtle {
                     .child(
                         div()
                             .truncate()
-                            .text_size(px(12.))
+                            .text_size(crate::appearance::ui_text(12.))
                             .font_weight(FontWeight::MEDIUM)
                             .child(format!(
                                 "{} in progress · {}",
@@ -271,7 +275,7 @@ impl GitTurtle {
                     .child(
                         div()
                             .truncate()
-                            .text_size(px(11.))
+                            .text_size(crate::appearance::ui_text(11.))
                             .text_color(rgb(p.muted))
                             .child(format!(
                                 "{} · {} unresolved {}",
