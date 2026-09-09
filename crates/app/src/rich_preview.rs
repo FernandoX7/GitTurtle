@@ -1,6 +1,7 @@
 //! Captured-byte document and media information, with static native PDF pages.
 use crate::*;
 use gitturtle_preview::{MAX_INPUT_BYTES, metadata};
+use gpui_kit::prelude::FluentBuilder;
 use std::{
     path::Path,
     sync::atomic::{AtomicUsize, Ordering},
@@ -129,6 +130,13 @@ impl Side {
             {
                 Ok(model) => {
                     side.metadata.format = model.format;
+                    // Successful supplied-byte geometry parsing supersedes the
+                    // generic sniffer's filename-only uncertainty. Keep byte
+                    // counts, container details and actual model restrictions.
+                    side.metadata.details.retain(|detail| {
+                        !(detail.starts_with("Filename hint: .")
+                            && detail.ends_with("; content signature is unrecognized or corrupt."))
+                    });
                     side.metadata.details.extend(model.details);
                     side.page_count = model.views.len();
                     for view in model.views {
@@ -309,7 +317,15 @@ pub(super) fn render_comparison<T: 'static>(
             if !side.present { body=body.child(div().text_color(rgb(colors.muted)).child("No file on this side")); }
             if let Some(page)=side.pages.get(selected) {
                 if let Some(caption)=&page.caption { body=body.child(div().text_size(appearance::ui_text(12.)).child(caption.clone())); }
-                if let Some(render)=&page.render { body=body.child(div().w_full().aspect_ratio(page.width as f32/page.height as f32).bg(rgb(0xffffff)).child(img(render.clone()).size_full().object_fit(ObjectFit::Contain))); }
+                if let Some(render)=&page.render {
+                    // PDF pages stay width-readable and scroll naturally. A
+                    // diagram/model instead fits the bounded side body without
+                    // enlarging small decoded images to the whole pane width.
+                    let fit=matches!(side.page_kind,"Diagram"|"View");
+                    body=body.child(div().w_full().aspect_ratio(page.width as f32/page.height as f32).bg(rgb(0xffffff))
+                        .when(fit,|frame|frame.max_w(px(page.width as f32)).max_h(relative(0.7)).flex_shrink_0().bg(rgb(colors.panel)))
+                        .child(img(render.clone()).size_full().object_fit(ObjectFit::Contain)));
+                }
                 if let Some(error)=&page.error { body=body.child(div().text_color(rgb(colors.modified)).text_size(appearance::ui_text(12.)).child(error.clone())); }
             }
             if let Some(error)=&side.error { body=body.child(div().text_color(rgb(colors.modified)).text_size(appearance::ui_text(12.)).child(error.clone())); }
@@ -519,6 +535,72 @@ fn captured_copy(bytes: &[u8], name: &Path) -> anyhow::Result<(tempfile::TempDir
 mod tests {
     use super::*;
     use core::prelude::v1::test;
+    #[test]
+    fn successful_model_decode_replaces_generic_uncertainty_and_keeps_real_details() {
+        let mut binary_stl = vec![0; 80];
+        binary_stl.extend_from_slice(&1u32.to_le_bytes());
+        for value in [0f32, 0., 1., 0., 0., 0., 2., 0., 0., 0., 3., 4.] {
+            binary_stl.extend_from_slice(&value.to_le_bytes());
+        }
+        binary_stl.extend_from_slice(&[0, 0]);
+        for (name, bytes) in [
+            ("binary.STL", binary_stl.as_slice()),
+            (
+                "mesh.stl",
+                include_bytes!("../../preview/tests/fixtures/models/tetra.stl").as_slice(),
+            ),
+            (
+                "mesh.obj",
+                include_bytes!("../../preview/tests/fixtures/models/tetra.obj").as_slice(),
+            ),
+            (
+                "mesh.fbx",
+                include_bytes!("../../preview/tests/fixtures/models/tetra.fbx").as_slice(),
+            ),
+            (
+                "mesh.step",
+                include_bytes!("../../preview/tests/fixtures/models/tetra.step").as_slice(),
+            ),
+            (
+                "mesh.3mf",
+                include_bytes!("../../preview/tests/fixtures/models/tetra.3mf").as_slice(),
+            ),
+        ] {
+            let side = Side::prepare(bytes.to_vec(), Path::new(name), || Ok(())).unwrap();
+            assert!(side.error.is_none(), "{name}: {:?}", side.error);
+            assert_eq!(side.pages.len(), 4);
+            assert_eq!(side.captured.as_deref(), Some(bytes));
+            assert!(
+                side.metadata
+                    .details
+                    .contains(&format!("{} captured bytes", bytes.len()))
+            );
+            assert!(
+                side.metadata
+                    .details
+                    .iter()
+                    .any(|detail| detail.contains("triangles"))
+            );
+            assert!(
+                !side
+                    .metadata
+                    .details
+                    .iter()
+                    .any(|detail| detail.contains("unrecognized or corrupt")),
+                "{name}"
+            );
+        }
+        let invalid = Side::prepare(vec![0; 8], Path::new("invalid.stl"), || Ok(())).unwrap();
+        assert!(invalid.error.is_some());
+        assert!(
+            invalid
+                .metadata
+                .details
+                .iter()
+                .any(|detail| detail.contains("unrecognized or corrupt"))
+        );
+    }
+
     #[test]
     fn captured_jpeg2000_magic_preserves_container_and_codestream_suffixes() {
         for (bytes, extension) in [

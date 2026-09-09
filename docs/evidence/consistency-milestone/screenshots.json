@@ -1,0 +1,47 @@
+[
+  {
+    "file": "before-history.png",
+    "build": "0c8eaec",
+    "sha256": "7d5289783e9393f47be46e4b38489b5a03453dbcc6c7fbc476d1efeb92ab86f3"
+  },
+  {
+    "file": "before-stale-projects.png",
+    "build": "0c8eaec",
+    "sha256": "e3a7a5837810d923fb0a12a2c50c0878022fa58e913b114db4463dcd15c00ffb"
+  },
+  {
+    "file": "before-settings.jpeg",
+    "build": "0c8eaec",
+    "sha256": "ac8ad922005df0d3c532fb94c9c99232ce026aa41f3cacf903f99267641f8c12"
+  },
+  {
+    "file": "braden-comfortable.jpeg",
+    "build": "debug frame-demand candidate",
+    "sha256": "f94082de737c10d1a0e9b13a0e9e5e188564eee431689e6fa53d7058072ba645"
+  },
+  {
+    "file": "nord-compact.jpeg",
+    "build": "debug frame-demand candidate",
+    "sha256": "ccadb754334d28b1af4e2b419c97efaf63023b789a0e003f712141b23567717e"
+  },
+  {
+    "file": "theme-grid.jpeg",
+    "build": "debug frame-demand candidate",
+    "sha256": "0b6df1599852d6d0b4f11887cd366a03c145f5ae8606f44d620399400af2d563"
+  },
+  {
+    "file": "profile-signing.jpeg",
+    "build": "75daadc",
+    "sha256": "604114066477737bb871522c60c1fc6c67427ba8a6332bedd7d9b0a51a72e410"
+  },
+  {
+    "file": "rebase-stale-index.jpeg",
+    "build": "75daadc",
+    "sha256": "b592b908fe7daffc929cf63b748d8a4fe08abd7b2af99a3828391d274b7fcebf"
+  },
+  {
+    "file": "rewrite-stale-lease-refused.jpeg",
+    "build": "75daadc",
+    "sha256": "c33ed76ad1cad6ed8b8236b18e0c940a6148b01dbae7ed77c2f810208ea5db16"
+  }
+]

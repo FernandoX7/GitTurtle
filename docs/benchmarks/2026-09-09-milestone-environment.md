@@ -64,6 +64,26 @@ The release executable SHA-256 is `2ccfe063599563c3f6ec19ec553c5055cc5884b8b9aa3
 
 These runs establish Linux/aarch64 compilation and the explicitly listed checks. They do not exercise native window rendering or X11/Wayland integration, and they are distinct from the workflow's hosted Ubuntu runner.
 
+### Expanded-format Linux validation
+
+The Mermaid, mesh/CAD, JPEG2000 and animated-GIF integration was validated again from the complete immutable source `1a8f7bd179918fef8e0c4b7aa7b3654a6d525de1`. Its `git archive` SHA-256 is `756ea361de2babcb072c1810af1fec8f4998ebaa5f0f9abb8aabb6a5dd72ad0b`. This run used the same Ubuntu 24.04/aarch64 QA image and Rust 1.98.0 / LLVM 22.1.8, Git 2.43.0 and Linux `7.0.12-linuxkit` environment described above. The source mount was read-only, with separate task-owned registry/target volumes, six CPUs and 12 GiB. No overlay or source edit was required.
+
+| Exact command | Executed result on `1a8f7bd` |
+| --- | --- |
+| `cargo fetch --locked` | Passed, 0.91 s; public dependency preparation had network access. |
+| `cargo fmt --all -- --check` | Passed, 1.23 s. |
+| `cargo test --locked --offline --workspace --no-fail-fast` | Passed: 450 tests, zero failures, three ignored; 94.58 s including compilation. App: 194 passed/one ignored; core unit: 21 passed; core integration: 198 passed/two ignored; preview: 37 passed. |
+| `cargo clippy --locked --offline --workspace --all-targets -- -D warnings` | Passed, 14.79 s. |
+| `cargo build --release --locked --offline -p gitturtle` | Passed, 81.32 s. |
+
+All validation after dependency fetch ran with Docker networking disabled, retaining only loopback for disposable transport fixtures. Durations include container startup and warm-cache dependency/application compilation; these are build/check durations, not native performance measurements. Counts use the final summary for each Cargo test target, so the Unicode Mermaid cache test's child-process summary is counted only through its parent test. The three ignored tests remain the manual performance fixture and optional OpenPGP/loopback-sshd tests.
+
+The Linux suite exercises Mermaid rendering and source/refusal boundaries, composed GIF frames and playback state, model geometry/raster limits, captured-byte routing, the older-Git signing regression and byte-safe repository fixtures. Five macOS-only preview tests are excluded; Linux includes one additional non-UTF8 path test. For comparison, the coordinator's expanded macOS workspace log contains 454 unique passing tests, zero failures and three ignored, after excluding the same duplicated child summary. Neither platform's automated count establishes native UI acceptance.
+
+The expanded Linux release executable SHA-256 is `257753576a1f2008c3bccd6243f932c2270aa293796ea4385e20ad4101174e7a`. `readelf -h /qa-target/release/gitturtle` identifies an ELF64 little-endian AArch64 position-independent executable; `ldd /qa-target/release/gitturtle` resolves every listed dependency in the QA image. No native Linux window, X11/Wayland session or hosted runner was started. macOS ImageIO/CoreGraphics codecs and Quick Look retain the explicit platform limits in the [preview matrix](../file-previews.md).
+
+All task-owned validation containers exited and were removed after the release identity check; a subsequent task-name-filtered `docker ps` returned no running container. Task-owned build caches were retained without a running container. Existing user containers and repositories were not changed.
+
 ## Hosted and native limits
 
 `git remote` returned no configured source remote. No authorized hosted repository/destination was identified by this check, no hosted workflow was started, and no hosted run URL/result exists. The inspected quality workflow targets `macos-15` and `ubuntu-24.04`, uses read-only checkout credentials and has no publishing step; configuration is distinct from execution.

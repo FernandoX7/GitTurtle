@@ -169,7 +169,7 @@ impl GitTurtle {
         let owner = cx.entity().downgrade();
         let return_focus = window.focused(cx);
         let form = cx.new(|cx| QuickForm::new(owner, repo, revision, return_focus, window, cx));
-        let focus_form = form.downgrade();
+        let query_focus = form.read(cx).query.read(cx).focus_handle(cx);
         window.open_alert_dialog(cx, move |dialog, _, cx| {
             let submit = form.clone();
             let cancel = form.clone();
@@ -210,14 +210,11 @@ impl GitTurtle {
                     false
                 })
         });
+        // Focus after open_alert_dialog installs its shell, in the same action.
+        // A key-triggered redraw can run before any on_next_frame callback;
+        // waiting for that callback drops the beginning of an immediate query.
+        query_focus.focus(window, cx);
         window.refresh();
-        window.on_next_frame(move |window, cx| {
-            let _ = focus_form.update(cx, |form, cx| {
-                if !form.closed.load(Ordering::Acquire) {
-                    form.query.read(cx).focus_handle(cx).focus(window, cx);
-                }
-            });
-        });
     }
 
     fn begin_revision_inspection(

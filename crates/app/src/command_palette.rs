@@ -423,7 +423,7 @@ impl GitTurtle {
         let context = self.palette_context();
         let form =
             cx.new(|cx| Palette::new(owner, path, file_scope, context, return_focus, window, cx));
-        let focus_form = form.downgrade();
+        let query_focus = form.read(cx).query.read(cx).focus_handle(cx);
         window.open_alert_dialog(cx, move |dialog, _, cx| {
             let cancel = form.clone();
             let cancel_action = form.clone();
@@ -459,14 +459,11 @@ impl GitTurtle {
                     false
                 })
         });
+        // Opening the dialog first focuses its shell. Set the query now: GPUI
+        // redraws before the next key event, without running frame callbacks.
+        // Deferring this focus loses characters typed before the next frame.
+        query_focus.focus(window, cx);
         window.refresh();
-        window.on_next_frame(move |window, cx| {
-            let _ = focus_form.update(cx, |form, cx| {
-                if !form.selection.closed {
-                    form.query.read(cx).focus_handle(cx).focus(window, cx);
-                }
-            });
-        });
     }
     fn run_palette_command(&mut self, id: CommandId, window: &mut Window, cx: &mut Context<Self>) {
         match id {
