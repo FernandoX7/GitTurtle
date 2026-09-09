@@ -12,7 +12,9 @@ use std::{
 const DARK_COLORS: [u32; 6] = [0x7adfb4, 0x8db7f6, 0xc3a5f2, 0xe8be7a, 0xea9ca5, 0x72ccd8];
 const LIGHT_COLORS: [u32; 6] = [0x146c53, 0x315da7, 0x7651aa, 0x8c5916, 0xa42d63, 0x156b7c];
 const NODE_MARGIN: f32 = 10.;
-const LANE_SPACING: f32 = 12.;
+pub(super) fn required_width(lane_count: usize, spacing: f32) -> f32 {
+    NODE_MARGIN * 2. + lane_count.saturating_sub(1).min(128) as f32 * spacing
+}
 
 /// Colors change with appearance; worker-prepared lane identities do not.
 pub(super) fn colors(cx: &App) -> [u32; 6] {
@@ -181,9 +183,9 @@ pub fn layout<E>(
 /// across the complete loaded graph, never a visible row's individual width.
 /// Node-safe margins keep the last lane inside a bounded graph column even
 /// when a repository has many simultaneously active branches.
-fn lane_x(width: f32, lane_count: usize, lane: usize) -> f32 {
+fn lane_x(width: f32, lane_count: usize, lane: usize, lane_spacing: f32) -> f32 {
     let available = (width - NODE_MARGIN * 2.).max(0.);
-    let spacing = LANE_SPACING.min(available / lane_count.saturating_sub(1).max(1) as f32);
+    let spacing = lane_spacing.min(available / lane_count.saturating_sub(1).max(1) as f32);
     NODE_MARGIN.min(width / 2.) + lane as f32 * spacing
 }
 
@@ -191,6 +193,7 @@ pub fn render(
     row: GraphRow,
     width: f32,
     lane_count: usize,
+    lane_spacing: f32,
     row_height: f32,
     active: bool,
     merge: bool,
@@ -206,7 +209,8 @@ pub fn render(
                 move |bounds, _, window, cx| {
                     let palette = palette(cx);
                     let colors = palette_colors(palette);
-                    let x = |lane| bounds.origin.x + px(lane_x(width, lane_count, lane));
+                    let x =
+                        |lane| bounds.origin.x + px(lane_x(width, lane_count, lane, lane_spacing));
                     let top = bounds.origin.y;
                     let middle = top + bounds.size.height / 2.;
                     let bottom = top + bounds.size.height;
@@ -473,7 +477,9 @@ mod tests {
     #[test]
     fn wide_graph_lanes_remain_ordered_and_inside_column() {
         for count in [1, 2, 3, 32, 128, 1024] {
-            let positions: Vec<_> = (0..count).map(|lane| lane_x(84., count, lane)).collect();
+            let positions: Vec<_> = (0..count)
+                .map(|lane| lane_x(84., count, lane, 20.))
+                .collect();
             assert!(
                 positions
                     .iter()
@@ -481,8 +487,30 @@ mod tests {
             );
             assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
         }
-        assert_eq!(lane_x(84., 3, 0), 10.);
-        assert_eq!(lane_x(84., 3, 1), 22.);
-        assert_eq!(lane_x(84., 3, 2), 34.);
+        assert_eq!(lane_x(84., 3, 0, 20.), 10.);
+        assert_eq!(lane_x(84., 3, 1, 20.), 30.);
+        assert_eq!(lane_x(84., 3, 2, 20.), 50.);
+    }
+
+    #[test]
+    fn readable_graph_width_preserves_spacing_when_history_grows() {
+        for spacing in [12., 20., 32., 44.] {
+            for lanes in [2, 8, 32, 128] {
+                let width = required_width(lanes, spacing);
+                let positions: Vec<_> = (0..lanes)
+                    .map(|lane| lane_x(width, lanes, lane, spacing))
+                    .collect();
+                assert!(
+                    positions
+                        .windows(2)
+                        .all(|pair| pair[1] - pair[0] >= spacing - 0.01)
+                );
+                assert!(positions.last().unwrap() + 5. < width);
+                assert_eq!(
+                    positions[1],
+                    lane_x(required_width(128, spacing), 128, 1, spacing)
+                );
+            }
+        }
     }
 }

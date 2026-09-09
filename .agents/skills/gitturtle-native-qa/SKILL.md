@@ -5,7 +5,7 @@ description: Validate GitTurtle's native GPUI interactions and local macOS packa
 
 # GitTurtle native validation
 
-Choose the checks affected by the change. Use the real native app; a browser mockup, successful compile, or accessibility tree alone does not establish visual correctness. Read [app contracts](../../../crates/app/AGENTS.md) and select the affected rows of [current validation guidance](../../../docs/validation.md#current-validation-guidance). That matrix covers current Git workflows; its dated evidence below applies only to the named builds. Design intent beyond implemented behavior is marked in [design](../../../docs/design.md).
+Choose the checks affected by the change. Use the real native app; a browser mockup, successful compile, or accessibility tree alone does not establish visual correctness. Read [app contracts](../../../crates/app/AGENTS.md) and select the affected rows of [current validation guidance](../../../docs/validation.md#current-validation-guidance). That matrix covers current Git workflows; its dated evidence below applies only to the named builds. Design intent beyond implemented behavior is marked in [design](../../../DESIGN.md).
 
 ## Build and identify the app
 

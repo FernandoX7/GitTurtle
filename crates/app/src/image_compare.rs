@@ -293,10 +293,32 @@ impl GitTurtle {
         } else {
             "Linked zoom and pan · Drag or scroll to move · Equal source coordinates stay aligned"
         };
+        let mut captured_actions = div().flex().flex_wrap().gap_2().px_3().py_1();
+        for (index, side) in [old, new].into_iter().enumerate() {
+            let label = if index == 0 { "Before" } else { "After" };
+            if let Some(literal) = side.literal_source.clone() {
+                captured_actions = captured_actions.child(button(("copy-image-source",index),format!("Copy {label} source"),"copy",false).tooltip("Copy the literal source bytes as UTF-8; rendered pixels never become a Git patch").on_click(move |_,_,cx|cx.write_to_clipboard(ClipboardItem::new_string(literal.to_string()))));
+            }
+            if let Some(bytes) = side.captured.clone() {
+                let path = self
+                    .selected_file
+                    .and_then(|selected| self.files.get(selected))
+                    .and_then(|file| {
+                        if index == 0 {
+                            file.old_path.clone()
+                        } else {
+                            file.new_path.clone()
+                        }
+                    })
+                    .unwrap_or_else(|| PathBuf::from("image.bin"));
+                captured_actions = captured_actions.child(button(("image-system-preview",index),format!("{label} system preview"),"external-link",false).tooltip("Open an isolated read-only copy of these captured bytes in system Quick Look").on_click(cx.listener(move |this,_,window,cx|this.open_captured_bytes(bytes.clone(),path.clone(),window,cx))));
+            }
+        }
         div()
             .size_full()
             .flex()
             .flex_col()
+            .child(captured_actions)
             .child(
                 div()
                     .flex()

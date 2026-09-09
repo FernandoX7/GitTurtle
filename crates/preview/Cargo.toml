@@ -7,7 +7,7 @@ description = "Bounded, in-memory image previews for GitTurtle"
 
 [dependencies]
 anyhow = "1"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff", "ico"] }
 resvg = { version = "0.48.1", default-features = false, features = ["text", "system-fonts"] }
 roxmltree = "0.21"
 

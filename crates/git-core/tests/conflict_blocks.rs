@@ -9,6 +9,43 @@ use std::{
     sync::Arc,
 };
 
+#[test]
+fn recovery_identity_survives_reopen_and_unrelated_staging_but_rejects_changed_sources() {
+    let fixture = Fixture::new("diff3");
+    let repo = GitRepository::open(&fixture.root).unwrap();
+    let original = repo
+        .conflict_preview(Path::new("file.txt"))
+        .unwrap()
+        .draft_identity();
+    drop(repo);
+    let reopened = GitRepository::open(&fixture.root).unwrap();
+    assert_eq!(
+        reopened
+            .conflict_preview(Path::new("file.txt"))
+            .unwrap()
+            .draft_identity(),
+        original
+    );
+    fs::write(fixture.root.join("unrelated.txt"), "preserve me\n").unwrap();
+    fixture.git(&["add", "unrelated.txt"]);
+    assert_eq!(
+        reopened
+            .conflict_preview(Path::new("file.txt"))
+            .unwrap()
+            .draft_identity(),
+        original
+    );
+    fs::write(fixture.root.join("file.txt"), "external resolution\n").unwrap();
+    assert_ne!(
+        reopened
+            .conflict_preview(Path::new("file.txt"))
+            .unwrap()
+            .draft_identity(),
+        original
+    );
+    assert_eq!(fixture.git(&["show", ":unrelated.txt"]), "preserve me");
+}
+
 struct Fixture {
     _temp: tempfile::TempDir,
     root: PathBuf,

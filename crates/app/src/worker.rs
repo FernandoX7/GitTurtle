@@ -3,7 +3,7 @@ use anyhow::{Result, anyhow, ensure};
 use futures::channel::oneshot;
 use gitturtle_core::{Branch, Commit, FileChange, GitRepository, TextPreview, Worktree};
 use gitturtle_preview::{
-    ImagePreview, MAX_INPUT_BYTES, decode_image, detect_lfs_pointer, is_image_path,
+    ImagePreview, MAX_INPUT_BYTES, decode_image, detect_lfs_pointer, is_image_path, metadata,
 };
 use gpui_kit::RenderImage;
 use std::{
@@ -35,6 +35,8 @@ pub struct Snapshot {
 }
 
 pub struct ImageSide {
+    pub captured: Option<Arc<[u8]>>,
+    pub literal_source: Option<Arc<str>>,
     pub image: Option<ImagePreview>,
     /// BGRA conversion happens on the worker; the UI only shares this allocation.
     pub render: Option<Arc<RenderImage>>,
@@ -46,6 +48,7 @@ pub struct ImageSide {
 }
 
 pub enum Content {
+    Rich(crate::rich_preview::Comparison),
     Conflict(Arc<crate::conflicts::Presentation>),
     Text {
         patch: String,
@@ -68,6 +71,7 @@ impl Content {
     /// textures have independent lifetimes and need their own presentation budget.
     fn bytes(&self) -> usize {
         match self {
+            Self::Rich(preview) => preview.retained_bytes(),
             Self::Text {
                 patch,
                 old,
@@ -98,6 +102,11 @@ impl Content {
                             .map_or(0, <[u8]>::len)
                         + side.message.as_ref().map_or(0, String::capacity)
                         + side.lfs_pointer.as_ref().map_or(0, Vec::capacity)
+                        + side.captured.as_ref().map_or(0, |bytes| bytes.len())
+                        + side
+                            .literal_source
+                            .as_ref()
+                            .map_or(0, |source| source.len())
                 })
                 .sum(),
             Self::Conflict(presentation) => presentation.bytes(),
@@ -644,17 +653,13 @@ fn execute(
             let (mode, bytes) = repo.read_tracked_working_file(&entry)?;
             cancellation.check()?;
             file.new_mode = mode;
-            let content = if image_change(&file) {
-                let old = working_image_side(&repo, vec![], false, "", cancellation);
-                let new = working_image_side(
-                    &repo,
-                    bytes,
-                    true,
-                    &entry.path.to_string_lossy(),
-                    cancellation,
-                );
-                Content::Images { old, new }
-            } else if let Some(content) = resolved_lfs_text_content(&repo, &file, &[], &bytes)? {
+            let content = if let Some(content) =
+                supplied_nontext_content(&repo, &file, &[], &bytes, cancellation)?
+            {
+                content
+            } else if let Some(content) =
+                resolved_lfs_text_content(&repo, &file, &[], &bytes, cancellation)?
+            {
                 content
             } else if bytes.len() > gitturtle_core::MAX_DIFF_BYTES
                 || bytes.iter().filter(|b| **b == b'\n').count() > gitturtle_core::MAX_DIFF_LINES
@@ -866,35 +871,12 @@ fn execute(
             let file = preview.file;
             let mut partial_diff = preview.partial;
             let mut unavailable = preview.partial_unavailable;
-            let mut content = if image_change(&file) {
-                let old_name = file
-                    .old_path
-                    .as_deref()
-                    .unwrap_or(file.path())
-                    .to_string_lossy();
-                let new_name = file
-                    .new_path
-                    .as_deref()
-                    .unwrap_or(file.path())
-                    .to_string_lossy();
-                let old = working_image_side(
-                    &repo,
-                    preview.old,
-                    file.old_path.is_some(),
-                    &old_name,
-                    cancellation,
-                );
-                cancellation.check()?;
-                let new = working_image_side(
-                    &repo,
-                    preview.new,
-                    file.new_path.is_some(),
-                    &new_name,
-                    cancellation,
-                );
-                Content::Images { old, new }
+            let mut content = if let Some(content) =
+                supplied_nontext_content(&repo, &file, &preview.old, &preview.new, cancellation)?
+            {
+                content
             } else if let Some(content) =
-                resolved_lfs_text_content(&repo, &file, &preview.old, &preview.new)?
+                resolved_lfs_text_content(&repo, &file, &preview.old, &preview.new, cancellation)?
             {
                 partial_diff = None;
                 unavailable = Some("This view shows verified LFS object content. Partial staging is unavailable because Git stages the underlying pointer; use whole-file staging.".into());
@@ -963,27 +945,16 @@ fn execute(
             if let Some(content) = cache.get(&key) {
                 return Ok(Output::Preview(content, start.elapsed()));
             }
-            let (content, cacheable) = if image_change(&file) {
-                let old_name = file
-                    .old_path
-                    .as_deref()
-                    .unwrap_or(file.path())
-                    .to_string_lossy();
-                let new_name = file
-                    .new_path
-                    .as_deref()
-                    .unwrap_or(file.path())
-                    .to_string_lossy();
-                let (old, old_cacheable) =
-                    image_side(&repo, file.old_oid.as_deref(), &old_name, cancellation);
-                cancellation.check()?;
-                let (new, new_cacheable) =
-                    image_side(&repo, file.new_oid.as_deref(), &new_name, cancellation);
-                (Content::Images { old, new }, old_cacheable && new_cacheable)
-            } else {
-                let content = text_content(&repo, &file, cancellation)?;
-                let cacheable = !matches!(&content, Content::Text { old, new, .. } if [old, new].iter().any(|source| detect_lfs_pointer(source.as_bytes()).is_some()));
-                (content, cacheable)
+            let content = text_content(&repo, &file, cancellation)?;
+            let cacheable = match &content {
+                Content::Images { old, new } => old.message.is_none() && new.message.is_none(),
+                Content::Rich(preview) => {
+                    preview.old.error.is_none() && preview.new.error.is_none()
+                }
+                Content::Text { old, new, .. } => ![old, new]
+                    .iter()
+                    .any(|source| detect_lfs_pointer(source.as_bytes()).is_some()),
+                _ => true,
             };
             cancellation.check()?;
             let content = Arc::new(content);
@@ -1156,6 +1127,170 @@ fn image_change(file: &FileChange) -> bool {
             .any(is_image_path)
 }
 
+fn regular_preview(file: &FileChange) -> bool {
+    !file.is_submodule() && file.old_mode != "120000" && file.new_mode != "120000"
+}
+
+/// Detection operates on captured bytes, never a filesystem filename. Extension
+/// hints still give corrupt/empty images an honest decoder error; plain source
+/// named .png remains literal text. Stored symlinks and gitlinks bypass rendering.
+fn supplied_nontext_content(
+    repo: &GitRepository,
+    file: &FileChange,
+    old: &[u8],
+    new: &[u8],
+    cancellation: &Cancellation,
+) -> Result<Option<Content>> {
+    if !regular_preview(file) {
+        return Ok(None);
+    }
+    cancellation.check()?;
+    let image = [old, new].iter().any(|bytes| metadata::is_image(bytes))
+        || (image_change(file)
+            && [old, new].iter().any(|bytes| {
+                !metadata::is_literal_text(bytes) || detect_lfs_pointer(bytes).is_some()
+            }))
+        || (image_change(file)
+            && ((file.old_path.is_some() && old.is_empty())
+                || (file.new_path.is_some() && new.is_empty())));
+    if image {
+        let old = working_image_side(
+            repo,
+            old.to_vec(),
+            file.old_path.is_some(),
+            &file
+                .old_path
+                .as_deref()
+                .unwrap_or(file.path())
+                .to_string_lossy(),
+            cancellation,
+        );
+        cancellation.check()?;
+        let new = working_image_side(
+            repo,
+            new.to_vec(),
+            file.new_path.is_some(),
+            &file
+                .new_path
+                .as_deref()
+                .unwrap_or(file.path())
+                .to_string_lossy(),
+            cancellation,
+        );
+        cancellation.check()?;
+        return Ok(Some(Content::Images { old, new }));
+    }
+    // A pointer is an identity, not the document itself. Resolve both sides via
+    // the existing verified LFS path, or retain its literal text/download action.
+    if [old, new]
+        .iter()
+        .any(|bytes| detect_lfs_pointer(bytes).is_some())
+    {
+        return Ok(None);
+    }
+    if ![old, new]
+        .iter()
+        .any(|bytes| !metadata::is_literal_text(bytes) || bytes.starts_with(b"%PDF-"))
+    {
+        return Ok(None);
+    }
+    let side = |bytes: &[u8], path: Option<&Path>| -> Result<Arc<crate::rich_preview::Side>> {
+        let Some(path) = path else {
+            return Ok(Arc::new(crate::rich_preview::Side::unavailable(
+                file.path(),
+                false,
+                None,
+            )));
+        };
+        if bytes.len() > MAX_INPUT_BYTES {
+            return Ok(Arc::new(crate::rich_preview::Side::unavailable(
+                path,
+                true,
+                Some(format!(
+                    "File contains {} bytes, exceeding the 32 MiB captured preview limit.",
+                    bytes.len()
+                )),
+            )));
+        }
+        Ok(Arc::new(crate::rich_preview::Side::prepare(
+            bytes.to_vec(),
+            path,
+            || cancellation.check(),
+        )?))
+    };
+    Ok(Some(Content::Rich(crate::rich_preview::Comparison {
+        old: side(old, file.old_path.as_deref())?,
+        new: side(new, file.new_path.as_deref())?,
+    })))
+}
+
+fn nontext_history_content(
+    repo: &GitRepository,
+    file: &FileChange,
+    cancellation: &Cancellation,
+) -> Result<Option<(Content, bool)>> {
+    if !regular_preview(file) {
+        return Ok(None);
+    }
+    let read = |oid: Option<&str>| -> Result<Vec<u8>> {
+        cancellation.check()?;
+        let Some(oid) = oid else {
+            return Ok(Vec::new());
+        };
+        let size = repo.blob_size(oid)?;
+        ensure!(
+            size <= MAX_INPUT_BYTES,
+            "File has {size} bytes, exceeding the 32 MiB captured preview limit"
+        );
+        cancellation.check()?;
+        repo.blob(oid)
+    };
+    let old = read(file.old_oid.as_deref());
+    cancellation.check()?;
+    let new = read(file.new_oid.as_deref());
+    cancellation.check()?;
+    if let (Ok(old), Ok(new)) = (&old, &new) {
+        return Ok(
+            supplied_nontext_content(repo, file, old, new, cancellation)?.map(|content| {
+                let cacheable = match &content {
+                    Content::Images { old, new } => old.message.is_none() && new.message.is_none(),
+                    Content::Rich(preview) => {
+                        preview.old.error.is_none() && preview.new.error.is_none()
+                    }
+                    _ => true,
+                };
+                (content, cacheable)
+            }),
+        );
+    }
+    // Keep readable and missing sides independent; a missing historical object
+    // never substitutes a working file and is never cached as permanently absent.
+    let side = |bytes: Result<Vec<u8>>,
+                path: Option<&Path>|
+     -> Result<Arc<crate::rich_preview::Side>> {
+        let Some(path) = path else {
+            return Ok(Arc::new(crate::rich_preview::Side::unavailable(
+                file.path(),
+                false,
+                None,
+            )));
+        };
+        Ok(Arc::new(match bytes {
+            Ok(bytes) => crate::rich_preview::Side::prepare(bytes, path, || cancellation.check())?,
+            Err(error) => {
+                crate::rich_preview::Side::unavailable(path, true, Some(format!("{error:#}")))
+            }
+        }))
+    };
+    Ok(Some((
+        Content::Rich(crate::rich_preview::Comparison {
+            old: side(old, file.old_path.as_deref())?,
+            new: side(new, file.new_path.as_deref())?,
+        }),
+        false,
+    )))
+}
+
 fn prepared_text(patch: String, old: String, new: String) -> Content {
     let presentation = Arc::new(PatchPresentation::prepare(&patch));
     let split = Arc::new(crate::split_diff::SplitPresentation::prepare(
@@ -1204,10 +1339,14 @@ fn content_unchanged(previous: &Content, next: &Content) -> bool {
                     == bp.as_ref().map(|partial| &partial.diff)
         }
         (Content::Notice(a), Content::Notice(b)) => a == b,
+        (Content::Rich(a), Content::Rich(b)) => {
+            a.old.same_source(&b.old) && a.new.same_source(&b.new)
+        }
         (Content::Conflict(a), Content::Conflict(b)) => a.snapshot == b.snapshot,
         (Content::Images { old: ao, new: an }, Content::Images { old: bo, new: bn }) => {
             [ao, an].into_iter().zip([bo, bn]).all(|(a, b)| {
                 a.bytes == b.bytes
+                    && a.captured == b.captured
                     && a.message == b.message
                     && match (&a.image, &b.image) {
                         (None, None) => true,
@@ -1232,9 +1371,28 @@ fn text_content(
     file: &FileChange,
     cancellation: &Cancellation,
 ) -> Result<Content> {
-    let sources = repo.text_preview_with_sources(file)?;
+    let sources = match repo.text_preview_with_sources(file) {
+        Ok(sources) => sources,
+        Err(error) => {
+            if let Some((content, _)) = nontext_history_content(repo, file, cancellation)? {
+                return Ok(content);
+            }
+            return Err(error);
+        }
+    };
     cancellation.check()?;
-    if let Some(content) = resolved_lfs_text_content(repo, file, &sources.old, &sources.new)? {
+    if matches!(sources.preview, TextPreview::TooLarge { .. }) {
+        if let Some((content, _)) = nontext_history_content(repo, file, cancellation)? {
+            return Ok(content);
+        }
+    } else if let Some(content) =
+        supplied_nontext_content(repo, file, &sources.old, &sources.new, cancellation)?
+    {
+        return Ok(content);
+    }
+    if let Some(content) =
+        resolved_lfs_text_content(repo, file, &sources.old, &sources.new, cancellation)?
+    {
         return Ok(content);
     }
     Ok(match sources.preview {
@@ -1257,89 +1415,25 @@ fn resolved_lfs_text_content(
     file: &FileChange,
     old: &[u8],
     new: &[u8],
+    cancellation: &Cancellation,
 ) -> Result<Option<Content>> {
     let Some(sources) = repo.resolved_lfs_text(file, old, new)? else {
         return Ok(None);
     };
+    if [sources.old.as_slice(), sources.new.as_slice()]
+        .iter()
+        .any(|bytes| !metadata::is_literal_text(bytes) || bytes.starts_with(b"%PDF-"))
+        && let Some(content) =
+            supplied_nontext_content(repo, file, &sources.old, &sources.new, cancellation)?
+    {
+        return Ok(Some(content));
+    }
     Ok(Some(match sources.preview {
         TextPreview::Patch(patch) => prepared_text(patch, String::from_utf8(sources.old)?, String::from_utf8(sources.new)?),
         TextPreview::Binary => Content::Notice("Verified LFS object downloaded. Its content is binary or not UTF-8 and has no text preview.".into()),
         TextPreview::TooLarge { old_bytes, new_bytes } => Content::Notice(format!("Verified LFS content exceeds the text display limit · {old_bytes} → {new_bytes} bytes.")),
         TextPreview::Submodule { .. } => Content::Notice("Submodules do not have an LFS text preview.".into()),
     }))
-}
-
-/// Never cache an unavailable preview: the local object may appear before
-/// another click. Successful LFS reads are size/hash verified by the core, so
-/// their decoded content is immutable and safe to retain under the pointer OID.
-fn image_side(
-    repo: &GitRepository,
-    oid: Option<&str>,
-    file_name: &str,
-    cancellation: &Cancellation,
-) -> (ImageSide, bool) {
-    let Some(oid) = oid else {
-        return (
-            ImageSide {
-                image: None,
-                render: None,
-                message: None,
-                bytes: 0,
-                lfs_pointer: None,
-            },
-            true,
-        );
-    };
-    let mut missing_pointer = None;
-    let result = (|| -> Result<(ImagePreview, Arc<RenderImage>, usize)> {
-        cancellation.check()?;
-        let size = repo.blob_size(oid)?;
-        ensure!(
-            size <= MAX_INPUT_BYTES,
-            "Image exceeds the 32 MiB input limit ({size} bytes)"
-        );
-        cancellation.check()?;
-        let mut bytes = repo.blob(oid)?;
-        cancellation.check()?;
-        if let Some(pointer) = detect_lfs_pointer(&bytes) {
-            let local = repo.local_lfs_object(&pointer.oid, pointer.size, MAX_INPUT_BYTES)?;
-            if local.is_none() {
-                missing_pointer = Some(bytes.clone());
-            }
-            bytes = local.ok_or_else(|| anyhow!(
-                    "Git LFS object is unavailable in the local store · {} bytes\nNo download was attempted.\n{}",
-                    pointer.size,
-                    pointer.oid
-                ))?;
-        }
-        cancellation.check()?;
-        let decoded = decode_image(&bytes, file_name, PREVIEW_EDGE)?;
-        cancellation.check()?;
-        let render = render_image(&decoded)?;
-        Ok((decoded, render, bytes.len()))
-    })();
-    match result {
-        Ok((image, render, bytes)) => (
-            ImageSide {
-                image: Some(image),
-                render: Some(render),
-                message: None,
-                bytes,
-                lfs_pointer: None,
-            },
-            true,
-        ),
-        Err(error) => (
-            ImageSide {
-                image: None,
-                render: None,
-                message: Some(format!("{error:#}")),
-                bytes: 0,
-                lfs_pointer: missing_pointer,
-            },
-            false,
-        ),
-    }
 }
 
 fn working_image_side(
@@ -1351,6 +1445,8 @@ fn working_image_side(
 ) -> ImageSide {
     if !present {
         return ImageSide {
+            captured: None,
+            literal_source: None,
             image: None,
             render: None,
             message: None,
@@ -1372,7 +1468,7 @@ fn working_image_side(
             }
             bytes = local.ok_or_else(|| {
                 anyhow!(
-                    "Git LFS object is unavailable locally · {} bytes. No download was attempted.",
+                    "Git LFS object is unavailable in the local store · {} bytes. No download was attempted.",
                     pointer.size
                 )
             })?;
@@ -1383,8 +1479,15 @@ fn working_image_side(
         let render = render_image(&decoded)?;
         Ok((decoded, render, bytes.len()))
     })();
+    let literal_source = (bytes.len() <= gitturtle_preview::MAX_SVG_BYTES)
+        .then(|| std::str::from_utf8(&bytes).ok().map(Arc::<str>::from))
+        .flatten();
+    let captured = (bytes.len() <= MAX_INPUT_BYTES && missing_pointer.is_none())
+        .then(|| Arc::<[u8]>::from(bytes));
     match result {
         Ok((image, render, bytes)) => ImageSide {
+            captured,
+            literal_source,
             image: Some(image),
             render: Some(render),
             message: None,
@@ -1392,6 +1495,8 @@ fn working_image_side(
             lfs_pointer: None,
         },
         Err(error) => ImageSide {
+            captured,
+            literal_source,
             image: None,
             render: None,
             message: Some(format!("{error:#}")),
@@ -1401,7 +1506,7 @@ fn working_image_side(
     }
 }
 
-fn render_image(preview: &ImagePreview) -> Result<Arc<RenderImage>> {
+pub(super) fn render_image(preview: &ImagePreview) -> Result<Arc<RenderImage>> {
     // GPUI RenderImage expects BGRA although image::Frame names the buffer RGBA.
     let mut bgra = preview.rgba.clone();
     let (pixels, remainder) = bgra.as_chunks_mut::<4>();
@@ -2459,6 +2564,8 @@ mod image_tests {
         let expected_bytes = preview.rgba.capacity() + preview.format.capacity() + 8;
         let content = Content::Images {
             old: ImageSide {
+                captured: None,
+                literal_source: None,
                 image: Some(preview),
                 render: Some(rendered),
                 message: None,
@@ -2466,6 +2573,8 @@ mod image_tests {
                 lfs_pointer: None,
             },
             new: ImageSide {
+                captured: None,
+                literal_source: None,
                 image: None,
                 render: None,
                 message: None,
@@ -2474,6 +2583,153 @@ mod image_tests {
             },
         };
         assert_eq!(content.bytes(), expected_bytes);
+    }
+
+    fn added_file(fixture: &Fixture, name: &str, bytes: &[u8]) -> FileChange {
+        FileChange {
+            old_path: None,
+            new_path: Some(name.into()),
+            old_oid: None,
+            new_oid: Some(fixture.blob(bytes)),
+            status: ChangeStatus::Added,
+            old_mode: "000000".into(),
+            new_mode: "100644".into(),
+        }
+    }
+
+    fn captured_preview(repo: &GitRepository, file: FileChange) -> Arc<Content> {
+        let Output::Preview(content, _) = execute(
+            Job::Preview {
+                repo: repo.clone(),
+                file,
+            },
+            &mut PreviewCache::default(),
+            &active(),
+            &mut RepositorySession::default(),
+        )
+        .unwrap() else {
+            panic!("expected captured preview")
+        };
+        content
+    }
+
+    #[test]
+    fn content_detection_preserves_mislabeled_source_and_image_bytes() {
+        let fixture = Fixture::new();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let source = b"const literal = '<svg is just text>';\n";
+        let preview = captured_preview(&repo, added_file(&fixture, "misleading.png", source));
+        assert!(matches!(&*preview,Content::Text {new,..} if new.as_bytes()==source));
+        let image = captured_preview(&repo, added_file(&fixture, "no-extension", SVG));
+        let Content::Images { old, new } = &*image else {
+            panic!("content should identify SVG")
+        };
+        assert!(old.image.is_none());
+        assert_eq!(new.captured.as_deref(), Some(SVG));
+        assert_eq!(new.literal_source.as_deref().unwrap().as_bytes(), SVG);
+        assert!(image.bytes() >= SVG.len() * 2 + 8);
+    }
+
+    #[test]
+    fn rich_history_keeps_exact_old_new_and_missing_sides_without_worktree_substitution() {
+        let fixture = Fixture::new();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let old = b"RIFF\0\0\0\0WAVE";
+        let new = b"RIFF\x01\0\0\0WAVE";
+        fs::write(fixture.0.join("sound.wav"), b"unrelated current worktree").unwrap();
+        let mut file = added_file(&fixture, "sound.wav", new);
+        file.old_path = Some("old-name.wav".into());
+        file.old_oid = Some(fixture.blob(old));
+        file.old_mode = "100644".into();
+        file.status = ChangeStatus::Renamed;
+        let preview = captured_preview(&repo, file.clone());
+        let Content::Rich(sides) = &*preview else {
+            panic!("expected media metadata")
+        };
+        assert_eq!(sides.old.captured.as_deref(), Some(old.as_slice()));
+        assert_eq!(sides.new.captured.as_deref(), Some(new.as_slice()));
+        assert_eq!(sides.old.metadata.format, "WAV audio");
+        file.old_oid = Some("f".repeat(40));
+        let missing = captured_preview(&repo, file);
+        let Content::Rich(sides) = &*missing else {
+            panic!("expected independent unavailable side")
+        };
+        assert!(sides.old.error.is_some());
+        assert_eq!(sides.new.captured.as_deref(), Some(new.as_slice()));
+        assert_eq!(
+            fs::read(fixture.0.join("sound.wav")).unwrap(),
+            b"unrelated current worktree"
+        );
+    }
+
+    #[test]
+    fn quick_open_and_working_changes_share_bounded_media_routing() {
+        let fixture = Fixture::new();
+        let original = b"RIFF\0\0\0\0WAVE";
+        let changed = b"RIFF\x01\0\0\0WAVE";
+        fs::write(fixture.0.join("sound.wav"), original).unwrap();
+        fixture.git(&["add", "sound.wav"], b"");
+        fixture.git(
+            &["-c", "commit.gpgsign=false", "commit", "-qm", "Audio"],
+            b"",
+        );
+        fs::write(fixture.0.join("sound.wav"), changed).unwrap();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let entry = repo.status().unwrap().entries.remove(0);
+        let Output::WorkingPreview(_, content, _) = execute(
+            Job::WorkingPreview {
+                repo: repo.clone(),
+                entry,
+                area: gitturtle_core::ChangeArea::Unstaged,
+            },
+            &mut PreviewCache::default(),
+            &active(),
+            &mut RepositorySession::default(),
+        )
+        .unwrap() else {
+            panic!("expected working preview")
+        };
+        let Content::Rich(sides) = &*content else {
+            panic!("expected media preview")
+        };
+        assert_eq!(sides.old.captured.as_deref(), Some(original.as_slice()));
+        assert_eq!(sides.new.captured.as_deref(), Some(changed.as_slice()));
+        let paths = repo
+            .search_tracked_paths(
+                &gitturtle_core::PathScope::Worktree,
+                "sound",
+                &gitturtle_core::HistoryCancellation::default(),
+            )
+            .unwrap();
+        let Output::Preview(content, _) = execute(
+            Job::TrackedPreview {
+                repo,
+                entry: paths.entries[0].clone(),
+                scope: gitturtle_core::PathScope::Worktree,
+            },
+            &mut PreviewCache::default(),
+            &active(),
+            &mut RepositorySession::default(),
+        )
+        .unwrap() else {
+            panic!("expected quick source")
+        };
+        let Content::Rich(sides) = &*content else {
+            panic!("expected quick source media preview")
+        };
+        assert!(!sides.old.present);
+        assert_eq!(sides.new.captured.as_deref(), Some(changed.as_slice()));
+    }
+
+    #[test]
+    fn stored_symlink_named_as_image_is_literal_and_never_followed() {
+        let fixture = Fixture::new();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let target = b"../private-file.png";
+        let mut file = added_file(&fixture, "link.png", target);
+        file.new_mode = "120000".into();
+        let preview = captured_preview(&repo, file);
+        assert!(matches!(&*preview,Content::Text {new,..} if new.as_bytes()==target));
     }
 
     #[test]

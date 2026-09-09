@@ -5,6 +5,56 @@ use gitturtle_core::{
 };
 use std::{fs, path::PathBuf, process::Command};
 
+#[test]
+fn message_recovery_identity_survives_restart_and_refuses_changed_index_or_git_message() {
+    let fixture = Fixture::new();
+    fixture.commit("first", "original message");
+    let _ = fixture.start(&[RebaseAction::Reword]);
+    let before = fixture.repo().interactive_rebase_resume().unwrap();
+    let token = before.draft_identity();
+    assert_eq!(
+        fixture
+            .repo()
+            .interactive_rebase_resume()
+            .unwrap()
+            .draft_identity(),
+        token
+    );
+    fs::write(fixture.root.join("extra"), "external staged edit").unwrap();
+    fixture.git(&["add", "extra"]);
+    assert_ne!(
+        fixture
+            .repo()
+            .interactive_rebase_resume()
+            .unwrap()
+            .draft_identity(),
+        token
+    );
+    fixture.git(&["reset", "--", "extra"]);
+    assert_eq!(
+        fixture
+            .repo()
+            .interactive_rebase_resume()
+            .unwrap()
+            .draft_identity(),
+        token
+    );
+    let message = fixture.root.join(".git/rebase-merge/message");
+    fs::write(message, "externally edited Git message\n").unwrap();
+    assert_ne!(
+        fixture
+            .repo()
+            .interactive_rebase_resume()
+            .unwrap()
+            .draft_identity(),
+        token
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("extra")).unwrap(),
+        "external staged edit"
+    );
+}
+
 struct Fixture {
     _temp: tempfile::TempDir,
     root: PathBuf,

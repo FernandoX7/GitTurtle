@@ -168,7 +168,13 @@ impl GitRepository {
                 command.arg("tag");
                 if let Some(annotation) = &plan.annotation {
                     command.args(["--annotate", "--cleanup=verbatim", "--file=-"]);
-                    input = Some(annotation.as_bytes().to_vec());
+                    let mut bytes = annotation.as_bytes().to_vec();
+                    // With verbatim cleanup Git appends the signature directly.
+                    // Its marker must start on a fresh line to be verifiable.
+                    if plan.signing && !bytes.ends_with(b"\n") {
+                        bytes.push(b'\n');
+                    }
+                    input = Some(bytes);
                 }
                 command.args(["--", &plan.name, &plan.target_oid]);
                 format!(

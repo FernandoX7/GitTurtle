@@ -870,27 +870,26 @@ impl Render for ProjectHub {
             .flex_col()
             .child(
                 div()
-                    .h(crate::appearance::ui_size(62.))
-                    .px_6()
-                    .when(narrow, |header| header.px_4())
+                    .h(crate::appearance::ui_size(56.))
+                    .px_4()
                     .flex_shrink_0()
                     .flex()
                     .items_center()
                     .gap_3()
                     .border_b_1()
                     .border_color(colors.border)
-                    .child(crate::app_icon(32.))
-                    .child(div().text_size(crate::appearance::ui_text(16.)).font_weight(FontWeight::SEMIBOLD).child("GitTurtle"))
-                    .child(div().w(px(1.)).h(crate::appearance::ui_size(18.)).bg(colors.border))
-                    .child(div().text_size(crate::appearance::ui_text(12.)).text_color(colors.muted_foreground).child("Projects"))
-                    .child(div().flex_1())
                     .when(self.can_go_back, |header| {
                         header.child(Button::new("hub-back").ghost().label("Back to repository").icon(Icon::default().path("icons/arrow-left.svg").size(px(15.))).disabled(self.unavailable()).on_click(cx.listener(|this, _, _, cx| {
                             if !this.unavailable() {
                                 cx.emit(ProjectEvent::Back);
                             }
                         })))
-                    }),
+                    })
+                    .child(crate::app_icon(32.))
+                    .child(div().text_size(crate::appearance::ui_text(16.)).font_weight(FontWeight::SEMIBOLD).child("GitTurtle"))
+                    .child(div().w(px(1.)).h(crate::appearance::ui_size(18.)).bg(colors.border))
+                    .child(div().text_size(crate::appearance::ui_text(12.)).text_color(colors.muted_foreground).child("Projects"))
+                    .child(div().flex_1()),
             )
             .child(
                 div()

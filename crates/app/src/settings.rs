@@ -39,6 +39,9 @@ impl GitTurtle {
     }
 
     pub(super) fn show_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.page != AppPage::Settings {
+            self.page_origin = self.page;
+        }
         self.capture_page_return_focus(window, cx);
         self.cancel_branch_action();
         self.cancel_interactive_rebase_action();
@@ -52,20 +55,12 @@ impl GitTurtle {
         });
         self.fill_identity_inputs(window, cx);
         window.focus(&self.app_focus, cx);
-        cx.notify();
+        self.repaint_page(window, cx);
     }
 
     pub(super) fn capture_page_return_focus(&mut self, window: &Window, cx: &App) {
         if self.page == AppPage::Repository {
             self.page_return_focus = window.focused(cx);
-        }
-    }
-
-    pub(super) fn restore_page_return_focus(&mut self, window: &mut Window, cx: &mut App) {
-        if self.page == AppPage::Repository
-            && let Some(focus) = self.page_return_focus.take()
-        {
-            window.focus(&focus, cx);
         }
     }
 
@@ -366,6 +361,21 @@ impl GitTurtle {
                     .text_color(rgb(p.muted))
                     .child("Choose what appears in history. Drag a column divider to resize; scroll horizontally when your columns need more room."),
             )
+            .child(div().flex().items_center().flex_wrap().gap_2()
+                .child(setting_description("Graph lane spacing", "Distinct lanes keep this spacing; wide histories scroll horizontally.", cx))
+                .child(button("graph-spacing-less", "−", "", false)
+                    .accessibility_label("Decrease graph lane spacing").disabled(self.settings.graph_spacing <= 12)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.settings.graph_spacing = this.settings.graph_spacing.saturating_sub(2).max(12);
+                        this.save_preferences(window, cx);
+                    })))
+                .child(div().min_w(px(38.)).text_center().child(format!("{} px", self.settings.graph_spacing)))
+                .child(button("graph-spacing-more", "+", "", false)
+                    .accessibility_label("Increase graph lane spacing").disabled(self.settings.graph_spacing >= 32)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.settings.graph_spacing = (this.settings.graph_spacing + 2).min(32);
+                        this.save_preferences(window, cx);
+                    }))))
             .children(ColumnId::ALL.into_iter().enumerate().map(|(index, id)| {
                 let setting = self.settings.columns.get(id);
                 div()
@@ -417,6 +427,75 @@ impl GitTurtle {
             .into_any_element()
     }
 
+    fn render_theme_picker(&self, columns: usize, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx);
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .children([true, false].into_iter().map(|light| {
+                let choices: Vec<_> = ThemeChoice::ALL
+                    .into_iter()
+                    .filter(|choice| choice.is_light() == light)
+                    .collect();
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(appearance::ui_text(12.))
+                            .text_color(rgb(p.muted))
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(if light {
+                                "Light palettes"
+                            } else {
+                                "Dark palettes"
+                            }),
+                    )
+                    .children(choices.chunks(columns).map(|row| {
+                        div()
+                            .flex()
+                            .gap_3()
+                            .children(row.iter().copied().map(|choice| {
+                                let selected =
+                                    !self.settings.follow_system && self.settings.theme == choice;
+                                Button::new(("settings-theme", choice as usize))
+                                    .ghost()
+                                    .group("settings-theme-choice")
+                                    .accessibility_label(format!("{} theme", choice.label()))
+                                    .selected(selected)
+                                    .toggled(selected)
+                                    .tooltip(format!(
+                                        "{} · {}",
+                                        choice.label(),
+                                        choice.description()
+                                    ))
+                                    .flex_1()
+                                    .min_w_0()
+                                    .h(appearance::ui_size(166.))
+                                    .p(px(2.))
+                                    .border_1()
+                                    .border_color(rgb(if selected { p.accent } else { p.border }))
+                                    .hover(move |style| style.border_color(rgb(p.accent)))
+                                    .rounded(px(10.))
+                                    .overflow_hidden()
+                                    .child(theme_preview(
+                                        choice,
+                                        selected,
+                                        p.accent,
+                                        p.accent_foreground,
+                                    ))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.choose_theme(choice, window, cx)
+                                    }))
+                            }))
+                            .children((row.len()..columns).map(|_| div().flex_1().min_w_0()))
+                    }))
+            }))
+            .into_any_element()
+    }
+
     pub(super) fn render_settings(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         let busy = self.operation_busy.is_some();
@@ -430,131 +509,79 @@ impl GitTurtle {
                 || self.identity_email.read(cx).value().trim() != profile.email
         });
         let repository_name = self.repository.as_ref().map(|repository| repository.name());
-        let appearance =
-            div()
-                .flex()
-                .flex_col()
-                .gap_5()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_3()
-                        .child(setting_description(
-                            "Follow system appearance",
-                            "Daylight in Light Mode; your selected dark palette in Dark Mode.",
-                            cx,
-                        ))
-                        .child(
-                            Switch::new("follow-system")
-                                .checked(self.settings.follow_system)
-                                .label("Follow system appearance")
-                                .on_click(cx.listener(|this, checked, window, cx| {
-                                    this.settings.follow_system = *checked;
-                                    this.apply_appearance(window, cx);
-                                    this.save_preferences(window, cx);
-                                })),
-                        ),
-                )
-                .child(
-                    div().flex().flex_col().gap_3().children(
-                        ThemeChoice::ALL
-                            .chunks(theme_columns)
-                            .enumerate()
-                            .map(|(row, choices)| {
-                                div().flex().gap_3().children(
-                                    choices.iter().copied().enumerate().map(|(column, choice)| {
-                                        let selected = !self.settings.follow_system
-                                            && self.settings.theme == choice;
-                                        Button::new((
-                                            "settings-theme",
-                                            row * theme_columns + column,
-                                        ))
-                                        .ghost()
-                                        .group("settings-theme-choice")
-                                        .accessibility_label(format!("{} theme", choice.label()))
-                                        .selected(selected)
-                                        .toggled(selected)
-                                        .tooltip(format!(
-                                            "{} · {}",
-                                            choice.label(),
-                                            choice.description()
-                                        ))
-                                        .flex_1()
-                                        .min_w_0()
-                                        .h(px(178.))
-                                        .p(px(2.))
-                                        .border_1()
-                                        .border_color(rgb(if selected {
-                                            p.accent
-                                        } else {
-                                            p.border
-                                        }))
-                                        .rounded(px(10.))
-                                        .overflow_hidden()
-                                        .child(theme_preview(
-                                            choice,
-                                            selected,
-                                            p.accent,
-                                            p.accent_foreground,
-                                        ))
-                                        .on_click(
-                                            cx.listener(move |this, _, window, cx| {
-                                                this.choose_theme(choice, window, cx)
-                                            }),
-                                        )
-                                    }),
-                                )
-                            }),
+        let appearance = div()
+            .flex()
+            .flex_col()
+            .gap_5()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(setting_description(
+                        "Follow system appearance",
+                        "Braden in Light Mode; your selected dark palette in Dark Mode.",
+                        cx,
+                    ))
+                    .child(
+                        Switch::new("follow-system")
+                            .checked(self.settings.follow_system)
+                            .label("Follow system appearance")
+                            .on_click(cx.listener(|this, checked, window, cx| {
+                                this.settings.follow_system = *checked;
+                                this.apply_appearance(window, cx);
+                                this.save_preferences(window, cx);
+                            })),
                     ),
-                )
-                .child(self.render_text_size_setting(false, cx))
-                .child(self.render_text_size_setting(true, cx))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_3()
-                        .when(narrow, |row| row.flex_col().items_start())
-                        .pt_4()
-                        .border_t_1()
-                        .border_color(rgb(p.border))
-                        .child(setting_description(
-                            "List density",
-                            "A little breathing room, or more at a glance.",
-                            cx,
-                        ))
-                        .child(
-                            div()
-                                .flex()
-                                .gap_1()
-                                .p_1()
-                                .rounded(px(8.))
-                                .bg(rgb(p.canvas))
-                                .children(Density::ALL.into_iter().enumerate().map(
-                                    |(index, density)| {
-                                        Button::new(("settings-density", index))
-                                            .small()
-                                            .ghost()
-                                            .label(density.label())
-                                            .selected(self.settings.density == density)
-                                            .toggled(self.settings.density == density)
-                                            .when(self.settings.density == density, |button| {
-                                                button.hover(|style| style.opacity(0.9))
-                                            })
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                if this.settings.density != density {
-                                                    this.settings.density = density;
-                                                    this.save_preferences(window, cx);
-                                                }
-                                            }))
-                                    },
-                                )),
-                        ),
-                )
-                .into_any_element();
+            )
+            .child(self.render_theme_picker(theme_columns, cx))
+            .child(self.render_text_size_setting(false, cx))
+            .child(self.render_text_size_setting(true, cx))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .when(narrow, |row| row.flex_col().items_start())
+                    .pt_4()
+                    .border_t_1()
+                    .border_color(rgb(p.border))
+                    .child(setting_description(
+                        "List density",
+                        "A little breathing room, or more at a glance.",
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .gap_1()
+                            .p_1()
+                            .rounded(px(8.))
+                            .bg(rgb(p.canvas))
+                            .children(Density::ALL.into_iter().enumerate().map(
+                                |(index, density)| {
+                                    Button::new(("settings-density", index))
+                                        .small()
+                                        .ghost()
+                                        .label(density.label())
+                                        .selected(self.settings.density == density)
+                                        .toggled(self.settings.density == density)
+                                        .when(self.settings.density == density, |button| {
+                                            button.hover(|style| style.opacity(0.9))
+                                        })
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            if this.settings.density != density {
+                                                this.settings.density = density;
+                                                this.save_preferences(window, cx);
+                                            }
+                                        }))
+                                },
+                            )),
+                    ),
+            )
+            .into_any_element();
 
         let startup = div()
             .flex()
@@ -686,7 +713,8 @@ impl GitTurtle {
                                 .on_click(cx.listener(|this, _, window, cx| this.fill_identity_inputs(window, cx))),
                         ),
                 )
-                .child(div().text_size(crate::appearance::ui_text(11.)).line_height(relative(1.5)).text_color(rgb(p.muted)).child("Name and email are saved to this repository’s Git configuration."))
+                .child(div().text_size(crate::appearance::ui_text(11.)).line_height(relative(1.5)).text_color(rgb(p.muted)).child(if self.profile.as_ref().is_some_and(|profile| profile.private_worktree) { "Name and email are saved only to this worktree’s existing private Git configuration." } else { "Name and email are saved to repository Git configuration shared by linked worktrees. Global identity is preserved." }))
+                .child(button("settings-manage-profiles", "Manage named profiles…", "user", false).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.open_profiles(window, cx))))
                 .into_any_element()
         } else {
             div()
@@ -725,62 +753,6 @@ impl GitTurtle {
             .flex_col()
             .bg(rgb(p.canvas))
             .text_color(rgb(p.text))
-            .child(
-                div()
-                    .h(crate::appearance::ui_size(54.))
-                    .flex_shrink_0()
-                    .px_6()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .bg(rgb(p.panel))
-                    .border_b_1()
-                    .border_color(rgb(p.border))
-                    .child(
-                        button("settings-back", "Back", "arrow-left", false).on_click(cx.listener(
-                            |this, _, window, cx| {
-                                this.page = if this.repository.is_some() {
-                                    AppPage::Repository
-                                } else {
-                                    AppPage::Projects
-                                };
-                                if this.page == AppPage::Repository
-                                    && this.mode != WorkspaceMode::History
-                                {
-                                    this.resume_file_history(window, cx);
-                                    this.ensure_editor(window, cx);
-                                }
-                                window.focus(
-                                    if this.page != AppPage::Repository {
-                                        &this.app_focus
-                                    } else if this.mode == WorkspaceMode::History {
-                                        &this.focus
-                                    } else {
-                                        &this.file_focus
-                                    },
-                                    cx,
-                                );
-                                this.restore_page_return_focus(window, cx);
-                                this.try_automatic_refresh(window, cx);
-                                cx.notify();
-                            },
-                        )),
-                    )
-                    .child(div().h(crate::appearance::ui_size(18.)).w(px(1.)).bg(rgb(p.border)))
-                    .child(
-                        div()
-                            .text_size(crate::appearance::ui_text(14.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Settings"),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .text_size(crate::appearance::ui_text(11.))
-                            .text_color(rgb(p.muted))
-                            .child("Make GitTurtle yours"),
-                    ),
-            )
             .child(
                 div()
                     .id("settings-scroll")

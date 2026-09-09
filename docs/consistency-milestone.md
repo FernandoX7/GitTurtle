@@ -32,12 +32,22 @@ Original complete application-data directory (two files), SHA-256 manifest, and 
 
 | ID / severity | Reproduction and affected screen | Correction | Verification |
 | --- | --- | --- | --- |
-| N1 / P2 | Select a history commit in installed baseline: inspector appears without a visible return/dismiss action. Activating a file reveals a small History action in the content header at a different position. The global header gives no context-aware Back. | Pending navigation transition table and consistent destination-labeled control | Baseline History/Compare screenshots captured; correction pending |
-| N2 / P2 | Installed header profile name is tightly padded plain text with a small icon; its action opens identity Settings rather than a named-profile picker. | Named profile picker and shared header control treatment | Baseline observed; implementation pending |
+| N1 / P2 | Select a history commit in installed baseline: inspector appears without a visible return/dismiss action. Activating a file reveals a small History action in the content header at a different position. The global header gives no context-aware Back. | Added shared destination-labeled Back, retained same-repository return, hidden-page shortcut guards, and documented transition table | Baseline captured; integrated native verification pending |
+| N2 / P2 | Installed header profile name is tightly padded plain text with a small icon; its action opens identity Settings rather than a named-profile picker. | Named profile picker and shared header control treatment | Profile/store/core fixtures pass; native verification pending |
+
+| N3 / P1 | Opening Projects or Activity updates the accessibility tree but leaves the previous comparison painted until window resize. | Observe Root dialog changes and explicitly invalidate page replacement; no continuous redraw loop | Baseline before/after-resize screenshots; integrated native verification pending |
+| N4 / P2 | Projects and Settings retain repository status/controls; Settings duplicates its heading. | Page-specific headers/status, coherent Projects hub, single Settings heading | Native verification pending |
+| N5 / P2 | Worktree selection has no clear row highlight; compact controls have uneven padding. | Shared minimum control geometry and selected/hover worktree row border/background | Native verification pending |
+
+## Implementation checkpoint
+
+The first integrated implementation includes the ten-theme picker with compatible `daylight` storage, adjustable graph lane spacing and persisted pane widths, navigation context fixes, named profiles, additional supplied-byte raster/PDF decoding and metadata, exact draft recovery, bounded rewritten-series review and explicit leased publication, and the native command palette. Canonical design guidance is now [DESIGN.md](../DESIGN.md). This is implementation evidence, not a claim of final native acceptance.
+
+Targeted checks before this checkpoint: app tests 177 passed/1 ignored before the final palette/rewrite UI hooks; palette tests 3 passed; preview tests 24 passed; worker preview tests 17 passed; recovery draft tests 5 passed including forced-process termination; core rewrite tests 7 passed including remote movement/rejection/cancellation/uncertain outcome; profiles 5 passed; tag/signing fixtures 11 passed. Integrated `cargo check --locked -p gitturtle`, formatting and diff whitespace checks pass. Final combined gates and native review remain pending.
 
 ## Native audit coverage
 
-Baseline release: History commit selection and explicit file comparison visually inspected. AX row selection did not activate a file; a coordinate click did. This is an automation targeting detail, not an application defect. Remaining principal workflows are pending initial audit.
+Baseline release: History commit selection and explicit file comparison visually inspected. AX row selection did not activate a file; a coordinate click did. This is an automation targeting detail, not an application defect. Quick Open typing/activation, File History, Blame, revision comparison cancellation, worktree list, activity empty state and Settings were also inspected in the installed baseline. Reflog activation was obstructed by the stale dialog painting finding; it requires integrated recheck. Working Changes, conflicts/rebase, broader management forms/authentication and new workflows still require integrated native coverage.
 
 ## Ownership and resumption
 

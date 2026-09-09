@@ -5,6 +5,7 @@ mod automatic_refresh;
 mod blame;
 mod branch_actions;
 mod columns;
+mod command_palette;
 mod commit_drafts;
 mod conflicts;
 mod diff_view;
@@ -20,14 +21,19 @@ mod lfs_download;
 mod local_refresh;
 mod navigation;
 mod operations;
+mod page_navigation;
 mod partial_view;
 mod path_filter;
 mod platform_polish;
 mod preferences;
+mod profiles;
 mod projects;
 mod recovery;
+mod recovery_drafts;
 mod reflog;
 mod revision_inspection;
+mod rewrite_review;
+mod rich_preview;
 mod settings;
 mod split_diff;
 mod tags;
@@ -82,6 +88,7 @@ gpui_kit::actions!(
         ShowSettings,
         ShowChanges,
         QuickOpenFile,
+        ShowCommandPalette,
         ShowActivity,
         ExtendNextWorking,
         ExtendPreviousWorking,
@@ -141,7 +148,7 @@ enum WorkspaceMode {
     Compare,
     Working,
 }
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AppPage {
     Repository,
     Projects,
@@ -180,6 +187,7 @@ struct GitTurtle {
     interactive_rebase: interactive_rebase::State,
     ignore_actions: ignore::State,
     menu_state: Option<(bool, bool)>,
+    dialog_layer_subscription: Option<Subscription>,
     settings_editor: Entity<InputState>,
     history_search: history_search::State,
     file_history: file_history::State,
@@ -187,11 +195,13 @@ struct GitTurtle {
     branch_actions: branch_actions::State,
     recovery: recovery::State,
     page_return_focus: Option<FocusHandle>,
+    page_origin: AppPage,
     content_panels: Entity<ResizableState>,
     history_panels: Entity<ResizableState>,
     retained_history_files: Option<(Vec<FileChange>, Option<usize>)>,
     commit_drafts: HashMap<PathBuf, CommitDraft>,
     draft_saver: commit_drafts::DraftSaver,
+    recovery_drafts: recovery_drafts::State,
     draft_save_error: Option<String>,
     draft_repository: Option<PathBuf>,
     settings: AppSettings,
@@ -209,6 +219,7 @@ struct GitTurtle {
     integration_state: Option<gitturtle_core::OperationState>,
     integration_task: Option<Task<()>>,
     profile: Option<gitturtle_core::GitProfile>,
+    profiles: profiles::State,
     remotes: Vec<gitturtle_core::Remote>,
     working_rows: Vec<workspace::WorkingRow>,
     working_selected: Option<(usize, gitturtle_core::ChangeArea)>,
@@ -296,6 +307,7 @@ impl GitTurtle {
         initial: Option<PathBuf>,
         preferences: Preferences,
         activity: activity::State,
+        recovery_drafts: recovery_drafts::State,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -345,6 +357,7 @@ impl GitTurtle {
             cx.new(|cx| InputState::new(window, cx).placeholder("Filter working paths…"));
         let mut this = Self {
             activity,
+            recovery_drafts,
             working_selection: working_selection::Selection::default(),
             working_filter: working_filter.clone(),
             file_filter: file_filter.clone(),
@@ -357,6 +370,7 @@ impl GitTurtle {
             interactive_rebase: interactive_rebase::State::default(),
             ignore_actions: ignore::State::default(),
             menu_state: None,
+            dialog_layer_subscription: None,
             settings_editor,
             history_search: history_search::State::default(),
             file_history: file_history::State::default(),
@@ -364,6 +378,7 @@ impl GitTurtle {
             branch_actions: branch_actions::State::default(),
             recovery: recovery::State::default(),
             page_return_focus: None,
+            page_origin: AppPage::Projects,
             content_panels: cx.new(|_| ResizableState::default()),
             history_panels: cx.new(|_| ResizableState::default()),
             retained_history_files: None,
@@ -386,6 +401,7 @@ impl GitTurtle {
             integration_state: None,
             integration_task: None,
             profile: None,
+            profiles: profiles::State::default(),
             remotes: Vec::new(),
             working_rows: Vec::new(),
             working_selected: None,
@@ -471,6 +487,7 @@ impl GitTurtle {
             interaction_started: None,
             details: false,
         };
+        this.load_profiles(window, cx);
         this.subscriptions.push(cx.subscribe_in(
             &file_filter,
             window,
@@ -852,7 +869,7 @@ impl GitTurtle {
                     Content::Images { old, new } => {
                         self.images = [old.render.clone(), new.render.clone()];
                     }
-                    Content::Notice(_) | Content::Conflict(_) => {}
+                    Content::Notice(_) | Content::Conflict(_) | Content::Rich(_) => {}
                 }
                 self.content = Some(content);
                 if self.page == AppPage::Repository
@@ -1075,8 +1092,13 @@ impl GitTurtle {
     /// An explicit History destination exits every retained inspection. Back
     /// remains a one-level return so comparisons keep their navigation context.
     fn show_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.repository.is_none() {
+            self.show_projects(window, cx);
+            return;
+        }
         self.close_inspections(window, cx);
         self.back_to_history(window, cx);
+        self.repaint_page(window, cx);
     }
 
     fn back_to_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1263,6 +1285,9 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.page != AppPage::Repository {
+            return;
+        }
         if self.move_blame_line(direction, edge, window, cx) {
             return;
         }
@@ -1319,33 +1344,20 @@ impl GitTurtle {
         }
     }
     fn search(&mut self, _: &Search, window: &mut Window, cx: &mut Context<Self>) {
-        self.back_to_history(window, cx);
+        if self.page != AppPage::Repository {
+            return;
+        }
+        self.show_history(window, cx);
         window.focus(&self.search.read(cx).focus_handle(cx), cx);
     }
     fn clear_search(&mut self, _: &ClearSearch, window: &mut Window, cx: &mut Context<Self>) {
-        if self.page != AppPage::Repository {
-            self.page = if self.repository.is_some() {
-                AppPage::Repository
-            } else {
-                AppPage::Projects
-            };
-            if self.page == AppPage::Repository && self.mode != WorkspaceMode::History {
-                self.resume_file_history(window, cx);
-                self.ensure_editor(window, cx);
-            }
-            window.focus(
-                if self.page != AppPage::Repository {
-                    &self.app_focus
-                } else if self.mode == WorkspaceMode::History {
-                    &self.focus
-                } else {
-                    &self.file_focus
-                },
-                cx,
-            );
-            self.restore_page_return_focus(window, cx);
-            self.try_automatic_refresh(window, cx);
+        if self.column_menu {
+            self.column_menu = false;
             cx.notify();
+            return;
+        }
+        if self.page != AppPage::Repository {
+            self.return_from_page(window, cx);
             return;
         }
         if self.mode != WorkspaceMode::History {
@@ -1383,6 +1395,11 @@ fn button(
     let mut button = Button::new(id)
         .small()
         .ghost()
+        .h(appearance::ui_size(28.))
+        .min_w(appearance::ui_size(28.))
+        .px(appearance::ui_size(10.))
+        .gap(appearance::ui_size(6.))
+        .rounded(px(7.))
         .selected(active)
         .text_size(crate::appearance::ui_text(12.));
     if active {
@@ -1475,13 +1492,19 @@ fn full_date(timestamp: i64) -> String {
         .unwrap_or_default()
 }
 fn language_for(extension: &str) -> &'static str {
-    match extension {
+    match extension.to_ascii_lowercase().as_str() {
         "rs" => "rust",
         "ts" | "tsx" => "typescript",
         "js" | "jsx" | "mjs" => "javascript",
         "json" => "json",
         "css" => "css",
         "md" => "markdown",
+        "yaml" | "yml" => "yaml",
+        "toml" => "toml",
+        "html" | "htm" => "html",
+        "py" | "pyw" => "python",
+        "go" => "go",
+        "sh" | "bash" | "zsh" => "bash",
         _ => "text",
     }
 }
@@ -1515,6 +1538,7 @@ fn main() {
     }
     let preferences = Preferences::load();
     let activity = activity::State::load();
+    let recovery_drafts = recovery_drafts::State::load();
     let initial = std::env::args_os().nth(1).map(PathBuf::from).or_else(|| {
         preferences
             .settings
@@ -1548,6 +1572,11 @@ fn main() {
                 Some("GitTurtleList"),
             ),
             KeyBinding::new(&format!("{primary}-p"), QuickOpenFile, Some("GitTurtle")),
+            KeyBinding::new(
+                &format!("{primary}-shift-p"),
+                ShowCommandPalette,
+                Some("GitTurtle"),
+            ),
             KeyBinding::new(
                 &format!("{primary}-shift-c"),
                 CompareRevisions,
@@ -1616,8 +1645,9 @@ fn main() {
                     ..Default::default()
                 },
                 |window, cx| {
-                    let view =
-                        cx.new(|cx| GitTurtle::new(initial, preferences, activity, window, cx));
+                    let view = cx.new(|cx| {
+                        GitTurtle::new(initial, preferences, activity, recovery_drafts, window, cx)
+                    });
                     cx.new(|cx| Root::new(view, window, cx))
                 },
             )

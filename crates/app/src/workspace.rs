@@ -131,20 +131,19 @@ impl GitTurtle {
             return;
         }
         match event {
-            projects::ProjectEvent::Open(path) => self.open(path.clone(), None, window, cx),
-            projects::ProjectEvent::Back => {
-                self.page = AppPage::Repository;
-                self.resume_file_history(window, cx);
-                if matches!(self.mode, WorkspaceMode::Compare | WorkspaceMode::Working) {
-                    self.ensure_editor(window, cx);
-                    window.focus(&self.file_focus, cx);
+            projects::ProjectEvent::Open(path) => {
+                if self
+                    .repository
+                    .as_ref()
+                    .is_some_and(|repo| repo.path() == path)
+                {
+                    self.return_from_page(window, cx);
                 } else {
-                    window.focus(&self.focus, cx);
+                    self.limit = 500;
+                    self.open(path.clone(), None, window, cx);
                 }
-                self.restore_page_return_focus(window, cx);
-                self.try_automatic_refresh(window, cx);
-                cx.notify();
             }
+            projects::ProjectEvent::Back => self.return_from_page(window, cx),
             projects::ProjectEvent::Clone {
                 source,
                 destination,
@@ -233,13 +232,14 @@ impl GitTurtle {
         }
         self.capture_page_return_focus(window, cx);
         self.page = AppPage::Projects;
+        self.page_origin = AppPage::Repository;
         window.focus(&self.app_focus, cx);
         self.hub.update(cx, |hub, cx| {
             hub.set_busy(false, cx);
             hub.set_error(None, cx);
             hub.set_can_go_back(self.repository.is_some(), cx);
         });
-        cx.notify();
+        self.repaint_page(window, cx);
     }
 
     pub(super) fn remember_repository(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -674,6 +674,11 @@ impl GitTurtle {
             } => Some(format!("Pushed {local_branch} to {remote}/{remote_branch}")),
             _ => None,
         };
+        let submitted_profile = if let WriteCommand::ApplyProfile(plan) = &command {
+            self.submitted_profile(plan)
+        } else {
+            None
+        };
         let tag_command = if let WriteCommand::Tag(command) = &command {
             Some(Arc::clone(command))
         } else {
@@ -727,9 +732,17 @@ impl GitTurtle {
         self.save_activity(window, cx);
         let control = self.begin_operation_control(window, cx);
         let activity_control = control.clone();
-        let response = self
-            .operations
-            .submit_controlled(control, move || repo.execute(&command));
+        let rewrite_capture = self.prepare_rewrite_capture(&command);
+        let response = self.operations.submit_controlled(control, move || {
+            if let Some(capture) = rewrite_capture {
+                futures::executor::block_on(capture).map_err(|_| {
+                    anyhow::anyhow!(
+                        "Original-series save ended without a result. Git was not started"
+                    )
+                })??;
+            }
+            repo.execute(&command)
+        });
         self.operation_task = Some(cx.spawn_in(window, async move |this,cx| {
             let result=response.await.unwrap_or_else(|_|Err(anyhow::anyhow!("Operation ended without a result. Refresh before retrying; repository state may have changed.")));
             let _=this.update_in(cx,|this,window,cx| {
@@ -760,6 +773,7 @@ impl GitTurtle {
                         this.operation_error = Some(format!("{error:#}"));
                     }
                 }
+                if let Some(profile) = submitted_profile { this.finish_profile_write(&path, profile, succeeded, window, cx); }
                 if let Some(command) = &tag_command { this.finish_tag_write(&path, command, succeeded, cx); }
                 if let Some(command) = &worktree_command { this.finish_worktree_write(&path, command, succeeded, window, cx); }
                 if let Some(command) = &recovery { this.finish_recovery_write(&path, command, succeeded, cx); }

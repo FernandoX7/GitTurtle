@@ -165,7 +165,14 @@ impl ColumnSettings {
 
     /// The subject absorbs spare width; visible columns never disappear merely
     /// because the viewport is small. Render header and rows from this same layout.
+    #[cfg(test)]
     pub fn layout(&self, available_width: f32) -> ColumnLayout {
+        self.layout_for_graph(available_width, 0.)
+    }
+
+    /// Lane geometry sets a readable minimum, while saved widths may add room.
+    /// The whole table scrolls rather than compressing distinct ancestry lanes.
+    pub fn layout_for_graph(&self, available_width: f32, graph_minimum: f32) -> ColumnLayout {
         let mut settings = self.clone();
         settings.normalize();
         let mut columns: Vec<_> = ColumnId::ALL
@@ -174,7 +181,11 @@ impl ColumnSettings {
                 let column = settings.get(id);
                 column.visible.then_some(VisibleColumn {
                     id,
-                    width: column.width,
+                    width: if id == ColumnId::Graph && graph_minimum.is_finite() {
+                        column.width.max(graph_minimum.clamp(0., 8192.))
+                    } else {
+                        column.width
+                    },
                 })
             })
             .collect();
@@ -201,6 +212,34 @@ impl ColumnSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn readable_graph_expands_the_shared_table_without_overwriting_user_widths() {
+        let settings = ColumnSettings::default();
+        let old = settings.clone();
+        let layout = settings.layout_for_graph(500., 900.);
+        assert_eq!(
+            layout
+                .columns
+                .iter()
+                .find(|c| c.id == ColumnId::Graph)
+                .unwrap()
+                .width,
+            900.
+        );
+        assert!(layout.content_width > 900.);
+        assert_eq!(settings, old);
+        let again = settings.layout_for_graph(500., 80.);
+        assert_eq!(
+            again
+                .columns
+                .iter()
+                .find(|c| c.id == ColumnId::Graph)
+                .unwrap()
+                .width,
+            settings.graph.width
+        );
+    }
 
     #[test]
     fn narrow_layout_preserves_all_chosen_columns_and_wide_layout_fills_subject() {

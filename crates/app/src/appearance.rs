@@ -62,6 +62,10 @@ pub enum ThemeChoice {
     TokyoNight,
     CatppuccinMocha,
     Nord,
+    Porcelain,
+    Sandstone,
+    DeepSea,
+    Ember,
     #[default]
     #[serde(other)]
     Midnight,
@@ -117,23 +121,31 @@ pub fn palette(cx: &App) -> Palette {
 }
 
 impl ThemeChoice {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 10] = [
         Self::Midnight,
         Self::Daylight,
         Self::Graphite,
         Self::TokyoNight,
         Self::CatppuccinMocha,
         Self::Nord,
+        Self::Porcelain,
+        Self::Sandstone,
+        Self::DeepSea,
+        Self::Ember,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Midnight => "Midnight",
             Self::Graphite => "Graphite",
-            Self::Daylight => "Daylight",
+            Self::Daylight => "Braden",
             Self::TokyoNight => "Tokyo Night",
             Self::CatppuccinMocha => "Catppuccin Mocha",
             Self::Nord => "Nord",
+            Self::Porcelain => "Porcelain",
+            Self::Sandstone => "Sandstone",
+            Self::DeepSea => "Deep Sea",
+            Self::Ember => "Ember",
         }
     }
 
@@ -145,11 +157,112 @@ impl ThemeChoice {
             Self::TokyoNight => "City blues · neon",
             Self::CatppuccinMocha => "Cozy pastels · mauve",
             Self::Nord => "Arctic blue · frost",
+            Self::Porcelain => "Cool ivory · sapphire",
+            Self::Sandstone => "Warm paper · terracotta",
+            Self::DeepSea => "Ocean ink · turquoise",
+            Self::Ember => "Smoked plum · apricot",
         }
+    }
+
+    pub fn is_light(self) -> bool {
+        matches!(self, Self::Daylight | Self::Porcelain | Self::Sandstone)
     }
 
     pub fn palette(self) -> Palette {
         match self {
+            // Original GitTurtle palettes, complete semantic surface sets.
+            Self::Porcelain => Palette {
+                canvas: 0xf6f7fc,
+                panel: 0xffffff,
+                subtle: 0xeff1f8,
+                hover: 0xe5e9f4,
+                border: 0xcbd3e4,
+                text: 0x242e49,
+                muted: 0x4d5b78,
+                accent: 0x3455a6,
+                accent_foreground: 0xffffff,
+                accent_hover: 0x294790,
+                accent_active: 0x203978,
+                selected: 0xdfe6f6,
+                added: 0x246448,
+                removed: 0xa92d4e,
+                modified: 0x795314,
+                renamed: 0x6c459a,
+                warning: 0x795314,
+                added_background: 0xe3f0e9,
+                removed_background: 0xf8e5ed,
+                hunk: 0x3455a6,
+                line_number: 0x5f6c86,
+            },
+            Self::Sandstone => Palette {
+                canvas: 0xf8f3ea,
+                panel: 0xfffcf6,
+                subtle: 0xf0eade,
+                hover: 0xeae1d3,
+                border: 0xd4c6b5,
+                text: 0x3b302b,
+                muted: 0x635446,
+                accent: 0x965034,
+                accent_foreground: 0xffffff,
+                accent_hover: 0x82432b,
+                accent_active: 0x6e3723,
+                selected: 0xeddfd0,
+                added: 0x396241,
+                removed: 0xa13243,
+                modified: 0x755012,
+                renamed: 0x794a84,
+                warning: 0x755012,
+                added_background: 0xe7efdc,
+                removed_background: 0xf6e3dd,
+                hunk: 0x365e8b,
+                line_number: 0x70614f,
+            },
+            Self::DeepSea => Palette {
+                canvas: 0x0d1c27,
+                panel: 0x132735,
+                subtle: 0x10222f,
+                hover: 0x213b4b,
+                border: 0x365366,
+                text: 0xe4f2f7,
+                muted: 0xb2c9d6,
+                accent: 0x68dccb,
+                accent_foreground: 0x072d2c,
+                accent_hover: 0x91e9dc,
+                accent_active: 0x58c9b9,
+                selected: 0x21434c,
+                added: 0x83d8ae,
+                removed: 0xf7a0ad,
+                modified: 0xe9ca8a,
+                renamed: 0xc5b2f0,
+                warning: 0xe9ca8a,
+                added_background: 0x183c35,
+                removed_background: 0x3b2c3b,
+                hunk: 0x94c9f4,
+                line_number: 0x9bb7c9,
+            },
+            Self::Ember => Palette {
+                canvas: 0x201a22,
+                panel: 0x2a222c,
+                subtle: 0x251e27,
+                hover: 0x3b303d,
+                border: 0x514052,
+                text: 0xf7ece5,
+                muted: 0xd0bfc7,
+                accent: 0xf2b38c,
+                accent_foreground: 0x382119,
+                accent_hover: 0xffcba6,
+                accent_active: 0xe3a27a,
+                selected: 0x48343d,
+                added: 0xadd3a5,
+                removed: 0xf2a2b2,
+                modified: 0xe8c88b,
+                renamed: 0xd1b0ef,
+                warning: 0xe8c88b,
+                added_background: 0x303b2e,
+                removed_background: 0x472b37,
+                hunk: 0xb4c7ee,
+                line_number: 0xbda6b6,
+            },
             Self::Midnight => Palette {
                 canvas: 0x10151f,
                 panel: 0x171e2b,
@@ -301,7 +414,7 @@ impl ThemeChoice {
     pub fn apply(self, window: Option<&mut Window>, cx: &mut App) {
         let palette = self.palette();
         Theme::change(
-            if self == Self::Daylight {
+            if self.is_light() {
                 ThemeMode::Light
             } else {
                 ThemeMode::Dark
@@ -572,5 +685,39 @@ mod tests {
         );
         assert!(Density::Compact.history_row_height() < Density::Comfortable.history_row_height());
         assert!(Density::Compact.file_row_height() < Density::Comfortable.file_row_height());
+    }
+
+    #[test]
+    fn saved_daylight_remains_braden_without_changing_its_storage_or_light_mapping() {
+        let saved =
+            r#"{"theme":"daylight","follow_system":false,"density":"compact","code_text_size":19}"#;
+        let mut settings: crate::preferences::AppSettings = serde_json::from_str(saved).unwrap();
+        assert_eq!(settings.theme.label(), "Braden");
+        assert_eq!(
+            serde_json::to_value(&settings).unwrap()["theme"],
+            "daylight"
+        );
+        assert_eq!(settings.density, Density::Compact);
+        assert_eq!(settings.code_text_size, 19);
+        assert_eq!(
+            settings.resolved_theme(gpui_kit::WindowAppearance::Dark),
+            ThemeChoice::Daylight
+        );
+        settings.follow_system = true;
+        for light in [
+            ThemeChoice::Daylight,
+            ThemeChoice::Porcelain,
+            ThemeChoice::Sandstone,
+        ] {
+            settings.theme = light;
+            assert_eq!(
+                settings.resolved_theme(gpui_kit::WindowAppearance::Light),
+                ThemeChoice::Daylight
+            );
+            assert_eq!(
+                settings.resolved_theme(gpui_kit::WindowAppearance::Dark),
+                ThemeChoice::Midnight
+            );
+        }
     }
 }

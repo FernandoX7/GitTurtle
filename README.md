@@ -2,7 +2,7 @@
 
 GitTurtle is a native Git client built with Rust and GPUI for everyday Git work, history, code changes, and image comparisons. It uses your installed Git executable, with no Electron runtime or AI features. Browsing stays local; repository writes and network operations start from explicit actions.
 
-Native builds have been exercised on macOS; the [validation notes](docs/validation.md) and [current milestone record](docs/review-milestone.md) identify the checked builds and limits. A [quality workflow](.github/workflows/quality.yml) is configured for macOS and Linux, but hosted CI execution and Linux builds/native interaction have not been verified here. See [the design specification](docs/design.md) for the broader intended experience.
+Native builds have been exercised on macOS; the [validation notes](docs/validation.md) and [current milestone record](docs/review-milestone.md) identify the checked builds and limits. A [quality workflow](.github/workflows/quality.yml) is configured for macOS and Linux, but hosted CI execution and Linux builds/native interaction have not been verified here. See [the design specification](DESIGN.md) for the broader intended experience.
 
 ## Current source features
 

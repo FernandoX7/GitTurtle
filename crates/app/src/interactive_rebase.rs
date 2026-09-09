@@ -56,6 +56,11 @@ fn close_rebase_dialog(
 }
 
 impl GitTurtle {
+    pub(super) fn refresh_rebase_message(&self, cx: &mut Context<Self>) {
+        if let Some(message) = &self.interactive_rebase.message {
+            message.update(cx, |_, cx| cx.notify());
+        }
+    }
     pub(super) fn cancel_interactive_rebase_action(&mut self) {
         self.interactive_rebase.generation = self.interactive_rebase.generation.wrapping_add(1);
         self.interactive_rebase.task = None;
@@ -99,6 +104,7 @@ impl GitTurtle {
             draft.pending = false;
             draft.closed = false;
         });
+        let review_owner = cx.entity().downgrade();
         window.open_alert_dialog(cx, move |dialog, _, _| {
             let close = draft.clone();
             let cancel = draft.clone();
@@ -107,13 +113,31 @@ impl GitTurtle {
                 .title(label("interactive-rebase-title", "Edit local commits"))
                 .width(px(720.))
                 .child(draft.clone())
-                .footer(DialogFooter::new().child(
-                    button("close-rebase-plan", "Close", "", false).on_click(
-                        move |_, window, cx| {
-                            button_close.update(cx, |form, cx| form.close(window, cx))
-                        },
-                    ),
-                ))
+                .footer(
+                    DialogFooter::new()
+                        .child(button("close-rebase-plan", "Close", "", false).on_click(
+                            move |_, window, cx| {
+                                button_close.update(cx, |form, cx| form.close(window, cx))
+                            },
+                        ))
+                        .child(
+                            button(
+                                "review-previous-rewrite",
+                                "Review last rewritten series…",
+                                "",
+                                false,
+                            )
+                            .on_click({
+                                let owner = review_owner.clone();
+                                move |_, window, cx| {
+                                    let _ = owner.update(cx, |owner, cx| {
+                                        window.close_dialog(cx);
+                                        owner.open_rewrite_review(window, cx);
+                                    });
+                                }
+                            }),
+                        ),
+                )
                 .on_ok(move |_, window, cx| {
                     close.update(cx, |form, cx| form.close(window, cx));
                     false
@@ -175,9 +199,14 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) {
         self.read_rebase(
-            |repo| repo.interactive_rebase_resume(),
+            |repo| {
+                let expected = repo.interactive_rebase_resume()?;
+                let key = recovery_drafts::Key::message(&expected);
+                Ok((expected, key))
+            },
             |result, this, window, cx| match result {
-                Ok(expected) => {
+                Ok((expected, key)) => {
+                    let recovered = this.recovery_drafts.latest(&key);
                     let owner = cx.entity().downgrade();
                     let retained = this
                         .interactive_rebase
@@ -185,16 +214,14 @@ impl GitTurtle {
                         .as_ref()
                         .filter(|form| {
                             let form = form.read(cx);
-                            form.expected.root == expected.root
-                                && form.expected.operation.same_operation(&expected.operation)
-                                && form.expected.message == expected.message
+                            form.key == key
                         })
                         .cloned();
                     let form = if let Some(form) = retained {
                         form.update(cx, |form, _| form.expected = expected);
                         form
                     } else {
-                        cx.new(|cx| MessageForm::new(owner, expected, window, cx))
+                        cx.new(|cx| MessageForm::new(owner, expected, key, recovered, window, cx))
                     };
                     form.update(cx, |form, _| form.closed = false);
                     this.interactive_rebase.message = Some(form.clone());
@@ -549,11 +576,17 @@ struct MessageForm {
     editor: Option<Entity<TextareaState>>,
     error: Option<String>,
     closed: bool,
+    key: recovery_drafts::Key,
+    recovered: Option<recovery_drafts::Draft>,
+    accepted: String,
+    _subscription: Option<Subscription>,
 }
 impl MessageForm {
     fn new(
         owner: WeakEntity<GitTurtle>,
         expected: InteractiveRebaseResume,
+        key: recovery_drafts::Key,
+        recovered: Option<recovery_drafts::Draft>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -564,9 +597,26 @@ impl MessageForm {
                     .default_value(message.clone())
             })
         });
+        let subscription = editor.as_ref().map(|editor| cx.subscribe_in(editor, window, |this, editor, event: &InputEvent, window, cx| {
+            if !matches!(event, InputEvent::Change) { return; }
+            if editor.read(cx).text().len() > 1024 * 1024 || editor.read(cx).value().contains('\0') {
+                editor.update(cx, |editor, cx| editor.set_value(this.accepted.clone(), window, cx));
+                this.error = Some("Message edits are limited to 1 MiB without NUL bytes. The previous draft is preserved.".into());
+                cx.notify(); return;
+            }
+            let value = editor.read(cx).value().to_string();
+            this.accepted = value.clone();
+            let key = this.key.clone();
+            let _ = this.owner.update(cx, |owner, cx| owner.persist_recovery_draft(key, Some(value), window, cx));
+            cx.notify();
+        }));
         Self {
             owner,
+            accepted: expected.message.clone().unwrap_or_default(),
             expected,
+            key,
+            recovered,
+            _subscription: subscription,
             editor,
             error: None,
             closed: false,
@@ -639,6 +689,10 @@ impl MessageForm {
 impl Render for MessageForm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
+        let durable_status = self
+            .owner
+            .upgrade()
+            .map(|owner| owner.read(cx).recovery_drafts.status());
         div().id("rebase-message-scroll")
             .max_h((window.viewport_size().height - px(240.)).max(px(160.)))
             .overflow_y_scroll()
@@ -649,7 +703,16 @@ impl Render for MessageForm {
             .child(label("rebase-resume-state", format!("{} · Base: {} · {} staged paths", self.expected.operation.branch, self.expected.operation.target_label, self.expected.operation.staged_paths.len())).text_size(crate::appearance::ui_text(12.)))
             .when_some(self.expected.operation.commit.as_ref(), |element, commit| element.child(label("rebase-resume-commit", format!("Replaying original commit {commit}")).text_size(crate::appearance::ui_text(12.))))
             .child(label("rebase-message-explanation", "Review Git's pending commit message. Git uses its configured cleanup rules for comments and whitespace, hooks, author identity, and signing. Your edited draft is retained when this dialog closes.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
+            .when_some(self.recovered.clone(), |element, recovered| {
+                let valid = recovered.key == self.key; let copy = recovered.text.clone();
+                element.child(div().flex().flex_col().gap_2()
+                    .child(label("rebase-recovered-context", if valid { "A saved message matches this rebase, staged index and Git message. Restore it to review before Continue." } else { "Saved message source changed. Copy the saved text to recover it; it cannot replace this message automatically." }).text_color(rgb(if valid { p.muted } else { p.warning })))
+                    .child(div().flex().gap_2()
+                        .child(button("copy-rebase-draft", "Copy saved text", "", false).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
+                        .child(button("restore-rebase-draft", "Restore saved message", "", false).disabled(!valid || self.editor.is_none()).on_click(cx.listener(move |this, _, window, cx| { if valid { if let Some(editor) = &this.editor { editor.update(cx, |editor, cx| editor.set_value(recovered.text.clone(), window, cx)); } this.recovered = None; cx.notify(); } })))))
+            })
             .when_some(self.editor.as_ref(), |element, editor| element.child(Textarea::new(editor).h(px(240.)).aria_label("Rebase commit message")))
+            .children(durable_status.map(|status| label("rebase-draft-save-status", status).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))))
             .when(self.editor.is_none(), |element| element.child(label("rebase-no-message", "No message is pending. Continue will replay the next planned step and pause if a message or conflict needs attention.").text_size(crate::appearance::ui_text(12.))))
             .children(self.error.as_ref().map(|error| label("rebase-message-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
             .child(button("review-rebase-continue", "Review Continue…", "", true).on_click(cx.listener(|this, _, window, cx| this.submit(window, cx)))))

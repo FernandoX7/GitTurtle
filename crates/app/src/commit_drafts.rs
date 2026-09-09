@@ -9,22 +9,32 @@ use anyhow::Result;
 use futures::channel::oneshot;
 use std::{
     collections::HashMap,
+    hash::Hash,
     path::PathBuf,
     sync::{Arc, Mutex},
 };
 
-type Drafts = HashMap<PathBuf, CommitDraft>;
-
-#[derive(Default)]
-struct Pending {
-    drafts: Drafts,
+struct Pending<K, V> {
+    drafts: HashMap<K, V>,
     scheduled: bool,
 }
 
-#[derive(Default)]
-pub struct DraftSaver {
-    pending: Arc<Mutex<Pending>>,
+pub struct CoalescingSaver<K, V> {
+    pending: Arc<Mutex<Pending<K, V>>>,
 }
+
+impl<K, V> Default for CoalescingSaver<K, V> {
+    fn default() -> Self {
+        Self {
+            pending: Arc::new(Mutex::new(Pending {
+                drafts: HashMap::new(),
+                scheduled: false,
+            })),
+        }
+    }
+}
+
+pub type DraftSaver = CoalescingSaver<PathBuf, CommitDraft>;
 
 impl DraftSaver {
     pub fn queue(
@@ -35,13 +45,19 @@ impl DraftSaver {
     ) -> Option<oneshot::Receiver<Result<()>>> {
         self.queue_with(executor, worktree, draft, Preferences::save_commit_drafts)
     }
+}
 
-    fn queue_with(
+impl<K: Clone + Eq + Hash + Send + 'static, V: Clone + Send + 'static> CoalescingSaver<K, V> {
+    pub(super) fn is_pending(&self) -> bool {
+        let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        pending.scheduled || !pending.drafts.is_empty()
+    }
+    pub(super) fn queue_with(
         &self,
         executor: &SerialExecutor,
-        worktree: PathBuf,
-        draft: CommitDraft,
-        save: impl FnMut(&Drafts) -> Result<()> + Send + 'static,
+        worktree: K,
+        draft: V,
+        save: impl FnMut(&HashMap<K, V>) -> Result<()> + Send + 'static,
     ) -> Option<oneshot::Receiver<Result<()>>> {
         {
             let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
@@ -63,13 +79,13 @@ impl DraftSaver {
 
 /// Also runs if the bounded executor rejects the job before executing it.
 /// Retain unsaved snapshots and allow the next explicit retry/edit to save.
-struct Scheduled {
-    pending: Arc<Mutex<Pending>>,
+struct Scheduled<K, V> {
+    pending: Arc<Mutex<Pending<K, V>>>,
     active: bool,
 }
 
-impl Scheduled {
-    fn save(mut self, mut save: impl FnMut(&Drafts) -> Result<()>) -> Result<()> {
+impl<K: Eq + Hash, V> Scheduled<K, V> {
+    fn save(mut self, mut save: impl FnMut(&HashMap<K, V>) -> Result<()>) -> Result<()> {
         loop {
             let batch = {
                 let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
@@ -96,7 +112,7 @@ impl Scheduled {
     }
 }
 
-impl Drop for Scheduled {
+impl<K, V> Drop for Scheduled<K, V> {
     fn drop(&mut self) {
         if self.active {
             self.pending

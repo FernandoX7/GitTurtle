@@ -14,6 +14,40 @@ use anyhow::{Context, Result, bail, ensure};
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
 use resvg::{tiny_skia, usvg};
 
+pub mod metadata;
+#[cfg(target_os = "macos")]
+mod native;
+
+pub const MAX_PDF_PAGES: usize = 8;
+pub const PDF_PREVIEW_EDGE: u32 = 1000;
+
+#[derive(Debug)]
+pub struct DocumentPreview {
+    pub pages: Vec<ImagePreview>,
+    pub page_count: usize,
+}
+
+/// Static PDF rendering from supplied bytes only. Never invokes PDF actions,
+/// JavaScript, launch links, external applications, or document URL loading.
+pub fn decode_pdf(bytes: &[u8], check: impl Fn() -> Result<()>) -> Result<DocumentPreview> {
+    ensure!(
+        bytes.len() <= MAX_INPUT_BYTES,
+        "PDF exceeds the 32 MiB input limit"
+    );
+    ensure!(bytes.starts_with(b"%PDF-"), "Unrecognized PDF header");
+    check()?;
+    #[cfg(target_os = "macos")]
+    {
+        native::decode_pdf(bytes, check)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        bail!(
+            "Native PDF page rendering requires macOS. Export the captured bytes for external inspection."
+        )
+    }
+}
+
 pub const MAX_INPUT_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_SOURCE_PIXELS: u64 = 32_000_000;
 pub const MAX_SOURCE_EDGE: u32 = 32_768;
@@ -48,7 +82,19 @@ pub fn is_image_path(path: &Path) -> bool {
         .is_some_and(|ext| {
             matches!(
                 ext.to_ascii_lowercase().as_str(),
-                "png" | "jpg" | "jpeg" | "webp" | "gif" | "svg"
+                "png"
+                    | "jpg"
+                    | "jpeg"
+                    | "webp"
+                    | "gif"
+                    | "svg"
+                    | "bmp"
+                    | "tif"
+                    | "tiff"
+                    | "ico"
+                    | "avif"
+                    | "heic"
+                    | "heif"
             )
         })
 }
@@ -104,7 +150,7 @@ pub fn detect_lfs_pointer(bytes: &[u8]) -> Option<LfsPointer> {
     })
 }
 
-/// Decode PNG/JPEG/WebP/GIF (first frame) or a static, self-contained SVG.
+/// Decode supported rasters (first image/frame) or a static, self-contained SVG.
 ///
 /// The filename is a format hint, never a local path to read. Raster magic takes
 /// precedence over it. Images are not enlarged; `max_edge` is capped at 4096.
@@ -125,18 +171,37 @@ pub fn decode_image(bytes: &[u8], file_name: &str, max_edge: u32) -> Result<Imag
     let max_edge = max_edge.min(MAX_PREVIEW_EDGE);
     match image::guess_format(bytes) {
         Ok(
-            format @ (ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP | ImageFormat::Gif),
+            format @ (ImageFormat::Png
+            | ImageFormat::Jpeg
+            | ImageFormat::WebP
+            | ImageFormat::Gif
+            | ImageFormat::Bmp
+            | ImageFormat::Tiff
+            | ImageFormat::Ico),
         ) => decode_raster(bytes, format, max_edge),
-        Ok(_) => bail!("Image format is not supported; use PNG, JPEG, WebP, GIF, or SVG"),
-        Err(_)
-            if Path::new(file_name)
+        _ if let Some(format) = metadata::iso_image_format(bytes) => {
+            #[cfg(target_os = "macos")]
+            {
+                native::decode_image(bytes, format, max_edge)
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                bail!(
+                    "{format} rendering requires a compatible macOS ImageIO codec; export the captured bytes for external inspection"
+                )
+            }
+        }
+        _ if metadata::is_svg(bytes)
+            || Path::new(file_name)
                 .extension()
                 .and_then(|s| s.to_str())
                 .is_some_and(|s| s.eq_ignore_ascii_case("svg")) =>
         {
             decode_svg(bytes, max_edge)
         }
-        Err(_) => bail!("Unrecognized image data; use PNG, JPEG, WebP, GIF, or SVG"),
+        _ => bail!(
+            "Unrecognized or unsupported image data; extension alone cannot identify a decoder"
+        ),
     }
 }
 
@@ -205,6 +270,9 @@ fn decode_raster(bytes: &[u8], format: ImageFormat, max_edge: u32) -> Result<Ima
             ImageFormat::Jpeg => "JPEG",
             ImageFormat::WebP => "WebP",
             ImageFormat::Gif => "GIF",
+            ImageFormat::Bmp => "BMP",
+            ImageFormat::Tiff => "TIFF · first image",
+            ImageFormat::Ico => "ICO · selected icon",
             _ => unreachable!("only explicitly supported raster formats reach the decoder"),
         }
         .into(),
@@ -337,6 +405,9 @@ mod tests {
             (ImageFormat::Jpeg, "JPEG"),
             (ImageFormat::WebP, "WebP"),
             (ImageFormat::Gif, "GIF"),
+            (ImageFormat::Bmp, "BMP"),
+            (ImageFormat::Tiff, "TIFF · first image"),
+            (ImageFormat::Ico, "ICO · selected icon"),
         ] {
             let bytes = encoded(RgbaImage::from_pixel(3, 2, Rgba([255, 0, 0, 255])), format);
             let preview = decode_image(&bytes, "wrong.extension", 100).unwrap();

@@ -47,6 +47,14 @@ pub struct InteractiveRebasePlan {
 }
 
 impl InteractiveRebasePlan {
+    pub fn review_identity(&self) -> String {
+        let mut digest = Sha256::new();
+        for value in [&self.branch, &self.base, &self.head] {
+            digest.update((value.len() as u64).to_le_bytes());
+            digest.update(value.as_bytes());
+        }
+        format!("{:x}", digest.finalize())
+    }
     pub fn steps(&self) -> Vec<RebaseStep> {
         self.commits
             .iter()
@@ -94,6 +102,21 @@ pub struct InteractiveRebaseResume {
     pub message: Option<String>,
     /// Failed reword already applied its commit; Continue alone skips its edit.
     amend_reword: bool,
+}
+
+impl InteractiveRebaseResume {
+    pub fn draft_identity(&self) -> String {
+        let mut digest = Sha256::new();
+        digest.update(self.operation.draft_identity(true));
+        digest.update([
+            u8::from(self.amend_reword),
+            u8::from(self.message.is_some()),
+        ]);
+        if let Some(message) = &self.message {
+            digest.update(message.as_bytes());
+        }
+        format!("{:x}", digest.finalize())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

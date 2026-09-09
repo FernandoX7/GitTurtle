@@ -26,6 +26,10 @@ mod lfs_download;
 pub use lfs_download::*;
 mod interactive_rebase;
 pub use interactive_rebase::*;
+mod rewrite_review;
+pub use rewrite_review::*;
+mod profiles;
+pub use profiles::*;
 
 const WRITE_TIMEOUT: Duration = Duration::from_secs(90);
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(180);
@@ -79,6 +83,10 @@ pub struct GitProfile {
     pub name: String,
     pub email: String,
     pub signing: bool,
+    pub tag_signing: bool,
+    pub signing_key: Option<String>,
+    pub signing_format: Option<String>,
+    pub private_worktree: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -164,6 +172,7 @@ pub enum WriteCommand {
     Worktree(Arc<WorktreeCommand>),
     RecoverReflog(Arc<ReflogRecoveryPlan>),
     InteractiveRebase(Arc<InteractiveRebaseCommand>),
+    PublishRewrite(Arc<LeasedPublishPlan>),
     Tag(Arc<TagCommand>),
     Ignore(Arc<IgnorePlan>),
     Recovery(Arc<RecoveryCommand>),
@@ -207,6 +216,7 @@ pub enum WriteCommand {
         name: String,
         email: String,
     },
+    ApplyProfile(Arc<ProfilePlan>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -261,11 +271,7 @@ impl GitRepository {
     /// Effective identity, including normal Git global/include/worktree configuration.
     /// Unlike object inspection, this command intentionally reads normal Git config.
     pub fn profile(&self) -> Result<GitProfile> {
-        let mut profile = GitProfile {
-            name: self.normal_config("user.name")?.unwrap_or_default(),
-            email: self.normal_config("user.email")?.unwrap_or_default(),
-            signing: config_bool(self.normal_config("commit.gpgsign")?.as_deref()),
-        };
+        let mut profile = self.profile_config()?;
         let mut command = normal_command(&self.path);
         command.args(["var", "GIT_AUTHOR_IDENT"]);
         let output = bounded_write_output(command, None, GIT_TIMEOUT)?;
@@ -604,12 +610,14 @@ impl GitRepository {
         let mut input = None;
         let mut timeout = WRITE_TIMEOUT;
         match operation {
+            WriteCommand::ApplyProfile(plan) => return self.execute_profile(plan),
             WriteCommand::DownloadLfs(plan) => return self.execute_lfs_download(plan),
             WriteCommand::Worktree(command) => return self.execute_worktree(command),
             WriteCommand::RecoverReflog(plan) => return self.execute_reflog_recovery(plan),
             WriteCommand::InteractiveRebase(command) => {
                 return self.execute_interactive_rebase(command);
             }
+            WriteCommand::PublishRewrite(plan) => return self.execute_leased_publish(plan),
             WriteCommand::Tag(command) => return self.execute_tag(command),
             WriteCommand::Ignore(plan) => return self.execute_ignore(plan),
             WriteCommand::Recovery(command) => return self.execute_recovery(command),
@@ -787,22 +795,12 @@ impl GitRepository {
                 timeout = NETWORK_TIMEOUT;
             }
             WriteCommand::SetIdentity { name, email } => {
-                validate_identity(name, email)?;
-                let scope =
-                    if config_bool(self.normal_config("extensions.worktreeConfig")?.as_deref()) {
-                        "--worktree"
-                    } else {
-                        "--local"
-                    };
-                command.args(["config", scope, "--replace-all", "user.name", name]);
-                checked_write_output(command, None, timeout)?;
-                let mut command = normal_command(&self.path);
-                command.args(["config", scope, "--replace-all", "user.email", email]);
-                checked_write_output(command, None, timeout).context("Name was saved, but email could not be saved; refresh the profile before retrying")?;
-                return Ok(WriteOutcome {
-                    message: "Repository identity updated".into(),
-                    commit_oid: None,
-                });
+                let plan = self.profile_plan(ProfileIdentity {
+                    name: name.clone(),
+                    email: email.clone(),
+                    signing: None,
+                })?;
+                return self.execute_profile(&plan);
             }
         }
         let output = checked_write_output(command, input, timeout)?;

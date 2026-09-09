@@ -1,6 +1,6 @@
 # Content and layout contracts
 
-Read this when changing or reviewing themes, geometry, content preparation, editor behavior, images or cache accounting. Source ownership is mapped in [app guidance](../AGENTS.md); visual intent is in [design](../../../docs/design.md).
+Read this when changing or reviewing themes, geometry, content preparation, editor behavior, images or cache accounting. Source ownership is mapped in [app guidance](../AGENTS.md); visual intent is in [design](../../../DESIGN.md).
 
 ## Theme and retained layout
 

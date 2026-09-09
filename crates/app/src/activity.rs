@@ -233,6 +233,10 @@ pub(super) fn target(command: &gitturtle_core::WriteCommand, fallback: &str) -> 
             local_branch,
             remote_branch,
         } => format!("{local_branch} → {remote}/{remote_branch}"),
+        WriteCommand::PublishRewrite(plan) => format!(
+            "{} → {}:{} · expected {}",
+            plan.new_oid, plan.remote, plan.remote_ref, plan.expected_remote_oid
+        ),
         WriteCommand::Worktree(command) => match command.as_ref() {
             WorktreeCommand::Create(plan) => {
                 format!("{} · {}", plan.branch, plan.destination.display())

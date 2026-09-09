@@ -38,6 +38,27 @@ pub struct OperationState {
 }
 
 impl OperationState {
+    /// Opaque, stable recovery identity. Message continuation includes the exact
+    /// index; conflict drafts can omit unrelated staged entries.
+    pub fn draft_identity(&self, include_index: bool) -> String {
+        let mut digest = Sha256::new();
+        for value in [
+            self.kind.label(),
+            self.head.as_deref().unwrap_or(""),
+            &self.branch,
+            &self.target_label,
+            self.commit.as_deref().unwrap_or(""),
+            &self.state_token,
+        ] {
+            digest.update((value.len() as u64).to_le_bytes());
+            digest.update(value.as_bytes());
+        }
+        digest.update([u8::from(self.requires_message_editor)]);
+        if include_index {
+            digest.update(self.index_token.as_bytes());
+        }
+        format!("{:x}", digest.finalize())
+    }
     /// Drafts belong to the same operation even when another conflict is staged.
     /// Continue/Abort still compare the complete state, including the index.
     pub fn same_operation(&self, other: &Self) -> bool {
@@ -89,6 +110,39 @@ pub struct ConflictPreview {
     /// Index stage 3: the integrated side, or the replayed commit during rebase.
     pub incoming: Option<ConflictSide>,
     pub working: Option<ConflictContent>,
+}
+
+impl ConflictPreview {
+    /// Calculated on the content worker. Includes raw working bytes so restoring
+    /// a saved editor cannot conceal external edits or a changed absent side.
+    pub fn draft_identity(&self) -> String {
+        let mut digest = Sha256::new();
+        digest.update((self.path.as_os_str().as_encoded_bytes().len() as u64).to_le_bytes());
+        digest.update(self.path.as_os_str().as_encoded_bytes());
+        for value in [
+            self.head.clone().unwrap_or_default(),
+            self.operation
+                .as_ref()
+                .map(|operation| operation.draft_identity(false))
+                .unwrap_or_default(),
+        ] {
+            digest.update((value.len() as u64).to_le_bytes());
+            digest.update(value.as_bytes());
+        }
+        for side in [&self.base, &self.current, &self.incoming] {
+            digest.update([u8::from(side.is_some())]);
+            if let Some(side) = side {
+                digest.update(side.oid.as_bytes());
+                digest.update(side.content.mode.as_bytes());
+            }
+        }
+        digest.update([u8::from(self.working.is_some())]);
+        if let Some(working) = &self.working {
+            digest.update(working.mode.as_bytes());
+            digest.update(&working.bytes);
+        }
+        format!("{:x}", digest.finalize())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

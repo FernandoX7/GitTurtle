@@ -18,7 +18,7 @@ These instructions supplement the [root agreements](../../AGENTS.md) for `crates
 | Patch, split source, partial actions, editor Find | `src/text.rs`, `src/diff_view.rs`, `src/split_diff.rs`, `src/partial_view.rs`, `src/editor_find.rs` | [Content and layout](docs/content-and-layout.md) |
 | Image comparison, overlay/wipe and pan | `src/image_compare.rs`, `src/worker.rs`, `src/views.rs` | [Images and cache accounting](docs/content-and-layout.md#images-and-cache-accounting) |
 
-The [design](../../docs/design.md) describes the dense, full-height workspace and persistent inspector; the [architecture](../../docs/architecture.md) describes the end-to-end data flow and bounds. Keep subsystem details in the focused contracts instead of extending this file for each regression.
+The [design](../../DESIGN.md) describes the dense, full-height workspace and persistent inspector; the [architecture](../../docs/architecture.md) describes the end-to-end data flow and bounds. Keep subsystem details in the focused contracts instead of extending this file for each regression.
 
 ## Cross-cutting contracts
 

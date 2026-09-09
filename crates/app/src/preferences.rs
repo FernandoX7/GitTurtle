@@ -28,6 +28,9 @@ pub struct AppSettings {
     pub external_editor: String,
     pub columns: ColumnSettings,
     pub density: Density,
+    pub graph_spacing: u8,
+    pub navigation_width: f32,
+    pub inspector_width: f32,
     pub interface_text_size: u8,
     pub code_text_size: u8,
     pub reopen_last: bool,
@@ -42,6 +45,9 @@ impl Default for AppSettings {
             external_editor: String::new(),
             columns: ColumnSettings::default(),
             density: Density::default(),
+            graph_spacing: 20,
+            navigation_width: 220.,
+            inspector_width: 320.,
             interface_text_size: crate::appearance::DEFAULT_INTERFACE_TEXT_SIZE,
             code_text_size: crate::appearance::DEFAULT_CODE_TEXT_SIZE,
             reopen_last: true,
@@ -60,7 +66,7 @@ impl AppSettings {
                 ThemeChoice::Daylight
             }
             _ => {
-                if self.theme == ThemeChoice::Daylight {
+                if self.theme.is_light() {
                     ThemeChoice::Midnight
                 } else {
                     self.theme
@@ -71,6 +77,17 @@ impl AppSettings {
 
     pub fn normalize(&mut self) {
         self.columns.normalize();
+        self.graph_spacing = self.graph_spacing.clamp(12, 32);
+        self.navigation_width = if self.navigation_width.is_finite() {
+            self.navigation_width.clamp(180., 360.)
+        } else {
+            220.
+        };
+        self.inspector_width = if self.inspector_width.is_finite() {
+            self.inspector_width.clamp(280., 480.)
+        } else {
+            320.
+        };
         self.interface_text_size = self.interface_text_size.clamp(
             *crate::appearance::INTERFACE_TEXT_RANGE.start(),
             *crate::appearance::INTERFACE_TEXT_RANGE.end(),

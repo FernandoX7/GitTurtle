@@ -9,8 +9,35 @@ impl GitTurtle {
     pub(super) fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         let busy = self.operation_busy.is_some();
+        if self.page == AppPage::Settings {
+            return div()
+                .min_h(appearance::ui_size(56.))
+                .px_4()
+                .py_2()
+                .flex()
+                .items_center()
+                .gap_3()
+                .bg(rgb(p.panel))
+                .border_b_1()
+                .border_color(rgb(p.border))
+                .child(
+                    button("page-back", self.back_label(), "arrow-left", false).on_click(
+                        cx.listener(|this, _, window, cx| this.return_from_page(window, cx)),
+                    ),
+                )
+                .child(app_icon(28.))
+                .child(
+                    div()
+                        .text_size(appearance::ui_text(15.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("Settings"),
+                )
+                .into_any_element();
+        }
         div()
-            .h(crate::appearance::ui_size(56.))
+            .min_h(crate::appearance::ui_size(56.))
+            .py_2()
+            .flex_wrap()
             .flex_shrink_0()
             .flex()
             .items_center()
@@ -19,6 +46,12 @@ impl GitTurtle {
             .bg(rgb(p.panel))
             .border_b_1()
             .border_color(rgb(p.border))
+            .child(
+                button("page-back", self.back_label(), "arrow-left", false)
+                    .disabled(busy && self.mode == WorkspaceMode::History)
+                    .tooltip(format!("{} · {}[", self.back_label(), primary_label()))
+                    .on_click(cx.listener(|this, _, window, cx| this.navigate_back(window, cx))),
+            )
             .child(app_icon(32.))
             .child(
                 div()
@@ -31,7 +64,7 @@ impl GitTurtle {
                             .unwrap_or_else(|| "GitTurtle".into());
                         move |window, cx| Tooltip::new(path.clone()).build(window, cx)
                     })
-                    .w(px(190.))
+                    .w(px(160.))
                     .min_w_0()
                     .flex()
                     .flex_col()
@@ -110,19 +143,7 @@ impl GitTurtle {
             .when(busy, |header| {
                 header.child(self.render_operation_cancel(cx))
             })
-            .child(
-                button(
-                    "profile",
-                    self.profile
-                        .as_ref()
-                        .filter(|p| !p.name.is_empty())
-                        .map(|p| p.name.clone())
-                        .unwrap_or("Git identity".into()),
-                    "user",
-                    self.page == AppPage::Settings,
-                )
-                .on_click(cx.listener(|this, _, window, cx| this.show_settings(window, cx))),
-            )
+            .child(self.render_profile_button(cx))
             .child(
                 button("settings", "Settings", "settings", false)
                     .tooltip(format!("Settings · {},", primary_label()))
@@ -471,7 +492,7 @@ impl GitTurtle {
             .as_ref()
             .map(|s| s.0.clone())
             .unwrap_or("All history".into());
-        let columns = self.settings.columns.layout(self.history_width - 26.);
+        let columns = self.history_column_layout();
         let history = if self.commits.is_empty() && self.error.is_some() {
             empty(
                 "Could not open repository",
@@ -709,12 +730,22 @@ impl GitTurtle {
             .into_any_element()
     }
 
+    fn history_column_layout(&self) -> columns::ColumnLayout {
+        self.settings.columns.layout_for_graph(
+            self.history_width - 26.,
+            graph::required_width(
+                self.graph_lanes,
+                f32::from(self.settings.graph_spacing) * appearance::ui_scale(),
+            ),
+        )
+    }
+
     pub(super) fn render_commit_row(&self, position: usize, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
         let index = self.visible[position];
         let commit = &self.commits[index];
         let active = self.selected_commit == Some(index);
-        let columns = self.settings.columns.layout(self.history_width - 26.);
+        let columns = self.history_column_layout();
         let lane_colors = graph::colors(cx);
         let color = lane_colors[self.graph[index].color % lane_colors.len()];
         let refs_width = self.settings.columns.refs.width;
@@ -801,6 +832,7 @@ impl GitTurtle {
                             self.graph[index].clone(),
                             column.width,
                             self.graph_lanes,
+                            f32::from(self.settings.graph_spacing) * appearance::ui_scale(),
                             self.settings.density.history_row_height(),
                             active,
                             commit.parents.len() > 1,
@@ -1480,6 +1512,7 @@ impl GitTurtle {
                     }
                 }
                 Content::Images { old, new } => self.render_image_comparison(old, new, cx),
+                Content::Rich(preview) => self.render_rich_preview(preview, cx),
                 Content::Conflict(_) => self.conflict_view.as_ref().map_or_else(
                     || empty("Loading conflict…", ""),
                     |view| div().size_full().child(view.clone()).into_any_element(),
@@ -1578,9 +1611,20 @@ impl GitTurtle {
         } else if self.sidebar {
             h_resizable("history-columns")
                 .with_state(&self.history_panels)
+                .on_resize({
+                    let owner = cx.entity().downgrade();
+                    move |panels, window, cx| {
+                        if let Some(width) = panels.read(cx).sizes().first().copied() {
+                            let _ = owner.update(cx, |this, cx| {
+                                this.settings.navigation_width = f32::from(width);
+                                this.save_preferences(window, cx);
+                            });
+                        }
+                    }
+                })
                 .child(
                     resizable_panel()
-                        .size(px(220.))
+                        .size(px(self.settings.navigation_width))
                         .size_range(px(180.)..px(360.))
                         .flex_none()
                         .child(self.render_sidebar(cx)),
@@ -1611,6 +1655,17 @@ impl GitTurtle {
         // would restore the initial widths, including after a manual drag.
         let workspace = h_resizable("content-columns")
             .with_state(&self.content_panels)
+            .on_resize({
+                let owner = cx.entity().downgrade();
+                move |panels, window, cx| {
+                    if let Some(width) = panels.read(cx).sizes().get(1).copied() {
+                        let _ = owner.update(cx, |this, cx| {
+                            this.settings.inspector_width = f32::from(width);
+                            this.save_preferences(window, cx);
+                        });
+                    }
+                }
+            })
             .child(
                 resizable_panel()
                     .size_range(px(520.)..px(10000.))
@@ -1618,7 +1673,7 @@ impl GitTurtle {
             )
             .child(
                 resizable_panel()
-                    .size(px(320.))
+                    .size(px(self.settings.inspector_width))
                     .size_range(px(280.)..px(480.))
                     .flex_none()
                     .child(if self.mode == WorkspaceMode::Working {
@@ -1640,6 +1695,18 @@ impl GitTurtle {
 
 impl Render for GitTurtle {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.dialog_layer_subscription.is_none()
+            && let Some(Some(root)) = window.root::<Root>()
+        {
+            // This view owns render_dialog_layer. Root's modal collection is a
+            // separate entity: observing it invalidates our cached child tree
+            // when any native dialog opens or closes, without a resize/input.
+            self.dialog_layer_subscription =
+                Some(cx.observe_in(&root, window, |_, _, window, cx| {
+                    window.refresh();
+                    cx.notify();
+                }));
+        }
         let colors = palette(cx);
         let menu_state = (self.repository.is_some(), self.operation_busy.is_some());
         if self.menu_state != Some(menu_state) {
@@ -1734,6 +1801,9 @@ impl Render for GitTurtle {
             .on_action(
                 cx.listener(|this, _: &QuickOpenFile, window, cx| this.open_quick_file(window, cx)),
             )
+            .on_action(cx.listener(|this, _: &ShowCommandPalette, window, cx| {
+                this.open_command_palette(window, cx)
+            }))
             .on_action(cx.listener(|this, _: &CompareRevisions, window, cx| {
                 this.open_revision_comparison(window, cx)
             }))
@@ -1781,7 +1851,7 @@ impl Render for GitTurtle {
                 }),
             )
             .on_action(
-                cx.listener(|this, _: &BackHistory, window, cx| this.back_to_history(window, cx)),
+                cx.listener(|this, _: &BackHistory, window, cx| this.navigate_back(window, cx)),
             )
             .on_action(cx.listener(|this, _: &NextTextChange, window, cx| {
                 this.navigate_text_change(true, window, cx)
@@ -1804,6 +1874,9 @@ impl Render for GitTurtle {
                 }),
             )
             .on_action(cx.listener(|this, _: &NextPane, window, cx| {
+                if this.page != AppPage::Repository {
+                    return;
+                }
                 if this.blame.owns_focus(window) {
                     this.open_blame_commit(window, cx);
                     return;
@@ -1896,36 +1969,39 @@ impl Render for GitTurtle {
                         )
                 }))
             })
-            .when(self.operation_error.is_none(), |el| {
-                el.children(self.operation_notice.as_ref().map(|notice| {
-                    div()
-                        .px_4()
-                        .py_2()
-                        .flex()
-                        .items_center()
-                        .gap_3()
-                        .bg(rgb(colors.selected))
-                        .text_color(rgb(colors.accent))
-                        .child(
-                            div()
-                                .id("operation-notice-summary")
-                                .role(Role::Label)
-                                .aria_label(notice.clone())
-                                .flex_1()
-                                .truncate()
-                                .text_size(crate::appearance::ui_text(11.))
-                                .child(notice.clone()),
-                        )
-                        .child(
-                            button("dismiss-operation-notice", "Dismiss", "", false).on_click(
-                                cx.listener(|this, _, _, cx| {
-                                    this.operation_notice = None;
-                                    cx.notify();
-                                }),
-                            ),
-                        )
-                }))
-            })
+            .when(
+                self.page == AppPage::Repository && self.operation_error.is_none(),
+                |el| {
+                    el.children(self.operation_notice.as_ref().map(|notice| {
+                        div()
+                            .px_4()
+                            .py_2()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .bg(rgb(colors.selected))
+                            .text_color(rgb(colors.accent))
+                            .child(
+                                div()
+                                    .id("operation-notice-summary")
+                                    .role(Role::Label)
+                                    .aria_label(notice.clone())
+                                    .flex_1()
+                                    .truncate()
+                                    .text_size(crate::appearance::ui_text(11.))
+                                    .child(notice.clone()),
+                            )
+                            .child(
+                                button("dismiss-operation-notice", "Dismiss", "", false).on_click(
+                                    cx.listener(|this, _, _, cx| {
+                                        this.operation_notice = None;
+                                        cx.notify();
+                                    }),
+                                ),
+                            )
+                    }))
+                },
+            )
             .child(div().flex_1().min_h_0().child(body))
             .child(
                 div()
@@ -1940,23 +2016,25 @@ impl Render for GitTurtle {
                     .bg(rgb(colors.panel))
                     .text_size(crate::appearance::ui_text(10.))
                     .text_color(rgb(colors.muted))
+                    .child(div().size(px(5.)).rounded_full().bg(rgb(
+                        if self.page == AppPage::Repository && self.error.is_some() {
+                            colors.removed
+                        } else {
+                            colors.accent
+                        },
+                    )))
                     .child(
-                        div()
-                            .size(px(5.))
-                            .rounded_full()
-                            .bg(rgb(if self.error.is_some() {
-                                colors.removed
-                            } else {
-                                colors.accent
-                            })),
-                    )
-                    .child(
-                        div().flex_1().truncate().child(
-                            self.error
+                        div().flex_1().truncate().child(match self.page {
+                            AppPage::Projects => {
+                                "Open a project or start a new repository".to_owned()
+                            }
+                            AppPage::Settings => "Appearance and layout preferences".to_owned(),
+                            AppPage::Repository => self
+                                .error
                                 .as_deref()
                                 .unwrap_or(self.loading.unwrap_or(&self.status))
                                 .to_string(),
-                        ),
+                        }),
                     )
                     .child(match self.page {
                         AppPage::Settings => "Tab Move between controls · Esc Back".to_owned(),

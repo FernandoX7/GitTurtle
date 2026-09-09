@@ -1,7 +1,7 @@
 use crate::*;
 use gitturtle_core::{
     ConflictBlockChoice, ConflictContent, ConflictPreview, ConflictResolution, IntegrationCommand,
-    MAX_DIFF_BYTES, MAX_DIFF_LINES, OperationKind, OperationState, TextConflictBlock, WriteCommand,
+    MAX_DIFF_BYTES, MAX_DIFF_LINES, OperationKind, TextConflictBlock, WriteCommand,
     choose_conflict_block, text_conflict_blocks,
 };
 use gpui_kit::component::input::Paste;
@@ -12,26 +12,13 @@ const MAX_RETAINED_DRAFT_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone)]
 struct ConflictIdentity {
-    path: PathBuf,
-    head: Option<String>,
-    operation: Option<OperationState>,
-    sides: [Option<(String, String)>; 3],
+    durable: String,
 }
 
 impl From<&ConflictPreview> for ConflictIdentity {
     fn from(snapshot: &ConflictPreview) -> Self {
-        let mut operation = snapshot.operation.clone();
-        if let Some(operation) = &mut operation {
-            operation.staged_paths = Vec::new();
-        }
         Self {
-            path: snapshot.path.clone(),
-            head: snapshot.head.clone(),
-            operation,
-            sides: [&snapshot.base, &snapshot.current, &snapshot.incoming].map(|side| {
-                side.as_ref()
-                    .map(|side| (side.oid.clone(), side.content.mode.clone()))
-            }),
+            durable: snapshot.draft_identity(),
         }
     }
 }
@@ -42,23 +29,9 @@ pub struct Draft {
 }
 
 impl Draft {
+    #[cfg(test)]
     fn matches(&self, snapshot: &ConflictPreview) -> bool {
-        self.identity.path == snapshot.path
-            && self.identity.head == snapshot.head
-            && match (&self.identity.operation, &snapshot.operation) {
-                (Some(old), Some(new)) => old.same_operation(new),
-                (None, None) => true,
-                _ => false,
-            }
-            && self
-                .identity
-                .sides
-                .iter()
-                .zip([&snapshot.base, &snapshot.current, &snapshot.incoming])
-                .all(|(old, new)| {
-                    old.as_ref().map(|(oid, mode)| (oid, mode))
-                        == new.as_ref().map(|v| (&v.oid, &v.content.mode))
-                })
+        self.identity.durable == snapshot.draft_identity()
     }
 }
 
@@ -308,9 +281,12 @@ pub enum ConflictEvent {
     Resolve(ConflictResolution),
     Draft(String),
     OpenEditor,
+    RecoveryDrafts,
 }
 
 pub struct ConflictView {
+    pub(super) durable_status: String,
+    durable_saved: Option<(bool, String)>,
     presentation: Arc<Presentation>,
     readers: [Option<Entity<EditorState>>; 3],
     resolution: Option<Entity<TextareaState>>,
@@ -343,6 +319,8 @@ impl ConflictView {
         cx: &mut Context<Self>,
     ) -> Self {
         let mut this = Self {
+            durable_status: "Edits are automatically saved outside the repository".into(),
+            durable_saved: None,
             blocks: presentation.blocks.clone(),
             block_source: presentation.result.clone().unwrap_or_default(),
             block_issue: presentation.block_issue.clone(),
@@ -665,6 +643,7 @@ impl Render for ConflictView {
                 }
             }))
             .child(div().px_3().py_2().flex().flex_wrap().items_center().gap_2().border_b_1().border_color(rgb(p.border))
+                .child(button("saved-conflict-drafts", "Saved drafts…", "", false).on_click(cx.listener(|_, _, _, cx| cx.emit(ConflictEvent::RecoveryDrafts))))
                 .child(button("conflict-branches", "Both sides", "", !self.base).on_click(cx.listener(|this, _, window, cx| { this.base = false; this.prepare_readers(window, cx); cx.notify(); })))
                 .child(button("conflict-base", "Base", "", self.base).on_click(cx.listener(|this, _, window, cx| { this.base = true; this.prepare_readers(window, cx); cx.notify(); })))
                 .child(button("conflict-block-mode", "Selected block", "", self.block_mode).disabled(self.blocks.is_empty()).on_click(cx.listener(|this, _, window, cx| { this.block_mode = true; this.readers = [None, None, None]; this.prepare_readers(window, cx); cx.notify(); })))
@@ -683,6 +662,20 @@ impl Render for ConflictView {
                 .children(self.block_issue.as_ref().map(|issue| div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning)).child(issue.clone())))))
             .child(div().flex_1().min_h(px(100.)).flex().children(if self.base { vec![self.render_side(0, cx)] } else { vec![self.render_side(1, cx), self.render_side(2, cx)] }))
             .child(div().px_3().py_2().flex().flex_col().gap_2().bg(rgb(p.subtle)).border_t_1().border_color(rgb(p.border))
+                .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(self.durable_status.clone()))
+                .when_some(self.durable_saved.clone(), |element, (valid, text)| {
+                    let copy = text.clone();
+                    element.child(div().flex().flex_wrap().items_center().gap_2()
+                        .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(if valid { p.muted } else { p.warning })).child(if valid { "Saved draft matches this operation, index stages and working file." } else { "Saved draft belongs to changed source state. Recover its text without replacing this file." }))
+                        .child(button("copy-saved-conflict", "Copy saved text", "", false).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
+                        .child(button("restore-saved-conflict", "Restore saved draft", "", false).disabled(!valid).on_click(cx.listener(move |this, _, window, cx| {
+                            if !valid { return; }
+                            this.open_resolution_editor(window, cx);
+                            if let Some(editor) = &this.resolution { editor.update(cx, |editor, cx| editor.set_value(text.clone(), window, cx)); }
+                            this.durable_saved = None;
+                            cx.notify();
+                        }))))
+                })
                 .child(div().flex().flex_wrap().items_center().gap_2()
                     .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Whole-file actions:"))
                     .child(button("resolve-current", "Use current file…", "", false).tooltip(format!("Replace and stage the entire file with {current}"))
@@ -721,10 +714,16 @@ impl GitTurtle {
             self.path.clone().unwrap_or_default(),
             presentation.snapshot.path.clone(),
         );
+        let persistent_key = recovery_drafts::Key::conflict(
+            &draft_key.0,
+            &draft_key.1,
+            presentation.identity.durable.clone(),
+        );
+        let recovered = self.recovery_drafts.latest(&persistent_key);
         let draft = self
             .conflict_drafts
             .get(&draft_key)
-            .filter(|draft| draft.matches(&presentation.snapshot))
+            .filter(|draft| draft.identity.durable == presentation.identity.durable)
             .map(|draft| draft.text.clone());
         let retained_bytes = self
             .conflict_drafts
@@ -738,6 +737,14 @@ impl GitTurtle {
             .min(MAX_DIFF_BYTES);
         let view = cx
             .new(|cx| ConflictView::new(Arc::clone(&presentation), draft, draft_limit, window, cx));
+        view.update(cx, |view, _| {
+            if let Some(recovered) = recovered {
+                view.durable_saved = Some((recovered.key == persistent_key, recovered.text));
+                view.durable_status = self.recovery_drafts.status();
+            } else if self.recovery_drafts.error.is_some() {
+                view.durable_status = self.recovery_drafts.status();
+            }
+        });
         let snapshot = Arc::clone(&presentation.snapshot);
         let identity = presentation.identity.clone();
         let path = self.path.clone();
@@ -747,11 +754,13 @@ impl GitTurtle {
             // read. Only executable actions are disabled while Git is busy.
             if let ConflictEvent::Draft(value) = event {
                 this.conflict_drafts.insert(draft_key.clone(), Draft { identity: identity.clone(), text: value.clone() });
+                this.persist_recovery_draft(persistent_key.clone(), Some(value.clone()), window, cx);
                 return;
             }
             if this.operation_busy.is_some() { return; }
             match event {
                 ConflictEvent::Draft(_) => unreachable!("drafts are saved before the operation guard"),
+                ConflictEvent::RecoveryDrafts => this.open_recovery_drafts(window, cx),
                 ConflictEvent::Resolve(resolution) => {
                     let file = snapshot.path.to_string_lossy();
                     let effect = match resolution {
@@ -916,7 +925,7 @@ mod tests {
     }
 
     #[test]
-    fn drafts_follow_the_conflict_identity_across_working_edits_but_never_new_conflicts() {
+    fn stale_working_edits_and_new_conflicts_refuse_restoration_but_preserve_text() {
         let original = Arc::new(snapshot());
         let draft = Draft {
             identity: ConflictIdentity::from(original.as_ref()),
@@ -924,7 +933,7 @@ mod tests {
         };
         let mut refreshed = original.as_ref().clone();
         refreshed.working.as_mut().unwrap().bytes = b"saved by an external editor\n".to_vec();
-        assert!(draft.matches(&refreshed));
+        assert!(!draft.matches(&refreshed));
         refreshed.incoming.as_mut().unwrap().oid = "e".repeat(40);
         assert!(!draft.matches(&refreshed));
         refreshed = original.as_ref().clone();

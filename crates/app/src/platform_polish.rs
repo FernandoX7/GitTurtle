@@ -71,6 +71,7 @@ pub(super) fn menus(repository: bool, busy: bool, cx: &mut App) {
             MenuItem::action("Select All", SelectAll),
         ]),
         Menu::new("View").items([
+            MenuItem::action("Command Palette…", ShowCommandPalette),
             action("History", Box::new(ShowHistory), repository),
             action("Working Changes", Box::new(ShowChanges), repository),
             action(
@@ -180,6 +181,8 @@ impl GitTurtle {
     pub(super) fn shortcut_help(&self, window: &mut Window, cx: &mut Context<Self>) {
         let modifier = primary_label();
         let rows = [
+            ("Command palette", "⇧P"),
+            ("Quick Open File", "P"),
             ("Open repository", "O"),
             ("Projects", "⇧O"),
             ("History", "1"),

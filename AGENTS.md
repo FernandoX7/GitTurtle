@@ -18,7 +18,7 @@ Read the affected crate's instructions before edits or reviews, including when s
 
 | Concern | Entry points |
 | --- | --- |
-| Native pages, navigation/focus, Git forms, editors, image comparison, appearance | [App guide](crates/app/AGENTS.md); [design](docs/design.md) |
+| Native pages, navigation/focus, Git forms, editors, image comparison, appearance | [App guide](crates/app/AGENTS.md); [design](DESIGN.md) |
 | Scheduling, cancellation, local refresh, caches and resource bounds | [App guide](crates/app/AGENTS.md); [architecture](docs/architecture.md); performance skill below |
 | Git reads, history/search, attribution, status, staging, integration/recovery, branches/remotes, tags/ignore and authentication | [Git core guide](crates/git-core/AGENTS.md); [Git service notes](crates/git-core/README.md) |
 | Supplied-byte image decoding, formats and limits | [Preview guide](crates/preview/AGENTS.md); app worker handles render-image conversion |
