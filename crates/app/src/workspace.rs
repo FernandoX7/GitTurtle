@@ -16,6 +16,16 @@ struct WorkingInspectorLayout {
     list_size: Option<Size<Pixels>>,
 }
 
+fn commit_composer_height(available: f32, row_height: f32, preferred: f32) -> f32 {
+    let available = available.max(0.);
+    // Reserve several visible rows at ordinary sizes and share very short
+    // bodies equally. The scrolling composer must never consume the list.
+    let list_reserve = (row_height * 3.5)
+        .max(available * 0.30)
+        .min(available * 0.50);
+    preferred.min(440.).min(available - list_reserve)
+}
+
 impl GitTurtle {
     pub(super) fn current_commit_draft(&self, cx: &App) -> CommitDraft {
         CommitDraft {
@@ -805,27 +815,30 @@ impl GitTurtle {
     ) -> AnyElement {
         let p = palette(cx);
         let previous_list = self.working_scroll.0.borrow().last_item_size;
-        // Use the laid-out inspector after the header, Targets, and operation
-        // feedback have taken their space. Notify only when its bounds change.
+        // Measure the list/composer body after Targets, feedback, the Changes
+        // header and wrapping path/selection controls have taken their space.
         let layout = window.use_keyed_state("working-inspector-layout", cx, |window, _| {
             WorkingInspectorLayout {
-                height: (window.viewport_size().height - px(250.)).max(px(240.)),
+                height: (window.viewport_size().height - px(400.)).max(px(160.)),
                 list_size: previous_list.map(|size| size.item),
             }
         });
         let available = f32::from(layout.read(cx).height);
         let short = available < 560.;
-        let header_height = if short { 44. } else { 52. };
-        let list_reserve = (self.settings.density.file_row_height() * 3.5).max(available * 0.30);
-        let composer_max = (available - header_height - list_reserve).clamp(120., 440.);
+        // The measured body's height must not change the header height, which
+        // would oscillate at a size threshold on successive layout passes.
+        let header_height = 44.;
         let normal_description = if self.settings.density == appearance::Density::Compact {
             100.
         } else {
             128.
         };
         let description_height = ((available - 440.) * 0.5 + 64.).clamp(64., normal_description);
-        let composer_height =
-            composer_max.min(description_height + if short { 180. } else { 244. });
+        let composer_height = commit_composer_height(
+            available,
+            self.settings.density.file_row_height(),
+            description_height + if short { 180. } else { 244. },
+        );
         let list_layout = layout.clone();
         let list_scroll = self.working_scroll.clone();
         let selected_row = self.working_rows.iter().position(
@@ -876,15 +889,7 @@ impl GitTurtle {
         .track_scroll(&self.working_scroll);
         div()
             .size_full().min_h_0().relative().flex().flex_col().bg(rgb(p.panel))
-            .child(self.render_working_selection(cx))
-            .child(canvas(|_, _, _| (), move |bounds, _, _, cx| {
-                layout.update(cx, |layout, cx| {
-                    if layout.height != bounds.size.height {
-                        layout.height = bounds.size.height;
-                        cx.notify();
-                    }
-                });
-            }).absolute().inset_0())
+            .child(div().flex_shrink_0().child(self.render_working_selection(cx)))
             .child(
                 div().h(px(header_height)).flex_shrink_0().px_4().flex().items_center().gap_2()
                     .border_b_1().border_color(rgb(p.border))
@@ -899,6 +904,15 @@ impl GitTurtle {
                         .accessibility_label("Refresh working changes").tooltip("Refresh working changes")
                         .disabled(busy || refreshing).on_click(cx.listener(|this, _, window, cx| this.refresh_worktree(window, cx)))),
             )
+            .child(div().relative().flex_1().min_h_0().flex().flex_col()
+            .child(canvas(|_, _, _| (), move |bounds, _, _, cx| {
+                layout.update(cx, |layout, cx| {
+                    if layout.height != bounds.size.height {
+                        layout.height = bounds.size.height;
+                        cx.notify();
+                    }
+                });
+            }).absolute().inset_0())
             .child(
                 div().id("working-pane").role(Role::ListBox).aria_label("Working tree files")
                     .tab_stop(true).key_context("GitTurtleList").track_focus(&self.file_focus)
@@ -1008,7 +1022,7 @@ impl GitTurtle {
                                 this.write(WriteCommand::Commit { message }, "Creating commit…", window, cx);
                             })),
                     )),
-            ))
+            )))
             .into_any_element()
     }
 
@@ -1491,9 +1505,25 @@ pub(super) fn display_remote_url(url: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{display_remote_url, remote_defaults, retained_area};
+    use super::{commit_composer_height, display_remote_url, remote_defaults, retained_area};
     use core::prelude::v1::test;
     use gitturtle_core::ChangeArea;
+
+    #[test]
+    fn small_working_inspector_reserves_files_after_wrapping_controls() {
+        // Reported 680-point content: 490-point inspector less 165 points of
+        // filter/selection controls and header, with Compact rows at UI 18.
+        let body = 490. - 165.;
+        let row = 34. * 18. / 13.;
+        let composer = commit_composer_height(body, row, 244.);
+        assert!(body - composer >= 3. * row);
+        assert!(composer >= 36. * 18. / 13. + 48.);
+        for body in [0., 80., 160., 325., 600., 1000.] {
+            let composer = commit_composer_height(body, row, 344.);
+            assert!((0. ..=body).contains(&composer));
+            assert!(body - composer >= body * 0.30);
+        }
+    }
 
     #[test]
     fn staging_preserves_path_selection_and_moves_area_only_when_needed() {

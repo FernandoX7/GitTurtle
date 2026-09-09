@@ -14,7 +14,7 @@ Pair file-status SVGs with a short label and semantic color; color alone must no
 
 ## Working composer
 
-Size the composer from the inspector's laid-out available height after header, Targets and feedback. Reserve file-list space, keep the commit footer outside the scrolling fields, and let additional guidance/errors scroll without clipping the action. When bounds or density change, bring the selected working row into view using its current identity, not the previous geometry's pixel offset. Layout observers notify only on changed bounds.
+Size the composer from the list/composer body's laid-out available height after the header, Targets, feedback, and wrapping path/selection controls. Reserve several file rows, share a very short body between files and composer, keep the commit footer outside the scrolling fields, and let additional guidance/errors scroll without clipping the action. Header geometry must not depend on the measured body height. When bounds or density change, bring the selected working row into view using its current identity, not the previous geometry's pixel offset. Layout observers notify only on changed bounds.
 
 ## Prepared content
 

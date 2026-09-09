@@ -1,7 +1,7 @@
 //! Revision and path inspections reuse the workspace preview and retained views.
 use crate::*;
 use gitturtle_core::{ComparisonMode, PathScope, RevisionComparison, TrackedPath, TrackedPaths};
-use gpui_kit::component::{WindowExt, dialog::DialogButtonProps};
+use gpui_kit::component::{WindowExt, dialog::DialogFooter};
 use gpui_kit::prelude::FluentBuilder;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -10,6 +10,23 @@ fn claim_modal_result(closed: &AtomicBool, accepted: &AtomicBool) -> bool {
         && accepted
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
+}
+
+fn cancel_modal_read(
+    closed: &AtomicBool,
+    reader: &Worker,
+    return_focus: Option<&FocusHandle>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if closed.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    reader.cancel();
+    window.close_dialog(cx);
+    if let Some(focus) = return_focus {
+        focus.focus(window, cx);
+    }
 }
 
 #[derive(Default)]
@@ -77,37 +94,44 @@ impl GitTurtle {
             _ => ("HEAD~1".into(), "HEAD".into(), ComparisonMode::Endpoints),
         };
         let owner = cx.entity().downgrade();
-        let form = cx.new(|cx| CompareForm::new(owner, repo, before, after, mode, window, cx));
-        let focus_form = form.downgrade();
         let return_focus = window.focused(cx);
+        let form = cx.new(|cx| {
+            CompareForm::new(owner, repo, (before, after, mode), return_focus, window, cx)
+        });
+        let focus_form = form.downgrade();
         window.open_alert_dialog(cx, move |dialog, _, cx| {
             let submit = form.clone();
-            let closed = form.read(cx).closed.clone();
-            let accepted = form.read(cx).accepted.clone();
-            let reader = form.read(cx).worker.clone();
-            let return_focus = return_focus.clone();
+            let cancel = form.clone();
+            let confirm = form.clone();
+            let cancel_action = form.clone();
             dialog
                 .title("Compare local revisions")
                 .width(px(660.))
                 .child(form.clone())
-                .button_props(
-                    DialogButtonProps::default()
-                        .ok_text("Compare")
-                        .cancel_text("Cancel")
-                        .show_cancel(true),
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            button("cancel-revision-comparison", "Cancel", "", false).on_click(
+                                move |_, window, cx| {
+                                    cancel.update(cx, |form, cx| form.cancel(window, cx))
+                                },
+                            ),
+                        )
+                        .child(
+                            button("submit-revision-comparison", "Compare", "", true)
+                                .disabled(form.read(cx).busy)
+                                .on_click(move |_, window, cx| {
+                                    confirm.update(cx, |form, cx| form.submit(window, cx))
+                                }),
+                        ),
                 )
                 .on_ok(move |_, window, cx| {
                     submit.update(cx, |form, cx| form.submit(window, cx));
                     false
                 })
-                .on_close(move |_, window, cx| {
-                    closed.store(true, Ordering::Release);
-                    reader.cancel();
-                    if !accepted.load(Ordering::Acquire)
-                        && let Some(focus) = &return_focus
-                    {
-                        focus.focus(window, cx);
-                    }
+                .on_cancel(move |_, window, cx| {
+                    cancel_action.update(cx, |form, cx| form.cancel(window, cx));
+                    false // cancel closes directly; do not pop another dialog.
                 })
         });
         window.on_next_frame(move |window, cx| {
@@ -133,37 +157,47 @@ impl GitTurtle {
             .map_or("HEAD", |c| &c.oid)
             .to_owned();
         let owner = cx.entity().downgrade();
-        let form = cx.new(|cx| QuickForm::new(owner, repo, revision, window, cx));
-        let focus_form = form.downgrade();
         let return_focus = window.focused(cx);
+        let form = cx.new(|cx| QuickForm::new(owner, repo, revision, return_focus, window, cx));
+        let focus_form = form.downgrade();
         window.open_alert_dialog(cx, move |dialog, _, cx| {
             let submit = form.clone();
-            let closed = form.read(cx).closed.clone();
-            let accepted = form.read(cx).accepted.clone();
-            let reader = form.read(cx).worker.clone();
-            let return_focus = return_focus.clone();
+            let cancel = form.clone();
+            let activate = form.clone();
+            let cancel_action = form.clone();
             dialog
                 .title("Quick Open File")
                 .width(px(700.))
                 .child(form.clone())
-                .button_props(
-                    DialogButtonProps::default()
-                        .ok_text("Open file")
-                        .cancel_text("Cancel")
-                        .show_cancel(true),
+                .footer(
+                    DialogFooter::new()
+                        .child(button("cancel-quick-file", "Cancel", "", false).on_click(
+                            move |_, window, cx| {
+                                cancel.update(cx, |form, cx| form.cancel(window, cx))
+                            },
+                        ))
+                        .child(
+                            button("activate-quick-file", "Open file", "", true)
+                                .disabled(
+                                    form.read(cx).busy
+                                        || form
+                                            .read(cx)
+                                            .page
+                                            .as_ref()
+                                            .is_none_or(|page| page.entries.is_empty()),
+                                )
+                                .on_click(move |_, window, cx| {
+                                    activate.update(cx, |form, cx| form.activate(window, cx))
+                                }),
+                        ),
                 )
                 .on_ok(move |_, window, cx| {
                     submit.update(cx, |form, cx| form.activate(window, cx));
                     false
                 })
-                .on_close(move |_, window, cx| {
-                    closed.store(true, Ordering::Release);
-                    reader.cancel();
-                    if !accepted.load(Ordering::Acquire)
-                        && let Some(focus) = &return_focus
-                    {
-                        focus.focus(window, cx);
-                    }
+                .on_cancel(move |_, window, cx| {
+                    cancel_action.update(cx, |form, cx| form.cancel(window, cx));
+                    false
                 })
         });
         window.on_next_frame(move |window, cx| {
@@ -467,7 +501,9 @@ impl GitTurtle {
             // Quick source omits the changed-file list. Keep its destination
             // focus attached to this visible inspector so app shortcuts work.
             .when(self.is_quick_source(), |element| element.role(Role::Group).aria_label("Tracked source information").track_focus(&self.file_focus).tab_stop(true))
-            .child(div().p_3().flex().flex_col().gap_2()
+            .child(div().id("revision-metadata").min_h_0().overflow_y_scroll().flex_shrink_0()
+                .when(!self.is_quick_source(), |element| element.max_h(px(260.)))
+                .p_3().flex().flex_col().gap_2()
                 .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
                 .child(div().id("revision-identities").role(Role::Label).aria_label(details.clone()).text_size(crate::appearance::ui_text(11.)).child(details))
                 .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Targets stay pinned while you inspect files. Refresh reviews current refs. No checkout or download."))
@@ -491,17 +527,19 @@ struct CompareForm {
     subscriptions: Vec<Subscription>,
     closed: Arc<AtomicBool>,
     accepted: Arc<AtomicBool>,
+    focus: FocusHandle,
+    return_focus: Option<FocusHandle>,
 }
 impl CompareForm {
     fn new(
         owner: WeakEntity<GitTurtle>,
         repo: GitRepository,
-        before: String,
-        after: String,
-        mode: ComparisonMode,
+        initial: (String, String, ComparisonMode),
+        return_focus: Option<FocusHandle>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let (before, after, mode) = initial;
         let before = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(before)
@@ -527,6 +565,8 @@ impl CompareForm {
             subscriptions: vec![],
             closed: Arc::new(AtomicBool::new(false)),
             accepted: Arc::new(AtomicBool::new(false)),
+            focus: cx.focus_handle(),
+            return_focus,
         };
         for (side, input) in [form.before.clone(), form.after.clone()]
             .into_iter()
@@ -536,7 +576,7 @@ impl CompareForm {
                 &input,
                 window,
                 move |this, _, event, window, cx| match event {
-                    InputEvent::Change => {
+                    InputEvent::Change | InputEvent::Focus => {
                         this.selected_side = side;
                         cx.notify();
                     }
@@ -551,15 +591,30 @@ impl CompareForm {
         form.task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response.await;
             let _ = this.update_in(cx, |this, _, cx| {
+                if this.closed.load(Ordering::Acquire) {
+                    return;
+                }
                 if let Ok(Ok(Output::RevisionTargets(targets))) = result {
                     this.targets = targets;
                 }
                 cx.notify();
             });
         }));
-        window.focus(&form.before.focus_handle(cx), cx);
         form
     }
+
+    fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.task = None;
+        self.busy = false;
+        cancel_modal_read(
+            &self.closed,
+            &self.worker,
+            self.return_focus.as_ref(),
+            window,
+            cx,
+        );
+    }
+
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.closed.load(Ordering::Acquire) || self.accepted.load(Ordering::Acquire)
         {
@@ -567,6 +622,9 @@ impl CompareForm {
         }
         self.busy = true;
         self.error = None;
+        // Disabled inputs leave the focus tree. Keep Escape in this modal
+        // while the worker resolves its captured values.
+        self.focus.focus(window, cx);
         let response = self.worker.submit(Job::CompareRevisions {
             repo: self.repo.clone(),
             before: self.before.read(cx).value().to_string(),
@@ -589,6 +647,8 @@ impl CompareForm {
                                 if !claim_modal_result(&this.closed, &this.accepted) {
                                     return;
                                 }
+                                this.closed.store(true, Ordering::Release);
+                                this.worker.cancel();
                                 window.close_dialog(cx);
                                 owner.show_revision_comparison(comparison, window, cx);
                                 owner.defer_inspection_focus(window, cx);
@@ -599,6 +659,21 @@ impl CompareForm {
                     _ => {
                         this.error = Some("Comparison cancelled or unavailable. Try again.".into())
                     }
+                }
+                if !this.closed.load(Ordering::Acquire) {
+                    let form = cx.entity().downgrade();
+                    window.on_next_frame(move |window, cx| {
+                        let _ = form.update(cx, |form, cx| {
+                            if !form.closed.load(Ordering::Acquire) && !form.busy {
+                                let input = if form.selected_side == 0 {
+                                    &form.before
+                                } else {
+                                    &form.after
+                                };
+                                input.read(cx).focus_handle(cx).focus(window, cx);
+                            }
+                        });
+                    });
                 }
                 cx.notify();
             });
@@ -622,9 +697,12 @@ impl Render for CompareForm {
             .take(8)
             .cloned()
             .collect();
-        div().flex().flex_col().gap_3().text_size(crate::appearance::ui_text(12.))
-            .child(div().child("Before").child(Input::new(&self.before).disabled(self.busy)))
-            .child(div().child("After").child(Input::new(&self.after).disabled(self.busy)))
+        div().id("comparison-form").track_focus(&self.focus).flex().flex_col().gap_3().text_size(crate::appearance::ui_text(12.))
+            .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.cancel(window, cx); cx.stop_propagation(); }))
+            .on_action(cx.listener(|this, _: &ClearSearch, window, cx| { this.cancel(window, cx); cx.stop_propagation(); }))
+            .on_action(cx.listener(|this, _: &gpui_kit::component::dialog::Cancel, window, cx| { this.cancel(window, cx); cx.stop_propagation(); }))
+            .child(div().child("Before").child(Input::new(&self.before).aria_label("Before: local branch, tag, or commit revision").disabled(self.busy)))
+            .child(div().child("After").child(Input::new(&self.after).aria_label("After: local branch, tag, or commit revision").disabled(self.busy)))
             .child(div().flex().flex_wrap().gap_1().children([(ComparisonMode::Endpoints,"Endpoints · Before → After"),(ComparisonMode::SinceBranching,"Changes since branching")].into_iter().map(|(mode,label)|button(label,label,"",self.mode==mode).toggled(self.mode==mode).disabled(self.busy).on_click(cx.listener(move |this,_,_,cx|{this.mode=mode;cx.notify();}))))
                 .child(button("swap-revisions","Swap","",false).disabled(self.busy).on_click(cx.listener(|this,_,window,cx|{let before=this.before.read(cx).value();let after=this.after.read(cx).value();this.before.update(cx,|input,cx|input.set_value(after,window,cx));this.after.update(cx,|input,cx|input.set_value(before,window,cx));}))))
             .child(div().text_color(rgb(p.muted)).child("Type a local revision, or choose a matching branch/tag for the most recently edited field. Names resolve when you press Compare. A merge-base comparison shows the changes leading to After."))
@@ -651,12 +729,14 @@ struct QuickForm {
     subscriptions: Vec<Subscription>,
     closed: Arc<AtomicBool>,
     accepted: Arc<AtomicBool>,
+    return_focus: Option<FocusHandle>,
 }
 impl QuickForm {
     fn new(
         owner: WeakEntity<GitTurtle>,
         repo: GitRepository,
         revision: String,
+        return_focus: Option<FocusHandle>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -683,6 +763,7 @@ impl QuickForm {
             subscriptions: vec![],
             closed: Arc::new(AtomicBool::new(false)),
             accepted: Arc::new(AtomicBool::new(false)),
+            return_focus,
         };
         for input in [form.query.clone(), form.revision.clone()] {
             form.subscriptions.push(cx.subscribe_in(
@@ -696,10 +777,26 @@ impl QuickForm {
             ));
         }
         form.search(window, cx);
-        window.focus(&form.query.focus_handle(cx), cx);
         form
     }
+
+    fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.task = None;
+        self.generation = self.generation.wrapping_add(1);
+        self.busy = false;
+        cancel_modal_read(
+            &self.closed,
+            &self.worker,
+            self.return_focus.as_ref(),
+            window,
+            cx,
+        );
+    }
+
     fn search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.closed.load(Ordering::Acquire) {
+            return;
+        }
         self.generation += 1;
         let generation = self.generation;
         self.worker.cancel();
@@ -731,7 +828,7 @@ impl QuickForm {
             };
             let result = response.await;
             let _ = this.update_in(cx, |this, _, cx| {
-                if generation != this.generation {
+                if generation != this.generation || this.closed.load(Ordering::Acquire) {
                     return;
                 }
                 this.busy = false;
@@ -770,6 +867,8 @@ impl QuickForm {
                 if !claim_modal_result(&self.closed, &self.accepted) {
                     return;
                 }
+                self.closed.store(true, Ordering::Release);
+                self.worker.cancel();
                 window.close_dialog(cx);
                 owner.show_tracked_file(scope, entry, window, cx);
                 owner.defer_inspection_focus(window, cx);
@@ -817,6 +916,9 @@ impl Render for QuickForm {
         .track_scroll(&self.scroll)
         .size_full();
         div().flex().flex_col().gap_2().text_size(crate::appearance::ui_text(12.))
+            .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.cancel(window, cx); cx.stop_propagation(); }))
+            .on_action(cx.listener(|this, _: &ClearSearch, window, cx| { this.cancel(window, cx); cx.stop_propagation(); }))
+            .on_action(cx.listener(|this, _: &gpui_kit::component::dialog::Cancel, window, cx| { this.cancel(window, cx); cx.stop_propagation(); }))
             .on_key_down(cx.listener(|this,event:&KeyDownEvent,_,cx|{let count=this.page.as_ref().map_or(0,|page|page.entries.len());if count==0{return;}match event.keystroke.key.as_str(){"down"=>this.selected=(this.selected+1).min(count-1),"up"=>this.selected=this.selected.saturating_sub(1),_=>return}cx.stop_propagation();this.scroll.scroll_to_item(this.selected,ScrollStrategy::Center);cx.notify();}))
             .child(div().flex().gap_1().children([(true,"Current worktree"),(false,"Chosen revision")].into_iter().map(|(worktree,label)|button(label,label,"",self.worktree==worktree).toggled(self.worktree==worktree).on_click(cx.listener(move |this,_,window,cx|{this.worktree=worktree;this.search(window,cx);})))) )
             .when(!self.worktree,|el|el.child(Input::new(&self.revision)))
