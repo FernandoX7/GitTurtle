@@ -287,6 +287,7 @@ pub enum ConflictEvent {
 
 pub struct ConflictView {
     pub(super) durable_status: String,
+    pub(super) durable_key: recovery_drafts::Key,
     durable_saved: Option<(bool, String)>,
     presentation: Arc<Presentation>,
     readers: [Option<Entity<EditorState>>; 3],
@@ -312,8 +313,9 @@ pub struct ConflictView {
 impl EventEmitter<ConflictEvent> for ConflictView {}
 
 impl ConflictView {
-    pub fn new(
+    pub(super) fn new(
         presentation: Arc<Presentation>,
+        durable_key: recovery_drafts::Key,
         initial_draft: Option<String>,
         draft_limit: usize,
         window: &mut Window,
@@ -321,6 +323,7 @@ impl ConflictView {
     ) -> Self {
         let mut this = Self {
             durable_status: "Edits are automatically saved outside the repository".into(),
+            durable_key,
             durable_saved: None,
             blocks: presentation.blocks.clone(),
             block_source: presentation.result.clone().unwrap_or_default(),
@@ -736,14 +739,20 @@ impl GitTurtle {
         let draft_limit = MAX_RETAINED_DRAFT_BYTES
             .saturating_sub(retained_bytes)
             .min(MAX_DIFF_BYTES);
-        let view = cx
-            .new(|cx| ConflictView::new(Arc::clone(&presentation), draft, draft_limit, window, cx));
+        let view = cx.new(|cx| {
+            ConflictView::new(
+                Arc::clone(&presentation),
+                persistent_key.clone(),
+                draft,
+                draft_limit,
+                window,
+                cx,
+            )
+        });
         view.update(cx, |view, _| {
+            view.durable_status = self.recovery_drafts.status_for(&persistent_key);
             if let Some(recovered) = recovered {
                 view.durable_saved = Some((recovered.key == persistent_key, recovered.text));
-                view.durable_status = self.recovery_drafts.status();
-            } else if self.recovery_drafts.error.is_some() {
-                view.durable_status = self.recovery_drafts.status();
             }
         });
         let snapshot = Arc::clone(&presentation.snapshot);

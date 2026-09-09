@@ -11,6 +11,7 @@ mod conflicts;
 mod diff_view;
 mod editor_find;
 mod file_history;
+mod gif_playback;
 mod graph;
 mod history_search;
 mod ignore;
@@ -165,6 +166,7 @@ enum TextMode {
     Split,
     Before,
     After,
+    Diagrams,
 }
 #[derive(Clone, Copy, PartialEq)]
 enum NavMode {
@@ -188,6 +190,9 @@ struct GitTurtle {
     ignore_actions: ignore::State,
     menu_state: Option<(bool, bool)>,
     dialog_layer_subscription: Option<Subscription>,
+    modal_was_open: bool,
+    modal_return_focus: Option<FocusHandle>,
+    modal_focus_generation: u64,
     settings_editor: Entity<InputState>,
     history_search: history_search::State,
     file_history: file_history::State,
@@ -373,6 +378,9 @@ impl GitTurtle {
             ignore_actions: ignore::State::default(),
             menu_state: None,
             dialog_layer_subscription: None,
+            modal_was_open: false,
+            modal_return_focus: None,
+            modal_focus_generation: 0,
             settings_editor,
             history_search: history_search::State::default(),
             file_history: file_history::State::default(),
@@ -869,7 +877,15 @@ impl GitTurtle {
                     elapsed.as_secs_f64() * 1000.
                 );
                 match content.as_ref() {
-                    Content::Text { .. } => {}
+                    Content::Text { diagrams, .. } => {
+                        if self.text_mode == TextMode::Diagrams && diagrams.is_none() {
+                            self.text_mode = if self.is_quick_source() {
+                                TextMode::After
+                            } else {
+                                TextMode::Unified
+                            };
+                        }
+                    }
                     Content::Images { old, new } => {
                         self.images = [old.render.clone(), new.render.clone()];
                     }
@@ -923,6 +939,9 @@ impl GitTurtle {
             .and_then(|s| s.to_str())
             .map(language_for)
             .unwrap_or("text");
+        if self.text_mode == TextMode::Diagrams {
+            return;
+        }
         if self.text_mode == TextMode::Split {
             if self.split_view.is_none() {
                 self.split_view = Some(split_diff::new(Arc::clone(split), language, window, cx));
@@ -930,7 +949,7 @@ impl GitTurtle {
             return;
         }
         let (slot, value, language, diff) = match self.text_mode {
-            TextMode::Split => unreachable!(),
+            TextMode::Split | TextMode::Diagrams => unreachable!(),
             TextMode::Unified => (&mut self.patch_editor, patch, "diff", true),
             TextMode::Before => (&mut self.before_editor, old, language, false),
             TextMode::After => (&mut self.after_editor, new, language, false),

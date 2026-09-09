@@ -58,10 +58,19 @@ fn close_rebase_dialog(
 impl GitTurtle {
     pub(super) fn refresh_rebase_message(&self, cx: &mut Context<Self>) {
         if let Some(message) = &self.interactive_rebase.message {
-            let status = self.recovery_drafts.status();
             let message = message.downgrade();
+            let owner = cx.entity().downgrade();
             cx.defer(move |cx| {
-                let _ = message.update(cx, |message, cx| {
+                let (Some(owner), Some(message)) = (owner.upgrade(), message.upgrade()) else {
+                    return;
+                };
+                // Persistence can be requested from this form's input callback.
+                // Defer both the key read and update to avoid reentering it.
+                let status = owner
+                    .read(cx)
+                    .recovery_drafts
+                    .status_for(&message.read(cx).key);
+                message.update(cx, |message, cx| {
                     message.durable_status = status;
                     cx.notify();
                 });
@@ -214,6 +223,7 @@ impl GitTurtle {
             |result, this, window, cx| match result {
                 Ok((expected, key)) => {
                     let recovered = this.recovery_drafts.latest(&key);
+                    let status = this.recovery_drafts.status_for(&key);
                     let owner = cx.entity().downgrade();
                     let retained = this
                         .interactive_rebase
@@ -230,7 +240,6 @@ impl GitTurtle {
                     } else {
                         cx.new(|cx| MessageForm::new(owner, expected, key, recovered, window, cx))
                     };
-                    let status = this.recovery_drafts.status();
                     form.update(cx, |form, _| {
                         form.closed = false;
                         form.durable_status = status;

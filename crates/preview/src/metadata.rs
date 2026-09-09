@@ -47,7 +47,20 @@ pub fn is_svg(bytes: &[u8]) -> bool {
 }
 
 pub fn is_image(bytes: &[u8]) -> bool {
-    image::guess_format(bytes).is_ok() || iso_image_format(bytes).is_some() || is_svg(bytes)
+    image::guess_format(bytes).is_ok()
+        || iso_image_format(bytes).is_some()
+        || jpeg2000_format(bytes).is_some()
+        || is_svg(bytes)
+}
+
+pub fn jpeg2000_format(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x00\x00\x00\x0cjP  \r\n\x87\n") {
+        Some("JPEG 2000 / JP2")
+    } else if bytes.starts_with(b"\xff\x4f\xff\x51") {
+        Some("JPEG 2000 / J2K codestream")
+    } else {
+        None
+    }
 }
 
 pub fn is_literal_text(bytes: &[u8]) -> bool {

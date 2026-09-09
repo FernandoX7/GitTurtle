@@ -214,7 +214,7 @@ pub(super) fn decode_image(bytes: &[u8], format: &str, max_edge: u32) -> Result<
         let source = Owned::new(
             CGImageSourceCreateWithData(data.raw, options.raw),
             CFRelease,
-            "This macOS ImageIO installation cannot read the AVIF/HEIF data",
+            "This macOS ImageIO installation cannot read this image format",
         )?;
         let properties = Owned::new(
             CGImageSourceCopyPropertiesAtIndex(source.raw, 0, options.raw),
@@ -257,7 +257,7 @@ pub(super) fn decode_image(bytes: &[u8], format: &str, max_edge: u32) -> Result<
         let image = Owned::new(
             CGImageSourceCreateThumbnailAtIndex(source.raw, 0, options.raw),
             CGImageRelease,
-            "The installed macOS codec cannot decode this AVIF/HEIF image",
+            "The installed macOS codec cannot decode this image",
         )?;
         let width = u32::try_from(CGImageGetWidth(image.raw))?;
         let height = u32::try_from(CGImageGetHeight(image.raw))?;

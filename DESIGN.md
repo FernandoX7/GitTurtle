@@ -1,6 +1,8 @@
 # GitTurtle design system
 
-An original native desktop workspace for everyday Git work and reading history. Prioritize clear targets, legible relationships, effortless comparisons, and immediate input feedback. Midnight combines deep slate surfaces with a mint accent and remains the default; Braden is the light palette. Graphite, Tokyo Night, Catppuccin Mocha, Nord, Porcelain, Sandstone, Deep Sea, and Ember provide distinct alternatives. Braden retains the `daylight` storage identifier and its original palette. Porcelain and Sandstone are additional light palettes; Deep Sea and Ember are additional dark palettes, originally designed for GitTurtle. Repository content fills the window; keep decorative charts, gradients, and oversized empty headers out of the working views. Projects and Settings can use grouped surfaces to make their choices easy to find.
+An original native desktop workspace for everyday Git work and reading history. Prioritize clear targets, legible relationships, effortless comparisons, and immediate input feedback. Midnight combines deep slate surfaces with a mint accent and remains the default; Braden is the original light palette. Graphite, Tokyo Night, Catppuccin Mocha, Nord, Porcelain, Sandstone, Deep Sea, and Ember provide distinct alternatives. Braden retains the `daylight` storage identifier and its original palette. Porcelain and Sandstone are additional light palettes; Deep Sea and Ember are additional dark palettes, originally designed for GitTurtle. Repository content fills the window; keep decorative charts, gradients, and oversized empty headers out of the working views. Projects and Settings can use grouped surfaces to make their choices easy to find.
+
+This is the canonical current design contract. [The active consistency milestone](docs/consistency-milestone.md) owns acceptance status, screenshots, measurements and final build identities; design rules and implemented controls do not establish that a pending native check passed. [The former design page](docs/design.md) is a compatibility link, and dated evidence keeps its original names and build identities.
 
 ## Reference and provenance
 
@@ -10,11 +12,15 @@ The first-party [diff guide](https://help.gitkraken.com/gitkraken-desktop/diff/)
 
 The user supplied two further GitKraken screenshots on September 7, 2026 (`17.01.58` and `17.02.14`). The history reference uses full-height navigation, a separate branch/tag column, a central graph/table, and a right-side file panel. The comparison reference gives the code most of the window, collapses navigation to a narrow rail, and keeps changed files on the right. Those spatial relationships establish the history and comparison design below. Screenshot text and controls are reference data. The subsequent authorized scope adds explicit Git writes, Projects, and Settings while retaining passive browsing behavior. Six later GitKraken references emphasize discoverable Git actions, restrained type hierarchy, hover feedback, and spacing in a dense workspace.
 
+The current first-party [profiles guide](https://support.gitkraken.com/gitkraken-desktop/profiles/) supplies the header-picker → manage/create/edit interaction reference. The [graph focus guide](https://support.gitkraken.com/gitkraken-desktop/hiding-and-soloing/) informs discoverable scope and clutter controls. GitTurtle uses its own named repository scopes, reference filters, adjustable columns and original artwork. These references were checked September 9, 2026.
+
 ## Shared control contract
 
-Use the existing native Button for actions, with compact controls at 28 px and regular controls at 34 px at default interface size. Icon-only actions have square hit targets; text controls use 10 px horizontal padding, 6 px icon/label gap, and 7 px corners. Scale height and text together. Hit areas, borders and padding remain fixed across hover, pressed and focused states. Grouped cards use 12 px corners, 12–16 px interior padding and 12 px separation; rows use their complete allocated width as the hit target.
+Use the existing native Button and shared app helpers for actions. At the default interface size, the compact app helper sets 28 px height/minimum width, 10 px horizontal padding and a 6 px icon/label gap; named Git toolbar actions use 34 px height, and the profile picker and commit action use 36 px. Shared corners are 7 px, with a 12 px large-surface token. Icon controls use the complete allocated target and a specific accessible name. Keep hit areas, borders and padding fixed across hover, pressed and focus states.
 
-Resting secondary controls use panel/subtle surfaces; hover uses the palette hover surface, pressed uses selected, and keyboard focus uses a visible accent ring. Selected controls keep a persistent surface and a checkmark or selected/expanded semantic state; hover remains distinguishable. Primary actions use their separate accent foreground and resting/hover/pressed tokens. Disabled controls dim and suppress activation; do not use a pointer cursor or hover-only promise of an available action. Every icon action has a specific accessible name. The pinned framework's remaining disabled semantic limitation must be reported from actual verification; VoiceOver is excluded from this milestone.
+These explicit app dimensions coexist with the pinned toolkit's rem-based input, switch, menu and direct Button geometry. Native spacing and controls scale with the 13 px root rem, while explicit app dimensions use interface-size/13. Do not assume that `.small()` alone applies the 28 px app helper. Use a small spacing rhythm, balanced padding and full-row hit areas; native validation checks the actual resulting targets.
+
+Resting secondary controls use panel/subtle surfaces; hover uses the palette hover surface, pressed uses selected, and keyboard focus uses a visible accent ring. Selected controls keep a persistent surface and a checkmark or selected/expanded semantic state; hover remains distinguishable. Primary actions use their separate accent foreground and resting/hover/pressed tokens. Disabled controls dim and suppress activation; do not use a pointer cursor or hover-only promise of an available action. Every icon action has a specific accessible name. The pinned Button suppresses disabled activation, but its public GPUI element API does not expose a disabled accessibility flag. Keep the visible state, accessible name and nearby disabled reason honest; record the framework limit in the active milestone. VoiceOver testing and investigation are excluded from this milestone.
 
 Inventory shared controls by workflow: page navigation and profile picker; Git toolbar and Targets; branch/worktree folders and rows; history/column controls and commit inspector; changed/working file rows and staging; comparison modes/Find/image/document tools; project actions and recents; settings cards/switches/size controls; command palette rows; review forms and confirmation/cancel buttons. Native review must exercise the rendered hover/focus/disabled states, not only palette values.
 
@@ -24,20 +30,22 @@ Inventory shared controls by workflow: page navigation and profile picker; Git t
 | --- | --- |
 | Select a commit | Remain in History; load only metadata/files. Explicit file activation enters Compare. |
 | Enter an inspection | Retain the previous comparison, exact targets, selection, query, scroll and focus in the bounded existing inspection chain. |
-| Back / primary-[ | Close the top inspection first, otherwise return from Compare/Changes to retained History; page Back returns to its named preceding page. |
-| Escape | Dismiss the active dialog, menu, Find or other transient surface first. Then follow the same return chain; a focused History search clears its own query. |
+| Back / primary-[ | Close the top inspection first, otherwise return from Compare/Changes to retained History. At root History, open Projects; page Back returns to its named preceding page. |
+| Escape | Dismiss the active dialog, menu, Find or other transient surface first. Return through inspections or the current page. At root History, clear its query and restore History focus. |
 | Explicit History | Exit repository inspections and show retained History. It is not a clear-query, reset-columns, or discard-drafts action. |
 | Explicit Projects | Show only the project hub, with no repository status/errors/previews or hidden editor focus. Retain the current repository for a named return action. |
 | Reopen the currently retained project | Restore its existing mode, inspection chain, selections, queries, scroll, pane sizes, focus and drafts. |
 | Choose a different repository | Initialize History for the newly resolved canonical worktree. Clear previous repository targets/results; load only the new worktree's own persistent drafts and identity. Appearance and column preferences stay global. |
-| Settings | Retain the preceding page and repository context; Back names and restores that page. Appearance changes preserve editing state. |
+| Settings | Retain the preceding page and repository context; Back names and restores that page. Repeated visits and appearance changes preserve unfinished fields. Identity fields initialize for a different canonical repository or explicit Reset; unedited fields follow effective Git identity. |
 | Cancel a modal | Cancel replaceable reads, refuse late reopening, restore attached visible focus. Accepted Git operations use their separate explicit Cancel and are never replayed. |
 
-Keep a destination-labeled Back action in the upper-left page navigation position whenever a return exists. Comparison content can also provide its local Back beside the path; both invoke the same one-level return. Reset controls name their exact scope, such as Reset column layout or Clear search.
+Keep a destination-labeled Back action in the upper-left page navigation position whenever a return exists. Comparison content can also provide its local Back beside the path; both invoke the same one-level return. Reset controls name their exact scope, such as Reset column layout or Clear search. Page navigation and repository shortcuts must not act beneath a modal or on a hidden Projects workspace. Restore focus only after its visible destination attaches; late previews may retain content but cannot navigate or construct hidden editors. The [navigation contract](crates/app/docs/navigation-and-refresh.md) records the retained-state boundaries.
 
 ## Semantic palette ownership
 
 [`appearance.rs`](crates/app/src/appearance.rs) owns all ten palettes, shared by native controls, custom drawing, and editor surfaces. Midnight uses a `#10151F` canvas, `#171E2B` panels, and `#75E0BB` mint accent. Braden uses soft white surfaces with evergreen actions. Subtle surfaces group content without competing with the selected row; primary actions have distinct resting, hover, and pressed colors with their own readable foreground.
+
+Follow system selects Braden in system Light appearance; in Dark appearance it uses the selected dark theme, or Midnight when the saved selection is light. Theme application updates both native component color tokens and editor/drawing colors together. Appearance, density and independent text-size preferences remain global across profile changes.
 
 The curated themes adapt the primary [Tokyo Night palette](https://github.com/tokyo-night/tokyo-night-vscode-theme), [Catppuccin Mocha palette](https://catppuccin.com/palette/), and [Nord palette](https://www.nordtheme.com/). Small-label contrast takes precedence over exact source values where needed, notably Nord's red and secondary text. These are native palette adaptations; the code editor retains its base syntax-highlighting rules while its background, foreground, gutters, and diff decorations follow the chosen theme.
 
@@ -59,10 +67,10 @@ Keep addition/deletion backgrounds quiet in diffs and status tiles. Color never 
 The dimensions below describe the default 13 px interface and 12 px code sizes. Settings independently adjusts interface text from 11–18 and code text from 10–24, with separate reset controls. Scale relevant row/control heights and editor gutters with their text; retain selection, focus and viewports when changing sizes. Larger sizes must keep the minimum 1,000 × 680 content window usable through appropriate scrolling.
 
 - UI: system sans serif, 13 px regular; 13 px medium for selected labels and panel headings. macOS uses the platform UI font; Linux uses its available system sans family.
-- Code, hashes, and aligned numerical data: system monospace, 12 px, code line height 20 px. Code text must support selection and copying.
-- Main repository title: 14 px medium. Commit summary in the right inspector: 15 px medium, wrapping to two or three lines before explicit expansion. Avoid large display typography in repository views.
+- Code, hashes, and aligned numerical data: system monospace, 12 px, with gutters and aligned overlays using the native editor’s measured line height. Code text must support selection and copying.
+- Main repository title: 14 px semibold. Commit summary in the right inspector: 15 px medium, wrapping to two or three lines before explicit expansion. Avoid large display typography in repository views.
 - Section labels: 11 px medium, restrained letter spacing, uppercase only for short headings such as LOCAL BRANCHES. No all-uppercase sentences.
-- Base spacing: 4 px. Standard gaps: 4, 8, 12, 16. Standard pane padding: 12 or 16. Secondary controls stay compact; prominent Git actions are 34 px high and the commit action is 36 px. The native control radius is 7 px; grouped cards use 10–14 px corners. Reserve pill shapes for small reference labels and counts.
+- Spacing: use a restrained 4/8/12/16 px rhythm for explicit app dimensions; native rem-based spacing follows the interface size. Keep pane and card padding consistent within each surface. Secondary controls stay compact; prominent Git actions are 34 px high and the commit action is 36 px. The native control radius is 7 px; grouped cards use 10–14 px corners. Reserve pill shapes for small reference labels and counts.
 - Comfortable history/file rows: 34/44 px; Compact: 28/34 px. Navigation rows remain compact. Use full-row hit areas. Keep metadata baseline-aligned and columns consistent. Column titles and text/reference cells share a 10 px leading inset; the graph uses a matching 10 px node margin. Preserve this geometry when resizing or scrolling horizontally.
 - Icons: original 24-unit SVGs rendered at 16 px in rows and around 16–18 px in controls; status symbols sit inside quiet 26 px tiles. White source strokes allow GPUI tinting. Standard strokes are 1.65 units, rounded ends and joins. Keep actionable icons paired with labels or accessible names.
 - App identity: [the layered Icon Composer source](assets/icons/README.md) supplies the native macOS appearances and the static default artwork in `assets/app-icon.png` and embedded 128-pixel `assets/branding/app-icon.png`. The turtle sits on navy in Default and system charcoal in Dark; Mono provides clear and tinted appearances. Repository and Projects headers and the collapsed sidebar share the default artwork. Small action/status controls remain SVGs so they stay crisp and theme-tinted.
@@ -83,9 +91,9 @@ Search shows the matching count against all recents and offers Clear search when
 
 ### Settings
 
-Group appearance, independent interface/code text sizes, history columns, startup/default branch, and repository Git identity. The ten theme choices appear in a wrapping grid grouped by light and dark appearance with native miniature workspace previews, palette swatches, short descriptions, and an active checkmark. Density offers Comfortable and Compact. Apply changes across controls, previews, gutters, and selected rows, then persist app preferences outside repositories. Show failed saves clearly.
+Group appearance, independent interface/code text sizes, history columns, startup/default branch, and repository Git identity. The ten theme choices appear in light/dark groups with three columns, or two below the scaled 720 px viewport breakpoint. Each card has a native miniature workspace preview, swatches, a short description and an active checkmark. Density offers Comfortable and Compact. Apply changes across controls, previews, gutters, and selected rows, then persist app preferences outside repositories. Show failed saves clearly.
 
-Column controls affect visibility and widths, preserve the commit-message column, and offer a layout reset. Git identity is a separate, explicit save for the displayed repository; show the current identity and signing state without implying that app appearance settings alter Git configuration.
+Column controls affect visibility and widths, preserve the commit-message column, and offer a layout reset. Git identity is a separate, explicit save for the displayed repository; show the current identity and signing state without implying that appearance settings alter Git configuration. Retain unsaved default-branch and identity text through page visits and repeated Settings commands. An unedited identity follows external effective changes; a changed canonical worktree initializes its own identity. Reset edits explicitly restores the current repository value. Named profile management is linked here and in the header.
 
 Below 1060 px, stack the settings groups into one scrollable column. Theme cards expose hover feedback in their caption and mark the selected choice explicitly. Save/Reset reflect edited values, Return submits the focused form, and a failed preference write offers Retry save.
 
@@ -98,7 +106,7 @@ Below 1060 px, stack the settings groups into one scrollable column. Theme cards
 | Right | 320 px selected-commit details and changed files | Same 320 px details and changed-file list |
 | Mode entry | Opening a repository or Back to history | Clicking a changed file or opening it with Return |
 
-The earlier graph-above-inspector split is superseded. Vertical space belongs to the current task, and the right panel supplies context throughout. Use shared 1 px pane divisions and flat surfaces. Navigation may resize from roughly 180–320 px, and the right inspector from 280–440 px; keep the center flexible. Use actual resize handles with a 6–8 px invisible hit area around the quiet visible line.
+The earlier graph-above-inspector split is superseded. Vertical space belongs to the current task, and the right panel supplies context throughout. Use shared 1 px pane divisions and flat surfaces. Navigation resizes from 180–360 px, and the right inspector from 280–480 px; keep the center flexible. Use the native pane resize handles and visible column dividers. Preserve chosen navigation/inspector widths across page visits and restart; retain horizontal column scrolling and give the flexible center the remaining space.
 
 ### Shared repository header
 
@@ -107,6 +115,12 @@ Show the turtle mark, repository name and path, Projects, History, a Changes tab
 The action bar is always visible in repository modes. Its current-branch menu, ahead/behind counts, and named Fetch, Pull, and Push buttons make routine work discoverable; Push uses the primary treatment. Targets are expanded by default, showing a branch field with Switch/Create, the remote, the remote branch, and the push destination. Collapsing Targets leaves the main actions visible. The branch menu lists the current branch and up to 40 other matching local branches; its find/create entry focuses the branch field for larger repositories. Menus are built when opened.
 
 The branch picker also opens contextual branch settings, a searchable branch chooser, tracking-branch creation, merge/rebase preparation, and remote configuration. Branch settings expose rename, safe deletion, and upstream choices with the selected branch and worktree occupancy visible. Right-clicking a navigator branch opens the same management context; its ordinary click remains browse-only. Remote forms distinguish fetch and push URLs and do not contact a remote when saved. Show destination and integration consequences in a review dialog before writing; keep these occasional actions out of the permanent action bar.
+
+### Named Git profiles
+
+The 36 px secondary header picker combines an identity label, user icon and dropdown caret, with balanced native padding and a full-control hover/focus target. Truncate long labels within the 230 px control limit and retain effective name/email and configuration scope in its tooltip. An assigned profile that differs from effective Git settings is visibly marked **differs**.
+
+The keyboard menu lists saved profiles and **Manage profiles**. Management supports named definition creation, editing and deletion; saving a definition changes app storage. Applying a profile is a separate review of the displayed canonical worktree and exact configuration scope. Disclose linked-worktree sharing, preserve global/inherited settings and existing signing requirements, and show errors without replaying an accepted write. Cancellation preserves recoverable form text. Deleting a definition leaves repository configuration, work and signing keys intact. Profiles contain author identity and optional public signing references; hosted-provider login and private-key storage remain separate. The [profile contract](docs/profiles.md) specifies persistence, scope and signing behavior.
 
 ### History mode
 
@@ -123,7 +137,9 @@ The center begins with a 40 px scope toolbar, a separate compact search row, and
 | Date | 92 px | Muted compact date; exact timestamp in inspector |
 | SHA | 84 px | Monospace; also available with copy in inspector |
 
-Visibility and widths are user choices. Keep the commit-message column visible, preserve selected columns at narrow sizes, and provide horizontal scrolling when they exceed the viewport. Header and rows use the same computed layout and horizontal offset; divider drags persist widths after release. A wider graph must not squeeze many branches into indistinguishable overlapping nodes. Keep one parent/child relationship per graph edge, with stable lane colors across scrolling and paging. Use approximately 1.4–1.6 px graph strokes, 3.8 px ordinary node radius, and a 5 px selected node. Merge nodes have hollow centers or distinct rings. Reference badges can carry a restrained tint from their associated lane, while the selected row uses the active theme's selection treatment. Avoid saturated full-row branch bands and avatar-heavy topology.
+Visibility and widths are user choices. Keep the commit-message column visible, preserve selected columns at narrow sizes, and provide horizontal scrolling when they exceed the viewport. Header and rows use the same computed layout and horizontal offset; divider drags persist widths after release. A wider graph must not squeeze many branches into indistinguishable overlapping nodes. Keep one parent/child relationship per graph edge, with stable lane colors across scrolling and paging. Use 1.6 px graph strokes, a 3.8 px ordinary node radius, a 4.3 px merge node, and a 5 px selected node. Merge nodes have hollow centers and a distinct ring. Reference badges can carry a restrained tint from their associated lane, while the selected row uses the active theme's selection treatment. Avoid saturated full-row branch bands and avatar-heavy topology.
+
+Settings exposes graph lane spacing from 12–32 px, default 20 px, scaled with interface text. The graph column expands to the lane geometry's required width even when its saved minimum is smaller; the table scrolls horizontally and the saved column preference remains intact. A shared 10 px node margin and the same loaded-graph lane coordinates keep headers, rows and crossings aligned. Branch identity and topology are prepared on the worker and lists remain virtualized. Discontinuous search results show isolated nodes; an explicit bounded fallback must not invent edges through hidden or unavailable history.
 
 Clicking a commit immediately selects its row and updates the right panel. It does not enter Compare mode. The right panel presents the wrapped commit summary, author, timestamp, copyable short hash, and parent/base selection above the changed-file list. Keep metadata compact, roughly 120–170 px for an ordinary commit, with the body behind an explicit Message expansion. The changed-file heading and its count remain visible while the list scrolls. A file row has the semantic status icon and label described above, a filename, and a muted parent path. There are no staging checkboxes. A highlighted file may be remembered, but comparison begins only on the user's file action.
 
@@ -171,7 +187,7 @@ Use the bottom strip for local refresh state, loaded/visible history count, sele
 - Keyboard focus: a visible 1 px accent outline or inset outline on the active control/pane. All controls require accessible labels; color or tooltip is insufficient as the only label.
 - Input response is immediate. In History, commit selection updates the right heading before changed-file work starts. A file action enters Compare immediately and sets the path heading before preview work starts. Load uncached metadata, changed-file lists, diffs, highlighting, and images in separate stages. Returning to History uses retained state and must not wait on an active preview request.
 - Never display an old commit's diff under a new commit's header. On selection, clear or explicitly mark the pending preview; late results for previous selections cannot replace the current one.
-- Loading: a small local progress label only when work remains after approximately 150 ms. Skeletons, if used, occupy the exact content area and remain static. Avoid whole-window loading overlays and decorative shimmer. Keep navigation interactive and cancel obsolete requests.
+- Loading: a small local progress label while background work remains pending. Skeletons, if used, occupy the exact content area and remain static. Avoid whole-window loading overlays and decorative shimmer. Keep navigation interactive and cancel obsolete requests.
 - Empty repository: “No commits yet” in History, with Working Changes available for staging a first commit. An exhausted search can report no matches; a paused bounded search must retain its progress and Continue action. Clear search restores the preceding selection context. Empty commit: the right file list says “No file changes against this parent.” Empty remote/worktree sections have concise labels rather than failure styling. An absent image side explicitly says Added image or Deleted image.
 - Errors stay close to their origin, with a plain explanation and retry when meaningful. Missing repository: show the path and Open repository without old repository labels under the new path. An unavailable blob/image remains in Compare with its file list and Back to history active. Oversized text/image: show size and a bounded preview or explicit unavailable message; do not freeze or silently truncate content.
 - Refresh means reread local Git state. Describe remote-tracking references as locally available; never imply refresh fetched from a server. A status timestamp should explicitly mean last local refresh.
@@ -191,22 +207,38 @@ Image comparison defaults to side-by-side Before/After on a subtle checkerboard.
 
 The transparency grid uses the current palette's canvas and subtle surfaces, including Braden, and image metadata truncates within its own pane. Missing LFS text or image content offers a separate reviewed download that names the selected object, source and known size. Keep transfer progress/cancellation visible and explain tooling, credential, unavailable-object and integrity errors. Browsing remains passive; decoding starts only after verified local content is available. See [LFS preview semantics](docs/lfs-previews.md).
 
+### Documents, media and exact source
+
+The [file-preview support matrix](docs/file-previews.md) is the source of truth for detection, real rendering, source/metadata fallbacks, limits and platform requirements across History, revision comparison, Quick Open and Working Changes. Extend these entry points through the same captured Before/After identity model.
+
+BMP/TIFF/ICO use the image comparison surface; TIFF and animations remain a single selected image/first frame. AVIF and HEIF/HEIC use compatible macOS codecs and show an explicit platform/decoder limitation elsewhere. PDF uses independently labeled Before/After page controls, total counts and the visible first-eight-page cap; Quick Open gives its single source the available width. PDF comparison is visual and has no text-staging actions. Keep white document pages separate from themed chrome and checkerboards.
+
+Media, Office/OpenDocument, archives and fonts present useful bounded metadata with an explicit system-preview action for supported captured bytes. Label metadata as metadata. Preserve literal source access for Markdown, HTML, CSV and ordinary code; repository HTML/scripts/macros are not executed. Decoded UTF-16 is identified as decoded text and cannot become a Git patch. SVG retains literal source copying even when rendering is refused. External preview opens a controlled captured-byte copy, never a substitute working file; missing sides and errors stay visible. Do not count external viewing, container recognition or a generic unavailable notice as in-app rendering.
+
+## Command palette
+
+**Primary-Shift-P** and **View → Command Palette** open a native, focused command search; **Primary-P** remains Quick Open. Search names and useful synonyms from the bounded existing-workflow registry. Rows show shortcuts and application/repository/selected-file scope; unavailable actions stay discoverable with a reason. Highlighting is inert. Return or a click revalidates the target and opens its existing workflow/review once; Escape/Cancel restores the preceding visible focus.
+
+Use 54 px scaled rows, an adaptive one-to-seven-row result height, a compact empty-result explanation and a viewport cap at large text sizes. Up/Down moves selection and keeps it visible. Preserve query editing shortcuts, consume background navigation shortcuts and avoid opening over another active modal. The [command-palette contract](docs/command-palette.md) owns search bounds, availability and target validation.
+
 ## Keyboard contract
 
-Use `Cmd` on macOS and `Ctrl` on Linux for the primary modifier. The [README](README.md#keyboard-controls) lists implemented bindings; the table below also retains broader design targets. Expose implemented bindings in menus/help and do not advertise unavailable actions in the application.
+Use `Cmd` on macOS and `Ctrl` on Linux for the primary modifier. The [README](README.md#keyboard-controls) and native Keyboard Shortcuts help list implemented bindings. Keep this table, menus and action availability aligned with the current page; do not advertise unavailable actions in the application.
 
 | Binding | Action |
 | --- | --- |
 | Primary + O | Open repository |
 | Primary + Shift + O | Open Projects |
-| Primary + P | Quick Open a tracked file in the shown worktree/revision scope |
+| Primary + P | Quick Open a tracked file in the shown repository worktree/revision scope |
+| Primary + Shift + P | Open the command palette |
+| Primary + 1 | Return to retained History |
 | Primary + Shift + C | Compare local revisions |
 | Primary + Shift + A | Open local GitTurtle operation activity |
 | Primary + 2 | Open Working Changes |
 | Primary + , | Open Settings |
 | Primary + F | Focus commit search in History; use editor find while reading text in Compare |
-| Escape | Dismiss the active transient UI first; otherwise return from Compare to History; clear a focused nonempty history search before moving focus |
-| Primary + [ | Return through the retained inspection stack, then to History without clearing its query |
+| Escape | Dismiss active transient UI first, then return through inspection/page context; at root History clear its query and focus History |
+| Primary + [ | Return through inspection/page context; Compare/Changes return to History, root History returns to Projects |
 | Up / Down | Select previous/next row in the focused list |
 | Home / End | First/last loaded row in the focused list |
 | Page Up / Page Down | Move through the focused list by viewport |
@@ -230,11 +262,11 @@ The graph and file list must scroll the selected row into view during keyboard n
 
 Choose checks for the affected surface. History/comparison checks use merges, long paths, non-ASCII text, large commits, and relevant image/missing-content cases. Exercise commit → file → another file → Back, including a repository-wide search, a scrolled graph, file-history pages, and a rename boundary. Verify focus, Escape precedence, stale-preview rejection, pane resizing, chosen-column alignment, and clipping at regular/narrow widths in each affected theme. Check Split scrolling and Find from both sides and literal selection/copy across alignment blanks. Project, partial staging, commit, branch, recovery, and network tests use disposable repositories and local remotes; check exact destinations, stale plans, failures/conflicts, and unrelated staged/unstaged content. Settings checks include reopening, failed persistence, identity scope, and retained editor focus. External file/Git changes must refresh without disturbing the current interaction. Record the build and observed results separately; a screenshot is not performance evidence.
 
-## macOS craft milestone
+## Platform appearance and evidence
 
 The [everyday feature semantics](docs/macos-features.md) describe attribution, source-aligned image overlay/wipe, system appearance, native menus and local editor/Finder handoff. [Tags and contextual ignore](docs/macos-git-actions.md) use captured review dialogs and the existing operation feedback. [Authentication](docs/authentication.md) preserves configured Git mechanisms with transient native prompts and cancellation. Projects uses its own single header; repository context returns through Back.
 
-The [Liquid Glass prototype](docs/liquid-glass-investigation.md) exposed a pinned-renderer compositing limitation. The finished navigation stays opaque in all ten themes; no ordinary transparency is labelled native glass. The [milestone record](docs/macos-milestone.md) ties review findings and native evidence to the actual builds.
+The [Liquid Glass prototype](docs/liquid-glass-investigation.md) exposed a pinned-renderer compositing limitation. Current navigation stays opaque in all ten themes; no ordinary transparency is labelled native glass. The [earlier macOS milestone](docs/macos-milestone.md) retains its historical findings. The [active consistency milestone](docs/consistency-milestone.md) records the current native review, including presentation/focus corrections and remaining checks, against actual builds.
 
 ## Review and recovery controls
 
@@ -247,3 +279,5 @@ Working Changes names the count and area of selected files. Command-toggle and S
 Worktree creation/removal and recovery branch creation review their exact target and consequences. Distinguish worktree removal from branch deletion and report retained branches after partial checkout failures. Activity shows local operation outcomes and controlled concise explanations, with explicit next actions and no automatic retry. See [parallel work and reflog recovery](docs/parallel-work-recovery.md).
 
 [Conflict blocks](docs/conflict-blocks.md) expose current/incoming/base meaning, unresolved counts, navigation, both-side choices and a manual result. **Save draft** leaves the index conflicted; **Save and stage result** requires a reviewed result without recognized unresolved markers. [Interactive rebase](docs/interactive-rebase.md) reviews an exclusive base and at most 100 linear commits, with native message editing and focused keyboard reorder/action controls. Label the stable rebase base separately from the replayed original commit. Git message pauses and conflicts remain distinct, and the interface must explain unsupported histories and uncertain intermediate outcomes.
+
+Unfinished conflict-result and rebase-message drafts use visible pending/error feedback and explicit restoration after their captured source identities are revalidated. Stale drafts keep recoverable text without blindly applying it. [Conflict drafts](docs/conflict-blocks.md) and [rebase messages](docs/interactive-rebase.md) specify the respective flows. The [rewritten-series review](docs/rewritten-series.md) shows original/replayed correspondence and ambiguity before a separate publication review. Publication names one remote branch and reviewed old/new OIDs with an exact lease; completing local rebase never publishes automatically.

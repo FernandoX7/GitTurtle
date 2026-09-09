@@ -45,7 +45,22 @@ The signing failure was reproduced directly in a disposable Git 2.43.0 repositor
 
 Running the remaining suites separately exposed two diagnostic compatibility cases: a missing promisor object terminates Git 2.43's batch reader with lazy fetching disabled, and a stash application blocked by an existing index lock returns empty stdout/stderr. Both now provide useful diagnostics while preserving no-fetch and repository-state assertions. The Linux preview suite independently passed 19 tests; macOS-only decoder tests are excluded on Linux.
 
-An immutable six-file compatibility overlay of `043f562` passed `cargo test --locked --offline -p gitturtle-core --no-fail-fast --test repository --test recovery --test profiles --test signing --test tags_ignore`: 60 passed, with two optional environment-dependent signing tests ignored. This exercised real SSH missing-key refusal, exact unsigned-tag rollback, concurrent replacement preservation, missing-object snapshots and stash lock preservation. A subsequent immutable tag-guard refinement passed `cargo test --locked --offline -p gitturtle-core --test tags_ignore signed_tag_postcondition`: two passed, including observed symbolic-reference replacement. Final integrated checkpoint validation is pending.
+An immutable six-file compatibility overlay of `043f562` passed `cargo test --locked --offline -p gitturtle-core --no-fail-fast --test repository --test recovery --test profiles --test signing --test tags_ignore`: 60 passed, with two optional environment-dependent signing tests ignored. This exercised real SSH missing-key refusal, exact unsigned-tag rollback, concurrent replacement preservation, missing-object snapshots and stash lock preservation. A subsequent immutable tag-guard refinement passed `cargo test --locked --offline -p gitturtle-core --test tags_ignore signed_tag_postcondition`: two passed, including observed symbolic-reference replacement.
+
+### Integrated Linux validation
+
+The integrated source snapshot is `75daadcd7fa9b5a7f4a0d28f248cf053856b40d6`, again extracted using `git archive` and mounted read-only. The same isolated registry/target volumes retain compiled dependencies; no user repository, credential home or running application state is mounted. The final formatting/Clippy retry uses that snapshot with only `crates/app/src/settings.rs` replaced by its test-module relocation: SHA-256 `1d29cb20e8f28d8fd25be4013c412e933cee53b3580ef1cac71be7a536db12de`. The relocation moves the existing `cfg(test)` module after production items; executable behavior is unchanged.
+
+| Exact command | Executed result |
+| --- | --- |
+| `cargo fmt --all -- --check` | Passed on `75daadc` and after the test-module relocation; final retry 1.25 s including container startup. |
+| `cargo test --locked --offline --workspace --no-fail-fast` | Passed: 424 tests, zero failures, three ignored, 22.10 s including container startup and incremental compilation. App: 186 passed/one ignored; core unit: 21 passed; preview: 19 passed. The remaining passing tests are core integration fixtures. |
+| `cargo clippy --locked --offline --workspace --all-targets -- -D warnings` | Passed after relocating the Settings test module, 3.32 s including container startup and incremental compilation. The initial `items_after_test_module` diagnostic is resolved. |
+| `cargo build --release --locked --offline -p gitturtle` | Passed on `75daadc`, 131.35 s including container startup and compilation. |
+
+The three ignored Linux tests are the manual performance fixture and optional OpenPGP/loopback-sshd environment tests. The latter two were explicitly executed successfully on macOS earlier in this record. These durations include compilation/container startup and are not application latency measurements.
+
+The release executable SHA-256 is `2ccfe063599563c3f6ec19ec553c5055cc5884b8b9aa34928c38c328b6c17080`. `readelf -h` identifies an ELF64 little-endian AArch64 position-independent executable; `ldd` resolves every listed dynamic dependency in the QA image. The actual container kernel is `7.0.12-linuxkit` on aarch64, with Rust 1.98.0 / LLVM 22.1.8. No display server or native Linux window was started.
 
 These runs establish Linux/aarch64 compilation and the explicitly listed checks. They do not exercise native window rendering or X11/Wayland integration, and they are distinct from the workflow's hosted Ubuntu runner.
 

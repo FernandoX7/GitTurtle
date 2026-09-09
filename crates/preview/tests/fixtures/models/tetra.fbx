@@ -1,0 +1,16 @@
+; FBX 7.4.0 project file
+FBXHeaderExtension: { FBXHeaderVersion: 1003
+ FBXVersion: 7400
+}
+Objects: {
+ Geometry: 100, "Geometry::Tetrahedron", "Mesh" {
+ Vertices: *12 { a: 0,0,0,2,0,0,0,3,0,0,0,4 }
+ PolygonVertexIndex: *12 { a: 0,2,-2,0,1,-4,1,2,-4,2,0,-4 }
+ }
+ Model: 200, "Model::Tetrahedron", "Mesh" { Version: 232
+ }
+}
+Connections: {
+ C: "OO",100,200
+ C: "OO",200,0
+}

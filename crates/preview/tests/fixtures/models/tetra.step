@@ -1,0 +1,28 @@
+ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION(('GitTurtle faceted fixture'),'2;1');
+FILE_NAME('tetra.step','2026-09-09',('GitTurtle'),('GitTurtle'),'','','');
+FILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));
+ENDSEC;
+DATA;
+/* A self-contained tetrahedron; comments are not entities: #999=MAPPED_ITEM('x'); */
+#1=CARTESIAN_POINT('O;quoted ''label''',(0.,0.,0.));
+#2=CARTESIAN_POINT('',(2.,0.,0.));
+#3=CARTESIAN_POINT('',(0.,3.,0.));
+#4=CARTESIAN_POINT('',(0.,0.,4.));
+#10=POLY_LOOP('',(#1,#3,#2));
+#11=POLY_LOOP('',(#1,#2,#4));
+#12=POLY_LOOP('',(#2,#3,#4));
+#13=POLY_LOOP('',(#3,#1,#4));
+#20=FACE_OUTER_BOUND('',#10,.T.);
+#21=FACE_OUTER_BOUND('',#11,.T.);
+#22=FACE_OUTER_BOUND('',#12,.T.);
+#23=FACE_OUTER_BOUND('',#13,.T.);
+#30=FACE('',(#20));
+#31=FACE('',(#21));
+#32=FACE('',(#22));
+#33=FACE('',(#23));
+#40=CLOSED_SHELL('',(#30,#31,#32,#33));
+#41=FACETED_BREP('Tetrahedron',#40);
+ENDSEC;
+END-ISO-10303-21;

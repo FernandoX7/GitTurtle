@@ -33,9 +33,11 @@ impl Drop for ExternalPreviewSlot {
 }
 
 pub struct Page {
-    pub render: Arc<RenderImage>,
+    pub render: Option<Arc<RenderImage>>,
     pub width: u32,
     pub height: u32,
+    pub caption: Option<String>,
+    pub error: Option<String>,
 }
 
 pub struct Side {
@@ -44,6 +46,7 @@ pub struct Side {
     pub name: PathBuf,
     pub pages: Vec<Page>,
     pub page_count: usize,
+    pub page_kind: &'static str,
     pub error: Option<String>,
     pub present: bool,
     selected_page: AtomicUsize,
@@ -66,6 +69,7 @@ impl Side {
             name: name.into(),
             pages: Vec::new(),
             page_count: 0,
+            page_kind: "Page",
             error,
             present,
             selected_page: AtomicUsize::new(0),
@@ -87,10 +91,17 @@ impl Side {
             name: name.into(),
             pages: Vec::new(),
             page_count: 0,
+            page_kind: "Page",
             error: None,
             present: true,
             selected_page: AtomicUsize::new(0),
         };
+        if side.metadata.source.is_none()
+            && bytes.len() <= gitturtle_core::MAX_DIFF_BYTES
+            && metadata::is_literal_text(&bytes)
+        {
+            side.metadata.source = std::str::from_utf8(&bytes).ok().map(Arc::from);
+        }
         if bytes.starts_with(b"%PDF-") {
             match gitturtle_preview::decode_pdf(&bytes, &check) {
                 Ok(document) => {
@@ -98,13 +109,37 @@ impl Side {
                     for page in document.pages {
                         check()?;
                         side.pages.push(Page {
-                            render: worker::render_image(&page)?,
+                            render: Some(worker::render_image(&page)?),
                             width: page.width,
                             height: page.height,
+                            caption: None,
+                            error: None,
                         });
                     }
                     if side.pages.len() < side.page_count {
                         side.metadata.details.push(format!("Showing the first {} of {} pages; system preview opens the complete captured document.",side.pages.len(),side.page_count));
+                    }
+                }
+                Err(error) => side.error = Some(format!("{error:#}")),
+            }
+        } else if gitturtle_preview::model3d::is_model_path(name) {
+            side.page_kind = "View";
+            side.metadata.format = "3D model".into();
+            match gitturtle_preview::model3d::decode_model(&bytes, &name.to_string_lossy(), &check)
+            {
+                Ok(model) => {
+                    side.metadata.format = model.format;
+                    side.metadata.details.extend(model.details);
+                    side.page_count = model.views.len();
+                    for view in model.views {
+                        check()?;
+                        side.pages.push(Page {
+                            render: Some(worker::render_image(&view.image)?),
+                            width: view.image.width,
+                            height: view.image.height,
+                            caption: Some(view.caption),
+                            error: None,
+                        });
                     }
                 }
                 Err(error) => side.error = Some(format!("{error:#}")),
@@ -127,7 +162,14 @@ impl Side {
             + self
                 .pages
                 .iter()
-                .map(|p| p.render.as_bytes(0).map_or(0, <[u8]>::len))
+                .map(|p| {
+                    p.render
+                        .as_ref()
+                        .and_then(|r| r.as_bytes(0))
+                        .map_or(0, <[u8]>::len)
+                        + p.caption.as_ref().map_or(0, String::capacity)
+                        + p.error.as_ref().map_or(0, String::capacity)
+                })
                 .sum::<usize>()
             + self.name.as_os_str().len()
             + self.error.as_ref().map_or(0, String::capacity)
@@ -150,6 +192,95 @@ impl Comparison {
     }
 }
 
+pub(super) fn prepare_mermaid(
+    old: &str,
+    new: &str,
+    file: &gitturtle_core::FileChange,
+    check: impl Fn() -> anyhow::Result<()>,
+) -> anyhow::Result<Option<Comparison>> {
+    // Symlinks and unresolved LFS pointers remain literal identities, including
+    // those with Mermaid suffixes; only verified content is a diagram source.
+    if [file.old_mode.as_str(), file.new_mode.as_str()].contains(&"120000")
+        || [old, new]
+            .iter()
+            .any(|source| gitturtle_preview::detect_lfs_pointer(source.as_bytes()).is_some())
+    {
+        return Ok(None);
+    }
+    let old_name = file.old_path.as_deref().unwrap_or_else(|| file.path());
+    let new_name = file.new_path.as_deref().unwrap_or_else(|| file.path());
+    let old_document = if file.old_path.is_some() {
+        gitturtle_preview::mermaid::preview(old, old_name, 1600, &check)?
+    } else {
+        None
+    };
+    let new_document = if file.new_path.is_some() {
+        gitturtle_preview::mermaid::preview(new, new_name, 1600, &check)?
+    } else {
+        None
+    };
+    if old_document.is_none() && new_document.is_none() {
+        return Ok(None);
+    }
+    let mut sides = Vec::with_capacity(2);
+    for (source, name, present, document) in [
+        (old, old_name, file.old_path.is_some(), old_document),
+        (new, new_name, file.new_path.is_some(), new_document),
+    ] {
+        check()?;
+        let mut side = Side::unavailable(name, present, None);
+        side.page_kind = "Diagram";
+        side.metadata.format = "Mermaid diagrams".into();
+        if present {
+            side.captured = Some(Arc::from(source.as_bytes()));
+            side.metadata.source = Some(Arc::from(source));
+        }
+        if let Some(document) = document {
+            side.page_count = document.total;
+            for (index, diagram) in document.diagrams.into_iter().enumerate() {
+                check()?;
+                let (render, width, height) = if let Some(image) = diagram.image {
+                    (
+                        Some(worker::render_image(&image)?),
+                        image.width,
+                        image.height,
+                    )
+                } else {
+                    (None, 1, 1)
+                };
+                side.pages.push(Page {
+                    render,
+                    width,
+                    height,
+                    caption: Some(format!(
+                        "Diagram {} · source line {}",
+                        index + 1,
+                        diagram.source_line
+                    )),
+                    error: diagram.error,
+                });
+            }
+            side.metadata.details.push("Static Mermaid: flowchart, sequence, class, state, ER and pie. Source tabs retain exact text and staging.".into());
+            if side.pages.len() < side.page_count {
+                side.metadata.details.push(format!(
+                    "First {} of {} Mermaid blocks rendered; inspect Source for all blocks.",
+                    side.pages.len(),
+                    side.page_count
+                ));
+            }
+        } else if present {
+            side.metadata
+                .details
+                .push("No Mermaid diagrams on this side; literal Source remains available.".into());
+        }
+        sides.push(Arc::new(side));
+    }
+    Ok(Some(Comparison {
+        old: sides.remove(0),
+        new: sides.remove(0),
+    }))
+}
+
 /// Render only supplied content. A dialog child must not borrow its parent
 /// entity while that parent is already rendering the dialog layer.
 pub(super) fn render_comparison<T: 'static>(
@@ -168,15 +299,19 @@ pub(super) fn render_comparison<T: 'static>(
                 header=header.child(button(("system-preview",index),"System preview","external-link",false).tooltip("Inspect an isolated copy of these captured revision bytes").on_click(move |_,window,cx| { let _=target.update(cx,|this,cx|this.open_captured_preview(Arc::clone(&captured),window,cx)); window.refresh(); }));
             }
             if !side.pages.is_empty() {
-                for (name,delta,disabled) in [("Previous page",-1isize,selected==0),("Next page",1isize,selected+1>=side.pages.len())] {
+                for (name,delta,disabled) in [(format!("Previous {}",side.page_kind.to_ascii_lowercase()),-1isize,selected==0),(format!("Next {}",side.page_kind.to_ascii_lowercase()),1isize,selected+1>=side.pages.len())] {
                     let side=Arc::clone(side);
                     header=header.child(button((if delta<0 {"pdf-previous"}else{"pdf-next"},index),"",if delta<0 {"chevron-left"}else{"chevron-right"},false).accessibility_label(format!("{label}: {name}")).tooltip(name).disabled(disabled).on_click(cx.listener(move|_,_,window,cx| { let next=side.selected_page.load(Ordering::Relaxed).saturating_add_signed(delta).min(side.pages.len().saturating_sub(1)); side.selected_page.store(next,Ordering::Relaxed); window.refresh(); cx.notify(); })));
                 }
-                header=header.child(div().text_size(appearance::ui_text(11.)).child(format!("Page {} / {}{}",selected+1,side.page_count,if side.pages.len()<side.page_count {" · first 8 available"}else{""})));
+                header=header.child(div().text_size(appearance::ui_text(11.)).child(format!("{} {} / {}{}",side.page_kind,selected+1,side.page_count,if side.pages.len()<side.page_count {format!(" · first {} available",side.pages.len())}else{String::new()})));
             }
             let mut body=div().id(("rich-side-scroll",index)).flex_1().min_h_0().overflow_y_scroll().p_3().flex().flex_col().gap_3();
             if !side.present { body=body.child(div().text_color(rgb(colors.muted)).child("No file on this side")); }
-            if let Some(page)=side.pages.get(selected) { body=body.child(div().w_full().aspect_ratio(page.width as f32/page.height as f32).bg(rgb(0xffffff)).child(img(page.render.clone()).size_full().object_fit(ObjectFit::Contain))); }
+            if let Some(page)=side.pages.get(selected) {
+                if let Some(caption)=&page.caption { body=body.child(div().text_size(appearance::ui_text(12.)).child(caption.clone())); }
+                if let Some(render)=&page.render { body=body.child(div().w_full().aspect_ratio(page.width as f32/page.height as f32).bg(rgb(0xffffff)).child(img(render.clone()).size_full().object_fit(ObjectFit::Contain))); }
+                if let Some(error)=&page.error { body=body.child(div().text_color(rgb(colors.modified)).text_size(appearance::ui_text(12.)).child(error.clone())); }
+            }
             if let Some(error)=&side.error { body=body.child(div().text_color(rgb(colors.modified)).text_size(appearance::ui_text(12.)).child(error.clone())); }
             for detail in &side.metadata.details { body=body.child(div().text_size(appearance::ui_text(11.)).text_color(rgb(colors.muted)).child(detail.clone())); }
             if let Some(source)=&side.metadata.source {
@@ -184,7 +319,7 @@ pub(super) fn render_comparison<T: 'static>(
                 body=body.child(button(("copy-decoded-source",index),"Copy source","copy",false).on_click(move|_,_,cx|cx.write_to_clipboard(ClipboardItem::new_string(copied.to_string()))));
                 let mut end=source.len().min(16*1024); while !source.is_char_boundary(end) { end-=1; }
                 body=body.child(div().font_family(mono()).text_size(appearance::code_text()).child(source[..end].to_owned()));
-                if end<source.len() { body=body.child(div().text_color(rgb(colors.muted)).child("Excerpt limited to 16 KiB; Copy decoded source includes the complete decoded text.")); }
+                if end<source.len() { body=body.child(div().text_color(rgb(colors.muted)).child("Excerpt limited to 16 KiB; Copy source includes the complete available text.")); }
             }
             div().flex_1().min_w_0().h_full().flex().flex_col().border_r_1().border_color(rgb(colors.border)).child(header).child(body)
         })).into_any_element()
@@ -266,6 +401,13 @@ fn captured_copy(bytes: &[u8], name: &Path) -> anyhow::Result<(tempfile::TempDir
         "avif".into()
     } else if metadata::iso_image_format(bytes).is_some() {
         "heic".into()
+    } else if let Some(format) = metadata::jpeg2000_format(bytes) {
+        if format.ends_with("JP2") {
+            "jp2"
+        } else {
+            "j2k"
+        }
+        .into()
     } else if metadata::is_svg(bytes) {
         "txt".into()
     } else if let Ok(format) = image::guess_format(bytes) {
@@ -329,6 +471,18 @@ fn captured_copy(bytes: &[u8], name: &Path) -> anyhow::Result<(tempfile::TempDir
             | "heic"
             | "heif"
             | "avif"
+            | "jp2"
+            | "j2k"
+            | "j2c"
+            | "jpc"
+            | "jpf"
+            | "jpx"
+            | "stl"
+            | "obj"
+            | "fbx"
+            | "3mf"
+            | "step"
+            | "stp"
     ) {
         extension.as_str()
     } else if metadata::is_literal_text(bytes) {
@@ -365,6 +519,23 @@ fn captured_copy(bytes: &[u8], name: &Path) -> anyhow::Result<(tempfile::TempDir
 mod tests {
     use super::*;
     use core::prelude::v1::test;
+    #[test]
+    fn captured_jpeg2000_magic_preserves_container_and_codestream_suffixes() {
+        for (bytes, extension) in [
+            (
+                include_bytes!("../../preview/tests/fixtures/half-red-blue.jp2").as_slice(),
+                "jp2",
+            ),
+            (
+                include_bytes!("../../preview/tests/fixtures/half-red-blue.j2k").as_slice(),
+                "j2k",
+            ),
+        ] {
+            let (_lease, path) = captured_copy(bytes, Path::new("misleading.png")).unwrap();
+            assert_eq!(path.extension().unwrap(), extension);
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
+        }
+    }
     #[test]
     fn external_copy_is_exact_private_and_does_not_use_stored_paths() {
         let bytes = b"<script>this must remain data</script>";

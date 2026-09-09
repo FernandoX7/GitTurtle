@@ -60,6 +60,7 @@ pub fn prepare(
         "Choose a supported context size."
     );
     let Content::Text {
+        diagrams,
         patch,
         old,
         new,
@@ -102,6 +103,7 @@ pub fn prepare(
     let split = Arc::new(SplitPresentation::from_rows(&sources, &rows));
     checkpoint()?;
     Ok(Arc::new(Content::Text {
+        diagrams: diagrams.clone(),
         patch, old: old.clone(), new: new.clone(), presentation, split,
         partial: None,
         partial_unavailable: Some("Review options are active. Partial staging is unavailable: reset to the original diff to select exact Git lines or hunks. Whole-file actions include every change.".into()),
@@ -532,6 +534,7 @@ mod tests {
             crate::partial_view::prepare(&patch, &presentation, Arc::clone(&diff)).unwrap(),
         );
         let original = Arc::new(Content::Text {
+            diagrams: None,
             patch,
             old,
             new,
@@ -579,6 +582,7 @@ mod tests {
         let presentation = Arc::new(PatchPresentation::prepare(patch));
         let split = Arc::new(SplitPresentation::prepare(old, new, &presentation));
         Arc::new(Content::Text {
+            diagrams: None,
             old: old.into(),
             new: new.into(),
             patch: patch.into(),

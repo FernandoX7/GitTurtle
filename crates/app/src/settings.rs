@@ -12,63 +12,6 @@ pub(super) struct DraftState {
     identity: Option<(PathBuf, (String, String))>,
 }
 
-#[cfg(test)]
-mod draft_tests {
-    use super::DraftState;
-    use std::path::Path;
-
-    fn identity(name: &str) -> (String, String) {
-        (name.into(), format!("{name}@example.invalid"))
-    }
-
-    #[test]
-    fn unsaved_default_branch_survives_reentry_and_external_updates_until_saved() {
-        let mut state = DraftState::new("main".into());
-        for saved in ["main", "main", "external"] {
-            assert_eq!(state.branch_update(saved, "draft-branch"), None);
-        }
-        assert_eq!(state.branch_update("draft-branch", "draft-branch"), None);
-        assert_eq!(
-            state.branch_update("new-default", "draft-branch"),
-            Some("new-default".into())
-        );
-    }
-
-    #[test]
-    fn identity_edits_retain_scope_and_reset_or_untouched_fields_follow_effective_git() {
-        let personal = Path::new("/fixture/personal");
-        let work = Path::new("/fixture/work");
-        let mut state = DraftState::new("main".into());
-        assert_eq!(
-            state.identity_update(personal, &identity("Alice"), &identity("")),
-            Some(identity("Alice"))
-        );
-        for effective in ["Alice", "Alice", "External"] {
-            assert_eq!(
-                state.identity_update(personal, &identity(effective), &identity("Draft")),
-                None
-            );
-        }
-        state.reset_identity(Some(personal), identity("External"));
-        assert_eq!(
-            state.identity_update(personal, &identity("Updated"), &identity("External")),
-            Some(identity("Updated"))
-        );
-        assert_eq!(
-            state.identity_update(work, &identity("Work"), &identity("PersonalDraft")),
-            Some(identity("Work"))
-        );
-        assert_eq!(
-            state.identity_update(work, &identity("SavedEdit"), &identity("SavedEdit")),
-            None
-        );
-        assert_eq!(
-            state.identity_update(work, &identity("NewEffective"), &identity("SavedEdit")),
-            Some(identity("NewEffective"))
-        );
-    }
-}
-
 impl DraftState {
     pub(super) fn new(branch: String) -> Self {
         Self {
@@ -1263,4 +1206,61 @@ fn settings_section(
         )
         .child(content)
         .into_any_element()
+}
+
+#[cfg(test)]
+mod draft_tests {
+    use super::DraftState;
+    use std::path::Path;
+
+    fn identity(name: &str) -> (String, String) {
+        (name.into(), format!("{name}@example.invalid"))
+    }
+
+    #[test]
+    fn unsaved_default_branch_survives_reentry_and_external_updates_until_saved() {
+        let mut state = DraftState::new("main".into());
+        for saved in ["main", "main", "external"] {
+            assert_eq!(state.branch_update(saved, "draft-branch"), None);
+        }
+        assert_eq!(state.branch_update("draft-branch", "draft-branch"), None);
+        assert_eq!(
+            state.branch_update("new-default", "draft-branch"),
+            Some("new-default".into())
+        );
+    }
+
+    #[test]
+    fn identity_edits_retain_scope_and_reset_or_untouched_fields_follow_effective_git() {
+        let personal = Path::new("/fixture/personal");
+        let work = Path::new("/fixture/work");
+        let mut state = DraftState::new("main".into());
+        assert_eq!(
+            state.identity_update(personal, &identity("Alice"), &identity("")),
+            Some(identity("Alice"))
+        );
+        for effective in ["Alice", "Alice", "External"] {
+            assert_eq!(
+                state.identity_update(personal, &identity(effective), &identity("Draft")),
+                None
+            );
+        }
+        state.reset_identity(Some(personal), identity("External"));
+        assert_eq!(
+            state.identity_update(personal, &identity("Updated"), &identity("External")),
+            Some(identity("Updated"))
+        );
+        assert_eq!(
+            state.identity_update(work, &identity("Work"), &identity("PersonalDraft")),
+            Some(identity("Work"))
+        );
+        assert_eq!(
+            state.identity_update(work, &identity("SavedEdit"), &identity("SavedEdit")),
+            None
+        );
+        assert_eq!(
+            state.identity_update(work, &identity("NewEffective"), &identity("SavedEdit")),
+            Some(identity("NewEffective"))
+        );
+    }
 }

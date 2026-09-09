@@ -1,0 +1,14 @@
+/target
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Temp files
+tmp_*.png
+benchmark_table*.png
+
+# Local comparison outputs (generated, not tracked)
+/comparison/
+node_modules/
+tmp/

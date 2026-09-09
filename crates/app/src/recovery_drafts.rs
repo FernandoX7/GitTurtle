@@ -4,6 +4,7 @@
 use crate::*;
 use anyhow::{Context as _, Result, ensure};
 use gpui_kit::component::{WindowExt, dialog::DialogFooter};
+use gpui_kit::prelude::FluentBuilder;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::File,
@@ -160,13 +161,19 @@ impl State {
             .cloned()
     }
     pub(super) fn status(&self) -> String {
+        self.save_status(!self.entries.is_empty())
+    }
+    pub(super) fn status_for(&self, key: &Key) -> String {
+        self.save_status(self.entries.contains_key(key))
+    }
+    fn save_status(&self, saved: bool) -> String {
         if let Some(error) = &self.error {
             format!(
                 "Draft save failed: {error}. Text remains available; Retry save or Copy saved text."
             )
         } else if self.saver.is_pending() {
             "Saving recovery draft… Keep the app open until Saved appears.".into()
-        } else if self.entries.is_empty() {
+        } else if !saved {
             "Edits save automatically outside the repository".into()
         } else {
             "Recovery draft saved locally · no file or index write".into()
@@ -403,9 +410,17 @@ impl GitTurtle {
     fn refresh_recovery_status(&self, cx: &mut Context<Self>) {
         if let Some(view) = &self.conflict_view {
             let view = view.downgrade();
-            let status = self.recovery_drafts.status();
+            let owner = cx.entity().downgrade();
             cx.defer(move |cx| {
-                let _ = view.update(cx, |view, cx| {
+                let (Some(owner), Some(view)) = (owner.upgrade(), view.upgrade()) else {
+                    return;
+                };
+                // Read only after the active editor/input update has ended.
+                let status = owner
+                    .read(cx)
+                    .recovery_drafts
+                    .status_for(&view.read(cx).durable_key);
+                view.update(cx, |view, cx| {
                     view.durable_status = status;
                     cx.notify();
                 });
@@ -585,9 +600,15 @@ impl Render for RecoveryList {
         let p = palette(cx);
         let count = self.rows.len();
         let status = self.status.clone();
+        let available = (window.viewport_size().height - px(300.)).clamp(px(120.), px(560.));
+        let height = (appearance::ui_size(110.) * count.min(5) as f32 + px(2.))
+            .max(px(120.))
+            .min(available);
         div().flex().flex_col().gap_3().child("Draft text is retained until you discard it, including completed, aborted, moved or removed worktrees. Copying never stages or continues an operation. Open the matching conflict or rebase message to check whether restoration is safe.")
             .child(div().text_color(rgb(p.muted)).child(status))
-            .child(div().h((window.viewport_size().height - px(300.)).clamp(px(120.), px(560.))).border_1().border_color(rgb(p.border)).rounded(px(6.)).overflow_hidden().child(uniform_list("saved-recovery-list", count, cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| this.row(index, cx)).collect::<Vec<_>>() )).size_full().track_scroll(&self.scroll)))
+            .child(div().h(height).border_1().border_color(rgb(p.border)).rounded(px(6.)).overflow_hidden()
+                .when(count == 0, |list| list.child(empty("No saved recovery drafts", "Conflict results and rebase messages appear here after you edit them.")))
+                .when(count > 0, |list| list.child(uniform_list("saved-recovery-list", count, cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| this.row(index, cx)).collect::<Vec<_>>() )).size_full().track_scroll(&self.scroll))))
     }
 }
 
@@ -635,6 +656,7 @@ mod tests {
         let recovered = state.latest(&key).unwrap();
         assert_eq!(recovered.text.as_bytes(), text.as_bytes());
         assert_eq!(recovered.key, key);
+        assert!(state.status_for(&key).contains("saved locally"));
         let stale = Key {
             source: "b".repeat(64),
             ..key.clone()
@@ -642,6 +664,21 @@ mod tests {
         let saved = state.latest(&stale).unwrap();
         assert_ne!(saved.key, stale);
         assert_eq!(saved.text, text);
+        assert_eq!(
+            state.status_for(&stale),
+            "Edits save automatically outside the repository"
+        );
+        let message = Key {
+            kind: Kind::RebaseMessage,
+            file: vec![],
+            ..key.clone()
+        };
+        assert_eq!(
+            state.status_for(&message),
+            "Edits save automatically outside the repository",
+            "A saved conflict must not confirm an untouched rebase message"
+        );
+        assert!(state.status().contains("saved locally"));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

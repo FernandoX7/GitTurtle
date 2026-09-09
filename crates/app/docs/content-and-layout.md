@@ -34,6 +34,15 @@ Reserve the empty Find collection without constructing an input/panel or replaci
 
 Prepare render-image pixels on the worker. Before/After image sides share bounded pan state; active drags continue across app content and clear on release or preview replacement. Overlay/wipe composes existing images in one source coordinate system without copying pixels on drag. Preserve absent/error sides, original dimension ratios when sides are independently downsampled, and the distinction between source dimensions and decoded-preview zoom. Retained navigation copies exclude active drag gestures.
 
+GIF comparisons start paused and retain a bounded set of worker-prepared frames.
+Play/Pause and frame stepping share one time position across Before/After; a
+shorter side holds its last frame until both loop. Painting selects an existing
+BGRA frame and requests the next native frame only for active playback in an
+active window. Hidden and paused canvases schedule no animation loop; retained
+navigation clones freeze playback. Cache accounting includes every frame,
+timeline metadata, first-frame RGBA and captured compressed bytes. The static
+`decode_image` API and secondary static image surfaces still show frame one.
+
 The preview cache counts retained source buffers, patch metadata and CPU image allocations. UI-held `Arc`s, editors and GPU textures may outlive eviction; its budget is not a total-memory cap. Changes to `Content` must keep `Content::bytes` accurate.
 
 `rich_preview` presents independent captured Before/After metadata and bounded PDF pages prepared by the same worker. Page choices belong to retained content; Quick Open uses the source width. PDF/decoded-encoding views never acquire partial staging actions. System Quick Look receives an explicit, private, read-only copy of the captured bytes with a safe suffix; it cannot substitute the working file. Image previews retain captured bytes and optional literal SVG source for system inspection/copy, and the cache counts those buffers. See the finite [file support matrix](../../../docs/file-previews.md) for codecs, page caps, encoding and external-viewer limits.

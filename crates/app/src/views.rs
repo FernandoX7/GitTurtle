@@ -166,20 +166,18 @@ impl GitTurtle {
             .bg(rgb(colors.panel))
             .border_r_1()
             .border_color(rgb(colors.border))
-            .child(
-                button("rail-history", "", "commit", true)
-                    .accessibility_label("Back to history")
-                    .tooltip("Back to history · Escape")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        if this.mode != WorkspaceMode::History {
-                            this.back_to_history(window, cx);
-                        } else {
+            .when(self.mode == WorkspaceMode::History, |rail| {
+                rail.child(
+                    button("rail-sidebar", "", "commit", false)
+                        .accessibility_label("Show branches and worktrees")
+                        .tooltip("Show branches and worktrees")
+                        .on_click(cx.listener(|this, _, _, cx| {
                             this.sidebar = true;
                             this.history_sidebar = true;
                             cx.notify();
-                        }
-                    })),
-            )
+                        })),
+                )
+            })
             .child(
                 button("rail-open", "", "folder", false)
                     .accessibility_label("Open repository")
@@ -1415,7 +1413,9 @@ impl GitTurtle {
             )
         } else if let Some(content) = &self.content {
             match content.as_ref() {
-                Content::Text { patch, .. } => {
+                Content::Text {
+                    patch, diagrams, ..
+                } => {
                     let mut modes = div()
                         .flex()
                         .items_center()
@@ -1427,9 +1427,15 @@ impl GitTurtle {
                         (TextMode::Unified, "Diff"),
                         (TextMode::Split, "Split"),
                         (TextMode::Before, "Before"),
-                        (TextMode::After, "After"),
+                        (
+                            TextMode::After,
+                            if quick_source { "Source" } else { "After" },
+                        ),
+                        (TextMode::Diagrams, "Diagrams"),
                     ] {
-                        if quick_source {
+                        if (quick_source && !matches!(mode, TextMode::After | TextMode::Diagrams))
+                            || (mode == TextMode::Diagrams && diagrams.is_none())
+                        {
                             continue;
                         }
                         modes = modes.child(
@@ -1443,17 +1449,23 @@ impl GitTurtle {
                         );
                     }
                     toolbar = toolbar.child(modes);
-                    if quick_source {
-                        toolbar = toolbar
-                            .child(div().text_size(appearance::ui_text(12.)).child("Source"));
-                    }
                     let editor = match self.text_mode {
-                        TextMode::Split => &None,
+                        TextMode::Split | TextMode::Diagrams => &None,
                         TextMode::Unified => &self.patch_editor,
                         TextMode::Before => &self.before_editor,
                         TextMode::After => &self.after_editor,
                     };
-                    if self.text_mode == TextMode::Split {
+                    if self.text_mode == TextMode::Diagrams {
+                        diagrams.as_ref().map_or_else(
+                            || {
+                                empty(
+                                    "No Mermaid diagrams",
+                                    "Use the source tabs to inspect this file.",
+                                )
+                            },
+                            |preview| self.render_rich_preview(preview, cx),
+                        )
+                    } else if self.text_mode == TextMode::Split {
                         self.split_view.as_ref().map_or_else(
                             || empty("Loading split comparison…", ""),
                             |view| div().size_full().child(view.clone()).into_any_element(),
@@ -1509,6 +1521,7 @@ impl GitTurtle {
             .when(
                 matches!(self.content.as_deref(), Some(Content::Text { .. }))
                     && !self.blame.is_visible()
+                    && self.text_mode != TextMode::Diagrams
                     && !quick_source,
                 |el| el.child(self.render_text_review(cx)),
             )
@@ -1678,11 +1691,17 @@ impl Render for GitTurtle {
             // separate entity: observing it invalidates our cached child tree
             // when any native dialog opens or closes, without a resize/input.
             self.dialog_layer_subscription =
-                Some(cx.observe_in(&root, window, |_, _, window, cx| {
+                Some(cx.observe_in(&root, window, |this, _, window, cx| {
+                    // Invalidate an older close repair even if a replacement
+                    // dialog opens before the next GitTurtle render.
+                    if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
+                        this.modal_focus_generation = this.modal_focus_generation.wrapping_add(1);
+                    }
                     window.refresh();
                     cx.notify();
                 }));
         }
+        self.update_modal_focus(window, cx);
         let colors = palette(cx);
         let menu_state = (self.repository.is_some(), self.operation_busy.is_some());
         if self.menu_state != Some(menu_state) {

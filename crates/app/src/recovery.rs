@@ -1054,6 +1054,9 @@ impl StashBrowser {
     }
 
     fn ensure_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.text_mode == 3 {
+            return;
+        }
         if self.editors[self.text_mode].is_some() {
             return;
         }
@@ -1217,6 +1220,23 @@ impl StashBrowser {
                 .into_any_element();
         }
         match self.content.as_deref() {
+            Some(Content::Text { diagrams, .. }) if self.text_mode == 3 => {
+                diagrams.as_ref().map_or_else(
+                    || {
+                        div()
+                            .child("No Mermaid diagrams on this file; use Source.")
+                            .into_any_element()
+                    },
+                    |preview| {
+                        crate::rich_preview::render_comparison(
+                            preview,
+                            false,
+                            self.owner.clone(),
+                            cx,
+                        )
+                    },
+                )
+            }
             Some(Content::Rich(preview)) => {
                 crate::rich_preview::render_comparison(preview, false, self.owner.clone(), cx)
             }
@@ -1256,7 +1276,11 @@ impl StashBrowser {
                                     div()
                                         .text_size(crate::appearance::ui_text(11.))
                                         .text_color(rgb(p.muted))
-                                        .child(label),
+                                        .child(if side.animation.is_some() {
+                                            format!("{label} · first frame")
+                                        } else {
+                                            label.into()
+                                        }),
                                 )
                                 .child(
                                     div()
@@ -1266,11 +1290,7 @@ impl StashBrowser {
                                         .items_center()
                                         .justify_center()
                                         .when_some(side.render.clone(), |element, image| {
-                                            element.child(
-                                                img(image)
-                                                    .size_full()
-                                                    .object_fit(ObjectFit::Contain),
-                                            )
+                                            element.child(crate::gif_playback::static_image(image))
                                         })
                                         .when(side.render.is_none(), |element| {
                                             element.child(
@@ -1372,7 +1392,7 @@ impl Render for StashBrowser {
                         }))
                         .when(!self.files().is_empty(), |element| element.child(files))
                         .when(self.files().is_empty(), |element| element.child(div().p_3().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("No saved files in this group."))))
-                    .child(div().flex().items_center().gap_1().children(["Diff", "Before", "After"].into_iter().enumerate().map(|(mode, label)| {
+                    .child(div().flex().items_center().gap_1().children(["Diff", "Before", "After", "Diagrams"].into_iter().enumerate().filter(|(mode,_)| *mode != 3 || matches!(self.content.as_deref(), Some(Content::Text {diagrams:Some(_),..}))).map(|(mode, label)| {
                         button(("stash-text-mode", mode), label, "", self.text_mode == mode).disabled(!matches!(self.content.as_deref(), Some(Content::Text { .. }))).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.ensure_editor(window, cx); cx.notify(); }))
                     })))
                     .child(div().flex_1().min_h_0().border_1().border_color(rgb(p.border)).rounded(px(5.)).overflow_hidden().child(self.render_content(cx)))

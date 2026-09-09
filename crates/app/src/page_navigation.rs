@@ -11,6 +11,79 @@ pub(super) fn return_page(page: AppPage, origin: AppPage, repository: bool) -> A
 }
 
 impl GitTurtle {
+    pub(super) fn update_modal_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let modal_open = window.has_active_dialog(cx) || window.has_active_sheet(cx);
+        if self.modal_was_open != modal_open {
+            self.modal_focus_generation = self.modal_focus_generation.wrapping_add(1);
+        }
+        if self.modal_was_open && !modal_open {
+            let previous = self.modal_return_focus.take();
+            let generation = self.modal_focus_generation;
+            let owner = cx.entity().downgrade();
+            let immediate_previous = previous.clone();
+            window.on_next_frame(move |window, cx| {
+                let _ = owner.update(cx, |this, cx| {
+                    this.restore_detached_modal_focus(
+                        generation,
+                        immediate_previous.as_ref(),
+                        window,
+                        cx,
+                    );
+                });
+            });
+            // The pinned toolkit restores its captured focus after a 250 ms
+            // close animation. Recheck once afterward; never poll or take focus
+            // from a new dialog, a surviving editor, or a Root sibling menu.
+            cx.spawn_in(window, async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(300))
+                    .await;
+                let _ = this.update_in(cx, |this, window, cx| {
+                    this.restore_detached_modal_focus(generation, previous.as_ref(), window, cx);
+                });
+            })
+            .detach();
+        } else if !modal_open && self.app_focus.contains_focused(window, cx) {
+            self.modal_return_focus = window.focused(cx);
+        }
+        self.modal_was_open = modal_open;
+    }
+
+    fn restore_detached_modal_focus(
+        &mut self,
+        generation: u64,
+        previous: Option<&FocusHandle>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.modal_focus_generation != generation
+            || window.has_active_dialog(cx)
+            || window.has_active_sheet(cx)
+            || !window.context_stack().is_empty()
+        {
+            return;
+        }
+        // In this window every attached control inherits Root's key context,
+        // including sibling popup menus outside app_focus. A missing/detached
+        // handle resolves to GPUI's synthetic dispatch root with no contexts.
+        // Comparing a handle with itself cannot establish attachment.
+        let fallback = match (self.page, self.mode) {
+            (AppPage::Repository, WorkspaceMode::History) => &self.focus,
+            (AppPage::Repository, _) => &self.file_focus,
+            _ => &self.app_focus,
+        };
+        let focus = previous
+            .filter(|focus| self.app_focus.contains(focus, window))
+            .or_else(|| {
+                self.app_focus
+                    .contains(fallback, window)
+                    .then_some(fallback)
+            })
+            .unwrap_or(&self.app_focus);
+        focus.focus(window, cx);
+        window.refresh();
+    }
+
     pub(super) fn back_label(&self) -> &'static str {
         match self.page {
             AppPage::Settings => {

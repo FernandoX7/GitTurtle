@@ -35,6 +35,7 @@ pub struct Snapshot {
 }
 
 pub struct ImageSide {
+    pub animation: Option<Arc<crate::gif_playback::Timeline>>,
     pub captured: Option<Arc<[u8]>>,
     pub literal_source: Option<Arc<str>>,
     pub image: Option<ImagePreview>,
@@ -51,6 +52,7 @@ pub enum Content {
     Rich(crate::rich_preview::Comparison),
     Conflict(Arc<crate::conflicts::Presentation>),
     Text {
+        diagrams: Option<Arc<crate::rich_preview::Comparison>>,
         patch: String,
         old: String,
         new: String,
@@ -60,8 +62,8 @@ pub enum Content {
         partial_unavailable: Option<String>,
     },
     Images {
-        old: ImageSide,
-        new: ImageSide,
+        old: Box<ImageSide>,
+        new: Box<ImageSide>,
     },
     Notice(String),
 }
@@ -73,6 +75,7 @@ impl Content {
         match self {
             Self::Rich(preview) => preview.retained_bytes(),
             Self::Text {
+                diagrams,
                 patch,
                 old,
                 new,
@@ -81,7 +84,10 @@ impl Content {
                 partial,
                 partial_unavailable,
             } => {
-                patch.capacity()
+                diagrams
+                    .as_ref()
+                    .map_or(0, |preview| preview.retained_bytes())
+                    + patch.capacity()
                     + old.capacity()
                     + new.capacity()
                     + presentation.retained_bytes()
@@ -92,14 +98,20 @@ impl Content {
             Self::Images { old, new } => [old, new]
                 .iter()
                 .map(|side| {
-                    side.image
-                        .as_ref()
-                        .map_or(0, |image| image.rgba.capacity() + image.format.capacity())
+                    std::mem::size_of::<ImageSide>()
                         + side
-                            .render
+                            .image
                             .as_ref()
-                            .and_then(|render| render.as_bytes(0))
-                            .map_or(0, <[u8]>::len)
+                            .map_or(0, |image| image.rgba.capacity() + image.format.capacity())
+                        + side.render.as_ref().map_or(0, |render| {
+                            (0..render.frame_count())
+                                .map(|frame| render.as_bytes(frame).map_or(0, <[u8]>::len))
+                                .sum::<usize>()
+                        })
+                        + side
+                            .animation
+                            .as_ref()
+                            .map_or(0, |timeline| timeline.retained_bytes())
                         + side.message.as_ref().map_or(0, String::capacity)
                         + side.lfs_pointer.as_ref().map_or(0, Vec::capacity)
                         + side.captured.as_ref().map_or(0, |bytes| bytes.len())
@@ -653,7 +665,7 @@ fn execute(
             let (mode, bytes) = repo.read_tracked_working_file(&entry)?;
             cancellation.check()?;
             file.new_mode = mode;
-            let content = if let Some(content) =
+            let mut content = if let Some(content) =
                 supplied_nontext_content(&repo, &file, &[], &bytes, cancellation)?
             {
                 content
@@ -675,6 +687,7 @@ fn execute(
                 // patch or selected-edit actions are manufactured.
                 prepared_text(String::new(), String::new(), source)
             };
+            attach_mermaid(&mut content, &file, cancellation)?;
             cancellation.check()?;
             Ok(Output::Preview(Arc::new(content), start.elapsed()))
         }
@@ -905,6 +918,7 @@ fn execute(
                 }
             };
             cancellation.check()?;
+            attach_mermaid(&mut content, &file, cancellation)?;
             if let Content::Text {
                 patch,
                 presentation,
@@ -1178,7 +1192,10 @@ fn supplied_nontext_content(
             cancellation,
         );
         cancellation.check()?;
-        return Ok(Some(Content::Images { old, new }));
+        return Ok(Some(Content::Images {
+            old: Box::new(old),
+            new: Box::new(new),
+        }));
     }
     // A pointer is an identity, not the document itself. Resolve both sides via
     // the existing verified LFS path, or retain its literal text/download action.
@@ -1188,9 +1205,14 @@ fn supplied_nontext_content(
     {
         return Ok(None);
     }
-    if ![old, new]
-        .iter()
-        .any(|bytes| !metadata::is_literal_text(bytes) || bytes.starts_with(b"%PDF-"))
+    let model = [file.old_path.as_deref(), file.new_path.as_deref()]
+        .into_iter()
+        .flatten()
+        .any(gitturtle_preview::model3d::is_model_path);
+    if !model
+        && ![old, new]
+            .iter()
+            .any(|bytes| !metadata::is_literal_text(bytes) || bytes.starts_with(b"%PDF-"))
     {
         return Ok(None);
     }
@@ -1274,6 +1296,7 @@ fn nontext_history_content(
             match bytes {
                 Ok(bytes) => working_image_side(repo, bytes, path.is_some(), &name, cancellation),
                 Err(error) => ImageSide {
+                    animation: None,
                     image: None,
                     render: None,
                     message: Some(format!("{error:#}")),
@@ -1288,7 +1311,13 @@ fn nontext_history_content(
         cancellation.check()?;
         let new = side(new, file.new_path.as_deref());
         cancellation.check()?;
-        return Ok(Some((Content::Images { old, new }, false)));
+        return Ok(Some((
+            Content::Images {
+                old: Box::new(old),
+                new: Box::new(new),
+            },
+            false,
+        )));
     }
     // Keep readable and missing sides independent; a missing historical object
     // never substitutes a working file and is never cached as permanently absent.
@@ -1326,6 +1355,7 @@ fn prepared_text(patch: String, old: String, new: String) -> Content {
         &presentation,
     ));
     Content::Text {
+        diagrams: None,
         patch,
         old,
         new,
@@ -1334,6 +1364,22 @@ fn prepared_text(patch: String, old: String, new: String) -> Content {
         partial: None,
         partial_unavailable: None,
     }
+}
+
+fn attach_mermaid(
+    content: &mut Content,
+    file: &FileChange,
+    cancellation: &Cancellation,
+) -> Result<()> {
+    if let Content::Text {
+        old, new, diagrams, ..
+    } = content
+        && diagrams.is_none()
+    {
+        *diagrams = crate::rich_preview::prepare_mermaid(old, new, file, || cancellation.check())?
+            .map(Arc::new);
+    }
+    Ok(())
 }
 
 /// Compare prepared mutable content off UI before deciding whether native
@@ -1347,6 +1393,7 @@ fn content_unchanged(previous: &Content, next: &Content) -> bool {
                 new: an,
                 partial_unavailable: au,
                 partial: ap,
+                diagrams: ad,
                 ..
             },
             Content::Text {
@@ -1355,10 +1402,16 @@ fn content_unchanged(previous: &Content, next: &Content) -> bool {
                 new: bn,
                 partial_unavailable: bu,
                 partial: bp,
+                diagrams: bd,
                 ..
             },
         ) => {
             a == b
+                && match (ad, bd) {
+                    (None, None) => true,
+                    (Some(a), Some(b)) => a.old.same_source(&b.old) && a.new.same_source(&b.new),
+                    _ => false,
+                }
                 && ao == bo
                 && an == bn
                 && au == bu
@@ -1422,7 +1475,7 @@ fn text_content(
     {
         return Ok(content);
     }
-    Ok(match sources.preview {
+    let mut content = match sources.preview {
         TextPreview::Patch(patch) => prepared_text(patch, String::from_utf8(sources.old)?, String::from_utf8(sources.new)?),
         TextPreview::Binary => Content::Notice(
             "Binary or non-UTF-8 file changed. Raw object IDs and file metadata are available above.".into(),
@@ -1434,7 +1487,9 @@ fn text_content(
             "Submodule reference changed\n\nBefore: {}\nAfter: {}",
             old_oid.as_deref().unwrap_or("Absent"), new_oid.as_deref().unwrap_or("Absent")
         )),
-    })
+    };
+    attach_mermaid(&mut content, file, cancellation)?;
+    Ok(content)
 }
 
 fn resolved_lfs_text_content(
@@ -1447,20 +1502,26 @@ fn resolved_lfs_text_content(
     let Some(sources) = repo.resolved_lfs_text(file, old, new)? else {
         return Ok(None);
     };
-    if [sources.old.as_slice(), sources.new.as_slice()]
-        .iter()
-        .any(|bytes| !metadata::is_literal_text(bytes) || bytes.starts_with(b"%PDF-"))
+    if ([file.old_path.as_deref(), file.new_path.as_deref()]
+        .into_iter()
+        .flatten()
+        .any(gitturtle_preview::model3d::is_model_path)
+        || [sources.old.as_slice(), sources.new.as_slice()]
+            .iter()
+            .any(|bytes| !metadata::is_literal_text(bytes) || bytes.starts_with(b"%PDF-")))
         && let Some(content) =
             supplied_nontext_content(repo, file, &sources.old, &sources.new, cancellation)?
     {
         return Ok(Some(content));
     }
-    Ok(Some(match sources.preview {
+    let mut content = match sources.preview {
         TextPreview::Patch(patch) => prepared_text(patch, String::from_utf8(sources.old)?, String::from_utf8(sources.new)?),
         TextPreview::Binary => Content::Notice("Verified LFS object downloaded. Its content is binary or not UTF-8 and has no text preview.".into()),
         TextPreview::TooLarge { old_bytes, new_bytes } => Content::Notice(format!("Verified LFS content exceeds the text display limit · {old_bytes} → {new_bytes} bytes.")),
         TextPreview::Submodule { .. } => Content::Notice("Submodules do not have an LFS text preview.".into()),
-    }))
+    };
+    attach_mermaid(&mut content, file, cancellation)?;
+    Ok(Some(content))
 }
 
 fn working_image_side(
@@ -1472,6 +1533,7 @@ fn working_image_side(
 ) -> ImageSide {
     if !present {
         return ImageSide {
+            animation: None,
             captured: None,
             literal_source: None,
             image: None,
@@ -1482,6 +1544,8 @@ fn working_image_side(
         };
     }
     let mut missing_pointer = None;
+    let mut animation = None;
+    let mut preview_notice = None;
     let result = (|| -> Result<(ImagePreview, Arc<RenderImage>, usize)> {
         cancellation.check()?;
         ensure!(
@@ -1501,6 +1565,21 @@ fn working_image_side(
             })?;
         }
         cancellation.check()?;
+        if gitturtle_preview::animation::is_gif(&bytes) {
+            match crate::gif_playback::prepare(&bytes, || cancellation.check()) {
+                Ok(prepared) => {
+                    cancellation.check()?;
+                    animation = Some(prepared.timeline);
+                    return Ok((prepared.image, prepared.render, bytes.len()));
+                }
+                Err(error) => {
+                    cancellation.check()?;
+                    preview_notice = Some(format!(
+                        "Static first frame only; animation unavailable: {error:#}"
+                    ));
+                }
+            }
+        }
         let decoded = decode_image(&bytes, name, PREVIEW_EDGE)?;
         cancellation.check()?;
         let render = render_image(&decoded)?;
@@ -1513,15 +1592,17 @@ fn working_image_side(
         .then(|| Arc::<[u8]>::from(bytes));
     match result {
         Ok((image, render, bytes)) => ImageSide {
+            animation,
             captured,
             literal_source,
             image: Some(image),
             render: Some(render),
-            message: None,
+            message: preview_notice,
             bytes,
             lfs_pointer: None,
         },
         Err(error) => ImageSide {
+            animation: None,
             captured,
             literal_source,
             image: None,
@@ -1715,6 +1796,7 @@ mod tests {
         ));
         let metadata_bytes = presentation.retained_bytes() + split.retained_bytes();
         let content = Arc::new(Content::Text {
+            diagrams: None,
             patch,
             old,
             new,
@@ -2588,9 +2670,13 @@ mod image_tests {
             &[10, 30, 255, 128, 200, 70, 5, 0]
         );
         assert_eq!(preview.rgba, [255, 30, 10, 128, 5, 70, 200, 0]);
-        let expected_bytes = preview.rgba.capacity() + preview.format.capacity() + 8;
+        let expected_bytes = preview.rgba.capacity()
+            + preview.format.capacity()
+            + 8
+            + 2 * std::mem::size_of::<ImageSide>();
         let content = Content::Images {
             old: ImageSide {
+                animation: None,
                 captured: None,
                 literal_source: None,
                 image: Some(preview),
@@ -2598,8 +2684,10 @@ mod image_tests {
                 message: None,
                 bytes: 8,
                 lfs_pointer: None,
-            },
+            }
+            .into(),
             new: ImageSide {
+                animation: None,
                 captured: None,
                 literal_source: None,
                 image: None,
@@ -2607,7 +2695,8 @@ mod image_tests {
                 message: None,
                 bytes: 0,
                 lfs_pointer: None,
-            },
+            }
+            .into(),
         };
         assert_eq!(content.bytes(), expected_bytes);
     }
@@ -2638,6 +2727,200 @@ mod image_tests {
             panic!("expected captured preview")
         };
         content
+    }
+
+    #[test]
+    fn gif_worker_retains_composed_frames_and_accounts_for_every_render_buffer() {
+        let fixture = Fixture::new();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
+            for color in [[255, 0, 0, 255], [0, 0, 255, 255]] {
+                encoder
+                    .encode_frame(image::Frame::from_parts(
+                        image::RgbaImage::from_pixel(3, 2, image::Rgba(color)),
+                        0,
+                        0,
+                        image::Delay::from_numer_denom_ms(100, 1),
+                    ))
+                    .unwrap();
+            }
+        }
+        let content = captured_preview(&repo, added_file(&fixture, "animation.data", &bytes));
+        let Content::Images { new, .. } = &*content else {
+            panic!("GIF magic should route to images");
+        };
+        let render = new.render.as_ref().unwrap();
+        assert_eq!(render.frame_count(), 2);
+        assert_eq!(new.animation.as_ref().unwrap().end_ms.len(), 2);
+        assert_ne!(render.as_bytes(0), render.as_bytes(1));
+        assert_eq!(new.captured.as_deref(), Some(bytes.as_slice()));
+        let rendered_bytes: usize = (0..render.frame_count())
+            .map(|frame| render.as_bytes(frame).unwrap().len())
+            .sum();
+        assert!(
+            content.bytes()
+                >= bytes.len() + rendered_bytes + new.image.as_ref().unwrap().rgba.len()
+        );
+    }
+
+    #[test]
+    fn model_worker_renders_obj_without_losing_captured_source_identity() {
+        let fixture = Fixture::new();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let source = b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+        fs::write(fixture.0.join("triangle.obj"), "different current file").unwrap();
+        let content = captured_preview(&repo, added_file(&fixture, "triangle.obj", source));
+        let Content::Rich(preview) = &*content else {
+            panic!("ASCII model uses geometric preview");
+        };
+        assert_eq!(preview.new.metadata.format, "OBJ");
+        assert_eq!(preview.new.pages.len(), 4);
+        assert_eq!(preview.new.page_kind, "View");
+        assert_eq!(preview.new.pages[0].caption.as_deref(), Some("Isometric"));
+        assert!(preview.new.pages[0].render.is_some());
+        assert_eq!(preview.new.captured.as_deref(), Some(source.as_slice()));
+        assert_eq!(
+            preview.new.metadata.source.as_deref().unwrap().as_bytes(),
+            source
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.0.join("triangle.obj")).unwrap(),
+            "different current file"
+        );
+    }
+
+    #[test]
+    fn mermaid_history_keeps_literal_renamed_sources_and_failed_diagrams() {
+        let fixture = Fixture::new();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let old = "flowchart LR\r\nA[Before]-->B\r\n";
+        let new = "flowchart LR\r\nA[After]-->B\r\n";
+        fs::write(fixture.0.join("new.mmd"), "different current source").unwrap();
+        let mut file = added_file(&fixture, "new.mmd", new.as_bytes());
+        file.old_path = Some("old.mermaid".into());
+        file.old_oid = Some(fixture.blob(old.as_bytes()));
+        file.old_mode = "100644".into();
+        file.status = ChangeStatus::Renamed;
+        let content = captured_preview(&repo, file);
+        let Content::Text {
+            old: actual_old,
+            new: actual_new,
+            diagrams: Some(diagrams),
+            ..
+        } = &*content
+        else {
+            panic!("Mermaid must retain text");
+        };
+        assert_eq!(actual_old, old);
+        assert_eq!(actual_new, new);
+        assert_eq!(diagrams.old.captured.as_deref(), Some(old.as_bytes()));
+        assert_eq!(diagrams.new.captured.as_deref(), Some(new.as_bytes()));
+        assert!(diagrams.old.pages[0].render.is_some() && diagrams.new.pages[0].render.is_some());
+        assert!(content.bytes() >= diagrams.retained_bytes() + old.len() + new.len());
+        let broken = "sequenceDiagram\n%%{init: {}}%%\nAlice->>Bob: literal";
+        let content =
+            captured_preview(&repo, added_file(&fixture, "broken.mmd", broken.as_bytes()));
+        assert!(
+            matches!(&*content, Content::Text { new, diagrams: Some(diagrams), .. } if new == broken && diagrams.new.pages[0].error.is_some())
+        );
+        let mut symlink = added_file(&fixture, "link.mmd", old.as_bytes());
+        symlink.new_mode = "120000".into();
+        assert!(matches!(
+            &*captured_preview(&repo, symlink),
+            Content::Text { diagrams: None, .. }
+        ));
+        let pointer = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{LFS_OID}\nsize {}\n",
+            SVG.len()
+        );
+        let unavailable = captured_preview(
+            &repo,
+            added_file(&fixture, "missing.mmd", pointer.as_bytes()),
+        );
+        assert!(
+            matches!(&*unavailable, Content::Text {diagrams: None, new, ..} if new == &pointer)
+        );
+    }
+
+    #[test]
+    fn mermaid_working_and_quick_open_keep_exact_staging_and_review_sources() {
+        let fixture = Fixture::new();
+        let old = "# Workflow\n```mermaid\nflowchart LR; A-->B\n```\n";
+        let new = "# Workflow\n```mermaid\nflowchart LR; A-->C\n```\n";
+        fs::write(fixture.0.join("README.md"), old).unwrap();
+        fixture.git(&["add", "README.md"], b"");
+        fixture.git(
+            &["-c", "commit.gpgsign=false", "commit", "-qm", "Chart"],
+            b"",
+        );
+        fs::write(fixture.0.join("README.md"), new).unwrap();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let index = fs::read(fixture.0.join(".git/index")).unwrap();
+        let Output::WorkingPreview(_, content, _) = execute(
+            Job::WorkingPreview {
+                repo: repo.clone(),
+                entry: repo.status().unwrap().entries.remove(0),
+                area: gitturtle_core::ChangeArea::Unstaged,
+            },
+            &mut PreviewCache::default(),
+            &active(),
+            &mut RepositorySession::default(),
+        )
+        .unwrap() else {
+            panic!("working preview");
+        };
+        let Content::Text {
+            diagrams: Some(diagrams),
+            partial: Some(_),
+            new: actual,
+            ..
+        } = &*content
+        else {
+            panic!("Chart retains exact partial staging");
+        };
+        assert_eq!(actual, new);
+        let reviewed = crate::text_review::prepare(
+            &content,
+            crate::text_review::Options {
+                hide_whitespace: true,
+                context: 3,
+            },
+            || Ok(()),
+        )
+        .unwrap();
+        assert!(
+            matches!(&*reviewed, Content::Text { diagrams: Some(retained), partial: None, .. } if Arc::ptr_eq(retained, diagrams))
+        );
+        let paths = repo
+            .search_tracked_paths(
+                &gitturtle_core::PathScope::Worktree,
+                "README",
+                &gitturtle_core::HistoryCancellation::default(),
+            )
+            .unwrap();
+        let Output::Preview(quick, _) = execute(
+            Job::TrackedPreview {
+                repo,
+                entry: paths.entries[0].clone(),
+                scope: gitturtle_core::PathScope::Worktree,
+            },
+            &mut PreviewCache::default(),
+            &active(),
+            &mut RepositorySession::default(),
+        )
+        .unwrap() else {
+            panic!("quick preview");
+        };
+        assert!(
+            matches!(&*quick, Content::Text { diagrams: Some(diagrams), partial: None, new: actual, .. } if actual == new && !diagrams.old.present && diagrams.new.pages[0].render.is_some())
+        );
+        assert_eq!(fs::read(fixture.0.join(".git/index")).unwrap(), index);
+        assert_eq!(
+            fs::read_to_string(fixture.0.join("README.md")).unwrap(),
+            new
+        );
     }
 
     #[test]

@@ -20,6 +20,7 @@ pub(super) struct State {
     pan: [f32; 2],
     bounds: Bounds<Pixels>,
     drag: Option<Drag>,
+    playback: gif_playback::Playback,
 }
 impl Clone for State {
     fn clone(&self) -> Self {
@@ -29,6 +30,7 @@ impl Clone for State {
             pan: self.pan,
             bounds: self.bounds,
             drag: None,
+            playback: self.playback.clone(),
         }
     }
 }
@@ -70,6 +72,7 @@ impl Default for State {
             pan: [0.; 2],
             bounds: Bounds::default(),
             drag: None,
+            playback: gif_playback::Playback::default(),
         }
     }
 }
@@ -100,6 +103,100 @@ fn layout(
 }
 
 impl GitTurtle {
+    fn gif_context(
+        &self,
+    ) -> (
+        gif_playback::SourceKey,
+        u64,
+        Option<Arc<gif_playback::Timeline>>,
+    ) {
+        let key = self
+            .images
+            .each_ref()
+            .map(|image| image.as_ref().map(|image| image.id));
+        let Some(Content::Images { old, new }) = self.content.as_deref() else {
+            return (key, 0, None);
+        };
+        let duration = [old, new]
+            .iter()
+            .filter_map(|side| side.animation.as_ref())
+            .map(|animation| animation.duration_ms)
+            .max()
+            .unwrap_or(0);
+        let timeline = new
+            .animation
+            .as_ref()
+            .filter(|animation| animation.end_ms.len() > 1)
+            .or_else(|| {
+                old.animation
+                    .as_ref()
+                    .filter(|animation| animation.end_ms.len() > 1)
+            })
+            .cloned();
+        (key, duration, timeline)
+    }
+    fn gif_step(&mut self, next: bool, cx: &mut Context<Self>) {
+        let (key, duration, Some(timeline)) = self.gif_context() else {
+            return;
+        };
+        let position =
+            self.image_comparison
+                .playback
+                .position(key, duration, std::time::Instant::now());
+        let index = timeline.frame_at(position);
+        let index = if next {
+            (index + 1).min(timeline.end_ms.len() - 1)
+        } else {
+            index.saturating_sub(1)
+        };
+        let position = if index == 0 {
+            0
+        } else {
+            timeline.end_ms[index - 1]
+        };
+        self.image_comparison.playback.seek(key, position);
+        cx.notify();
+    }
+    fn gif_controls(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (key, duration, timeline) = self.gif_context();
+        timeline?;
+        let p = palette(cx);
+        let playing = self.image_comparison.playback.playing(key);
+        let position =
+            self.image_comparison
+                .playback
+                .position(key, duration, std::time::Instant::now());
+        let mut labels = Vec::new();
+        let mut truncated = false;
+        if let Some(Content::Images { old, new }) = self.content.as_deref() {
+            for (index, side) in [old, new].iter().enumerate() {
+                if let Some(animation) = &side.animation {
+                    labels.push(format!(
+                        "{} {}/{}",
+                        if self.is_quick_source() {
+                            "Frame"
+                        } else if index == 0 {
+                            "Before"
+                        } else {
+                            "After"
+                        },
+                        animation.frame_at(position) + 1,
+                        animation.end_ms.len()
+                    ));
+                    truncated |= animation.truncated;
+                }
+            }
+        }
+        Some(div().flex().flex_col().gap_1().px_3().py_2().border_b_1().border_color(rgb(p.border))
+            .child(div().flex().flex_wrap().items_center().gap_2()
+                .child(button("gif-playback-toggle", if playing { "Pause GIF" } else { "Play GIF" }, "", playing).on_click(cx.listener(|this, _, _, cx| { let (key, duration, _) = this.gif_context(); this.image_comparison.playback.toggle(key, duration, std::time::Instant::now()); cx.notify(); })))
+                .child(button("gif-first-frame", "First frame", "", false).on_click(cx.listener(|this, _, _, cx| { let (key, _, _) = this.gif_context(); this.image_comparison.playback.seek(key, 0); cx.notify(); })))
+                .child(button("gif-previous-frame", "Previous frame", "", false).on_click(cx.listener(|this, _, _, cx| this.gif_step(false, cx))))
+                .child(button("gif-next-frame", "Next frame", "", false).on_click(cx.listener(|this, _, _, cx| this.gif_step(true, cx))))
+                .child(div().text_size(appearance::ui_text(11.)).text_color(rgb(p.muted)).child(format!("{:.2} / {:.2} s · {}", position as f64 / 1000., duration as f64 / 1000., labels.join(" · ")))))
+            .child(div().text_size(appearance::ui_text(10.)).text_color(rgb(p.muted)).child(if truncated { "Playback is limited to the decoded segment (120 frames, 30 seconds, 16 million output pixels). Open captured bytes in system preview for the complete animation." } else if self.is_quick_source() { "Frame controls pause playback for inspection." } else { "Both versions share one clock; a shorter animation holds its final frame. Frame controls pause playback for inspection." }))
+            .into_any_element())
+    }
     fn image_geometry(&self) -> Geometry {
         let sides = match self.content.as_deref() {
             Some(Content::Images { old, new }) => [old, new].map(|side| {
@@ -273,14 +370,19 @@ impl GitTurtle {
                 );
             }
         }
+        let animation_label = if old.animation.is_some() || new.animation.is_some() {
+            "GIF frame preview"
+        } else {
+            "First image/frame"
+        };
         let scale_notice = if source {
             format!(
-                "First image/frame · 100% = {:.1}% of source size",
+                "{animation_label} · 100% = {:.1}% of source size",
                 self.image_geometry().source_scale * 100.
             )
         } else {
             format!(
-                "First image/frame · 100% = {:.1}% of source size · Both versions share the same scale",
+                "{animation_label} · 100% = {:.1}% of source size · Both versions share the same scale",
                 self.image_geometry().source_scale * 100.
             )
         };
@@ -319,6 +421,7 @@ impl GitTurtle {
             .flex()
             .flex_col()
             .child(captured_actions)
+            .children(self.gif_controls(cx))
             .child(
                 div()
                     .flex()
@@ -390,6 +493,13 @@ impl GitTurtle {
                                             .clone()
                                             .unwrap_or_else(|| "No image on this side".into())
                                     });
+                                let details = if side.image.is_some() {
+                                    side.message.as_ref().map_or(details.clone(), |notice| {
+                                        format!("{details} · {notice}")
+                                    })
+                                } else {
+                                    details
+                                };
                                 div()
                                     .id(("image-side-description", i))
                                     .role(Role::Label)
@@ -446,6 +556,12 @@ impl GitTurtle {
         let state = self.image_comparison.clone();
         let both = self.images.iter().all(Option::is_some);
         let weak = cx.weak_entity();
+        let (key, duration, timeline) = self.gif_context();
+        let position =
+            self.image_comparison
+                .playback
+                .position(key, duration, std::time::Instant::now());
+        let playing = timeline.is_some() && self.image_comparison.playback.playing(key);
         let mut view = div()
             .id(("image-composite", side.unwrap_or(2)))
             .relative()
@@ -477,7 +593,14 @@ impl GitTurtle {
                             this.image_comparison.bounds = bounds;
                         });
                     },
-                    |_, _, _, _| {},
+                    move |_, _, window, _| {
+                        // A frame is requested only while this canvas is painted
+                        // and explicit playback is active. Hidden/paused previews
+                        // have no timer or recursively scheduled callback.
+                        if playing && side != Some(0) && window.is_window_active() {
+                            window.request_animation_frame();
+                        }
+                    },
                 )
                 .absolute()
                 .inset_0(),
@@ -488,6 +611,13 @@ impl GitTurtle {
             }
             let Some(image) = image.clone() else {
                 continue;
+            };
+            let frame_index = match self.content.as_deref() {
+                Some(Content::Images { old, new }) => [old, new][index]
+                    .animation
+                    .as_ref()
+                    .map_or(0, |timeline| timeline.frame_at(position)),
+                _ => 0,
             };
             let opacity = if side.is_none() && state.mode == Mode::Overlay && index == 1 && both {
                 state.amount
@@ -523,7 +653,7 @@ impl GitTurtle {
                         image_bounds,
                         Corners::default(),
                         image.clone(),
-                        0,
+                        frame_index,
                         false,
                     );
                 },

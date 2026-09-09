@@ -345,6 +345,9 @@ impl SeriesBrowser {
         cx.notify();
     }
     fn prepare_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.text_mode == 3 {
+            return;
+        }
         let Some(Content::Text {
             patch,
             old,
@@ -471,6 +474,18 @@ impl SeriesBrowser {
                 .into_any_element();
         }
         match self.content.as_deref() {
+            Some(Content::Text { diagrams, .. }) if self.text_mode == 3 => {
+                diagrams.as_ref().map_or_else(
+                    || {
+                        div()
+                            .child("No Mermaid diagrams on this file; use Source.")
+                            .into_any_element()
+                    },
+                    |preview| {
+                        rich_preview::render_comparison(preview, false, self.owner.clone(), cx)
+                    },
+                )
+            }
             Some(Content::Text { .. }) if self.text_mode == 0 => self.patch.as_ref().map_or_else(
                 || div().into_any_element(),
                 |patch| patch.clone().into_any_element(),
@@ -503,17 +518,17 @@ impl SeriesBrowser {
                                 .flex_col()
                                 .gap_2()
                                 .p_2()
-                                .child(label)
+                                .child(if side.animation.is_some() {
+                                    format!("{label} · first frame")
+                                } else {
+                                    label.into()
+                                })
                                 .child(
                                     div()
                                         .flex_1()
                                         .min_h_0()
                                         .when_some(side.render.clone(), |element, image| {
-                                            element.child(
-                                                img(image)
-                                                    .size_full()
-                                                    .object_fit(ObjectFit::Contain),
-                                            )
+                                            element.child(crate::gif_playback::static_image(image))
                                         })
                                         .when(side.render.is_none(), |element| {
                                             element.child(
@@ -554,11 +569,38 @@ impl SeriesBrowser {
                 ""
             }
         );
+        let commit_labels = [
+            (row.original, &review.original, "Original"),
+            (row.rewritten, &review.rewritten, "Rewritten"),
+        ]
+        .map(|(commit_index, commits, side)| {
+            commit_index.map_or_else(
+                || (format!("{side}: absent"), "—".to_owned()),
+                |commit_index| {
+                    let commit = &commits[commit_index].commit;
+                    let text = format!(
+                        "{} · {} {}",
+                        commit_index + 1,
+                        short_oid(&commit.oid),
+                        commit.subject
+                    );
+                    (format!("{side}: {text}"), text)
+                },
+            )
+        });
         div()
             .id(("series-row", index))
             .role(Role::ListBoxOption)
             .aria_selected(selected)
-            .aria_label(label.clone())
+            .when(selected, |row| row.aria_active_descendant())
+            .aria_position_in_set(index + 1)
+            .aria_size_of_set(review.rows.len())
+            .aria_label(format!(
+                "{label}. {}. {}",
+                commit_labels[0].0, commit_labels[1].0
+            ))
+            .w_full()
+            .min_w_0()
             .h(appearance::ui_size(68.))
             .px_3()
             .py_2()
@@ -572,36 +614,27 @@ impl SeriesBrowser {
             .cursor_pointer()
             .child(
                 div()
+                    .w_full()
+                    .min_w_0()
                     .text_size(appearance::ui_text(11.))
                     .text_color(rgb(p.muted))
+                    .truncate()
                     .child(label),
             )
             .child(
-                div().flex().gap_3().children(
-                    [
-                        (row.original, &review.original, "Original"),
-                        (row.rewritten, &review.rewritten, "Rewritten"),
-                    ]
-                    .into_iter()
-                    .map(|(index, commits, label)| {
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .gap_3()
+                    .children(commit_labels.into_iter().map(|(_, text)| {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .overflow_hidden()
+                            .truncate()
                             .text_size(appearance::ui_text(12.))
-                            .child(index.map_or_else(
-                                || format!("{label}: —"),
-                                |index| {
-                                    format!(
-                                        "{} · {} {}",
-                                        index + 1,
-                                        short_oid(&commits[index].commit.oid),
-                                        commits[index].commit.subject
-                                    )
-                                },
-                            ))
-                    }),
-                ),
+                            .child(text)
+                    })),
             )
             .on_click(cx.listener(move |this, _, window, cx| this.select(index, window, cx)))
             .into_any_element()
@@ -612,6 +645,10 @@ impl Render for SeriesBrowser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         let height = (f32::from(window.viewport_size().height) - 250.).clamp(240., 690.);
+        let row_count = self.review.as_ref().map_or(0, |review| review.rows.len());
+        let row_height = appearance::ui_size(68.);
+        let list_height = (row_height * row_count.clamp(1, 6) as f32 + px(2.))
+            .min((px(height) - appearance::ui_size(210.)).max(row_height + px(2.)));
         let selected = self
             .review
             .as_ref()
@@ -622,15 +659,15 @@ impl Render for SeriesBrowser {
                 && plan.remote_ref
                     == format!("refs/heads/{}", self.remote_branch.read(cx).value().trim())
         });
-        div().id("rewrite-review-body").h(px(height)).overflow_y_scroll().flex().flex_col().gap_2()
+        div().id("rewrite-review-body").w_full().min_w_0().max_h(px(height)).when(self.inspecting, |element| element.h(px(height))).overflow_y_scroll().flex().flex_col().gap_2()
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.back(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| { this.back(window, cx); cx.stop_propagation(); }))
             .when(!self.inspecting, |element| element
                 .child(div().text_size(appearance::ui_text(12.)).text_color(rgb(p.muted)).child("Original → rewritten · unique patch fingerprints identify likely correspondence. Changed patches may match by unique subject only. Ambiguous, combined and empty commits remain explicit; inspect both sides before publishing."))
                 .when_some(self.review.as_ref(), |element, review| element.child(div().text_size(appearance::ui_text(11.)).child(format!("{} · original {} → rewritten {} · base {}", review.branch, short_oid(&review.original_head), short_oid(&review.rewritten_head), short_oid(&review.base)))))
-                .child(div().id("series-focus-list").flex_1().min_h(px(100.)).border_1().border_color(rgb(p.border)).focus_visible(|style| style.border_color(rgb(p.accent))).rounded(px(6.)).overflow_hidden().tab_stop(true).track_focus(&self.focus).role(Role::ListBox).aria_label("Original and rewritten commits")
+                .child(div().id("series-focus-list").w_full().min_w_0().h(list_height).flex_shrink_0().border_1().border_color(rgb(p.border)).focus_visible(|style| style.border_color(rgb(p.accent))).rounded(px(6.)).overflow_hidden().tab_stop(true).track_focus(&self.focus).role(Role::ListBox).aria_label("Original and rewritten commits").aria_description("Up and Down select a commit pair. Return inspects rewritten files.")
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| { match event.keystroke.key.as_str() { "up" => this.select(this.selected.saturating_sub(1), window, cx), "down" => this.select(this.selected + 1, window, cx), "enter" => this.inspect(false, window, cx), _ => return } cx.stop_propagation(); }))
-                    .child(uniform_list("rewrite-series-list", self.review.as_ref().map_or(0, |review| review.rows.len()), cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| this.row(index, cx)).collect::<Vec<_>>())).size_full().track_scroll(&self.rows_scroll)))
+                    .child(uniform_list("rewrite-series-list", row_count, cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| this.row(index, cx)).collect::<Vec<_>>())).size_full().track_scroll(&self.rows_scroll)))
                 .child(div().flex().flex_wrap().gap_2()
                     .child(button("inspect-series-messages", "Review messages", "", false).disabled(selected.is_none()).on_click(cx.listener(|this, _, window, cx| this.inspect_messages(window, cx))))
                     .child(button("inspect-original-commit", "Inspect original files", "", false).disabled(selected.as_ref().is_none_or(|row| row.original.is_none())).on_click(cx.listener(|this, _, window, cx| this.inspect(true, window, cx))))
@@ -653,7 +690,7 @@ impl Render for SeriesBrowser {
                 .when(self.messages.is_none(), |element| element.child(div().h(px(130.)).flex_shrink_0().border_1().border_color(rgb(p.border)).rounded(px(6.)).overflow_hidden().child(uniform_list("series-files", self.files.len(), cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| {
                     let file = &this.files[index]; button(("series-file", index), file.path().to_string_lossy().into_owned(), "", this.selected_file == Some(index)).w_full().h(appearance::ui_size(30.)).on_click(cx.listener(move |this, _, window, cx| this.file(index, window, cx))).into_any_element()
                 }).collect::<Vec<_>>())).size_full().track_scroll(&self.files_scroll))))
-                .when(matches!(self.content.as_deref(), Some(Content::Text { .. })), |element| element.child(div().flex().gap_2().children(["Patch", "Before source", "After source"].into_iter().enumerate().map(|(mode, label)| button(("series-text-mode", mode), label, "", self.text_mode == mode).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.prepare_editor(window, cx); cx.notify(); }))))))
+                .when(matches!(self.content.as_deref(), Some(Content::Text { .. })), |element| element.child(div().flex().gap_2().children(["Patch", "Before source", "After source", "Diagrams"].into_iter().enumerate().filter(|(mode,_)| *mode != 3 || matches!(self.content.as_deref(), Some(Content::Text {diagrams:Some(_),..}))).map(|(mode, label)| button(("series-text-mode", mode), label, "", self.text_mode == mode).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.prepare_editor(window, cx); cx.notify(); }))))))
                 .child(div().flex_1().min_h(px(100.)).border_1().border_color(rgb(p.border)).overflow_hidden().child(self.render_content(cx))))
             .when(self.pending, |element| element.child(div().text_color(rgb(p.muted)).child("Reading captured local history…")))
             .when_some(self.error.as_ref(), |element, error| element.child(div().max_h(px(100.)).id("series-review-error").overflow_y_scroll().text_size(appearance::ui_text(12.)).text_color(rgb(p.warning)).child(error.clone())))
