@@ -16,6 +16,7 @@ mod graph;
 mod history_search;
 mod ignore;
 mod image_compare;
+mod image_lifetime;
 mod integration;
 mod interactive_rebase;
 mod lfs_download;
@@ -1607,6 +1608,7 @@ fn main() {
     });
     gpui_kit::application().with_assets(Assets).run(move |cx| {
         gpui_kit::init(cx);
+        image_lifetime::init(cx);
         interactive_rebase::init(cx);
         preferences
             .settings

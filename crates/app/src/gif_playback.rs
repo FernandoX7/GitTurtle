@@ -17,7 +17,8 @@ pub(super) struct Prepared {
 pub(super) fn static_image(image: Arc<RenderImage>) -> AnyElement {
     canvas(
         |_, _, _| (),
-        move |bounds, _, window, _| {
+        move |bounds, _, window, cx| {
+            crate::image_lifetime::track(&image, window, cx);
             let dimensions = image.size(0);
             let width = dimensions.width.0 as f32;
             let height = dimensions.height.0 as f32;

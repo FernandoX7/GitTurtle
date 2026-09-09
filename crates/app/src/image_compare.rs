@@ -628,7 +628,8 @@ impl GitTurtle {
             let logical_size = geometry.sizes[index];
             let layer = canvas(
                 |_, _, _| (),
-                move |bounds, _, window, _| {
+                move |bounds, _, window, cx| {
+                    crate::image_lifetime::track(&image, window, cx);
                     let (scale, origin, _) = layout(
                         [f32::from(bounds.size.width), f32::from(bounds.size.height)],
                         extent,

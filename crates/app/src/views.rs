@@ -1684,6 +1684,7 @@ impl GitTurtle {
 
 impl Render for GitTurtle {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        image_lifetime::after_draw(window, cx);
         if self.dialog_layer_subscription.is_none()
             && let Some(Some(root)) = window.root::<Root>()
         {

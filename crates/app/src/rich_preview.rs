@@ -328,7 +328,7 @@ pub(super) fn render_comparison<T: 'static>(
                     } else {
                         // PDF pages remain width-readable with natural scrolling.
                         body=body.child(div().w_full().aspect_ratio(page.width as f32/page.height as f32).bg(rgb(0xffffff))
-                            .child(img(render.clone()).size_full().object_fit(ObjectFit::Contain)));
+                            .child(crate::gif_playback::static_image(render.clone())));
                     }
                 }
                 if let Some(error)=&page.error { body=body.child(div().text_color(rgb(colors.modified)).text_size(appearance::ui_text(12.)).child(error.clone())); }
