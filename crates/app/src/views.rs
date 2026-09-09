@@ -183,9 +183,11 @@ impl GitTurtle {
             .border_color(rgb(colors.border))
             .child(
                 div()
-                    .h(crate::appearance::ui_size(40.))
+                    .min_h(crate::appearance::ui_size(40.))
+                    .py_1()
                     .flex_shrink_0()
                     .flex()
+                    .flex_wrap()
                     .items_center()
                     .gap_1()
                     .px_2()

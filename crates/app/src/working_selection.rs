@@ -729,3 +729,7 @@ mod tests {
         assert_eq!(selection.selected, [s].into_iter().collect());
     }
 }
+
+#[cfg(test)]
+#[path = "review_bench.rs"]
+mod benchmarks;
