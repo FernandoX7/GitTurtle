@@ -31,9 +31,21 @@ def digest(path):
 
 
 def compiled_inputs():
+    """Hash a conservative source-provenance superset, including local patches."""
     paths = set(ROOT.glob("crates/**/*.rs")) | set(ROOT.glob("crates/**/Cargo.toml"))
     paths.update(path for path in ROOT.glob("assets/**/*") if path.is_file())
+    paths.update(path for path in ROOT.glob("crates/**/tests/fixtures/**/*") if path.is_file())
     paths.update(ROOT / name for name in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml") if (ROOT / name).exists())
+    # Cargo.lock does not hash path-patched dependencies. Keep their complete
+    # supplied trees (Rust, manifests, licenses, patch notes and embedded data),
+    # including future non-Rust assets, without recording local build caches.
+    for directory, directories, files in os.walk(ROOT / "vendor"):
+        directories[:] = [name for name in directories if name not in {"target", ".git", "__pycache__"}]
+        paths.update(
+            Path(directory) / name for name in files
+            if name != ".DS_Store" and not name.endswith((".pyc", ".pyo"))
+            and (Path(directory) / name).is_file()
+        )
     return {str(path.relative_to(ROOT)): digest(path) for path in sorted(paths)}
 
 
