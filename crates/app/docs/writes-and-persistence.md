@@ -1,0 +1,33 @@
+# Writes and persistence contracts
+
+Read this when changing or reviewing working status, write forms, operation outcomes, projects, settings or draft storage. These contracts describe user interactions in GitTurtle. Engineering authorization follows the [root agreements](../../../AGENTS.md). Git command behavior belongs in [core write guidance](../../git-core/AGENTS.md).
+
+## Captured actions and outcomes
+
+Hub events carry Open/Clone/Create/Back intent; clone/init and destination checks run off the UI thread. Preserve native-picker path bytes, user-edited form values, cancellation and nearby errors. A submitted write keeps its captured repository/target and cannot be replaced or retried by later navigation. Show busy state and refresh relevant status/history after success or failure. `SerialExecutor::submit` and `submit_controlled` preserve accepted writes after a dropped reply; `submit_read` may skip superseded queued status reads. Preference persistence uses a separate executor instance.
+
+`RepositoryOutcomes` scopes operation errors/notices to the last successfully resolved canonical worktree. Only a successful, generation-accepted Open snapshot can clear the previous worktree's captured outcome. Failed opens and aliases of the same worktree preserve it; an outcome published after Open was dispatched also survives its reply, including Clone/Create completion notices.
+
+The repository action bar stays visible in History, Compare and Working Changes. `git_actions_open` controls only the Targets fields, which start expanded; preserve the choice across Projects/Settings visits. Navigator branches filter history; the current-branch menu explicitly checks out a local branch. Build its bounded choices only when opened, keep find/create available, and reject callbacks if the repository changed since opening. Derive remote defaults again when branch/upstream changes without overwriting edited targets on ordinary refresh. Tooltips identify the target and Pull's fast-forward-only behavior. Display remote URLs through `display_remote_url` to omit embedded credentials.
+
+Branch management belongs in the compact picker and navigator context menus; ordinary navigator clicks remain browse-only. Branch, remote, integration and recovery forms prepare consequences off the UI thread, retain input on failure, and confirm the captured repository and target through `open_alert_dialog`/`confirm_git_write`. The dialog exposes its actual Review/Confirm and Cancel buttons. Keep selected-commit actions in its context menu or inspector and working recovery actions in the Changes inspector. Respect branches occupied by other worktrees and show destination/upstream changes before submitting them.
+
+Tag and ignore actions also prepare exact captured reviews before entering the existing operation executor. Authentication prompts and cancellation are transient and operation-scoped; credentials never enter preferences. Preserve configured authentication mechanisms and explicit process cancellation described in [authentication](../../../docs/authentication.md). Native menu and editor/Finder handoff actions remain explicit local interactions.
+
+## Working changes and recovery
+
+Distinguish HEAD-to-index from index-to-worktree previews, including files present in both lists. Pass both paths when staging a rename. Passive status/preview reads stay read-only. Real operations use core's stale-checked plans and commands; mutation checks use disposable fixtures.
+
+Conflict drafts remain in memory under the canonical worktree, path, operation and stage identities. Unrelated refreshes cannot discard them or apply them to a new conflict. Bound manual text and retained allocations. Stage external edits or save-and-stage manual results only through the explicit resolution command. Recovery uses detected Git state; stash-apply conflicts have unresolved files without a sequencer Continue/Abort operation.
+
+Stash inspection owns separate bounded metadata/preview readers and never replaces the workspace comparison. Show staged, unstaged and untracked snapshots separately and load only a selected file. Restore-index and include-untracked are explicit choices; restoration never removes a stash, and Drop requires a separate captured-entry confirmation. Preserve core's contextual failed-restoration summary: verified conflict/retention state belongs in the compact error, both Git streams and exit status in Details. Do not classify uncertain process outcomes as confirmed conflicts or claim retention when its recheck failed.
+
+Amend retains edited fields on failure and the exact original message when unchanged; edited messages use the ordinary composer format. Undo-local, revert and cherry-pick use prepared core plans rather than inferred UI safety. Merge replay/revert requires an explicit mainline parent. Never silently retry an accepted write.
+
+## Preferences and commit drafts
+
+Scope drafts to the resolved canonical worktree after discovery. Persist Title and Description independently from settings/recents through the serialized, coalescing draft saver. Build the message as title, blank line, description without trimming user formatting. Retain text on failure; clear it only when a successful commit matches the submitted text. A failed draft save must retain pending data without overwriting a newer edit with the older failed snapshot.
+
+Persist normalized column widths/visibility, settings, recents and drafts outside repositories. Do not apply stale save replies over newer UI choices. Repository identity saves use the operation executor, not the app-preferences file.
+
+Preference saves reread the current disk counterpart before atomically merging settings or recents; a stale UI snapshot must not replace both. Preserve read-only loading, supported-version migration and byte-safe recent paths. Invalid or unsupported stores produce a save error rather than being overwritten with defaults.
