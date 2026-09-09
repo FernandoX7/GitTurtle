@@ -245,11 +245,12 @@ impl ReflogBrowser {
 }
 
 impl Render for ReflogBrowser {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
+        let body_height = (window.viewport_size().height - px(240.)).max(px(120.));
         let matches = self.matches(cx);
         let unavailable = self.pending || !self.current(cx);
-        div().id("reflog-browser-content").flex().flex_col().gap_3().max_h(px(590.)).overflow_y_scroll()
+        div().id("reflog-browser-content").flex().flex_col().gap_3().max_h(px(590.).min(body_height)).overflow_y_scroll()
             .child(label("reflog-explanation", "Git records local reference movements here, including actions by other tools. HEAD belongs to this worktree; branch logs are shared. Entries expire, and unreachable objects may be pruned. This is not a permanent backup or a complete activity history.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
             .child(div().flex().gap_2().child(div().flex_1().child(Input::new(&self.scope).aria_label("Reflog scope: HEAD or local branch name"))).child(button("refresh-reflog", "Read log", "refresh-cw", false).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx)))))
             .when_some(self.page.as_ref(), |element, page| element.child(label("reflog-scope-summary", format!("{} · {} retained entries · newest first", page.reference, page.entries.len())).text_size(crate::appearance::ui_text(12.))).when(page.truncated, |element| element.child(label("reflog-limit", "Showing the newest 1,000 records within a 4 MiB tail. Older records are outside this bounded view.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning)))))

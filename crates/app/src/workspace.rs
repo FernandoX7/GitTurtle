@@ -905,11 +905,14 @@ impl GitTurtle {
                         .disabled(busy || refreshing).on_click(cx.listener(|this, _, window, cx| this.refresh_worktree(window, cx)))),
             )
             .child(div().relative().flex_1().min_h_0().flex().flex_col()
-            .child(canvas(|_, _, _| (), move |bounds, _, _, cx| {
+            .child(canvas(|_, _, _| (), move |bounds, _, window, cx| {
                 layout.update(cx, |layout, cx| {
                     if layout.height != bounds.size.height {
                         layout.height = bounds.size.height;
                         cx.notify();
+                        // Refresh is ignored during paint. Defer it so the
+                        // cached workspace consumes the measured body height.
+                        window.defer(cx, |window, _| window.refresh());
                     }
                 });
             }).absolute().inset_0())
@@ -933,7 +936,7 @@ impl GitTurtle {
                                     else if refreshing { "Checking staged changes and local edits." }
                                     else { "Refresh to try reading this working tree again." })),
                     ))
-                    .child(canvas(|_, _, _| (), move |bounds, _, _, cx| {
+                    .child(canvas(|_, _, _| (), move |bounds, _, window, cx| {
                         list_layout.update(cx, |layout, cx| {
                             if layout.list_size != Some(bounds.size) {
                                 if layout.list_size.is_some() && let Some(selected) = selected_row {
@@ -941,6 +944,7 @@ impl GitTurtle {
                                 }
                                 layout.list_size = Some(bounds.size);
                                 cx.notify();
+                                window.defer(cx, |window, _| window.refresh());
                             }
                         });
                     }).absolute().inset_0()),

@@ -351,8 +351,9 @@ impl WorktreeManager {
 }
 
 impl Render for WorktreeManager {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
+        let body_height = (window.viewport_size().height - px(240.)).max(px(120.));
         let unavailable = self.pending || !self.current(cx);
         let query = self.filter.read(cx).value().trim().to_lowercase();
         let trees: Vec<_> = self
@@ -376,7 +377,7 @@ impl Render for WorktreeManager {
             .take(12)
             .cloned()
             .collect();
-        div().id("worktree-manager-content").flex().flex_col().gap_3().max_h(px(570.)).overflow_y_scroll()
+        div().id("worktree-manager-content").flex().flex_col().gap_3().max_h(px(570.).min(body_height)).overflow_y_scroll()
             .child(div().flex().gap_2()
                 .child(button("worktree-browse-tab", "Manage", "", !self.creating).toggled(!self.creating).on_click(cx.listener(|this, _, _, cx| { this.creating = false; cx.notify(); })))
                 .child(button("worktree-create-tab", "Create worktree…", "plus", self.creating).toggled(self.creating).on_click(cx.listener(|this, _, _, cx| { this.creating = true; cx.notify(); })))

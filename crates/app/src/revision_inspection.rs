@@ -690,7 +690,7 @@ impl CompareForm {
     }
 }
 impl Render for CompareForm {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         let query = if self.selected_side == 0 {
             self.before.read(cx).value()
@@ -705,10 +705,13 @@ impl Render for CompareForm {
             .take(8)
             .cloned()
             .collect();
-        div().id("comparison-form").track_focus(&self.focus).flex().flex_col().gap_3().text_size(crate::appearance::ui_text(12.))
+        div().id("comparison-form").track_focus(&self.focus)
+            .max_h((window.viewport_size().height - px(240.)).max(px(160.)))
+            .overflow_y_scroll().text_size(crate::appearance::ui_text(12.))
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.cancel(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| { this.cancel(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &gpui_kit::component::dialog::Cancel, window, cx| { this.cancel(window, cx); cx.stop_propagation(); }))
+            .child(div().flex().flex_col().gap_3()
             .child(div().child("Before").child(Input::new(&self.before).aria_label("Before: local branch, tag, or commit revision").disabled(self.busy)))
             .child(div().child("After").child(Input::new(&self.after).aria_label("After: local branch, tag, or commit revision").disabled(self.busy)))
             .child(div().flex().flex_wrap().gap_1().children([(ComparisonMode::Endpoints,"Endpoints · Before → After"),(ComparisonMode::SinceBranching,"Changes since branching")].into_iter().map(|(mode,label)|button(label,label,"",self.mode==mode).toggled(self.mode==mode).disabled(self.busy).on_click(cx.listener(move |this,_,_,cx|{this.mode=mode;cx.notify();}))))
@@ -716,7 +719,7 @@ impl Render for CompareForm {
             .child(div().text_color(rgb(p.muted)).child("Type a local revision, or choose a matching branch/tag for the most recently edited field. Names resolve when you press Compare. A merge-base comparison shows the changes leading to After."))
             .children(choices.into_iter().enumerate().map(|(i,name)|button(("revision-choice",i),name.clone(),"",false).disabled(self.busy).on_click(cx.listener(move |this,_,window,cx|{let input=if this.selected_side==0{&this.before}else{&this.after};input.update(cx,|input,cx|input.set_value(name.clone(),window,cx));}))))
             .when(self.busy,|el|el.child(div().child("Resolving local revisions and changed files… Cancel closes this read.")))
-            .children(self.error.as_ref().map(|error|div().text_color(rgb(p.removed)).child(error.clone())))
+            .children(self.error.as_ref().map(|error|div().text_color(rgb(p.removed)).child(error.clone()))))
     }
 }
 
@@ -891,7 +894,7 @@ impl QuickForm {
     }
 }
 impl Render for QuickForm {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         let count = self.page.as_ref().map_or(0, |page| page.entries.len());
         let list = uniform_list(
@@ -929,18 +932,21 @@ impl Render for QuickForm {
         )
         .track_scroll(&self.scroll)
         .size_full();
-        div().flex().flex_col().gap_2().text_size(crate::appearance::ui_text(12.))
+        div().id("quick-file-form-scroll")
+            .max_h((window.viewport_size().height - px(240.)).max(px(160.)))
+            .overflow_y_scroll().text_size(crate::appearance::ui_text(12.))
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.cancel(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| { this.cancel(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &gpui_kit::component::dialog::Cancel, window, cx| { this.cancel(window, cx); cx.stop_propagation(); }))
             .on_key_down(cx.listener(|this,event:&KeyDownEvent,_,cx|{let count=this.page.as_ref().map_or(0,|page|page.entries.len());if count==0{return;}match event.keystroke.key.as_str(){"down"=>this.selected=(this.selected+1).min(count-1),"up"=>this.selected=this.selected.saturating_sub(1),_=>return}cx.stop_propagation();this.scroll.scroll_to_item(this.selected,ScrollStrategy::Center);cx.notify();}))
+            .child(div().flex().flex_col().gap_2()
             .child(div().flex().gap_1().children([(true,"Current worktree"),(false,"Chosen revision")].into_iter().map(|(worktree,label)|button(label,label,"",self.worktree==worktree).toggled(self.worktree==worktree).on_click(cx.listener(move |this,_,window,cx|{this.worktree=worktree;this.search(window,cx);})))) )
             .when(!self.worktree,|el|el.child(Input::new(&self.revision)))
             .child(Input::new(&self.query))
             .child(div().text_color(rgb(p.muted)).child(if self.busy{"Searching local tracked paths…".into()}else{format!("{count} matches · ↑/↓ select · Return opens · Escape cancels{}",self.page.as_ref().filter(|page|page.truncated).map_or("",|_|" · Limit reached; narrow the query"))}))
             .children(self.error.as_ref().map(|error|div().text_color(rgb(p.removed)).child(error.clone())))
             .child(div().id("quick-open-results").role(Role::ListBox).aria_label("Matching tracked files").h(px(320.)).border_1().border_color(rgb(p.border)).overflow_hidden().when(count>0,|el|el.child(list)).when(count==0&&!self.busy,|el|el.child(div().p_3().child("No matching tracked files. Untracked files are available in Working Changes."))))
-            .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("File History and Blame are available after opening. Worktree reads show raw current bytes; a chosen revision is pinned to its resolved commit."))
+            .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("File History and Blame are available after opening. Worktree reads show raw current bytes; a chosen revision is pinned to its resolved commit.")))
     }
 }
 

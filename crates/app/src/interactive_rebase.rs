@@ -485,7 +485,7 @@ impl RebaseForm {
 }
 
 impl Render for RebaseForm {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         let issue = self
             .plan
@@ -505,10 +505,13 @@ impl Render for RebaseForm {
         )
         .size_full()
         .track_scroll(&self.scroll);
-        div().flex().flex_col().gap_3()
+        div().id("rebase-plan-scroll")
+            .max_h((window.viewport_size().height - px(240.)).max(px(160.)))
+            .overflow_y_scroll()
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.close(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| { this.close(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &gpui_kit::component::dialog::Cancel, window, cx| { this.close(window, cx); cx.stop_propagation(); }))
+            .child(div().flex().flex_col().gap_3()
             .child(label("rebase-base-explanation", "Base stays unchanged. Review up to 100 commits after it on the current branch. Merge-preserving and root rewrites are unsupported.").text_size(crate::appearance::ui_text(12.)))
             .child(div().flex().gap_2().items_center().child(div().flex_1().child(Input::new(&self.base).aria_label("Exclusive base revision")))
                 .child(button("load-rebase-commits", if self.pending { "Loading…" } else { "Load commits" }, "", false).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.load(window, cx)))))
@@ -536,7 +539,7 @@ impl Render for RebaseForm {
                 .child(button("review-interactive-rebase", "Review rebase…", "", true).disabled(self.pending || issue.is_some() || changed_base || (!plan.known_published_refs.is_empty() && !self.acknowledged)).on_click(cx.listener(|this, _, window, cx| this.review(window, cx)))))
             .when(changed_base, |element| element.child(label("rebase-base-changed", "Base edited: load commits again to update the sequence.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
             .children(issue.map(|issue| label("rebase-invalid-plan", issue).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
-            .children(self.error.as_ref().map(|error| label("rebase-form-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
+            .children(self.error.as_ref().map(|error| label("rebase-form-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning)))))
     }
 }
 
@@ -634,18 +637,21 @@ impl MessageForm {
     }
 }
 impl Render for MessageForm {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
-        div().flex().flex_col().gap_3()
+        div().id("rebase-message-scroll")
+            .max_h((window.viewport_size().height - px(240.)).max(px(160.)))
+            .overflow_y_scroll()
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.close(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| { this.close(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &gpui_kit::component::dialog::Cancel, window, cx| { this.close(window, cx); cx.stop_propagation(); }))
+            .child(div().flex().flex_col().gap_3()
             .child(label("rebase-resume-state", format!("{} · Base: {} · {} staged paths", self.expected.operation.branch, self.expected.operation.target_label, self.expected.operation.staged_paths.len())).text_size(crate::appearance::ui_text(12.)))
             .when_some(self.expected.operation.commit.as_ref(), |element, commit| element.child(label("rebase-resume-commit", format!("Replaying original commit {commit}")).text_size(crate::appearance::ui_text(12.))))
             .child(label("rebase-message-explanation", "Review Git's pending commit message. Git uses its configured cleanup rules for comments and whitespace, hooks, author identity, and signing. Your edited draft is retained when this dialog closes.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
             .when_some(self.editor.as_ref(), |element, editor| element.child(Textarea::new(editor).h(px(240.)).aria_label("Rebase commit message")))
             .when(self.editor.is_none(), |element| element.child(label("rebase-no-message", "No message is pending. Continue will replay the next planned step and pause if a message or conflict needs attention.").text_size(crate::appearance::ui_text(12.))))
             .children(self.error.as_ref().map(|error| label("rebase-message-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
-            .child(button("review-rebase-continue", "Review Continue…", "", true).on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))))
+            .child(button("review-rebase-continue", "Review Continue…", "", true).on_click(cx.listener(|this, _, window, cx| this.submit(window, cx)))))
     }
 }

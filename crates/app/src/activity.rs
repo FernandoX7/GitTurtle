@@ -329,8 +329,10 @@ struct ActivityBrowser {
     _observer: Subscription,
 }
 impl Render for ActivityBrowser {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
+        let body_height = (window.viewport_size().height - px(240.)).max(px(120.));
+        let list_height = appearance::ui_size(430.).min((body_height - px(160.)).max(px(100.)));
         let Some(owner) = self.owner.upgrade() else {
             return div().into_any_element();
         };
@@ -338,13 +340,13 @@ impl Render for ActivityBrowser {
         let progress = app.operation_progress();
         let entries = app.activity.entries.clone();
         let error = app.activity.error.clone();
-        div().flex().flex_col().gap_2().text_size(appearance::ui_text(12.))
+        div().id("activity-browser-content").max_h(body_height).overflow_y_scroll().flex().flex_col().gap_2().text_size(appearance::ui_text(12.))
             .child(div().text_color(rgb(p.muted)).child("The latest 200 operations submitted by GitTurtle, across repositories. This is not a complete record of work performed by Git or other tools. Reflog recovery is available separately."))
             .child(div().flex().gap_2()
                 .child(button("activity-refresh","Refresh current repository","",false).disabled(app.operation_busy.is_some()).on_click({let owner=self.owner.clone();move |_,window,cx|{let _=owner.update(cx,|app,cx|{window.close_dialog(cx);app.refresh_worktree(window,cx);});}}))
                 .child(button("activity-reflog","Browse reflog…","",false).disabled(app.operation_busy.is_some()||app.repository.is_none()).on_click({let owner=self.owner.clone();move |_,window,cx|{let _=owner.update(cx,|app,cx|{window.close_dialog(cx);app.open_reflog_browser(window,cx);});}})))
             .children(error.map(|error|div().text_color(rgb(p.warning)).child(error)))
-            .child(div().id("activity-entries").h(appearance::ui_size(430.)).overflow_y_scroll().flex().flex_col().gap_2()
+            .child(div().id("activity-entries").h(list_height).flex_shrink_0().overflow_y_scroll().flex().flex_col().gap_2()
                 .children(entries.into_iter().rev().map(|entry|{
                     let timestamp=chrono::DateTime::from_timestamp(entry.time,0).map(|t|t.with_timezone(&chrono::Local).format("%b %d %H:%M:%S").to_string()).unwrap_or_default();
                     let heading=format!("{} · {} · {}",entry.operation,entry.outcome.label(),timestamp);
