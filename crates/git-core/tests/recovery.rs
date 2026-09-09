@@ -179,7 +179,10 @@ fn failed_stash_apply_reports_git_lock_failure_without_claiming_conflicts() {
     );
     assert!(!diagnostic.contains("produced conflicts"));
     assert!(diagnostic.contains("Git stderr:"));
-    assert!(diagnostic.contains("could not write index"), "{diagnostic}");
+    assert!(
+        diagnostic.contains("An index.lock is present in this working copy"),
+        "{diagnostic}"
+    );
     assert!(!diagnostic.contains("then use Continue"));
     assert_eq!(f.head(), head);
     assert_eq!(f.index(), index);

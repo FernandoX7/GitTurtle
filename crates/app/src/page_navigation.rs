@@ -32,7 +32,9 @@ impl GitTurtle {
         self.page = return_page(self.page, self.page_origin, self.repository.is_some());
         if self.page == AppPage::Repository {
             self.resume_file_history(window, cx);
-            self.ensure_editor(window, cx);
+            if self.mode != WorkspaceMode::History {
+                self.ensure_editor(window, cx);
+            }
             let focus = self.page_return_focus.take().unwrap_or_else(|| {
                 if self.mode == WorkspaceMode::History {
                     self.focus.clone()

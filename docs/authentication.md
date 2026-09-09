@@ -26,6 +26,8 @@ All three signing fixtures passed locally on 2026-09-08 on macOS 26.6.2 arm64 wi
 
 ## Automated quality gates
 
+The [September 9 milestone environment record](benchmarks/2026-09-09-milestone-environment.md) adds current isolated SSH-agent/OpenPGP signing, loopback HTTP/SSH/helper, cancellation and Keychain-presence checks, with exact commands and source-input identities. Its Linux container results are recorded separately from native and hosted-provider evidence.
+
 [The quality workflow](../.github/workflows/quality.yml) runs locked workspace tests, formatting, Clippy and release compilation on macOS 15 and Ubuntu 24.04. It uses Rust 1.98.0 (the workspace toolchain), a pinned checkout action with read-only permissions and no persisted checkout credential, isolated runner Git configuration, and Linux native build libraries. It contains no distribution, upload, signing or publication step. Its Linux dependencies follow the [upstream native build setup](https://github.com/longbridge/gpui-component/blob/main/script/install-linux.sh), excluding optional webview libraries that are absent from this application.
 
 The workflow configuration and local commands can be verified here. A hosted green run and actual Linux compilation/interactions must be reported separately; authoring the workflow does not establish that they passed.

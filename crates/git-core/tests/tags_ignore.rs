@@ -114,6 +114,109 @@ fn annotation_inspection_preserves_message_and_never_bypasses_signing() {
     assert_eq!(repo.tags().unwrap().tags.len(), 1);
 }
 
+#[cfg(unix)]
+fn empty_signature_fixture() -> Fixture {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    f.git(&["config", "tag.gpgSign", "true"]);
+    f.git(&["config", "gpg.format", "ssh"]);
+    f.git(&["config", "user.signingKey", "fixture-key"]);
+    let signer = f.root.join(".git/empty-signature");
+    fs::write(
+        &signer,
+        "#!/bin/sh\nfor buffer do :; done\n: > \"$buffer.sig\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&signer, fs::Permissions::from_mode(0o700)).unwrap();
+    f.git(&["config", "gpg.ssh.program", signer.to_str().unwrap()]);
+    f
+}
+
+#[cfg(unix)]
+#[test]
+fn success_without_signature_removes_only_exact_unsigned_tag_and_preserves_work() {
+    let f = empty_signature_fixture();
+    f.write("tracked", "unrelated working edit\n");
+    f.write("staged", "unrelated staged content\n");
+    f.git(&["add", "staged"]);
+    let head = f.git(&["rev-parse", "HEAD"]);
+    let index = f.git(&["ls-files", "--stage"]);
+    let repo = f.repo();
+    let plan = repo.create_tag_plan("unsigned-failure", "HEAD", Some("A literal marker is just message text:\n-----BEGIN SSH SIGNATURE-----\nexample\n-----END SSH SIGNATURE-----\n".into())).unwrap();
+    let error = repo
+        .execute(&WriteCommand::Tag(Arc::new(TagCommand::Create(plan))))
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("unsigned tag was removed"),
+        "{error:#}"
+    );
+    assert!(repo.tags().unwrap().tags.is_empty());
+    assert_eq!(f.git(&["rev-parse", "HEAD"]), head);
+    assert_eq!(f.git(&["ls-files", "--stage"]), index);
+    assert_eq!(
+        fs::read(f.root.join("tracked")).unwrap(),
+        b"unrelated working edit\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn signed_tag_postcondition_preserves_concurrent_replacement_and_runs_reference_hook() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = empty_signature_fixture();
+    f.git(&["config", "core.hooksPath", ".git/hooks"]);
+    let hook = f.root.join(".git/hooks/reference-transaction");
+    fs::write(&hook, "#!/bin/sh\nif test \"$1\" = committed && test ! -f .git/tag-replaced; then\n  while read old new ref; do\n    if test \"$ref\" = refs/tags/concurrent; then\n      : > .git/tag-replaced\n      git update-ref \"$ref\" HEAD\n    fi\n  done\nfi\n").unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o700)).unwrap();
+    let repo = f.repo();
+    let plan = repo
+        .create_tag_plan("concurrent", "HEAD", Some("must sign".into()))
+        .unwrap();
+    assert!(
+        repo.execute(&WriteCommand::Tag(Arc::new(TagCommand::Create(plan))))
+            .is_err()
+    );
+    assert!(
+        f.root.join(".git/tag-replaced").exists(),
+        "Configured reference hook must run"
+    );
+    assert_eq!(
+        f.git(&["rev-parse", "refs/tags/concurrent"]),
+        f.git(&["rev-parse", "HEAD"])
+    );
+    assert_eq!(f.git(&["cat-file", "-t", "refs/tags/concurrent"]), "commit");
+}
+
+#[cfg(unix)]
+#[test]
+fn signed_tag_postcondition_refuses_observed_symbolic_replacement() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = empty_signature_fixture();
+    f.git(&["config", "core.hooksPath", ".git/hooks"]);
+    let hook = f.root.join(".git/hooks/reference-transaction");
+    fs::write(&hook, "#!/bin/sh\nif test \"$1\" = committed && test ! -f .git/tag-replaced; then\n  while read old new ref; do\n    if test \"$ref\" = refs/tags/symbolic; then\n      : > .git/tag-replaced\n      git update-ref refs/tags/retained-target \"$new\"\n      git symbolic-ref \"$ref\" refs/tags/retained-target\n    fi\n  done\nfi\n").unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o700)).unwrap();
+    let repo = f.repo();
+    let plan = repo
+        .create_tag_plan("symbolic", "HEAD", Some("must sign".into()))
+        .unwrap();
+    let error = repo
+        .execute(&WriteCommand::Tag(Arc::new(TagCommand::Create(plan))))
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("symbolic reference"),
+        "{error:#}"
+    );
+    assert_eq!(
+        f.git(&["symbolic-ref", "refs/tags/symbolic"]),
+        "refs/tags/retained-target"
+    );
+    assert_eq!(
+        f.git(&["cat-file", "-t", "refs/tags/retained-target"]),
+        "tag"
+    );
+}
+
 #[test]
 fn named_push_ignores_mirror_and_follow_tags_configuration() {
     let f = Fixture::new();

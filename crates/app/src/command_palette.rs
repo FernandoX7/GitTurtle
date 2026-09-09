@@ -319,6 +319,11 @@ struct PaletteContext {
     path: Option<PathBuf>,
     label: String,
 }
+impl PaletteContext {
+    fn allows(&self, original_path: &Option<PathBuf>, command: CommandId) -> bool {
+        original_path == &self.path && command.reason(&self.availability).is_none()
+    }
+}
 
 #[derive(Default)]
 struct Selection {
@@ -363,6 +368,19 @@ impl GitTurtle {
         }
     }
     fn palette_file_scope(&self) -> FileScope {
+        if self.mode == WorkspaceMode::Working {
+            return FileScope {
+                working: self.working_selected.and_then(|(index, area)| {
+                    self.work_status
+                        .as_ref()?
+                        .entries
+                        .get(index)
+                        .cloned()
+                        .map(|entry| (entry, area))
+                }),
+                ..FileScope::default()
+            };
+        }
         FileScope {
             commit: self
                 .selected_commit
@@ -372,17 +390,11 @@ impl GitTurtle {
                 .selected_file
                 .and_then(|index| self.files.get(index))
                 .cloned(),
-            working: self.working_selected.and_then(|(index, area)| {
-                self.work_status
-                    .as_ref()?
-                    .entries
-                    .get(index)
-                    .cloned()
-                    .map(|entry| (entry, area))
-            }),
+            working: None,
         }
     }
     fn palette_availability(&self) -> Availability {
+        let file_scope = self.palette_file_scope();
         Availability {
             repository: self.repository.is_some(),
             workspace: self.page == AppPage::Repository,
@@ -391,8 +403,8 @@ impl GitTurtle {
                 .work_status
                 .as_ref()
                 .is_some_and(|status| status.branch.is_some()),
-            file: self.selected_file.is_some(),
-            working_file: self.working_selected.is_some(),
+            file: file_scope.file.is_some(),
+            working_file: file_scope.working.is_some(),
             working: self.mode == WorkspaceMode::Working,
             file_history: self.file_history.is_active(),
             blame: self.blame.is_visible(),
@@ -589,13 +601,10 @@ impl Palette {
     }
     fn can_activate(&self) -> bool {
         !self.selection.closed
-            && self.path == self.context.path
-            && self.results.get(self.selection.index).is_some_and(|index| {
-                COMMANDS[*index]
-                    .id
-                    .reason(&self.context.availability)
-                    .is_none()
-            })
+            && self
+                .results
+                .get(self.selection.index)
+                .is_some_and(|index| self.context.allows(&self.path, COMMANDS[*index].id))
     }
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.selection.claim(true) {
@@ -646,6 +655,13 @@ impl Render for Palette {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         let count = self.results.len();
+        let desired_height = appearance::ui_size(if count == 0 {
+            78.
+        } else {
+            54. * count.min(7) as f32 + 2.
+        });
+        let available_height = (window.viewport_size().height - appearance::ui_size(300.))
+            .max(appearance::ui_size(54.));
         let context = self.context.availability.clone();
         let selected_file_command = self
             .results
@@ -826,7 +842,7 @@ impl Render for Palette {
                     .id("command-palette-results")
                     .role(Role::ListBox)
                     .aria_label("Matching commands")
-                    .h((window.viewport_size().height - px(300.)).clamp(px(150.), px(360.)))
+                    .h(desired_height.min(available_height))
                     .overflow_hidden()
                     .border_1()
                     .border_color(rgb(p.border))
@@ -860,7 +876,8 @@ impl Render for Palette {
 
 #[cfg(test)]
 mod tests {
-    use super::{Availability, COMMANDS, CommandId, Selection, matches};
+    use super::{Availability, COMMANDS, CommandId, PaletteContext, Selection, matches};
+    use std::path::PathBuf;
     #[test]
     fn search_finds_synonyms_and_respects_all_terms_and_bounds() {
         for (query, expected) in [
@@ -909,5 +926,30 @@ mod tests {
         assert!(!selection.claim(false));
         assert!(selection.claim(true));
         assert!(!selection.claim(true));
+    }
+    #[test]
+    fn refreshed_snapshot_disables_changed_repository_and_hidden_or_busy_workspace() {
+        let original = Some(PathBuf::from("/fixture/original"));
+        let mut snapshot = PaletteContext {
+            availability: Availability {
+                repository: true,
+                workspace: true,
+                ..Availability::default()
+            },
+            path: original.clone(),
+            label: "Original repository".into(),
+        };
+        assert!(snapshot.allows(&original, CommandId::QuickOpen));
+        snapshot.path = Some(PathBuf::from("/fixture/replacement"));
+        assert!(!snapshot.allows(&original, CommandId::QuickOpen));
+        assert!(!snapshot.allows(&original, CommandId::Profiles));
+        snapshot.path = original.clone();
+        snapshot.availability.workspace = false;
+        assert!(!snapshot.allows(&original, CommandId::QuickOpen));
+        assert!(snapshot.allows(&original, CommandId::History));
+        snapshot.availability.workspace = true;
+        snapshot.availability.busy = true;
+        assert!(!snapshot.allows(&original, CommandId::QuickOpen));
+        assert!(snapshot.allows(&original, CommandId::Activity));
     }
 }

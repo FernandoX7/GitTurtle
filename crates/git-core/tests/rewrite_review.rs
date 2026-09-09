@@ -270,6 +270,42 @@ fn cancellation_before_network_write_preserves_remote_and_never_retries() {
     assert_eq!(fixture.remote_head(), fixture.original);
 }
 
+#[cfg(unix)]
+#[test]
+fn local_pre_push_hook_receives_reviewed_destination_and_can_refuse_publication() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = Fixture::new();
+    let review = fixture.rewrite();
+    let plan = fixture.plan(&review);
+    let hook = fixture.root.join(".git/hooks/pre-push");
+    fs::write(&hook, "#!/bin/sh\nprintf '%s\\n' \"$1\" \"$2\" > .git/reviewed-hook-destination\ncat > .git/reviewed-hook-refs\necho 'local publication policy refused' >&2\nexit 1\n").unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    let error = fixture.repo().execute_leased_publish(&plan).unwrap_err();
+    assert!(format!("{error:#}").contains("local publication policy refused"));
+    assert_eq!(fixture.remote_head(), fixture.original);
+    assert_eq!(
+        git(&fixture.root, &["rev-parse", "HEAD"]),
+        review.rewritten_head
+    );
+    let destinations =
+        fs::read_to_string(fixture.root.join(".git/reviewed-hook-destination")).unwrap();
+    assert_eq!(
+        destinations.lines().collect::<Vec<_>>(),
+        [plan.remote_url.as_str(), plan.remote_url.as_str()]
+    );
+    let refs = fs::read_to_string(fixture.root.join(".git/reviewed-hook-refs")).unwrap();
+    let fields: Vec<_> = refs.split_whitespace().collect();
+    assert_eq!(
+        fields,
+        [
+            plan.new_oid.as_str(),
+            plan.new_oid.as_str(),
+            plan.remote_ref.as_str(),
+            plan.expected_remote_oid.as_str()
+        ]
+    );
+}
+
 #[test]
 fn remote_movement_requires_fetched_objects_then_a_separate_new_series_and_lease_review() {
     let fixture = Fixture::new();

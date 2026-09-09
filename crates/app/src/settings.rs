@@ -4,6 +4,105 @@ use columns::{ColumnId, ColumnSettings};
 use gitturtle_core::WriteCommand;
 use gpui_kit::component::{checkbox::Checkbox, switch::Switch};
 use gpui_kit::prelude::FluentBuilder;
+use std::path::Path;
+
+/// Baselines distinguish a saved value moving externally from an unfinished edit.
+pub(super) struct DraftState {
+    branch: String,
+    identity: Option<(PathBuf, (String, String))>,
+}
+
+#[cfg(test)]
+mod draft_tests {
+    use super::DraftState;
+    use std::path::Path;
+
+    fn identity(name: &str) -> (String, String) {
+        (name.into(), format!("{name}@example.invalid"))
+    }
+
+    #[test]
+    fn unsaved_default_branch_survives_reentry_and_external_updates_until_saved() {
+        let mut state = DraftState::new("main".into());
+        for saved in ["main", "main", "external"] {
+            assert_eq!(state.branch_update(saved, "draft-branch"), None);
+        }
+        assert_eq!(state.branch_update("draft-branch", "draft-branch"), None);
+        assert_eq!(
+            state.branch_update("new-default", "draft-branch"),
+            Some("new-default".into())
+        );
+    }
+
+    #[test]
+    fn identity_edits_retain_scope_and_reset_or_untouched_fields_follow_effective_git() {
+        let personal = Path::new("/fixture/personal");
+        let work = Path::new("/fixture/work");
+        let mut state = DraftState::new("main".into());
+        assert_eq!(
+            state.identity_update(personal, &identity("Alice"), &identity("")),
+            Some(identity("Alice"))
+        );
+        for effective in ["Alice", "Alice", "External"] {
+            assert_eq!(
+                state.identity_update(personal, &identity(effective), &identity("Draft")),
+                None
+            );
+        }
+        state.reset_identity(Some(personal), identity("External"));
+        assert_eq!(
+            state.identity_update(personal, &identity("Updated"), &identity("External")),
+            Some(identity("Updated"))
+        );
+        assert_eq!(
+            state.identity_update(work, &identity("Work"), &identity("PersonalDraft")),
+            Some(identity("Work"))
+        );
+        assert_eq!(
+            state.identity_update(work, &identity("SavedEdit"), &identity("SavedEdit")),
+            None
+        );
+        assert_eq!(
+            state.identity_update(work, &identity("NewEffective"), &identity("SavedEdit")),
+            Some(identity("NewEffective"))
+        );
+    }
+}
+
+impl DraftState {
+    pub(super) fn new(branch: String) -> Self {
+        Self {
+            branch,
+            identity: None,
+        }
+    }
+    fn branch_update(&mut self, saved: &str, edited: &str) -> Option<String> {
+        if edited != self.branch && edited != saved {
+            return None;
+        }
+        self.branch = saved.into();
+        (edited != saved).then(|| saved.into())
+    }
+    fn identity_update(
+        &mut self,
+        path: &Path,
+        effective: &(String, String),
+        edited: &(String, String),
+    ) -> Option<(String, String)> {
+        if let Some((scope, baseline)) = &self.identity
+            && scope == path
+            && edited != baseline
+            && edited != effective
+        {
+            return None;
+        }
+        self.identity = Some((path.to_owned(), effective.clone()));
+        (edited != effective).then(|| effective.clone())
+    }
+    fn reset_identity(&mut self, path: Option<&Path>, effective: (String, String)) {
+        self.identity = path.map(|path| (path.to_owned(), effective));
+    }
+}
 
 impl GitTurtle {
     pub(super) fn subscribe_settings_inputs(
@@ -11,6 +110,12 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Status replies can change the effective identity while Settings is
+        // visible. Reconcile after parent notifications, outside rendering.
+        self.subscriptions
+            .push(cx.observe_in(&cx.entity(), window, |this, _, window, cx| {
+                this.sync_settings_drafts(window, cx)
+            }));
         self.subscriptions.push(cx.subscribe_in(
             &self.settings_branch,
             window,
@@ -50,10 +155,7 @@ impl GitTurtle {
         self.column_drag = None;
         self.image_drag = None;
         self.end_image_drag();
-        self.settings_branch.update(cx, |input, cx| {
-            input.set_value(self.settings.default_branch.clone(), window, cx)
-        });
-        self.fill_identity_inputs(window, cx);
+        self.sync_settings_drafts(window, cx);
         window.focus(&self.app_focus, cx);
         self.repaint_page(window, cx);
     }
@@ -66,10 +168,44 @@ impl GitTurtle {
 
     fn fill_identity_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let profile = self.profile.clone().unwrap_or_default();
+        self.settings_drafts.reset_identity(
+            self.repository.as_ref().map(|repository| repository.path()),
+            (profile.name.clone(), profile.email.clone()),
+        );
         self.identity_name
             .update(cx, |input, cx| input.set_value(profile.name, window, cx));
         self.identity_email
             .update(cx, |input, cx| input.set_value(profile.email, window, cx));
+    }
+
+    fn sync_settings_drafts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.page != AppPage::Settings {
+            return;
+        }
+        if let Some(value) = self.settings_drafts.branch_update(
+            &self.settings.default_branch,
+            self.settings_branch.read(cx).value().as_ref(),
+        ) {
+            self.settings_branch
+                .update(cx, |input, cx| input.set_value(value, window, cx));
+        }
+        let (Some(repository), Some(profile)) = (&self.repository, &self.profile) else {
+            return;
+        };
+        let effective = (profile.name.clone(), profile.email.clone());
+        let edited = (
+            self.identity_name.read(cx).value().to_string(),
+            self.identity_email.read(cx).value().to_string(),
+        );
+        if let Some((name, email)) =
+            self.settings_drafts
+                .identity_update(repository.path(), &effective, &edited)
+        {
+            self.identity_name
+                .update(cx, |input, cx| input.set_value(name, window, cx));
+            self.identity_email
+                .update(cx, |input, cx| input.set_value(email, window, cx));
+        }
     }
 
     /// This method never replaces current UI settings with an older disk reply.

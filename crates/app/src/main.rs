@@ -234,6 +234,7 @@ struct GitTurtle {
     remote_name: Entity<InputState>,
     remote_branch: Entity<InputState>,
     settings_branch: Entity<InputState>,
+    settings_drafts: settings::DraftState,
     column_drag: Option<(columns::ColumnId, Pixels, f32)>,
     column_menu: bool,
     git_actions_open: bool,
@@ -346,6 +347,7 @@ impl GitTurtle {
         let remote_branch = cx.new(|cx| InputState::new(window, cx).placeholder("Remote branch"));
         let settings_branch =
             cx.new(|cx| InputState::new(window, cx).default_value(settings.default_branch.clone()));
+        let settings_drafts = settings::DraftState::new(settings.default_branch.clone());
         let settings_editor = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(settings.external_editor.clone())
@@ -420,6 +422,7 @@ impl GitTurtle {
             remote_name,
             remote_branch,
             settings_branch,
+            settings_drafts,
             column_drag: None,
             column_menu: false,
             git_actions_open: true,
@@ -488,6 +491,7 @@ impl GitTurtle {
             details: false,
         };
         this.load_profiles(window, cx);
+        this.install_draft_quit_observer(cx);
         this.subscriptions.push(cx.subscribe_in(
             &file_filter,
             window,

@@ -385,6 +385,9 @@ impl GitRepository {
         );
         let mut command = normal_command(&self.path);
         configure_network(&mut command, self)?;
+        // Pin the reviewed destination after checking the named remote. Using
+        // the name here would let a concurrent config edit retarget the write.
+        // Git still runs its normal push hooks and authentication for this URL.
         command.args([
             "-c",
             &format!("remote.{}.mirror=false", plan.remote),
@@ -401,7 +404,7 @@ impl GitRepository {
                 plan.remote_ref, plan.expected_remote_oid
             ),
             "--",
-            &plan.remote,
+            &plan.remote_url,
             &format!("{}:{}", plan.new_oid, plan.remote_ref),
         ]);
         let output = checked_write_output(command, None, NETWORK_TIMEOUT).context("Leased publication did not return success. The lease is never broadened or retried; inspect the remote explicitly before another attempt")?;

@@ -435,11 +435,33 @@ impl GitRepository {
         } else {
             "Review Git's diagnostics and the current files before taking another action."
         };
+        // Some older Git releases return an empty stderr when stash apply
+        // cannot acquire the index lock. Report observed local state without
+        // claiming it proves the cause or removing another writer's lock.
+        let index_locked = !matches!(conflicted, Ok(true))
+            && run_git(
+                &self.path,
+                &[
+                    "rev-parse",
+                    "--path-format=absolute",
+                    "--git-path",
+                    "index.lock",
+                ],
+            )
+            .ok()
+            .is_some_and(|path| {
+                std::fs::symlink_metadata(path_from_bytes(trim_line(&path))).is_ok()
+            });
+        let local_state = if index_locked {
+            "\n\nAn index.lock is present in this working copy; another Git operation may own it. Let that operation finish, then refresh."
+        } else {
+            ""
+        };
         // Keep both original streams, including stdout-only merge diagnostics.
         // The leading sentence is suitable for the compact operation error bar;
         // Details retains the full diagnostic content and actual exit status.
         bail!(
-            "{summary} {saved}\n\n{guidance}\n\nGit result: {}\n\nGit stdout:\n{}\n\nGit stderr:\n{}",
+            "{summary} {saved}\n\n{guidance}{local_state}\n\nGit result: {}\n\nGit stdout:\n{}\n\nGit stderr:\n{}",
             output.status,
             text(&output.stdout),
             text(&output.stderr),

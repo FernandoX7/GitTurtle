@@ -533,11 +533,10 @@ fn partial_clone_reads_do_not_fetch_missing_promisor_blobs() {
     assert_eq!(repo.history(10).unwrap()[0].oid, commit);
     let changes = repo.changes(&commit, 0).unwrap();
     assert_eq!(changes[0].new_oid.as_deref(), Some(blob.as_str()));
+    let unavailable = repo.blob(&blob).unwrap_err().to_string();
     assert!(
-        repo.blob(&blob)
-            .unwrap_err()
-            .to_string()
-            .contains("not available locally")
+        unavailable.contains("not available locally"),
+        "{unavailable}"
     );
     assert!(repo.blob_size(&blob).is_err());
     drop(repo);

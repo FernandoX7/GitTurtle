@@ -1,6 +1,7 @@
 [workspace]
 members = ["crates/app", "crates/git-core", "crates/preview"]
 default-members = ["crates/app"]
+exclude = ["vendor/gpui-pre-macos"]
 resolver = "3"
 
 [workspace.package]
@@ -18,3 +19,7 @@ opt-level = 2
 lto = "thin"
 codegen-units = 8
 strip = "debuginfo"
+
+# Keep the matching GPUI 0.3.4 stack; supply a demand-driven macOS frame wakeup.
+[patch.crates-io]
+gpui-pre-macos = { path = "vendor/gpui-pre-macos" }

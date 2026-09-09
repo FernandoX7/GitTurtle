@@ -148,6 +148,12 @@ impl GitTurtle {
     }
 
     pub(super) fn open_quick_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.page != AppPage::Repository
+            || window.has_active_dialog(cx)
+            || window.has_active_sheet(cx)
+        {
+            return;
+        }
         let Some(repo) = self
             .repository
             .clone()

@@ -153,6 +153,7 @@ impl GitRepository {
     pub(super) fn execute_tag(&self, operation: &TagCommand) -> Result<WriteOutcome> {
         let mut command = normal_command(&self.path);
         let mut input = None;
+        let mut signed_guard = None;
         let mut timeout = WRITE_TIMEOUT;
         let message = match operation {
             TagCommand::Create(plan) => {
@@ -177,6 +178,14 @@ impl GitRepository {
                     // Its marker must start on a fresh line to be verifiable.
                     if plan.signing && !bytes.ends_with(b"\n") {
                         bytes.push(b'\n');
+                    }
+                    if plan.signing {
+                        signed_guard = Some(SignedTagGuard::prepare(
+                            &self.path,
+                            plan,
+                            &bytes,
+                            &mut command,
+                        )?);
                     }
                     input = Some(bytes);
                 }
@@ -245,6 +254,9 @@ impl GitRepository {
             }
         };
         checked_write_output(command, input, timeout)?;
+        if let Some(guard) = signed_guard {
+            guard.check(self)?;
+        }
         Ok(WriteOutcome {
             message,
             commit_oid: None,
@@ -341,4 +353,136 @@ impl GitRepository {
             root: self.path.clone(),
         })
     }
+}
+
+/// Git 2.43's SSH signer can return a positive error that `git tag` mistakes
+/// for success. Capture the exact possible unsigned object before invoking Git
+/// so a failed-signature rollback cannot delete a different object ID.
+struct SignedTagGuard {
+    reference: String,
+    unsigned: Vec<u8>,
+    unsigned_oid: String,
+}
+
+impl SignedTagGuard {
+    fn prepare(
+        root: &Path,
+        plan: &CreateTagPlan,
+        annotation: &[u8],
+        command: &mut Command,
+    ) -> Result<Self> {
+        let mut ident_command = normal_command(root);
+        ident_command.args(["var", "GIT_COMMITTER_IDENT"]);
+        let output = checked_write_output(ident_command, None, GIT_TIMEOUT)?;
+        let ident = std::str::from_utf8(trim_line(&output.stdout))?;
+        let (name_email, date) = ident
+            .rsplit_once("> ")
+            .context("Invalid Git tagger identity")?;
+        let (name, email) = name_email
+            .rsplit_once(" <")
+            .context("Invalid Git tagger identity")?;
+        // Preserve the effective identity and date Git resolved, including
+        // configured environment overrides, throughout this single operation.
+        command
+            .env("GIT_COMMITTER_NAME", name)
+            .env("GIT_COMMITTER_EMAIL", email)
+            .env("GIT_COMMITTER_DATE", date);
+        let mut unsigned = format!(
+            "object {}\ntype commit\ntag {}\ntagger {ident}\n\n",
+            plan.target_oid, plan.name
+        )
+        .into_bytes();
+        unsigned.extend_from_slice(annotation);
+        let mut hash = git_command(root);
+        hash.args(["hash-object", "-t", "tag", "--stdin"]);
+        let output = checked_write_output(hash, Some(unsigned.clone()), GIT_TIMEOUT)?;
+        let unsigned_oid = text(trim_line(&output.stdout));
+        validate_oid(&unsigned_oid)?;
+        Ok(Self {
+            reference: format!("refs/tags/{}", plan.name),
+            unsigned,
+            unsigned_oid,
+        })
+    }
+
+    fn check(self, repo: &GitRepository) -> Result<()> {
+        let mut symbolic = git_command(&repo.path);
+        symbolic.args(["symbolic-ref", "--quiet", "--no-recurse", &self.reference]);
+        let symbolic = bounded_write_output(symbolic, None, GIT_TIMEOUT)?;
+        ensure!(
+            symbolic.status.code() == Some(1),
+            "The created tag changed to a symbolic reference or its type could not be checked; it was preserved. Inspect {} before publishing",
+            self.reference
+        );
+        let oid = text(trim_line(&run_git(
+            &repo.path,
+            &["rev-parse", "--verify", "--end-of-options", &self.reference],
+        )?));
+        validate_oid(&oid)?;
+        let size = run_git(&repo.path, &["cat-file", "-s", &oid])?;
+        let size = std::str::from_utf8(trim_line(&size))?.parse::<usize>()?;
+        ensure!(
+            size <= self.unsigned.len().saturating_add(256 * 1024),
+            "The created tag exceeds the signature inspection limit; its signature is unconfirmed. Inspect the tag before publishing; no retry was attempted"
+        );
+        let object = run_git(&repo.path, &["cat-file", "tag", &oid]).context(
+            "The created tag changed or is no longer annotated; its current reference was preserved. Inspect it before publishing",
+        )?;
+        if object
+            .strip_prefix(self.unsigned.as_slice())
+            .is_some_and(signature_envelope)
+        {
+            return Ok(());
+        }
+        if oid == self.unsigned_oid && object == self.unsigned {
+            let mut rollback = normal_command(&repo.path);
+            rollback.args([
+                "update-ref",
+                "--no-deref",
+                "-d",
+                &self.reference,
+                &self.unsigned_oid,
+            ]);
+            match checked_write_output(rollback, None, GIT_TIMEOUT) {
+                Ok(_) => bail!(
+                    "Git reported success without the required tag signature. The unsigned tag was removed using its exact object ID; no unsigned fallback or retry was performed. Check the configured signer and key before trying again"
+                ),
+                Err(error) => bail!(
+                    "Git reported success without the required tag signature. Removal of the unsigned tag was not confirmed; a different object-ID replacement is preserved. Inspect {} before publishing; no retry was attempted. {error:#}",
+                    self.reference
+                ),
+            }
+        }
+        bail!(
+            "The created tag does not match the reviewed signed annotation, or changed during creation. Its current reference was preserved. Inspect {} before publishing; no retry was attempted",
+            self.reference
+        )
+    }
+}
+
+/// This checks that signing appended an envelope to the exact submitted bytes;
+/// trust verification remains an explicit Git verification using its config.
+fn signature_envelope(bytes: &[u8]) -> bool {
+    [
+        (
+            b"-----BEGIN SSH SIGNATURE-----\n".as_slice(),
+            b"-----END SSH SIGNATURE-----".as_slice(),
+        ),
+        (
+            b"-----BEGIN PGP SIGNATURE-----\n".as_slice(),
+            b"-----END PGP SIGNATURE-----".as_slice(),
+        ),
+        (
+            b"-----BEGIN SIGNED MESSAGE-----\n".as_slice(),
+            b"-----END SIGNED MESSAGE-----".as_slice(),
+        ),
+    ]
+    .into_iter()
+    .any(|(begin, end)| {
+        bytes.strip_prefix(begin).is_some_and(|body| {
+            let body = body.strip_suffix(b"\n").unwrap_or(body);
+            body.strip_suffix(end)
+                .is_some_and(|payload| payload.len() > 1 && payload.ends_with(b"\n"))
+        })
+    })
 }

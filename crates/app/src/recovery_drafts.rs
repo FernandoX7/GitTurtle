@@ -90,6 +90,7 @@ pub(super) struct Draft {
 pub(super) struct State {
     entries: HashMap<Key, Draft>,
     saver: commit_drafts::CoalescingSaver<Key, Option<Draft>>,
+    save_generation: u64,
     pub error: Option<String>,
     browser: Option<WeakEntity<RecoveryList>>,
 }
@@ -149,9 +150,13 @@ impl State {
     }
     pub(super) fn latest(&self, key: &Key) -> Option<Draft> {
         self.entries
-            .values()
-            .filter(|draft| draft.key.same_location(key))
-            .max_by_key(|draft| draft.updated)
+            .get(key)
+            .or_else(|| {
+                self.entries
+                    .values()
+                    .filter(|draft| draft.key.same_location(key))
+                    .max_by_key(|draft| draft.updated)
+            })
             .cloned()
     }
     pub(super) fn status(&self) -> String {
@@ -282,6 +287,17 @@ pub(super) fn latest_rewrite(root: &Path) -> Result<SavedRewrite> {
 }
 
 impl GitTurtle {
+    /// GPUI waits up to its own 200 ms shutdown budget for observers. This
+    /// accepted queue barrier gives normal quit a chance to finish draft saves;
+    /// only an already confirmed Saved state proves durability on termination.
+    pub(super) fn install_draft_quit_observer(&mut self, cx: &mut Context<Self>) {
+        self.subscriptions.push(cx.on_app_quit(|this, _| {
+            let barrier = preference_barrier(&this.preferences_writer);
+            async move {
+                let _ = barrier.await;
+            }
+        }));
+    }
     /// Enqueue before the accepted Start, on the same serialized preferences
     /// writer as drafts. The operation waits for this result before calling Git.
     pub(super) fn prepare_rewrite_capture(
@@ -358,13 +374,21 @@ impl GitTurtle {
                     save_at(batch, &store_path()?)
                 });
         if let Some(response) = response {
+            self.recovery_drafts.save_generation =
+                self.recovery_drafts.save_generation.wrapping_add(1);
+            let generation = self.recovery_drafts.save_generation;
             self.recovery_drafts.error = None;
             cx.spawn_in(window, async move |this, cx| {
                 let result = response
                     .await
                     .unwrap_or_else(|_| Err(anyhow::anyhow!("Save ended without confirmation")));
                 let _ = this.update_in(cx, |this, window, cx| {
-                    this.recovery_drafts.error = result.err().map(|error| format!("{error:#}"));
+                    // A newer accepted batch may have finished before this UI
+                    // reply was polled. Do not clear its failure with an older
+                    // success or replace a newer success with an old failure.
+                    if this.recovery_drafts.save_generation == generation {
+                        this.recovery_drafts.error = result.err().map(|error| format!("{error:#}"));
+                    }
                     this.refresh_recovery_status(cx);
                     window.refresh();
                     cx.notify();
@@ -438,6 +462,10 @@ impl GitTurtle {
                 })
         });
     }
+}
+
+fn preference_barrier(writer: &SerialExecutor) -> futures::channel::oneshot::Receiver<Result<()>> {
+    writer.submit(|| Ok(()))
 }
 
 struct RecoveryList {
@@ -616,6 +644,31 @@ mod tests {
         assert_eq!(saved.text, text);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
+
+    #[test]
+    fn returning_to_an_earlier_source_prefers_its_valid_draft_and_keeps_newer_stale_text() {
+        let original = key('a');
+        let changed = key('b');
+        let mut first = draft(original.clone(), "valid for original source\r\n");
+        first.updated = 1;
+        let mut second = draft(changed.clone(), "newer draft for changed source\n");
+        second.updated = 2;
+        let state = State {
+            entries: HashMap::from([(original.clone(), first), (changed.clone(), second)]),
+            ..State::default()
+        };
+        assert_eq!(state.latest(&original).unwrap().key, original);
+        assert_eq!(state.latest(&changed).unwrap().key, changed);
+        assert_eq!(
+            state.latest(&key('c')).unwrap().text,
+            "newer draft for changed source\n"
+        );
+        assert_eq!(
+            state.entries.len(),
+            2,
+            "Source changes never remove recoverable text"
+        );
+    }
     #[test]
     fn failed_store_is_preserved_and_other_worktrees_survive_updates() {
         let path = fixture("merge");
@@ -711,6 +764,57 @@ mod tests {
         assert_eq!(
             read(&path).unwrap().get(&key('a')).unwrap().text.as_bytes(),
             "Forced termination 🐢\r\n  exact text\n".as_bytes()
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn normal_quit_barrier_finishes_latest_coalesced_text_after_a_dropped_reply() {
+        let path = fixture("quit-barrier");
+        let writer = SerialExecutor::new("recovery-quit-fixture");
+        let saver = commit_drafts::CoalescingSaver::default();
+        let (started, running) = std::sync::mpsc::channel();
+        let (release, gate) = std::sync::mpsc::channel();
+        let output = path.clone();
+        let mut first = true;
+        let key = key('a');
+        let response = saver
+            .queue_with(
+                &writer,
+                key.clone(),
+                Some(draft(key.clone(), "first")),
+                move |batch| {
+                    if first {
+                        first = false;
+                        started.send(()).unwrap();
+                        gate.recv().unwrap();
+                    }
+                    save_at(batch, &output)
+                },
+            )
+            .unwrap();
+        drop(response);
+        running.recv().unwrap();
+        assert!(
+            saver
+                .queue_with(
+                    &writer,
+                    key.clone(),
+                    Some(draft(key.clone(), "latest before quit\r\n")),
+                    |_| unreachable!()
+                )
+                .is_none()
+        );
+        let mut barrier = preference_barrier(&writer);
+        assert!(
+            barrier.try_recv().unwrap().is_none(),
+            "Quit barrier must wait for accepted writes"
+        );
+        release.send(()).unwrap();
+        futures::executor::block_on(barrier).unwrap().unwrap();
+        assert_eq!(
+            read(&path).unwrap().get(&key).unwrap().text,
+            "latest before quit\r\n"
         );
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }

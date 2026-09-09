@@ -1044,7 +1044,14 @@ impl BatchWire {
         writeln!(self.input, "{request} {oid}").context("Git object reader disconnected")?;
         self.input.flush()?;
         let mut header = String::new();
-        self.output.read_line(&mut header)?;
+        let received = self.output.read_line(&mut header)?;
+        // Older Git releases exit for a missing promisor object when lazy
+        // fetching is disabled instead of returning a batch `missing` record.
+        // EOF can also mean another reader failure, so retain that uncertainty.
+        ensure!(
+            received != 0,
+            "Git object reader ended before responding for {oid}. The object is either not available locally or the reader failed (automatic fetching is disabled)."
+        );
         let fields: Vec<_> = header.split_whitespace().collect();
         ensure!(
             fields.len() != 2 || fields[1] != "missing",

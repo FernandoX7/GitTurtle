@@ -568,7 +568,7 @@ impl SeriesBrowser {
             .border_b_1()
             .border_color(rgb(p.border))
             .bg(rgb(if selected { p.selected } else { p.panel }))
-            .hover(|style| style.bg(rgb(p.subtle)))
+            .hover(|style| style.bg(rgb(p.row_hover(selected))))
             .cursor_pointer()
             .child(
                 div()
@@ -628,7 +628,7 @@ impl Render for SeriesBrowser {
             .when(!self.inspecting, |element| element
                 .child(div().text_size(appearance::ui_text(12.)).text_color(rgb(p.muted)).child("Original → rewritten · unique patch fingerprints identify likely correspondence. Changed patches may match by unique subject only. Ambiguous, combined and empty commits remain explicit; inspect both sides before publishing."))
                 .when_some(self.review.as_ref(), |element, review| element.child(div().text_size(appearance::ui_text(11.)).child(format!("{} · original {} → rewritten {} · base {}", review.branch, short_oid(&review.original_head), short_oid(&review.rewritten_head), short_oid(&review.base)))))
-                .child(div().id("series-focus-list").flex_1().min_h(px(100.)).border_1().border_color(rgb(p.border)).rounded(px(6.)).overflow_hidden().tab_stop(true).track_focus(&self.focus).role(Role::ListBox).aria_label("Original and rewritten commits")
+                .child(div().id("series-focus-list").flex_1().min_h(px(100.)).border_1().border_color(rgb(p.border)).focus_visible(|style| style.border_color(rgb(p.accent))).rounded(px(6.)).overflow_hidden().tab_stop(true).track_focus(&self.focus).role(Role::ListBox).aria_label("Original and rewritten commits")
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| { match event.keystroke.key.as_str() { "up" => this.select(this.selected.saturating_sub(1), window, cx), "down" => this.select(this.selected + 1, window, cx), "enter" => this.inspect(false, window, cx), _ => return } cx.stop_propagation(); }))
                     .child(uniform_list("rewrite-series-list", self.review.as_ref().map_or(0, |review| review.rows.len()), cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| this.row(index, cx)).collect::<Vec<_>>())).size_full().track_scroll(&self.rows_scroll)))
                 .child(div().flex().flex_wrap().gap_2()

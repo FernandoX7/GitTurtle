@@ -1318,33 +1318,6 @@ impl GitTurtle {
             .px_3()
             .border_b_1()
             .border_color(rgb(colors.border))
-            .child(
-                button(
-                    "back-history",
-                    if self.file_history.is_active() || self.revision_inspection.is_active() {
-                        "Back"
-                    } else {
-                        "History"
-                    },
-                    "arrow-left",
-                    false,
-                )
-                .accessibility_label(if self.file_history.is_active() {
-                    "Back from file history"
-                } else if self.revision_inspection.is_active() {
-                    "Back to previous inspection"
-                } else {
-                    "Back to history"
-                })
-                .tooltip("Back · Escape")
-                .on_click(cx.listener(|this, _, window, cx| this.back_to_history(window, cx))),
-            )
-            .child(
-                div()
-                    .h(crate::appearance::ui_size(18.))
-                    .w(px(1.))
-                    .bg(rgb(colors.border)),
-            )
             .children(
                 self.working_selected
                     .filter(|_| self.mode == WorkspaceMode::Working)
@@ -1798,21 +1771,29 @@ impl Render for GitTurtle {
                 }
             }))
             .on_action(cx.listener(|this, _: &SelectAllWorking, _, cx| this.select_all_working(cx)))
-            .on_action(
-                cx.listener(|this, _: &ShowActivity, window, cx| this.open_activity(window, cx)),
-            )
-            .on_action(
-                cx.listener(|this, _: &QuickOpenFile, window, cx| this.open_quick_file(window, cx)),
-            )
+            .on_action(cx.listener(|this, _: &ShowActivity, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    this.open_activity(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &QuickOpenFile, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    this.open_quick_file(window, cx);
+                }
+            }))
             .on_action(cx.listener(|this, _: &ShowCommandPalette, window, cx| {
                 this.open_command_palette(window, cx)
             }))
             .on_action(cx.listener(|this, _: &CompareRevisions, window, cx| {
-                this.open_revision_comparison(window, cx)
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    this.open_revision_comparison(window, cx);
+                }
             }))
-            .on_action(
-                cx.listener(|this, _: &ShowHistory, window, cx| this.show_history(window, cx)),
-            )
+            .on_action(cx.listener(|this, _: &ShowHistory, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    this.show_history(window, cx);
+                }
+            }))
             .on_action(cx.listener(|this, _: &RevealRepository, _, cx| {
                 if let Some(repo) = &this.repository {
                     cx.reveal_path(repo.path());
@@ -1823,9 +1804,11 @@ impl Render for GitTurtle {
                     this.open_external_editor(window, cx)
                 }),
             )
-            .on_action(
-                cx.listener(|this, _: &ShortcutHelp, window, cx| this.shortcut_help(window, cx)),
-            )
+            .on_action(cx.listener(|this, _: &ShortcutHelp, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    this.shortcut_help(window, cx);
+                }
+            }))
             .on_action(cx.listener(|_, _: &MinimizeWindow, window, _| window.minimize_window()))
             .on_action(cx.listener(|this, _: &CloseWindow, window, _| {
                 if this.operation_busy.is_none() {
@@ -1833,17 +1816,34 @@ impl Render for GitTurtle {
                 }
             }))
             .on_action(cx.listener(|_, _: &ZoomWindow, window, _| window.zoom_window()))
-            .on_action(
-                cx.listener(|this, _: &ShowProjects, window, cx| this.show_projects(window, cx)),
-            )
-            .on_action(
-                cx.listener(|this, _: &ShowSettings, window, cx| this.show_settings(window, cx)),
-            )
-            .on_action(
-                cx.listener(|this, _: &ShowChanges, window, cx| this.show_working(window, cx)),
-            )
-            .on_action(cx.listener(Self::choose_repository))
-            .on_action(cx.listener(Self::refresh))
+            .on_action(cx.listener(|this, _: &ShowProjects, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    this.show_projects(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ShowSettings, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    this.show_settings(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ShowChanges, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    this.show_working(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, action: &OpenRepository, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    this.choose_repository(action, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, action: &Refresh, window, cx| {
+                if !window.has_active_dialog(cx)
+                    && !window.has_active_sheet(cx)
+                    && this.page == AppPage::Repository
+                {
+                    this.refresh(action, window, cx);
+                }
+            }))
             .on_action(cx.listener(Self::search))
             .on_action(cx.listener(Self::clear_search))
             // Editor Escape is a distinct action from the list binding. Find
@@ -1877,7 +1877,10 @@ impl Render for GitTurtle {
                 }),
             )
             .on_action(cx.listener(|this, _: &NextPane, window, cx| {
-                if this.page != AppPage::Repository {
+                if this.page != AppPage::Repository
+                    || window.has_active_dialog(cx)
+                    || window.has_active_sheet(cx)
+                {
                     return;
                 }
                 if this.blame.owns_focus(window) {
@@ -1895,6 +1898,12 @@ impl Render for GitTurtle {
                 }
             }))
             .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| {
+                if this.page != AppPage::Repository
+                    || window.has_active_dialog(cx)
+                    || window.has_active_sheet(cx)
+                {
+                    return;
+                }
                 if this.mode != WorkspaceMode::History {
                     this.back_to_history(window, cx);
                 } else {
