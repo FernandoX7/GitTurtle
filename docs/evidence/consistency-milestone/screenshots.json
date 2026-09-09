@@ -169,5 +169,35 @@
     "build": "66fe451c390a9073bcc2c9759cde181db30906dd",
     "uuid": "0271911C-6EFF-33CB-9345-F3E6EB1CEB56",
     "sha256": "bc71b5b453e6c618a8a13c1740726782317fc6f1b287c29c9974cb54ccec34db"
+  },
+  {
+    "file": "final-braden-settings.jpeg",
+    "build": "92ea02c6a9ecefefc7bf43b9fffa9ac516c99d82",
+    "uuid": "0C794E6C-D59D-353C-B23C-31321BDD1245",
+    "sha256": "1be9032e8759f1326735c7aed75395d1421686f18ffe61d7ba8f26d1339b010f"
+  },
+  {
+    "file": "final-mermaid.jpeg",
+    "build": "92ea02c6a9ecefefc7bf43b9fffa9ac516c99d82",
+    "uuid": "0C794E6C-D59D-353C-B23C-31321BDD1245",
+    "sha256": "aa85cc023705dde42729bde2e8ae9d9f64f5a505467e1a78c44a60f86e9ca266"
+  },
+  {
+    "file": "final-model.jpeg",
+    "build": "92ea02c6a9ecefefc7bf43b9fffa9ac516c99d82",
+    "uuid": "0C794E6C-D59D-353C-B23C-31321BDD1245",
+    "sha256": "031642a9904891ef1ad8fc5c40d92152b1bae2b0046afdc40e81e3b8ffa808ae"
+  },
+  {
+    "file": "final-command-palette.jpeg",
+    "build": "92ea02c6a9ecefefc7bf43b9fffa9ac516c99d82",
+    "uuid": "0C794E6C-D59D-353C-B23C-31321BDD1245",
+    "sha256": "129821c814c135d6fcebd72b234088e49a88a34c586dea5ef7de0360c3d5cb1a"
+  },
+  {
+    "file": "fixed-pdf-minimum.jpeg",
+    "build": "92ea02c6a9ecefefc7bf43b9fffa9ac516c99d82",
+    "uuid": "0C794E6C-D59D-353C-B23C-31321BDD1245",
+    "sha256": "e776711faae025498b104f997d7fec557abd00bc52b69185030d20b249e188f4"
   }
 ]

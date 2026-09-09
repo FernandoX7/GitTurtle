@@ -116,6 +116,22 @@ The repository-switch regression is included in the app suite. Counts retain onl
 
 The release executable SHA-256 is `f965883e028bbe336e26d29bc722851512269bb1b969dc5153dfc1799febafe7`. `readelf -h` confirms ELF64 little-endian AArch64 PIE, and `ldd` resolves every listed dynamic dependency in the QA image. All task-owned containers exited and were removed after the release identity check; the task-filtered `docker ps` result was empty. No native Linux window, macOS UI, packaging or hosted workflow was exercised in this run. Prior source/build records are retained separately above.
 
+### Image-lifetime correction Linux validation
+
+Source `92ea02c6a9ecefefc7bf43b9fffa9ac516c99d82` adds shared render-image lifetime tracking and explicit atlas retirement when ordinary owners release an image. Its immutable `git archive` SHA-256 is `5371aedce17654028f805d00ac1a69a2e547e2fd7832952a2b1cb2d4cfe54874`. The complete gates ran against that read-only snapshot without an overlay, using the same isolated caches, six-CPU/12-GiB limits, Ubuntu 24.04/aarch64 QA image, Rust 1.98.0 / LLVM 22.1.8, Git 2.43.0 and Linux `7.0.12-linuxkit` environment.
+
+| Exact command | Executed result on `92ea02c` |
+| --- | --- |
+| `cargo fetch --locked` | Passed, 0.50 s; dependency preparation only. |
+| `cargo fmt --all -- --check` | Passed, 1.38 s. |
+| `cargo test --locked --offline --workspace --no-fail-fast` | Passed: 457 unique tests, zero failures, three ignored; 24.46 s. App: 201 passed/one ignored; core unit: 21 passed; core integration: 198 passed/two ignored; preview: 37 passed. |
+| `cargo clippy --locked --offline --workspace --all-targets -- -D warnings` | Passed, 3.82 s. |
+| `cargo build --release --locked --offline -p gitturtle` | Passed, 74.29 s. |
+
+All five image-lifetime ownership/scheduling regressions passed, covering repeated paints, retained/shared owners, delayed outgoing-frame ownership, window closure and repeated worktree-image retirement. These tests establish the registry logic; actual GPU atlas behavior and native memory observations belong to the coordinator's separate native recheck. Counts exclude the nested Mermaid child-summary duplicate. The same three ignored tests and platform limits apply. Validation after fetch ran with `--network none`; durations include container startup and incremental compilation, not application latency.
+
+The release executable SHA-256 is `89cac9b60a626aa059f9b43f3abc3e9d3af405fc959a7e4ff33d5ba9af788df2`. `readelf -h` confirms ELF64 little-endian AArch64 PIE, and `ldd` resolves every listed dynamic dependency in the QA image. All task-owned containers exited and were removed after release identity verification; the task-filtered running-container list was empty before the native memory recheck. No native Linux window, macOS UI, packaging or hosted workflow was exercised by this run. Earlier source/build evidence, including `66fe451`, remains separate above.
+
 ## Hosted and native limits
 
 `git remote` returned no configured source remote. No authorized hosted repository/destination was identified by this check, no hosted workflow was started, and no hosted run URL/result exists. The inspected quality workflow targets `macos-15` and `ubuntu-24.04`, uses read-only checkout credentials and has no publishing step; configuration is distinct from execution.
