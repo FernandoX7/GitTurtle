@@ -799,6 +799,7 @@ impl Panel {
                 else if !had_saved { this.notice=None; }
                 this.error=(!errors.is_empty()).then(||errors.join("\n"));
                 this.save_status=if had_saved {"Draft restored locally"}else{"No local draft yet"}.into();
+                this.focus_visible_section(window,cx);
             },Err(error)=>this.error=Some(format!("{error:#}"))
         },window,cx);
     }

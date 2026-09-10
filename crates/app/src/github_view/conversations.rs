@@ -1082,5 +1082,74 @@ mod tests {
             .unwrap()
             .unwrap();
         cx.executor().run_until_parked();
+        // Replacing a focused old-head composer must transfer keyboard focus
+        // onto the new visible capture, so Escape still uses the real close path.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+        cx.executor().run_until_parked();
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.begin_reply(target.clone(), window, cx);
+                panel.conversations.input.update(cx, |input, cx| {
+                    input.set_value("Keep old-head text after explicit reinspection", window, cx);
+                    cx.emit(InputEvent::Change);
+                });
+                assert!(
+                    panel
+                        .conversations
+                        .input
+                        .read(cx)
+                        .focus_handle(cx)
+                        .is_focused(window)
+                );
+                panel.review.fixture_moved = true;
+                panel.inspect(github::review::fixture_pull(true), window, cx);
+            })
+        });
+        app.read_with(cx, |app, _| app.operations.submit(|| Ok(())))
+            .await
+            .unwrap()
+            .unwrap();
+        cx.executor().run_until_parked();
+        cx.update(|window, cx| {
+            assert!(window.has_active_dialog(cx));
+            let panel = panel.read(cx);
+            assert_eq!(panel.pull.as_ref().unwrap().head.sha, "3".repeat(40));
+            assert!(
+                panel.conversations.active.is_none(),
+                "old reply remains copy-only after head replacement"
+            );
+            assert!(
+                panel.review.section_focus.is_focused(window),
+                "new visible Overview owns focus after old composer disappears"
+            );
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_keystrokes("escape");
+        cx.update(|window, cx| {
+            assert!(
+                !window.has_active_dialog(cx),
+                "Escape must invoke the controlled dialog cancellation path"
+            );
+            assert!(panel.read(cx).closed);
+            assert!(
+                cx.default_global::<WarmPanels>()
+                    .0
+                    .iter()
+                    .any(|entry| entry.panel.entity_id() == panel.entity_id()),
+                "Escape retains the panel in its warm cache"
+            );
+            app.update(cx, |app, cx| app.open_github(window, cx));
+        });
+        cx.executor().run_until_parked();
+        cx.update(|window,cx|panel.update(cx,|panel,cx| {
+            assert_eq!(panel.pull.as_ref().unwrap().head.sha,"3".repeat(40));
+            assert!(panel.saved.iter().any(|draft|matches!(draft,Draft::Reply(reply) if reply.target==target && reply.body=="Keep old-head text after explicit reinspection")));
+            panel.close(window,cx);
+        }));
+        app.read_with(cx, |app, _| app.preferences_writer.submit(|| Ok(())))
+            .await
+            .unwrap()
+            .unwrap();
+        cx.executor().run_until_parked();
     }
 }
