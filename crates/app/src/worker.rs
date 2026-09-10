@@ -1,3 +1,6 @@
+mod repository_identity;
+use repository_identity::RepositoryIdentity;
+
 use crate::{graph, text::PatchPresentation};
 use anyhow::{Result, anyhow, ensure};
 use futures::channel::oneshot;
@@ -506,6 +509,7 @@ impl Worker {
 struct RetainedRepository {
     canonical_root: PathBuf,
     repository: Arc<GitRepository>,
+    identity: RepositoryIdentity,
 }
 
 /// Retain one current worktree session, independently of preview eviction and
@@ -527,6 +531,14 @@ struct OrdinaryHistory {
 impl RepositorySession {
     fn open(&mut self, requested: &Path) -> Result<GitRepository> {
         let canonical = requested.canonicalize()?;
+        if self
+            .current
+            .as_ref()
+            .is_some_and(|current| !current.identity.is_current())
+        {
+            self.current = None;
+            self.history = None;
+        }
         if let Some(current) = &self.current
             && current.canonical_root == canonical
         {
@@ -542,10 +554,12 @@ impl RepositorySession {
             return Ok(current.repository.as_ref().clone());
         }
         let repository = Arc::new(discovered);
+        let identity = RepositoryIdentity::capture(&repository)?;
         self.history = None;
         self.current = Some(RetainedRepository {
             canonical_root,
             repository: Arc::clone(&repository),
+            identity,
         });
         Ok(repository.as_ref().clone())
     }
@@ -3531,6 +3545,79 @@ mod image_tests {
             .err()
             .expect("deleted branch must fail");
         assert!(error.to_string().contains("no longer exists"));
+    }
+
+    #[test]
+    fn retained_session_reopens_replaced_repository_at_the_same_path() {
+        for replace_root in [true, false] {
+            let fixture = Fixture::new();
+            let replacement = Fixture::new();
+            let old_blob = fixture.blob(b"old repository object\n");
+            let new_blob = replacement.blob(b"replacement repository object\n");
+            let mut session = RepositorySession::default();
+            assert_eq!(
+                session.open(&fixture.0).unwrap().blob(&old_blob).unwrap(),
+                b"old repository object\n"
+            );
+            let retained = Arc::downgrade(&session.current.as_ref().unwrap().repository);
+            let preserved = tempfile::tempdir().unwrap();
+            let (original, incoming) = if replace_root {
+                (fixture.0.clone(), replacement.0.clone())
+            } else {
+                (fixture.0.join(".git"), replacement.0.join(".git"))
+            };
+            fs::rename(&original, preserved.path().join("original")).unwrap();
+            fs::rename(&incoming, &original).unwrap();
+            let reopened = session.open(&fixture.0).unwrap();
+            assert_eq!(
+                reopened.blob(&new_blob).unwrap(),
+                b"replacement repository object\n"
+            );
+            assert!(
+                retained.upgrade().is_none(),
+                "replacement must release the previous object reader owner"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn retained_session_reopens_in_place_gitdir_redirection_with_preserved_mtime() {
+        use std::os::unix::fs::MetadataExt;
+        let fixture = Fixture::new();
+        let replacement = Fixture::new();
+        let old_blob = fixture.blob(b"old linked repository object\n");
+        let new_blob = replacement.blob(b"new linked repository object\n");
+        let directories = tempfile::tempdir().unwrap();
+        let original = directories.path().join("admin-a");
+        let incoming = directories.path().join("admin-b");
+        fs::rename(fixture.0.join(".git"), &original).unwrap();
+        fs::rename(replacement.0.join(".git"), &incoming).unwrap();
+        let git_link = fixture.0.join(".git");
+        let old_pointer = format!("gitdir: {}\n", original.display());
+        let new_pointer = format!("gitdir: {}\n", incoming.display());
+        assert_eq!(old_pointer.len(), new_pointer.len());
+        fs::write(&git_link, old_pointer).unwrap();
+        let mut session = RepositorySession::default();
+        assert_eq!(
+            session.open(&fixture.0).unwrap().blob(&old_blob).unwrap(),
+            b"old linked repository object\n"
+        );
+        let before = fs::metadata(&git_link).unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+        let mut file = fs::OpenOptions::new().write(true).open(&git_link).unwrap();
+        file.write_all(new_pointer.as_bytes()).unwrap();
+        file.set_modified(before.modified().unwrap()).unwrap();
+        drop(file);
+        let after = fs::metadata(&git_link).unwrap();
+        assert_eq!(before.ino(), after.ino());
+        assert_eq!(before.len(), after.len());
+        assert_eq!(before.modified().unwrap(), after.modified().unwrap());
+        assert!(original.is_dir() && incoming.is_dir());
+        assert_eq!(
+            session.open(&fixture.0).unwrap().blob(&new_blob).unwrap(),
+            b"new linked repository object\n"
+        );
     }
 
     #[test]

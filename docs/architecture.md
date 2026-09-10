@@ -99,6 +99,8 @@ Explicit operations have bounded inputs/output and deadlines separate from read 
 
 The worker retains one current `GitRepository` independently of UI selection and preview-cache eviction. Reopening the same canonical worktree root returns a clone of that handle, preserving its shared persistent `cat-file` reader. A nested path still requires Git discovery; if it resolves to the retained root, the existing handle is reused.
 
+Worker session reuse checks filesystem identities of the worktree and private/common administration directories, plus Git-directory indirection metadata. Replacing a repository at the same pathname releases its retained object-reader owner and history cursor before rediscovery. Ordinary index/ref edits preserve the warm session; checks run on the worker and are not an atomic lock against concurrent filesystem replacement.
+
 Refresh and scope changes continue to read mutable branches, worktrees, and history. Session reuse does not freeze a branch tip or make Refresh use an old snapshot. Linked worktrees have distinct sessions even when they share the same common object directory, because their HEAD and local configuration can differ. Moving to another worktree replaces the retained owner on the worker thread. Returning from Compare to History does not invoke repository discovery at all.
 
 ## Quiet local refresh
