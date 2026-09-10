@@ -7,8 +7,10 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use std::{
+    cell::RefCell,
     collections::HashSet,
     path::{Path, PathBuf},
+    rc::Rc,
 };
 
 /// User intent only. The application executes repository work in the background.
@@ -33,6 +35,13 @@ enum ProjectMode {
     Create,
 }
 
+#[derive(Default, PartialEq)]
+struct FocusObservation {
+    focus: Option<FocusHandle>,
+    viewport: Bounds<Pixels>,
+    rem_size: Pixels,
+}
+
 pub struct ProjectHub {
     recent: Vec<PathBuf>,
     filtered: Vec<PathBuf>,
@@ -53,6 +62,11 @@ pub struct ProjectHub {
     can_go_back: bool,
     error: Option<String>,
     recent_scroll: UniformListScrollHandle,
+    body_scroll: ScrollHandle,
+    revealed_focus: Rc<RefCell<FocusObservation>>,
+    action_tabs_focus: FocusHandle,
+    parent_field_focus: FocusHandle,
+    submit_focus: FocusHandle,
     subscriptions: Vec<Subscription>,
 }
 
@@ -98,6 +112,11 @@ impl ProjectHub {
             can_go_back: false,
             error: None,
             recent_scroll: UniformListScrollHandle::new(),
+            body_scroll: ScrollHandle::new(),
+            revealed_focus: Rc::default(),
+            action_tabs_focus: cx.focus_handle(),
+            parent_field_focus: cx.focus_handle(),
+            submit_focus: cx.focus_handle(),
             subscriptions: Vec::new(),
         };
         this.subscriptions.push(cx.subscribe_in(
@@ -513,8 +532,60 @@ impl ProjectHub {
             .into_any_element()
     }
 
+    fn reveal_on_focus(
+        &self,
+        focus: FocusHandle,
+    ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
+        let scroll = self.body_scroll.clone();
+        let revealed = self.revealed_focus.clone();
+        move |bounds, window, cx| {
+            let observed = FocusObservation {
+                focus: window.focused(cx),
+                viewport: scroll.bounds(),
+                rem_size: window.rem_size(),
+            };
+            if *revealed.borrow() == observed || !focus.contains_focused(window, cx) {
+                return;
+            }
+            let Some(bounds) = bounds.into_iter().reduce(|a, b| a.union(&b)) else {
+                return;
+            };
+            let viewport = observed.viewport;
+            let inset = px(12.);
+            let delta = if bounds.top() < viewport.top() + inset {
+                viewport.top() + inset - bounds.top()
+            } else if bounds.bottom() > viewport.bottom() - inset {
+                viewport.bottom() - inset - bounds.bottom()
+            } else {
+                return;
+            };
+            let previous = scroll.offset();
+            let offset = point(
+                previous.x,
+                (previous.y + delta).clamp(-scroll.max_offset().y, px(0.)),
+            );
+            if offset == previous {
+                return;
+            }
+            let scroll = scroll.clone();
+            // Layout only measures. Apply one reveal after painting, unless
+            // focus or a user's scroll has already superseded this request.
+            window.defer(cx, move |window, cx| {
+                if window.focused(cx) == observed.focus
+                    && scroll.offset() == previous
+                    && scroll.bounds() == viewport
+                {
+                    scroll.set_offset(offset);
+                    window.refresh();
+                }
+            });
+        }
+    }
+
     fn field(&self, label: &'static str, input: &Entity<InputState>, cx: &App) -> AnyElement {
         div()
+            .on_children_prepainted(self.reveal_on_focus(input.focus_handle(cx)))
+            .debug_selector(move || label.into())
             .flex()
             .flex_col()
             .gap_2()
@@ -570,7 +641,10 @@ impl ProjectHub {
             .gap_5()
             .child(
                 div()
+                    .on_children_prepainted(self.reveal_on_focus(self.action_tabs_focus.clone()))
                     .id("project-action-tabs")
+                    .track_focus(&self.action_tabs_focus)
+                    .tab_stop(false)
                     .role(Role::TabList)
                     .aria_label("Project action")
                     .flex()
@@ -737,6 +811,13 @@ impl ProjectHub {
                             .child(self.field("Project folder name", &self.name, cx))
                             .child(
                                 div()
+                                    .on_children_prepainted(
+                                        self.reveal_on_focus(self.parent_field_focus.clone()),
+                                    )
+                                    .id("project-parent-field")
+                                    .debug_selector(|| "project-parent-field".into())
+                                    .track_focus(&self.parent_field_focus)
+                                    .tab_stop(false)
                                     .flex()
                                     .flex_col()
                                     .gap_2()
@@ -820,25 +901,34 @@ impl ProjectHub {
                         )
                     })
                     .child(
-                        Button::new("hub-submit")
-                            .primary()
-                            .h(crate::appearance::ui_size(40.))
+                        div()
+                            .on_children_prepainted(self.reveal_on_focus(self.submit_focus.clone()))
+                            .id("project-submit-field")
+                            .debug_selector(|| "project-submit-field".into())
+                            .track_focus(&self.submit_focus)
+                            .tab_stop(false)
                             .w_full()
-                            .icon(
-                                Icon::default()
-                                    .path(format!("icons/{symbol}.svg"))
-                                    .size(px(16.)),
-                            )
-                            .disabled(self.unavailable())
-                            .loading(self.busy)
-                            .label(if self.busy {
-                                self.busy_label()
-                            } else if self.mode == ProjectMode::Clone {
-                                "Clone project"
-                            } else {
-                                "Create project"
-                            })
-                            .on_click(cx.listener(|this, _, _, cx| this.submit(cx))),
+                            .child(
+                                Button::new("hub-submit")
+                                    .primary()
+                                    .h(crate::appearance::ui_size(40.))
+                                    .w_full()
+                                    .icon(
+                                        Icon::default()
+                                            .path(format!("icons/{symbol}.svg"))
+                                            .size(px(16.)),
+                                    )
+                                    .disabled(self.unavailable())
+                                    .loading(self.busy)
+                                    .label(if self.busy {
+                                        self.busy_label()
+                                    } else if self.mode == ProjectMode::Clone {
+                                        "Clone project"
+                                    } else {
+                                        "Create project"
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| this.submit(cx))),
+                            ),
                     )
             })
             .when_some(self.error.as_ref(), |panel, error| {
@@ -875,6 +965,8 @@ impl Render for ProjectHub {
         let colors = Theme::global(cx).colors;
         let compact = window.viewport_size().width < px(900.);
         let narrow = window.viewport_size().width < px(640.);
+        let scroll = self.body_scroll.clone();
+        let revealed = self.revealed_focus.clone();
         div()
             .size_full()
             .bg(colors.background)
@@ -928,10 +1020,21 @@ impl Render for ProjectHub {
             )
             .child(
                 div()
+                    .on_children_prepainted(move |_, window, cx| {
+                        // Record even focus outside the form, so returning to
+                        // the same field reveals it again. Scrolling alone
+                        // leaves this unchanged and never snaps the view back.
+                        *revealed.borrow_mut() = FocusObservation {
+                            focus: window.focused(cx),
+                            viewport: scroll.bounds(),
+                            rem_size: window.rem_size(),
+                        };
+                    })
                     .id("project-hub-body")
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
+                    .track_scroll(&self.body_scroll)
                     .flex()
                     .flex_col()
                     .items_center()
@@ -1087,6 +1190,108 @@ fn validate_branch(branch: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use core::prelude::v1::test;
+
+    #[gpui::test]
+    fn keyboard_focus_reveals_project_fields_and_submit_at_small_window(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            Theme::global_mut(cx).font_size = px(18.);
+        });
+        let captured = Rc::new(RefCell::new(None));
+        let observed = captured.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let hub = cx.new(|cx| ProjectHub::new(vec![], "main".into(), window, cx));
+            *captured.borrow_mut() = Some(hub.clone());
+            gpui_kit::component::Root::new(hub, window, cx)
+        });
+        let hub = observed.borrow_mut().take().unwrap();
+        cx.simulate_resize(size(px(1000.), px(680.)));
+
+        fn settle(cx: &mut VisualTestContext) {
+            for _ in 0..2 {
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+                cx.run_until_parked();
+            }
+        }
+        fn assert_visible(
+            cx: &mut VisualTestContext,
+            hub: &Entity<ProjectHub>,
+            selector: &'static str,
+        ) {
+            let bounds = cx.debug_bounds(selector).expect("rendered focus target");
+            let viewport = cx.read(|cx| hub.read(cx).body_scroll.bounds());
+            assert!(
+                bounds.top() >= viewport.top() && bounds.bottom() <= viewport.bottom(),
+                "{selector}: {bounds:?} must be inside {viewport:?}"
+            );
+        }
+
+        for mode in [ProjectMode::Clone, ProjectMode::Create] {
+            cx.update(|window, cx| {
+                hub.update(cx, |hub, cx| hub.change_mode(mode, window, cx));
+            });
+            settle(cx);
+            let first = if mode == ProjectMode::Clone {
+                "Repository URL or local path"
+            } else {
+                "Project folder name"
+            };
+            assert_visible(cx, &hub, first);
+            if mode == ProjectMode::Clone {
+                cx.simulate_keystrokes("tab");
+                settle(cx);
+                cx.update(|window, cx| {
+                    assert!(hub.read(cx).name.focus_handle(cx).is_focused(window))
+                });
+                assert_visible(cx, &hub, "Project folder name");
+            }
+            cx.simulate_keystrokes("tab");
+            settle(cx);
+            cx.update(|window, cx| {
+                assert!(hub.read(cx).parent.focus_handle(cx).is_focused(window))
+            });
+            assert_visible(cx, &hub, "project-parent-field");
+            cx.simulate_keystrokes("tab");
+            settle(cx);
+            cx.update(|window, cx| {
+                assert!(hub.read(cx).parent_field_focus.contains_focused(window, cx));
+                assert!(!hub.read(cx).parent.focus_handle(cx).is_focused(window));
+            });
+            assert_visible(cx, &hub, "project-parent-field");
+            if mode == ProjectMode::Create {
+                cx.simulate_keystrokes("tab");
+                settle(cx);
+                cx.update(|window, cx| {
+                    assert!(hub.read(cx).branch.focus_handle(cx).is_focused(window))
+                });
+                assert_visible(cx, &hub, "Initial branch");
+            }
+            cx.simulate_keystrokes("tab");
+            settle(cx);
+            cx.update(|window, cx| assert!(hub.read(cx).submit_focus.contains_focused(window, cx)));
+            assert_visible(cx, &hub, "project-submit-field");
+
+            // A user may scroll away from a focused control. Unchanged focus
+            // must not schedule another reveal or continuously redraw.
+            cx.update(|window, cx| {
+                hub.read(cx).body_scroll.set_offset(point(px(0.), px(0.)));
+                window.refresh();
+            });
+            settle(cx);
+            cx.read(|cx| assert_eq!(hub.read(cx).body_scroll.offset().y, px(0.)));
+            cx.simulate_keystrokes("shift-tab");
+            settle(cx);
+            assert_visible(
+                cx,
+                &hub,
+                if mode == ProjectMode::Clone {
+                    "project-parent-field"
+                } else {
+                    "Initial branch"
+                },
+            );
+        }
+    }
 
     #[gpui::test]
     fn populated_project_inputs_keep_their_names_across_modes(cx: &mut TestAppContext) {

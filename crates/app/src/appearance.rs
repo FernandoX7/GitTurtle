@@ -622,6 +622,16 @@ mod tests {
                     assert!(contrast(status, background) >= 3., "{choice:?} status icon");
                 }
             }
+            // Provider patch content and its line coordinates share the diff
+            // surfaces; their ordinary-size text needs the text threshold too.
+            for background in [palette.added_background, palette.removed_background] {
+                for foreground in [palette.text, palette.muted] {
+                    assert!(
+                        contrast(foreground, background) >= 4.5,
+                        "{choice:?} diff content and line coordinates"
+                    );
+                }
+            }
             assert!(contrast(palette.added, palette.added_background) >= 4.5);
             assert!(contrast(palette.removed, palette.removed_background) >= 4.5);
             for background in [palette.accent, palette.accent_hover, palette.accent_active] {

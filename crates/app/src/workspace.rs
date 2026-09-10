@@ -1274,7 +1274,7 @@ impl GitTurtle {
                         div()
                             .flex_shrink_0()
                             .text_size(crate::appearance::ui_text(10.))
-                            .text_color(rgb(color))
+                            .text_color(rgb(p.text))
                             .child(status_label),
                     )
                     .child(
