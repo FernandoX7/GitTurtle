@@ -98,7 +98,8 @@ impl ReviewState {
             composing: None,
             input: cx.new(|cx| {
                 TextareaState::new(window, cx)
-                    .rows(3)
+                    // Bounded prose layout lets Tab traverse controls instead of indenting.
+                    .auto_grow(3, 3)
                     .placeholder("Explain this change…")
             }),
             source: None,

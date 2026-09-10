@@ -32,7 +32,8 @@ impl State {
             active: None,
             input: cx.new(|cx| {
                 TextareaState::new(window, cx)
-                    .rows(3)
+                    // Bounded prose layout lets Tab traverse controls instead of indenting.
+                    .auto_grow(3, 3)
                     .placeholder("Write a reply to this conversation…")
             }),
             deferred: DeferredDraft::default(),
@@ -672,6 +673,53 @@ mod tests {
                 panel.review.input.update(cx, |input, cx| {
                     input.set_value("Inline still here", window, cx)
                 });
+            })
+        });
+        // All three prose composers participate in the native focus chain.
+        let editors = cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.review.section = Section::Review;
+                cx.notify();
+                panel.focus_visible_section(window, cx);
+                [
+                    panel.conversations.input.clone(),
+                    panel.review.input.clone(),
+                    panel.body.clone(),
+                ]
+            })
+        });
+        for editor in editors {
+            let before = cx.update(|window, cx| {
+                editor.read(cx).focus_handle(cx).focus(window, cx);
+                editor.read(cx).value().to_string()
+            });
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.simulate_keystrokes("tab");
+            cx.update(|window, cx| {
+                assert!(
+                    !editor.read(cx).focus_handle(cx).is_focused(window),
+                    "Tab must leave a prose composer for its next control"
+                );
+                assert_eq!(
+                    editor.read(cx).value(),
+                    before,
+                    "Tab must not insert whitespace into prose"
+                );
+            });
+            cx.simulate_keystrokes("shift-tab");
+            cx.update(|window, cx| {
+                assert!(
+                    editor.read(cx).focus_handle(cx).is_focused(window),
+                    "Shift+Tab returns from the adjacent control to its composer"
+                );
+                assert_eq!(editor.read(cx).value(), before);
+            });
+        }
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.review.section = Section::Overview;
+                panel.focus_visible_section(window, cx);
+                cx.notify();
             })
         });
         for _ in 0..3 {
