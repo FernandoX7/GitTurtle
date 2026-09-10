@@ -560,7 +560,7 @@ impl GitTurtle {
         };
         this.load_profiles(window, cx);
         this.install_draft_quit_observer(cx);
-        this.install_tab_quit_observer(cx);
+        this.install_tab_quit_observer(window, cx);
         this.subscriptions.push(cx.subscribe_in(
             &file_filter,
             window,

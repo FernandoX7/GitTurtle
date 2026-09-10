@@ -1,6 +1,7 @@
 //! Local repository tabs: one active reader/watch session and bounded retained views.
 use crate::*;
 use anyhow::{Result, ensure};
+use futures::FutureExt;
 use gpui_kit::prelude::FluentBuilder;
 use serde::{Deserialize, Serialize};
 use std::{fs::File, io::Read, path::Path};
@@ -302,14 +303,17 @@ impl Session {
             }
         }
     }
-    pub fn save(mut self) -> Result<()> {
+    pub fn save(self) -> Result<()> {
+        self.save_at(&session_path()?)
+    }
+    fn save_at(mut self, path: &Path) -> Result<()> {
         self.normalize();
         let bytes = serde_json::to_vec_pretty(&self)?;
         ensure!(
             bytes.len() <= MAX_SESSION_BYTES,
             "Repository session exceeds 16 MiB"
         );
-        preferences::atomic_write(&session_path()?, &bytes)
+        preferences::atomic_write(path, &bytes)
     }
 }
 fn session_path() -> Result<PathBuf> {
@@ -322,6 +326,9 @@ pub struct Tab {
     warm: Option<WarmTab>,
     pub error: Option<String>,
 }
+type SessionSaveCompletion =
+    futures::future::Shared<futures::future::BoxFuture<'static, std::result::Result<(), String>>>;
+
 #[derive(Default)]
 pub struct State {
     pub tabs: Vec<Tab>,
@@ -333,6 +340,11 @@ pub struct State {
     pub document_restore: Option<Bookmark>,
     panel_observers: Vec<Subscription>,
     pub save_pending: Option<Task<()>>,
+    saver: commit_drafts::CoalescingSaver<(), Session>,
+    save_completion: Option<SessionSaveCompletion>,
+    closing: bool,
+    #[cfg(test)]
+    save_path: Option<PathBuf>,
 }
 impl State {
     pub fn from_session(session: Session) -> Self {
@@ -953,6 +965,12 @@ impl GitTurtle {
             tab.path = repo.path().to_owned();
             tab.error = None;
         }
+        // Capture after receive installs the accepted metadata. A newly opened
+        // active tab may never be switched or otherwise trigger a session save.
+        // Cold bookmarks finish restoration before taking their replacement.
+        if self.repository_tabs.restoring.is_none() {
+            self.save_repository_session(window, cx);
+        }
         false
     }
     pub(super) fn switch_repository_tab(
@@ -1121,12 +1139,82 @@ impl GitTurtle {
         }
         self.repository_tabs.saved()
     }
-    pub(super) fn install_tab_quit_observer(&mut self, cx: &mut Context<Self>) {
+    fn queue_session_snapshot(&mut self, cx: &App) -> SessionSaveCompletion {
+        let session = self.session_snapshot(cx);
+        #[cfg(test)]
+        let save_path = self.repository_tabs.save_path.clone();
+        let response = self.repository_tabs.saver.queue_with(
+            &self.preferences_writer,
+            (),
+            session,
+            move |sessions| {
+                let Some(session) = sessions.get(&()).cloned() else {
+                    return Ok(());
+                };
+                #[cfg(test)]
+                if let Some(path) = &save_path {
+                    return session.save_at(path);
+                }
+                session.save()
+            },
+        );
+        if let Some(response) = response {
+            self.repository_tabs.save_completion = Some(
+                response
+                    .map(|result| match result {
+                        Ok(Ok(())) => Ok(()),
+                        Ok(Err(error)) => Err(format!("{error:#}")),
+                        Err(_) => Err("Repository session saving was interrupted".into()),
+                    })
+                    .boxed()
+                    .shared(),
+            );
+        }
+        // A coalesced close snapshot belongs to the already accepted save job;
+        // waiting for an extra barrier could fail when the executor is full.
+        self.repository_tabs
+            .save_completion
+            .as_ref()
+            .expect("every pending session belongs to an accepted completion")
+            .clone()
+    }
+    fn flush_session_for_shutdown(&mut self, cx: &App) -> SessionSaveCompletion {
+        self.repository_tabs.save_pending = None;
+        if self.repository_tabs.closing
+            && let Some(completion) = &self.repository_tabs.save_completion
+        {
+            return completion.clone();
+        }
+        self.repository_tabs.closing = true;
+        self.queue_session_snapshot(cx)
+    }
+    pub(super) fn install_tab_quit_observer(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let owner = cx.weak_entity();
+        let owner_window = window.window_handle().window_id();
+        self.subscriptions.push(cx.on_window_closed(move |cx, id| {
+            if id == owner_window
+                && let Ok(completion) =
+                    owner.update(cx, |this, cx| this.flush_session_for_shutdown(cx))
+            {
+                // Window-close observers run before its entities are released.
+                // Keep the actual save alive at app lifetime for delayed native
+                // termination after the last window and this view disappear.
+                let mut completion = Some(completion);
+                cx.on_app_quit(move |_| {
+                    let completion = completion.take();
+                    async move {
+                        if let Some(completion) = completion {
+                            let _ = completion.await;
+                        }
+                    }
+                })
+                .detach();
+            }
+        }));
         self.subscriptions.push(cx.on_app_quit(|this, cx| {
-            let session = this.session_snapshot(cx);
-            let reply = this.preferences_writer.submit(move || session.save());
+            let completion = this.flush_session_for_shutdown(cx);
             async move {
-                let _ = reply.await;
+                let _ = completion.await;
             }
         }));
     }
@@ -1136,15 +1224,12 @@ impl GitTurtle {
             .timer(std::time::Duration::from_millis(250));
         self.repository_tabs.save_pending = Some(cx.spawn_in(window, async move |this, cx| {
             timer.await;
-            let response = this.update(cx, |this, cx| {
-                let session = this.session_snapshot(cx);
-                this.preferences_writer.submit(move || session.save())
-            });
+            let response = this.update(cx, |this, cx| this.queue_session_snapshot(cx));
             if let Ok(response) = response {
                 let result = response.await;
                 let _ = this.update(cx, |this, cx| {
-                    if let Ok(Err(error)) = result {
-                        this.draft_save_error = Some(format!("Repository session: {error:#}"));
+                    if let Err(error) = result {
+                        this.draft_save_error = Some(format!("Repository session: {error}"));
                         cx.notify();
                     }
                 });
@@ -1753,6 +1838,190 @@ impl Render for LibraryView {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    async fn settle_tab_test(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        for _ in 0..8 {
+            cx.executor().run_until_parked();
+            let tasks = cx.update(|_, cx| {
+                app.update(cx, |app, _| {
+                    [
+                        app.task.take(),
+                        app.status_task.take(),
+                        app.integration_task.take(),
+                        app.repository_tabs.save_pending.take(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                })
+            });
+            if tasks.is_empty() {
+                break;
+            }
+            for task in tasks {
+                task.await;
+            }
+        }
+        let (operations, preferences) = app.read_with(cx, |app, _| {
+            (
+                app.operations.submit_read(|| Ok(())),
+                app.preferences_writer.submit_read(|| Ok(())),
+            )
+        });
+        operations.await.unwrap().unwrap();
+        preferences.await.unwrap().unwrap();
+        cx.executor().run_until_parked();
+        cx.update(|_, cx| {
+            app.update(cx, |app, _| {
+                app.automatic.reset();
+                app._display_preferences_task = None;
+            })
+        });
+    }
+
+    #[gpui::test]
+    async fn new_tab_and_latest_bookmark_survive_actual_window_close_with_full_save_queue(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::component::Root;
+        use std::{cell::RefCell, rc::Rc, sync::mpsc};
+
+        cx.executor().allow_parking();
+        cx.executor().set_block_on_ticks(100..=100);
+        let fixture = tempfile::tempdir().unwrap();
+        let first = GitRepository::init(fixture.path().join("first"), "main").unwrap();
+        let second = GitRepository::init(fixture.path().join("new-tab"), "main").unwrap();
+        let first_path = first.path().canonicalize().unwrap();
+        let second_path = second.path().canonicalize().unwrap();
+        let save_path = fixture.path().join("isolated-session.json");
+        let saved = Session {
+            version: 1,
+            active: 0,
+            tabs: vec![SavedTab {
+                path: SavedPath::new(&first_path),
+                bookmark: Bookmark::default(),
+            }],
+            ..Default::default()
+        };
+        saved.clone().save_at(&save_path).unwrap();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+        });
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let observed = captured.clone();
+        let destination = save_path.clone();
+        let (root_view, window_cx) = cx.add_window_view(move |window, cx| {
+            let app = cx.new(|cx| {
+                let mut app = GitTurtle::new(
+                    Some(first_path),
+                    Preferences::default(),
+                    saved,
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                );
+                app.repository_tabs.save_path = Some(destination);
+                app
+            });
+            *captured.borrow_mut() = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let app = observed.borrow_mut().take().unwrap();
+        settle_tab_test(&app, window_cx).await;
+        window_cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(second_path.clone(), window, cx);
+            })
+        });
+        settle_tab_test(&app, window_cx).await;
+        // Opening and accepting metadata must save both tabs even if no switch,
+        // reorder, group action or later close ever occurs.
+        let persisted = Session::load_at(&save_path).unwrap();
+        assert_eq!(persisted.tabs.len(), 2);
+        assert_eq!(persisted.tabs[persisted.active].path.path(), second_path);
+        assert!(persisted.tabs[persisted.active].bookmark.query.is_empty());
+
+        let (release, gate) = mpsc::channel();
+        let (started, running) = futures::channel::oneshot::channel();
+        let blocker = app.read_with(window_cx, |app, _| {
+            app.preferences_writer.submit(move || {
+                let _ = started.send(());
+                gate.recv()?;
+                Ok(())
+            })
+        });
+        running.await.unwrap();
+        let queued = app.read_with(window_cx, |app, _| {
+            (0..7)
+                .map(|_| app.preferences_writer.submit(|| Ok(())))
+                .collect::<Vec<_>>()
+        });
+        window_cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                // The accepted session snapshot occupies the eighth queue slot.
+                drop(app.queue_session_snapshot(cx));
+            })
+        });
+        let refused = app.read_with(window_cx, |app, _| app.preferences_writer.submit(|| Ok(())));
+        assert!(refused.await.unwrap().is_err());
+        let search = app.read_with(window_cx, |app, _| app.search.clone());
+        let weak = app.downgrade();
+        drop(app);
+        drop(root_view);
+        window_cx.update(|window, cx| {
+            // The shared widget value changes immediately before the window is
+            // removed. The earlier accepted snapshot does not contain it.
+            search.update(cx, |input, cx| {
+                input.set_value("last query before closing", window, cx)
+            });
+            window.open_dialog(cx, |dialog, _, _| {
+                dialog.title("Open dialog during window close")
+            });
+            assert!(window.has_active_dialog(cx));
+            window.remove_window();
+        });
+        window_cx.cx.update(|cx| assert!(cx.windows().is_empty()));
+        assert!(
+            weak.upgrade().is_none(),
+            "the window and GitTurtle view must really be released"
+        );
+        assert!(
+            Session::load_at(&save_path).unwrap().tabs[1]
+                .bookmark
+                .query
+                .is_empty()
+        );
+        // Resolve the real executor from a background task during GPUI's actual
+        // shutdown wait. The removed window cannot own the final completion.
+        window_cx
+            .executor()
+            .spawn(async move {
+                release.send(()).unwrap();
+            })
+            .detach();
+        cx.quit();
+        blocker.await.unwrap().unwrap();
+        for response in queued {
+            response.await.unwrap().unwrap();
+        }
+        let restored = Session::load_at(&save_path).unwrap();
+        assert_eq!(restored.tabs.len(), 2);
+        assert_eq!(restored.tabs[restored.active].path.path(), second_path);
+        assert_eq!(
+            restored.tabs[restored.active].bookmark.query,
+            "last query before closing"
+        );
+        let restored_state = State::from_session(restored);
+        assert_eq!(restored_state.active_path(), Some(second_path.as_path()));
+        assert_eq!(
+            restored_state.tabs[restored_state.active.unwrap()]
+                .saved
+                .query,
+            "last query before closing"
+        );
+    }
 
     #[gpui::test]
     async fn startup_installs_root_before_restoring_six_tabs_and_respects_initial_path(
