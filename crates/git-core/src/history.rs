@@ -646,6 +646,7 @@ enum ReadMessage {
 /// backpressure pauses Git naturally while the application browses that page.
 struct HistoryStream {
     child: Child,
+    pipes: PipeControl,
     receive: Option<mpsc::Receiver<ReadMessage>>,
     readers: Vec<JoinHandle<()>>,
     writer: Option<JoinHandle<std::io::Result<()>>>,
@@ -671,12 +672,13 @@ impl HistoryStream {
             .stderr(Stdio::piped())
             .spawn()
             .context("Unable to start Git history traversal")?;
+        let pipes = ChildPipes::take(&mut child)?;
         let writer = input.map(|bytes| {
-            let mut stdin = child.stdin.take().expect("Requested Git input pipe");
+            let mut stdin = pipes.input.expect("Requested Git input pipe");
             thread::spawn(move || stdin.write_all(&bytes))
         });
-        let mut stdout = child.stdout.take().expect("Requested Git output pipe");
-        let stderr = child.stderr.take().expect("Requested Git error pipe");
+        let mut stdout = pipes.output;
+        let stderr = pipes.error.expect("Requested Git error pipe");
         let (send, receive) = mpsc::sync_channel(8);
         let errors = send.clone();
         let output_reader = thread::spawn(move || {
@@ -708,6 +710,7 @@ impl HistoryStream {
         });
         Ok(Self {
             child,
+            pipes: pipes.control,
             receive: Some(receive),
             readers: vec![output_reader, error_reader],
             writer,
@@ -775,6 +778,10 @@ impl HistoryStream {
             }
             if self.stdout_done
                 && let Some(stderr) = &self.stderr
+                && self
+                    .writer
+                    .as_ref()
+                    .is_none_or(|writer| writer.is_finished())
                 && let Some(status) = self.child.try_wait()?
             {
                 ensure!(
@@ -799,6 +806,7 @@ impl HistoryStream {
 
 impl Drop for HistoryStream {
     fn drop(&mut self) {
+        self.pipes.stop();
         terminate_process_group(&self.child);
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -831,12 +839,13 @@ pub(super) fn stream_history(
         .stderr(Stdio::piped())
         .spawn()
         .context("Unable to start Git history read")?;
+    let pipes = ChildPipes::take(&mut child)?;
     let input_writer = input.map(|bytes| {
-        let mut stdin = child.stdin.take().expect("Requested Git input pipe");
+        let mut stdin = pipes.input.expect("Requested Git input pipe");
         thread::spawn(move || stdin.write_all(&bytes))
     });
-    let mut stdout = child.stdout.take().context("Missing Git output pipe")?;
-    let stderr = child.stderr.take().context("Missing Git error pipe")?;
+    let mut stdout = pipes.output;
+    let stderr = pipes.error.expect("Requested Git error pipe");
     let (send, receive) = mpsc::sync_channel(8);
     let errors = send.clone();
     let output_reader = thread::spawn(move || {
@@ -896,7 +905,12 @@ pub(super) fn stream_history(
             if status.is_none() {
                 status = child.try_wait()?;
             }
-            if stdout_done && let (Some(status), Some(stderr)) = (status, stderr.as_ref()) {
+            if stdout_done
+                && input_writer
+                    .as_ref()
+                    .is_none_or(|writer| writer.is_finished())
+                && let (Some(status), Some(stderr)) = (status, stderr.as_ref())
+            {
                 ensure!(
                     status.success(),
                     "Git history read failed: {}",
@@ -908,6 +922,7 @@ pub(super) fn stream_history(
     })();
     // Always close the receiver before joining: a bounded sender may otherwise
     // remain blocked when a page fills while Git is still producing output.
+    pipes.control.stop();
     terminate_process_group(&child);
     let _ = child.kill();
     let _ = child.wait();
@@ -928,6 +943,60 @@ pub(super) fn stream_history(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn history_deadline_joins_detached_output_and_input_holders() {
+        for input_held in [false, true] {
+            let (fixture, command) = process_io::fixtures::DetachedPipeHolder::command(input_held);
+            let started = Instant::now();
+            let end = stream_history(
+                command,
+                input_held.then(|| vec![b'x'; 1024 * 1024]),
+                &HistoryCancellation::default(),
+                Duration::from_millis(300),
+                |_| Ok(true),
+            )
+            .unwrap();
+            fixture.wait_ready();
+            assert_eq!(end, ReadEnd::TimedOut);
+            assert!(started.elapsed() < Duration::from_secs(2));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn traversal_cancellation_joins_detached_output_and_input_holders() {
+        for input_held in [false, true] {
+            let (fixture, command) = process_io::fixtures::DetachedPipeHolder::command(input_held);
+            let mut traversal = HistoryTraversal {
+                scope: HistoryScope::PinnedRefs(Vec::new()),
+                offset: 0,
+                stream: Some(
+                    HistoryStream::start(command, input_held.then(|| vec![b'x'; 1024 * 1024]))
+                        .unwrap(),
+                ),
+                deferred: None,
+                failed: false,
+            };
+            fixture.wait_ready();
+            let cancel = HistoryCancellation::default();
+            let cancelling = {
+                let cancel = cancel.clone();
+                thread::spawn(move || {
+                    thread::sleep(Duration::from_millis(30));
+                    cancel.cancel();
+                })
+            };
+            let started = Instant::now();
+            let error = traversal.next_page(10, &cancel).unwrap_err();
+            assert!(error.to_string().contains("cancelled"));
+            assert!(started.elapsed() < Duration::from_secs(2));
+            assert!(traversal.stream.is_none());
+            assert!(traversal.failed);
+            cancelling.join().unwrap();
+        }
+    }
 
     #[cfg(unix)]
     #[test]

@@ -10,6 +10,7 @@ mod conflict_blocks;
 mod history;
 mod inspection;
 mod preview_assets;
+mod process_io;
 mod work;
 pub use blame::*;
 pub use conflict_blocks::*;
@@ -19,6 +20,7 @@ pub use preview_assets::*;
 pub use work::*;
 
 use anyhow::{Context, Result, bail, ensure};
+use process_io::{ChildPipes, PipeControl, StopPipe};
 use sha2::{Digest, Sha256};
 use similar::{Algorithm, TextDiff};
 use std::{
@@ -856,8 +858,7 @@ fn bounded_output(mut command: Command, timeout: Duration) -> Result<Output> {
         .stderr(Stdio::piped())
         .spawn()
         .context("Unable to start Git; install Git and ensure it is on PATH")?;
-    let stdout = child.stdout.take().context("Missing Git output pipe")?;
-    let stderr = child.stderr.take().context("Missing Git error pipe")?;
+    let pipes = ChildPipes::take(&mut child)?;
     let read = |pipe: Box<dyn Read + Send>, limit: usize| {
         thread::spawn(move || -> std::io::Result<Vec<u8>> {
             let mut bytes = Vec::new();
@@ -865,48 +866,56 @@ fn bounded_output(mut command: Command, timeout: Duration) -> Result<Output> {
             Ok(bytes)
         })
     };
-    let stdout = read(Box::new(stdout), MAX_COMMAND_OUTPUT);
-    let stderr = read(Box::new(stderr), 128 * 1024);
+    let stdout = read(Box::new(pipes.output), MAX_COMMAND_OUTPUT);
+    let stderr = read(
+        Box::new(pipes.error.expect("Requested Git error pipe")),
+        128 * 1024,
+    );
     let start = Instant::now();
-    let status = loop {
+    let mut status = None;
+    let result = loop {
         if work::inspection_cancelled() {
-            terminate_process_group(&child);
-            let _ = child.kill();
-            let _ = child.wait();
             break Err(anyhow::anyhow!("Repository inspection cancelled"));
         }
-        match child.try_wait() {
-            Ok(Some(status)) => break Ok(status),
-            Ok(None) if start.elapsed() < timeout => thread::sleep(Duration::from_millis(1)),
-            Ok(None) => {
-                terminate_process_group(&child);
-                let _ = child.kill();
-                let _ = child.wait();
-                break Err(anyhow::anyhow!(
-                    "Git read exceeded its {} second time limit",
-                    timeout.as_secs()
-                ));
-            }
-            Err(error) => {
-                terminate_process_group(&child);
-                let _ = child.kill();
-                let _ = child.wait();
-                break Err(error.into());
+        if status.is_none() {
+            match child.try_wait() {
+                Ok(value) => status = value,
+                Err(error) => break Err(error.into()),
             }
         }
+        if let Some(status) = status
+            && stdout.is_finished()
+            && stderr.is_finished()
+        {
+            break Ok(status);
+        }
+        if start.elapsed() >= timeout {
+            break Err(anyhow::anyhow!(
+                "Git read exceeded its {} second time limit",
+                timeout.as_secs()
+            ));
+        }
+        thread::sleep(Duration::from_millis(1));
     };
-    let stdout = stdout
-        .join()
-        .map_err(|_| anyhow::anyhow!("Git output reader stopped"))??;
-    let stderr = stderr
-        .join()
-        .map_err(|_| anyhow::anyhow!("Git error reader stopped"))??;
+    if result.is_err() {
+        pipes.control.stop();
+        terminate_process_group(&child);
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    // Join both before propagating an error from either pipe, and retain the
+    // deadline/cancellation error instead of the resulting stopped-pipe error.
+    let stdout = stdout.join();
+    let stderr = stderr.join();
+    let status = result?;
+    let stdout = stdout.map_err(|_| anyhow::anyhow!("Git output reader stopped"))??;
+    let stderr = stderr.map_err(|_| anyhow::anyhow!("Git error reader stopped"))??;
     ensure!(
         stdout.len() <= MAX_COMMAND_OUTPUT && stderr.len() <= 128 * 1024,
         "Git command output exceeded its memory limit"
     );
     Ok(Output {
-        status: status?,
+        status,
         stdout,
         stderr,
     })
@@ -917,6 +926,7 @@ struct BatchReader {
     requests: mpsc::Sender<BatchRequest>,
     worker: Option<JoinHandle<()>>,
     timeout: Duration,
+    pipes: PipeControl,
 }
 
 enum BatchRequest {
@@ -935,8 +945,8 @@ enum BatchValue {
 }
 
 struct BatchWire {
-    input: ChildStdin,
-    output: BufReader<ChildStdout>,
+    input: StopPipe<ChildStdin>,
+    output: BufReader<StopPipe<ChildStdout>>,
 }
 
 impl BatchReader {
@@ -954,16 +964,9 @@ impl BatchReader {
             .stderr(Stdio::null())
             .spawn()
             .context("Unable to start Git object reader")?;
-        let input = child
-            .stdin
-            .take()
-            .context("Missing Git object input pipe")?;
-        let output = BufReader::new(
-            child
-                .stdout
-                .take()
-                .context("Missing Git object output pipe")?,
-        );
+        let pipes = ChildPipes::take(&mut child)?;
+        let input = pipes.input.expect("Requested Git object input pipe");
+        let output = BufReader::new(pipes.output);
         let (requests, receiver) = mpsc::channel();
         let worker = thread::spawn(move || {
             let mut wire = BatchWire { input, output };
@@ -992,6 +995,7 @@ impl BatchReader {
             requests,
             worker: Some(worker),
             timeout,
+            pipes: pipes.control,
         })
     }
 
@@ -1076,6 +1080,7 @@ impl BatchWire {
 
 impl Drop for BatchReader {
     fn drop(&mut self) {
+        self.pipes.stop();
         let _ = self.requests.send(BatchRequest::Stop);
         terminate_process_group(&self.child);
         let _ = self.child.kill();
@@ -1191,6 +1196,41 @@ fn null_device() -> &'static OsStr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn passive_deadline_includes_pipe_holders_after_parent_exit() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "sleep 0.3 & exit 0"]);
+        let started = Instant::now();
+        let error = bounded_output(command, Duration::from_millis(30)).unwrap_err();
+        assert!(error.to_string().contains("time limit"));
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn passive_deadline_joins_readers_with_detached_pipe_holders() {
+        let (fixture, command) = process_io::fixtures::DetachedPipeHolder::command(false);
+        let started = Instant::now();
+        let error = bounded_output(command, Duration::from_millis(300)).unwrap_err();
+        fixture.wait_ready();
+        assert!(error.to_string().contains("time limit"));
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn object_timeout_joins_its_reader_with_detached_pipe_holders() {
+        let (fixture, command) = process_io::fixtures::DetachedPipeHolder::command(false);
+        let reader = BatchReader::spawn_command(command, Duration::from_millis(30)).unwrap();
+        fixture.wait_ready();
+        let started = Instant::now();
+        let error = reader.read_object(&"0".repeat(40), "blob").unwrap_err();
+        assert!(error.to_string().contains("time limit"));
+        drop(reader);
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
 
     #[cfg(unix)]
     #[test]

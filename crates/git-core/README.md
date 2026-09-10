@@ -82,6 +82,19 @@ Primary references: [porcelain status](https://git-scm.com/docs/git-status), [st
 
 Image callers must separately bound decoded pixels and GPU allocations. A generation check or queue policy belongs to the UI worker. Search and file-history calls accept `HistoryCancellation`; other core reads retain their individual deadlines rather than interrupting an already-running call on selection changes. Multiple calls may be needed for one interaction, so the per-request deadline is not an end-to-end interaction deadline. OS scheduling or uninterruptible filesystem I/O is outside these deadlines' guarantee.
 
+On macOS and Linux, passive command, object-batch and history pipes use the
+private `process_io` owner. Descriptors become nonblocking before any reader or
+writer starts; readiness polling also watches a shared local socket whose EOF
+wakes every blocked pipe on cancellation or cleanup. Idle traversals need no
+periodic polling wakeups. A command is complete only after its direct child and
+required pipe threads finish, so direct-child exit cannot bypass a deadline.
+Cleanup stops and joins GitTurtle's I/O threads even if an external wrapper has
+detached a child into another session while retaining a pipe. The app does not
+claim to terminate independently daemonized programs outside Git's process group.
+The explicit-write runner retains its separate authentication, progress,
+cancellation and uncertain-outcome policy. See the
+[passive process audit and release measurements](../../docs/security-git-audit.md).
+
 Ordinary application history uses `history_traversal` and `HistoryTraversal::next_page`: one topological Git process walks captured local tips once, with no growing-prefix or `--skip` replay. Pages contain at most 500 commits / 32 MiB of retained metadata; a 2 MiB record bound and eight 8 KiB pipe chunks bound read-ahead. Backpressure pauses the producer between requests. Cancellation and the 15-second page deadline close/reap the process and invalidate the cursor; a retry starts the visible captured scope again. The caller owns retention and closes idle traversals when leaving a tab. Git's internal revision-walk allocation is separate from the metadata/pipe bounds; these are not a process RSS cap.
 
 `history_page` remains a stateless compatibility API that reads current refs and can shift if another tool changes them. `history_from_page` pins an immutable anchor but still replays the skipped prefix. Search retains its existing pinned-tip/scanned-offset semantics. For streaming traversal, refresh explicitly creates a new scope; continued pages are unaffected by later ref movement. Remote-tracking branches describe locally available state, with freshness controlled by an explicit fetch in this client or another tool. Missing promisor objects return an explicit local-unavailability error.
