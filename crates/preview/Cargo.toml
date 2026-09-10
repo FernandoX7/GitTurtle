@@ -13,6 +13,7 @@ roxmltree = "0.21"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 mermaid-rs-renderer = { version = "=0.3.1", default-features = false }
+meshopt = "=0.6.2"
 ufbx = "0.11.3"
 stl_io = "0.11.0"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }

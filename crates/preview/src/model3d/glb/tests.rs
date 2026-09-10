@@ -3,7 +3,7 @@ use crate::model3d::{ModelCamera, ModelUnits, decode_geometry, is_model_path, re
 use serde_json::{Value, json};
 use std::{cell::Cell, path::Path};
 
-fn pack(document: &Value, bin: &[u8]) -> Vec<u8> {
+pub(super) fn pack(document: &Value, bin: &[u8]) -> Vec<u8> {
     pack_json(&serde_json::to_vec(document).unwrap(), Some(bin))
 }
 fn pack_json(json: &[u8], bin: Option<&[u8]>) -> Vec<u8> {
@@ -26,7 +26,7 @@ fn pack_json(json: &[u8], bin: Option<&[u8]>) -> Vec<u8> {
     bytes[8..12].copy_from_slice(&length.to_le_bytes());
     bytes
 }
-fn triangle() -> (Value, Vec<u8>) {
+pub(super) fn triangle() -> (Value, Vec<u8>) {
     let mut bytes = Vec::new();
     for coordinate in [0f32, 0., 0., 2., 0., 0., 0., 3., 4.] {
         bytes.extend(coordinate.to_le_bytes());
@@ -39,7 +39,7 @@ fn triangle() -> (Value, Vec<u8>) {
     });
     (document, bytes)
 }
-fn decoded(document: &Value, bin: &[u8]) -> crate::model3d::ModelGeometry {
+pub(super) fn decoded(document: &Value, bin: &[u8]) -> crate::model3d::ModelGeometry {
     decode_geometry(&pack(document, bin), "captured.GLB", || Ok(())).unwrap()
 }
 fn error(document: &Value, bin: &[u8]) -> String {
@@ -48,14 +48,14 @@ fn error(document: &Value, bin: &[u8]) -> String {
         decode_geometry(&pack(document, bin), "bad.glb", || Ok(())).unwrap_err()
     )
 }
-fn expect_error(document: &Value, bin: &[u8], message: &str) {
+pub(super) fn expect_error(document: &Value, bin: &[u8], message: &str) {
     let actual = error(document, bin);
     assert!(
         actual.contains(message),
         "expected {message:?}, got {actual}"
     );
 }
-fn add_indices(document: &mut Value, bin: &mut Vec<u8>, kind: u32, values: &[u32]) {
+pub(super) fn add_indices(document: &mut Value, bin: &mut Vec<u8>, kind: u32, values: &[u32]) {
     let start = bin.len().next_multiple_of(4);
     bin.resize(start, 0);
     for &index in values {
@@ -460,7 +460,6 @@ fn glb_refuses_external_geometry_and_omits_appearance_resources() {
 fn glb_refuses_geometry_extensions_even_optional_undeclared_or_on_unselected_nodes() {
     for extension in [
         "KHR_draco_mesh_compression",
-        "EXT_meshopt_compression",
         "KHR_meshopt_compression",
         "EXT_mesh_gpu_instancing",
         "KHR_node_visibility",

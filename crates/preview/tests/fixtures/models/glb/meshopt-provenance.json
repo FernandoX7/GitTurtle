@@ -1,0 +1,112 @@
+{
+  "meshoptimizer_version": "0.25",
+  "upstream_revision": "6daea4695c48338363b08022d2fb15deaef6ac09",
+  "upstream_modules": [
+    {
+      "url": "https://raw.githubusercontent.com/zeux/meshoptimizer/6daea4695c48338363b08022d2fb15deaef6ac09/js/meshopt_encoder.js",
+      "sha256": "1e5a64c0bf1fe0218e8ff80f5c800e34fa31db02cc260229c81125d88d957590",
+      "bytes": 24735
+    },
+    {
+      "url": "https://raw.githubusercontent.com/zeux/meshoptimizer/6daea4695c48338363b08022d2fb15deaef6ac09/js/meshopt_decoder.js",
+      "sha256": "05e1d7b12b8fe408b07690d701328671d026c4ace808684c942f398b1f0801d5",
+      "bytes": 32869
+    }
+  ],
+  "node_version": "v26.5.0",
+  "reference_boundary": "Official JavaScript/WASM decodeGltfBuffer independently verifies encoded position bytes and each decoded triangle identity/winding before output. This is not a native app test.",
+  "fixtures": [
+    {
+      "source_sha256": "db98b3123aa86a34ab83203863a5eb1d0299682e3fd9ba278cb5c3cecab4195d",
+      "output_sha256": "359a68e7c27d44a59290cad541bf638cd546dcc343aa8a2ec01c41600ea9c6d1",
+      "bytes": 1648,
+      "encoder_sha256": "1e5a64c0bf1fe0218e8ff80f5c800e34fa31db02cc260229c81125d88d957590",
+      "decoder_sha256": "05e1d7b12b8fe408b07690d701328671d026c4ace808684c942f398b1f0801d5",
+      "transformation": "Lossless POSITION and triangle indices; source transforms/scenes retained; appearance payloads omitted; required absent fallback buffer",
+      "views": [
+        {
+          "view": 0,
+          "mode": "ATTRIBUTES",
+          "count": 8,
+          "stride": 12,
+          "input_sha256": "65d74788a70db4408f0c07029b901f584f48131f49d4557cce1326a5fb43520f",
+          "decoded_sha256": "65d74788a70db4408f0c07029b901f584f48131f49d4557cce1326a5fb43520f",
+          "compressed_sha256": "5cd3947e714f78800e3aa97ddd899ee4b169312283acc6fc3fc547b4a27a9371"
+        },
+        {
+          "view": 1,
+          "mode": "TRIANGLES",
+          "count": 36,
+          "stride": 2,
+          "input_sha256": "d6f3896682994c0104bb5556d9686d23d40a2261bf7a354f56cb0f3a6c28e382",
+          "decoded_sha256": "74395ed61535008a85cdb1bbffe0231ad53d1cbdd14e5810ff16cc2b10c3fbc6",
+          "compressed_sha256": "32f1893f575548468d417e392f127917e9e9b206a726a8795d2dc49dc68da3e1"
+        }
+      ],
+      "file": "meshopt-arch-before.glb"
+    },
+    {
+      "source_sha256": "ce02434bb6339f8b24cd04a50b23807ca02efb40ed0ed62d6518ca17a79e21f0",
+      "output_sha256": "675d34888d8ee9d33df9ccfa8d290719f3ad5f2aa0bd3e6bbe8d782d0cbdefb0",
+      "bytes": 1656,
+      "encoder_sha256": "1e5a64c0bf1fe0218e8ff80f5c800e34fa31db02cc260229c81125d88d957590",
+      "decoder_sha256": "05e1d7b12b8fe408b07690d701328671d026c4ace808684c942f398b1f0801d5",
+      "transformation": "Lossless POSITION and triangle indices; source transforms/scenes retained; appearance payloads omitted; required absent fallback buffer",
+      "views": [
+        {
+          "view": 0,
+          "mode": "ATTRIBUTES",
+          "count": 8,
+          "stride": 12,
+          "input_sha256": "65d74788a70db4408f0c07029b901f584f48131f49d4557cce1326a5fb43520f",
+          "decoded_sha256": "65d74788a70db4408f0c07029b901f584f48131f49d4557cce1326a5fb43520f",
+          "compressed_sha256": "5cd3947e714f78800e3aa97ddd899ee4b169312283acc6fc3fc547b4a27a9371"
+        },
+        {
+          "view": 1,
+          "mode": "TRIANGLES",
+          "count": 36,
+          "stride": 2,
+          "input_sha256": "d6f3896682994c0104bb5556d9686d23d40a2261bf7a354f56cb0f3a6c28e382",
+          "decoded_sha256": "74395ed61535008a85cdb1bbffe0231ad53d1cbdd14e5810ff16cc2b10c3fbc6",
+          "compressed_sha256": "32f1893f575548468d417e392f127917e9e9b206a726a8795d2dc49dc68da3e1"
+        }
+      ],
+      "file": "meshopt-arch-after.glb"
+    },
+    {
+      "source_sha256": "ccc9c3ce56423720b09399c2351537207cd5a65f859f9e6e2f30922762f3abd4",
+      "output_sha256": "b838780639867ad51529bd5328e0b152ada1618bb4ebc22184e642cf4baa33b9",
+      "bytes": 6396,
+      "encoder_sha256": "1e5a64c0bf1fe0218e8ff80f5c800e34fa31db02cc260229c81125d88d957590",
+      "decoder_sha256": "05e1d7b12b8fe408b07690d701328671d026c4ace808684c942f398b1f0801d5",
+      "transformation": "Lossless POSITION and triangle indices; source transforms/scenes retained; appearance payloads omitted; required absent fallback buffer",
+      "views": [
+        {
+          "view": 0,
+          "mode": "ATTRIBUTES",
+          "count": 406,
+          "stride": 12,
+          "input_sha256": "87c3d051840fff094bbbb04e767adcba1cc38521d7e5ff39cf4982da3df30af2",
+          "decoded_sha256": "87c3d051840fff094bbbb04e767adcba1cc38521d7e5ff39cf4982da3df30af2",
+          "compressed_sha256": "ab87a4e593050ff4c6f878b0e90c1c72d99fff84ba27764c3a6677c3f4a0aff8"
+        },
+        {
+          "view": 1,
+          "mode": "TRIANGLES",
+          "count": 2046,
+          "stride": 2,
+          "input_sha256": "c6fdbf76311623d53ec20575504678901b5542eeeda82255185eb05a2a6893fd",
+          "decoded_sha256": "0cd9058827f19af206dc9b44da8fc728966da7cc940f47762ece6825864d17e8",
+          "compressed_sha256": "e71fdf536bd35e16edb4aa61ad32a8a9b127c3da7e51d0bcc3700e5c204e705c"
+        }
+      ],
+      "file": "meshopt-avocado.glb"
+    }
+  ],
+  "source_assets": {
+    "meshopt-arch-before.glb": "assembly-before.glb, authored GitTurtle fixture under repository license",
+    "meshopt-arch-after.glb": "assembly-after.glb, authored GitTurtle fixture under repository license",
+    "meshopt-avocado.glb": "Avocado.glb, Microsoft 2017, CC0-1.0; see provenance.json and Avocado.LICENSE.md"
+  }
+}

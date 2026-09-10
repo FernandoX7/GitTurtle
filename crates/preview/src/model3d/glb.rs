@@ -7,6 +7,9 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+mod compression;
+use compression::{BufferExtensions, DecodedView, ViewExtensions};
+
 const MAX_JSON_BYTES: usize = 4 * 1024 * 1024;
 const MAX_JSON_TOKENS: usize = 250_000;
 const MAX_JSON_DEPTH: usize = 32;
@@ -95,6 +98,8 @@ struct Primitive {
 struct Buffer {
     byte_length: usize,
     uri: Option<String>,
+    #[serde(default)]
+    extensions: BufferExtensions,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -105,6 +110,8 @@ struct BufferView {
     byte_length: usize,
     byte_stride: Option<usize>,
     target: Option<u32>,
+    #[serde(default)]
+    extensions: ViewExtensions,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -174,6 +181,9 @@ pub(super) fn decode(bytes: &[u8], check: &impl Fn() -> Result<()>) -> Result<De
         meshes: HashMap::new(),
         output: Vec::new(),
         visits: 0,
+        decoded_views: HashMap::new(),
+        compressed_bytes: 0,
+        decompressed_bytes: 0,
     };
     for &root in roots {
         decoder.expand(root, IDENTITY, &transforms, 0)?;
@@ -269,6 +279,7 @@ fn supported_extension(name: &str) -> bool {
     matches!(
         name,
         QUANTIZATION
+            | compression::EXTENSION
             | "KHR_materials_unlit"
             | "KHR_materials_pbrSpecularGlossiness"
             | "KHR_materials_clearcoat"
@@ -302,6 +313,15 @@ struct JsonPreflight<'a, F> {
     tokens: usize,
     next_check: usize,
 }
+#[derive(Clone, Copy)]
+enum JsonLocation {
+    Root,
+    Buffers,
+    BufferViews,
+    Buffer,
+    BufferView,
+    Other,
+}
 impl<'a, F: Fn() -> Result<()>> JsonPreflight<'a, F> {
     fn new(bytes: &'a [u8], check: &'a F) -> Self {
         Self {
@@ -313,7 +333,7 @@ impl<'a, F: Fn() -> Result<()>> JsonPreflight<'a, F> {
         }
     }
     fn run(mut self) -> Result<()> {
-        self.value(0, false, true)?;
+        self.value(0, false, true, JsonLocation::Root)?;
         self.space()?;
         ensure!(
             self.offset == self.bytes.len(),
@@ -375,7 +395,13 @@ impl<'a, F: Fn() -> Result<()>> JsonPreflight<'a, F> {
             }
         }
     }
-    fn value(&mut self, depth: usize, extension_map: bool, inspect_extensions: bool) -> Result<()> {
+    fn value(
+        &mut self,
+        depth: usize,
+        extension_map: bool,
+        inspect_extensions: bool,
+        location: JsonLocation,
+    ) -> Result<()> {
         self.checkpoint()?;
         self.tokens += 1;
         ensure!(
@@ -418,6 +444,14 @@ impl<'a, F: Fn() -> Result<()>> JsonPreflight<'a, F> {
                             supported_extension(&key),
                             "GLB extension {key} is not supported for static geometry preview"
                         );
+                        ensure!(
+                            key != compression::EXTENSION
+                                || matches!(
+                                    location,
+                                    JsonLocation::Buffer | JsonLocation::BufferView
+                                ),
+                            "GLB EXT_meshopt_compression is only valid on buffers or buffer views"
+                        );
                     }
                     ensure!(
                         keys.insert(key.clone()),
@@ -428,6 +462,12 @@ impl<'a, F: Fn() -> Result<()>> JsonPreflight<'a, F> {
                         depth + 1,
                         inspect_extensions && key == "extensions",
                         inspect_extensions && key != "extras",
+                        match (location, key.as_str()) {
+                            (_, "extensions") => location,
+                            (JsonLocation::Root, "buffers") => JsonLocation::Buffers,
+                            (JsonLocation::Root, "bufferViews") => JsonLocation::BufferViews,
+                            _ => JsonLocation::Other,
+                        },
                     )?;
                     self.space()?;
                     match self.bytes.get(self.offset) {
@@ -454,7 +494,16 @@ impl<'a, F: Fn() -> Result<()>> JsonPreflight<'a, F> {
                         entries <= MAX_JSON_ARRAY,
                         "GLB JSON array exceeds the 16,384-entry preview limit"
                     );
-                    self.value(depth + 1, false, inspect_extensions)?;
+                    self.value(
+                        depth + 1,
+                        false,
+                        inspect_extensions,
+                        match location {
+                            JsonLocation::Buffers => JsonLocation::Buffer,
+                            JsonLocation::BufferViews => JsonLocation::BufferView,
+                            _ => JsonLocation::Other,
+                        },
+                    )?;
                     self.space()?;
                     match self.bytes.get(self.offset) {
                         Some(b']') => {
@@ -638,11 +687,7 @@ fn validate_document(
     for (index, buffer) in document.buffers.iter().enumerate() {
         check()?;
         ensure!(buffer.byte_length > 0, "GLB buffer length must be positive");
-        if buffer.uri.is_none() {
-            ensure!(
-                index == 0,
-                "Only GLB buffer 0 may refer to the embedded BIN chunk"
-            );
+        if buffer.uri.is_none() && index == 0 {
             let bin = bin.context("GLB embedded geometry buffer has no BIN chunk")?;
             ensure!(
                 buffer.byte_length <= bin.len() && bin.len() - buffer.byte_length <= 3,
@@ -660,6 +705,7 @@ fn validate_document(
             "GLB BIN chunk has no matching embedded buffer 0; external or URI geometry buffers are not supported"
         );
     }
+    compression::validate(document, check)?;
     for source in &document.buffer_views {
         check()?;
         let buffer = document
@@ -950,6 +996,9 @@ struct Decoder<'a, F> {
     meshes: HashMap<usize, Vec<Triangle>>,
     output: Vec<Triangle>,
     visits: usize,
+    decoded_views: HashMap<usize, DecodedView>,
+    compressed_bytes: usize,
+    decompressed_bytes: usize,
 }
 impl<F: Fn() -> Result<()>> Decoder<'_, F> {
     fn expand(
@@ -992,7 +1041,14 @@ impl<F: Fn() -> Result<()>> Decoder<'_, F> {
         Ok(())
     }
     fn data(&self, index: usize) -> Result<&[u8]> {
+        if let Some(decoded) = self.decoded_views.get(&index) {
+            return Ok(decoded.bytes());
+        }
         let source = view(self.document, index)?;
+        ensure!(
+            source.extensions.meshopt.is_none(),
+            "GLB compressed buffer view was not prepared"
+        );
         let buffer = &self.document.buffers[source.buffer];
         ensure!(
             buffer.uri.is_none() && source.buffer == 0,
@@ -1053,6 +1109,7 @@ impl<F: Fn() -> Result<()>> Decoder<'_, F> {
         Ok(indices)
     }
     fn positions(&mut self, index: usize) -> Result<Vec<Point>> {
+        self.prepare_accessor(index)?;
         let accessor = self
             .document
             .accessors
@@ -1114,6 +1171,7 @@ impl<F: Fn() -> Result<()>> Decoder<'_, F> {
         Ok(positions)
     }
     fn indices(&mut self, index: usize, vertices: usize) -> Result<Vec<usize>> {
+        self.prepare_accessor(index)?;
         let accessor = self
             .document
             .accessors

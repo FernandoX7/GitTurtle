@@ -79,6 +79,60 @@ endorsement by the creators or Khronos is implied.
 | Avocado | `ccc9c3ce56423720b09399c2351537207cd5a65f859f9e6e2f30922762f3abd4` |
 | RiggedSimple | `3a79dabb67bb0cd598a18d08b954d9d357c27c30672f82ef5d3f4e7fe6ca3401` |
 
+## Meshopt fixtures and independent codec reference
+
+`meshopt-arch-before.glb` and `meshopt-arch-after.glb` are lossless compressed
+derivatives of the authored assembly pair above. They retain the same 36
+triangles, shared mesh instances, nested transforms and bounds. Their shared
+index view uses TRIANGLES; FLOAT positions use ATTRIBUTES with NONE. Both require
+`EXT_meshopt_compression` and use its absent fallback-buffer convention.
+
+`meshopt-avocado.glb` is a geometry-only derivative of Microsoft's CC0 Avocado
+above: 682 triangles with the original positions, indices, node placement and
+meter scale. Texture/material/normal/UV payloads were removed, then position and
+index views were compressed losslessly. The original license and attribution
+still apply; it is a modified asset, not an unchanged upstream sample.
+
+[`meshopt-provenance.json`](meshopt-provenance.json) records every source/output
+hash, encoder/decoder module hash, immutable upstream URL, runtime version and
+decoded buffer expectation. The fixture encoder
+[`encode-meshopt-glb.cjs`](../../../../../../scripts/encode-meshopt-glb.cjs)
+uses the official MIT-licensed [meshoptimizer 0.25 JavaScript/WASM modules](https://github.com/zeux/meshoptimizer/tree/6daea4695c48338363b08022d2fb15deaef6ac09/js),
+separate from GitTurtle's Rust/FFI adapter. It verifies POSITION bytes exactly and
+each decoded triangle's cyclic vertex identity and winding before writing a GLB.
+It does not quantize or reorder geometry. Fixture generators never download
+resources; supply the two pinned upstream modules locally. Module hashes are
+checked before loading. These modules are fixture tooling and are not packaged
+with GitTurtle.
+
+```sh
+node scripts/encode-meshopt-glb.cjs /tmp/meshoptimizer-js crates/preview/tests/fixtures/models/glb/assembly-before.glb /tmp/meshopt-arch-before.glb
+python3 scripts/create-meshopt-preview-fixtures.py /tmp/gitturtle-meshopt-fixture --upstream-js /tmp/meshoptimizer-js > /tmp/gitturtle-meshopt-manifest.json
+```
+
+The disposable History/Working fixture includes the changed arch, added/deleted
+compressed models, a useful Before with malformed After, invalid compressed
+bytes, and existing deformation/Draco/external-buffer refusals. It also includes
+compressed and uncompressed versions of the same dense 65,536-triangle torus
+and Avocado, with preserved placement. Local LFS cases provide exact compressed
+bytes, an absent object, a corrupt object and a comparison with only one locally
+resolvable side; no LFS commands or downloads are used. Its stdout manifest
+records refs/index/working hashes and local LFS-object hashes. Keep that manifest
+outside the watched fixture. The generator refuses an existing destination.
+
+[`probe_models`](../../../../examples/probe_models.rs) reports actual decoding
+and independent 360-pixel solid, 720-pixel solid and 720-pixel wireframe outcomes
+for explicitly supplied files. Each outcome remains distinct: decoding success
+does not imply every requested raster fits the raster budget. Its optional
+`--triangles-directory` export writes the complete retained triangle sequence as
+little-endian f64 coordinates for an independent geometry comparison. Store
+private inputs, path manifests, exports and results outside this repository.
+
+```sh
+cargo build --release --locked -p gitturtle-preview --example probe_models
+target/release/examples/probe_models /tmp/gitturtle-meshopt-fixture/assembly.glb
+```
+
 ## Release measurement harness
 
 [`bench_model`](../../../../examples/bench_model.rs) measures `decode_geometry`
