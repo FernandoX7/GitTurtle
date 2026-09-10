@@ -11,6 +11,36 @@ use std::{
 const SERVICE: &str = "com.gitturtle.github.oauth";
 #[cfg(target_os = "macos")]
 const ACCOUNT: &str = "github.com";
+// Legacy macOS Keychain interaction policy is process-wide. Every app-owned
+// credential operation uses this lock so an explicit connection in another
+// window cannot overlap the noninteractive policy used by a stored read.
+#[cfg(target_os = "macos")]
+static KEYCHAIN_ACCESS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(target_os = "macos")]
+fn keychain_access() -> Result<std::sync::MutexGuard<'static, ()>> {
+    KEYCHAIN_ACCESS.try_lock().map_err(|_| anyhow!(
+        "Another GitHub Keychain operation is active. Complete or dismiss its macOS authorization dialog before trying again."
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn decode_stored_credential(
+    result: security_framework::base::Result<Vec<u8>>,
+) -> Result<Option<Credential>> {
+    match result {
+        Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes).map_err(|_| {
+            anyhow!("The GitHub Keychain entry is invalid. Connect the account again.")
+        })?)),
+        Err(error) if error.code() == -25300 => Ok(None),
+        Err(error) if error.code() == -25308 => bail!(
+            "GitHub Keychain access needs your permission. Choose Connect GitHub CLI account and complete any macOS authorization dialog, then retry your requested action. Stored account reads do not open a permission dialog."
+        ),
+        Err(_) => bail!(
+            "GitHub credential access was refused by Keychain. Unlock the login Keychain or choose Connect GitHub CLI account explicitly."
+        ),
+    }
+}
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Credential {
     pub login: String,
@@ -34,17 +64,30 @@ pub(crate) struct SecureStore;
 #[cfg(target_os = "macos")]
 impl CredentialStore for SecureStore {
     fn load(&self) -> Result<Option<Credential>> {
-        match security_framework::passwords::get_generic_password(SERVICE, ACCOUNT) {
-            Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes).map_err(|_| {
-                anyhow!("The GitHub Keychain entry is invalid. Connect the account again.")
-            })?)),
-            Err(error) if error.code() == -25300 => Ok(None),
-            Err(_) => bail!(
-                "GitHub credential access was refused by Keychain. Unlock the login Keychain or reconnect explicitly."
-            ),
-        }
+        use security_framework::os::macos::keychain::SecKeychain;
+        let _access = keychain_access()?;
+        // The existing item lives in the legacy login Keychain, where per-query
+        // LocalAuthentication flags do not prevent every authorization prompt.
+        // Preserve an already-disabled policy; the library's guard restores true
+        // on drop, so only create one when true was the original setting.
+        let interaction_allowed = SecKeychain::user_interaction_allowed().map_err(|_| {
+            anyhow!(
+                "Could not check GitHub Keychain access policy. Connect the account explicitly."
+            )
+        })?;
+        let _interaction = if interaction_allowed {
+            Some(SecKeychain::disable_user_interaction().map_err(|_| anyhow!(
+                "Could not request GitHub Keychain access without a dialog. Connect the account explicitly."
+            ))?)
+        } else {
+            None
+        };
+        decode_stored_credential(security_framework::passwords::get_generic_password(
+            SERVICE, ACCOUNT,
+        ))
     }
     fn save(&self, credential: &Credential) -> Result<()> {
+        let _access = keychain_access()?;
         security_framework::passwords::set_generic_password(
             SERVICE,
             ACCOUNT,
@@ -57,6 +100,7 @@ impl CredentialStore for SecureStore {
         })
     }
     fn remove(&self) -> Result<()> {
+        let _access = keychain_access()?;
         match security_framework::passwords::delete_generic_password(SERVICE, ACCOUNT) {
             Ok(()) => Ok(()),
             Err(error) if error.code() == -25300 => Ok(()),
@@ -381,6 +425,54 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn keychain_authorization_required_refuses_with_explicit_connection_guidance() {
+        let error =
+            decode_stored_credential(Err(security_framework::base::Error::from_code(-25308)))
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("Connect GitHub CLI account"));
+        assert!(error.contains("Stored account reads do not open a permission dialog"));
+        assert!(
+            decode_stored_credential(Err(security_framework::base::Error::from_code(-25300)))
+                .unwrap()
+                .is_none()
+        );
+        let credential = Credential {
+            login: "fixture-reviewer".into(),
+            token: "fixture-secret".into(),
+        };
+        let restored = decode_stored_credential(Ok(serde_json::to_vec(&credential).unwrap()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.login, credential.login);
+        assert_eq!(restored.token, credential.token);
+        let invalid = decode_stored_credential(Ok(b"invalid-fixture-secret".to_vec()))
+            .unwrap_err()
+            .to_string();
+        assert!(!invalid.contains("invalid-fixture-secret"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn another_window_keychain_operation_is_refused_without_waiting_or_touching_credentials() {
+        let access = keychain_access().unwrap();
+        let (send, receive) = std::sync::mpsc::channel();
+        let contender = std::thread::spawn(move || {
+            send.send(keychain_access().err().map(|error| error.to_string()))
+                .unwrap();
+        });
+        let result = receive.recv_timeout(Duration::from_secs(1));
+        drop(access);
+        contender.join().unwrap();
+        let message = result
+            .expect("another window must not wait on a Keychain dialog")
+            .expect("overlapping credential access must be refused");
+        assert!(message.contains("Complete or dismiss its macOS authorization dialog"));
+        assert!(keychain_access().is_ok());
+    }
     #[test]
     fn headers_and_rate_limit_are_parsed_without_diagnostics() {
         let response =
