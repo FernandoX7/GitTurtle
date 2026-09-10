@@ -451,6 +451,7 @@ impl Panel {
             .child(label("github-reply-context", format!("{} · #{} · {} · captured head {}",target.account,target.pull.number,target.pull.repository.label(),target.pull.head.sha)).text_color(rgb(p.muted)))
             .when(!valid,|element|element.child(label("github-reply-unavailable","Original context is unavailable on this page. Refresh or return to its conversation before sending. Your exact draft remains local.").text_color(rgb(p.warning))))
             .child(Textarea::new(&self.conversations.input).h(appearance::ui_size(100.)).aria_label("Reply to captured GitHub conversation, saved locally").disabled(self.pending))
+            .when_some(self.error.as_ref(),|element,error|element.child(div().id("github-reply-error-scroll").debug_selector(||"github-reply-outcome".into()).max_h(appearance::ui_size(84.)).overflow_y_scroll().child(label("github-reply-error",error.clone()).role(Role::Alert).a11y_synthetic_children(native_accessibility::assertive).text_color(rgb(p.warning)))))
             .child(div().flex().flex_wrap().items_center().gap_2()
                 .child(button("github-review-reply","Review reply…","",true).disabled(self.pending||!valid).on_click(cx.listener(|this,_,window,cx|this.review_reply(window,cx))))
                 .child(button("github-close-reply","Save and close reply","",false).disabled(self.pending).on_click(cx.listener(|this,_,window,cx|{this.save_reply(window,cx);this.conversations.active=None;this.confirm=None;this.focus_visible_section(window,cx);cx.notify();})))
@@ -634,10 +635,32 @@ mod tests {
             app.update(cx, |app, cx| app.open_github(window, cx));
         });
         cx.executor().run_until_parked();
+        let normal_font=cx.update(|_,cx| {
+            let normal=gpui_kit::component::Theme::global_mut(cx).font_size;
+            gpui_kit::component::Theme::global_mut(cx).font_size=px(17.);
+            panel.update(cx,|panel,cx| {
+                panel.rows=vec![github::review::fixture_pull(true)];
+                panel.review.show_list=true;
+                panel.notice=Some("PR list refreshed. The selected PR keeps its captured head until explicitly reopened.".into());
+                cx.notify();
+            });
+            normal
+        });
+        for _ in 0..3 {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+        }
+        assert!(
+            cx.debug_bounds("github-pr-list").unwrap().size.height >= px(60.),
+            "refreshed PR rows must remain visible beside retained PR detail at enlarged text size"
+        );
         cx.update(|window, cx| {
+            gpui_kit::component::Theme::global_mut(cx).font_size = normal_font;
             panel.update(cx, |panel, cx| {
-                panel.begin_reply(target.clone(), window, cx)
-            })
+                panel.review.show_list = false;
+                panel.notice = None;
+                panel.begin_reply(target.clone(), window, cx);
+            });
         });
         cx.simulate_input("Immediate reply café");
         cx.update(|window, cx| {
@@ -757,11 +780,77 @@ mod tests {
             cx.update(|window, cx| window.draw(cx).clear(cx));
             cx.run_until_parked();
         }
+        // Root supplies the real Dialog Return binding. Enter on a focused
+        // reply button must run the button, never the dialog's default close.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.confirm = None;
+                panel.focus_visible_section(window, cx);
+                cx.notify();
+            })
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_keystrokes("tab");
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let enter = gpui_kit::Keystroke::parse("enter").unwrap();
+        cx.simulate_event(gpui_kit::KeyDownEvent {
+            keystroke: enter.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(gpui_kit::KeyUpEvent { keystroke: enter });
+        cx.update(|window,cx| panel.update(cx,|panel,cx| {
+            assert!(window.has_active_dialog(cx), "Return must not implicitly close the PR dialog");
+            assert!(!panel.closed);
+            assert!(matches!(panel.confirm.as_ref().map(|confirmation|&confirmation.action),Some(Action::Reply {target:captured,..}) if captured==&target));
+        }));
+        for _ in 0..3 {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+        }
         let confirmation = cx.debug_bounds("github-confirmation").unwrap();
         let viewport = cx.read(|cx| panel.read(cx).review.body_scroll.bounds());
         assert!(
             confirmation.bottom() <= viewport.bottom(),
             "confirmation must reveal its send action"
+        );
+        // A provider refusal must be readable beside the still-focused draft,
+        // even when the outer viewport was scrolled to the reply before sending.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.review.fixture = true;
+                panel.review.fixture_moved = true;
+                panel.submit(window, cx);
+            })
+        });
+        app.read_with(cx, |app, _| app.operations.submit(|| Ok(())))
+            .await
+            .unwrap()
+            .unwrap();
+        cx.executor().run_until_parked();
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                assert!(
+                    panel.error.is_some(),
+                    "stale fixture head refuses the actual captured outbound reply"
+                );
+                assert_eq!(
+                    panel.conversations.input.read(cx).value(),
+                    " Exact reply\r\n  café\n"
+                );
+            })
+        });
+        for _ in 0..3 {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+        }
+        let outcome = cx
+            .debug_bounds("github-reply-outcome")
+            .expect("visible reply refusal");
+        let viewport = cx.read(|cx| panel.read(cx).review.body_scroll.bounds());
+        assert!(
+            outcome.top() >= viewport.top() && outcome.bottom() <= viewport.bottom(),
+            "reply refusal {outcome:?} stays visible beside its draft in {viewport:?}"
         );
         // Exercise actual asynchronous refresh failures with a moved provider head.
         // A failed single-thread read invalidates only its exact context; a failed

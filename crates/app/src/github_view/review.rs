@@ -27,6 +27,12 @@ pub(super) fn init(cx: &mut App) {
         return;
     }
     cx.set_global(ReviewBindings);
+    // Let GPUI's button key-up activation run instead of Dialog's default Confirm.
+    cx.bind_keys([KeyBinding::new(
+        "enter",
+        gpui_kit::NoAction,
+        Some("GitTurtleGithubButton"),
+    )]);
     for context in ["GitTurtleGithubFiles", "GitTurtleGithubPatch"] {
         cx.bind_keys([
             KeyBinding::new("up", ReviewUp, Some(context)),

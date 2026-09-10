@@ -28,6 +28,17 @@ fn label(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Stateful<Di
         .child(text)
         .text_size(crate::appearance::ui_text(12.))
 }
+/// Preserve native focused-button Enter/Space activation inside this long-lived
+/// dialog; its default Return-to-confirm action must not bypass Panel::close.
+fn button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    symbol: &str,
+    active: bool,
+) -> Button {
+    crate::button(id, label, symbol, active).key_context("GitTurtleGithubButton")
+}
+
 #[derive(Default)]
 struct WarmPanels(Vec<WarmPanel>);
 impl gpui_kit::Global for WarmPanels {}
@@ -98,6 +109,7 @@ impl GitTurtle {
             let cancel = form.clone();
             dialog
                 .title("GitHub pull requests")
+                .on_ok(|_, _, _| false)
                 .width((window.viewport_size().width - px(48.)).clamp(px(320.), px(1100.)))
                 .child(form.clone())
                 .footer(DialogFooter::new().child(
@@ -928,7 +940,10 @@ impl Panel {
                     }
                 }
             },
-            Err(error) => this.error = Some(format!("{error:#}")),
+            Err(error) => {
+                this.error = Some(format!("{error:#}"));
+                if this.conversations.active.is_some() { this.focus_visible_section(window,cx); }
+            },
         }, window, cx);
     }
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1052,14 +1067,14 @@ impl Render for Panel {
                     .child(button("github-sign-in-help","Copy sign-in command","",false).on_click(|_,_,cx|cx.write_to_clipboard(ClipboardItem::new_string("gh auth login --hostname github.com --web --skip-ssh-key".into()))))
                     .child(button("github-disconnect","Disconnect GitTurtle","",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.run(false,|_|SecureStore.remove(),|result,this,_,_|match result{Ok(())=>{this.account=None;this.notice=Some("GitTurtle authorization removed. GitHub CLI and ordinary Git authentication retain their settings.".into());},Err(error)=>this.error=Some(error.to_string())},window,cx)))))))
             .when_some(self.notice.as_ref(),|element,notice|element.child(label("github-notice",notice.clone()).role(Role::Status).a11y_synthetic_children(native_accessibility::polite).text_color(rgb(p.muted))))
-            .when_some(self.error.as_ref(),|element,error|element.child(label("github-error",error.clone()).role(Role::Alert).a11y_synthetic_children(native_accessibility::assertive).text_color(rgb(p.warning))))
+            .when_some(self.error.as_ref().filter(|_|self.conversations.active.is_none()),|element,error|element.child(label("github-error",error.clone()).role(Role::Alert).a11y_synthetic_children(native_accessibility::assertive).text_color(rgb(p.warning))))
             .when_some(self.draft_issue,|element,issue|element.child(label("github-draft-validation",issue.message()).role(Role::Alert).a11y_synthetic_children(native_accessibility::assertive).text_color(rgb(p.warning))))
             .when(pending,|element|element.child(div().flex().items_center().gap_2()
                 .child(label("github-busy",if self.writing{"Sending the captured review…"}else{"Loading your requested PR context…"}).role(Role::Status).a11y_synthetic_children(|builder|{native_accessibility::polite(builder);builder.parent_node().set_busy();}))
                 .child(button("github-cancel","Cancel","",false).on_click(cx.listener(|this,_,_,cx|{if let Some(control)=&this.control{control.cancel();}
                     if let Some(control)=&this.local_control{control.cancel();}this.notice=Some(if this.writing{"Cancellation requested. Check GitHub before resubmitting; an accepted action is never replayed."}else{"Cancellation requested. Your review draft is retained."}.into());cx.notify();})))))
             .when(!self.create && (self.review.show_list||self.pull.is_none()),|element|element
-                .child(div().id("github-pr-list").max_h(px(200.)).overflow_y_scroll().flex().flex_col().gap_1()
+                .child(div().id("github-pr-list").debug_selector(||"github-pr-list".into()).flex_shrink_0().max_h(px(200.)).overflow_y_scroll().flex().flex_col().gap_1()
                     .children(self.rows.iter().map(|pull|{let pull=pull.clone();let selected=self.pull.as_ref().is_some_and(|p|p.number==pull.number);let number=pull.number;let name=format!("#{} · {}",pull.number,pull.title);let context=format!("{} · {} → {} · {}",if pull.draft{"Draft"}else{"Open"},pull.head.branch,pull.base.branch,pull.user.login);
                         div().id(("github-pr-card",pull.number)).p_3().rounded(px(7.)).border_1().border_color(rgb(if selected{p.accent}else{p.border})).bg(rgb(p.panel)).flex().flex_col().gap_1()
                             .child(button(("github-pr",pull.number),name,"",selected).w_full().disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.inspect(pull.clone(),window,cx))))
