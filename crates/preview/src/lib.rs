@@ -20,6 +20,7 @@ pub mod metadata;
 pub mod model3d;
 #[cfg(target_os = "macos")]
 mod native;
+mod svg_limits;
 
 pub const PDF_PREVIEW_EDGE: u32 = 1000;
 pub const MAX_PDF_PAGE_TEXT_BYTES: usize = 256 * 1024;
@@ -401,6 +402,7 @@ fn decode_svg(bytes: &[u8], max_edge: u32) -> Result<ImagePreview> {
             }
         }
     }
+    svg_limits::check_expansion(&document)?;
     let mut options = usvg::Options {
         // Explicit resolvers: resources_dir=None alone still permits absolute
         // paths in the default usvg resolver. No resource bytes may enter here.
@@ -681,6 +683,185 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("nesting")
+        );
+    }
+
+    #[test]
+    fn svg_rejects_compact_reference_expansion_before_rendering() {
+        // Only 43 XML elements, but cloning each pair of references recursively
+        // produces more than ten thousand elements before rasterization.
+        let mut svg = String::from(
+            "<svg xmlns='http://www.w3.org/2000/svg' width='2' height='2'><defs><rect id='n0' width='1' height='1'/>",
+        );
+        for index in 1..=13 {
+            svg.push_str(&format!(
+                "<g id='n{index}'><use href='#n{}'/><use href='#n{}'/></g>",
+                index - 1,
+                index - 1
+            ));
+        }
+        svg.push_str("</defs><use href='#n13'/></svg>");
+        assert!(svg.len() < 1024);
+        for svg in [
+            svg.clone(),
+            svg.replace("'/>", " '/>"),
+            svg.replace(" xmlns='http://www.w3.org/2000/svg'", ""),
+        ] {
+            let error = decode_image(svg.as_bytes(), "fan-out.svg", 2).unwrap_err();
+            assert!(error.to_string().contains("expanded"), "{error:#}");
+        }
+    }
+
+    #[test]
+    fn svg_bounds_reference_payload_cycles_and_expanded_depth() {
+        // A small node count can still multiply a large path's geometry.
+        let svg = format!(
+            "<svg xmlns='http://www.w3.org/2000/svg' width='2' height='2'><defs><path id='p' d='M0 0 {}'/></defs>{}</svg>",
+            "L1 1 ".repeat(8192),
+            "<use href='#p'/>".repeat(64)
+        );
+        assert!(svg.len() < MAX_SVG_BYTES);
+        let error = decode_image(svg.as_bytes(), "payload.svg", 2).unwrap_err();
+        assert!(error.to_string().contains("payload"), "{error:#}");
+
+        let mut deep = String::from(
+            "<svg xmlns='http://www.w3.org/2000/svg' width='2' height='2'><defs><rect id='n0' width='1' height='1'/>",
+        );
+        for index in 1..=MAX_SVG_DEPTH {
+            deep.push_str(&format!("<use id='n{index}' href='#n{}'/>", index - 1));
+        }
+        deep.push_str("</defs></svg>");
+        let error = decode_image(deep.as_bytes(), "deep.svg", 2).unwrap_err();
+        assert!(error.to_string().contains("nesting"), "{error:#}");
+
+        let cycle = b"<svg xmlns='http://www.w3.org/2000/svg' width='2' height='2'><g id='a'><use href='#b'/></g><g id='b'><use href='#a'/></g></svg>";
+        let error = decode_image(cycle, "cycle.svg", 2).unwrap_err();
+        assert!(error.to_string().contains("cycle"), "{error:#}");
+    }
+
+    #[test]
+    fn svg_expansion_preserves_href_precedence_and_nested_reference_pixels() {
+        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="2" height="1">
+            <defs><rect id="r" width="1" height="1" fill="red"/>
+            <rect id="r" width="1" height="1" fill="blue"/>
+            <use id="a" xlink:href="#r"/></defs>
+            <use xlink:href="#unused" href="#a "/><use href="#a" x="1"/>
+        </svg>"##;
+        let preview = decode_image(svg, "references.svg", 2).unwrap();
+        assert_eq!(preview.rgba, [255, 0, 0, 255, 255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn svg_bounds_marker_multiplication_before_rendering() {
+        let svg = format!(
+            "<svg xmlns='http://www.w3.org/2000/svg' width='2' height='2'><defs><marker id='m' markerWidth='1' markerHeight='1'>{}</marker></defs><path d='M0 0 {}' marker-mid='url(#m)'/></svg>",
+            "<path d='M0 0 L1 1 L0 1 Z'/>".repeat(50),
+            "L1 1 L0 0 ".repeat(128)
+        );
+        assert!(svg.len() < 4096);
+        let error = decode_image(svg.as_bytes(), "markers.svg", 2).unwrap_err();
+        assert!(error.to_string().contains("expanded"), "{error:#}");
+    }
+
+    #[test]
+    fn svg_marker_preflight_refuses_css_bypasses_and_nested_cycles() {
+        let document = |extra: &str, path: &str| {
+            format!(
+                "<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10'>{extra}<defs><marker id='m' markerWidth='2' markerHeight='2'><path d='M0 0 L2 2 L0 2 Z'/></marker></defs>{path}</svg>"
+            )
+        };
+        for (extra, path) in [
+            (
+                "<style>path { marker-mid: url('#m') }</style>",
+                "<path d='M0 0 L1 1'/>",
+            ),
+            (
+                "<style xmlns='urn:untrusted'>path { marker-mid: url('#m') }</style>",
+                "<path d='M0 0 L1 1'/>",
+            ),
+            ("", "<path style='marker:url(#m)' d='M0 0 L1 1'/>"),
+            (
+                "",
+                "<g marker-mid='url(#m)'><path marker-mid='none' style='marker-mid:inherit' d='M0 0 L1 1'/></g>",
+            ),
+            (
+                "<style>path { m\\61rker-mid: url('#m') }</style>",
+                "<path d='M0 0 L1 1'/>",
+            ),
+        ] {
+            let error = decode_image(document(extra, path).as_bytes(), "css.svg", 10).unwrap_err();
+            assert!(error.to_string().contains("CSS"), "{error:#}");
+        }
+        let cycle = document("", "<path d='M0 0 L2 2' marker-end='url(#m)'/>").replace(
+            "<path d='M0 0 L2 2 L0 2 Z'",
+            "<path marker-end='url(#m)' d='M0 0 L2 2 L0 2 Z'",
+        );
+        let error = decode_image(cycle.as_bytes(), "nested.svg", 10).unwrap_err();
+        assert!(error.to_string().contains("cycle"), "{error:#}");
+    }
+
+    #[test]
+    fn svg_preserves_inherited_marker_arrows_and_plain_styles() {
+        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+            <style>path { stroke: none }</style>
+            <defs><marker id="m" markerUnits="userSpaceOnUse" markerWidth="2" markerHeight="2"><rect width="2" height="2" fill="red"/></marker></defs>
+            <g marker-end="url('#m')"><path d="M0 0 L4 4" style="fill: none"/></g>
+        </svg>"##;
+        let preview = decode_image(svg, "arrow.svg", 10).unwrap();
+        assert_eq!(&preview.rgba[(4 * 10 + 4) * 4..][..4], &[255, 0, 0, 255]);
+        assert_eq!(preview.rgba[3], 0);
+    }
+
+    #[test]
+    #[ignore = "bounded mutation probe; run explicitly with --ignored --nocapture"]
+    fn svg_bounded_mutation_probe() {
+        // Reproducible, coverage-uninstrumented byte mutation of the boundary's
+        // supported/refused syntax. This is a finite panic/output-invariant
+        // probe, not a proof of safety or a native-framework fuzz campaign.
+        let corpus = [
+            "<svg xmlns='http://www.w3.org/2000/svg' width='8' height='8'><path d='M0 0 L8 8 L0 8 Z' fill='red'/></svg>",
+            "<svg width='8' height='8'><defs><rect id='r' width='2' height='2'/><use id='u' href='#r'/></defs><use href='#u '/></svg>",
+            "<svg width='8' height='8'><g id='a'><use href='#b'/></g><g id='b'><use href='#a'/></g></svg>",
+            "<svg width='8' height='8'><defs><marker id='m' markerWidth='2' markerHeight='2'><path d='M0 0 L2 2 L0 2 Z'/></marker></defs><path marker-mid='url(#m)' d='M0 0 L2 2 L3 3'/></svg>",
+            "<svg width='8' height='8'><defs><marker id='m'><path marker-end='url(#m)' d='M0 0 L1 1'/></marker></defs><style>path{marker:url(#m)}</style><path d='M0 0 L1 1'/></svg>",
+            "<!DOCTYPE svg [<!ENTITY x 'bounded'>]><svg width='8' height='8'><image href='data:bad'/></svg>",
+        ];
+        let started = std::time::Instant::now();
+        let mut random = 0x4153_5452_4153_5647u64;
+        let mut accepted = 0;
+        let mut attempted = 0;
+        while attempted < 16_384 && started.elapsed() < std::time::Duration::from_secs(5) {
+            let mut bytes = corpus[attempted % corpus.len()].as_bytes().to_vec();
+            for _ in 0..1 + attempted % 4 {
+                random ^= random << 13;
+                random ^= random >> 7;
+                random ^= random << 17;
+                let at = random as usize % bytes.len().max(1);
+                match random % 4 {
+                    0 if !bytes.is_empty() => {
+                        bytes.remove(at);
+                    }
+                    1 => bytes.insert(at, (random >> 32) as u8),
+                    2 if !bytes.is_empty() => bytes[at] ^= (random >> 32) as u8,
+                    _ => bytes.truncate(at),
+                }
+            }
+            if let Ok(preview) = decode_image(&bytes, "mutation.svg", 32) {
+                accepted += 1;
+                assert!(preview.width > 0 && preview.width <= 32);
+                assert!(preview.height > 0 && preview.height <= 32);
+                assert_eq!(
+                    preview.rgba.len(),
+                    preview.width as usize * preview.height as usize * 4
+                );
+            }
+            attempted += 1;
+        }
+        eprintln!(
+            "SVG mutation seed=4153545241535647 corpus={} attempts={attempted} accepted={accepted} refused={} elapsed_ms={:.3}",
+            corpus.len(),
+            attempted - accepted,
+            started.elapsed().as_secs_f64() * 1000.
         );
     }
 
