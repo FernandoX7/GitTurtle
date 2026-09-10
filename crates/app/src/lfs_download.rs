@@ -88,7 +88,9 @@ impl GitTurtle {
             .children(targets.into_iter().map(|(side, target)| {
                 button(
                     ("download-lfs-side", side),
-                    if side == 0 {
+                    if self.is_quick_source() {
+                        "Download Source LFS…"
+                    } else if side == 0 {
                         "Download Before LFS…"
                     } else {
                         "Download After LFS…"
