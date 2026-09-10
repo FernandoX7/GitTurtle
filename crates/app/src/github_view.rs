@@ -547,7 +547,13 @@ mod tests {
     use std::{cell::RefCell, rc::Rc};
 
     #[gpui::test]
-    fn opening_github_from_an_active_repository_update_defers_local_reads(cx: &mut TestAppContext) {
+    async fn opening_github_from_an_active_repository_update_defers_local_reads(
+        cx: &mut TestAppContext,
+    ) {
+        // This full app integration test intentionally performs local reads on
+        // the real serial executors. GPUI's supported I/O mode accepts their
+        // cross-thread wakes; the barriers below drain them before teardown.
+        cx.executor().allow_parking();
         let fixture = tempfile::tempdir().unwrap();
         let result = std::process::Command::new("git")
             .args(["-c", "init.templateDir=", "init", "--initial-branch=main"])
@@ -589,6 +595,15 @@ mod tests {
             app.update(cx, |app, cx| app.open_github(window, cx));
             assert!(window.has_active_dialog(cx));
         });
+        let (operations_done, preferences_done) = app.read_with(cx, |app, _| {
+            (
+                app.operations.submit_read(|| Ok(())),
+                app.preferences_writer.submit_read(|| Ok(())),
+            )
+        });
+        operations_done.await.unwrap().unwrap();
+        preferences_done.await.unwrap().unwrap();
+        cx.executor().run_until_parked();
         cx.update(|window, cx| {
             assert!(window.has_active_dialog(cx));
             window.close_dialog(cx);

@@ -60,3 +60,11 @@ Full source archive, exact Docker argument arrays, stage logs, parsed test ident
 | `tests.log` | `9195ef7cac9674ba21374c4657bf24ff4678bdf226d4640117929901b6081e35` |
 | `clippy.log` | `ab0815d64984f76cde43c15f0dd91094e96689d24ec049ac66719e75e8a39efe` |
 | `release.log` | `719264fee81f367e4e3c6c30b08f16fc416718846e67c3523f327a181181be55` |
+
+## Corrected workflow candidate f9fb53e
+
+The immutable `f9fb53e52809bbce5d2b73af2e844bfb5def99ef` archive (SHA-256 `7233f3aec57bc1d9cf0366a8cc37c076958d3954ecc63d393403af3470b5a0cb`) used the same isolated commands and environment. Fetch passed in 0.446 s, formatting in 1.500 s, strict workspace Clippy in 5.679 s, and release in 70.326 s. Identity inspection passed in 0.180 s; the ELF64 AArch64 executable hash is `db7df205687cf14288a86d5c7fead9872e851f657ba2210a56d57486356b6fa1`, with all shared libraries resolved.
+
+The workspace test gate **failed** in 26.712 s because the app test process aborted. The new full-app GitHub opening regression performed real serial-executor I/O while GPUI's test scheduler still forbade foreign-thread wakes. Its background reply triggered the scheduler assertion; the ensuing task cleanup aborted the process. The earlier profile-lock and portable-Find regressions passed, and core/preview suites finished successfully. Although 529 distinct passing test lines were observed across the process output, the app suite did not produce a normal result; this is not a completed passing test total. The required correction is confined to the integration test's supported GPUI real-I/O mode and draining both serial executors before teardown; production scheduling is unchanged.
+
+Evidence is retained in `/tmp/gitturtle-linux-f9fb53e-o5fsgcaq`, including archive, full logs, exact Docker argv, stage records, and manifest with the incomplete app-suite limitation. All task containers exited and were removed before further native performance work. `tests.log` SHA-256: `f0fe5df9aed6547ea387b46ec59381b141c681fc58f88f12dd919221e1f197c0`. No native Linux or hosted execution claim is made.
