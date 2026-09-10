@@ -4,6 +4,14 @@ Current milestone: [security, architecture and resource bounds](security-quality
 
 This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native interaction evidence is macOS-specific. Current platform execution and access limits belong in the active milestone and [environment report](benchmarks/2026-09-09-milestone-environment.md). The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Distribution is outside the current milestone.
 
+## September 10 GitHub review conversations
+
+The [GitHub review validation record](github-review-validation.md) records native
+conversation actions and durable reply recovery, live draft/ready PR creation,
+range comments and collected reviews, live reply/resolve/reopen, and stale-head
+refusal in the authorized private synthetic repository. Its source/build identities
+keep baseline, integrated live, and final correction evidence separate.
+
 ## Final September 10 security milestone
 
 [Source `b4440f1`](security-quality-milestone.md) passed the macOS and local
@@ -47,7 +55,7 @@ For changes to the current workflows, use disposable repositories and local remo
 | Incremental ordinary history | Page across the5,000-row/64MiB window with an older selection retained; verify stable OIDs, connected graph frontier and native Older/Previous/Newest behavior. Inspect slim and lane-overflow graphs, rapid selection, cancellation and search discontinuity. Use the [120k fixture measurements](benchmarks/2026-09-10-history-pagination.md) for backend comparisons and separate native callbacks. |
 | Interactive model comparison | Exercise pointer and keyboard orbit/pan/zoom/fit, standard views, linked and independent cameras, edges, orientation, units, missing sides and literal source. Compare curved analytic and mapped STEP fixtures within the [finite support matrix](file-previews.md), then repeat opens/tab changes/window closure while observing resource retirement. |
 | PDF and rendered Markdown | Navigate PDF beyond page8 with entry/previous/next, unequal counts, linked positions, zoom, extracted text and literal copy; retain state across Back/tabs/restart and evict bounded cached pages. Check native Markdown prose/tables/code/Mermaid, revision-correct local images, explicit local/external links, linked scrolling, keyboard reading and exact source staging. |
-| GitHub collaboration | Open/close the offline native panel through the palette, validate forms and recover local drafts without network activity. Mock captured account/repository/head identities, pagination, rate limits, partial failures and uncertain outcomes. Real connection, PRs/comments/reviews and hosted CI require the specifically authorized disposable context; record live results separately. |
+| GitHub collaboration | Open/close the offline native panel through the palette; check keyboard activation, visible composers, confirmations, refreshed PR and recovery lists at narrow/wide sizes, both densities, larger text and light/dark themes. Reply, resolve/reopen, page authoritative conversations and retain exact drafts through navigation, tabs and restart. Check stale account/head/thread identities, missing context, permissions, rate limits, partial failures, persistence failures, cancellation and uncertainty. Real connection, PRs/comments/reviews and hosted CI require specifically authorized disposable context; record independently verified live results and credential access separately. |
 | Precise staging and commits | Exercise hunk and changed-line stage/unstage with mixed index/worktree edits; verify unrelated index entries and working bytes. Check whole-file fallback explanations, exact Title/Description bytes, hook/signing failures, and worktree-specific draft retention through navigation and restart. |
 | Conflicts and integration | Inspect base and both named sides, rebase labels, manual and complete-side resolution, external edits, stale-save refusal, and editor handoff. Verify Continue's staged-path review, external operation detection, Abort preservation, and Keep files without losing HEAD/index/worktree state. |
 | Stashes and commit recovery | Inspect staged/unstaged/untracked saved content; restore with and without staged state; confirm the stash survives success and conflict until an explicit Drop. Check amend, eligible Undo, revert/cherry-pick and merge-parent choice, including stale targets, failures, and independent work. |
