@@ -184,7 +184,8 @@ impl GitTurtle {
                             .unwrap_or_else(|| "GitTurtle".into());
                         move |window, cx| Tooltip::new(path.clone()).build(window, cx)
                     })
-                    .w(appearance::ui_size(200.))
+                    .flex_1()
+                    .max_w(appearance::ui_size(200.))
                     .min_w(appearance::ui_size(100.))
                     .flex()
                     .flex_col()
