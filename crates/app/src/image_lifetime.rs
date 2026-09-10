@@ -10,6 +10,7 @@ struct Registry {
     // One cleanup reference, never one reference per paint/frame/window.
     images: HashMap<ImageId, Arc<RenderImage>>,
     pending: HashSet<WindowId>,
+    trace: bool,
 }
 impl Global for Registry {}
 
@@ -38,7 +39,10 @@ impl Registry {
 }
 
 pub(super) fn init(cx: &mut App) {
-    cx.set_global(Registry::default());
+    cx.set_global(Registry {
+        trace: std::env::var_os("GITTURTLE_TRACE").is_some(),
+        ..Default::default()
+    });
     cx.on_window_closed(|cx, id| {
         // A callback queued on a closed window will never run. Other windows
         // must remain able to schedule cleanup, including for shared images.
@@ -46,7 +50,16 @@ pub(super) fn init(cx: &mut App) {
         // GPUI invokes this observer before dropping the Window box. App::defer
         // runs after that drop and release_dropped_entities, so its frame/view
         // references have gone before checking whether we are the sole owner.
-        cx.defer(|cx| retire(None, cx));
+        cx.defer(|cx| {
+            retire(None, cx);
+            let registry = cx.global::<Registry>();
+            if registry.trace {
+                eprintln!(
+                    "gitturtle.image_window_closed retained_images={}",
+                    registry.images.len()
+                );
+            }
+        });
     })
     .detach();
 }
@@ -73,12 +86,25 @@ pub(super) fn after_draw(window: &Window, cx: &mut App) {
 pub(super) fn track(image: &Arc<RenderImage>, window: &Window, cx: &mut App) {
     if !cx.global::<Registry>().images.contains_key(&image.id) {
         cx.global_mut::<Registry>().track(image);
+        let registry = cx.global::<Registry>();
+        if registry.trace {
+            eprintln!(
+                "gitturtle.image_track frames={} retained_images={}",
+                image.frame_count(),
+                registry.images.len()
+            );
+        }
     }
     after_draw(window, cx);
 }
 
 fn retire(window: Option<&mut Window>, cx: &mut App) {
     let released = cx.global_mut::<Registry>().released();
+    let count = released.len();
+    let frames = released
+        .iter()
+        .map(|image| image.frame_count())
+        .sum::<usize>();
     let mut window = window;
     for image in released {
         // This supported API removes every GIF frame in every window, including
@@ -86,6 +112,13 @@ fn retire(window: Option<&mut Window>, cx: &mut App) {
         // A cache, retained inspection, dialog, canvas or another window holding
         // any Arc prevents retirement, so live cached scenes keep valid tiles.
         cx.drop_image(image, window.as_deref_mut());
+    }
+    let registry = cx.global::<Registry>();
+    if count > 0 && registry.trace {
+        eprintln!(
+            "gitturtle.image_retire images={count} frames={frames} retained_images={}",
+            registry.images.len()
+        );
     }
 }
 

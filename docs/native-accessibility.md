@@ -39,3 +39,14 @@ Native acceptance covers minimum and wide window sizes, both densities, and ten 
 Apple’s [accessibility design guidance](https://developer.apple.com/design/human-interface-guidelines/accessibility/) and [VoiceOver guidance](https://developer.apple.com/design/human-interface-guidelines/voiceover/) support readable labels, navigable order and equivalent custom-control behavior. The implementation uses the public [Reduce Motion property](https://developer.apple.com/documentation/appkit/nsworkspace/accessibilitydisplayshouldreducemotion), [Increase Contrast property](https://developer.apple.com/documentation/appkit/nsworkspace/accessibilitydisplayshouldincreasecontrast), and [Reduce Transparency property](https://developer.apple.com/documentation/appkit/nsworkspace/accessibilitydisplayshouldreducetransparency). [Apple’s VoiceOver evaluation criteria](https://developer.apple.com/help/app-store-connect/manage-app-accessibility/voiceover-evaluation-criteria) inform the native workflow checks; this document makes no certification or App Store declaration.
 
 The pinned component Input also now projects its accessibility metadata onto the shared editing-state element that owns keyboard focus. Previously the role was on an outer frame and the editing focus target had no accessible node, so GPUI selected its window-root fallback. The frame remains a separate focus group; no duplicate FocusHandle is registered. The bounded [component patch](../vendor/gpui-component/GITTURTLE-PATCH.md) and [base patch](../vendor/gpui-base/GITTURTLE-PATCH.md) preserve version and Apache provenance. Synthetic rendered-node checks establish ordinary/password/multiline roles, names, identifiers and editable-action semantics on the actual editing focus owner; native macOS focus and VoiceOver behavior require the updated packaged executable.
+
+
+Display-option changes use the public NSWorkspace notification center, with a
+single coalesced wakeup into GPUI's foreground executor. The callback does not
+reenter an active App borrow, poll settings, or write system preferences. The
+view owns the observer and unregisters it on release. Each event rereads current
+values; Reduce Motion immediately pauses animated GIF playback and exposes
+manual frame stepping. Startup and activation reads remain fallbacks. This also
+corrects stale OFF state observed after the first release's focus-only update.
+The exact existing objc2 versions are reused through macOS-only dependencies;
+other platforms keep their supported toolkit behavior.

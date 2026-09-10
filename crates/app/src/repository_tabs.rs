@@ -439,6 +439,25 @@ pub(super) fn history_bytes(commits: &[Commit], graph: &[graph::GraphRow]) -> us
             })
             .sum::<usize>()
 }
+// The widgets are shared by the window, but their values belong to one tab.
+// Cold tabs always start with empty inputs; warm tabs restore the exact snapshot.
+#[derive(Default)]
+struct TabInputs {
+    values: [String; 6],
+}
+impl TabInputs {
+    fn capture(inputs: [&Entity<InputState>; 6], cx: &App) -> Self {
+        Self {
+            values: inputs.map(|input| input.read(cx).value().to_string()),
+        }
+    }
+    fn restore(self, inputs: [&Entity<InputState>; 6], window: &mut Window, cx: &mut App) {
+        for (input, value) in inputs.into_iter().zip(self.values) {
+            input.update(cx, |input, cx| input.set_value(value, window, cx));
+        }
+    }
+}
+
 struct WarmTab {
     bytes: usize,
     repository: GitRepository,
@@ -449,12 +468,7 @@ struct WarmTab {
     blame: blame::State,
     search: history_search::State,
     paging: history_paging::State,
-    query: String,
-    nav_query: String,
-    working_query: String,
-    branch_input: String,
-    remote_input: String,
-    remote_branch_input: String,
+    inputs: TabInputs,
     branches: Vec<Branch>,
     worktrees: Vec<Worktree>,
     nav_rows: Vec<NavRow>,
@@ -708,12 +722,7 @@ impl GitTurtle {
             blame: std::mem::take(&mut self.blame),
             search: std::mem::take(&mut self.history_search),
             paging: std::mem::take(&mut self.history_paging),
-            query: self.search.read(cx).value().to_string(),
-            nav_query: self.nav_search.read(cx).value().to_string(),
-            working_query: self.working_filter.read(cx).value().to_string(),
-            branch_input: self.branch_name.read(cx).value().to_string(),
-            remote_input: self.remote_name.read(cx).value().to_string(),
-            remote_branch_input: self.remote_branch.read(cx).value().to_string(),
+            inputs: TabInputs::capture(self.tab_inputs(), cx),
             branches: std::mem::take(&mut self.branches),
             worktrees: std::mem::take(&mut self.worktrees),
             nav_rows: std::mem::take(&mut self.nav_rows),
@@ -805,16 +814,7 @@ impl GitTurtle {
         self.working_selection = warm.working_selection;
         self.operation_notice = warm.operation_notice;
         self.operation_error = warm.operation_error;
-        for (input, value) in [
-            (&self.search, warm.query),
-            (&self.nav_search, warm.nav_query),
-            (&self.working_filter, warm.working_query),
-            (&self.branch_name, warm.branch_input),
-            (&self.remote_name, warm.remote_input),
-            (&self.remote_branch, warm.remote_branch_input),
-        ] {
-            input.update(cx, |input, cx| input.set_value(value, window, cx));
-        }
+        warm.inputs.restore(self.tab_inputs(), window, cx);
         self.observe_tab_panels(cx);
         if let Some(index) = self.repository_tabs.active {
             let saved = self.repository_tabs.tabs[index].saved.clone();
@@ -847,6 +847,22 @@ impl GitTurtle {
 }
 
 impl GitTurtle {
+    fn tab_inputs(&self) -> [&Entity<InputState>; 6] {
+        [
+            &self.search,
+            &self.nav_search,
+            &self.working_filter,
+            &self.branch_name,
+            &self.remote_name,
+            &self.remote_branch,
+        ]
+    }
+    fn clear_tab_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let switching = self.repository_tabs.switching;
+        self.repository_tabs.switching = true;
+        TabInputs::default().restore(self.tab_inputs(), window, cx);
+        self.repository_tabs.switching = switching;
+    }
     pub(super) fn open_repository_tab(
         &mut self,
         path: PathBuf,
@@ -906,6 +922,8 @@ impl GitTurtle {
             error: None,
         });
         self.repository_tabs.active = Some(index);
+        self.repository_tabs.restoring = None;
+        self.clear_tab_inputs(window, cx);
         false
     }
     pub(super) fn tab_snapshot_accepted(
@@ -967,6 +985,7 @@ impl GitTurtle {
         if let Some(warm) = self.repository_tabs.tabs[index].warm.take() {
             self.restore_warm_tab(warm, window, cx);
         } else {
+            self.clear_tab_inputs(window, cx);
             let saved = self.repository_tabs.tabs[index].saved.clone();
             self.restore_tab_widths(&saved);
             let scope = saved
@@ -1734,6 +1753,59 @@ impl Render for LibraryView {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[gpui::test]
+    fn shared_inputs_start_empty_for_new_tabs_and_restore_independent_warm_queries(
+        cx: &mut TestAppContext,
+    ) {
+        struct Probe([Entity<InputState>; 6]);
+        impl Render for Probe {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                Input::new(&self.0[0])
+            }
+        }
+        cx.update(gpui_kit::init);
+        let (probe, cx) = cx.add_window_view(|window, cx| {
+            Probe(std::array::from_fn(|_| {
+                cx.new(|cx| InputState::new(window, cx))
+            }))
+        });
+        cx.update(|window, cx| {
+            let inputs = probe.read(cx).0.clone();
+            for (input, value) in inputs.iter().zip([
+                "change 11000",
+                "feature/",
+                "src/",
+                "draft-branch",
+                "origin",
+                "main",
+            ]) {
+                input.update(cx, |input, cx| input.set_value(value, window, cx));
+            }
+            let first_tab = TabInputs::capture(inputs.each_ref(), cx);
+            TabInputs::default().restore(inputs.each_ref(), window, cx);
+            assert!(inputs.iter().all(|input| input.read(cx).value().is_empty()));
+
+            // Editing the new repository must not change the retained first tab.
+            inputs[0].update(cx, |input, cx| {
+                input.set_value("new repository query", window, cx)
+            });
+            let second_tab = TabInputs::capture(inputs.each_ref(), cx);
+            first_tab.restore(inputs.each_ref(), window, cx);
+            assert_eq!(inputs[0].read(cx).value().as_ref(), "change 11000");
+            assert_eq!(inputs[1].read(cx).value().as_ref(), "feature/");
+            let first_tab = TabInputs::capture(inputs.each_ref(), cx);
+            second_tab.restore(inputs.each_ref(), window, cx);
+            assert_eq!(inputs[0].read(cx).value().as_ref(), "new repository query");
+            assert!(
+                inputs[1..]
+                    .iter()
+                    .all(|input| input.read(cx).value().is_empty())
+            );
+            first_tab.restore(inputs.each_ref(), window, cx);
+            assert_eq!(inputs[0].read(cx).value().as_ref(), "change 11000");
+        });
+    }
 
     #[test]
     fn workspace_text_exposes_full_repository_and_group_description() {

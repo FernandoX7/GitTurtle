@@ -337,6 +337,7 @@ struct GitTurtle {
     search: Entity<InputState>,
     nav_search: Entity<InputState>,
     subscriptions: Vec<Subscription>,
+    _display_preferences_task: Option<Task<()>>,
     app_focus: FocusHandle,
     focus: FocusHandle,
     file_focus: FocusHandle,
@@ -537,6 +538,7 @@ impl GitTurtle {
             search: search.clone(),
             nav_search: nav_search.clone(),
             subscriptions: vec![],
+            _display_preferences_task: None,
             app_focus: cx.focus_handle(),
             focus: cx.focus_handle(),
             file_focus: cx.focus_handle(),
@@ -637,6 +639,7 @@ impl GitTurtle {
                 .push(cx.observe(panels, |_, _, cx| cx.notify()));
         }
         this.subscribe_settings_inputs(window, cx);
+        this._display_preferences_task = native_accessibility::observe_display_preferences(cx);
         this.subscriptions
             .push(cx.observe_window_activation(window, |this, window, cx| {
                 if window.is_window_active() {

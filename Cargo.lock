@@ -2248,6 +2248,7 @@ name = "gitturtle"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "block2 0.6.2",
  "chrono",
  "futures",
  "gitturtle-core",
@@ -2257,6 +2258,9 @@ dependencies = [
  "libc",
  "markdown",
  "notify",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "rust-embed",
  "security-framework",
  "serde",

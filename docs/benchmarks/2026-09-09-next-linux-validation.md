@@ -41,3 +41,22 @@ Local evidence is retained at `/tmp/gitturtle-linux-0a0fb5a-of0a3kk5`: immutable
 All named task containers exited and were removed; the final task-name-filtered container listing was empty. Build caches remain available.
 
 No Linux desktop session, native Linux window, Linux screen reader, hosted CI or hosted GitHub account action was exercised. macOS PDF codecs, Keychain authorization, actual VoiceOver, display settings and packaging remain separate coordinator evidence. Earlier [Linux environment records](2026-09-09-milestone-environment.md) and [this checkpoint’s preparation inventory](2026-09-09-next-linux-inventory.md) retain their own scope.
+
+## Integrated accessibility candidate a7139cd
+
+The same isolated Linux/aarch64 environment executed all gates against `a7139cd45dbd5ec98004bf52770a65d3c974b3fc`, exported with `git archive --format=tar a7139cd45dbd5ec98004bf52770a65d3c974b3fc`. Archive SHA-256: `8721dc18cedf84d380b1c129fd0e391e9ba04093e5b9e736542b6e3f35ae1474`; the tar commit header independently matched. The source mount stayed read-only, with no overlay. This candidate includes the exact gpui-component 0.6.0 input focus-owner patch and additional dialog/graph fixes.
+
+Formatting passed in 1.453 s, strict workspace Clippy passed in 9.044 s, and the release build passed in 70.446 s. Locked dependency preparation passed in 0.485 s. The workspace test command above **failed** in 44.885 s: 527 unique tests passed, two failed, and three remained ignored. The app suite reported 250 passed, two failed and one ignored; all core and preview suites passed. These failures prevent treating this candidate as a passing combined gate:
+
+- `native_accessibility::dialog_tests::focused_reader_closes_find_before_the_dialog` used the literal macOS `cmd-f` shortcut on Linux, so Find did not open before Escape reached the dialog. The first-Escape assertion failed.
+- `profiles::store::tests::restart_assignments_edit_delete_and_stale_saves_preserve_other_profiles` received an advisory-lock-busy error at the final sequential delete, after the expected stale-delete rejection. The coordinator observed the same profile failure in the macOS combined suite; it requires a source correction and combined recheck.
+
+Release SHA-256: `d089280baecf1baf901e890f561d9ebbc05d0a1ad0eb785de356be575620190b`. Identity inspection passed in 0.155 s: ELF64 AArch64 PIE, all listed shared libraries resolved. This successful build does not negate the test failures.
+
+Full source archive, exact Docker argument arrays, stage logs, parsed test identities, per-stage exit/timing records and SHA-256 manifest are retained under `/tmp/gitturtle-linux-a7139cd-0bz0w1ib`. All named task containers were removed. No native Linux, hosted CI or hosted GitHub account action was exercised. The seven new passing/failing app tests are counted by distinct suite/test identity, including the child Mermaid isolation summary only once.
+
+| Candidate log | SHA-256 |
+| --- | --- |
+| `tests.log` | `9195ef7cac9674ba21374c4657bf24ff4678bdf226d4640117929901b6081e35` |
+| `clippy.log` | `ab0815d64984f76cde43c15f0dd91094e96689d24ec049ac66719e75e8a39efe` |
+| `release.log` | `719264fee81f367e4e3c6c30b08f16fc416718846e67c3523f327a181181be55` |

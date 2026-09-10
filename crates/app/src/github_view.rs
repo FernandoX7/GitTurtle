@@ -37,7 +37,7 @@ impl GitTurtle {
             let close = form.clone();
             let cancel = form.clone();
             dialog
-                .title(label("github-title", "GitHub pull requests"))
+                .title("GitHub pull requests")
                 .width(px(860.))
                 .child(form.clone())
                 .footer(DialogFooter::new().child(
@@ -146,7 +146,14 @@ impl Panel {
                 }
             },
         ));
-        this.load_local(window, cx);
+        // The parent opens this entity while it is already being updated.
+        // Wait until GPUI returns that parent to the app before borrowing its
+        // serial executor for passive local metadata and draft reads.
+        cx.defer_in(window, |this, window, cx| {
+            if !this.closed {
+                this.load_local(window, cx);
+            }
+        });
         this
     }
     fn load_local(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -529,5 +536,63 @@ impl Render for Panel {
                 .child(button("github-confirm-send","Send to GitHub","",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.submit(window,cx))))))
             .when(!self.attempts.is_empty(),|element|element.child(label("github-attempt-heading","Previous outbound attempts · refresh GitHub before repeating an interrupted action")).child(div().id("github-attempt-list").max_h(px(100.)).overflow_y_scroll().flex().flex_col().gap_1().children(self.attempts.iter().rev().take(10).enumerate().map(|(index,attempt)|label(("github-attempt",index),format!("{}: {}",attempt.destination,attempt.outcome))))))
             .when(!self.saved.is_empty(),|element|element.child(label("github-saved-heading","Recoverable local drafts · Copy retains older-head text without reattaching diff positions")).child(div().id("github-saved-drafts").max_h(px(100.)).overflow_y_scroll().flex().flex_col().gap_1().children(self.saved.iter().take(128).enumerate().map(|(index,draft)|{let draft=draft.clone(); let discard=draft.clone(); div().flex().gap_2().child(button(("github-copy-draft",index),format!("Copy {}",draft.key()),"",false).on_click(move|_,_,cx|cx.write_to_clipboard(ClipboardItem::new_string(draft.text().to_owned())))).child(button(("github-discard-draft",index),"Discard saved draft","",false).disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.discard_draft(discard.clone(),window,cx))))}))))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::prelude::v1::test;
+    use gpui_kit::component::Root;
+    use std::{cell::RefCell, rc::Rc};
+
+    #[gpui::test]
+    fn opening_github_from_an_active_repository_update_defers_local_reads(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let result = std::process::Command::new("git")
+            .args(["-c", "init.templateDir=", "init", "--initial-branch=main"])
+            .arg(fixture.path())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(result.status.success());
+        let repo = GitRepository::open(fixture.path()).unwrap();
+        let view: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let captured = view.clone();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+        });
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let app = cx.new(|cx| {
+                let mut app = GitTurtle::new(
+                    None,
+                    Preferences::default(),
+                    repository_tabs::Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                );
+                app.page = AppPage::Repository;
+                app.repository = Some(repo);
+                app
+            });
+            *captured.borrow_mut() = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let app = view.borrow().as_ref().unwrap().clone();
+        cx.update(|window, cx| {
+            // This is the same parent-entity update boundary as command-palette
+            // activation. The previous constructor synchronously reborrowed it.
+            app.update(cx, |app, cx| app.open_github(window, cx));
+            assert!(window.has_active_dialog(cx));
+        });
+        cx.update(|window, cx| {
+            assert!(window.has_active_dialog(cx));
+            window.close_dialog(cx);
+            assert!(!window.has_active_dialog(cx));
+        });
     }
 }

@@ -9,6 +9,17 @@ use std::{
 };
 
 const MAX_BYTES: u64 = 512 * 1024;
+
+struct StorageLock(fs::File);
+impl Drop for StorageLock {
+    fn drop(&mut self) {
+        // A concurrently forked child can retain this open file description
+        // until exec, even with CLOEXEC. Closing only our descriptor can leave
+        // its lock held briefly, so release it explicitly on every exit path.
+        let _ = self.0.unlock();
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Definition {
     pub id: String,
@@ -221,6 +232,7 @@ impl Store {
         lock_file
             .try_lock()
             .context("Profile storage is busy in another application instance")?;
+        let _lock = StorageLock(lock_file);
         let mut store = Self::load_at(path)?;
         match mutation {
             Mutation::Save {
@@ -291,6 +303,38 @@ mod tests {
             .join(format!("gitturtle-profiles-{}-{nonce}", std::process::id()))
             .join("profiles.json")
     }
+    #[cfg(unix)]
+    #[test]
+    fn inherited_descriptor_does_not_keep_completed_profile_update_locked() {
+        let path = path();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let lock_file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path.with_extension("json.lock"))
+            .unwrap();
+        lock_file.try_lock().unwrap();
+        // A duplicate shares the same open file description as an inherited
+        // pre-exec child descriptor, without forking this multithreaded test.
+        let inherited = lock_file.try_clone().unwrap();
+        let lock = StorageLock(lock_file);
+        let mutation = Mutation::Save {
+            previous: None,
+            definition: definition("Personal"),
+        };
+        let busy = Store::update_at(&path, &mutation).unwrap_err();
+        assert!(format!("{busy:#}").contains("Profile storage is busy"));
+        assert!(!path.exists());
+
+        drop(lock);
+        let saved = Store::update_at(&path, &mutation).unwrap();
+        assert_eq!(saved.definitions, vec![definition("Personal")]);
+        drop(inherited);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
     #[test]
     fn restart_assignments_edit_delete_and_stale_saves_preserve_other_profiles() {
         let path = path();

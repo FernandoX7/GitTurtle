@@ -1,7 +1,23 @@
 //! Native accessibility semantics, keyboard navigation, and local OS choices.
 //! No setting is changed here: macOS display preferences are read on startup
-//! and foreground activation, then applied to the toolkit's motion policy.
+//! and on workspace display-change notifications, then applied to the toolkit's
+//! motion policy. Foreground activation remains a fallback read.
 use crate::*;
+
+#[cfg(any(target_os = "macos", test))]
+mod display_changes;
+
+pub(super) fn observe_display_preferences(cx: &mut Context<GitTurtle>) -> Option<Task<()>> {
+    #[cfg(target_os = "macos")]
+    {
+        Some(display_changes::subscribe(cx))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = cx;
+        None
+    }
+}
 
 gpui_kit::actions!(
     gitturtle,
@@ -53,44 +69,12 @@ pub(super) struct DisplayPreferences {
 
 #[cfg(target_os = "macos")]
 pub(super) fn display_preferences() -> Option<DisplayPreferences> {
-    use std::ffi::{c_char, c_void};
-    #[link(name = "objc")]
-    unsafe extern "C" {
-        fn objc_getClass(name: *const c_char) -> *mut c_void;
-        fn sel_registerName(name: *const c_char) -> *mut c_void;
-        fn objc_msgSend();
-    }
-    // SAFETY: NSWorkspace's singleton and these parameterless BOOL getters are
-    // public AppKit APIs. This function is called on GPUI's main thread; it does
-    // not retain unowned Objective-C objects or read a privacy database.
-    unsafe {
-        let class = objc_getClass(c"NSWorkspace".as_ptr());
-        if class.is_null() {
-            return None;
-        }
-        let send_id: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
-            std::mem::transmute(objc_msgSend as *const ());
-        let send_bool: unsafe extern "C" fn(*mut c_void, *mut c_void) -> i8 =
-            std::mem::transmute(objc_msgSend as *const ());
-        let workspace = send_id(class, sel_registerName(c"sharedWorkspace".as_ptr()));
-        if workspace.is_null() {
-            return None;
-        }
-        Some(DisplayPreferences {
-            reduce_motion: send_bool(
-                workspace,
-                sel_registerName(c"accessibilityDisplayShouldReduceMotion".as_ptr()),
-            ) != 0,
-            increase_contrast: send_bool(
-                workspace,
-                sel_registerName(c"accessibilityDisplayShouldIncreaseContrast".as_ptr()),
-            ) != 0,
-            reduce_transparency: send_bool(
-                workspace,
-                sel_registerName(c"accessibilityDisplayShouldReduceTransparency".as_ptr()),
-            ) != 0,
-        })
-    }
+    let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
+    Some(DisplayPreferences {
+        reduce_motion: workspace.accessibilityDisplayShouldReduceMotion(),
+        increase_contrast: workspace.accessibilityDisplayShouldIncreaseContrast(),
+        reduce_transparency: workspace.accessibilityDisplayShouldReduceTransparency(),
+    })
 }
 #[cfg(not(target_os = "macos"))]
 pub(super) fn display_preferences() -> Option<DisplayPreferences> {

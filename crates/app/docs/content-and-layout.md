@@ -58,3 +58,11 @@ not remove the pinned renderer's atlas tiles.
 `rich_preview` presents independent captured Before/After metadata and bounded PDF pages prepared by the same worker. Page choices belong to retained content; Quick Open uses the source width. PDF/decoded-encoding views never acquire partial staging actions. System Quick Look receives an explicit, private, read-only copy of the captured bytes with a safe suffix; it cannot substitute the working file. Image previews retain captured bytes and optional literal SVG source for system inspection/copy, and the cache counts those buffers. See the finite [file support matrix](../../../docs/file-previews.md) for codecs, page caps, encoding and external-viewer limits.
 
 Dialog children use the generic `rich_preview::render_comparison` helper with owned preview data and a weak owner handle. Rendering must not read or update the parent `GitTurtle` entity while its dialog layer is rendering; that reenters GPUI's active entity borrow. Parent updates belong in explicit action callbacks, and PDF page changes notify the rendering child.
+
+
+Opt-in `GITTURTLE_TRACE` records new registered preview images, completed
+`App::drop_image` retirement counts (including all GIF frames), retained image
+counts, and the count after window closure. It emits only lifecycle events and
+does not schedule draws or polling. This proves application retirement calls;
+it is not a measurement of Metal driver allocation bytes. Pair native repeat
+cycles with process/resource observations when evaluating preview cleanup.

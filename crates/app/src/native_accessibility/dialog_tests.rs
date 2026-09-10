@@ -225,7 +225,11 @@ fn focused_reader_closes_find_before_the_dialog(cx: &mut TestAppContext) {
     });
     let focus = view.update(cx, |view, cx| view.editor.read(cx).focus_handle(cx));
     cx.update(|window, cx| focus.focus(window, cx));
-    cx.simulate_keystrokes("cmd-f escape");
+    #[cfg(target_os = "macos")]
+    cx.simulate_keystrokes("cmd-f");
+    #[cfg(not(target_os = "macos"))]
+    cx.simulate_keystrokes("ctrl-f");
+    cx.simulate_keystrokes("escape");
     assert_eq!(*observed.borrow(), 0, "first Escape closes Find");
     cx.simulate_keystrokes("escape");
     assert_eq!(*observed.borrow(), 1, "second Escape closes the dialog");

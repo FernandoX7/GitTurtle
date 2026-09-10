@@ -1,6 +1,6 @@
 # GitHub collaboration
 
-GitTurtle’s **GitHub pull requests…** command opens a native panel for the selected local worktree. Opening the panel reads local remotes and saved drafts only. Connect, Refresh PRs, selecting a PR, reviewing a new PR destination, and Send to GitHub are explicit network interactions. Local filesystem refresh and repository focus do not contact GitHub.
+GitTurtle’s **GitHub pull requests…** command opens a native panel for the selected local worktree. Opening the panel reads local remotes and saved drafts only. The initial read is deferred until GPUI finishes the parent view update, so command-palette activation cannot recursively borrow the repository view; a panel closed before that callback skips the read. Connect, Refresh PRs, selecting a PR, reviewing a new PR destination, and Send to GitHub are explicit network interactions. Local filesystem refresh and repository focus do not contact GitHub.
 
 The current provider is GitHub.com. Ordinary Git authentication, profiles, branch Push, hooks, filters, and signing retain their existing paths. PR creation requires an already published branch and never pushes it implicitly.
 
@@ -47,3 +47,5 @@ Hosted validation needs one explicitly authorized disposable GitHub.com reposito
 ## Research basis
 
 The API behavior follows GitHub’s [pull-request endpoints](https://docs.github.com/en/rest/pulls/pulls), [review endpoints](https://docs.github.com/en/rest/pulls/reviews), and [rate-limit guidance](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api). The interaction research used GitKraken’s first-party [pull-request workflow](https://help.gitkraken.com/gitkraken-desktop/pull-requests/) and [Launchpad overview](https://help.gitkraken.com/gitkraken-desktop/gitkraken-launchpad/) for explicit creation, visible repository/branch context, and adjacent review/check information. GitTurtle implements those interactions as its own bounded native dialog and existing local comparison flow.
+
+The application regression `github_view::tests::opening_github_from_an_active_repository_update_defers_local_reads` opens the actual panel/root through the same parent-entity update boundary used by command-palette activation, using a disposable local repository and no account connection or hosted action. Native command-palette and Back/Escape behavior remain package validation checks.
