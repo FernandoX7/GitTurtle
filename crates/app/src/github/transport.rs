@@ -127,7 +127,9 @@ impl GhTransport {
 impl Transport for GhTransport {
     fn request(&mut self, request: Request, control: &OperationControl) -> Result<Response> {
         ensure!(
-            request.endpoint.starts_with("repos/") || request.endpoint == "user",
+            request.endpoint.starts_with("repos/")
+                || request.endpoint == "user"
+                || request.endpoint == "graphql",
             "Unsupported GitHub API destination"
         );
         ensure!(

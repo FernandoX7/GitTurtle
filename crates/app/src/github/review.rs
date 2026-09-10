@@ -208,86 +208,6 @@ fn parse_patch(patch: &str, additions: u32, deletions: u32) -> Result<Vec<PatchR
     Ok(rows)
 }
 
-#[derive(Clone, Debug, Deserialize)]
-pub(crate) struct ReviewComment {
-    pub id: u64,
-    pub path: String,
-    pub body: String,
-    pub user: User,
-    #[serde(default)]
-    pub in_reply_to_id: Option<u64>,
-    #[serde(default)]
-    pub line: Option<u32>,
-    #[serde(default)]
-    pub original_line: Option<u32>,
-    #[serde(default)]
-    pub start_line: Option<u32>,
-    #[serde(default)]
-    pub side: Option<DiffSide>,
-    #[serde(default)]
-    pub commit_id: String,
-    #[serde(default)]
-    pub original_commit_id: String,
-}
-impl ReviewComment {
-    pub fn outdated(&self, pull: &CapturedPull) -> bool {
-        self.line.is_none() || (!self.commit_id.is_empty() && self.commit_id != pull.head.sha)
-    }
-    pub fn location(&self, pull: &CapturedPull) -> String {
-        let line = self
-            .line
-            .or(self.original_line)
-            .map(|n| n.to_string())
-            .unwrap_or_else(|| "unavailable".into());
-        format!(
-            "{} · {} {}{}{}",
-            self.path,
-            if self.side == Some(DiffSide::Left) {
-                "Before"
-            } else {
-                "After"
-            },
-            self.start_line.map(|n| format!("{n}–")).unwrap_or_default(),
-            line,
-            if self.outdated(pull) {
-                " · outdated position"
-            } else {
-                ""
-            }
-        )
-    }
-}
-#[derive(Clone, Debug)]
-pub(crate) struct Thread {
-    pub root_id: u64,
-    pub missing_root: bool,
-    pub comments: Vec<ReviewComment>,
-}
-pub(crate) fn threads(comments: &[ReviewComment]) -> Vec<Thread> {
-    let mut result: Vec<Thread> = vec![];
-    for comment in comments {
-        let root_id = comment.in_reply_to_id.unwrap_or(comment.id);
-        if let Some(thread) = result.iter_mut().find(|thread| thread.root_id == root_id) {
-            thread.comments.push(comment.clone());
-        } else {
-            result.push(Thread {
-                root_id,
-                missing_root: true,
-                comments: vec![comment.clone()],
-            });
-        }
-    }
-    for thread in &mut result {
-        thread
-            .comments
-            .sort_by_key(|comment| (comment.id != thread.root_id, comment.id));
-        thread.missing_root = thread
-            .comments
-            .iter()
-            .all(|comment| comment.id != thread.root_id);
-    }
-    result
-}
 pub(crate) fn position_label(comment: &LineComment) -> String {
     format!(
         "{} · {} {}{}",
@@ -344,49 +264,28 @@ impl<T: Transport> Client<T> {
             has_next: response.next_page() && page < 30,
         })
     }
-    pub fn comments(
-        &mut self,
-        pull: &CapturedPull,
-        page: u32,
-        control: &OperationControl,
-    ) -> Result<Page<ReviewComment>> {
-        ensure!(
-            (1..=1000).contains(&page),
-            "Review discussion page must be between 1 and 1000"
-        );
-        self.revalidate(pull, control)?;
-        let response = self.get(format!("{}/pulls/{}/comments?per_page={REVIEW_PAGE_SIZE}&page={page}&sort=created&direction=asc",pull.repository.endpoint(),pull.number),control)?;
-        let items: Vec<ReviewComment> = response.json()?;
-        ensure!(
-            items.len() <= REVIEW_PAGE_SIZE,
-            "Too many review comments in one page"
-        );
-        for item in &items {
-            ensure!(
-                item.id > 0 && safe_path(&item.path),
-                "GitHub returned an invalid comment identity"
-            );
-            validate_text(&item.body, false)?;
-        }
-        self.revalidate(pull, control)?;
-        Ok(Page {
-            items,
-            page,
-            has_next: response.next_page(),
-        })
-    }
 }
 
 /// Explicit built-in native QA fixture. This transport has no credential,
 /// process, URL-following or network path, including when a fixture request fails.
 pub(crate) enum UiTransport {
     Live(super::transport::GhTransport),
-    Fixture { moved: bool },
+    #[cfg(test)]
+    Fixture {
+        moved: bool,
+    },
+    NativeFixture {
+        moved: bool,
+        session: std::sync::Arc<std::sync::Mutex<super::native_fixture::Session>>,
+    },
 }
 impl UiTransport {
     pub fn open(fixture: bool, moved: bool) -> Result<Self> {
         if fixture {
-            Ok(Self::Fixture { moved })
+            Ok(Self::NativeFixture {
+                moved,
+                session: super::native_fixture::session(),
+            })
         } else {
             Ok(Self::Live(super::transport::GhTransport::stored()?))
         }
@@ -394,7 +293,9 @@ impl UiTransport {
     pub fn login(&self) -> &str {
         match self {
             Self::Live(transport) => transport.login(),
+            #[cfg(test)]
             Self::Fixture { .. } => "offline-reviewer",
+            Self::NativeFixture { .. } => "offline-reviewer",
         }
     }
 }
@@ -402,7 +303,18 @@ impl Transport for UiTransport {
     fn request(&mut self, request: Request, control: &OperationControl) -> Result<Response> {
         match self {
             Self::Live(transport) => transport.request(request, control),
+            #[cfg(test)]
             Self::Fixture { moved } => fixture_response(request, *moved, control),
+            Self::NativeFixture { moved, session } => {
+                if request.endpoint == "graphql" {
+                    session
+                        .lock()
+                        .map_err(|_| anyhow!("Offline fixture session is unavailable"))?
+                        .request(request, *moved, control)
+                } else {
+                    fixture_response(request, *moved, control)
+                }
+            }
         }
     }
 }
@@ -411,6 +323,9 @@ pub(crate) fn fixture_pull(moved: bool) -> PullRequest {
 }
 fn fixture_response(request: Request, moved: bool, control: &OperationControl) -> Result<Response> {
     ensure!(!control.is_cancelled(), "Offline fixture request cancelled");
+    if request.endpoint == "graphql" {
+        return super::native_fixture::Session::default().request(request, moved, control);
+    }
     let root = "repos/gitturtle-fixture/native-review";
     ensure!(
         request.endpoint == "user" || request.endpoint.starts_with(&format!("{root}/")),
@@ -503,21 +418,6 @@ mod tests {
             files[1].selection(3, 4).unwrap().path,
             "docs/review/界面-guide.md"
         );
-    }
-    #[test]
-    fn discussion_groups_replies_and_exposes_outdated_or_missing_root() {
-        let pull = fixture_pull(false)
-            .capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
-        let comments = Client(UiTransport::Fixture { moved: false })
-            .comments(&pull, 1, &OperationControl::default())
-            .unwrap()
-            .items;
-        let threads = threads(&comments);
-        assert_eq!(threads.len(), 3);
-        assert_eq!(threads[0].comments.len(), 2);
-        assert!(!threads[0].missing_root);
-        assert!(threads[1].comments[0].outdated(&pull));
-        assert!(threads[2].missing_root);
     }
     #[test]
     fn fixture_never_falls_through_to_network_and_moved_head_refuses_read() {

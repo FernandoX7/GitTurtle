@@ -2,7 +2,7 @@
 use super::*;
 use crate::github::{
     CapturedPull, LineComment,
-    review::{self as model, PullFile, ReviewComment, UiTransport},
+    review::{self as model, PullFile, UiTransport},
 };
 
 gpui_kit::actions!(
@@ -60,9 +60,6 @@ pub(super) struct ReviewState {
     pub files: Vec<PullFile>,
     pub file_page: u32,
     pub files_next: bool,
-    pub discussions: Vec<ReviewComment>,
-    pub thread_page: u32,
-    pub threads_next: bool,
     pub selected_file: Option<usize>,
     pub selected_row: Option<usize>,
     pub anchor: Option<usize>,
@@ -94,9 +91,6 @@ impl ReviewState {
             files: vec![],
             file_page: 1,
             files_next: false,
-            discussions: vec![],
-            thread_page: 1,
-            threads_next: false,
             selected_file: None,
             selected_row: None,
             anchor: None,
@@ -132,15 +126,12 @@ impl ReviewState {
     pub fn reset_content(&mut self) {
         self.cancel_preparation();
         self.files.clear();
-        self.discussions.clear();
         self.selected_file = None;
         self.selected_row = None;
         self.anchor = None;
         self.source = None;
         self.file_page = 1;
-        self.thread_page = 1;
         self.files_next = false;
-        self.threads_next = false;
     }
 }
 impl Panel {
@@ -206,6 +197,14 @@ impl Panel {
         }
         if self.pull.is_none() {
             self.destination.read(cx).focus_handle(cx).focus(window, cx);
+            return;
+        }
+        if self.conversations.active.is_some() {
+            self.conversations
+                .input
+                .read(cx)
+                .focus_handle(cx)
+                .focus(window, cx);
             return;
         }
         match self.review.section {
@@ -280,18 +279,7 @@ impl Panel {
                     + file.rows.iter().map(|row| row.text.len()).sum::<usize>()
             })
             .sum::<usize>()
-            + self
-                .review
-                .discussions
-                .iter()
-                .map(|c| {
-                    c.body.len()
-                        + c.path.len()
-                        + c.user.login.len()
-                        + c.commit_id.len()
-                        + c.original_commit_id.len()
-                })
-                .sum::<usize>()
+            + self.conversation_bytes(cx)
             + self.review.comments.iter().map(comment).sum::<usize>()
             + self.review.composing.as_ref().map_or(0, comment)
             + (self.body.read(cx).value().len()
@@ -310,7 +298,14 @@ impl Panel {
             + self
                 .attempts
                 .iter()
-                .map(|attempt| attempt.destination.len() + attempt.outcome.len())
+                .map(|attempt| {
+                    attempt.destination.len()
+                        + attempt.outcome.len()
+                        + attempt
+                            .completed_reply_sha256
+                            .as_ref()
+                            .map_or(0, String::len)
+                })
                 .sum::<usize>()
             + self.account.as_ref().map_or(0, String::len)
             + self.notice.as_ref().map_or(0, String::len)
@@ -324,6 +319,8 @@ impl Panel {
                             p.body.len() + p.title.len() + p.head.len() + p.base.len()
                         }
                         Action::Comment { body, .. } => body.len(),
+                        Action::Reply { target, body } => target.retained_bytes() + body.len(),
+                        Action::SetThreadResolved { target, .. } => target.retained_bytes(),
                         Action::Review(r) => review(r),
                     }
             })
@@ -342,6 +339,7 @@ impl Panel {
                 .map(|draft| match draft {
                     Draft::Pull(p) => p.body.len() + p.title.len(),
                     Draft::Review(p) => review(p),
+                    Draft::Reply(p) => p.target.retained_bytes() + p.body.len(),
                 })
                 .sum::<usize>()
     }
@@ -391,7 +389,7 @@ impl Panel {
         }
     }
 
-    fn captured(&self, cx: &App) -> Option<CapturedPull> {
+    pub(super) fn captured(&self, cx: &App) -> Option<CapturedPull> {
         self.pull
             .as_ref()
             .and_then(|pull| self.destination(cx).ok().map(|repo| pull.capture(repo)))
@@ -454,29 +452,6 @@ impl Panel {
         self.review.anchor = None;
         self.review.source = None;
         self.review.mode = 0;
-    }
-    fn thread_page(&mut self, page: u32, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(pull) = self.captured(cx) else {
-            return;
-        };
-        let fixture = self.review.fixture;
-        let moved = self.review.fixture_moved;
-        self.run(
-            false,
-            move |control| {
-                Client(UiTransport::open(fixture, moved)?).comments(&pull, page, &control)
-            },
-            |result, this, _, _| match result {
-                Ok(page) => {
-                    this.review.discussions = page.items;
-                    this.review.thread_page = page.page;
-                    this.review.threads_next = page.has_next;
-                }
-                Err(error) => this.error = Some(format!("{error:#}")),
-            },
-            window,
-            cx,
-        );
     }
     pub(super) fn select_review_file(
         &mut self,
@@ -760,6 +735,7 @@ impl Panel {
             )
             .child(
                 Textarea::new(&self.review.input)
+                    .h(appearance::ui_size(100.))
                     .aria_label("Inline review comment, saved locally with its captured position")
                     .disabled(self.pending),
             )
@@ -1024,30 +1000,6 @@ impl Panel {
                     .child(div().min_w_0().flex_1().truncate().text_color(rgb(if row.kind==b'@'{p.hunk}else{p.text})).child(row.text.clone()))
                     .on_click(cx.listener(move|this,event:&ClickEvent,window,cx|this.select_review_line(index,event.modifiers().shift,window,cx))).into_any_element()
             }).collect::<Vec<_>>())).size_full().track_scroll(&self.review.line_scroll)).into_any_element()
-    }
-    pub(super) fn render_threads(&self, path: Option<&str>, cx: &mut Context<Self>) -> AnyElement {
-        let p = palette(cx);
-        let Some(pull) = self.captured(cx) else {
-            return div().into_any_element();
-        };
-        let threads = model::threads(&self.review.discussions);
-        let visible = threads
-            .into_iter()
-            .filter(|thread| {
-                path.is_none_or(|path| thread.comments.iter().any(|comment| comment.path == path))
-            })
-            .collect::<Vec<_>>();
-        div().id("github-thread-section").role(Role::Group).aria_label("Pull request review discussions").tab_stop(true).track_focus(&self.review.section_focus).border_1().border_color(rgb(p.border)).focus_visible(|style|style.border_color(rgb(p.accent))).flex().flex_col().gap_2().child(div().id("github-threads").max_h(px(250.)).overflow_y_scroll().flex().flex_col().gap_2()
-            .when(visible.is_empty(),|element|element.child(label("github-no-threads","No inline discussions on this loaded page.")))
-            .children(visible.into_iter().map(|thread|div().p_3().rounded(px(6.)).bg(rgb(p.subtle)).border_1().border_color(rgb(p.border)).flex().flex_col().gap_2()
-                .when(thread.missing_root,|element|element.child(label(("github-thread-missing",thread.root_id),"Opening comment is on another page; replies remain readable.").text_color(rgb(p.warning))))
-                .children(thread.comments.iter().map(|comment|div().flex().flex_col().gap_1().child(label(("github-comment-author",comment.id),format!("{}{}",comment.user.login,if comment.in_reply_to_id.is_some(){" · reply"}else{""})).font_weight(FontWeight::SEMIBOLD))
-                    .child(label(("github-comment-location",comment.id),comment.location(&pull)).text_color(rgb(if comment.outdated(&pull){p.warning}else{p.muted})))
-                    .when(comment.outdated(&pull),|element|element.child(label(("github-comment-original",comment.id),format!("Original commit {}",if comment.original_commit_id.is_empty(){&comment.commit_id}else{&comment.original_commit_id})).text_color(rgb(p.muted))))
-                    .child(label(("github-comment-body",comment.id),comment.body.clone())))))))
-            .child(div().flex().items_center().gap_2().child(button("github-threads-previous","Previous discussions","",false).disabled(self.pending||self.review.thread_page<=1).on_click(cx.listener(|this,_,window,cx|this.thread_page(this.review.thread_page-1,window,cx))))
-                .child(label("github-threads-page",format!("Page {} · up to 100 comments",self.review.thread_page)))
-                .child(button("github-threads-next","Next discussions","",false).disabled(self.pending||!self.review.threads_next).on_click(cx.listener(|this,_,window,cx|this.thread_page(this.review.thread_page+1,window,cx))))).into_any_element()
     }
     pub(super) fn render_collected(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
@@ -1504,6 +1456,7 @@ mod tests {
                         })
                         .collect();
                     panel.attempts.push(drafts::Attempt {
+                        completed_reply_sha256: None,
                         destination: "fixture attempt".into(),
                         outcome: "Observed result".repeat(200),
                     });

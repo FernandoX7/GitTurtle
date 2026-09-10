@@ -1,16 +1,26 @@
 //! Separate, bounded non-secret local collaboration drafts. Never overwrite an
 //! unsupported/corrupt store and never discard a draft after an uncertain write.
+use super::conversations::CapturedThread;
 use super::*;
+use sha2::{Digest, Sha256};
 use std::path::Path;
 
 const VERSION: u32 = 1;
 const MAX_STORE: usize = 16 * 1024 * 1024;
 const MAX_DRAFTS: usize = 128;
 const MAX_ATTEMPTS_BYTES: usize = 1024 * 1024;
+/// Exact text tied to the authoritative conversation and connected account that
+/// were captured when composition began. A changed target gets its own entry.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct ReplyDraft {
+    pub target: CapturedThread,
+    pub body: String,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) enum Draft {
     Pull(NewPull),
     Review(ReviewDraft),
+    Reply(ReplyDraft),
 }
 impl Draft {
     pub fn key(&self) -> String {
@@ -23,6 +33,9 @@ impl Draft {
                 p.pull.head.sha,
                 p.pull.base.sha
             ),
+            // Include every captured identity, with JSON escaping so opaque
+            // provider IDs and paths cannot collide through separators.
+            Self::Reply(reply) => format!("reply:{}", json!(&reply.target)),
         }
     }
     #[cfg(test)]
@@ -30,6 +43,7 @@ impl Draft {
         match self {
             Self::Pull(p) => &p.body,
             Self::Review(p) => &p.body,
+            Self::Reply(reply) => &reply.body,
         }
     }
     pub fn recovery_text(&self) -> String {
@@ -57,6 +71,28 @@ impl Draft {
                     ));
                 }
                 text
+            }
+            Self::Reply(reply) => {
+                let target = &reply.target;
+                format!(
+                    "Reply · github.com/{} #{}\nAccount {} ({})\nRepository ID {}\nPull request ID {}\nThread ID {}\nOpening comment ID {}\nOriginal commit {}\nPath {}\nHead {}\nBase {}\n\n{}",
+                    target.pull.repository.label(),
+                    target.pull.number,
+                    target.account,
+                    target.account_id,
+                    target.repository_id,
+                    target.pull_id,
+                    target.thread_id,
+                    target.root_comment_id.as_deref().unwrap_or("Unavailable"),
+                    target
+                        .original_commit_id
+                        .as_deref()
+                        .unwrap_or("Unavailable"),
+                    target.path,
+                    target.pull.head.sha,
+                    target.pull.base.sha,
+                    reply.body,
+                )
             }
         }
     }
@@ -104,7 +140,23 @@ fn save_at(path: &Path, draft: Draft) -> Result<()> {
 }
 fn save_batch_at(path: &Path, drafts: impl IntoIterator<Item = Draft>) -> Result<()> {
     let mut store = load_at(path)?;
+    let drafts: Vec<_> = drafts.into_iter().collect();
+    // An empty reply is queued through the same serialized saver as typing.
+    // Removing it here cannot race an earlier accepted save, and completed
+    // conversations do not consume the allowance for unfinished work. Apply
+    // removals first so a coalesced replacement can reuse a just-freed slot.
+    let removals: std::collections::HashSet<_> = drafts
+        .iter()
+        .filter(|draft| matches!(draft, Draft::Reply(reply) if reply.body.is_empty()))
+        .map(Draft::key)
+        .collect();
+    store
+        .entries
+        .retain(|entry| !removals.contains(&entry.key()));
     for draft in drafts {
+        if matches!(&draft, Draft::Reply(reply) if reply.body.is_empty()) {
+            continue;
+        }
         let key = draft.key();
         if let Some(entry) = store.entries.iter_mut().find(|entry| entry.key() == key) {
             *entry = draft;
@@ -124,13 +176,15 @@ fn save_batch_at(path: &Path, drafts: impl IntoIterator<Item = Draft>) -> Result
     crate::preferences::atomic_write(path, &bytes)
 }
 pub(crate) fn remove_exact(draft: &Draft) -> Result<()> {
-    let path = path()?;
-    let mut store = load_at(&path)?;
+    remove_exact_at(&path()?, draft)
+}
+fn remove_exact_at(path: &Path, draft: &Draft) -> Result<()> {
+    let mut store = load_at(path)?;
     let submitted = serde_json::to_value(draft)?;
     store
         .entries
         .retain(|entry| serde_json::to_value(entry).ok().as_ref() != Some(&submitted));
-    crate::preferences::atomic_write(&path, &serde_json::to_vec_pretty(&store)?)
+    crate::preferences::atomic_write(path, &serde_json::to_vec_pretty(&store)?)
 }
 #[cfg(test)]
 mod tests {
@@ -146,6 +200,225 @@ mod tests {
             expected_head: None,
             expected_base: None,
         })
+    }
+    fn reply(body: &str) -> ReplyDraft {
+        ReplyDraft {
+            target: CapturedThread {
+                pull: super::super::review::fixture_pull(false)
+                    .capture(Repository::parse("gitturtle-fixture/native-review").unwrap()),
+                account: "offline-reviewer".into(),
+                account_id: "U_fixture_reviewer".into(),
+                repository_id: "R_fixture_repository".into(),
+                pull_id: "PR_fixture_42".into(),
+                thread_id: "PRRT_fixture_7".into(),
+                path: "docs/界面:review.md".into(),
+                root_comment_id: Some("PRRC_fixture_70".into()),
+                original_commit_id: Some("a".repeat(40)),
+            },
+            body: body.into(),
+        }
+    }
+    #[test]
+    fn reply_restart_preserves_exact_text_and_all_original_identities() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("drafts.json");
+        // Existing version-one creation drafts remain readable when replies
+        // are introduced; no destructive migration is needed.
+        save_at(&path, draft("Existing description\n")).unwrap();
+        let text = "\n  Reply with exact spacing\r\n界面 🐢\n\n";
+        let captured = reply(text);
+        save_at(&path, Draft::Reply(captured.clone())).unwrap();
+        let reopened = load_at(&path).unwrap();
+        assert_eq!(reopened.entries.len(), 2);
+        assert_eq!(reopened.entries[0].text(), "Existing description\n");
+        let Draft::Reply(restored) = &reopened.entries[1] else {
+            panic!("reply expected");
+        };
+        assert_eq!(restored.target, captured.target);
+        assert_eq!(restored.body, text);
+        let recovery = reopened.entries[1].recovery_text();
+        for identity in [
+            captured.target.pull.repository.label(),
+            format!("#{}", captured.target.pull.number),
+            captured.target.account,
+            captured.target.account_id,
+            captured.target.repository_id,
+            captured.target.pull_id,
+            captured.target.thread_id,
+            captured.target.path,
+            captured.target.root_comment_id.unwrap(),
+            captured.target.original_commit_id.unwrap(),
+            captured.target.pull.head.sha,
+            captured.target.pull.base.sha,
+        ] {
+            assert!(recovery.contains(&identity), "missing identity: {identity}");
+        }
+        assert!(recovery.ends_with(text));
+    }
+
+    #[test]
+    fn changed_reply_targets_remain_separately_recoverable() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("drafts.json");
+        let original = reply("Original reply\n");
+        save_at(&path, Draft::Reply(original.clone())).unwrap();
+        let mutations: &[fn(&mut CapturedThread)] = &[
+            |target| target.pull.repository.owner = "another-owner".into(),
+            |target| target.pull.repository.name = "another-repository".into(),
+            |target| target.pull.number += 1,
+            |target| target.pull.head.sha = "b".repeat(40),
+            |target| target.pull.base.sha = "c".repeat(40),
+            |target| target.account = "another-reviewer".into(),
+            |target| target.account_id = "U_another_reviewer".into(),
+            |target| target.repository_id = "R_recreated_repository".into(),
+            |target| target.pull_id = "PR_another_pull".into(),
+            |target| target.thread_id = "PRRT_another_thread".into(),
+            |target| target.path = "docs/renamed-review.md".into(),
+            |target| target.root_comment_id = None,
+            |target| target.original_commit_id = None,
+        ];
+        for (index, mutate) in mutations.iter().enumerate() {
+            let mut changed = original.clone();
+            mutate(&mut changed.target);
+            changed.body = format!("Changed context {index}\n");
+            save_at(&path, Draft::Reply(changed)).unwrap();
+        }
+        let reopened = load_at(&path).unwrap();
+        assert_eq!(reopened.entries.len(), mutations.len() + 1);
+        assert_eq!(reopened.entries[0].text(), original.body);
+        // Continuing the original conversation replaces its body only.
+        let mut edited = original.clone();
+        edited.body = "Continued original reply\n".into();
+        save_at(&path, Draft::Reply(edited)).unwrap();
+        let reopened = load_at(&path).unwrap();
+        assert_eq!(reopened.entries.len(), mutations.len() + 1);
+        assert_eq!(reopened.entries[0].text(), "Continued original reply\n");
+        assert_eq!(reopened.entries[1].text(), "Changed context 0\n");
+    }
+
+    #[test]
+    fn reply_identity_separators_cannot_overwrite_another_conversation() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("drafts.json");
+        let mut first = reply("First conversation");
+        first.target.thread_id = "thread:one".into();
+        first.target.path = "two:notes.md".into();
+        let mut second = first.clone();
+        second.target.thread_id = "thread".into();
+        second.target.path = "one:two:notes.md".into();
+        second.body = "Second conversation".into();
+        save_at(&path, Draft::Reply(first)).unwrap();
+        save_at(&path, Draft::Reply(second)).unwrap();
+        let reopened = load_at(&path).unwrap();
+        assert_eq!(reopened.entries.len(), 2);
+        assert_eq!(reopened.entries[0].text(), "First conversation");
+        assert_eq!(reopened.entries[1].text(), "Second conversation");
+    }
+
+    #[test]
+    fn failed_reply_batch_preserves_existing_text_and_invalid_store() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("drafts.json");
+        let original = reply("Keep this reply\n");
+        save_at(&path, Draft::Reply(original.clone())).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let mut replacements = vec![Draft::Reply(reply("Uncommitted replacement"))];
+        replacements.extend((0..MAX_DRAFTS).map(|index| {
+            let mut next = original.clone();
+            next.target.thread_id = format!("PRRT_new_{index}");
+            Draft::Reply(next)
+        }));
+        assert!(save_batch_at(&path, replacements).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let invalid = b"{\"version\":999,\"entries\":[]}";
+        std::fs::write(&path, invalid).unwrap();
+        assert!(save_at(&path, Draft::Reply(original)).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), invalid);
+    }
+
+    #[test]
+    fn discarding_a_captured_reply_preserves_a_newer_edit() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("drafts.json");
+        let old = Draft::Reply(reply("Earlier reply\n"));
+        let edited = Draft::Reply(reply("Last characters before navigating\n"));
+        save_at(&path, old.clone()).unwrap();
+        save_at(&path, edited.clone()).unwrap();
+        remove_exact_at(&path, &old).unwrap();
+        assert_eq!(load_at(&path).unwrap().entries[0].text(), edited.text());
+        remove_exact_at(&path, &edited).unwrap();
+        assert!(load_at(&path).unwrap().entries.is_empty());
+    }
+
+    #[test]
+    fn confirmed_reply_completion_replaces_only_the_submitted_context() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("drafts.json");
+        let original = reply("Successfully posted reply\n");
+        let mut other = reply("Unfinished reply in another conversation\n");
+        other.target.thread_id = "PRRT_another_thread".into();
+        save_at(&path, Draft::Reply(other.clone())).unwrap();
+        let executor = crate::operations::SerialExecutor::new("reply-completion-draft-test");
+        let saver = crate::commit_drafts::CoalescingSaver::<String, Draft>::default();
+        let (started, waiting) = std::sync::mpsc::channel();
+        let (release, gate) = std::sync::mpsc::channel();
+        let mut first_save = true;
+        let destination = path.clone();
+        let pending = Draft::Reply(original.clone());
+        let response = saver
+            .queue_with(&executor, pending.key(), pending, move |batch| {
+                if first_save {
+                    first_save = false;
+                    started.send(())?;
+                    gate.recv()?;
+                }
+                save_batch_at(&destination, batch.values().cloned())
+            })
+            .unwrap();
+        waiting
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        // Provider success arrives while the previous typing snapshot is
+        // already being saved. Its same-target clear must finish afterward.
+        let completed = Draft::Reply(ReplyDraft {
+            body: String::new(),
+            ..original
+        });
+        assert!(
+            saver
+                .queue_with(&executor, completed.key(), completed, |_| {
+                    panic!("completion must join the accepted save")
+                })
+                .is_none()
+        );
+        release.send(()).unwrap();
+        futures::executor::block_on(response).unwrap().unwrap();
+        let reopened = load_at(&path).unwrap();
+        assert_eq!(reopened.entries.len(), 1);
+        assert_eq!(reopened.entries[0].text(), other.body);
+    }
+
+    #[test]
+    fn completing_a_reply_frees_capacity_for_a_coalesced_new_draft() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("drafts.json");
+        save_batch_at(
+            &path,
+            (0..MAX_DRAFTS).map(|index| {
+                let mut next = reply("Existing reply");
+                next.target.thread_id = format!("PRRT_thread_{index}");
+                Draft::Reply(next)
+            }),
+        )
+        .unwrap();
+        let mut completed = reply("");
+        completed.target.thread_id = "PRRT_thread_0".into();
+        let new = Draft::Reply(reply("New conversation\n"));
+        let new_key = new.key();
+        save_batch_at(&path, [new, Draft::Reply(completed)]).unwrap();
+        let reopened = load_at(&path).unwrap();
+        assert_eq!(reopened.entries.len(), MAX_DRAFTS);
+        assert!(reopened.entries.iter().any(|entry| entry.key() == new_key));
     }
     #[test]
     fn exact_text_survives_reopen_and_bad_store_is_not_replaced() {
@@ -205,6 +478,7 @@ mod tests {
             .map(|index| Attempt {
                 destination: format!("{index:03}{}", "d".repeat(4093)),
                 outcome: "x".repeat(4096),
+                completed_reply_sha256: None,
             })
             .collect();
         let original = serde_json::to_vec_pretty(&attempts).unwrap();
@@ -247,6 +521,80 @@ mod tests {
         let reopened = attempts_at(&path).unwrap();
         assert_eq!(reopened.len(), 1);
         assert_eq!(reopened[0].outcome, "Accepted action 91");
+    }
+    #[test]
+    fn confirmed_reply_remains_completed_when_draft_cleanup_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("drafts.json");
+        let attempts = temp.path().join("attempts.json");
+        let completed = reply("Exact reply accepted by GitHub\n");
+        save_at(&path, Draft::Reply(completed.clone())).unwrap();
+        record_reply_outcome_at(
+            &attempts,
+            completed.target.destination(),
+            "GitHub accepted this reply".into(),
+            Some(&completed),
+        )
+        .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let cleared = ReplyDraft {
+            body: String::new(),
+            ..completed.clone()
+        };
+        // Another coalesced form causes the entire atomic cleanup batch to be
+        // refused. The old reply stays on disk, but its success proof is safe.
+        let mut too_large = reply(&"x".repeat(MAX_STORE));
+        too_large.target.thread_id = "PRRT_oversize".into();
+        assert!(save_batch_at(&path, [Draft::Reply(cleared), Draft::Reply(too_large)]).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let Draft::Reply(restored) = load_at(&path).unwrap().entries.remove(0) else {
+            panic!("reply expected");
+        };
+        assert!(reply_was_completed(
+            &attempts_at(&attempts).unwrap(),
+            &restored
+        ));
+        let encoded = std::fs::read_to_string(&attempts).unwrap();
+        assert!(!encoded.contains("Exact reply accepted by GitHub"));
+    }
+
+    #[test]
+    fn completion_proof_is_exact_and_survives_later_uncertain_and_resolution_attempts() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("attempts.json");
+        let completed = reply("Exact sent reply\n");
+        let destination = completed.target.destination();
+        record_reply_outcome_at(
+            &path,
+            destination.clone(),
+            "Accepted".into(),
+            Some(&completed),
+        )
+        .unwrap();
+        for outcome in [
+            "Submission started; inspect GitHub",
+            "Response was lost; outcome uncertain",
+            "Conversation resolved",
+        ] {
+            record_attempt_at(&path, destination.clone(), outcome.into()).unwrap();
+            let reopened = attempts_at(&path).unwrap();
+            assert_eq!(reopened.len(), 1);
+            assert_eq!(reopened[0].outcome, outcome);
+            assert!(reply_was_completed(&reopened, &completed));
+        }
+        let reopened = attempts_at(&path).unwrap();
+        let mut changed = completed.clone();
+        changed.body.push(' ');
+        assert!(!reply_was_completed(&reopened, &changed));
+        changed = completed.clone();
+        changed.target.account_id = "U_another_account".into();
+        assert!(!reply_was_completed(&reopened, &changed));
+        changed = completed.clone();
+        changed.target.pull.head.sha = "d".repeat(40);
+        assert!(!reply_was_completed(&reopened, &changed));
+        changed = completed;
+        changed.target.thread_id = "PRRT_another_thread".into();
+        assert!(!reply_was_completed(&reopened, &changed));
     }
     #[test]
     fn changed_head_keeps_older_review_recoverable() {
@@ -335,6 +683,10 @@ mod tests {
 pub(crate) struct Attempt {
     pub destination: String,
     pub outcome: String,
+    /// The operation executor records this with confirmed provider success.
+    /// A failed subsequent preference cleanup must not revive completed text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_reply_sha256: Option<String>,
 }
 fn attempts_path() -> Result<PathBuf> {
     Ok(path()?.with_file_name("github-attempts.json"))
@@ -360,16 +712,48 @@ pub(crate) fn record_attempt(destination: String, outcome: String) -> Result<()>
     record_attempt_at(&attempts_path()?, destination, outcome)
 }
 fn record_attempt_at(path: &Path, destination: String, outcome: String) -> Result<()> {
+    record_reply_outcome_at(path, destination, outcome, None)
+}
+pub(crate) fn record_reply_outcome(
+    destination: String,
+    outcome: String,
+    completed: Option<&ReplyDraft>,
+) -> Result<()> {
+    record_reply_outcome_at(&attempts_path()?, destination, outcome, completed)
+}
+fn reply_fingerprint(reply: &ReplyDraft) -> String {
+    // Serde's fixed struct layout includes every captured identity and exact
+    // body byte. Persist only a bounded digest, never a second copy of the text.
+    format!("{:x}", Sha256::digest(json!(reply).to_string().as_bytes()))
+}
+pub(crate) fn reply_was_completed(attempts: &[Attempt], reply: &ReplyDraft) -> bool {
+    let fingerprint = reply_fingerprint(reply);
+    attempts
+        .iter()
+        .any(|attempt| attempt.completed_reply_sha256.as_ref() == Some(&fingerprint))
+}
+fn record_reply_outcome_at(
+    path: &Path,
+    destination: String,
+    outcome: String,
+    completed: Option<&ReplyDraft>,
+) -> Result<()> {
     ensure!(
         destination.len() <= 4096 && outcome.len() <= 4096,
         "GitHub attempt identity exceeds its limit"
     );
+    let completed_reply_sha256 = completed.map(reply_fingerprint);
     let mut attempts = attempts_at(path)?;
     if let Some(attempt) = attempts
         .iter_mut()
         .find(|attempt| attempt.destination == destination)
     {
         attempt.outcome = outcome;
+        // Pending, failed and resolution attempts share this captured target;
+        // none can erase proof that the earlier exact reply was accepted.
+        if completed_reply_sha256.is_some() {
+            attempt.completed_reply_sha256 = completed_reply_sha256;
+        }
     } else {
         if attempts.len() == 128 {
             attempts.remove(0);
@@ -377,6 +761,7 @@ fn record_attempt_at(path: &Path, destination: String, outcome: String) -> Resul
         attempts.push(Attempt {
             destination,
             outcome,
+            completed_reply_sha256,
         });
     }
     let bytes = serde_json::to_vec_pretty(&attempts)?;

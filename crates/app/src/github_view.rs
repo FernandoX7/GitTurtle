@@ -14,6 +14,7 @@ use gpui_kit::{
     prelude::FluentBuilder,
 };
 use std::time::Duration;
+mod conversations;
 mod review;
 use crate::github::review::UiTransport;
 use review::Section;
@@ -274,6 +275,7 @@ fn finished_save_status(
 }
 struct Panel {
     review: review::ReviewState,
+    conversations: conversations::State,
     owner: WeakEntity<GitTurtle>,
     repo: GitRepository,
     destination: Entity<InputState>,
@@ -328,6 +330,7 @@ impl Panel {
     ) -> Self {
         let mut this=Self {
             review:review::ReviewState::new(window,cx),
+            conversations:conversations::State::new(window,cx),
             owner,repo,destination:cx.new(|cx|InputState::new(window,cx).placeholder("owner/repository")),
             head:cx.new(|cx|InputState::new(window,cx).default_value(branch).placeholder("Published head branch (owner:branch for a fork)")),
             base:cx.new(|cx|InputState::new(window,cx).default_value("main")),title:cx.new(|cx|InputState::new(window,cx).placeholder("Pull request title")),
@@ -350,6 +353,16 @@ impl Panel {
                 if matches!(event, InputEvent::Change) {
                     this.confirm = None;
                     this.defer_draft_save(window, cx);
+                }
+            },
+        ));
+        this.subscriptions.push(cx.subscribe_in(
+            &this.conversations.input,
+            window,
+            |this, _, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.confirm = None;
+                    this.defer_reply_save(window, cx);
                 }
             },
         ));
@@ -386,6 +399,8 @@ impl Panel {
                         this.draft_timer = None;
                         this.persist_draft(draft, window, cx);
                     }
+                    this.save_reply(window, cx);
+                    this.conversations.reset_content();
                     this.review.reset_content();
                     this.review.comments.clear();
                     this.review.composing = None;
@@ -563,6 +578,7 @@ impl Panel {
         cx.notify();
     }
     fn save_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_reply(window, cx);
         // Explicit close/selection/review commits the current form immediately.
         // A superseded timer must never enqueue its older destination afterward.
         self.draft_timer = None;
@@ -575,6 +591,13 @@ impl Panel {
     fn flush_draft_for_shutdown(&mut self, cx: &mut App) -> Option<DraftSaveCompletion> {
         self.draft_timer = None;
         self.deferred_draft.clear();
+        let reply = if self.closed {
+            None
+        } else {
+            self.reply_snapshot(cx)
+        };
+        self.conversations.timer = None;
+        self.conversations.deferred.clear();
         let draft = if self.closed {
             None
         } else {
@@ -582,14 +605,19 @@ impl Panel {
         };
         self.closed = true;
         if let Ok(response) = self.owner.update(cx, |owner, _| {
-            draft.and_then(|draft| {
-                self.saver.queue_with(
+            let mut response = None;
+            for draft in draft.into_iter().chain(reply) {
+                let queued = self.saver.queue_with(
                     &owner.preferences_writer,
                     draft.key(),
                     draft,
                     drafts::save_batch,
-                )
-            })
+                );
+                if queued.is_some() {
+                    response = queued;
+                }
+            }
+            response
         }) {
             let _ = track_save_completion(&mut self.save_completion, response);
         }
@@ -631,7 +659,9 @@ impl Panel {
                         response_generation,
                         this.save_response_generation,
                         current,
-                        this.deferred_draft.is_pending() || this.saver.is_pending(),
+                        this.deferred_draft.is_pending()
+                            || this.conversations.deferred.is_pending()
+                            || this.saver.is_pending(),
                         succeeded,
                     );
                     cx.notify();
@@ -667,6 +697,7 @@ impl Panel {
         self.pending = true;
         self.writing = writing;
         self.error = None;
+        self.notice = None;
         self.task=Some(cx.spawn_in(window,async move|this,cx|{
             let result=response.await.unwrap_or_else(|_|Err(anyhow::anyhow!("GitHub operation was interrupted. Its outcome may be uncertain; check the destination before submitting again.")));
             let _=this.update_in(cx,|this,window,cx|{if generation!=this.request_generation{return;}this.pending=false;this.writing=false;this.control=None;if !this.closed {receive(result,this,window,cx);}cx.notify();});
@@ -706,7 +737,7 @@ impl Panel {
         };
         let fixture = self.review.fixture;
         let moved = self.review.fixture_moved;
-        self.run(false,move|control|{let transport=UiTransport::open(fixture,moved)?;let login=transport.login().to_owned();Ok((Client(transport).list(&repository,page,&control)?,login))},|result,this,_,_|match result {Ok((page,login))=>{this.rows=page.items;this.page=page.page;this.has_next=page.has_next;this.account=Some(login);this.notice=Some("PR list refreshed. Selecting a PR explicitly loads its current review and check status.".into());},Err(error)=>this.error=Some(format!("{error:#}"))},window,cx);
+        self.run(false,move|control|{let transport=UiTransport::open(fixture,moved)?;let login=transport.login().to_owned();Ok((Client(transport).list(&repository,page,&control)?,login))},|result,this,_,_|match result {Ok((page,login))=>{this.create=false;this.review.show_list=true;this.confirm=None;this.rows=page.items;this.page=page.page;this.has_next=page.has_next;this.account=Some(login);this.notice=Some("PR list refreshed. Selecting a PR explicitly loads its current review and check status.".into());},Err(error)=>this.error=Some(format!("{error:#}"))},window,cx);
     }
     fn inspect(&mut self, pull: PullRequest, window: &mut Window, cx: &mut Context<Self>) {
         self.save_draft(window, cx);
@@ -725,24 +756,31 @@ impl Panel {
             let captured=pull.capture(repository);
             let status=client.status(&captured,&control);
             let files=client.files(&captured,1,&control);
-            let comments=client.comments(&captured,1,&control);
+            let comments=client.review_threads(&captured,None,&control);
             Ok((pull,captured,status,files,comments))
         },|result,this,window,cx|match result {
             Ok((pull,captured,status,files,comments))=>{
-                this.create=false;this.confirm=None;this.review.reset_content();this.review.show_list=false;this.review.section=Section::Overview;
+                this.create=false;this.confirm=None;this.review.reset_content();this.conversations.reset_content();this.review.show_list=false;this.review.section=Section::Overview;
                 this.description=pull.body.as_ref().map(|body|text::editor(body,"markdown",None,window,cx));
                 let mut errors=vec![];
                 match status {Ok(status)=>this.status=Some(status),Err(error)=>{this.status=None;errors.push(format!("Review/check status: {error:#}"));}}
                 match files {Ok(page)=>{this.review.files=page.items;this.review.file_page=page.page;this.review.files_next=page.has_next;},Err(error)=>errors.push(format!("Changed files: {error:#}"))}
-                match comments {Ok(page)=>{this.review.discussions=page.items;this.review.thread_page=page.page;this.review.threads_next=page.has_next;},Err(error)=>errors.push(format!("Discussions: {error:#}"))}
+                match comments {Ok(page)=>{this.receive_threads(page,None);},Err(error)=>errors.push(format!("Discussions: {error:#}"))}
                 this.pull=Some(pull);
                 let draft=this.saved.iter().find_map(|draft|match draft {Draft::Review(review) if review.pull==captured=>Some(review.clone()),_=>None});
                 this.body.update(cx,|input,cx|input.set_value(draft.as_ref().map(|d|d.body.clone()).unwrap_or_default(),window,cx));
                 this.event=draft.as_ref().map(|d|d.event).unwrap_or(ReviewEvent::Comment);
-                let had_saved=draft.is_some();
+                let had_review=draft.is_some();
                 this.restore_review(draft,window,cx);
-                let older=this.saved.iter().any(|draft|matches!(draft,Draft::Review(review) if review.pull.repository==captured.repository && review.pull.number==captured.number && review.pull!=captured));
-                this.notice=older.then(||"An older-head review is retained in Recover drafts. Copy its exact text and original positions; they are never remapped to this head.".into());
+                this.restore_reply(window,cx);
+                let had_saved=had_review||this.conversations.active.is_some();
+                let older=this.saved.iter().any(|draft| match draft {
+                    Draft::Review(review) => review.pull.repository==captured.repository && review.pull.number==captured.number && review.pull!=captured,
+                    Draft::Reply(reply) => !reply.body.is_empty() && reply.target.pull.repository==captured.repository && reply.target.pull.number==captured.number && (reply.target.pull!=captured || this.account.as_deref()!=Some(reply.target.account.as_str())),
+                    _ => false,
+                });
+                if older { this.notice=Some("Drafts from another captured head or account remain in Recover drafts. Copy their exact text and original identities; targets are never remapped.".into()); }
+                else if !had_saved { this.notice=None; }
                 this.error=(!errors.is_empty()).then(||errors.join("\n"));
                 this.save_status=if had_saved {"Draft restored locally"}else{"No local draft yet"}.into();
             },Err(error)=>this.error=Some(format!("{error:#}"))
@@ -756,6 +794,7 @@ impl Panel {
         }
         self.save_draft(window, cx);
         self.create = true;
+        self.conversations.reset_content();
         self.review.reset_content();
         self.review.comments.clear();
         self.review.composing = None;
@@ -816,13 +855,14 @@ impl Panel {
                     let account = transport.login().to_owned();
                     Ok((Client(transport).prepare_create(pull, &control)?, account))
                 },
-                |result, this, _, _| match result {
+                |result, this, window, cx| match result {
                     Ok((pull, account)) => {
                         this.account = Some(account.clone());
                         this.confirm = Some(Confirmation {
                             action: Action::Create(pull),
                             account,
                         });
+                        this.focus_confirmation(window, cx);
                     }
                     Err(error) => this.error = Some(format!("{error:#}")),
                 },
@@ -838,7 +878,7 @@ impl Panel {
         self.confirm = Some(Confirmation {
             account,
             action: match draft {
-                Draft::Pull(_) => unreachable!(),
+                Draft::Pull(_) | Draft::Reply(_) => unreachable!(),
                 Draft::Review(p) if self.discussion => Action::Comment {
                     pull: p.pull,
                     body: p.body,
@@ -846,7 +886,7 @@ impl Panel {
                 Draft::Review(p) => Action::Review(p),
             },
         });
-        cx.notify();
+        self.focus_confirmation(window, cx);
     }
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(confirmation) = self.confirm.take() else {
@@ -855,7 +895,37 @@ impl Panel {
         self.save_draft(window, cx);
         let fixture = self.review.fixture;
         let moved = self.review.fixture_moved;
-        self.run(true,move|control|{let transport=UiTransport::open(fixture,moved)?;anyhow::ensure!(transport.login()==confirmation.account,"The connected GitHub account changed. Review the destination again before submitting.");let destination=format!("{} · account {}",confirmation.action.destination(),confirmation.account);drafts::record_attempt(destination.clone(),"Submission started; if no final outcome appears, inspect GitHub before sending again.".into())?;let result=Client(transport).execute(confirmation.action,&control);let outcome=match &result{Ok(notice)=>notice.clone(),Err(error)=>format!("{error:#}")};if let Err(error)=drafts::record_attempt(destination,outcome.chars().take(4000).collect()){return Err(anyhow::anyhow!("The GitHub action finished but saving its outcome failed: {error}. Check GitHub before resubmitting."));}result},|result,this,_,_|match result {Ok(notice)=>{this.notice=Some(format!("{notice}. The local draft remains available; submitting it again creates another outbound action."));},Err(error)=>this.error=Some(format!("{error:#}"))},window,cx);
+        let sent_action = confirmation.action.clone();
+        self.run(true, move |control| {
+            let transport = UiTransport::open(fixture, moved)?;
+            anyhow::ensure!(transport.login() == confirmation.account, "The connected GitHub account changed. Review the destination again before submitting.");
+            let destination = format!("{} · account {}", confirmation.action.destination(), confirmation.account);
+            drafts::record_attempt(destination.clone(), "Submission started; if no final outcome appears, inspect GitHub before sending again.".into())?;
+            let completed_reply = match &confirmation.action {
+                Action::Reply { target, body } => Some(drafts::ReplyDraft { target: target.clone(), body: body.clone() }),
+                _ => None,
+            };
+            let result = Client(transport).execute(confirmation.action, &control);
+            let outcome = match &result { Ok(notice) => notice.clone(), Err(error) => format!("{error:#}") };
+            if let Err(error) = drafts::record_reply_outcome(destination, outcome.chars().take(4000).collect(), completed_reply.as_ref().filter(|_|result.is_ok())) {
+                return Err(anyhow::anyhow!("The GitHub action finished but saving its outcome failed: {error}. Check GitHub before resubmitting."));
+            }
+            result
+        }, move |result, this, window, cx| match result {
+            Ok(notice) => {
+                if matches!(sent_action, Action::Reply {..} | Action::SetThreadResolved {..}) {
+                    this.finish_conversation_action(&sent_action, window, cx);
+                } else {
+                    this.notice = Some(format!("{notice}. The local draft remains available; submitting it again creates another outbound action."));
+                    if matches!(sent_action, Action::Create(_)) {
+                        this.create = false; this.review.show_list = true;
+                        this.notice = Some(format!("{notice}. Refresh PRs to open the new pull request."));
+                        this.focus_visible_section(window, cx);
+                    }
+                }
+            },
+            Err(error) => this.error = Some(format!("{error:#}")),
+        }, window, cx);
     }
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.pending && self.writing {
@@ -1012,6 +1082,7 @@ impl Render for Panel {
                 .when(self.review.section==Section::Files,|element|element.child(self.render_files(cx)))
                 .when(self.review.section==Section::Review,|element|element.child(self.render_collected(cx))))
             .when(self.create,|element|element
+                .child(button("github-create-back","Pull requests","arrow-left",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|{this.save_draft(window,cx);this.create=false;this.confirm=None;this.review.show_list=true;this.focus_visible_section(window,cx);cx.notify();})))
                 .child(label("github-create-fields","New pull request · published head → destination base").font_weight(FontWeight::SEMIBOLD))
                 .child(Input::new(&self.title).aria_label("Pull request title").disabled(pending))
                 .child(div().flex().gap_2().child(div().flex_1().child(Input::new(&self.head).aria_label("Published head branch").disabled(pending))).child(div().flex_1().child(Input::new(&self.base).aria_label("Destination base branch").disabled(pending))))
@@ -1022,20 +1093,21 @@ impl Render for Panel {
                 .when(!self.create,|element|element.child(div().flex().flex_wrap().gap_1()
                     .children([ReviewEvent::Comment,ReviewEvent::Approve,ReviewEvent::RequestChanges].map(|event|button(event.label(),event.label(),"",!self.discussion&&self.event==event).toggled(!self.discussion&&self.event==event).disabled(pending).on_click(cx.listener(move|this,_,window,cx|{this.discussion=false;this.event=event;this.confirm=None;this.save_draft(window,cx);}))))
                     .child(button("github-discussion","Discussion only","",self.discussion).toggled(self.discussion).disabled(pending||!self.review.comments.is_empty()||self.review.composing.is_some()).on_click(cx.listener(|this,_,_,cx|{this.discussion=true;this.confirm=None;cx.notify();})))))
-                .child(div().debug_selector(||"github-review-summary".into()).on_children_prepainted(self.reveal_on_focus(self.body.read(cx).focus_handle(cx))).child(Textarea::new(&self.body).aria_label(if self.create{"Pull request description"}else{"Review summary"}).disabled(pending)))
+                .child(div().debug_selector(||"github-review-summary".into()).on_children_prepainted(self.reveal_on_focus(self.body.read(cx).focus_handle(cx))).child(Textarea::new(&self.body).h(appearance::ui_size(130.)).aria_label(if self.create{"Pull request description"}else{"Review summary"}).disabled(pending)))
                 .child(div().flex().items_center().gap_2().child(label("github-draft-status",self.save_status.clone()).role(Role::Status).a11y_synthetic_children(native_accessibility::polite).text_color(rgb(p.muted)))
                     .child(div().flex_1()).child(button("github-review-submit","Review submission…","",true).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.review_submission(window,cx))))))
-            .when_some(self.confirm.as_ref(),|element,confirmation|element.child(div().p_3().border_1().border_color(rgb(p.accent)).rounded(px(7.)).flex().flex_col().gap_2()
+            .child(self.render_reply_composer(cx))
+            .when_some(self.confirm.as_ref(),|element,confirmation|element.child(div().debug_selector(||"github-confirmation".into()).on_children_prepainted(self.reveal_on_focus(self.conversations.confirm_focus.clone())).track_focus(&self.conversations.confirm_focus).tab_stop(true).p_3().border_1().border_color(rgb(p.accent)).rounded(px(7.)).flex().flex_col().gap_2()
                 .child(label("github-confirm-destination",format!("{}\nAccount · {}",confirmation.action.destination(),confirmation.account)).font_weight(FontWeight::SEMIBOLD))
-                .child(div().id("github-confirm-text-scroll").max_h(px(180.)).overflow_y_scroll().child(label("github-confirm-text",match &confirmation.action{Action::Create(pull)=>format!("{}\n\n{}",pull.title,pull.body),Action::Comment{body,..}=>body.clone(),Action::Review(review)=>format!("{} review · {} inline comments\n\n{}{}",review.event.label(),review.comments.len(),review.body,review.comments.iter().map(|comment|format!("\n\n{}\n{}",github::review::position_label(comment),comment.body)).collect::<String>())})))
+                .child(div().id("github-confirm-text-scroll").max_h(px(180.)).overflow_y_scroll().child(label("github-confirm-text",match &confirmation.action{Action::Create(pull)=>format!("{}\n\n{}",pull.title,pull.body),Action::Comment{body,..}|Action::Reply{body,..}=>body.clone(),Action::SetThreadResolved{resolved,..}=>if *resolved{"Resolve this conversation"}else{"Reopen this conversation"}.into(),Action::Review(review)=>format!("{} review · {} inline comments\n\n{}{}",review.event.label(),review.comments.len(),review.body,review.comments.iter().map(|comment|format!("\n\n{}\n{}",github::review::position_label(comment),comment.body)).collect::<String>())})))
                 .child(label("github-confirm-guidance","Send performs one outbound action with these exact captured targets and comments. Inspect the destination before repeating an uncertain attempt.").text_color(rgb(p.muted)))
                 .child(div().flex().gap_2().child(button("github-confirm-send",if self.review.fixture{"Send to offline fixture"}else{"Send to GitHub"},"",true).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.submit(window,cx))))
-                    .child(button("github-edit-submission","Keep editing","",false).disabled(pending).on_click(cx.listener(|this,_,_,cx|{this.confirm=None;cx.notify();}))))))
+                    .child(button("github-edit-submission","Keep editing","",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|{this.confirm=None;this.focus_visible_section(window,cx);cx.notify();}))))))
             .child(div().flex().items_center().gap_2().child(button("github-recovery-toggle",format!("Recover drafts · {}",self.saved.len()),"",self.review.recovery_open).toggled(self.review.recovery_open).on_click(cx.listener(|this,_,_,cx|{this.review.recovery_open= !this.review.recovery_open;cx.notify();})))
                 .child(label("github-passive-policy","Drafts stay on this Mac · outbound actions are explicit").text_color(rgb(p.muted))))
             .when(self.review.recovery_open,|element|element
                 .child(label("github-saved-heading","Captured drafts · Copy includes all inline text and original positions; older heads are never remapped").text_color(rgb(p.muted)))
-                .child(div().id("github-saved-drafts").max_h(px(160.)).overflow_y_scroll().flex().flex_col().gap_2().children(self.saved.iter().take(128).enumerate().map(|(index,draft)|{let draft=draft.clone();let discard=draft.clone();div().flex().flex_col().gap_1().child(label(("github-draft-identity",index),draft.key()).text_color(rgb(p.muted)))
+                .child(div().id("github-saved-drafts").max_h(px(160.)).overflow_y_scroll().flex().flex_col().gap_2().children(self.saved.iter().filter(|draft| !matches!(draft,Draft::Reply(reply) if reply.body.is_empty())).take(128).enumerate().map(|(index,draft)|{let draft=draft.clone();let discard=draft.clone();div().flex().flex_col().gap_1().child(label(("github-draft-identity",index),match &draft {Draft::Reply(reply)=>format!("Reply · {} #{} · {} · {}",reply.target.pull.repository.label(),reply.target.pull.number,reply.target.path,reply.target.account),_=>draft.key()}).text_color(rgb(p.muted)))
                     .child(div().flex().gap_2().child(button(("github-copy-draft",index),"Copy complete draft","",false).on_click(move|_,_,cx|cx.write_to_clipboard(ClipboardItem::new_string(draft.recovery_text()))))
                         .child(button(("github-discard-draft",index),"Discard saved draft","",false).disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.discard_draft(discard.clone(),window,cx)))))})))
                 .when(!self.attempts.is_empty(),|element|element.child(label("github-attempt-heading","Previous outbound attempts · inspect the destination before repeating"))

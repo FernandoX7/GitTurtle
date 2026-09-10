@@ -1,6 +1,8 @@
 //! Explicit GitHub collaboration. Call from the serialized operation executor;
 //! opening the panel and ordinary local refresh never dispatch network traffic.
+pub(crate) mod conversations;
 pub(crate) mod drafts;
+pub(crate) mod native_fixture;
 pub(crate) mod review;
 pub(crate) mod transport;
 
@@ -192,8 +194,19 @@ pub(crate) struct ReviewDraft {
 #[derive(Clone, Debug)]
 pub(crate) enum Action {
     Create(NewPull),
-    Comment { pull: CapturedPull, body: String },
+    Comment {
+        pull: CapturedPull,
+        body: String,
+    },
     Review(ReviewDraft),
+    Reply {
+        target: conversations::CapturedThread,
+        body: String,
+    },
+    SetThreadResolved {
+        target: conversations::CapturedThread,
+        resolved: bool,
+    },
 }
 impl Action {
     pub fn destination(&self) -> String {
@@ -214,6 +227,9 @@ impl Action {
                 pull.head.sha,
                 pull.base.sha
             ),
+            Self::Reply { target, .. } | Self::SetThreadResolved { target, .. } => {
+                target.destination()
+            }
         }
     }
 }
@@ -516,6 +532,13 @@ impl<T: Transport> Client<T> {
             !control.is_cancelled(),
             "GitHub action cancelled before submission"
         );
+        match &action {
+            Action::Reply { target, body } => return self.reply_to_thread(target, body, control),
+            Action::SetThreadResolved { target, resolved } => {
+                return self.set_thread_resolved(target, *resolved, control);
+            }
+            _ => {}
+        }
         let (endpoint, body) = match &action {
             Action::Create(p) => {
                 ensure!(
@@ -592,6 +615,7 @@ impl<T: Transport> Client<T> {
                     json!({ "commit_id": draft.pull.head.sha, "body": draft.body, "event": draft.event.api(), "comments": draft.comments }),
                 )
             }
+            Action::Reply { .. } | Action::SetThreadResolved { .. } => unreachable!(),
         };
         ensure!(
             !control.is_cancelled(),
