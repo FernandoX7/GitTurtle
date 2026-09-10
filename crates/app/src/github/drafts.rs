@@ -24,10 +24,35 @@ impl Draft {
             ),
         }
     }
+    #[cfg(test)]
     pub fn text(&self) -> &str {
         match self {
             Self::Pull(p) => &p.body,
             Self::Review(p) => &p.body,
+        }
+    }
+    pub fn recovery_text(&self) -> String {
+        match self {
+            Self::Pull(p) => format!("{}\n\n{}", p.title, p.body),
+            Self::Review(p) => {
+                let mut text = format!(
+                    "{} #{}\nHead {}\nBase {}\n{}\n\n{}",
+                    p.pull.repository.label(),
+                    p.pull.number,
+                    p.pull.head.sha,
+                    p.pull.base.sha,
+                    p.event.label(),
+                    p.body
+                );
+                for comment in p.comments.iter().chain(p.composing.iter()) {
+                    text.push_str(&format!(
+                        "\n\n{}\n{}",
+                        super::review::position_label(comment),
+                        comment.body
+                    ));
+                }
+                text
+            }
         }
     }
 }
@@ -169,6 +194,7 @@ mod tests {
             body: "Preserve this".into(),
             event: ReviewEvent::Comment,
             comments: vec![],
+            composing: None,
         };
         let mut moved = old.clone();
         moved.pull.head.sha = "3".repeat(40);

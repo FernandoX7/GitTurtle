@@ -14,6 +14,9 @@ use gpui_kit::{
     prelude::FluentBuilder,
 };
 use std::time::Duration;
+mod review;
+use crate::github::review::UiTransport;
+use review::Section;
 
 fn label(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Stateful<Div> {
     let text = text.into();
@@ -40,7 +43,7 @@ impl GitTurtle {
             let cancel = form.clone();
             dialog
                 .title("GitHub pull requests")
-                .width(px(860.))
+                .width(px(1100.))
                 .child(form.clone())
                 .footer(DialogFooter::new().child(
                     button("github-close", "Back to repository", "", false).on_click(
@@ -119,6 +122,7 @@ fn capture_draft(
             body: fields.body,
             event,
             comments: vec![],
+            composing: None,
         }))
     }
 }
@@ -214,6 +218,7 @@ fn finished_save_status(
     }
 }
 struct Panel {
+    review: review::ReviewState,
     owner: WeakEntity<GitTurtle>,
     repo: GitRepository,
     destination: Entity<InputState>,
@@ -262,6 +267,7 @@ impl Panel {
         cx: &mut Context<Self>,
     ) -> Self {
         let mut this=Self {
+            review:review::ReviewState::new(window,cx),
             owner,repo,destination:cx.new(|cx|InputState::new(window,cx).placeholder("owner/repository")),
             head:cx.new(|cx|InputState::new(window,cx).default_value(branch).placeholder("Published head branch (owner:branch for a fork)")),
             base:cx.new(|cx|InputState::new(window,cx).default_value("main")),title:cx.new(|cx|InputState::new(window,cx).placeholder("Pull request title")),
@@ -270,6 +276,23 @@ impl Panel {
             account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),error:None,pending:false,writing:false,closed:false,
             confirm:None,control:None,task:None,saved:vec![],save_status:String::new(),draft_issue:None,saver:Default::default(),deferred_draft:Default::default(),draft_timer:None,save_response_generation:0,save_completion:None,subscriptions:vec![],templates:vec![],attempts:vec![],local_control:None,
         };
+        if this.review.fixture {
+            this.destination.update(cx, |input, cx| {
+                input.set_value("gitturtle-fixture/native-review", window, cx)
+            });
+            this.account = Some("offline-reviewer".into());
+            this.notice=Some("Offline review fixture · fixed sample data; account connection and network transport are unavailable in this mode.".into());
+        }
+        this.subscriptions.push(cx.subscribe_in(
+            &this.review.input,
+            window,
+            |this, _, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.confirm = None;
+                    this.defer_draft_save(window, cx);
+                }
+            },
+        ));
         for input in [this.head.clone(), this.base.clone(), this.title.clone()] {
             this.subscriptions.push(cx.subscribe_in(
                 &input,
@@ -297,6 +320,16 @@ impl Panel {
             window,
             |this, _, event: &InputEvent, window, cx| {
                 if matches!(event, InputEvent::Change) {
+                    // Destination edits arrive after the field changed. Flush the
+                    // old captured review snapshot before clearing its identity.
+                    if let Some(draft @ Draft::Review(_)) = this.deferred_draft.draft.take() {
+                        this.draft_timer = None;
+                        this.persist_draft(draft, window, cx);
+                    }
+                    this.review.reset_content();
+                    this.review.comments.clear();
+                    this.review.composing = None;
+                    this.review.show_list = true;
                     this.rows.clear();
                     this.pull = None;
                     this.status = None;
@@ -390,7 +423,7 @@ impl Panel {
         Repository::parse(&self.destination.read(cx).value())
     }
     fn current_draft(&self, cx: &App) -> Result<Draft, DraftIssue> {
-        capture_draft(
+        let mut draft = capture_draft(
             &self.destination.read(cx).value(),
             self.create,
             self.draft,
@@ -402,8 +435,17 @@ impl Panel {
                 head: self.head.read(cx).value().to_string(),
                 base: self.base.read(cx).value().to_string(),
             },
-        )
+        )?;
+        if let Draft::Review(review) = &mut draft {
+            review.comments = self.review.comments.clone();
+            review.composing = self.review.composing.clone().map(|mut comment| {
+                comment.body = self.review.input.read(cx).value().to_string();
+                comment
+            });
+        }
+        Ok(draft)
     }
+
     fn draft_to_save(&mut self, cx: &App) -> Option<Draft> {
         let draft = match self.current_draft(cx) {
             Ok(draft) => draft,
@@ -554,6 +596,11 @@ impl Panel {
         cx.notify();
     }
     fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.review.fixture {
+            self.notice=Some("Offline fixture account: offline-reviewer. No credential or network access is available.".into());
+            cx.notify();
+            return;
+        }
         self.run(
             false,
             |control| GhTransport::connect_existing(&control),
@@ -579,7 +626,9 @@ impl Panel {
                 return;
             }
         };
-        self.run(false,move|control|{let transport=GhTransport::stored()?;let login=transport.login().to_owned();Ok((Client(transport).list(&repository,page,&control)?,login))},|result,this,_,_|match result {Ok((page,login))=>{this.rows=page.items;this.page=page.page;this.has_next=page.has_next;this.account=Some(login);this.notice=Some("PR list refreshed. Selecting a PR explicitly loads its current review and check status.".into());},Err(error)=>this.error=Some(format!("{error:#}"))},window,cx);
+        let fixture = self.review.fixture;
+        let moved = self.review.fixture_moved;
+        self.run(false,move|control|{let transport=UiTransport::open(fixture,moved)?;let login=transport.login().to_owned();Ok((Client(transport).list(&repository,page,&control)?,login))},|result,this,_,_|match result {Ok((page,login))=>{this.rows=page.items;this.page=page.page;this.has_next=page.has_next;this.account=Some(login);this.notice=Some("PR list refreshed. Selecting a PR explicitly loads its current review and check status.".into());},Err(error)=>this.error=Some(format!("{error:#}"))},window,cx);
     }
     fn inspect(&mut self, pull: PullRequest, window: &mut Window, cx: &mut Context<Self>) {
         self.save_draft(window, cx);
@@ -590,17 +639,38 @@ impl Panel {
                 return;
             }
         };
-        self.run(false,move|control|{let mut client=Client(GhTransport::stored()?);let pull=client.pull(&repository,pull.number,&control)?;let status=client.status(&pull.capture(repository),&control);Ok((pull,status))},|result,this,window,cx|match result {Ok((pull,status))=>{
-            this.create=false;this.confirm=None;this.description=pull.body.as_ref().map(|body|text::editor(body,"markdown",None,window,cx));
-            match status {Ok(status)=>this.status=Some(status),Err(error)=>{this.status=None;this.error=Some(format!("PR loaded; some review/check status is unavailable: {error:#}"));}}
-            let captured=pull.capture(this.destination(cx).expect("captured repository"));this.pull=Some(pull);
-            let draft=this.saved.iter().find_map(|draft|match draft {Draft::Review(review) if review.pull==captured=>Some(review.clone()),_=>None});
-            this.body.update(cx,|input,cx|input.set_value(draft.as_ref().map(|d|d.body.clone()).unwrap_or_default(),window,cx));
-            if let Some(draft)=draft {this.event=draft.event;}
-            let older=this.saved.iter().any(|draft|matches!(draft,Draft::Review(review) if review.pull.repository==captured.repository && review.pull.number==captured.number && review.pull!=captured));
-            this.notice=Some(if older {"An older-head review draft is retained below. Copy it for recovery; review its text and positions against this new head before submission."}else{"Head and base are captured. Reviews recheck both before submission; changes open only locally available objects."}.into());
-        },Err(error)=>this.error=Some(format!("{error:#}"))},window,cx);
+        let fixture = self.review.fixture;
+        let moved = self.review.fixture_moved;
+        self.run(false,move|control|{
+            let mut client=Client(UiTransport::open(fixture,moved)?);
+            let pull=client.pull(&repository,pull.number,&control)?;
+            let captured=pull.capture(repository);
+            let status=client.status(&captured,&control);
+            let files=client.files(&captured,1,&control);
+            let comments=client.comments(&captured,1,&control);
+            Ok((pull,captured,status,files,comments))
+        },|result,this,window,cx|match result {
+            Ok((pull,captured,status,files,comments))=>{
+                this.create=false;this.confirm=None;this.review.reset_content();this.review.show_list=false;this.review.section=Section::Overview;
+                this.description=pull.body.as_ref().map(|body|text::editor(body,"markdown",None,window,cx));
+                let mut errors=vec![];
+                match status {Ok(status)=>this.status=Some(status),Err(error)=>{this.status=None;errors.push(format!("Review/check status: {error:#}"));}}
+                match files {Ok(page)=>{this.review.files=page.items;this.review.file_page=page.page;this.review.files_next=page.has_next;},Err(error)=>errors.push(format!("Changed files: {error:#}"))}
+                match comments {Ok(page)=>{this.review.discussions=page.items;this.review.thread_page=page.page;this.review.threads_next=page.has_next;},Err(error)=>errors.push(format!("Discussions: {error:#}"))}
+                this.pull=Some(pull);
+                let draft=this.saved.iter().find_map(|draft|match draft {Draft::Review(review) if review.pull==captured=>Some(review.clone()),_=>None});
+                this.body.update(cx,|input,cx|input.set_value(draft.as_ref().map(|d|d.body.clone()).unwrap_or_default(),window,cx));
+                this.event=draft.as_ref().map(|d|d.event).unwrap_or(ReviewEvent::Comment);
+                let had_saved=draft.is_some();
+                this.restore_review(draft,window,cx);
+                let older=this.saved.iter().any(|draft|matches!(draft,Draft::Review(review) if review.pull.repository==captured.repository && review.pull.number==captured.number && review.pull!=captured));
+                this.notice=older.then(||"An older-head review is retained in Recover drafts. Copy its exact text and original positions; they are never remapped to this head.".into());
+                this.error=(!errors.is_empty()).then(||errors.join("\n"));
+                this.save_status=if had_saved {"Draft restored locally"}else{"No local draft yet"}.into();
+            },Err(error)=>this.error=Some(format!("{error:#}"))
+        },window,cx);
     }
+
     fn create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.create {
             self.save_draft(window, cx);
@@ -608,6 +678,9 @@ impl Panel {
         }
         self.save_draft(window, cx);
         self.create = true;
+        self.review.reset_content();
+        self.review.comments.clear();
+        self.review.composing = None;
         self.pull = None;
         self.status = None;
         self.description = None;
@@ -635,11 +708,33 @@ impl Panel {
             }
         };
         self.draft_issue = None;
+        if let Draft::Review(review) = &draft {
+            if review.composing.is_some() {
+                self.error = Some(
+                    "Add or discard the unfinished inline comment before reviewing submission."
+                        .into(),
+                );
+                cx.notify();
+                return;
+            }
+            if let Err(error) = github::validate_text(
+                &review.body,
+                self.discussion
+                    || review.event == ReviewEvent::RequestChanges
+                    || (review.event == ReviewEvent::Comment && review.comments.is_empty()),
+            ) {
+                self.error = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+        }
+        let fixture = self.review.fixture;
+        let moved = self.review.fixture_moved;
         if let Draft::Pull(pull) = draft {
             self.run(
                 false,
                 move |control| {
-                    let transport = GhTransport::stored()?;
+                    let transport = UiTransport::open(fixture, moved)?;
                     let account = transport.login().to_owned();
                     Ok((Client(transport).prepare_create(pull, &control)?, account))
                 },
@@ -680,7 +775,9 @@ impl Panel {
             return;
         };
         self.save_draft(window, cx);
-        self.run(true,move|control|{let transport=GhTransport::stored()?;anyhow::ensure!(transport.login()==confirmation.account,"The connected GitHub account changed. Review the destination again before submitting.");let destination=format!("{} · account {}",confirmation.action.destination(),confirmation.account);drafts::record_attempt(destination.clone(),"Submission started; if no final outcome appears, inspect GitHub before sending again.".into())?;let result=Client(transport).execute(confirmation.action,&control);let outcome=match &result{Ok(notice)=>notice.clone(),Err(error)=>format!("{error:#}")};if let Err(error)=drafts::record_attempt(destination,outcome.chars().take(4000).collect()){return Err(anyhow::anyhow!("The GitHub action finished but saving its outcome failed: {error}. Check GitHub before resubmitting."));}result},|result,this,_,_|match result {Ok(notice)=>{this.notice=Some(format!("{notice}. The local draft remains available; submitting it again creates another outbound action."));},Err(error)=>this.error=Some(format!("{error:#}"))},window,cx);
+        let fixture = self.review.fixture;
+        let moved = self.review.fixture_moved;
+        self.run(true,move|control|{let transport=UiTransport::open(fixture,moved)?;anyhow::ensure!(transport.login()==confirmation.account,"The connected GitHub account changed. Review the destination again before submitting.");let destination=format!("{} · account {}",confirmation.action.destination(),confirmation.account);drafts::record_attempt(destination.clone(),"Submission started; if no final outcome appears, inspect GitHub before sending again.".into())?;let result=Client(transport).execute(confirmation.action,&control);let outcome=match &result{Ok(notice)=>notice.clone(),Err(error)=>format!("{error:#}")};if let Err(error)=drafts::record_attempt(destination,outcome.chars().take(4000).collect()){return Err(anyhow::anyhow!("The GitHub action finished but saving its outcome failed: {error}. Check GitHub before resubmitting."));}result},|result,this,_,_|match result {Ok(notice)=>{this.notice=Some(format!("{notice}. The local draft remains available; submitting it again creates another outbound action."));},Err(error)=>this.error=Some(format!("{error:#}"))},window,cx);
     }
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.pending && self.writing {
@@ -765,47 +862,86 @@ impl Render for Panel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         let pending = self.pending;
-        div().id("github-panel").max_h(px(620.)).overflow_y_scroll().flex().flex_col().gap_3()
-            .child(label("github-worktree",format!("Local worktree: {}",self.repo.path().display())).text_color(rgb(p.muted)))
-            .child(div().flex().gap_2().child(div().flex_1().child(Input::new(&self.destination).aria_label("GitHub destination owner and repository").disabled(pending))).child(button("github-connect","Connect GitHub CLI account","",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.connect(window,cx)))))
-            .child(div().flex().flex_wrap().gap_2()
-                .child(button("github-sign-in-help","Copy sign-in command","",false).on_click(|_,_,cx|cx.write_to_clipboard(ClipboardItem::new_string("gh auth login --hostname github.com --web --skip-ssh-key".into()))))
-                .child(button("github-refresh","Refresh PRs · network","",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.refresh(1,window,cx))))
-                .child(button("github-create","New pull request","plus",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.create(window,cx))))
-                .child(button("github-disconnect","Disconnect GitTurtle","",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.run(false,|_|SecureStore.remove(),|result,this,_,_|match result {Ok(())=>{this.account=None;this.notice=Some("GitTurtle authorization removed from Keychain. GitHub CLI and ordinary Git authentication keep their own settings.".into());},Err(error)=>this.error=Some(error.to_string())},window,cx)))))
-            .when_some(self.account.as_ref(),|element,account|element.child(label("github-account",format!("Account: {account} · github.com"))))
+        let show_editor =
+            self.create || (self.pull.is_some() && self.review.section == Section::Review);
+        div().id("github-panel").min_w_0().max_h(px(660.)).overflow_y_scroll().flex().flex_col().gap_2()
+            .when(self.review.fixture,|element|element.child(div().flex().flex_wrap().items_center().gap_2().p_2().rounded(px(6.)).bg(rgb(p.subtle))
+                .child(label("github-fixture-mode","OFFLINE FIXTURE · native review · no network or credentials").text_color(rgb(p.muted)))
+                .child(button("github-fixture-move",if self.review.fixture_moved{"Fixture head moved"}else{"Move fixture head"},"",false).disabled(pending||self.review.fixture_moved).on_click(cx.listener(|this,_,_,cx|{this.review.fixture_moved=true;this.confirm=None;this.notice=Some("Fixture head moved remotely. This view and its draft retain the original commit. Submit to verify stale-head refusal, or Refresh PRs and reopen to inspect the new head.".into());cx.notify();})))))
+            .child(div().flex().flex_wrap().items_center().gap_2()
+                .child(div().w(appearance::ui_size(280.)).min_w(px(190.)).child(Input::new(&self.destination).aria_label("GitHub destination owner and repository").disabled(pending)))
+                .child(button("github-refresh",if self.review.fixture{"Refresh fixture PRs"}else{"Refresh PRs"},"refresh-cw",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.refresh(1,window,cx))))
+                .child(button("github-create","New pull request","plus",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.create(window,cx))))
+                .child(div().flex_1()).child(button("github-account-options",self.account.as_ref().map(|account|format!("Account · {account}")).unwrap_or_else(||"Connect account".into()),"",self.review.connection_open).toggled(self.review.connection_open).disabled(pending).on_click(cx.listener(|this,_,_,cx|{this.review.connection_open=!this.review.connection_open;cx.notify();}))))
+            .when(self.review.connection_open,|element|element.child(div().p_3().border_1().border_color(rgb(p.border)).rounded(px(6.)).flex().flex_col().gap_2()
+                .child(label("github-worktree",format!("Local worktree: {}",self.repo.path().display())).text_color(rgb(p.muted)))
+                .child(label("github-connection-help","Connect uses your current GitHub CLI account and saves GitTurtle authorization in secure storage. Refresh and PR selection are explicit network reads.").text_color(rgb(p.muted)))
+                .child(div().flex().flex_wrap().gap_2()
+                    .child(button("github-connect","Connect GitHub CLI account","",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.connect(window,cx))))
+                    .child(button("github-sign-in-help","Copy sign-in command","",false).on_click(|_,_,cx|cx.write_to_clipboard(ClipboardItem::new_string("gh auth login --hostname github.com --web --skip-ssh-key".into()))))
+                    .child(button("github-disconnect","Disconnect GitTurtle","",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.run(false,|_|SecureStore.remove(),|result,this,_,_|match result{Ok(())=>{this.account=None;this.notice=Some("GitTurtle authorization removed. GitHub CLI and ordinary Git authentication retain their settings.".into());},Err(error)=>this.error=Some(error.to_string())},window,cx)))))))
             .when_some(self.notice.as_ref(),|element,notice|element.child(label("github-notice",notice.clone()).role(Role::Status).a11y_synthetic_children(native_accessibility::polite).text_color(rgb(p.muted))))
             .when_some(self.error.as_ref(),|element,error|element.child(label("github-error",error.clone()).role(Role::Alert).a11y_synthetic_children(native_accessibility::assertive).text_color(rgb(p.warning))))
             .when_some(self.draft_issue,|element,issue|element.child(label("github-draft-validation",issue.message()).role(Role::Alert).a11y_synthetic_children(native_accessibility::assertive).text_color(rgb(p.warning))))
-            .when(pending,|element|element.child(div().flex().gap_2().child(label("github-busy",if self.writing {"Sending the reviewed GitHub action…"}else{"Loading the explicit request…"}).role(Role::Status).a11y_synthetic_children(|builder| {native_accessibility::polite(builder); builder.parent_node().set_busy();})).child(button("github-cancel","Cancel","",false).on_click(cx.listener(|this,_,_,cx|{if let Some(control)=&this.control{control.cancel();}
-                    if let Some(control)=&this.local_control{control.cancel();}this.notice=Some("Cancellation requested. A submitted action may already have reached GitHub; it will not be replayed.".into());cx.notify();})))))
-            .when(!self.create,|element|element.child(div().id("github-pr-list").max_h(px(175.)).overflow_y_scroll().flex().flex_col().gap_1().children(self.rows.iter().map(|pull|{
-                let pull=pull.clone();let selected=self.pull.as_ref().is_some_and(|p|p.number==pull.number);let text=format!("#{} · {} · {} · {} → {}",pull.number,if pull.draft {"Draft"}else{"Open"},pull.title,pull.head.branch,pull.base.branch);
-                Button::new(("github-pr",pull.number)).ghost().w_full().label(text.clone()).accessibility_label(text).selected(selected).disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.inspect(pull.clone(),window,cx)))
-            })).when(self.rows.is_empty(),|element|element.child(label("github-list-empty","No pull requests loaded. Choose Refresh PRs to contact this repository.")))))
-            .child(div().flex().gap_2().child(button("github-previous","Previous PR page","",false).disabled(pending||self.page<=1).on_click(cx.listener(|this,_,window,cx|this.refresh(this.page-1,window,cx)))).child(label("github-page",format!("Page {} · up to {} PRs",self.page,github::PAGE_SIZE))).child(button("github-next","Next PR page","",false).disabled(pending||!self.has_next).on_click(cx.listener(|this,_,window,cx|this.refresh(this.page+1,window,cx)))))
+            .when(pending,|element|element.child(div().flex().items_center().gap_2()
+                .child(label("github-busy",if self.writing{"Sending the captured review…"}else{"Loading your requested PR context…"}).role(Role::Status).a11y_synthetic_children(|builder|{native_accessibility::polite(builder);builder.parent_node().set_busy();}))
+                .child(button("github-cancel","Cancel","",false).on_click(cx.listener(|this,_,_,cx|{if let Some(control)=&this.control{control.cancel();}if let Some(control)=&this.local_control{control.cancel();}this.notice=Some(if this.writing{"Cancellation requested. Check GitHub before resubmitting; an accepted action is never replayed."}else{"Cancellation requested. Your review draft is retained."}.into());cx.notify();})))))
+            .when(!self.create && (self.review.show_list||self.pull.is_none()),|element|element
+                .child(div().id("github-pr-list").max_h(px(200.)).overflow_y_scroll().flex().flex_col().gap_1()
+                    .children(self.rows.iter().map(|pull|{let pull=pull.clone();let selected=self.pull.as_ref().is_some_and(|p|p.number==pull.number);let number=pull.number;let name=format!("#{} · {}",pull.number,pull.title);let context=format!("{} · {} → {} · {}",if pull.draft{"Draft"}else{"Open"},pull.head.branch,pull.base.branch,pull.user.login);
+                        div().id(("github-pr-card",pull.number)).p_3().rounded(px(7.)).border_1().border_color(rgb(if selected{p.accent}else{p.border})).bg(rgb(p.panel)).flex().flex_col().gap_1()
+                            .child(button(("github-pr",pull.number),name,"",selected).w_full().disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.inspect(pull.clone(),window,cx))))
+                            .child(label(("github-pr-context",number),context).text_color(rgb(p.muted)))
+                    }))
+                    .when(self.rows.is_empty(),|element|element.child(div().p_5().flex().flex_col().gap_2().child(label("github-list-empty","Your pull requests, ready to review").font_weight(FontWeight::SEMIBOLD)).child(label("github-list-empty-help","Choose a repository and Refresh PRs to load open requests. Opening this panel reads local settings and drafts only.").text_color(rgb(p.muted))))))
+                .child(div().flex().items_center().gap_2().child(button("github-previous","Previous PR page","",false).disabled(pending||self.page<=1).on_click(cx.listener(|this,_,window,cx|this.refresh(this.page-1,window,cx))))
+                    .child(label("github-page",format!("Page {} · up to {} PRs",self.page,github::PAGE_SIZE)).text_color(rgb(p.muted)))
+                    .child(button("github-next","Next PR page","",false).disabled(pending||!self.has_next).on_click(cx.listener(|this,_,window,cx|this.refresh(this.page+1,window,cx))))))
             .when_some(self.pull.as_ref(),|element,pull|element
-                .child(label("github-captured-identities",format!("#{} · {}\nBefore {} ({})\nAfter {} ({})",pull.number,pull.title,pull.base.branch,pull.base.sha,pull.head.branch,pull.head.sha)))
-                .child(button("github-open-changes","Open changes in native Compare","",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.changes(window,cx)))))
-            .when_some(self.description.as_ref(),|element,description|element.child(crate::editor_find::Editor::new(description).readonly(true).h(px(110.)).aria_label("Pull request description, exact Markdown source")))
-            .when_some(self.status.as_ref(),|element,status|element.child(label("github-review-check-status",format!("Reviews: {}\nChecks: {}{}",if status.reviews.is_empty(){"None reported".into()}else{status.reviews.join(" · ")},if status.checks.is_empty(){"None reported".into()}else{status.checks.join(" · ")},if status.incomplete {"\nAdditional status entries are outside this 100-entry endpoint preview."}else{""}))))
+                .child(div().flex().flex_col().gap_2()
+                    .child(div().flex().items_center().gap_2().child(button("github-back-list",if self.review.show_list{"Hide PR list"}else{"Pull requests"},"arrow-left",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|{this.save_draft(window,cx);this.review.show_list=!this.review.show_list;cx.notify();})))
+                        .child(label("github-pull-title",format!("#{} · {}",pull.number,pull.title)).font_weight(FontWeight::SEMIBOLD).text_size(appearance::ui_text(15.))))
+                    .child(label("github-branch-context",format!("{} → {} · {}",pull.head.branch,pull.base.branch,if pull.draft{"Draft PR"}else{"Open PR"})).text_color(rgb(p.muted))))
+                .child(self.render_tabs(cx))
+                .when(self.review.section==Section::Overview,|element|element
+                    .child(label("github-captured-identities",format!("Before · {}\nAfter  · {}",pull.base.sha,pull.head.sha)).text_color(rgb(p.muted)))
+                    .when_some(self.description.as_ref(),|element,description|element.child(crate::editor_find::Editor::new(description).readonly(true).h(px(120.)).aria_label("Pull request description, exact Markdown source")))
+                    .when_some(self.status.as_ref(),|element,status|element.child(div().p_3().bg(rgb(p.subtle)).rounded(px(6.)).flex().flex_col().gap_1()
+                        .child(label("github-review-status",format!("Reviews · {}",if status.reviews.is_empty(){"None reported".into()}else{status.reviews.join(" · ")})))
+                        .child(label("github-check-status",format!("Checks · {}{}",if status.checks.is_empty(){"None reported".into()}else{status.checks.join(" · ")},if status.incomplete{" · Additional status entries are outside this preview"}else{""})))))
+                    .child(self.render_threads(None,cx))
+                    .child(button("github-open-changes","Open captured local comparison","",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.changes(window,cx)))))
+                .when(self.review.section==Section::Files,|element|element.child(self.render_files(cx)))
+                .when(self.review.section==Section::Review,|element|element.child(self.render_collected(cx))))
             .when(self.create,|element|element
-                .child(label("github-create-fields","Create a pull request · published head → destination base"))
+                .child(label("github-create-fields","New pull request · published head → destination base").font_weight(FontWeight::SEMIBOLD))
                 .child(Input::new(&self.title).aria_label("Pull request title").disabled(pending))
                 .child(div().flex().gap_2().child(div().flex_1().child(Input::new(&self.head).aria_label("Published head branch").disabled(pending))).child(div().flex_1().child(Input::new(&self.base).aria_label("Destination base branch").disabled(pending))))
                 .child(div().flex().gap_2().children([(true,"Draft"),(false,"Ready")].map(|(draft,name)|button(name,name,"",self.draft==draft).toggled(self.draft==draft).disabled(pending).on_click(cx.listener(move|this,_,window,cx|{this.draft=draft;this.confirm=None;this.save_draft(window,cx);}))))
-                .child(button("github-load-templates","Load local base templates","",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.load_templates(window,cx)))))
+                    .child(button("github-load-templates","Load local base templates","",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.load_templates(window,cx)))))
                 .children(self.templates.iter().enumerate().map(|(index,template)|{let template=template.clone();button(("github-template",index),format!("Append {} · {}",template.path,&template.revision[..8]),"",false).disabled(pending).on_click(cx.listener(move|this,_,window,cx|{let body=format!("{}{}{}",this.body.read(cx).value(),if this.body.read(cx).value().is_empty(){""}else{"\n\n"},template.body);this.body.update(cx,|input,cx|input.set_value(body,window,cx));this.save_draft(window,cx);} ))})))
-            .when(self.create||self.pull.is_some(),|element|element
-                .when(!self.create,|element|element.child(div().flex().flex_wrap().gap_2().child(button("github-discussion","Discussion comment","",self.discussion).toggled(self.discussion).disabled(pending).on_click(cx.listener(|this,_,_,cx|{this.discussion=true;this.confirm=None;cx.notify();}))).children([ReviewEvent::Comment,ReviewEvent::Approve,ReviewEvent::RequestChanges].map(|event|button(event.label(),format!("Review: {}",event.label()),"",!self.discussion&&self.event==event).toggled(!self.discussion&&self.event==event).disabled(pending).on_click(cx.listener(move|this,_,window,cx|{this.discussion=false;this.event=event;this.confirm=None;this.save_draft(window,cx);}))))))
-                .child(Textarea::new(&self.body).aria_label(if self.create {"Pull request description"}else{"Comment or review draft"}).disabled(pending))
-                .child(label("github-draft-status",self.save_status.clone()).role(Role::Status).a11y_synthetic_children(native_accessibility::polite).text_color(rgb(p.muted)))
-                .child(button("github-review-submit","Review outbound action…","",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.review_submission(window,cx)))))
-            .when_some(self.confirm.as_ref(),|element,action|element.child(div().p_3().border_1().border_color(rgb(p.warning)).flex().flex_col().gap_2()
-                .child(label("github-confirm-destination",format!("Send this action to {} · account {}\nThe captured text will be posted using the reviewed account. If an earlier attempt had an uncertain outcome, inspect GitHub before sending again.",action.action.destination(),action.account)))
-                .child(button("github-confirm-send","Send to GitHub","",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.submit(window,cx))))))
-            .when(!self.attempts.is_empty(),|element|element.child(label("github-attempt-heading","Previous outbound attempts · refresh GitHub before repeating an interrupted action")).child(div().id("github-attempt-list").max_h(px(100.)).overflow_y_scroll().flex().flex_col().gap_1().children(self.attempts.iter().rev().take(10).enumerate().map(|(index,attempt)|label(("github-attempt",index),format!("{}: {}",attempt.destination,attempt.outcome))))))
-            .when(!self.saved.is_empty(),|element|element.child(label("github-saved-heading","Recoverable local drafts · Copy retains older-head text without reattaching diff positions")).child(div().id("github-saved-drafts").max_h(px(100.)).overflow_y_scroll().flex().flex_col().gap_1().children(self.saved.iter().take(128).enumerate().map(|(index,draft)|{let draft=draft.clone(); let discard=draft.clone(); div().flex().gap_2().child(button(("github-copy-draft",index),format!("Copy {}",draft.key()),"",false).on_click(move|_,_,cx|cx.write_to_clipboard(ClipboardItem::new_string(draft.text().to_owned())))).child(button(("github-discard-draft",index),"Discard saved draft","",false).disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.discard_draft(discard.clone(),window,cx))))}))))
+            .when(show_editor,|element|element
+                .when(!self.create,|element|element.child(div().flex().flex_wrap().gap_1()
+                    .children([ReviewEvent::Comment,ReviewEvent::Approve,ReviewEvent::RequestChanges].map(|event|button(event.label(),event.label(),"",!self.discussion&&self.event==event).toggled(!self.discussion&&self.event==event).disabled(pending).on_click(cx.listener(move|this,_,window,cx|{this.discussion=false;this.event=event;this.confirm=None;this.save_draft(window,cx);}))))
+                    .child(button("github-discussion","Discussion only","",self.discussion).toggled(self.discussion).disabled(pending||!self.review.comments.is_empty()||self.review.composing.is_some()).on_click(cx.listener(|this,_,_,cx|{this.discussion=true;this.confirm=None;cx.notify();})))))
+                .child(Textarea::new(&self.body).aria_label(if self.create{"Pull request description"}else{"Review summary"}).disabled(pending))
+                .child(div().flex().items_center().gap_2().child(label("github-draft-status",self.save_status.clone()).role(Role::Status).a11y_synthetic_children(native_accessibility::polite).text_color(rgb(p.muted)))
+                    .child(div().flex_1()).child(button("github-review-submit","Review submission…","",true).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.review_submission(window,cx))))))
+            .when_some(self.confirm.as_ref(),|element,confirmation|element.child(div().p_3().border_1().border_color(rgb(p.accent)).rounded(px(7.)).flex().flex_col().gap_2()
+                .child(label("github-confirm-destination",format!("{}\nAccount · {}",confirmation.action.destination(),confirmation.account)).font_weight(FontWeight::SEMIBOLD))
+                .child(label("github-confirm-text",match &confirmation.action{Action::Create(pull)=>format!("{}\n\n{}",pull.title,pull.body),Action::Comment{body,..}=>body.clone(),Action::Review(review)=>format!("{} review · {} inline comments\n\n{}{}",review.event.label(),review.comments.len(),review.body,review.comments.iter().map(|comment|format!("\n\n{}\n{}",github::review::position_label(comment),comment.body)).collect::<String>())}))
+                .child(label("github-confirm-guidance","Send performs one outbound action with these exact captured targets and comments. Inspect the destination before repeating an uncertain attempt.").text_color(rgb(p.muted)))
+                .child(div().flex().gap_2().child(button("github-confirm-send",if self.review.fixture{"Send to offline fixture"}else{"Send to GitHub"},"",true).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.submit(window,cx))))
+                    .child(button("github-edit-submission","Keep editing","",false).disabled(pending).on_click(cx.listener(|this,_,_,cx|{this.confirm=None;cx.notify();}))))))
+            .child(div().flex().items_center().gap_2().child(button("github-recovery-toggle",format!("Recover drafts · {}",self.saved.len()),"",self.review.recovery_open).toggled(self.review.recovery_open).on_click(cx.listener(|this,_,_,cx|{this.review.recovery_open=!this.review.recovery_open;cx.notify();})))
+                .child(label("github-passive-policy","Drafts stay on this Mac · outbound actions are explicit").text_color(rgb(p.muted))))
+            .when(self.review.recovery_open,|element|element
+                .child(label("github-saved-heading","Captured drafts · Copy includes all inline text and original positions; older heads are never remapped").text_color(rgb(p.muted)))
+                .child(div().id("github-saved-drafts").max_h(px(160.)).overflow_y_scroll().flex().flex_col().gap_2().children(self.saved.iter().take(128).enumerate().map(|(index,draft)|{let draft=draft.clone();let discard=draft.clone();div().flex().flex_col().gap_1().child(label(("github-draft-identity",index),draft.key()).text_color(rgb(p.muted)))
+                    .child(div().flex().gap_2().child(button(("github-copy-draft",index),"Copy complete draft","",false).on_click(move|_,_,cx|cx.write_to_clipboard(ClipboardItem::new_string(draft.recovery_text()))))
+                        .child(button(("github-discard-draft",index),"Discard saved draft","",false).disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.discard_draft(discard.clone(),window,cx)))))})))
+                .when(!self.attempts.is_empty(),|element|element.child(label("github-attempt-heading","Previous outbound attempts · inspect the destination before repeating"))
+                    .child(div().id("github-attempt-list").max_h(px(100.)).overflow_y_scroll().flex().flex_col().gap_1().children(self.attempts.iter().rev().take(10).enumerate().map(|(index,attempt)|label(("github-attempt",index),format!("{}: {}",attempt.destination,attempt.outcome)))))))
     }
 }
 

@@ -1,6 +1,7 @@
 //! Explicit GitHub collaboration. Call from the serialized operation executor;
 //! opening the panel and ordinary local refresh never dispatch network traffic.
 pub(crate) mod drafts;
+pub(crate) mod review;
 pub(crate) mod transport;
 
 use anyhow::{Result, anyhow, bail, ensure};
@@ -160,14 +161,18 @@ impl ReviewEvent {
         }
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct LineComment {
     pub path: String,
     pub line: u32,
     pub side: DiffSide,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_side: Option<DiffSide>,
     pub body: String,
 }
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub(crate) enum DiffSide {
     Left,
@@ -179,6 +184,8 @@ pub(crate) struct ReviewDraft {
     pub body: String,
     pub event: ReviewEvent,
     pub comments: Vec<LineComment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composing: Option<LineComment>,
 }
 #[derive(Clone, Debug)]
 pub(crate) enum Action {
@@ -199,10 +206,11 @@ impl Action {
                 if p.draft { "draft" } else { "ready" }
             ),
             Self::Comment { pull, .. } | Self::Review(ReviewDraft { pull, .. }) => format!(
-                "github.com/{} #{} · head {}",
+                "github.com/{} #{} · head {} · base {}",
                 pull.repository.label(),
                 pull.number,
-                pull.head.sha
+                pull.head.sha,
+                pull.base.sha
             ),
         }
     }
@@ -545,7 +553,15 @@ impl<T: Transport> Client<T> {
                 )
             }
             Action::Review(draft) => {
-                validate_text(&draft.body, draft.event == ReviewEvent::RequestChanges)?;
+                validate_text(
+                    &draft.body,
+                    draft.event == ReviewEvent::RequestChanges
+                        || (draft.event == ReviewEvent::Comment && draft.comments.is_empty()),
+                )?;
+                ensure!(
+                    draft.composing.is_none(),
+                    "Add or discard the unfinished inline comment before reviewing submission"
+                );
                 ensure!(
                     draft.comments.len() <= 100,
                     "A review supports at most 100 inline comments"
@@ -553,7 +569,14 @@ impl<T: Transport> Client<T> {
                 for comment in &draft.comments {
                     validate_text(&comment.body, true)?;
                     ensure!(
-                        comment.line > 0 && safe_path(&comment.path),
+                        comment.line > 0
+                            && safe_path(&comment.path)
+                            && match (comment.start_line, comment.start_side) {
+                                (None, None) => true,
+                                (Some(start), Some(side)) =>
+                                    start > 0 && start < comment.line && side == comment.side,
+                                _ => false,
+                            },
                         "Review comment position is invalid"
                     );
                 }
@@ -682,7 +705,7 @@ fn safe_path(value: &str) -> bool {
             .split('/')
             .any(|p| p == ".." || p == "." || p.is_empty())
 }
-fn validate_text(value: &str, required: bool) -> Result<()> {
+pub(crate) fn validate_text(value: &str, required: bool) -> Result<()> {
     ensure!(
         value.len() <= MAX_TEXT && !value.contains('\0') && (!required || !value.trim().is_empty()),
         "Text is empty, contains NUL, or exceeds the 256 KiB limit"
@@ -765,6 +788,7 @@ mod tests {
                 body: "Review".into(),
                 event: ReviewEvent::Approve,
                 comments: vec![],
+                composing: None,
             }),
             &OperationControl::default(),
         );
@@ -794,8 +818,11 @@ mod tests {
                         path: "src/a.rs".into(),
                         line: 8,
                         side: DiffSide::Right,
+                        start_line: None,
+                        start_side: None,
                         body: "Explain this".into(),
                     }],
+                    composing: None,
                 }),
                 &OperationControl::default(),
             )
