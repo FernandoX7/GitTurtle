@@ -875,6 +875,12 @@ impl GitTurtle {
         }
         let references = references.into_any_element();
         let mut references = Some(references);
+        let graph_filtered = history_paging::graph_is_filtered(
+            self.commits.len(),
+            self.visible.len(),
+            self.automatic.retained_commit,
+            self.history_search_active(),
+        ) || self.graph_notice.is_some();
         let row = div()
             .id(("commit", index))
             .role(Role::ListBoxOption)
@@ -923,14 +929,17 @@ impl GitTurtle {
                         .child(graph::render(
                             self.graph[index].clone(),
                             column.width,
-                            self.graph_lane_offset(),
+                            if graph_filtered {
+                                0
+                            } else {
+                                self.graph_lane_offset()
+                            },
                             f32::from(self.settings.graph_spacing) * appearance::ui_scale(),
                             self.settings.density.history_row_height(),
                             graph::RowStyle {
                                 active,
                                 merge: commit.parents.len() > 1,
-                                filtered: self.visible.len() != self.commits.len()
-                                    || self.graph_notice.is_some(),
+                                filtered: graph_filtered,
                             },
                         ))
                         .into_any_element(),

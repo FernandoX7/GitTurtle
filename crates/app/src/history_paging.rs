@@ -26,6 +26,19 @@ impl State {
     }
 }
 
+/// One retained inspector commit is outside the ordinary virtualized window;
+/// it is not a hidden row in that window's continuous ancestry. Search results
+/// remain discontinuous even when all of their returned matches are visible.
+pub(super) fn graph_is_filtered(
+    commit_count: usize,
+    visible_count: usize,
+    retained_commit: Option<usize>,
+    search_active: bool,
+) -> bool {
+    let retained = usize::from(retained_commit.is_some_and(|index| index < commit_count));
+    search_active || visible_count != commit_count - retained
+}
+
 fn fits_window(
     current_rows: usize,
     current_bytes: usize,
@@ -186,6 +199,83 @@ impl GitTurtle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[::core::prelude::v1::test]
+    fn deep_window_retains_ancestry_edges_with_selection_outside_visible_rows() {
+        let commits = (0..6001)
+            .map(|index| Commit {
+                oid: format!("commit-{index}"),
+                parents: if index < 6000 {
+                    vec![format!("commit-{}", index + 1)]
+                } else {
+                    vec![]
+                },
+                author: String::new(),
+                timestamp: 0,
+                subject: String::new(),
+                body: String::new(),
+            })
+            .collect::<Vec<_>>();
+        let selected = commits[0].clone();
+        let mut cursor = graph::GraphCursor::default();
+        let mut visible_commits = Vec::new();
+        let mut rows = Vec::new();
+        let mut offset = 0;
+        for (page, chunk) in commits[..6000].chunks(PAGE_SIZE).enumerate() {
+            let (prepared, hidden) = cursor
+                .append(chunk, 128, 1_000_000, || Ok::<_, ()>(()))
+                .unwrap();
+            assert!(!hidden);
+            if !fits_window(
+                visible_commits.len(),
+                retained_bytes(&visible_commits, &rows),
+                chunk.len(),
+                retained_bytes(chunk, &prepared),
+            ) {
+                visible_commits.clear();
+                rows.clear();
+                offset = page * PAGE_SIZE;
+            }
+            visible_commits.extend_from_slice(chunk);
+            rows.extend(prepared);
+        }
+        assert_eq!(offset, 5000);
+        assert_eq!(visible_commits.len(), 1000);
+        assert!(rows.iter().all(|row| row.incoming && !row.edges.is_empty()));
+        let visible_count = visible_commits.len();
+        let retained_commit = Some(visible_count);
+        visible_commits.push(selected);
+        rows.push(graph::GraphRow::default());
+        assert!(!graph_is_filtered(
+            visible_commits.len(),
+            visible_count,
+            retained_commit,
+            false
+        ));
+        assert!(graph_is_filtered(
+            visible_commits.len(),
+            visible_count - 1,
+            retained_commit,
+            false
+        ));
+        assert_eq!(
+            rows[..visible_count]
+                .iter()
+                .map(|row| row.edges.len())
+                .sum::<usize>(),
+            1000
+        );
+    }
+
+    #[::core::prelude::v1::test]
+    fn search_and_other_missing_rows_remain_discontinuous() {
+        assert!(graph_is_filtered(500, 500, None, true));
+        assert!(graph_is_filtered(501, 500, Some(500), true));
+        assert!(graph_is_filtered(501, 499, Some(500), false));
+        assert!(graph_is_filtered(501, 500, Some(999), false));
+        assert!(!graph_is_filtered(500, 500, None, false));
+        assert!(!graph_is_filtered(0, 0, Some(0), false));
+    }
 
     #[::core::prelude::v1::test]
     fn window_can_continue_at_arbitrary_depth_and_bounds_rows_and_bytes_independently() {

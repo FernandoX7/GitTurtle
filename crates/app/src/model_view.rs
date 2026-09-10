@@ -460,6 +460,9 @@ fn render_side<T: 'static>(
         .border_color(rgb(colors.border));
     let mut source_actions = div().flex().flex_wrap().items_center().gap_2().child(
         div()
+            .id(("model-source-label", index))
+            .role(Role::Label)
+            .aria_label(format!("{label} · 3D"))
             .font_weight(FontWeight::SEMIBOLD)
             .child(format!("{label} · 3D")),
     );
@@ -491,6 +494,14 @@ fn render_side<T: 'static>(
     }
     header = header.child(source_actions);
     let Some(document) = side.model.clone() else {
+        let message = side.error.clone().unwrap_or_else(|| {
+            if side.present {
+                "3D preview unavailable"
+            } else {
+                "No file on this side"
+            }
+            .into()
+        });
         return div()
             .flex_1()
             .min_w_0()
@@ -498,14 +509,21 @@ fn render_side<T: 'static>(
             .flex()
             .flex_col()
             .child(header)
-            .child(div().p_3().child(side.error.clone().unwrap_or_else(|| {
-                if side.present {
-                    "3D preview unavailable"
-                } else {
-                    "No file on this side"
-                }
-                .into()
-            })))
+            .child(
+                div()
+                    .id(("model-unavailable", index))
+                    .role(if side.error.is_some() {
+                        Role::Alert
+                    } else {
+                        Role::Label
+                    })
+                    .aria_label(bounded_accessible_text(format!("{label}: {message}")))
+                    .when(side.error.is_some(), |element| {
+                        element.a11y_synthetic_children(native_accessibility::assertive)
+                    })
+                    .p_3()
+                    .child(message),
+            )
             .into_any_element();
     };
     let (camera, wireframe, linked, pending, error, frame, display_camera, focus) = {
@@ -614,16 +632,20 @@ fn render_side<T: 'static>(
             })),
         );
     }
+    let summary = format!(
+        "{} triangles · view span {:.4} {}",
+        document.scene.triangle_count(),
+        camera.span,
+        document.scene.units.label()
+    );
     header = header.child(views).child(
         div()
+            .id(("model-summary", index))
+            .role(Role::Label)
+            .aria_label(format!("{label}: {summary}"))
             .text_size(appearance::ui_text(10.))
             .text_color(rgb(colors.muted))
-            .child(format!(
-                "{} triangles · view span {:.4} {}",
-                document.scene.triangle_count(),
-                camera.span,
-                document.scene.units.label()
-            )),
+            .child(summary),
     );
     let mut canvas = model_canvas(
         index,
@@ -701,6 +723,10 @@ fn render_side<T: 'static>(
         .child(
             div()
                 .id(("model-details", index))
+                .role(Role::Label)
+                .aria_label(bounded_accessible_text(format!(
+                    "{label} model details: {details}"
+                )))
                 .max_h(px(76.))
                 .overflow_y_scroll()
                 .p_2()
@@ -709,6 +735,19 @@ fn render_side<T: 'static>(
                 .child(details),
         )
         .into_any_element()
+}
+
+fn bounded_accessible_text(mut text: String) -> String {
+    const MAX_BYTES: usize = 16 * 1024;
+    if text.len() > MAX_BYTES {
+        let mut end = MAX_BYTES - '…'.len_utf8();
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+        text.push('…');
+    }
+    text
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -737,7 +776,10 @@ fn model_canvas<T: 'static>(
     div().id(("model-canvas",index)).flex_1().min_h_0().min_w_0().relative().overflow_hidden().bg(rgb(0x1c222a)).border_1().border_color(rgb(colors.border))
         .focus_visible(|style|style.border_color(rgb(colors.accent))).tab_stop(true).track_focus(&focus).role(Role::Image)
         .aria_label(format!("{label} interactive 3D model, {} triangles",document.scene.triangle_count()))
-        .aria_description("Arrows orbit; Shift and arrows pan; plus and minus zoom; F fits; zero resets; W toggles edges. Exact source is available above.")
+        .aria_description(format!(
+            "Displayed orientation: yaw {:.1} degrees, elevation {:.1} degrees. Target X {:.4}, Y {:.4}, Z {:.4}; view span {:.4} {}. Arrows orbit; Shift and arrows pan; plus and minus zoom; F fits; zero resets; W toggles edges. Exact source is available above.",
+            camera.yaw.to_degrees(), camera.pitch.to_degrees(), camera.target[0], camera.target[1], camera.target[2], camera.span, document.scene.units.label()
+        ))
         .cursor(CursorStyle::OpenHand)
         .on_mouse_down(MouseButton::Left,cx.listener(move |_,event:&MouseDownEvent,window,cx|{
             click_focus.focus(window,cx);

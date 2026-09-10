@@ -114,6 +114,7 @@ pub struct FocusTrapContainer<E: InteractiveElement + ParentElement + Styled + E
     id: ElementId,
     focus_handle: FocusHandle,
     base: E,
+    dialog_label: crate::dialog_label::DialogLabel,
 }
 
 impl<E: InteractiveElement + ParentElement + Styled + Element> FocusTrapContainer<E> {
@@ -122,6 +123,7 @@ impl<E: InteractiveElement + ParentElement + Styled + Element> FocusTrapContaine
             id: id.into(),
             base: child.track_focus(&focus_handle),
             focus_handle,
+            dialog_label: Default::default(),
         }
     }
 }
@@ -183,6 +185,21 @@ impl<E: InteractiveElement + ParentElement + Styled + Element + 'static> Element
         self.base.write_a11y_info(node);
         if matches!(node.role(), gpui::Role::Dialog | gpui::Role::AlertDialog) {
             node.set_modal();
+            if node.label().is_none() && node.labelled_by().is_empty() {
+                node.set_label(
+                    self.dialog_label
+                        .get()
+                        .unwrap_or_else(|| {
+                            if node.role() == gpui::Role::AlertDialog {
+                                "Alert dialog"
+                            } else {
+                                "Dialog"
+                            }
+                            .into()
+                        })
+                        .to_string(),
+                );
+            }
         }
     }
 
@@ -192,6 +209,22 @@ impl<E: InteractiveElement + ParentElement + Styled + Element + 'static> Element
         builder: &mut gpui::A11ySubtreeBuilder,
     ) {
         Element::a11y_synthetic_children(&mut self.base, prepaint, builder);
+        let role = builder.parent_node().role();
+        if matches!(role, gpui::Role::Dialog | gpui::Role::AlertDialog)
+            && builder.parent_node().labelled_by().is_empty()
+        {
+            if let Some(label) = self.dialog_label.get() {
+                if builder.parent_node().label() != Some(label.as_ref()) {
+                    return;
+                }
+                let title_id = builder.synthetic_node_id("dialog-visible-title");
+                let mut title = gpui::accesskit::Node::new(gpui::Role::Label);
+                title.set_label(label.to_string());
+                if builder.push_child(title_id, title) {
+                    builder.parent_node().set_labelled_by([title_id]);
+                }
+            }
+        }
     }
 
     fn request_layout(
@@ -203,7 +236,11 @@ impl<E: InteractiveElement + ParentElement + Styled + Element + 'static> Element
     ) -> (LayoutId, Self::RequestLayoutState) {
         // Register this focus trap with the manager
         FocusTrapManager::register_trap(global_id.unwrap(), self.focus_handle.downgrade(), cx);
-
+        let _label_scope = matches!(
+            self.base.a11y_role(),
+            Some(gpui::Role::Dialog | gpui::Role::AlertDialog)
+        )
+        .then(|| self.dialog_label.enter());
         self.base.request_layout(global_id, None, window, cx)
     }
 

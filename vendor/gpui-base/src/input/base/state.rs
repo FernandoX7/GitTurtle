@@ -7,8 +7,9 @@ use gpui::{
     Action, App, AppContext, Bounds, ClipboardItem, Context, Edges, Entity, EntityInputHandler,
     EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyBinding,
     KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
-    Pixels, Point, Render, ScrollHandle, ScrollWheelEvent, SharedString, Styled as _, Subscription,
-    UTF16Selection, Window, actions, div, point, prelude::FluentBuilder as _, px,
+    Pixels, Point, Render, ScrollHandle, ScrollWheelEvent, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, UTF16Selection, Window, actions,
+    div, point, prelude::FluentBuilder as _, px,
 };
 use ropey::{Rope, RopeSlice};
 use serde::Deserialize;
@@ -269,6 +270,17 @@ pub(crate) fn init(cx: &mut App) {
     ]);
 }
 
+/// Accessibility presentation projected by the styled input onto the element
+/// that owns editing focus. It carries no copy of the input text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InputAccessibility {
+    pub role: Option<gpui::Role>,
+    pub label: Option<SharedString>,
+    pub placeholder: Option<SharedString>,
+    pub author_id: Option<SharedString>,
+    pub expose_value: bool,
+}
+
 /// The shared text-editing engine behind [`crate::input::InputState`],
 /// [`crate::input::TextareaState`] and [`crate::input::EditorState`].
 ///
@@ -283,6 +295,7 @@ pub struct InputBaseState<M: InputModeKind> {
     /// State only this mode needs. See [`InputModeKind::Extras`].
     pub(crate) extras: M::Extras,
     pub(super) focus_handle: FocusHandle,
+    accessibility_presentation: Option<InputAccessibility>,
     pub(super) mode: LayoutMode,
     pub(super) text: Rope,
     pub(super) display_map: DisplayMap,
@@ -506,6 +519,18 @@ impl<M: InputModeKind> InputBaseState<M> {
         }
     }
 
+    /// Project the styled input's semantics onto its existing editing focus owner.
+    pub fn set_accessibility_presentation(
+        &mut self,
+        presentation: InputAccessibility,
+        cx: &mut Context<Self>,
+    ) {
+        if self.accessibility_presentation.as_ref() != Some(&presentation) {
+            self.accessibility_presentation = Some(presentation);
+            cx.notify();
+        }
+    }
+
     /// Whether this input spans more than one line.
     ///
     /// Answered by the mode marker, which is fixed when the state is built.
@@ -614,6 +639,7 @@ impl<M: InputModeKind> InputBaseState<M> {
         Self {
             extras: M::Extras::default(),
             focus_handle: focus_handle.clone(),
+            accessibility_presentation: None,
             text: "".into(),
             display_map: DisplayMap::new(text_style.font(), window.rem_size(), None),
             search_session: super::SearchSession::default(),
@@ -3088,10 +3114,52 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
             self._pending_update = false;
         }
 
+        let accessibility = self.accessibility_presentation.clone();
+        // Only an active accessibility client needs a text snapshot. Secret
+        // content types stay hidden even when a visual mask is toggled off.
+        let accessibility_value = (window.is_a11y_active()
+            && !self.masked
+            && accessibility.as_ref().is_some_and(|a| a.expose_value))
+        .then(|| self.text.to_string());
+        let disabled = self.disabled;
+        let readonly = self.readonly;
+        let accessibility_state = entity.clone();
         let element = div()
             .id("input-state")
             .key_context(CONTEXT)
             .track_focus(&self.focus_handle)
+            .when_some(accessibility, |this, accessibility| {
+                this.when_some(accessibility.role, |this, role| this.role(role))
+                    .when_some(accessibility.label, |this, label| this.aria_label(label))
+                    .when_some(accessibility.author_id, |this, id| {
+                        this.accessibility_id(id)
+                    })
+                    .when_some(accessibility.placeholder, |this, placeholder| {
+                        this.aria_placeholder(placeholder)
+                    })
+                    .when_some(accessibility_value, |this, value| this.aria_value(value))
+                    .a11y_synthetic_children(move |builder| {
+                        if disabled {
+                            builder.parent_node().set_disabled();
+                        }
+                        if readonly {
+                            builder.parent_node().set_read_only();
+                        }
+                    })
+                    .when(!disabled && !readonly, |this| {
+                        this.on_a11y_action(
+                            gpui::AccessibleAction::SetValue,
+                            move |data, window, cx| {
+                                let Some(gpui::accesskit::ActionData::Value(value)) = data else {
+                                    return;
+                                };
+                                accessibility_state.update(cx, |state, cx| {
+                                    state.replace_all(value.to_string(), window, cx);
+                                });
+                            },
+                        )
+                    })
+            })
             .when(self.is_editable(), |this| {
                 this.on_action(window.listener_for(&entity, InputBaseState::backspace))
                     .on_action(window.listener_for(&entity, InputBaseState::delete))

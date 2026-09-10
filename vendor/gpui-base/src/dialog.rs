@@ -275,7 +275,8 @@ impl ParentElement for DialogTitle {
     }
 }
 impl RenderOnce for DialogTitle {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(mut self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        crate::dialog_label::capture_title(&mut self.children);
         self.base
             .id("dialog-title")
             .children(self.children)
@@ -489,6 +490,7 @@ impl RenderOnce for Dialog {
         let confirm_change = self.on_open_change.clone();
         let backdrop_change = self.on_open_change.clone();
         let viewport = window.viewport_size();
+        let keyboard = self.keyboard;
 
         deferred(
             anchored().position(point(px(0.), px(0.))).child(
@@ -507,7 +509,17 @@ impl RenderOnce for Dialog {
                         let request_cancel = request_close.clone();
                         let request_confirm = request_close.clone();
                         let closed_cancel = closed.clone();
-                        this.on_action(move |_: &Cancel, window, cx| {
+                        this.when(keyboard, |this| {
+                            this.on_action(|_: &crate::input::Escape, window, cx| {
+                                // Inputs bind Escape to their own action. Bridge it
+                                // only after child Find/completion/IME handlers had
+                                // the chance to consume it, preserving first-Escape
+                                // dismissal of those transient input surfaces.
+                                window.dispatch_action(Box::new(Cancel), cx);
+                                cx.stop_propagation();
+                            })
+                        })
+                        .on_action(move |_: &Cancel, window, cx| {
                             let event = ClickEvent::default();
                             if cancel(&event, window, cx) {
                                 request_open_change(

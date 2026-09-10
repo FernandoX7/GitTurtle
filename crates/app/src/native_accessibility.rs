@@ -274,6 +274,11 @@ impl GitTurtle {
 }
 
 #[cfg(test)]
+mod dialog_tests;
+#[cfg(test)]
+mod input_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use core::prelude::v1::test;

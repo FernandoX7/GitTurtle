@@ -1677,11 +1677,30 @@ impl LibraryView {
         }
     }
 }
+fn workspace_text(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Stateful<Div> {
+    let text = text.into();
+    div()
+        .id(id)
+        .role(Role::Label)
+        .aria_label(text.clone())
+        .child(text)
+}
+
 impl Render for LibraryView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = palette(cx);
-        div().flex().flex_col().gap_3().child(div().text_size(appearance::ui_text(12.)).child("Pinned repositories stay available after their tab closes. Named workspaces are local groups; opening a group only reads its selected repository."))
-            .child(div().flex().items_center().gap_2().child(div().flex_1().child(Input::new(&self.name))).child(button("create-local-workspace","Create workspace","",false).on_click(cx.listener(|this,_,window,cx|{
+        let create_label = self.active.as_ref().map_or_else(
+            || "Create named local workspace".to_owned(),
+            |path| {
+                format!(
+                    "Create named local workspace and add repository {}",
+                    path.display()
+                )
+            },
+        );
+        div().flex().flex_col().gap_3().child(workspace_text("local-workspaces-description", "Pinned repositories stay available after their tab closes. Named workspaces are local groups; opening a group only reads its selected repository.").text_size(appearance::ui_text(12.)))
+            .children(self.active.as_ref().map(|path| workspace_text("local-workspaces-current-repository", format!("Current repository: {}", path.display())).text_size(appearance::ui_text(12.))))
+            .child(div().flex().items_center().gap_2().child(div().flex_1().child(Input::new(&self.name).aria_label("New local workspace name"))).child(button("create-local-workspace","Create workspace","",false).accessibility_label(create_label).on_click(cx.listener(|this,_,window,cx|{
                 let name=this.name.read(cx).value().trim().to_owned();
                 if name.is_empty()||name.len()>64||name.contains(['\n','\r','\0']){this.error=Some("Use a workspace name of 1–64 bytes.".into());cx.notify();return;}
                 if this.session.groups.len()>=MAX_GROUPS||this.session.groups.contains(&name){this.error=Some("Choose a new name; up to 16 local workspaces are supported.".into());cx.notify();return;}
@@ -1689,20 +1708,24 @@ impl Render for LibraryView {
                 if let Some(path)=this.active.clone(){if let Some(entry)=this.session.library.iter_mut().find(|entry|entry.path.path()==path){entry.group=Some(name);}else{this.session.library.push(LibraryEntry{path:SavedPath::new(&path),pinned:false,group:Some(name)});}}
                 this.name.update(cx,|input,cx|input.set_value("",window,cx));this.error=None;cx.notify();
             }))))
-            .children(self.error.as_ref().map(|error|div().text_color(rgb(colors.removed)).child(error.clone())))
+            .children(self.error.as_ref().map(|error|workspace_text("local-workspaces-error", error.clone()).role(Role::Alert).text_color(rgb(colors.removed))))
             .child(div().id("local-workspace-library").max_h(px(360.)).overflow_y_scroll().flex().flex_col().gap_2()
                 .children(self.session.groups.clone().into_iter().enumerate().map(|(index,group)|{
                     let count=self.session.library.iter().filter(|entry|entry.group.as_ref()==Some(&group)).count();let assign=group.clone();let open=group.clone();let remove=group.clone();
-                    div().flex().items_center().gap_2().child(div().flex_1().child(format!("{group} · {count} repositories")))
-                        .child(button(("open-workspace",index),"Open","",false).disabled(count==0).on_click(cx.listener(move|this,_,window,cx|{window.close_dialog(cx);let _=this.owner.update(cx,|owner,cx|owner.open_repository_group(&open,window,cx));})))
-                        .child(button(("assign-workspace",index),"Add current","",false).disabled(self.active.is_none()).on_click(cx.listener(move|this,_,window,cx|{if let Some(path)=this.active.clone(){let _=this.owner.update(cx,|owner,cx|owner.set_tab_library(path.clone(),None,Some(Some(assign.clone())),window,cx));if let Some(entry)=this.session.library.iter_mut().find(|entry|entry.path.path()==path){entry.group=Some(assign.clone());}else{this.session.library.push(LibraryEntry{path:SavedPath::new(&path),pinned:false,group:Some(assign.clone())});}cx.notify();}})))
-                        .child(button(("delete-workspace",index),"Remove group","",false).on_click(cx.listener(move|this,_,window,cx|{this.session.groups.retain(|group|group!=&remove);for entry in &mut this.session.library{if entry.group.as_ref()==Some(&remove){entry.group=None;}}let _=this.owner.update(cx,|owner,cx|{owner.repository_tabs.groups.retain(|group|group!=&remove);for entry in &mut owner.repository_tabs.library{if entry.group.as_ref()==Some(&remove){entry.group=None;}}owner.save_repository_session(window,cx);});cx.notify();})))
+                    let description=format!("{group} · {count} {}", if count == 1 { "repository" } else { "repositories" });
+                    let add_label=self.active.as_ref().map_or_else(||format!("Add current repository to workspace {group}; no repository is open"), |path|format!("Add repository {} to workspace {group}", path.display()));
+                    div().flex().items_center().gap_2().child(workspace_text(("local-workspace-name", index), description.clone()).flex_1())
+                        .child(button(("open-workspace",index),"Open","",false).accessibility_label(format!("Open workspace {description}")).disabled(count==0).on_click(cx.listener(move|this,_,window,cx|{window.close_dialog(cx);let _=this.owner.update(cx,|owner,cx|owner.open_repository_group(&open,window,cx));})))
+                        .child(button(("assign-workspace",index),"Add current","",false).accessibility_label(add_label).disabled(self.active.is_none()).on_click(cx.listener(move|this,_,window,cx|{if let Some(path)=this.active.clone(){let _=this.owner.update(cx,|owner,cx|owner.set_tab_library(path.clone(),None,Some(Some(assign.clone())),window,cx));if let Some(entry)=this.session.library.iter_mut().find(|entry|entry.path.path()==path){entry.group=Some(assign.clone());}else{this.session.library.push(LibraryEntry{path:SavedPath::new(&path),pinned:false,group:Some(assign.clone())});}cx.notify();}})))
+                        .child(button(("delete-workspace",index),"Remove group","",false).accessibility_label(format!("Remove workspace group {group}; keep its repositories and drafts")).on_click(cx.listener(move|this,_,window,cx|{this.session.groups.retain(|group|group!=&remove);for entry in &mut this.session.library{if entry.group.as_ref()==Some(&remove){entry.group=None;}}let _=this.owner.update(cx,|owner,cx|{owner.repository_tabs.groups.retain(|group|group!=&remove);for entry in &mut owner.repository_tabs.library{if entry.group.as_ref()==Some(&remove){entry.group=None;}}owner.save_repository_session(window,cx);});cx.notify();})))
                 }))
                 .children(self.session.library.clone().into_iter().enumerate().map(|(index,entry)|{
-                    let path=entry.path.path();let remove=path.clone();let label=format!("{}{}{}",if entry.pinned{"★ "}else{""},path.display(),entry.group.map_or(String::new(),|group|format!(" · {group}")));
-                    div().flex().items_center().gap_2().child(div().flex_1().min_w_0().truncate().child(label))
-                        .child(button(("open-library-repo",index),"Open","",false).on_click(cx.listener(move|this,_,window,cx|{window.close_dialog(cx);let _=this.owner.update(cx,|owner,cx|owner.open_repository_tab(path.clone(),window,cx));})))
-                        .child(button(("remove-library-repo",index),"Remove","",false).tooltip("Remove from the local library; keep its folder and drafts").on_click(cx.listener(move|this,_,window,cx|{this.session.library.retain(|entry|entry.path.path()!=remove);let _=this.owner.update(cx,|owner,cx|{owner.repository_tabs.library.retain(|entry|entry.path.path()!=remove);owner.save_repository_session(window,cx);});cx.notify();})))
+                    let path=entry.path.path();let remove=path.clone();
+                    let label=format!("{}{}{}",if entry.pinned{"★ "}else{""},path.display(),entry.group.as_ref().map_or(String::new(),|group|format!(" · {group}")));
+                    let accessible=format!("{}repository {}{}",if entry.pinned{"Pinned "}else{""},path.display(),entry.group.as_ref().map_or(String::new(),|group|format!(", workspace {group}")));
+                    div().flex().items_center().gap_2().child(workspace_text(("local-workspace-repository", index),label).aria_label(accessible).flex_1().min_w_0().truncate())
+                        .child(button(("open-library-repo",index),"Open","",false).accessibility_label(format!("Open repository {}", path.display())).on_click(cx.listener(move|this,_,window,cx|{window.close_dialog(cx);let _=this.owner.update(cx,|owner,cx|owner.open_repository_tab(path.clone(),window,cx));})))
+                        .child(button(("remove-library-repo",index),"Remove","",false).accessibility_label(format!("Remove repository {} from local library; keep its folder and drafts", remove.display())).tooltip("Remove from the local library; keep its folder and drafts").on_click(cx.listener(move|this,_,window,cx|{this.session.library.retain(|entry|entry.path.path()!=remove);let _=this.owner.update(cx,|owner,cx|{owner.repository_tabs.library.retain(|entry|entry.path.path()!=remove);owner.save_repository_session(window,cx);});cx.notify();})))
                 })))
     }
 }
@@ -1711,6 +1734,20 @@ impl Render for LibraryView {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[test]
+    fn workspace_text_exposes_full_repository_and_group_description() {
+        let description = "Pinned repository /projects/one/same-name, workspace Related";
+        let text = workspace_text("repository-description", description).truncate();
+        let mut node = gpui::accesskit::Node::new(text.a11y_role().expect("named text role"));
+        text.write_a11y_info(&mut node);
+        assert_eq!(node.role(), Role::Label);
+        assert_eq!(node.label(), Some(description));
+        let other = workspace_text("other-repository", "/projects/two/same-name");
+        let mut other_node = gpui::accesskit::Node::new(other.a11y_role().unwrap());
+        other.write_a11y_info(&mut other_node);
+        assert_ne!(node.label(), other_node.label());
+    }
 
     fn session(paths: &[&str], active: usize) -> Session {
         Session {

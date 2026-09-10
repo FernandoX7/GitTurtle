@@ -21,6 +21,7 @@ mod combobox;
 pub mod component_traits;
 mod date_picker;
 mod dialog;
+mod dialog_label;
 pub mod dock;
 mod element_ext;
 mod event;

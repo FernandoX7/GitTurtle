@@ -2204,15 +2204,26 @@ impl PlatformWindow for MacWindow {
         };
         let action_handler = A11yActionHandler(callbacks.action);
 
-        let adapter = unsafe {
-            accesskit_macos::SubclassingAdapter::for_window(
-                lock.native_window as *mut c_void,
+        // GPUI's first responder is its rendering view, a child of the
+        // NSWindow content view. Install the accessibility focus override on
+        // that responder so AppKit queries the same view that receives keys.
+        let mut adapter = unsafe {
+            accesskit_macos::SubclassingAdapter::new(
+                lock.native_view.as_ptr() as *mut c_void,
                 activation_handler,
                 action_handler,
             )
         };
-
+        // Window construction can make the view key before GPUI installs its
+        // accessibility callbacks. Seed that state instead of waiting for a
+        // later deactivate/reactivate cycle to report focused descendants.
+        let is_active = unsafe { lock.native_window.isKeyWindow() == YES };
+        let events = adapter.update_view_focus_state(is_active);
         lock.accesskit_adapter = Some(adapter);
+        drop(lock);
+        if let Some(events) = events {
+            events.raise();
+        }
     }
 
     fn a11y_tree_update(&self, tree_update: accesskit::TreeUpdate) {

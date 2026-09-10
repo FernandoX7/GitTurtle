@@ -1,4 +1,4 @@
-# GitTurtle macOS frame-demand patch
+# GitTurtle macOS frame-demand and accessibility patches
 
 This is the Apache-2.0 `gpui-pre-macos` 0.3.4 package, kept at the matching GPUI Kit dependency version. The original license is in [LICENSE-APACHE](LICENSE-APACHE). No editor code or framework migration is included.
 
@@ -23,3 +23,11 @@ cargo test --locked -p gpui-pre-macos --example frame_demand_probe
 ```
 
 The probe opens no window and never registers a display link. It pumps the main run loop to verify that 1,000 demanded frames coalesce to one callback, an idle source does not produce further callbacks, and dropping a source cancels its queued callback. Both the separate-copy run and the command above against the GitTurtle workspace lock passed all three assertions. This isolates dispatch/lifecycle behavior; it does not establish visible rendering or native focus correctness.
+
+## Accessibility responder alignment
+
+`MacWindow` creates its rendering `native_view` as a child of `NSWindow.contentView` and makes that child the first responder. The upstream `a11y_init` used AccessKit's `SubclassingAdapter::for_window`, which subclasses the parent content view. As a result, the accessibility tree and `accessibilityFocusedUIElement` override were attached to a different view than the keyboard responder. Native release validation observed window-level accessible focus while keyboard input still reached controls.
+
+The focused patch in `src/window.rs::a11y_init` uses the same pinned AccessKit 0.26.3 `SubclassingAdapter::new` API with the live rendering view pointer. The adapter retains that view. It also seeds the adapter's host-focus state using the current `NSWindow.isKeyWindow`, because the initial activation may precede callback installation. Subsequent activation continues through the original window-key handler. Any returned event batch is raised after releasing the window-state lock. No focus action, settings mutation, dependency update, Git operation or Linux behavior is added.
+
+Compilation checks constructor/type compatibility. Actual native descendant-focus and VoiceOver results must be recorded against the updated binary; the source correction and prior regression observation alone do not establish a passing native workflow.

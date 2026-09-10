@@ -26,4 +26,4 @@ cargo clippy --locked --offline --workspace --all-targets -- -D warnings
 cargo build --release --locked --offline -p gitturtle
 ```
 
-Verify the resulting ELF identity with `sha256sum`, `readelf -h`, and `ldd`, retaining logs and exact source/image identities. Separate compilation/test timing from application performance. A container pass cannot establish Linux desktop accessibility, window behavior, macOS codecs/Keychain, or hosted CI. No full gate was started during this inventory.
+Verify the resulting ELF identity with `sha256sum`, `readelf -h`, and `ldd`, retaining logs and exact source/image identities. Separate compilation/test timing from application performance. A container pass cannot establish Linux desktop accessibility, window behavior, macOS codecs/Keychain, or hosted CI. No full gate was started during this inventory. The subsequent [0a0fb5a checkpoint validation](2026-09-09-next-linux-validation.md) records the executed combined gates separately.
