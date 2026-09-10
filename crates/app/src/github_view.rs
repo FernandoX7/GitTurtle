@@ -12,6 +12,7 @@ use gpui_kit::{
     component::{WindowExt, dialog::DialogFooter},
     prelude::FluentBuilder,
 };
+use std::time::Duration;
 
 fn label(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Stateful<Div> {
     let text = text.into();
@@ -123,6 +124,68 @@ fn capture_draft(
 fn empty_pull_draft(draft: &Draft) -> bool {
     matches!(draft, Draft::Pull(pull) if pull.title.is_empty() && pull.body.is_empty())
 }
+/// One unpublished form snapshot, regardless of how often typing changes its
+/// destination key. Only a quiet form or an explicit transition reaches the
+/// durable saver; previously accepted destination drafts remain independent.
+#[derive(Default)]
+struct DeferredDraft {
+    generation: u64,
+    draft: Option<Draft>,
+}
+impl DeferredDraft {
+    fn clear(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.draft = None;
+    }
+    fn replace(&mut self, draft: Draft) -> u64 {
+        self.clear();
+        self.draft = Some(draft);
+        self.generation
+    }
+    fn take(&mut self, generation: u64) -> Option<Draft> {
+        if self.generation == generation {
+            self.draft.take()
+        } else {
+            None
+        }
+    }
+    fn is_pending(&self) -> bool {
+        self.draft.is_some()
+    }
+}
+const DRAFT_QUIET_PERIOD: Duration = Duration::from_millis(500);
+
+fn retain_window_close_barrier(
+    response: futures::channel::oneshot::Receiver<anyhow::Result<()>>,
+    cx: &mut App,
+) {
+    let mut response = Some(response);
+    // The panel and its subscriptions disappear before macOS's asynchronous
+    // terminate callback. Keep this accepted completion at app lifetime instead.
+    cx.on_app_quit(move |_| {
+        let response = response.take();
+        async move {
+            if let Some(response) = response {
+                let _ = response.await;
+            }
+        }
+    })
+    .detach();
+}
+
+fn apply_save_completion(
+    status: &mut String,
+    response_generation: u64,
+    latest_generation: u64,
+    current: Result<Draft, DraftIssue>,
+    pending: bool,
+    succeeded: bool,
+) {
+    if response_generation == latest_generation {
+        *status = finished_save_status(current, pending, succeeded).into();
+    }
+}
+
 fn finished_save_status(
     current: Result<Draft, DraftIssue>,
     pending: bool,
@@ -167,6 +230,9 @@ struct Panel {
     save_status: String,
     draft_issue: Option<DraftIssue>,
     saver: commit_drafts::CoalescingSaver<String, Draft>,
+    deferred_draft: DeferredDraft,
+    draft_timer: Option<Task<()>>,
+    save_response_generation: u64,
     subscriptions: Vec<Subscription>,
     templates: Vec<github::Template>,
     attempts: Vec<drafts::Attempt>,
@@ -187,7 +253,7 @@ impl Panel {
             body:cx.new(|cx|TextareaState::new(window,cx).rows(5).placeholder("Description or review text — saved locally")),
             rows:vec![],page:1,has_next:false,pull:None,status:None,description:None,create:false,draft:true,event:ReviewEvent::Comment,discussion:true,
             account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),error:None,pending:false,writing:false,closed:false,
-            confirm:None,control:None,task:None,saved:vec![],save_status:String::new(),draft_issue:None,saver:Default::default(),subscriptions:vec![],templates:vec![],attempts:vec![],local_control:None,
+            confirm:None,control:None,task:None,saved:vec![],save_status:String::new(),draft_issue:None,saver:Default::default(),deferred_draft:Default::default(),draft_timer:None,save_response_generation:0,subscriptions:vec![],templates:vec![],attempts:vec![],local_control:None,
         };
         for input in [this.head.clone(), this.base.clone(), this.title.clone()] {
             this.subscriptions.push(cx.subscribe_in(
@@ -196,7 +262,7 @@ impl Panel {
                 |this, _, event: &InputEvent, window, cx| {
                     if matches!(event, InputEvent::Change) {
                         this.confirm = None;
-                        this.save_draft(window, cx);
+                        this.defer_draft_save(window, cx);
                     }
                 },
             ));
@@ -207,7 +273,7 @@ impl Panel {
             |this, _, event: &InputEvent, window, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.confirm = None;
-                    this.save_draft(window, cx);
+                    this.defer_draft_save(window, cx);
                 }
             },
         ));
@@ -223,11 +289,31 @@ impl Panel {
                     this.confirm = None;
                     this.page = 1;
                     this.has_next = false;
-                    this.save_draft(window, cx);
+                    this.defer_draft_save(window, cx);
                     cx.notify();
                 }
             },
         ));
+        let panel = cx.weak_entity();
+        let panel_window = window.window_handle().window_id();
+        this.subscriptions.push(cx.on_window_closed(move |cx, id| {
+            if id == panel_window {
+                // GPUI delivers this before releasing the window's entities.
+                if let Ok(Some(response)) =
+                    panel.update(cx, |this, cx| this.flush_draft_for_shutdown(cx))
+                {
+                    retain_window_close_barrier(response, cx);
+                }
+            }
+        }));
+        this.subscriptions.push(cx.on_app_quit(|this, cx| {
+            let response = this.flush_draft_for_shutdown(cx);
+            async move {
+                if let Some(response) = response {
+                    let _ = response.await;
+                }
+            }
+        }));
         // The parent opens this entity while it is already being updated.
         // Wait until GPUI returns that parent to the app before borrowing its
         // serial executor for passive local metadata and draft reads.
@@ -303,7 +389,7 @@ impl Panel {
             },
         )
     }
-    fn save_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn draft_to_save(&mut self, cx: &App) -> Option<Draft> {
         let draft = match self.current_draft(cx) {
             Ok(draft) => draft,
             Err(issue) => {
@@ -311,16 +397,76 @@ impl Panel {
                 if self.draft_issue.is_some() {
                     self.draft_issue = Some(issue);
                 }
-                cx.notify();
-                return;
+                return None;
             }
         };
         self.draft_issue = None;
         if empty_pull_draft(&draft) {
             self.save_status.clear();
-            cx.notify();
-            return;
+            return None;
         }
+        Some(draft)
+    }
+    fn defer_draft_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.draft_timer = None;
+        self.deferred_draft.clear();
+        if let Some(draft) = self.draft_to_save(cx) {
+            let generation = self.deferred_draft.replace(draft);
+            self.save_status = "Saving local draft…".into();
+            let timer = cx.background_executor().timer(DRAFT_QUIET_PERIOD);
+            self.draft_timer = Some(cx.spawn_in(window, async move |this, cx| {
+                timer.await;
+                let _ = this.update_in(cx, |this, window, cx| {
+                    let Some(draft) = this.deferred_draft.take(generation) else {
+                        return;
+                    };
+                    this.draft_timer = None;
+                    if !this.closed {
+                        this.persist_draft(draft, window, cx);
+                    }
+                });
+            }));
+        }
+        cx.notify();
+    }
+    fn save_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Explicit close/selection/review commits the current form immediately.
+        // A superseded timer must never enqueue its older destination afterward.
+        self.draft_timer = None;
+        self.deferred_draft.clear();
+        if let Some(draft) = self.draft_to_save(cx) {
+            self.persist_draft(draft, window, cx);
+        }
+        cx.notify();
+    }
+    fn flush_draft_for_shutdown(
+        &mut self,
+        cx: &mut App,
+    ) -> Option<futures::channel::oneshot::Receiver<anyhow::Result<()>>> {
+        self.draft_timer = None;
+        self.deferred_draft.clear();
+        let draft = if self.closed {
+            None
+        } else {
+            self.draft_to_save(cx)
+        };
+        self.closed = true;
+        self.owner
+            .update(cx, |owner, _| {
+                if let Some(draft) = draft {
+                    let _ = self.saver.queue_with(
+                        &owner.preferences_writer,
+                        draft.key(),
+                        draft,
+                        drafts::save_batch,
+                    );
+                }
+                // Normal app quit awaits this within GPUI's shutdown budget.
+                owner.preferences_writer.submit(|| Ok(()))
+            })
+            .ok()
+    }
+    fn persist_draft(&mut self, draft: Draft, window: &mut Window, cx: &mut Context<Self>) {
         let key = draft.key();
         if let Some(old) = self.saved.iter_mut().find(|d| d.key() == key) {
             *old = draft.clone();
@@ -341,17 +487,22 @@ impl Panel {
         };
         self.save_status = "Saving local draft…".into();
         if let Some(response) = response {
+            self.save_response_generation = self.save_response_generation.wrapping_add(1);
+            let response_generation = self.save_response_generation;
             cx.spawn_in(window, async move |this, cx| {
                 let result = response.await;
                 let _ = this.update_in(cx, |this, _, cx| {
                     // A previous destination's reply must not claim the
                     // currently invalid or newly edited form has been saved.
-                    this.save_status = finished_save_status(
-                        this.current_draft(cx),
-                        this.saver.is_pending(),
+                    let current = this.current_draft(cx);
+                    apply_save_completion(
+                        &mut this.save_status,
+                        response_generation,
+                        this.save_response_generation,
+                        current,
+                        this.deferred_draft.is_pending() || this.saver.is_pending(),
                         matches!(result, Ok(Ok(()))),
-                    )
-                    .into();
+                    );
                     cx.notify();
                 });
             })
@@ -407,6 +558,7 @@ impl Panel {
         );
     }
     fn refresh(&mut self, page: u32, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_draft(window, cx);
         let repository = match self.destination(cx) {
             Ok(repo) => repo,
             Err(error) => {
@@ -459,6 +611,7 @@ impl Panel {
         self.run(false,move|_|github::local_templates(&repo,&revision),|result,this,_,_|match result {Ok(templates)=>{this.templates=templates;this.notice=Some("Templates came from the locally available base revision. Choose one to append its exact text; repository HTML is never executed.".into());},Err(error)=>this.error=Some(format!("{error:#}"))},window,cx);
     }
     fn review_submission(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_draft(window, cx);
         let draft = match self.current_draft(cx) {
             Ok(draft) => draft,
             Err(issue) => {
@@ -660,6 +813,90 @@ mod tests {
     }
 
     #[test]
+    fn destination_typing_persists_only_settled_draft_and_preserves_prior_destinations() {
+        use std::{
+            collections::HashMap,
+            sync::{Arc, Mutex},
+        };
+
+        let executor = operations::SerialExecutor::new("github-deferred-draft-test");
+        let saver = commit_drafts::CoalescingSaver::default();
+        let stored = Arc::new(Mutex::new(HashMap::<String, Draft>::new()));
+        let persist = |draft: Draft| {
+            let output = stored.clone();
+            // Deliberately drop the UI reply: accepted writes must survive it.
+            let _ = saver.queue_with(&executor, draft.key(), draft, move |batch| {
+                output.lock().unwrap().extend(batch.clone());
+                Ok(())
+            });
+            futures::executor::block_on(executor.submit(|| Ok(())))
+                .unwrap()
+                .unwrap();
+        };
+        let capture = |destination: &str| {
+            capture_draft(
+                destination,
+                true,
+                true,
+                ReviewEvent::Comment,
+                None,
+                entered_fields(),
+            )
+            .unwrap()
+        };
+        let previous = capture("gitturtle-fixture/previous");
+        let previous_key = previous.key();
+        persist(previous);
+
+        let mut deferred = DeferredDraft::default();
+        let mut old_ticket = None;
+        let destination = "milestone-qa";
+        for end in 1..=destination.len() {
+            let ticket = deferred.replace(capture(&format!(
+                "gitturtle-fixture/{}",
+                &destination[..end],
+            )));
+            if let Some(old) = old_ticket {
+                assert!(
+                    deferred.take(old).is_none(),
+                    "superseded timer published a prefix"
+                );
+            }
+            old_ticket = Some(ticket);
+            assert_eq!(stored.lock().unwrap().len(), 1);
+        }
+        assert_eq!(
+            finished_save_status(
+                Ok(capture("gitturtle-fixture/milestone-qa")),
+                deferred.is_pending(),
+                true,
+            ),
+            "Saving local draft…",
+            "an earlier successful save must not mark a pending edit saved",
+        );
+        let final_draft = deferred.take(old_ticket.unwrap()).unwrap();
+        let final_key = final_draft.key();
+        persist(final_draft);
+        assert!(!deferred.is_pending());
+        let saved = stored.lock().unwrap();
+        assert_eq!(
+            saved.len(),
+            2,
+            "intermediate destinations must not consume recovery slots"
+        );
+        assert!(saved.contains_key(&previous_key));
+        let Draft::Pull(final_draft) = &saved[&final_key] else {
+            unreachable!()
+        };
+        assert_eq!(
+            final_draft.repository.label(),
+            "gitturtle-fixture/milestone-qa"
+        );
+        assert_eq!(final_draft.title, entered_fields().title);
+        assert_eq!(final_draft.body, entered_fields().body);
+    }
+
+    #[test]
     fn correcting_destination_captures_existing_text_and_distinguishes_missing_selection() {
         let fields = entered_fields();
         let capture = |destination, creating| {
@@ -724,6 +961,77 @@ mod tests {
             finished_save_status(capture(), true, false),
             "Draft save failed — keep this window open or copy the text"
         );
+    }
+
+    #[test]
+    fn out_of_order_save_replies_cannot_replace_a_newer_failure_or_success() {
+        let capture = || {
+            capture_draft(
+                "fixture/repository",
+                true,
+                true,
+                ReviewEvent::Comment,
+                None,
+                entered_fields(),
+            )
+        };
+        let mut status = String::new();
+        // The failing saver retains its unsaved batch; there is no scheduled
+        // retry. An older success must not leave the form stuck on Saving.
+        apply_save_completion(&mut status, 2, 2, capture(), true, false);
+        let failure = status.clone();
+        assert!(failure.contains("failed"));
+        apply_save_completion(&mut status, 1, 2, capture(), true, true);
+        assert_eq!(status, failure);
+
+        apply_save_completion(&mut status, 3, 3, capture(), false, true);
+        assert_eq!(status, "Draft saved locally");
+        apply_save_completion(&mut status, 2, 3, capture(), false, false);
+        assert_eq!(status, "Draft saved locally");
+    }
+
+    #[gpui::test]
+    fn window_close_completion_survives_removed_window_until_app_shutdown(cx: &mut TestAppContext) {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        // Shutdown excludes tasks from its own foreground session to avoid
+        // reentering App. Preference completions come from the background.
+        cx.executor().set_block_on_ticks(100..=100);
+        let window = cx.add_window(|_, _| gpui::Empty);
+        let (complete, response) = futures::channel::oneshot::channel();
+        let mut response = Some(response);
+        cx.update(|cx| {
+            cx.on_window_closed(move |cx, id| {
+                if id == window.window_id() {
+                    retain_window_close_barrier(response.take().unwrap(), cx);
+                }
+            })
+            .detach();
+            window
+                .update(cx, |_, window, _| window.remove_window())
+                .unwrap();
+            assert!(cx.windows().is_empty());
+        });
+        assert!(
+            !complete.is_canceled(),
+            "closing the window dropped its final save completion",
+        );
+        let waited = Arc::new(AtomicBool::new(false));
+        let completed = waited.clone();
+        cx.executor()
+            .spawn(async move {
+                complete.send(Ok(())).unwrap();
+                completed.store(true, Ordering::SeqCst);
+            })
+            .detach();
+        assert!(!waited.load(Ordering::SeqCst));
+        // This executes GPUI's real shutdown observer collection and bounded
+        // future wait after the window and its view have already been released.
+        cx.quit();
+        assert!(waited.load(Ordering::SeqCst));
     }
 
     #[gpui::test]
