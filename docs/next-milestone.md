@@ -122,3 +122,41 @@ pending; a named AX tree alone is not a VoiceOver usability pass. System Dark,
 Increase Contrast OFF, Reduce Transparency OFF and Reduce Motion OFF have been
 restored after their checks; VoiceOver and keyboard navigation still need final
 restoration. Genuine application data remains backed up.
+
+## Corrected-candidate rechecks and startup finding
+
+Candidate `58f09ff690e0dbd863a8c29d6699640248d0a136` passed formatting,
+540 unique macOS workspace tests, strict Clippy and release compilation with an
+unchanged compiled-input map. The corresponding Linux snapshot passed533 unique
+tests, formatting, strict Clippy and release. These results remain tied to that
+source; subsequent startup/title/form fixes require their own combined gate.
+Its macOS package UUID is `36B80119-0910-39AD-80DE-FEEB8C918509`, executable SHA-256
+`ce21a4983f5cd4d9ee751c20e927b323cd53a6a6fdf461813ed536c70007169b`.
+
+N13 / P1: launching with saved tabs and no explicit CLI path aborted before the
+window appeared: the constructor tried to switch an existing tab and queried
+`Root` before the caller installed it. Startup now defers initial opening until
+after window-root construction. A real GPUI integration regression covers six
+cold saved tabs, restored branch scope and a distinct explicit CLI path.
+Full-app integration tests now resolve default persistence to a process-local
+temporary directory on every thread, preventing background/quit callbacks from
+writing genuine developer application state.
+
+The same candidate launched successfully with a new explicit fixture path
+(PID51556). Its native rechecks established actual focused AX text fields;
+GitHub opening without a crash; Tab entering the destination field; Ctrl-Shift-Tab
+remaining inside a modal; Escape from the description returning to the repository;
+PDF cold restoration at Before12/After20 with linked pages and125% After zoom;
+page-entry Escape restoring selected-file focus; and reader Find-first Escape
+precedence. With actual system settings, GIF Play became Pause, Reduce Motion ON
+stopped it and disabled Play, and OFF re-enabled Play without automatic resume.
+The original motion setting is OFF again. Screenshots are named `candidate58-*`.
+
+N7 follow-up / P2: native modal titles still read only “Alert dialog.” The styled
+component erased its title twice; bounded unwrapping in the base title reader
+now captures those ordinary titles. The actual component-title regression passes.
+N14 / P2: an invalid GitHub destination in the visible Create form produced a
+misleading request to choose/create a PR and no useful unsaved-draft status.
+Destination validation and draft feedback now preserve text, distinguish the
+invalid destination from absent PR selection, and reject stale save feedback.
+Three focused regressions pass; native recheck is pending. No account connection or hosted action was attempted.

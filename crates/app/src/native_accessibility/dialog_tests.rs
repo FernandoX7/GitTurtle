@@ -4,6 +4,7 @@ use gpui_kit::base::{Dialog as BaseDialog, DialogTitle, FocusTrapElement};
 use std::{cell::RefCell, rc::Rc};
 
 type Nodes = Rc<RefCell<Vec<gpui::accesskit::Node>>>;
+
 struct Observe<E> {
     inner: E,
     nodes: Nodes,
@@ -137,6 +138,57 @@ fn dialog_titles_follow_nested_layout_scopes_without_stale_names(cx: &mut TestAp
         ]
     );
     assert!(nodes.iter().all(|node| node.is_modal()));
+}
+
+#[gpui::test]
+fn rendered_component_titles_unwrap_the_erased_alert_and_dialog_title(cx: &mut TestAppContext) {
+    struct ComponentTitles {
+        nodes: Nodes,
+    }
+    impl Render for ComponentTitles {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.nodes.borrow_mut().clear();
+            // Component Dialog::title and AlertDialog::title retain AnyElement,
+            // then build their styled DialogTitle with .child(title). Calling
+            // .child with erased content adds an additional AnyElement layer.
+            let titles = [
+                "Command palette".into_any_element(),
+                String::from("GitHub pull requests").into_any_element(),
+                SharedString::from("After · Page 20 text").into_any_element(),
+            ];
+            div().children(titles.into_iter().enumerate().map(|(index, title)| {
+                Observe {
+                    inner: div()
+                        .id(("component-modal", index))
+                        .role(Role::AlertDialog)
+                        .focus_trap(("component-modal-trap", index), &cx.focus_handle())
+                        .child(gpui_kit::component::dialog::DialogTitle::new().child(title)),
+                    nodes: self.nodes.clone(),
+                }
+            }))
+        }
+    }
+    cx.update(gpui_kit::init);
+    let nodes: Nodes = Default::default();
+    let observed = nodes.clone();
+    let (_, cx) = cx.add_window_view(move |_, _| ComponentTitles { nodes });
+    cx.update(|window, cx| {
+        window.draw(cx).clear(cx);
+    });
+    let nodes = observed.borrow();
+    assert_eq!(
+        nodes.iter().map(|node| node.label()).collect::<Vec<_>>(),
+        [
+            Some("Command palette"),
+            Some("GitHub pull requests"),
+            Some("After · Page 20 text")
+        ]
+    );
+    assert!(
+        nodes
+            .iter()
+            .all(|node| node.role() == Role::AlertDialog && node.is_modal())
+    );
 }
 
 #[gpui::test]

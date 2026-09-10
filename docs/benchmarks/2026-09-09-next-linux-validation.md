@@ -1,5 +1,7 @@
 # Linux validation of the next milestone checkpoint
 
+Latest completed gate: **`58f09ff690e0dbd863a8c29d6699640248d0a136` passed Linux/aarch64 formatting, all 533 workspace tests, strict Clippy and the release build** (three opt-in tests ignored). [Final candidate evidence](#final-candidate-58f09ff) follows the preserved earlier checkpoint records below.
+
 Executed September 9, 2026 against commit `0a0fb5a2f42379743baedf6d6ab0c98f38c1d49a`. Linux/aarch64 formatting, workspace tests, strict Clippy and release gates passed without source changes or an overlay.
 
 ## Source and environment
@@ -68,3 +70,27 @@ The immutable `f9fb53e52809bbce5d2b73af2e844bfb5def99ef` archive (SHA-256 `7233f
 The workspace test gate **failed** in 26.712 s because the app test process aborted. The new full-app GitHub opening regression performed real serial-executor I/O while GPUI's test scheduler still forbade foreign-thread wakes. Its background reply triggered the scheduler assertion; the ensuing task cleanup aborted the process. The earlier profile-lock and portable-Find regressions passed, and core/preview suites finished successfully. Although 529 distinct passing test lines were observed across the process output, the app suite did not produce a normal result; this is not a completed passing test total. The required correction is confined to the integration test's supported GPUI real-I/O mode and draining both serial executors before teardown; production scheduling is unchanged.
 
 Evidence is retained in `/tmp/gitturtle-linux-f9fb53e-o5fsgcaq`, including archive, full logs, exact Docker argv, stage records, and manifest with the incomplete app-suite limitation. All task containers exited and were removed before further native performance work. `tests.log` SHA-256: `f0fe5df9aed6547ea387b46ec59381b141c681fc58f88f12dd919221e1f197c0`. No native Linux or hosted execution claim is made.
+
+## Final candidate 58f09ff
+
+All applicable Linux/aarch64 gates passed against immutable commit `58f09ff690e0dbd863a8c29d6699640248d0a136`. The source was exported with `git archive --format=tar 58f09ff690e0dbd863a8c29d6699640248d0a136`; archive SHA-256: `4991781fa6ded754910d7680c90ccdc827bdd24d9a570b469a5f3ca203909a1e`. The tar commit header independently matched. The same image ID, read-only source/root, task-owned caches, CPU/memory limits and network isolation described above were used, with no source overlay or version changes.
+
+| Exact command inside the container | Result | Wall time |
+| --- | --- | --- |
+| `cargo fetch --locked` | Passed | 0.442 s |
+| `cargo fmt --all -- --check` | Passed | 1.584 s |
+| `cargo test --locked --offline --workspace --no-fail-fast` | 533 unique passed; zero failed; three ignored | 24.900 s |
+| `cargo clippy --locked --offline --workspace --all-targets -- -D warnings` | Passed | 5.992 s |
+| `cargo build --release --locked --offline -p gitturtle` | Passed | 79.696 s |
+
+The complete passing total is **533**: app 256, core unit 23, core integration 209 and preview 45. The Mermaid child summary is counted once, and both doc-test suites contain zero tests. The three existing opt-in CPU/OpenPGP/loopback-sshd tests remain ignored. The earlier profile-lock, portable-Find and full-app GitHub opening regressions all passed in this combined run. The macOS-only NSWorkspace notification observer is not compiled or exercised on Linux; macOS adapter/Keychain/codec and actual assistive-technology evidence remain separate.
+
+Release SHA-256: `60668b0cd2aa1772ba39b8bc4bb3d78667be19bb25cbf05967067725a718b87b`. Identity checks passed in 0.232 s: ELF64 little-endian AArch64 PIE, with every listed shared library resolved. This candidate's release command ran successfully against its own archive; the recorded hash identifies that exact output. Compilation times include container overhead and warm caches, and are not application latency or performance measurements.
+
+Evidence is retained at `/tmp/gitturtle-linux-58f09ff-qxvwi9j1`: source archive, `source-info.json`, `run.py`, exact Docker argv and stage records, complete logs, parsed test identities and aggregate `manifest.json`. All named task containers exited and were removed. No Docker validation workload remains running; only task-owned caches remain. No Linux desktop window, Linux screen reader, hosted CI or hosted GitHub action was exercised.
+
+| Final log | SHA-256 |
+| --- | --- |
+| `tests.log` | `0a8e81b5d8ce2acc31ccb447ae492b04f2fbc2385f84b152123091c83b085fe0` |
+| `clippy.log` | `b9dc09eb9e043c16e188f5eb7c4a437bb1d0c3310d52b1aa704972f339492c30` |
+| `release.log` | `7416be5cf424b8889b22de18789ba464193df7dfb9a0028ef39a16311d98863f` |

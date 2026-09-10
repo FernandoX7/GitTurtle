@@ -44,15 +44,7 @@ pub(crate) fn capture_title(children: &mut [AnyElement]) {
     let mut text = String::new();
     const MAX_BYTES: usize = 16 * 1024;
     for child in children {
-        let value = if let Some(value) = child.downcast_mut::<SharedString>() {
-            Some(value.clone())
-        } else if let Some(value) = child.downcast_mut::<&'static str>() {
-            Some(SharedString::from(*value))
-        } else {
-            child
-                .downcast_mut::<Text>()
-                .map(|value| value.text().clone())
-        };
+        let value = readable_text(child, 0);
         let Some(value) = value else {
             continue;
         };
@@ -71,5 +63,26 @@ pub(crate) fn capture_title(children: &mut [AnyElement]) {
     }
     if !text.is_empty() {
         *label.borrow_mut() = Some(text.into());
+    }
+}
+
+fn readable_text(element: &mut AnyElement, depth: usize) -> Option<SharedString> {
+    // Component Dialog and AlertDialog first erase their title and then pass
+    // it through ParentElement::child, which wraps AnyElement again. Preserve
+    // those plain titles without traversing arbitrary rich component trees.
+    if depth == 16 {
+        return None;
+    }
+    if let Some(inner) = element.downcast_mut::<AnyElement>() {
+        return readable_text(inner, depth + 1);
+    }
+    if let Some(value) = element.downcast_mut::<SharedString>() {
+        Some(value.clone())
+    } else if let Some(value) = element.downcast_mut::<&'static str>() {
+        Some(SharedString::from(*value))
+    } else {
+        element
+            .downcast_mut::<Text>()
+            .map(|value| value.text().clone())
     }
 }

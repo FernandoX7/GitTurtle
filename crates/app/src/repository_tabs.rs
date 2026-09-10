@@ -1755,6 +1755,177 @@ mod tests {
     use ::core::prelude::v1::test;
 
     #[gpui::test]
+    async fn startup_installs_root_before_restoring_six_tabs_and_respects_initial_path(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::component::Root;
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.executor().allow_parking();
+        let fixture = tempfile::tempdir().unwrap();
+        let settings = preferences::settings_path().unwrap();
+        assert!(
+            settings
+                .parent()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("gitturtle-app-tests-")
+        );
+        let paths: Vec<_> = (0..7)
+            .map(|index| fixture.path().join(format!("repository-{index}")))
+            .collect();
+        for path in [&paths[3], &paths[6]] {
+            let repo = GitRepository::init(path, "main").unwrap();
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(repo.path())
+                .args([
+                    "-c",
+                    "user.name=Startup Fixture",
+                    "-c",
+                    "user.email=startup@example.invalid",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "--allow-empty",
+                    "-m",
+                    "Initial fixture commit",
+                ])
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+        });
+        // The first initial path is the saved active repository; the second
+        // represents an explicit CLI path that takes precedence over that tab.
+        for initial_index in [3, 6] {
+            let mut saved = Session {
+                version: 1,
+                active: 3,
+                tabs: paths[..6]
+                    .iter()
+                    .map(|path| SavedTab {
+                        path: SavedPath::new(path),
+                        bookmark: Bookmark::default(),
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            saved.tabs[3].bookmark.scope = Some((
+                "Saved main scope".into(),
+                SavedScope::Branch {
+                    name: "main".into(),
+                    remote: false,
+                },
+            ));
+            let initial = paths[initial_index].clone();
+            let expected = initial.canonicalize().unwrap();
+            let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+            let observed = captured.clone();
+            let (_, window_cx) = cx.add_window_view(move |window, cx| {
+                let app = cx.new(|cx| {
+                    let app = GitTurtle::new(
+                        Some(initial),
+                        Preferences::default(),
+                        saved,
+                        activity::State::default(),
+                        recovery_drafts::State::default(),
+                        window,
+                        cx,
+                    );
+                    assert!(app.path.is_none(), "opening must wait for the actual Root");
+                    app
+                });
+                *captured.borrow_mut() = Some(app.clone());
+                Root::new(app, window, cx)
+            });
+            let app = observed.borrow().as_ref().unwrap().clone();
+            window_cx.executor().run_until_parked();
+            window_cx.update(|window, cx| {
+                assert!(!window.has_active_dialog(cx));
+                app.update(cx, |app, _| {
+                    assert_eq!(
+                        app.path.as_ref().map(|path| path.canonicalize().unwrap()),
+                        Some(expected.clone())
+                    );
+                    assert_eq!(
+                        app.repository_tabs.tabs.len(),
+                        if initial_index == 3 { 6 } else { 7 }
+                    );
+                    assert_eq!(
+                        app.scope.as_ref().map(|scope| scope.0.as_str()),
+                        if initial_index == 3 {
+                            Some("Saved main scope")
+                        } else {
+                            None
+                        }
+                    );
+                });
+            });
+            // Drain actual worker replies and persistence before destroying the
+            // test platform; it must not receive wakes from an old executor.
+            for _ in 0..8 {
+                let tasks = window_cx.update(|_, cx| {
+                    app.update(cx, |app, _| {
+                        [
+                            app.task.take(),
+                            app.status_task.take(),
+                            app.integration_task.take(),
+                            app.repository_tabs.save_pending.take(),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<_>>()
+                    })
+                });
+                if tasks.is_empty() {
+                    break;
+                }
+                for task in tasks {
+                    task.await;
+                }
+                window_cx.executor().run_until_parked();
+            }
+            window_cx.update(|_, cx| {
+                app.update(cx, |app, _| {
+                    assert_eq!(
+                        app.repository
+                            .as_ref()
+                            .map(|repo| repo.path().canonicalize().unwrap()),
+                        Some(expected.clone())
+                    );
+                    app.automatic.reset();
+                    app._display_preferences_task = None;
+                })
+            });
+            let (operations, preferences, worker) = app.read_with(window_cx, |app, _| {
+                (
+                    app.operations.submit_read(|| Ok(())),
+                    app.preferences_writer.submit_read(|| Ok(())),
+                    app.worker.submit(Job::ReleaseHistory),
+                )
+            });
+            operations.await.unwrap().unwrap();
+            preferences.await.unwrap().unwrap();
+            worker.await.unwrap().unwrap();
+            window_cx.executor().run_until_parked();
+        }
+    }
+
+    #[gpui::test]
     fn shared_inputs_start_empty_for_new_tabs_and_restore_independent_warm_queries(
         cx: &mut TestAppContext,
     ) {

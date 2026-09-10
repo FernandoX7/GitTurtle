@@ -56,6 +56,86 @@ struct Confirmation {
     action: Action,
     account: String,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DraftIssue {
+    Destination,
+    Selection,
+}
+impl DraftIssue {
+    fn message(self) -> &'static str {
+        match self {
+            Self::Destination => {
+                "Enter the destination as owner/repository or a GitHub.com remote URL."
+            }
+            Self::Selection => "Choose a pull request or select New pull request first.",
+        }
+    }
+    fn save_message(self) -> &'static str {
+        match self {
+            Self::Destination => {
+                "Draft not saved: enter a valid owner/repository destination. Keep this window open or copy your text."
+            }
+            Self::Selection => {
+                "Draft not saved: choose a pull request or select New pull request. Keep this window open or copy your text."
+            }
+        }
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DraftFields {
+    title: String,
+    body: String,
+    head: String,
+    base: String,
+}
+fn capture_draft(
+    destination: &str,
+    creating: bool,
+    draft: bool,
+    event: ReviewEvent,
+    pull: Option<&PullRequest>,
+    fields: DraftFields,
+) -> Result<Draft, DraftIssue> {
+    if !creating && pull.is_none() {
+        return Err(DraftIssue::Selection);
+    }
+    let repository = Repository::parse(destination).map_err(|_| DraftIssue::Destination)?;
+    if creating {
+        Ok(Draft::Pull(NewPull {
+            repository,
+            title: fields.title,
+            body: fields.body,
+            head: fields.head,
+            base: fields.base,
+            draft,
+            expected_head: None,
+            expected_base: None,
+        }))
+    } else {
+        Ok(Draft::Review(ReviewDraft {
+            pull: pull.expect("selection checked above").capture(repository),
+            body: fields.body,
+            event,
+            comments: vec![],
+        }))
+    }
+}
+fn empty_pull_draft(draft: &Draft) -> bool {
+    matches!(draft, Draft::Pull(pull) if pull.title.is_empty() && pull.body.is_empty())
+}
+fn finished_save_status(
+    current: Result<Draft, DraftIssue>,
+    pending: bool,
+    succeeded: bool,
+) -> &'static str {
+    match current {
+        Err(issue) => issue.save_message(),
+        Ok(draft) if empty_pull_draft(&draft) => "",
+        Ok(_) if !succeeded => "Draft save failed — keep this window open or copy the text",
+        Ok(_) if pending => "Saving local draft…",
+        Ok(_) => "Draft saved locally",
+    }
+}
 struct Panel {
     owner: WeakEntity<GitTurtle>,
     repo: GitRepository,
@@ -85,6 +165,7 @@ struct Panel {
     task: Option<Task<()>>,
     saved: Vec<Draft>,
     save_status: String,
+    draft_issue: Option<DraftIssue>,
     saver: commit_drafts::CoalescingSaver<String, Draft>,
     subscriptions: Vec<Subscription>,
     templates: Vec<github::Template>,
@@ -106,7 +187,7 @@ impl Panel {
             body:cx.new(|cx|TextareaState::new(window,cx).rows(5).placeholder("Description or review text — saved locally")),
             rows:vec![],page:1,has_next:false,pull:None,status:None,description:None,create:false,draft:true,event:ReviewEvent::Comment,discussion:true,
             account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),error:None,pending:false,writing:false,closed:false,
-            confirm:None,control:None,task:None,saved:vec![],save_status:String::new(),saver:Default::default(),subscriptions:vec![],templates:vec![],attempts:vec![],local_control:None,
+            confirm:None,control:None,task:None,saved:vec![],save_status:String::new(),draft_issue:None,saver:Default::default(),subscriptions:vec![],templates:vec![],attempts:vec![],local_control:None,
         };
         for input in [this.head.clone(), this.base.clone(), this.title.clone()] {
             this.subscriptions.push(cx.subscribe_in(
@@ -133,7 +214,7 @@ impl Panel {
         this.subscriptions.push(cx.subscribe_in(
             &this.destination,
             window,
-            |this, _, event: &InputEvent, _, cx| {
+            |this, _, event: &InputEvent, window, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.rows.clear();
                     this.pull = None;
@@ -142,6 +223,7 @@ impl Panel {
                     this.confirm = None;
                     this.page = 1;
                     this.has_next = false;
+                    this.save_draft(window, cx);
                     cx.notify();
                 }
             },
@@ -206,32 +288,37 @@ impl Panel {
     fn destination(&self, cx: &App) -> anyhow::Result<Repository> {
         Repository::parse(&self.destination.read(cx).value())
     }
-    fn current_draft(&self, cx: &App) -> Option<Draft> {
-        if self.create {
-            Some(Draft::Pull(NewPull {
-                repository: self.destination(cx).ok()?,
+    fn current_draft(&self, cx: &App) -> Result<Draft, DraftIssue> {
+        capture_draft(
+            &self.destination.read(cx).value(),
+            self.create,
+            self.draft,
+            self.event,
+            self.pull.as_ref(),
+            DraftFields {
                 title: self.title.read(cx).value().to_string(),
                 body: self.body.read(cx).value().to_string(),
                 head: self.head.read(cx).value().to_string(),
                 base: self.base.read(cx).value().to_string(),
-                draft: self.draft,
-                expected_head: None,
-                expected_base: None,
-            }))
-        } else {
-            Some(Draft::Review(ReviewDraft {
-                pull: self.pull.as_ref()?.capture(self.destination(cx).ok()?),
-                body: self.body.read(cx).value().to_string(),
-                event: self.event,
-                comments: vec![],
-            }))
-        }
+            },
+        )
     }
     fn save_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(draft) = self.current_draft(cx) else {
-            return;
+        let draft = match self.current_draft(cx) {
+            Ok(draft) => draft,
+            Err(issue) => {
+                self.save_status = issue.save_message().into();
+                if self.draft_issue.is_some() {
+                    self.draft_issue = Some(issue);
+                }
+                cx.notify();
+                return;
+            }
         };
-        if draft.text().is_empty() && matches!(&draft,Draft::Pull(p) if p.title.is_empty()) {
+        self.draft_issue = None;
+        if empty_pull_draft(&draft) {
+            self.save_status.clear();
+            cx.notify();
             return;
         }
         let key = draft.key();
@@ -240,26 +327,31 @@ impl Panel {
         } else {
             self.saved.push(draft.clone());
         }
-        let response = self
-            .owner
-            .update(cx, |owner, _| {
-                self.saver
-                    .queue_with(&owner.preferences_writer, key, draft, drafts::save_batch)
-            })
-            .ok()
-            .flatten();
+        let response = match self.owner.update(cx, |owner, _| {
+            self.saver
+                .queue_with(&owner.preferences_writer, key, draft, drafts::save_batch)
+        }) {
+            Ok(response) => response,
+            Err(_) => {
+                self.save_status =
+                    "Draft save failed — keep this window open or copy the text".into();
+                cx.notify();
+                return;
+            }
+        };
         self.save_status = "Saving local draft…".into();
         if let Some(response) = response {
             cx.spawn_in(window, async move |this, cx| {
                 let result = response.await;
                 let _ = this.update_in(cx, |this, _, cx| {
-                    match result {
-                        Ok(Ok(())) => this.save_status = "Draft saved locally".into(),
-                        _ => {
-                            this.save_status =
-                                "Draft save failed — keep this window open or copy the text".into();
-                        }
-                    }
+                    // A previous destination's reply must not claim the
+                    // currently invalid or newly edited form has been saved.
+                    this.save_status = finished_save_status(
+                        this.current_draft(cx),
+                        this.saver.is_pending(),
+                        matches!(result, Ok(Ok(()))),
+                    )
+                    .into();
                     cx.notify();
                 });
             })
@@ -345,6 +437,10 @@ impl Panel {
         },Err(error)=>this.error=Some(format!("{error:#}"))},window,cx);
     }
     fn create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.create {
+            self.save_draft(window, cx);
+            return;
+        }
         self.save_draft(window, cx);
         self.create = true;
         self.pull = None;
@@ -354,6 +450,7 @@ impl Panel {
         self.body
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.notice=Some("Use a branch already published to GitHub. Creating a PR never pushes a branch. Choose Draft or Ready, then review the destination.".into());
+        self.save_draft(window, cx);
         cx.notify();
     }
     fn load_templates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -362,10 +459,16 @@ impl Panel {
         self.run(false,move|_|github::local_templates(&repo,&revision),|result,this,_,_|match result {Ok(templates)=>{this.templates=templates;this.notice=Some("Templates came from the locally available base revision. Choose one to append its exact text; repository HTML is never executed.".into());},Err(error)=>this.error=Some(format!("{error:#}"))},window,cx);
     }
     fn review_submission(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(draft) = self.current_draft(cx) else {
-            self.error = Some("Choose a pull request or create a new one first.".into());
-            return;
+        let draft = match self.current_draft(cx) {
+            Ok(draft) => draft,
+            Err(issue) => {
+                self.draft_issue = Some(issue);
+                self.save_status = issue.save_message().into();
+                cx.notify();
+                return;
+            }
         };
+        self.draft_issue = None;
         if let Draft::Pull(pull) = draft {
             self.run(
                 false,
@@ -507,6 +610,7 @@ impl Render for Panel {
             .when_some(self.account.as_ref(),|element,account|element.child(label("github-account",format!("Account: {account} · github.com"))))
             .when_some(self.notice.as_ref(),|element,notice|element.child(label("github-notice",notice.clone()).role(Role::Status).a11y_synthetic_children(native_accessibility::polite).text_color(rgb(p.muted))))
             .when_some(self.error.as_ref(),|element,error|element.child(label("github-error",error.clone()).role(Role::Alert).a11y_synthetic_children(native_accessibility::assertive).text_color(rgb(p.warning))))
+            .when_some(self.draft_issue,|element,issue|element.child(label("github-draft-validation",issue.message()).role(Role::Alert).a11y_synthetic_children(native_accessibility::assertive).text_color(rgb(p.warning))))
             .when(pending,|element|element.child(div().flex().gap_2().child(label("github-busy",if self.writing {"Sending the reviewed GitHub action…"}else{"Loading the explicit request…"}).role(Role::Status).a11y_synthetic_children(|builder| {native_accessibility::polite(builder); builder.parent_node().set_busy();})).child(button("github-cancel","Cancel","",false).on_click(cx.listener(|this,_,_,cx|{if let Some(control)=&this.control{control.cancel();}
                     if let Some(control)=&this.local_control{control.cancel();}this.notice=Some("Cancellation requested. A submitted action may already have reached GitHub; it will not be replayed.".into());cx.notify();})))))
             .when(!self.create,|element|element.child(div().id("github-pr-list").max_h(px(175.)).overflow_y_scroll().flex().flex_col().gap_1().children(self.rows.iter().map(|pull|{
@@ -529,7 +633,7 @@ impl Render for Panel {
             .when(self.create||self.pull.is_some(),|element|element
                 .when(!self.create,|element|element.child(div().flex().flex_wrap().gap_2().child(button("github-discussion","Discussion comment","",self.discussion).toggled(self.discussion).disabled(pending).on_click(cx.listener(|this,_,_,cx|{this.discussion=true;this.confirm=None;cx.notify();}))).children([ReviewEvent::Comment,ReviewEvent::Approve,ReviewEvent::RequestChanges].map(|event|button(event.label(),format!("Review: {}",event.label()),"",!self.discussion&&self.event==event).toggled(!self.discussion&&self.event==event).disabled(pending).on_click(cx.listener(move|this,_,window,cx|{this.discussion=false;this.event=event;this.confirm=None;this.save_draft(window,cx);}))))))
                 .child(Textarea::new(&self.body).aria_label(if self.create {"Pull request description"}else{"Comment or review draft"}).disabled(pending))
-                .child(label("github-draft-status",self.save_status.clone()).text_color(rgb(p.muted)))
+                .child(label("github-draft-status",self.save_status.clone()).role(Role::Status).a11y_synthetic_children(native_accessibility::polite).text_color(rgb(p.muted)))
                 .child(button("github-review-submit","Review outbound action…","",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.review_submission(window,cx)))))
             .when_some(self.confirm.as_ref(),|element,action|element.child(div().p_3().border_1().border_color(rgb(p.warning)).flex().flex_col().gap_2()
                 .child(label("github-confirm-destination",format!("Send this action to {} · account {}\nThe captured text will be posted using the reviewed account. If an earlier attempt had an uncertain outcome, inspect GitHub before sending again.",action.action.destination(),action.account)))
@@ -545,6 +649,82 @@ mod tests {
     use core::prelude::v1::test;
     use gpui_kit::component::Root;
     use std::{cell::RefCell, rc::Rc};
+
+    fn entered_fields() -> DraftFields {
+        DraftFields {
+            title: "Keep this title".into(),
+            body: "Exact body\r\n  with spaces and café\n".into(),
+            head: "topic/branch".into(),
+            base: "main".into(),
+        }
+    }
+
+    #[test]
+    fn correcting_destination_captures_existing_text_and_distinguishes_missing_selection() {
+        let fields = entered_fields();
+        let capture = |destination, creating| {
+            capture_draft(
+                destination,
+                creating,
+                true,
+                ReviewEvent::Comment,
+                None,
+                fields.clone(),
+            )
+        };
+        for invalid in ["", "invalid destination", "owner"] {
+            assert_eq!(capture(invalid, true).unwrap_err(), DraftIssue::Destination);
+        }
+        assert_eq!(
+            capture("invalid destination", false).unwrap_err(),
+            DraftIssue::Selection
+        );
+        assert_eq!(
+            capture("fixture/repository", false).unwrap_err(),
+            DraftIssue::Selection
+        );
+        let Draft::Pull(corrected) = capture("fixture/repository", true).unwrap() else {
+            panic!("create form produces a pull request draft");
+        };
+        assert_eq!(corrected.repository.label(), "fixture/repository");
+        assert_eq!(corrected.title, fields.title);
+        assert_eq!(corrected.body, fields.body);
+        assert_eq!(corrected.head, fields.head);
+        assert_eq!(corrected.base, fields.base);
+        assert!(corrected.draft);
+        assert_eq!(corrected.expected_head, None);
+        assert_eq!(corrected.expected_base, None);
+    }
+
+    #[test]
+    fn save_completion_keeps_invalid_destination_and_failed_storage_unsaved() {
+        assert_eq!(
+            finished_save_status(Err(DraftIssue::Destination), false, true),
+            DraftIssue::Destination.save_message(),
+        );
+        let capture = || {
+            capture_draft(
+                "fixture/repository",
+                true,
+                true,
+                ReviewEvent::Comment,
+                None,
+                entered_fields(),
+            )
+        };
+        assert_eq!(
+            finished_save_status(capture(), true, true),
+            "Saving local draft…"
+        );
+        assert_eq!(
+            finished_save_status(capture(), false, true),
+            "Draft saved locally"
+        );
+        assert_eq!(
+            finished_save_status(capture(), true, false),
+            "Draft save failed — keep this window open or copy the text"
+        );
+    }
 
     #[gpui::test]
     async fn opening_github_from_an_active_repository_update_defers_local_reads(

@@ -6,7 +6,7 @@ use crate::{
     appearance::{Density, ThemeChoice},
     columns::ColumnSettings,
 };
-use anyhow::{Context, Result, anyhow, ensure};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
@@ -388,12 +388,14 @@ impl Preferences {
     }
 }
 
+#[cfg(not(test))]
 fn absolute_environment_path(name: &str) -> Option<PathBuf> {
     std::env::var_os(name)
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
 }
 
+#[cfg(not(test))]
 pub(super) fn settings_path() -> Result<PathBuf> {
     #[cfg(target_os = "macos")]
     let directory = absolute_environment_path("HOME")
@@ -406,7 +408,22 @@ pub(super) fn settings_path() -> Result<PathBuf> {
     let directory = absolute_environment_path("APPDATA").map(|appdata| appdata.join("GitTurtle"));
     directory
         .map(|directory| directory.join("preferences.json"))
-        .ok_or_else(|| anyhow!("The user settings directory is unavailable"))
+        .ok_or_else(|| anyhow::anyhow!("The user settings directory is unavailable"))
+}
+
+// Full-app tests run real background and quit-time preference writes. Resolve
+// their defaults here, on every thread, without changing process environment or
+// allowing an integration fixture to replace a developer's saved session.
+#[cfg(test)]
+pub(super) fn settings_path() -> Result<PathBuf> {
+    static DIRECTORY: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    let directory = DIRECTORY.get_or_init(|| {
+        tempfile::Builder::new()
+            .prefix("gitturtle-app-tests-")
+            .tempdir()
+            .expect("create isolated test preferences")
+    });
+    Ok(directory.path().join("preferences.json"))
 }
 
 struct PendingFile(PathBuf);

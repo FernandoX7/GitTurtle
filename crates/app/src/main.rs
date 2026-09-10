@@ -667,7 +667,11 @@ impl GitTurtle {
             cx,
         );
         if let Some(path) = initial {
-            this.open(path, None, window, cx);
+            // Saved tabs consult the window's dialog/sheet root while opening.
+            // The caller installs Root only after this constructor returns.
+            cx.defer_in(window, move |this, window, cx| {
+                this.open(path, None, window, cx);
+            });
         }
         this
     }
