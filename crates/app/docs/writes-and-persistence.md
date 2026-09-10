@@ -30,7 +30,7 @@ Amend retains edited fields on failure and the exact original message when uncha
 
 Scope drafts to the resolved canonical worktree after discovery. Persist Title and Description independently from settings/recents through the serialized, coalescing draft saver. Build the message as title, blank line, description without trimming user formatting. Retain text on failure; clear it only when a successful commit matches the submitted text. A failed draft save must retain pending data without overwriting a newer edit with the older failed snapshot.
 
-The commit-draft saver keeps its accepted completion at app lifetime. Normal application shutdown awaits that completion even after the final window disappears, including a coalesced final edit when the preference queue is full. An earlier repository-session save is not a substitute for the composer save; native shutdown still has the toolkit's bounded grace period.
+Commit and recovery draft savers keep their actual accepted completion at app lifetime. Normal application shutdown awaits that completion even after the final window disappears, including a coalesced final edit when the preference queue is full. An earlier repository-session save or an extra queue barrier is not a substitute for the draft save. GPUI allows a 200 ms shutdown grace; a confirmed Saved result remains the durable boundary for slow or failed I/O and forced termination.
 
 Persist normalized column widths/visibility, settings, recents and drafts outside repositories. Do not apply stale save replies over newer UI choices. Repository identity saves use the operation executor, not the app-preferences file.
 

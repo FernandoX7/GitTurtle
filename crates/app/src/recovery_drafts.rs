@@ -3,13 +3,19 @@
 //! bounds and storage so large resolutions cannot crowd out ordinary drafts.
 use crate::*;
 use anyhow::{Context as _, Result, ensure};
+use futures::{
+    FutureExt,
+    future::{BoxFuture, Shared},
+};
 use gpui_kit::component::{WindowExt, dialog::DialogFooter};
 use gpui_kit::prelude::FluentBuilder;
 use serde::{Deserialize, Serialize};
 use std::{
+    cell::RefCell,
     fs::File,
     io::Read,
     path::Path,
+    rc::Rc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -17,6 +23,7 @@ const MAX_ENTRIES: usize = 256;
 const MAX_BYTES: usize = 64 * 1024 * 1024;
 const MAX_TEXT: usize = 2 * 1024 * 1024;
 type Batch = HashMap<Key, Option<Draft>>;
+type SaveCompletion = Shared<BoxFuture<'static, std::result::Result<(), String>>>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(super) struct Key {
@@ -91,6 +98,7 @@ pub(super) struct Draft {
 pub(super) struct State {
     entries: HashMap<Key, Draft>,
     saver: commit_drafts::CoalescingSaver<Key, Option<Draft>>,
+    save_completion: Rc<RefCell<Option<SaveCompletion>>>,
     save_generation: u64,
     pub error: Option<String>,
     browser: Option<WeakEntity<RecoveryList>>,
@@ -113,6 +121,41 @@ fn now() -> u64 {
 }
 
 impl State {
+    /// Keep the actual accepted save independent of the window and its view.
+    /// The toolkit still bounds the total native shutdown wait to 200 ms.
+    fn install_quit_observer(&self, cx: &mut App) {
+        let completion = self.save_completion.clone();
+        cx.on_app_quit(move |_| {
+            let completion = completion.borrow().clone();
+            async move {
+                if let Some(completion) = completion {
+                    let _ = completion.await;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn queue_save(
+        &self,
+        writer: &SerialExecutor,
+        key: Key,
+        draft: Option<Draft>,
+        save: impl FnMut(&Batch) -> Result<()> + Send + 'static,
+    ) -> Option<SaveCompletion> {
+        let response = self.saver.queue_with(writer, key, draft, save)?;
+        let completion = response
+            .map(|result| match result {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(error)) => Err(format!("{error:#}")),
+                Err(_) => Err("Save ended without confirmation".into()),
+            })
+            .boxed()
+            .shared();
+        *self.save_completion.borrow_mut() = Some(completion.clone());
+        Some(completion)
+    }
+
     fn rows(&self) -> Vec<RecoveryRow> {
         let mut rows: Vec<_> = self
             .entries
@@ -294,12 +337,16 @@ pub(super) fn latest_rewrite(root: &Path) -> Result<SavedRewrite> {
 }
 
 impl GitTurtle {
-    /// GPUI waits up to its own 200 ms shutdown budget for observers. This
-    /// accepted queue barrier gives normal quit a chance to finish draft saves;
-    /// only an already confirmed Saved state proves durability on termination.
+    /// Await the accepted recovery save after normal quit or last-window close,
+    /// without needing another slot in the serialized preference queue. Only a
+    /// confirmed Saved state proves durability beyond GPUI's 200 ms quit grace.
     pub(super) fn install_draft_quit_observer(&mut self, cx: &mut Context<Self>) {
+        self.recovery_drafts.install_quit_observer(cx);
+        // Preserve the existing best-effort drain for other preferences during
+        // ordinary Quit. Recovery durability no longer depends on this extra
+        // queue slot or on the view surviving until the quit callback.
         self.subscriptions.push(cx.on_app_quit(|this, _| {
-            let barrier = preference_barrier(&this.preferences_writer);
+            let barrier = this.preferences_writer.submit(|| Ok(()));
             async move {
                 let _ = barrier.await;
             }
@@ -376,8 +423,7 @@ impl GitTurtle {
         }
         let response =
             self.recovery_drafts
-                .saver
-                .queue_with(&self.preferences_writer, key, draft, |batch| {
+                .queue_save(&self.preferences_writer, key, draft, |batch| {
                     save_at(batch, &store_path()?)
                 });
         if let Some(response) = response {
@@ -386,15 +432,13 @@ impl GitTurtle {
             let generation = self.recovery_drafts.save_generation;
             self.recovery_drafts.error = None;
             cx.spawn_in(window, async move |this, cx| {
-                let result = response
-                    .await
-                    .unwrap_or_else(|_| Err(anyhow::anyhow!("Save ended without confirmation")));
+                let result = response.await;
                 let _ = this.update_in(cx, |this, window, cx| {
                     // A newer accepted batch may have finished before this UI
                     // reply was polled. Do not clear its failure with an older
                     // success or replace a newer success with an old failure.
                     if this.recovery_drafts.save_generation == generation {
-                        this.recovery_drafts.error = result.err().map(|error| format!("{error:#}"));
+                        this.recovery_drafts.error = result.err();
                     }
                     this.refresh_recovery_status(cx);
                     window.refresh();
@@ -477,10 +521,6 @@ impl GitTurtle {
                 })
         });
     }
-}
-
-fn preference_barrier(writer: &SerialExecutor) -> futures::channel::oneshot::Receiver<Result<()>> {
-    writer.submit(|| Ok(()))
 }
 
 struct RecoveryList {
@@ -805,54 +845,84 @@ mod tests {
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
-    #[test]
-    fn normal_quit_barrier_finishes_latest_coalesced_text_after_a_dropped_reply() {
-        let path = fixture("quit-barrier");
+    #[gpui::test]
+    async fn final_recovery_draft_survives_removed_window_and_full_save_queue(
+        cx: &mut TestAppContext,
+    ) {
+        struct RecoveryEditor {
+            recovery: State,
+        }
+        impl Render for RecoveryEditor {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+            }
+        }
+
+        cx.executor().allow_parking();
+        cx.executor().set_block_on_ticks(100..=100);
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("recovery-drafts.json");
         let writer = SerialExecutor::new("recovery-quit-fixture");
-        let saver = commit_drafts::CoalescingSaver::default();
-        let (started, running) = std::sync::mpsc::channel();
+        let (started, running) = futures::channel::oneshot::channel();
         let (release, gate) = std::sync::mpsc::channel();
+        let blocker = writer.submit(move || {
+            let _ = started.send(());
+            gate.recv()?;
+            Ok(())
+        });
+        running.await.unwrap();
+        let queued: Vec<_> = (0..7).map(|_| writer.submit(|| Ok(()))).collect();
+        let (editor, window_cx) = cx.add_window_view(|_, cx| {
+            let recovery = State::default();
+            recovery.install_quit_observer(cx);
+            RecoveryEditor { recovery }
+        });
         let output = path.clone();
-        let mut first = true;
-        let key = key('a');
-        let response = saver
-            .queue_with(
+        let identity = key('a');
+        editor.update(window_cx, |editor, _| {
+            drop(editor.recovery.queue_save(
                 &writer,
-                key.clone(),
-                Some(draft(key.clone(), "first")),
-                move |batch| {
-                    if first {
-                        first = false;
-                        started.send(()).unwrap();
-                        gate.recv().unwrap();
-                    }
-                    save_at(batch, &output)
-                },
-            )
-            .unwrap();
-        drop(response);
-        running.recv().unwrap();
-        assert!(
-            saver
-                .queue_with(
-                    &writer,
-                    key.clone(),
-                    Some(draft(key.clone(), "latest before quit\r\n")),
-                    |_| unreachable!()
-                )
-                .is_none()
-        );
-        let mut barrier = preference_barrier(&writer);
-        assert!(
-            barrier.try_recv().unwrap().is_none(),
-            "Quit barrier must wait for accepted writes"
-        );
-        release.send(()).unwrap();
-        futures::executor::block_on(barrier).unwrap().unwrap();
+                identity.clone(),
+                Some(draft(identity.clone(), "first")),
+                move |batch| save_at(batch, &output),
+            ));
+            assert!(
+                editor
+                    .recovery
+                    .queue_save(
+                        &writer,
+                        identity.clone(),
+                        Some(draft(
+                            identity.clone(),
+                            "Final resolution 🐢\r\n  exact text\n"
+                        )),
+                        |_| unreachable!()
+                    )
+                    .is_none()
+            );
+        });
+        assert!(writer.submit(|| Ok(())).await.unwrap().is_err());
+        let weak = editor.downgrade();
+        drop(editor);
+        window_cx.update(|window, _| window.remove_window());
+        assert!(weak.upgrade().is_none());
+        assert!(!path.exists());
+        window_cx
+            .executor()
+            .spawn(async move {
+                release.send(()).unwrap();
+            })
+            .detach();
+        cx.quit();
+        // GPUI shutdown must finish the actual accepted save before we drain
+        // any of the external executor replies below.
         assert_eq!(
-            read(&path).unwrap().get(&key).unwrap().text,
-            "latest before quit\r\n"
+            read(&path).unwrap().get(&identity).unwrap().text.as_bytes(),
+            "Final resolution 🐢\r\n  exact text\n".as_bytes()
         );
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        blocker.await.unwrap().unwrap();
+        for response in queued {
+            response.await.unwrap().unwrap();
+        }
     }
 }

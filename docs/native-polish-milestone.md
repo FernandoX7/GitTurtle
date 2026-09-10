@@ -54,6 +54,43 @@ existing slim graph retains readable commit metadata and visible lane controls.
 | U4 / P1 | Destination edit can drop the captured deferred review draft before its 500 ms quiet save | Flush captured draft before scope invalidation; preserve full inline draft text and positions | Regression pending |
 | U5 / P2 | Projects headings, field labels, destination and errors are drawn text without readable or live semantics in pinned toolkit | Explicit readable names/roles and scoped error announcements | Pending native check |
 | U6 / P1 | Accepted commit-draft saves lack app-lifetime shutdown ownership; closing last tab also lacks explicit Projects focus | Await accepted/coalesced draft completion at shutdown and restore visible root focus | Actual final-window/full-queue draft regression and last-tab focus regression passed; native recheck pending |
+| U7 / P1 | Native Return in the new PR file list or selected patch dismisses the dialog instead of opening content/composition | Scoped review actions and visible focus destinations | Reproduced in the intermediate release; correction and native recheck pending |
+| U8 / P1 | Fixed PR modal dimensions exceed the minimum window; description editor collapses in the ordinary window | Viewport-bounded modal, scrollable body and explicit editor heights | Native description reproduction and toolkit sizing review; recheck pending |
+| U9 / P2 | At 1000 × 680 with 18-point interface text, inspector hash/actions clip, Message is below the metadata cutoff, and selected rows can leave view after resizing | Responsive inspector and selection reveal on viewport/text-size changes | Reproduced in the intermediate release; correction pending |
+| U10 / P2 | Small colored status words miss 4.5:1 contrast in some selected/hover states | Readable primary text for status words; preserve distinct colored icons | Resolved palette audit; native corrected-state recheck pending |
+| U11 / P2 | At minimum size with enlarged text, Projects Clone Tab navigation focuses a form field below the visible viewport | Reveal the newly focused form control | Reproduced with native keyboard and visible screenshot; correction pending |
+
+## Intermediate native iteration
+
+The first combined release was built from `926881c88e32bafa0a44b1cb1209a58afe26e765`.
+All 835 recorded compiled inputs were hash-checked unchanged after the successful
+release build. The local intermediate bundle has UUID
+`F2C7C33C-27E5-31B6-A9C3-7182B44B43BA` and executable SHA-256
+`5ec0c385223de7bb53d98f3fa8ec5ec5684b1d9e98b996727f0375ad4ef00805`.
+It is an iteration artifact, not the final installed package.
+
+Unaltered Braden History/Compare captures use the same Aurora commit and file as
+the baseline, at a traced 1480 × 981 content viewport, Comfortable density and
+13/12-point text. The compact header, collapsed Targets and square icons are
+visible. Native resizing reached exactly 1000 × 680; 18-point interface/code
+text exposed U9 and U11. Projects headings, named clone fields, selection and
+error semantics appeared in the native accessibility tree.
+
+The offline PR fixture displayed captured identities, check/review status,
+existing replies, explicitly outdated positions and four changed files. Clicking
+After line 2 and Shift-Down selected the supported 2–3 range with two selected AX
+rows and visible range marking. Return exposed U7. These observations establish
+the reproductions, not a completed review workflow.
+
+Native Projects checks created `native-create-国際化-workspace` with an unborn
+`main`, and cloned the disposable local origin into `native-clone-界面-complete`
+with clean `main` at `383ba02db0401256316538ed771e1bf8f1f2d28b`. Attempting an
+existing nonempty clone destination reported the error and preserved it. An
+earlier fixture clone had an unborn `master` because the synthetic bare origin's
+HEAD still named the missing default branch; the fixture HEAD was corrected to
+`main` before the successful clone. This setup correction is not an app failure.
+No unrelated repository was written. Further regression checks use the corrected
+fixtures and the final compiled build.
 
 ## Ownership and evidence rules
 
