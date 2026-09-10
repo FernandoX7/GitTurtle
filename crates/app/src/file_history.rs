@@ -141,6 +141,7 @@ pub(super) struct ReturnContext {
     patch_view: Option<Entity<diff_view::DiffView>>,
     partial_subscription: Option<Subscription>,
     split_view: Option<Entity<split_diff::SplitView>>,
+    markdown_view: Option<Entity<markdown_view::View>>,
     before_editor: Option<Entity<EditorState>>,
     after_editor: Option<Entity<EditorState>>,
     images: [Option<Arc<RenderImage>>; 2],
@@ -169,6 +170,45 @@ pub(super) struct State {
 }
 
 impl State {
+    pub(super) fn pause_for_tab(&mut self) {
+        self.task = None;
+        if let Some(lineage) = &mut self.lineage {
+            lineage.generation = lineage.generation.wrapping_add(1);
+            if lineage.pending.take().is_some() {
+                lineage.error =
+                    Some("History read paused on tab switch; use Retry to continue.".into());
+            }
+        }
+        if let Some(retained) = &mut self.retained {
+            retained.pause_for_tab();
+        }
+        if let Some(previous) = &mut self.previous {
+            previous.pause_for_tab();
+        }
+    }
+
+    pub(super) fn retained_bytes(&self) -> usize {
+        self.retained
+            .as_ref()
+            .map_or(0, |context| context.retained_bytes())
+            + self
+                .previous
+                .as_ref()
+                .map_or(0, |previous| previous.retained_bytes())
+            + self
+                .lineage
+                .as_ref()
+                .and_then(|lineage| lineage.page.as_ref())
+                .map_or(0, |page| {
+                    page.entries
+                        .iter()
+                        .map(|entry| {
+                            entry.commit.history_bytes()
+                                + repository_tabs::file_bytes(&entry.change)
+                        })
+                        .sum()
+                })
+    }
     fn depth(&self) -> usize {
         usize::from(self.is_active())
             + self
@@ -201,6 +241,26 @@ impl State {
 }
 
 impl ReturnContext {
+    pub(super) fn pause_for_tab(&mut self) {
+        pdf_view::pause(self.content.as_deref());
+        model_view::pause(self.content.as_deref());
+        markdown_view::pause(self.content.as_deref());
+        self.image_comparison = self.image_comparison.clone();
+    }
+
+    pub(super) fn retained_bytes(&self) -> usize {
+        // The preview accounts captured data, decoded pixels and presentations.
+        // Reserve extra copies for native editors and uploaded image surfaces.
+        self.content
+            .as_ref()
+            .map_or(0, |content| content.bytes().saturating_mul(4))
+            + self
+                .files
+                .iter()
+                .map(repository_tabs::file_bytes)
+                .sum::<usize>()
+            + self.file_filter.capacity()
+    }
     pub(super) fn rescale_code(&self, ratio: f32, cx: &mut App) {
         for editor in [&self.patch_editor, &self.before_editor, &self.after_editor]
             .into_iter()
@@ -228,6 +288,13 @@ impl ReturnContext {
 }
 
 impl GitTurtle {
+    pub(super) fn file_history_preview_origins(&self) -> Option<markdown_view::Origins> {
+        let entry = self.file_history.lineage.as_ref()?.entry()?;
+        Some(markdown_view::Origins::revisions(
+            entry.commit.parents.first().cloned(),
+            Some(entry.commit.oid.clone()),
+        ))
+    }
     pub(super) fn take_inspection_context(
         &mut self,
         window: &mut Window,
@@ -246,6 +313,7 @@ impl GitTurtle {
             patch_view: self.patch_view.take(),
             partial_subscription: self.partial_subscription.take(),
             split_view: self.split_view.take(),
+            markdown_view: self.markdown_view.take(),
             before_editor: self.before_editor.take(),
             after_editor: self.after_editor.take(),
             images: std::mem::take(&mut self.images),
@@ -296,6 +364,7 @@ impl GitTurtle {
         self.patch_view = retained.patch_view;
         self.partial_subscription = retained.partial_subscription;
         self.split_view = retained.split_view;
+        self.markdown_view = retained.markdown_view;
         self.before_editor = retained.before_editor;
         self.after_editor = retained.after_editor;
         self.images = retained.images;

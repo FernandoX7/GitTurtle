@@ -161,6 +161,10 @@ impl Playback {
         self.offset_ms = position;
         self.started = (!was_playing).then_some(now);
     }
+    pub fn pause(&mut self, now: Instant) {
+        self.offset_ms = self.elapsed(now);
+        self.started = None;
+    }
     pub fn seek(&mut self, key: SourceKey, position_ms: u64) {
         self.key = key;
         self.offset_ms = position_ms;
@@ -217,6 +221,19 @@ mod tests {
         assert_eq!(playback.position(key, 1000, now), 700);
         playback.toggle(key, 1000, now);
         assert!(!playback.clone().playing(key));
+    }
+    #[test]
+    fn reduced_motion_pause_keeps_the_current_frame_until_explicit_resume() {
+        let now = Instant::now();
+        let key = [Some(ImageId(31)), None];
+        let mut playback = Playback::default();
+        playback.toggle(key, 1000, now);
+        playback.pause(now + Duration::from_millis(240));
+        assert!(!playback.playing(key));
+        assert_eq!(
+            playback.position(key, 1000, now + Duration::from_secs(30)),
+            240
+        );
     }
     #[test]
     fn unequal_durations_share_time_and_shorter_side_holds_last_frame() {

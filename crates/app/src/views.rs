@@ -136,9 +136,36 @@ impl GitTurtle {
             .child(div().flex_1())
             .children(self.operation_busy.map(|label| {
                 div()
+                    .id("operation-progress")
+                    .role(Role::Status)
+                    .aria_label(format!(
+                        "{}{}",
+                        self.operation_progress()
+                            .unwrap_or_else(|| label.to_owned()),
+                        self.operation_repository
+                            .as_ref()
+                            .map_or(String::new(), |path| format!(" in {}", path.display()))
+                    ))
+                    .a11y_synthetic_children(|builder| {
+                        builder.parent_node().set_live(gpui::accesskit::Live::Off)
+                    })
                     .text_size(crate::appearance::ui_text(11.))
                     .text_color(rgb(p.accent))
-                    .child(self.operation_progress().unwrap_or_else(|| label.into()))
+                    .child(
+                        self.operation_progress()
+                            .unwrap_or_else(|| label.to_owned())
+                            + &self
+                                .operation_repository
+                                .as_ref()
+                                .map_or(String::new(), |path| {
+                                    format!(
+                                        " · {}",
+                                        path.file_name()
+                                            .unwrap_or(path.as_os_str())
+                                            .to_string_lossy()
+                                    )
+                                }),
+                    )
             }))
             .when(busy, |header| {
                 header.child(self.render_operation_cancel(cx))
@@ -217,7 +244,7 @@ impl GitTurtle {
                             (NavMode::Worktrees, "Worktrees"),
                         ]
                         .map(|(mode, name)| {
-                            button(name, name, "", self.nav_mode == mode).on_click(cx.listener(
+                            button(name, name, "", self.nav_mode == mode).toggled(self.nav_mode == mode).on_click(cx.listener(
                                 move |this, _, _, cx| {
                                     this.nav_mode = mode;
                                     this.rebuild_navigation(cx);
@@ -232,21 +259,28 @@ impl GitTurtle {
                 div()
                     .px_3()
                     .pb_3()
-                    .child(Input::new(&self.nav_search).text_size(crate::appearance::ui_text(11.))),
+                    .child(Input::new(&self.nav_search).aria_label("Filter branches and worktrees").text_size(crate::appearance::ui_text(11.))),
             )
             .child(
-                uniform_list(
-                    "navigation",
-                    self.nav_rows.len(),
-                    cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                        range
-                            .map(|i| this.render_nav_row(i, cx))
-                            .collect::<Vec<_>>()
-                    }),
-                )
-                .flex_1()
-                .min_h_0()
-                .track_scroll(&self.nav_scroll),
+                div()
+                    .id("repository-navigation")
+                    .role(Role::Tree)
+                    .aria_label("Branches and worktrees. Arrow keys browse; Left and Right collapse or expand; Enter activates; Shift F10 opens branch actions")
+                    .key_context("GitTurtleNavigation")
+                    .tab_stop(true)
+                    .track_focus(&self.nav_focus)
+                    .flex_1().min_h_0()
+                    .on_action(cx.listener(|this, _: &native_accessibility::NextNavigation, window, cx| this.move_navigation(true, false, window, cx)))
+                    .on_action(cx.listener(|this, _: &native_accessibility::PreviousNavigation, window, cx| this.move_navigation(false, false, window, cx)))
+                    .on_action(cx.listener(|this, _: &native_accessibility::FirstNavigation, window, cx| this.move_navigation(false, true, window, cx)))
+                    .on_action(cx.listener(|this, _: &native_accessibility::LastNavigation, window, cx| this.move_navigation(true, true, window, cx)))
+                    .on_action(cx.listener(|this, _: &native_accessibility::ExpandNavigation, window, cx| this.expand_navigation(true, window, cx)))
+                    .on_action(cx.listener(|this, _: &native_accessibility::CollapseNavigation, window, cx| this.expand_navigation(false, window, cx)))
+                    .on_action(cx.listener(|this, _: &native_accessibility::ActivateNavigation, window, cx| { if let Some(index)=this.nav_cursor {this.activate_navigation(index, window, cx);} }))
+                    .on_action(cx.listener(|this, _: &native_accessibility::ManageNavigation, window, cx| this.manage_navigation(window, cx)))
+                    .child(uniform_list("navigation", self.nav_rows.len(), cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+                        range.map(|i| this.render_nav_row(i, cx)).collect::<Vec<_>>()
+                    })).size_full().track_scroll(&self.nav_scroll)),
             )
             .child(
                 div()
@@ -255,7 +289,7 @@ impl GitTurtle {
                     .text_color(rgb(colors.muted))
                     .border_t_1()
                     .border_color(rgb(colors.border))
-                    .child("Browse branches to filter history.\nUse Branch above to switch."),
+                    .child("Arrows browse · Enter filters or opens.\nLeft/Right folders · Shift F10 actions."),
             )
             .into_any_element()
     }
@@ -286,10 +320,16 @@ impl GitTurtle {
             expanded,
         } = &row
         {
-            let key = key.clone();
+            let _ = key;
             return div()
                 .id(("nav-folder", index))
-                .role(Role::Button)
+                .role(Role::TreeItem)
+                .aria_level(depth + 1)
+                .when(self.nav_cursor == Some(index), |row| {
+                    row.aria_active_descendant()
+                        .border_l_2()
+                        .border_color(rgb(colors.accent))
+                })
                 .aria_expanded(*expanded)
                 .aria_label(format!(
                     "{} {} · {} branches",
@@ -317,12 +357,8 @@ impl GitTurtle {
                         .text_size(crate::appearance::ui_text(10.))
                         .child(count.to_string()),
                 )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if !this.expanded_folders.remove(&key) {
-                        this.expanded_folders.insert(key.clone());
-                    }
-                    this.rebuild_navigation(cx);
-                    cx.notify();
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.activate_navigation(index, window, cx)
                 }))
                 .into_any_element();
         }
@@ -386,7 +422,13 @@ impl GitTurtle {
         let branch_repository = self.path.clone();
         let element = div()
             .id(("nav", index))
-            .role(Role::ListBoxOption)
+            .role(Role::TreeItem)
+            .aria_level(depth + 1)
+            .when(self.nav_cursor == Some(index), |row| {
+                row.aria_active_descendant()
+                    .border_l_2()
+                    .border_color(rgb(colors.accent))
+            })
             .aria_label(tooltip.clone())
             .aria_selected(active)
             .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
@@ -414,43 +456,9 @@ impl GitTurtle {
                 if active { colors.accent } else { colors.muted },
             ))
             .child(div().flex_1().truncate().child(name))
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.limit = 500;
-                match &row {
-                    NavRow::All => {
-                        if let Some(path) = this.path.clone() {
-                            this.open(path, None, window, cx);
-                        }
-                    }
-                    NavRow::Branch(i, _) => {
-                        if let Some(path) = this.path.clone() {
-                            let branch = &this.branches[*i];
-                            this.open(
-                                path,
-                                Some((
-                                    branch.name.clone(),
-                                    worker::Scope::Branch {
-                                        name: branch.name.clone(),
-                                        remote: branch.remote,
-                                    },
-                                )),
-                                window,
-                                cx,
-                            );
-                        }
-                    }
-                    NavRow::Worktree(i) => {
-                        let tree = &this.worktrees[*i];
-                        let path = tree.path.clone();
-                        let scope = Some((
-                            tree.branch.clone().unwrap_or("Detached worktree".into()),
-                            worker::Scope::Worktree { path: path.clone() },
-                        ));
-                        this.open(path, scope, window, cx);
-                    }
-                    _ => {}
-                }
-            }));
+            .on_click(
+                cx.listener(move |this, _, window, cx| this.activate_navigation(index, window, cx)),
+            );
         if let Some((name, remote)) = contextual_branch {
             element
                 .context_menu(move |menu, _, cx| {
@@ -560,6 +568,36 @@ impl GitTurtle {
                     .pl(px(10.))
                     .pr_3()
                     .child(div().truncate().child(id.label()))
+                    .when(id == columns::ColumnId::Graph, |cell| {
+                        let capacity = self.graph_lane_capacity();
+                        let offset = self.graph_lane_offset();
+                        cell.when(self.graph_lanes > capacity, |cell| {
+                            cell.child(div().flex_1())
+                                .child(
+                                    button("earlier-graph-lanes", "‹", "", false)
+                                        .accessibility_label("Show earlier graph lanes")
+                                        .disabled(offset == 0)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.shift_graph_lanes(false);
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    button("later-graph-lanes", "›", "", false)
+                                        .accessibility_label(format!(
+                                            "Show later graph lanes; viewing {}–{} of {}",
+                                            offset + 1,
+                                            (offset + capacity).min(self.graph_lanes),
+                                            self.graph_lanes
+                                        ))
+                                        .disabled(offset + capacity >= self.graph_lanes)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.shift_graph_lanes(true);
+                                            cx.notify();
+                                        })),
+                                )
+                        })
+                    })
                     .child(
                         div()
                             .id(("column-resize", id as usize))
@@ -620,7 +658,7 @@ impl GitTurtle {
                         div()
                             .text_size(crate::appearance::ui_text(10.))
                             .text_color(rgb(colors.muted))
-                            .child(format!("{} commits", self.visible.len())),
+                            .child(if self.history_search_active() { format!("{} commits", self.visible.len()) } else { format!("{}–{}", self.history_paging.offset + usize::from(!self.visible.is_empty()), self.history_paging.offset + self.visible.len()) }),
                     )
                     .child(div().flex_1())
                     .child(
@@ -632,28 +670,28 @@ impl GitTurtle {
                         ),
                     )
                     .child(
-                        button(
-                            "load-more",
-                            if self.limit >= 10000 {
-                                "10,000 limit"
-                            } else {
-                                "Load more"
-                            },
-                            "chevron",
-                            false,
-                        )
-                        .disabled(
-                            self.repository.is_none()
-                                || self.history_search_active()
-                                || self.commits.len() < self.limit
-                                || self.limit >= 10000,
-                        )
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.limit = (this.limit + 500).min(10000);
-                            if let Some(path) = this.path.clone() {
-                                this.open(path, this.scope.clone(), window, cx);
-                            }
-                        })),
+                        button("history-newest", "Newest", "", false)
+                            .disabled(self.history_search_active() || self.loading.is_some() || self.history_paging.offset == 0)
+                            .tooltip("Return to the newest rows in this captured snapshot; Refresh reads current tips")
+                            .on_click(cx.listener(|this, _, window, cx| this.request_history_page(0, window, cx))),
+                    )
+                    .child(
+                        button("history-previous", "Previous", "", false)
+                            .disabled(self.history_search_active() || self.loading.is_some() || self.history_paging.offset == 0)
+                            .tooltip("Read the preceding page; your selected comparison remains available")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.request_history_page(this.history_paging.offset.saturating_sub(history_paging::PAGE_SIZE), window, cx);
+                            })),
+                    )
+                    .child(
+                        button("load-more", "Older", "chevron", false)
+                            .disabled(self.repository.is_none() || self.history_search_active() || self.loading.is_some() || self.history_paging.next_offset.is_none())
+                            .tooltip("Continue the captured history; retains up to 5,000 rows in a bounded window")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if let Some(offset) = this.history_paging.next_offset {
+                                    this.request_history_page(offset, window, cx);
+                                }
+                            })),
                     ),
             )
             .child(
@@ -738,6 +776,52 @@ impl GitTurtle {
         )
     }
 
+    fn graph_lane_capacity(&self) -> usize {
+        let width = self
+            .history_column_layout()
+            .columns
+            .iter()
+            .find(|column| column.id == columns::ColumnId::Graph)
+            .map_or(112., |column| column.width);
+        graph::visible_lane_capacity(
+            width,
+            f32::from(self.settings.graph_spacing) * appearance::ui_scale(),
+        )
+    }
+
+    fn graph_lane_offset(&self) -> usize {
+        self.graph_offset
+            .min(self.graph_lanes.saturating_sub(self.graph_lane_capacity()))
+    }
+
+    pub(super) fn shift_graph_lanes(&mut self, later: bool) {
+        let capacity = self.graph_lane_capacity();
+        let offset = self.graph_lane_offset();
+        self.graph_offset = if later {
+            offset
+                .saturating_add(capacity.saturating_sub(1).max(1))
+                .min(self.graph_lanes.saturating_sub(capacity))
+        } else {
+            offset.saturating_sub(capacity.saturating_sub(1).max(1))
+        };
+    }
+
+    pub(super) fn reveal_graph_lane(&mut self, index: usize) {
+        let Some(row) = self.graph.get(index) else {
+            return;
+        };
+        let lane = row.lane;
+        let capacity = self.graph_lane_capacity();
+        let offset = self.graph_lane_offset();
+        self.graph_offset = if lane < offset {
+            lane
+        } else if lane >= offset + capacity {
+            lane + 1 - capacity
+        } else {
+            offset
+        };
+    }
+
     pub(super) fn render_commit_row(&self, position: usize, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
         let index = self.visible[position];
@@ -795,12 +879,22 @@ impl GitTurtle {
             .id(("commit", index))
             .role(Role::ListBoxOption)
             .aria_label(format!(
-                "{} · {} · {}",
+                "{} · {} · {} · {} parent{}{}",
                 commit.subject,
                 commit.author,
-                short_oid(&commit.oid)
+                short_oid(&commit.oid),
+                commit.parents.len(),
+                if commit.parents.len() == 1 { "" } else { "s" },
+                if commit.parents.len() > 1 {
+                    " · merge commit"
+                } else {
+                    ""
+                }
             ))
             .aria_selected(active)
+            .when(active, |row| row.aria_active_descendant())
+            .aria_position_in_set(position + 1)
+            .aria_size_of_set(self.visible.len())
             .w_full()
             .h(px(self.settings.density.history_row_height()))
             .flex()
@@ -829,7 +923,7 @@ impl GitTurtle {
                         .child(graph::render(
                             self.graph[index].clone(),
                             column.width,
-                            self.graph_lanes,
+                            self.graph_lane_offset(),
                             f32::from(self.settings.graph_spacing) * appearance::ui_scale(),
                             self.settings.density.history_row_height(),
                             graph::RowStyle {
@@ -1201,6 +1295,7 @@ impl GitTurtle {
             .role(Role::ListBoxOption)
             .aria_label(format!("{} · {}", path.display(), file.status.label()))
             .aria_selected(active)
+            .when(active, |row| row.aria_active_descendant())
             .tooltip(move |window, cx| Tooltip::new(full_path.clone()).build(window, cx))
             .w_full()
             .h(px(self.settings.density.file_row_height()))
@@ -1414,7 +1509,10 @@ impl GitTurtle {
         } else if let Some(content) = &self.content {
             match content.as_ref() {
                 Content::Text {
-                    patch, diagrams, ..
+                    patch,
+                    diagrams,
+                    markdown,
+                    ..
                 } => {
                     let mut modes = div()
                         .flex()
@@ -1432,9 +1530,15 @@ impl GitTurtle {
                             if quick_source { "Source" } else { "After" },
                         ),
                         (TextMode::Diagrams, "Diagrams"),
+                        (TextMode::Markdown, "Rendered"),
                     ] {
-                        if (quick_source && !matches!(mode, TextMode::After | TextMode::Diagrams))
+                        if (quick_source
+                            && !matches!(
+                                mode,
+                                TextMode::After | TextMode::Diagrams | TextMode::Markdown
+                            ))
                             || (mode == TextMode::Diagrams && diagrams.is_none())
+                            || (mode == TextMode::Markdown && markdown.is_none())
                         {
                             continue;
                         }
@@ -1450,12 +1554,17 @@ impl GitTurtle {
                     }
                     toolbar = toolbar.child(modes);
                     let editor = match self.text_mode {
-                        TextMode::Split | TextMode::Diagrams => &None,
+                        TextMode::Split | TextMode::Diagrams | TextMode::Markdown => &None,
                         TextMode::Unified => &self.patch_editor,
                         TextMode::Before => &self.before_editor,
                         TextMode::After => &self.after_editor,
                     };
-                    if self.text_mode == TextMode::Diagrams {
+                    if self.text_mode == TextMode::Markdown {
+                        self.markdown_view.as_ref().map_or_else(
+                            || empty("Loading rendered Markdown…", ""),
+                            |view| div().size_full().child(view.clone()).into_any_element(),
+                        )
+                    } else if self.text_mode == TextMode::Diagrams {
                         diagrams.as_ref().map_or_else(
                             || {
                                 empty(
@@ -1521,7 +1630,7 @@ impl GitTurtle {
             .when(
                 matches!(self.content.as_deref(), Some(Content::Text { .. }))
                     && !self.blame.is_visible()
-                    && self.text_mode != TextMode::Diagrams
+                    && !matches!(self.text_mode, TextMode::Diagrams | TextMode::Markdown)
                     && !quick_source,
                 |el| el.child(self.render_text_review(cx)),
             )
@@ -1829,6 +1938,41 @@ impl Render for GitTurtle {
                     this.shortcut_help(window, cx);
                 }
             }))
+            .on_action(cx.listener(|this, _: &NextRepositoryTab, window, cx| {
+                this.cycle_repository_tab(1, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &PreviousRepositoryTab, window, cx| {
+                this.cycle_repository_tab(-1, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &CloseRepositoryTab, window, cx| {
+                if let Some(index) = this.repository_tabs.active {
+                    this.close_repository_tab(index, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &SelectRepositoryTab1, window, cx| {
+                this.switch_repository_tab(0, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SelectRepositoryTab2, window, cx| {
+                this.switch_repository_tab(1, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SelectRepositoryTab3, window, cx| {
+                this.switch_repository_tab(2, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SelectRepositoryTab4, window, cx| {
+                this.switch_repository_tab(3, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SelectRepositoryTab5, window, cx| {
+                this.switch_repository_tab(4, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SelectRepositoryTab6, window, cx| {
+                this.switch_repository_tab(5, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SelectRepositoryTab7, window, cx| {
+                this.switch_repository_tab(6, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SelectRepositoryTab8, window, cx| {
+                this.switch_repository_tab(7, window, cx)
+            }))
             .on_action(cx.listener(|_, _: &MinimizeWindow, window, _| window.minimize_window()))
             .on_action(cx.listener(|this, _: &CloseWindow, window, _| {
                 if this.operation_busy.is_none() {
@@ -1932,6 +2076,7 @@ impl Render for GitTurtle {
                     cx.notify();
                 }
             }))
+            .child(self.render_repository_tabs(cx))
             .when(self.page != AppPage::Projects, |root| {
                 root.child(self.render_header(cx))
             })
@@ -1968,7 +2113,8 @@ impl Render for GitTurtle {
                         .child(
                             div()
                                 .id("operation-error-summary")
-                                .role(Role::Label)
+                                .role(Role::Alert)
+                                .a11y_synthetic_children(native_accessibility::assertive)
                                 .aria_label(error.clone())
                                 .flex_1()
                                 .min_w_0()
@@ -2016,7 +2162,8 @@ impl Render for GitTurtle {
                             .child(
                                 div()
                                     .id("operation-notice-summary")
-                                    .role(Role::Label)
+                                    .role(Role::Status)
+                                    .a11y_synthetic_children(native_accessibility::polite)
                                     .aria_label(notice.clone())
                                     .flex_1()
                                     .truncate()

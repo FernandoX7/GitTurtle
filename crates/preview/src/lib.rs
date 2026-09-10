@@ -21,8 +21,17 @@ pub mod model3d;
 #[cfg(target_os = "macos")]
 mod native;
 
-pub const MAX_PDF_PAGES: usize = 8;
 pub const PDF_PREVIEW_EDGE: u32 = 1000;
+pub const MAX_PDF_PAGE_TEXT_BYTES: usize = 256 * 1024;
+const MAX_PDF_PAGES: usize = 100_000;
+
+/// Extracted page text, separate from raster pixels and never used as a Git patch.
+/// `None` means the page has no extractable text; no OCR is performed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PdfPageText {
+    pub text: Option<String>,
+    pub truncated: bool,
+}
 
 #[derive(Debug)]
 pub struct DocumentPreview {
@@ -33,15 +42,21 @@ pub struct DocumentPreview {
 /// Static PDF rendering from supplied bytes only. Never invokes PDF actions,
 /// JavaScript, launch links, external applications, or document URL loading.
 pub fn decode_pdf(bytes: &[u8], check: impl Fn() -> Result<()>) -> Result<DocumentPreview> {
-    ensure!(
-        bytes.len() <= MAX_INPUT_BYTES,
-        "PDF exceeds the 32 MiB input limit"
-    );
-    ensure!(bytes.starts_with(b"%PDF-"), "Unrecognized PDF header");
+    decode_pdf_page(bytes, 0, check)
+}
+
+/// Render exactly one zero-based page from the captured document. Page count
+/// discovery does not rasterize preceding pages or retain a native document.
+pub fn decode_pdf_page(
+    bytes: &[u8],
+    page: usize,
+    check: impl Fn() -> Result<()>,
+) -> Result<DocumentPreview> {
+    check_pdf_input(bytes, page)?;
     check()?;
     #[cfg(target_os = "macos")]
     {
-        native::decode_pdf(bytes, check)
+        native::decode_pdf_page(bytes, page, check)
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -49,6 +64,42 @@ pub fn decode_pdf(bytes: &[u8], check: impl Fn() -> Result<()>) -> Result<Docume
             "Native PDF page rendering requires macOS. Export the captured bytes for external inspection."
         )
     }
+}
+
+/// Extract a single zero-based page using supplied bytes and the native PDFKit
+/// text layer. Run on a bounded worker. At most 256 KiB of UTF-8 is returned;
+/// truncation is explicit. PDF reading order may differ from its visual layout.
+/// Cancellation is checked between phases, but cannot interrupt a system call.
+pub fn decode_pdf_page_text(
+    bytes: &[u8],
+    page: usize,
+    check: impl Fn() -> Result<()>,
+) -> Result<PdfPageText> {
+    check_pdf_input(bytes, page)?;
+    check()?;
+    #[cfg(target_os = "macos")]
+    {
+        native::decode_pdf_page_text(bytes, page, check)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        bail!(
+            "PDF text extraction requires macOS PDFKit; no text extractor is available on this platform"
+        )
+    }
+}
+
+fn check_pdf_input(bytes: &[u8], page: usize) -> Result<()> {
+    ensure!(
+        bytes.len() <= MAX_INPUT_BYTES,
+        "PDF exceeds the 32 MiB input limit"
+    );
+    ensure!(bytes.starts_with(b"%PDF-"), "Unrecognized PDF header");
+    ensure!(
+        page < MAX_PDF_PAGES,
+        "PDF page exceeds the 100,000-page navigation bound"
+    );
+    Ok(())
 }
 
 pub const MAX_INPUT_BYTES: usize = 32 * 1024 * 1024;

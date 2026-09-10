@@ -41,6 +41,8 @@ pub struct Page {
 }
 
 pub struct Side {
+    pub pdf: Option<Arc<crate::pdf_view::Document>>,
+    pub model: Option<Arc<crate::model_view::Document>>,
     pub metadata: metadata::Metadata,
     pub captured: Option<Arc<[u8]>>,
     pub name: PathBuf,
@@ -55,6 +57,8 @@ pub struct Side {
 impl Side {
     pub fn unavailable(name: &Path, present: bool, error: Option<String>) -> Self {
         Self {
+            pdf: None,
+            model: None,
             metadata: metadata::Metadata {
                 format: if present {
                     "Preview unavailable"
@@ -86,6 +90,8 @@ impl Side {
         );
         check()?;
         let mut side = Self {
+            pdf: None,
+            model: None,
             metadata: metadata::inspect(&bytes, name),
             captured: None,
             name: name.into(),
@@ -116,17 +122,17 @@ impl Side {
                             error: None,
                         });
                     }
-                    if side.pages.len() < side.page_count {
-                        side.metadata.details.push(format!("Showing the first {} of {} pages; system preview opens the complete captured document.",side.pages.len(),side.page_count));
-                    }
                 }
                 Err(error) => side.error = Some(format!("{error:#}")),
             }
         } else if gitturtle_preview::model3d::is_model_path(name) {
             side.page_kind = "View";
             side.metadata.format = "3D model".into();
-            match gitturtle_preview::model3d::decode_model(&bytes, &name.to_string_lossy(), &check)
-            {
+            match gitturtle_preview::model3d::decode_geometry(
+                &bytes,
+                &name.to_string_lossy(),
+                &check,
+            ) {
                 Ok(model) => {
                     side.metadata.format = model.format;
                     // Successful supplied-byte geometry parsing supersedes the
@@ -137,27 +143,32 @@ impl Side {
                             && detail.ends_with("; content signature is unrecognized or corrupt."))
                     });
                     side.metadata.details.extend(model.details);
-                    side.page_count = model.views.len();
-                    for view in model.views {
-                        check()?;
-                        side.pages.push(Page {
-                            render: Some(worker::render_image(&view.image)?),
-                            width: view.image.width,
-                            height: view.image.height,
-                            caption: Some(view.caption),
-                            error: None,
-                        });
-                    }
+                    side.model = Some(Arc::new(crate::model_view::Document::new(model.scene)));
                 }
                 Err(error) => side.error = Some(format!("{error:#}")),
             }
         }
         check()?;
-        side.captured = Some(bytes.into());
+        let captured: Arc<[u8]> = bytes.into();
+        if captured.starts_with(b"%PDF-") && side.page_count > 0 {
+            side.pdf = Some(Arc::new(crate::pdf_view::Document::new(
+                captured.clone(),
+                side.page_count,
+                side.pages.pop(),
+                &check,
+            )?));
+            side.pages.clear();
+        }
+        side.captured = Some(captured);
         Ok(side)
     }
     pub fn retained_bytes(&self) -> usize {
         self.captured.as_ref().map_or(0, |b| b.len())
+            + self.pdf.as_ref().map_or(0, |pdf| pdf.retained_bytes())
+            + self
+                .model
+                .as_ref()
+                .map_or(0, |model| model.retained_bytes())
             + self.metadata.format.capacity()
             + self
                 .metadata
@@ -296,6 +307,12 @@ pub(super) fn render_comparison<T: 'static>(
     owner: WeakEntity<GitTurtle>,
     cx: &mut Context<T>,
 ) -> AnyElement {
+    if preview.old.pdf.is_some() || preview.new.pdf.is_some() {
+        return crate::pdf_view::render_comparison(preview, quick, owner, cx);
+    }
+    if preview.old.model.is_some() || preview.new.model.is_some() {
+        return crate::model_view::render_comparison(preview, quick, owner, cx);
+    }
     let colors = palette(cx);
     div().size_full().min_w_0().flex().children([("Before",&preview.old),(if quick {"Source"}else{"After"},&preview.new)].into_iter().enumerate().filter(|(index,_)|!quick||*index==1).map(|(index,(label,side))| {
             let selected=side.selected_page.load(Ordering::Relaxed).min(side.pages.len().saturating_sub(1));
@@ -355,7 +372,7 @@ impl GitTurtle {
         render_comparison(preview, self.is_quick_source(), cx.entity().downgrade(), cx)
     }
 
-    fn open_captured_preview(
+    pub(super) fn open_captured_preview(
         &mut self,
         side: Arc<Side>,
         window: &mut Window,
@@ -573,8 +590,17 @@ mod tests {
         ] {
             let side = Side::prepare(bytes.to_vec(), Path::new(name), || Ok(())).unwrap();
             assert!(side.error.is_none(), "{name}: {:?}", side.error);
-            assert_eq!(side.pages.len(), 4);
+            assert!(
+                side.pages.is_empty(),
+                "{name} prepares interactive geometry"
+            );
+            let model = side.model.as_ref().expect("retained interactive scene");
+            assert!(model.retained_bytes() > 0);
+            assert!(side.retained_bytes() >= bytes.len() + model.retained_bytes());
             assert_eq!(side.captured.as_deref(), Some(bytes));
+            if name.ends_with(".obj") || name.ends_with(".step") {
+                assert_eq!(side.metadata.source.as_deref().unwrap().as_bytes(), bytes);
+            }
             assert!(
                 side.metadata
                     .details

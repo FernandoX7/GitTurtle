@@ -9,11 +9,13 @@ mod blame;
 mod conflict_blocks;
 mod history;
 mod inspection;
+mod preview_assets;
 mod work;
 pub use blame::*;
 pub use conflict_blocks::*;
 pub use history::*;
 pub use inspection::*;
+pub use preview_assets::*;
 pub use work::*;
 
 use anyhow::{Context, Result, bail, ensure};

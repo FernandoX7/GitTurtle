@@ -50,6 +50,29 @@ enum Target {
     },
 }
 impl State {
+    pub(super) fn pause_for_tab(&mut self) {
+        if let Some(active) = &mut self.active {
+            active.context.pause_for_tab();
+            active.lineage.pause_for_tab();
+            active.previous.pause_for_tab();
+        }
+    }
+    pub(super) fn retained_bytes(&self) -> usize {
+        self.active.as_ref().map_or(0, |active| {
+            (match &active.target {
+                Target::Comparison(comparison) => comparison
+                    .files
+                    .iter()
+                    .map(repository_tabs::file_bytes)
+                    .sum::<usize>(),
+                Target::File { entry, .. } => {
+                    entry.path.as_os_str().len() + entry.oid.capacity() + entry.mode.capacity()
+                }
+            }) + active.context.retained_bytes()
+                + active.lineage.retained_bytes()
+                + active.previous.retained_bytes()
+        })
+    }
     pub(super) fn rescale_code(&self, ratio: f32, cx: &mut App) {
         if let Some(active) = &self.active {
             active.context.rescale_code(ratio, cx);
@@ -75,6 +98,25 @@ impl State {
 }
 
 impl GitTurtle {
+    pub(super) fn inspection_preview_origins(&self) -> Option<markdown_view::Origins> {
+        match &self.revision_inspection.active.as_ref()?.target {
+            Target::Comparison(comparison) => Some(markdown_view::Origins::revisions(
+                Some(comparison.base_oid.clone()),
+                Some(comparison.after.oid.clone()),
+            )),
+            Target::File {
+                scope: PathScope::Revision(oid),
+                ..
+            } => Some(markdown_view::Origins::revisions(None, Some(oid.clone()))),
+            Target::File {
+                scope: PathScope::Worktree,
+                ..
+            } => Some(markdown_view::Origins {
+                old: None,
+                new: Some(gitturtle_core::PreviewAssetScope::Worktree),
+            }),
+        }
+    }
     pub(super) fn open_revision_comparison(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(repo) = self
             .repository
@@ -250,7 +292,7 @@ impl GitTurtle {
         true
     }
 
-    fn show_revision_comparison(
+    pub(super) fn show_revision_comparison(
         &mut self,
         comparison: RevisionComparison,
         window: &mut Window,

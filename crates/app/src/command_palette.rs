@@ -8,6 +8,13 @@ use gpui_kit::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum CommandId {
+    NextRepositoryTab,
+    PreviousRepositoryTab,
+    CloseRepositoryTab,
+    MoveRepositoryTabLeft,
+    MoveRepositoryTabRight,
+    LocalWorkspaces,
+    PinRepository,
     Projects,
     Open,
     History,
@@ -17,6 +24,7 @@ pub(super) enum CommandId {
     Branch,
     Worktrees,
     Tags,
+    GitHub,
     Reflog,
     Rebase,
     RewriteReview,
@@ -30,6 +38,8 @@ pub(super) enum CommandId {
     Refresh,
     Search,
     Sidebar,
+    EarlierGraphLanes,
+    LaterGraphLanes,
     Editor,
     Reveal,
     Help,
@@ -52,6 +62,66 @@ macro_rules! command {
     };
 }
 pub(super) const COMMANDS: &[CommandSpec] = &[
+    command!(
+        NextRepositoryTab,
+        "Next repository tab",
+        "tabs switch worktree",
+        "⌃Tab"
+    ),
+    command!(
+        PreviousRepositoryTab,
+        "Previous repository tab",
+        "tabs switch worktree",
+        "⌃⇧Tab"
+    ),
+    command!(
+        CloseRepositoryTab,
+        "Close repository tab",
+        "tabs close",
+        "W"
+    ),
+    command!(
+        MoveRepositoryTabLeft,
+        "Move repository tab left",
+        "tabs reorder earlier",
+        ""
+    ),
+    command!(
+        MoveRepositoryTabRight,
+        "Move repository tab right",
+        "tabs reorder later",
+        ""
+    ),
+    command!(
+        LocalWorkspaces,
+        "Local workspaces and pinned repositories…",
+        "tabs groups organize pin library",
+        ""
+    ),
+    command!(
+        PinRepository,
+        "Pin or unpin this repository",
+        "tabs library favorite",
+        ""
+    ),
+    command!(
+        GitHub,
+        "GitHub pull requests…",
+        "github collaboration PR review comment create draft account",
+        ""
+    ),
+    command!(
+        EarlierGraphLanes,
+        "Show earlier graph lanes",
+        "graph horizontal left overflow",
+        ""
+    ),
+    command!(
+        LaterGraphLanes,
+        "Show later graph lanes",
+        "graph horizontal right overflow",
+        ""
+    ),
     command!(
         Projects,
         "Go to Projects",
@@ -216,6 +286,7 @@ impl CommandId {
                 | Self::Compare
                 | Self::Branch
                 | Self::Worktrees
+                | Self::GitHub
                 | Self::Tags
                 | Self::Reflog
                 | Self::Rebase
@@ -225,13 +296,27 @@ impl CommandId {
                 | Self::Refresh
                 | Self::Search
                 | Self::Sidebar
+                | Self::EarlierGraphLanes
+                | Self::LaterGraphLanes
         )
     }
     fn selected_file(self) -> bool {
         matches!(self, Self::FileHistory | Self::Blame)
     }
     fn reason(self, context: &Availability) -> Option<&'static str> {
-        if context.busy && !matches!(self, Self::Activity | Self::Help) {
+        if context.busy
+            && !matches!(
+                self,
+                Self::Activity
+                    | Self::Help
+                    | Self::NextRepositoryTab
+                    | Self::PreviousRepositoryTab
+                    | Self::CloseRepositoryTab
+                    | Self::LocalWorkspaces
+                    | Self::MoveRepositoryTabLeft
+                    | Self::MoveRepositoryTabRight
+            )
+        {
             return Some("Wait for the current Git operation to finish");
         }
         if (self.workspace()
@@ -467,6 +552,17 @@ impl GitTurtle {
     }
     fn run_palette_command(&mut self, id: CommandId, window: &mut Window, cx: &mut Context<Self>) {
         match id {
+            CommandId::NextRepositoryTab => self.cycle_repository_tab(1, window, cx),
+            CommandId::PreviousRepositoryTab => self.cycle_repository_tab(-1, window, cx),
+            CommandId::CloseRepositoryTab => {
+                if let Some(index) = self.repository_tabs.active {
+                    self.close_repository_tab(index, window, cx);
+                }
+            }
+            CommandId::MoveRepositoryTabLeft => self.move_repository_tab(-1, window, cx),
+            CommandId::MoveRepositoryTabRight => self.move_repository_tab(1, window, cx),
+            CommandId::LocalWorkspaces => self.open_repository_library(window, cx),
+            CommandId::PinRepository => self.toggle_repository_pin(window, cx),
             CommandId::Projects => self.show_projects(window, cx),
             CommandId::Open => self.choose_repository(&OpenRepository, window, cx),
             CommandId::History => self.show_history(window, cx),
@@ -484,6 +580,7 @@ impl GitTurtle {
             }
             CommandId::Worktrees => self.open_worktree_manager(window, cx),
             CommandId::Tags => self.open_tags(window, cx),
+            CommandId::GitHub => self.open_github(window, cx),
             CommandId::Reflog => self.open_reflog_browser(window, cx),
             CommandId::Rebase => self.open_interactive_rebase(None, window, cx),
             CommandId::RewriteReview => self.open_rewrite_review(window, cx),
@@ -518,6 +615,10 @@ impl GitTurtle {
                     self.history_sidebar = self.sidebar;
                     cx.notify();
                 }
+            }
+            CommandId::EarlierGraphLanes | CommandId::LaterGraphLanes => {
+                self.shift_graph_lanes(id == CommandId::LaterGraphLanes);
+                cx.notify();
             }
             CommandId::Editor => self.open_external_editor(window, cx),
             CommandId::Reveal => {
@@ -697,6 +798,8 @@ impl Render for Palette {
                                     .unwrap_or_default()
                             ))
                             .aria_selected(selected)
+                            .aria_position_in_set(index + 1)
+                            .aria_size_of_set(this.results.len())
                             .w_full()
                             .h(crate::appearance::ui_size(54.))
                             .px_3()
@@ -822,6 +925,30 @@ impl Render for Palette {
                 cx.stop_propagation();
                 cx.notify();
             }))
+            .child(
+                div()
+                    .id("command-palette-current-result")
+                    .role(Role::Status)
+                    .a11y_synthetic_children(native_accessibility::polite)
+                    .aria_label(
+                        self.results
+                            .get(self.selection.index)
+                            .map(|index| {
+                                format!(
+                                    "{} · {} of {}{}",
+                                    COMMANDS[*index].label,
+                                    self.selection.index + 1,
+                                    self.results.len(),
+                                    reason
+                                        .map(|reason| format!(" · Unavailable: {reason}"))
+                                        .unwrap_or_default()
+                                )
+                            })
+                            .unwrap_or_else(|| "No matching commands".into()),
+                    )
+                    .h(px(1.))
+                    .overflow_hidden(),
+            )
             .child(
                 Input::new(&self.query)
                     .aria_label("Search app commands")

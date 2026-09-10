@@ -170,11 +170,18 @@ impl ColumnSettings {
         self.layout_for_graph(available_width, 0.)
     }
 
-    /// Lane geometry sets a readable minimum, while saved widths may add room.
-    /// The whole table scrolls rather than compressing distinct ancestry lanes.
+    /// Reserve a useful graph viewport without allowing ancestry far below the
+    /// current viewport to push commit messages offscreen. Wider graphs scroll
+    /// within this column at their original lane spacing; a deliberate saved
+    /// width can still exceed the automatic allowance.
     pub fn layout_for_graph(&self, available_width: f32, graph_minimum: f32) -> ColumnLayout {
         let mut settings = self.clone();
         settings.normalize();
+        let graph_allowance = if available_width.is_finite() {
+            (available_width * 0.25).clamp(112., 280.)
+        } else {
+            112.
+        };
         let mut columns: Vec<_> = ColumnId::ALL
             .into_iter()
             .filter_map(|id| {
@@ -182,7 +189,7 @@ impl ColumnSettings {
                 column.visible.then_some(VisibleColumn {
                     id,
                     width: if id == ColumnId::Graph && graph_minimum.is_finite() {
-                        column.width.max(graph_minimum.clamp(0., 8192.))
+                        column.width.max(graph_minimum.clamp(0., graph_allowance))
                     } else {
                         column.width
                     },
@@ -214,7 +221,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn readable_graph_expands_the_shared_table_without_overwriting_user_widths() {
+    fn distant_graph_lanes_do_not_push_messages_out_of_the_viewport() {
         let settings = ColumnSettings::default();
         let old = settings.clone();
         let layout = settings.layout_for_graph(500., 900.);
@@ -225,9 +232,9 @@ mod tests {
                 .find(|c| c.id == ColumnId::Graph)
                 .unwrap()
                 .width,
-            900.
+            125.
         );
-        assert!(layout.content_width > 900.);
+        assert!(layout.content_width < 900.);
         assert_eq!(settings, old);
         let again = settings.layout_for_graph(500., 80.);
         assert_eq!(
@@ -239,6 +246,9 @@ mod tests {
                 .width,
             settings.graph.width
         );
+        let mut custom = settings;
+        custom.set_width(ColumnId::Graph, 400.);
+        assert_eq!(custom.layout_for_graph(500., 2000.).columns[1].width, 400.);
     }
 
     #[test]

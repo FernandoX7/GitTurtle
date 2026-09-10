@@ -12,7 +12,10 @@ mod diff_view;
 mod editor_find;
 mod file_history;
 mod gif_playback;
+mod github;
+mod github_view;
 mod graph;
+mod history_paging;
 mod history_search;
 mod ignore;
 mod image_compare;
@@ -21,11 +24,15 @@ mod integration;
 mod interactive_rebase;
 mod lfs_download;
 mod local_refresh;
+mod markdown_view;
+mod model_view;
+mod native_accessibility;
 mod navigation;
 mod operations;
 mod page_navigation;
 mod partial_view;
 mod path_filter;
+mod pdf_view;
 mod platform_polish;
 mod preferences;
 mod profiles;
@@ -33,6 +40,8 @@ mod projects;
 mod recovery;
 mod recovery_drafts;
 mod reflog;
+mod repository_access;
+mod repository_tabs;
 mod revision_inspection;
 mod rewrite_review;
 mod rich_preview;
@@ -72,6 +81,17 @@ use worker::{Content, Job, Output, Worker};
 gpui_kit::actions!(
     gitturtle,
     [
+        CloseRepositoryTab,
+        NextRepositoryTab,
+        PreviousRepositoryTab,
+        SelectRepositoryTab1,
+        SelectRepositoryTab2,
+        SelectRepositoryTab3,
+        SelectRepositoryTab4,
+        SelectRepositoryTab5,
+        SelectRepositoryTab6,
+        SelectRepositoryTab7,
+        SelectRepositoryTab8,
         Quit,
         OpenRepository,
         Refresh,
@@ -168,6 +188,7 @@ enum TextMode {
     Before,
     After,
     Diagrams,
+    Markdown,
 }
 #[derive(Clone, Copy, PartialEq)]
 enum NavMode {
@@ -233,6 +254,7 @@ struct GitTurtle {
     preferences_writer: SerialExecutor,
     operations: SerialExecutor,
     operation_busy: Option<&'static str>,
+    operation_repository: Option<PathBuf>,
     operation_outcomes: operations::RepositoryOutcomes,
     operation_error: Option<String>,
     operation_notice: Option<String>,
@@ -272,9 +294,13 @@ struct GitTurtle {
     path: Option<PathBuf>,
     scope: Option<(String, worker::Scope)>,
     limit: usize,
+    history_paging: history_paging::State,
+    repository_tabs: repository_tabs::State,
     branches: Vec<Branch>,
     worktrees: Vec<Worktree>,
     nav_rows: Vec<NavRow>,
+    nav_cursor: Option<usize>,
+    nav_focus: FocusHandle,
     nav_mode: NavMode,
     expanded_folders: HashSet<String>,
     seed_folders: bool,
@@ -282,6 +308,7 @@ struct GitTurtle {
     visible: Vec<usize>,
     graph: Vec<graph::GraphRow>,
     graph_lanes: usize,
+    graph_offset: usize,
     graph_notice: Option<String>,
     refs: HashMap<String, Vec<String>>,
     selected_commit: Option<usize>,
@@ -294,6 +321,7 @@ struct GitTurtle {
     patch_view: Option<Entity<diff_view::DiffView>>,
     partial_subscription: Option<Subscription>,
     split_view: Option<Entity<split_diff::SplitView>>,
+    markdown_view: Option<Entity<markdown_view::View>>,
     conflict_view: Option<Entity<conflicts::ConflictView>>,
     conflict_subscription: Option<Subscription>,
     conflict_drafts: HashMap<(PathBuf, PathBuf), conflicts::Draft>,
@@ -333,6 +361,7 @@ impl GitTurtle {
     fn new(
         initial: Option<PathBuf>,
         preferences: Preferences,
+        tab_session: repository_tabs::Session,
         activity: activity::State,
         recovery_drafts: recovery_drafts::State,
         window: &mut Window,
@@ -421,6 +450,7 @@ impl GitTurtle {
             preferences_writer: SerialExecutor::new("gitturtle-preferences"),
             operations: SerialExecutor::new("gitturtle-operations"),
             operation_busy: None,
+            operation_repository: None,
             operation_outcomes: operations::RepositoryOutcomes::default(),
             operation_error: None,
             operation_notice: None,
@@ -464,9 +494,13 @@ impl GitTurtle {
             path: None,
             scope: None,
             limit: 500,
+            history_paging: history_paging::State::default(),
+            repository_tabs: repository_tabs::State::from_session(tab_session),
             branches: vec![],
             worktrees: vec![],
             nav_rows: vec![],
+            nav_cursor: Some(0),
+            nav_focus: cx.focus_handle(),
             nav_mode: NavMode::Local,
             expanded_folders: HashSet::new(),
             seed_folders: true,
@@ -474,6 +508,7 @@ impl GitTurtle {
             visible: vec![],
             graph: vec![],
             graph_lanes: 1,
+            graph_offset: 0,
             graph_notice: None,
             refs: HashMap::new(),
             selected_commit: None,
@@ -486,6 +521,7 @@ impl GitTurtle {
             patch_view: None,
             partial_subscription: None,
             split_view: None,
+            markdown_view: None,
             conflict_view: None,
             conflict_subscription: None,
             conflict_drafts: HashMap::new(),
@@ -522,6 +558,7 @@ impl GitTurtle {
         };
         this.load_profiles(window, cx);
         this.install_draft_quit_observer(cx);
+        this.install_tab_quit_observer(cx);
         this.subscriptions.push(cx.subscribe_in(
             &file_filter,
             window,
@@ -556,7 +593,7 @@ impl GitTurtle {
         );
         this.subscriptions.push(
             cx.subscribe_in(&nav_search, window, |this, _, event, _, cx| {
-                if matches!(event, InputEvent::Change) {
+                if matches!(event, InputEvent::Change) && !this.repository_tabs.switching {
                     this.rebuild_navigation(cx);
                     this.nav_scroll.scroll_to_item(0, ScrollStrategy::Top);
                     cx.notify();
@@ -602,6 +639,10 @@ impl GitTurtle {
         this.subscribe_settings_inputs(window, cx);
         this.subscriptions
             .push(cx.observe_window_activation(window, |this, window, cx| {
+                if window.is_window_active() {
+                    native_accessibility::sync_preferences(cx);
+                    this.apply_motion_preferences(cx);
+                }
                 if window.is_window_active() && this.repository.is_some() {
                     this.ensure_local_watcher(true, window, cx);
                     this.queue_automatic_refresh(
@@ -670,6 +711,11 @@ impl GitTurtle {
                     }
                     Err(error) => {
                         this.error = Some(format!("{error:#}"));
+                        if let Some(index) = this.repository_tabs.active
+                            && let Some(tab) = this.repository_tabs.tabs.get_mut(index)
+                        {
+                            tab.error = this.error.clone();
+                        }
                         this.status = "Read could not complete".into();
                         this.hub.update(cx, |hub, cx| {
                             hub.set_busy(false, cx);
@@ -694,14 +740,14 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.tab_open_requested(&path, &scope, window, cx) {
+            return;
+        }
         self.cancel_branch_action();
         self.cancel_recovery_read();
         self.cancel_tag_action();
         self.cancel_interactive_rebase_action();
         self.cancel_ignore_action();
-        if self.operation_busy.is_some() {
-            return;
-        }
         self.close_inspections(window, cx);
         self.close_blame(window, cx);
         self.blame = blame::State::default();
@@ -768,6 +814,10 @@ impl GitTurtle {
     }
 
     fn clear_preview(&mut self) {
+        self.repository_tabs.document_restore = None;
+        pdf_view::pause(self.content.as_deref());
+        model_view::pause(self.content.as_deref());
+        markdown_view::pause(self.content.as_deref());
         self.review = text_review::State::default();
         self.image_drag = None;
         self.image_comparison = image_compare::State::default();
@@ -777,6 +827,7 @@ impl GitTurtle {
         self.patch_view = None;
         self.partial_subscription = None;
         self.split_view = None;
+        self.markdown_view = None;
         self.conflict_view = None;
         self.conflict_subscription = None;
         self.before_editor = None;
@@ -786,6 +837,8 @@ impl GitTurtle {
 
     fn receive(&mut self, output: Output, window: &mut Window, cx: &mut Context<Self>) {
         match output {
+            Output::HistoryReleased => {}
+            Output::HistoryPage(result) => self.receive_history_page(result, window, cx),
             Output::ReviewText(content, elapsed) => {
                 self.status = format!(
                     "Text review prepared · {:.1} ms",
@@ -811,6 +864,10 @@ impl GitTurtle {
                 self.receive(Output::Preview(content, elapsed), window, cx);
             }
             Output::Snapshot(snapshot) => {
+                if self.tab_snapshot_accepted(&snapshot.repository, window, cx) {
+                    return;
+                }
+                self.history_paging = history_paging::State::from_snapshot(&snapshot);
                 self.status = format!(
                     "Local snapshot · {:.0} ms · {} branches · {} worktrees",
                     snapshot.elapsed.as_secs_f64() * 1000.,
@@ -859,6 +916,10 @@ impl GitTurtle {
                             .find(|&i| self.commits[i].oid == oid)
                     })
                     .or_else(|| self.visible.first().copied());
+                if self.repository_tabs.restoring.is_some() {
+                    self.finish_tab_snapshot(window, cx);
+                    return;
+                }
                 if self.mode == WorkspaceMode::Working {
                     self.selected_commit = selected;
                 } else if let Some(index) = selected {
@@ -897,6 +958,7 @@ impl GitTurtle {
                 if self.mode == WorkspaceMode::History {
                     self.trace_frame("commit_files_frame_ms", window, cx);
                 }
+                self.restore_tab_file(window, cx);
             }
             Output::Preview(content, elapsed) => {
                 self.status = format!(
@@ -905,8 +967,15 @@ impl GitTurtle {
                     elapsed.as_secs_f64() * 1000.
                 );
                 match content.as_ref() {
-                    Content::Text { diagrams, .. } => {
-                        if self.text_mode == TextMode::Diagrams && diagrams.is_none() {
+                    Content::Text {
+                        diagrams, markdown, ..
+                    } => {
+                        if let (Some(view), Some(markdown)) = (&self.markdown_view, markdown) {
+                            view.update(cx, |view, cx| view.replace(markdown.clone(), cx));
+                        }
+                        if (self.text_mode == TextMode::Diagrams && diagrams.is_none())
+                            || (self.text_mode == TextMode::Markdown && markdown.is_none())
+                        {
                             self.text_mode = if self.is_quick_source() {
                                 TextMode::After
                             } else {
@@ -924,6 +993,7 @@ impl GitTurtle {
                     && matches!(self.mode, WorkspaceMode::Compare | WorkspaceMode::Working)
                 {
                     self.ensure_editor(window, cx);
+                    self.restore_tab_documents(cx);
                     self.trace_frame(
                         if self.mode == WorkspaceMode::Working {
                             "working_preview_frame_ms"
@@ -967,6 +1037,20 @@ impl GitTurtle {
             .and_then(|s| s.to_str())
             .map(language_for)
             .unwrap_or("text");
+        if self.text_mode == TextMode::Markdown {
+            if self.markdown_view.is_none()
+                && let Content::Text {
+                    markdown: Some(markdown),
+                    ..
+                } = content.as_ref()
+            {
+                let markdown = markdown.clone();
+                let quick = self.is_quick_source();
+                self.markdown_view =
+                    Some(cx.new(|cx| markdown_view::View::new(markdown, quick, cx)));
+            }
+            return;
+        }
         if self.text_mode == TextMode::Diagrams {
             return;
         }
@@ -977,7 +1061,7 @@ impl GitTurtle {
             return;
         }
         let (slot, value, language, diff) = match self.text_mode {
-            TextMode::Split | TextMode::Diagrams => unreachable!(),
+            TextMode::Split | TextMode::Diagrams | TextMode::Markdown => unreachable!(),
             TextMode::Unified => (&mut self.patch_editor, patch, "diff", true),
             TextMode::Before => (&mut self.before_editor, old, language, false),
             TextMode::After => (&mut self.after_editor, new, language, false),
@@ -1116,6 +1200,13 @@ impl GitTurtle {
                 .push(NavRow::Section("WORKTREES", matching.len()));
             self.nav_rows.extend(matching);
         }
+        self.nav_cursor = self
+            .nav_cursor
+            .filter(|index| {
+                *index < self.nav_rows.len()
+                    && !matches!(self.nav_rows[*index], NavRow::Section(..))
+            })
+            .or(Some(0));
     }
 
     fn trace_frame(&mut self, metric: &'static str, window: &mut Window, cx: &mut Context<Self>) {
@@ -1153,6 +1244,9 @@ impl GitTurtle {
     }
 
     fn back_to_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        pdf_view::pause(self.content.as_deref());
+        model_view::pause(self.content.as_deref());
+        markdown_view::pause(self.content.as_deref());
         if self.close_blame(window, cx) {
             return;
         }
@@ -1216,6 +1310,7 @@ impl GitTurtle {
             .map(|i| self.files[i].path().to_owned())
             .or_else(|| self.preferred_file.take());
         self.selected_commit = Some(index);
+        self.reveal_graph_lane(index);
         self.parent = 0;
         self.files.clear();
         self.file_paths.reset();
@@ -1265,8 +1360,23 @@ impl GitTurtle {
         self.zoom = 0.;
         self.image_scroll.set_offset(point(px(0.), px(0.)));
         if let Some(repo) = &self.repository {
+            let origins = self
+                .file_history_preview_origins()
+                .or_else(|| self.inspection_preview_origins())
+                .unwrap_or_else(|| {
+                    let commit = self
+                        .selected_commit
+                        .and_then(|index| self.commits.get(index));
+                    markdown_view::Origins::revisions(
+                        commit
+                            .and_then(|commit| commit.parents.get(self.parent))
+                            .cloned(),
+                        commit.map(|commit| commit.oid.clone()),
+                    )
+                });
             self.request(
                 Job::Preview {
+                    origins,
                     repo: repo.clone(),
                     file: self.files[index].clone(),
                 },
@@ -1322,8 +1432,7 @@ impl GitTurtle {
                 && let Some(path) = paths.into_iter().next()
             {
                 let _ = this.update_in(cx, |this, window, cx| {
-                    this.limit = 500;
-                    this.open(path, None, window, cx);
+                    this.open_repository_tab(path, window, cx);
                 });
             }
         })
@@ -1599,15 +1708,24 @@ fn main() {
     let preferences = Preferences::load();
     let activity = activity::State::load();
     let recovery_drafts = recovery_drafts::State::load();
+    let tab_session = repository_tabs::Session::load();
     let initial = std::env::args_os().nth(1).map(PathBuf::from).or_else(|| {
         preferences
             .settings
             .reopen_last
-            .then(|| preferences.last_repository())
+            .then(|| {
+                tab_session
+                    .tabs
+                    .get(tab_session.active)
+                    .map(|tab| tab.path.path())
+                    .or_else(|| preferences.last_repository())
+            })
             .flatten()
     });
     gpui_kit::application().with_assets(Assets).run(move |cx| {
         gpui_kit::init(cx);
+        native_accessibility::sync_preferences(cx);
+        native_accessibility::bind_keys(cx);
         image_lifetime::init(cx);
         interactive_rebase::init(cx);
         preferences
@@ -1646,7 +1764,59 @@ fn main() {
             KeyBinding::new(&format!("{primary}-q"), Quit, None),
             KeyBinding::new(&format!("{primary}-1"), ShowHistory, Some("GitTurtle")),
             KeyBinding::new(&format!("{primary}-m"), MinimizeWindow, Some("GitTurtle")),
-            KeyBinding::new(&format!("{primary}-w"), CloseWindow, Some("GitTurtle")),
+            KeyBinding::new(
+                &format!("{primary}-w"),
+                CloseRepositoryTab,
+                Some("GitTurtle"),
+            ),
+            KeyBinding::new(
+                &format!("{primary}-shift-w"),
+                CloseWindow,
+                Some("GitTurtle"),
+            ),
+            KeyBinding::new(&format!("{primary}-t"), OpenRepository, Some("GitTurtle")),
+            KeyBinding::new("ctrl-tab", NextRepositoryTab, Some("GitTurtle")),
+            KeyBinding::new("ctrl-shift-tab", PreviousRepositoryTab, Some("GitTurtle")),
+            KeyBinding::new(
+                &format!("{primary}-alt-1"),
+                SelectRepositoryTab1,
+                Some("GitTurtle"),
+            ),
+            KeyBinding::new(
+                &format!("{primary}-alt-2"),
+                SelectRepositoryTab2,
+                Some("GitTurtle"),
+            ),
+            KeyBinding::new(
+                &format!("{primary}-alt-3"),
+                SelectRepositoryTab3,
+                Some("GitTurtle"),
+            ),
+            KeyBinding::new(
+                &format!("{primary}-alt-4"),
+                SelectRepositoryTab4,
+                Some("GitTurtle"),
+            ),
+            KeyBinding::new(
+                &format!("{primary}-alt-5"),
+                SelectRepositoryTab5,
+                Some("GitTurtle"),
+            ),
+            KeyBinding::new(
+                &format!("{primary}-alt-6"),
+                SelectRepositoryTab6,
+                Some("GitTurtle"),
+            ),
+            KeyBinding::new(
+                &format!("{primary}-alt-7"),
+                SelectRepositoryTab7,
+                Some("GitTurtle"),
+            ),
+            KeyBinding::new(
+                &format!("{primary}-alt-8"),
+                SelectRepositoryTab8,
+                Some("GitTurtle"),
+            ),
             KeyBinding::new(&format!("{primary}-h"), HideApplication, None),
             KeyBinding::new(&format!("{primary}-alt-h"), HideOtherApplications, None),
             KeyBinding::new(
@@ -1707,7 +1877,15 @@ fn main() {
                 },
                 |window, cx| {
                     let view = cx.new(|cx| {
-                        GitTurtle::new(initial, preferences, activity, recovery_drafts, window, cx)
+                        GitTurtle::new(
+                            initial,
+                            preferences,
+                            tab_session,
+                            activity,
+                            recovery_drafts,
+                            window,
+                            cx,
+                        )
                     });
                     cx.new(|cx| Root::new(view, window, cx))
                 },

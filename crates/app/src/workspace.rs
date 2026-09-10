@@ -183,6 +183,9 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let accepted_path = self.path.clone();
+        let accepted_page = self.page;
+        self.operation_repository = Some(destination.clone());
         self.operation_busy = Some(label);
         self.operation_error = None;
         self.operation_notice = None;
@@ -201,19 +204,28 @@ impl GitTurtle {
                 this.activity.finish(activity_id, result.is_ok(), activity_control.is_cancelled(), explanation.contains("without a result") || explanation.contains("timed out"), &explanation);
                 this.save_activity(window, cx);
                 this.operation_busy = None;
+                this.operation_repository = None;
                 this.finish_operation_control(window, cx);
                 this.hub.update(cx, |hub, cx| hub.set_busy(false, cx));
                 match result {
                     Ok(repo) => {
                         let message = format!("{} · {}", if label.starts_with("Cloning") { "Repository cloned" } else { "Repository created" }, repo.name());
-                        this.limit = 500; this.open(repo.path().to_owned(), None, window, cx);
-                        this.operation_notice = Some(message);
+                        if this.path == accepted_path && this.page == accepted_page {
+                            this.limit = 500; this.open(repo.path().to_owned(), None, window, cx);
+                            this.operation_notice = Some(message);
+                        } else {
+                            this.register_completed_repository(repo.path().to_owned(), message, window, cx);
+                        }
                     }
                     Err(error) => {
                         let message = format!("{error:#}");
                         this.hub.update(cx, |hub, cx| hub.set_error(Some(message.clone()), cx));
-                        this.operation_error = Some(message);
-                        this.operation_notice = None;
+                        if this.path == accepted_path && this.page == accepted_page {
+                            this.operation_error = Some(message);
+                            this.operation_notice = None;
+                        } else {
+                            this.status = format!("Repository operation failed in {}: {message}",destination.display());
+                        }
                     }
                 }
                 cx.notify();
@@ -520,7 +532,15 @@ impl GitTurtle {
         self.interaction_started = Some(Instant::now());
         window.focus(&self.file_focus, cx);
         self.request(
-            Job::WorkingPreview { repo, entry, area },
+            Job::WorkingPreview {
+                repo,
+                entry,
+                area,
+                head: self
+                    .work_status
+                    .as_ref()
+                    .and_then(|status| status.head.clone()),
+            },
             "Reading working comparison…",
             window,
             cx,
@@ -709,6 +729,7 @@ impl GitTurtle {
                 | WriteCommand::Push { .. }
         ) || matches!(&command, WriteCommand::Integration(operation) if !matches!(operation, gitturtle_core::IntegrationCommand::Resolve { .. }))
             || matches!(&command, WriteCommand::Recovery(command) if matches!(command.as_ref(), gitturtle_core::RecoveryCommand::Amend { .. } | gitturtle_core::RecoveryCommand::Undo { .. } | gitturtle_core::RecoveryCommand::Revert { .. } | gitturtle_core::RecoveryCommand::CherryPick { .. }));
+        self.operation_repository = Some(path.clone());
         self.operation_busy = Some(label);
         self.operation_error = None;
         self.operation_notice = None;
@@ -754,6 +775,7 @@ impl GitTurtle {
                 this.activity.finish(activity_id, success, activity_control.is_cancelled(), uncertain, &explanation);
                 this.save_activity(window, cx);
                 this.operation_busy=None;
+                this.operation_repository=None;
                 this.finish_operation_control(window, cx);
                 let succeeded=result.is_ok();
                 match result {
@@ -765,12 +787,10 @@ impl GitTurtle {
                         } else {
                             outcome.message.lines().find(|line| !line.trim().is_empty()).unwrap_or("Git operation completed").to_owned()
                         };
-                        this.status = notice.clone();
-                        this.operation_notice = Some(notice);
+                        this.tab_operation_feedback(&path, Some(notice), None);
                     }
                     Err(error) => {
-                        this.operation_notice = None;
-                        this.operation_error = Some(format!("{error:#}"));
+                        this.tab_operation_feedback(&path, None, Some(format!("{error:#}")));
                     }
                 }
                 if let Some(profile) = submitted_profile { this.finish_profile_write(&path, profile, succeeded, window, cx); }
@@ -1199,6 +1219,9 @@ impl GitTurtle {
                         if staged { "Staged" } else { "Unstaged" }
                     ))
                     .aria_selected(active)
+                    .when(self.working_selected == Some((index, area)), |row| {
+                        row.aria_active_descendant()
+                    })
                     .h(px(self.settings.density.file_row_height()))
                     .w_full()
                     .pl(px(10.))

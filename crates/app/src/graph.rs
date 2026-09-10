@@ -62,24 +62,106 @@ struct Lane<'a> {
     color: usize,
 }
 
-/// Lay out a topologically ordered, newest-first history. The frontier contains
-/// one lane per pending parent OID, so converging ancestry joins before its
-/// parent row. Boundary lane indices and colors are shared by adjacent rows.
-///
-/// Input parents can extend beyond a paged history; their edges remain open at
-/// the bottom. Existing rows retain their topology when more rows are appended.
-/// The worker checks cancellation before each row so a superseded snapshot
-/// does not keep allocating geometry after its budget preflight has finished.
+/// Bounded frontier and branch-color continuity between history pages. No
+/// previously rendered commits or geometry are retained by this cursor.
+#[derive(Clone, Debug, Default)]
+pub struct GraphCursor {
+    frontier: Vec<(String, usize)>,
+    next_color: usize,
+    hidden: bool,
+}
+
+impl GraphCursor {
+    /// Prepare only the new page, committing frontier state after successful
+    /// cancellation checks. A budget fallback stays node-only until reset;
+    /// callers should also replace retained rows when `hidden` becomes true.
+    pub fn append<E>(
+        &mut self,
+        commits: &[Commit],
+        lane_limit: usize,
+        edge_limit: usize,
+        mut checkpoint: impl FnMut() -> Result<(), E>,
+    ) -> Result<(Vec<GraphRow>, bool), E> {
+        let mut hidden = self.hidden;
+        if !hidden {
+            let mut frontier: HashSet<&str> =
+                self.frontier.iter().map(|(oid, _)| oid.as_str()).collect();
+            let mut parents = HashSet::new();
+            let mut edges = 0usize;
+            let mut parent_entries = 0usize;
+            for commit in commits {
+                checkpoint()?;
+                let width = frontier.len() + usize::from(!frontier.contains(commit.oid.as_str()));
+                if width > lane_limit {
+                    hidden = true;
+                    break;
+                }
+                frontier.remove(commit.oid.as_str());
+                parents.clear();
+                for parent in &commit.parents {
+                    parent_entries += 1;
+                    parents.insert(parent.as_str());
+                    frontier.insert(parent.as_str());
+                    if frontier.len() > lane_limit || parent_entries > edge_limit {
+                        hidden = true;
+                        break;
+                    }
+                }
+                edges = edges.saturating_add(width.saturating_sub(1) + parents.len());
+                if hidden || edges > edge_limit {
+                    hidden = true;
+                    break;
+                }
+            }
+        }
+        if hidden {
+            let rows = commits
+                .iter()
+                .map(|_| {
+                    checkpoint()?;
+                    Ok(GraphRow {
+                        width: 1,
+                        ..Default::default()
+                    })
+                })
+                .collect::<Result<Vec<_>, E>>()?;
+            self.frontier.clear();
+            self.hidden = true;
+            return Ok((rows, true));
+        }
+        let (rows, frontier, next_color) =
+            layout_page(commits, &self.frontier, self.next_color, checkpoint)?;
+        self.frontier = frontier;
+        self.next_color = next_color;
+        Ok((rows, false))
+    }
+}
+
+/// Lay out a topologically ordered, newest-first history. Paged callers use
+/// GraphCursor to preserve exactly these lanes/colors without prefix replay.
 pub fn layout<E>(
     commits: &[Commit],
-    mut checkpoint: impl FnMut() -> Result<(), E>,
+    checkpoint: impl FnMut() -> Result<(), E>,
 ) -> Result<Vec<GraphRow>, E> {
-    let mut lanes: Vec<Lane<'_>> = Vec::new();
+    layout_page(commits, &[], 0, checkpoint).map(|(rows, _, _)| rows)
+}
+
+type PageLayout = (Vec<GraphRow>, Vec<(String, usize)>, usize);
+
+fn layout_page<E>(
+    commits: &[Commit],
+    frontier: &[(String, usize)],
+    mut next_color: usize,
+    mut checkpoint: impl FnMut() -> Result<(), E>,
+) -> Result<PageLayout, E> {
+    let mut lanes: Vec<Lane<'_>> = frontier
+        .iter()
+        .map(|(oid, color)| Lane { oid, color: *color })
+        .collect();
     let mut before = Vec::new();
     let mut seen = HashSet::new();
     let mut parents = Vec::new();
     let mut positions = HashMap::new();
-    let mut next_color = 0;
     let mut rows = Vec::with_capacity(commits.len());
     let empty_edges: Arc<[Edge]> = Arc::default();
     for commit in commits {
@@ -176,17 +258,22 @@ pub fn layout<E>(
             width: before.len().max(lanes.len()),
         });
     }
-    Ok(rows)
+    let frontier = lanes
+        .into_iter()
+        .map(|lane| (lane.oid.to_owned(), lane.color))
+        .collect();
+    Ok((rows, frontier, next_color))
 }
 
-/// One coordinate system for every row. The caller passes the maximum `width`
-/// across the complete loaded graph, never a visible row's individual width.
-/// Node-safe margins keep the last lane inside a bounded graph column even
-/// when a repository has many simultaneously active branches.
-fn lane_x(width: f32, lane_count: usize, lane: usize, lane_spacing: f32) -> f32 {
-    let available = (width - NODE_MARGIN * 2.).max(0.);
-    let spacing = lane_spacing.min(available / lane_count.saturating_sub(1).max(1) as f32);
-    NODE_MARGIN.min(width / 2.) + lane as f32 * spacing
+/// A shared horizontal lane viewport keeps true spacing and continuous edges
+/// across every visible row. Clipping is explicit; lanes are never compressed
+/// into indistinguishable pixels to accommodate offscreen ancestry.
+pub fn visible_lane_capacity(width: f32, lane_spacing: f32) -> usize {
+    (((width - NODE_MARGIN * 2.).max(0.) / lane_spacing.max(1.)).floor() as usize + 1).max(1)
+}
+
+fn lane_x(width: f32, lane_offset: usize, lane: usize, lane_spacing: f32) -> f32 {
+    NODE_MARGIN.min(width / 2.) + (lane as f32 - lane_offset as f32) * lane_spacing
 }
 
 pub struct RowStyle {
@@ -198,7 +285,7 @@ pub struct RowStyle {
 pub fn render(
     row: GraphRow,
     width: f32,
-    lane_count: usize,
+    lane_offset: usize,
     lane_spacing: f32,
     row_height: f32,
     style: RowStyle,
@@ -212,6 +299,7 @@ pub fn render(
         .w(px(width))
         .h(px(row_height))
         .flex_shrink_0()
+        .overflow_hidden()
         .child(
             canvas(
                 |_, _, _| (),
@@ -219,7 +307,7 @@ pub fn render(
                     let palette = palette(cx);
                     let colors = palette_colors(palette);
                     let x =
-                        |lane| bounds.origin.x + px(lane_x(width, lane_count, lane, lane_spacing));
+                        |lane| bounds.origin.x + px(lane_x(width, lane_offset, lane, lane_spacing));
                     let top = bounds.origin.y;
                     let middle = top + bounds.size.height / 2.;
                     let bottom = top + bounds.size.height;
@@ -484,21 +572,13 @@ mod tests {
     }
 
     #[test]
-    fn wide_graph_lanes_remain_ordered_and_inside_column() {
-        for count in [1, 2, 3, 32, 128, 1024] {
-            let positions: Vec<_> = (0..count)
-                .map(|lane| lane_x(84., count, lane, 20.))
-                .collect();
-            assert!(
-                positions
-                    .iter()
-                    .all(|&x| (NODE_MARGIN..=84. - NODE_MARGIN).contains(&x))
-            );
-            assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
-        }
-        assert_eq!(lane_x(84., 3, 0, 20.), 10.);
-        assert_eq!(lane_x(84., 3, 1, 20.), 30.);
-        assert_eq!(lane_x(84., 3, 2, 20.), 50.);
+    fn lane_viewport_keeps_spacing_and_can_reach_offscreen_ancestry() {
+        assert_eq!(visible_lane_capacity(84., 20.), 4);
+        assert_eq!(lane_x(84., 0, 0, 20.), 10.);
+        assert_eq!(lane_x(84., 0, 4, 20.), 90.);
+        assert_eq!(lane_x(84., 4, 4, 20.), 10.);
+        assert_eq!(lane_x(84., 4, 3, 20.), -10.);
+        assert_eq!(lane_x(84., 4, 7, 20.), 70.);
     }
 
     #[test]
@@ -507,7 +587,7 @@ mod tests {
             for lanes in [2, 8, 32, 128] {
                 let width = required_width(lanes, spacing);
                 let positions: Vec<_> = (0..lanes)
-                    .map(|lane| lane_x(width, lanes, lane, spacing))
+                    .map(|lane| lane_x(width, 0, lane, spacing))
                     .collect();
                 assert!(
                     positions
@@ -517,9 +597,68 @@ mod tests {
                 assert!(positions.last().unwrap() + 5. < width);
                 assert_eq!(
                     positions[1],
-                    lane_x(required_width(128, spacing), 128, 1, spacing)
+                    lane_x(required_width(128, spacing), 0, 1, spacing)
                 );
             }
         }
+    }
+
+    #[test]
+    fn incremental_pages_match_complete_topology_and_colors_without_retaining_rows() {
+        let commits = [
+            commit("head", &["a", "b", "c"]),
+            commit("a", &["shared"]),
+            commit("b", &["shared", "extra"]),
+            commit("c", &["extra"]),
+            commit("extra", &["root"]),
+            commit("shared", &["root"]),
+            commit("root", &[]),
+        ];
+        let expected = layout(&commits);
+        for page_size in 1..=commits.len() {
+            let mut cursor = GraphCursor::default();
+            let mut rows = Vec::new();
+            for page in commits.chunks(page_size) {
+                let (next, hidden) = cursor
+                    .append(page, 128, 200_000, || Ok::<_, ()>(()))
+                    .unwrap();
+                assert!(!hidden);
+                rows.extend(next);
+            }
+            assert_eq!(rows, expected);
+            assert!(cursor.frontier.is_empty());
+        }
+    }
+
+    #[test]
+    fn incremental_cancellation_preserves_cursor_and_wide_pages_latch_honest_fallback() {
+        let mut cursor = GraphCursor::default();
+        cursor
+            .append(&[commit("head", &["a", "b"])], 128, 200_000, || {
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        let saved = cursor.frontier.clone();
+        let mut count = 0;
+        let next = [commit("a", &["root"]), commit("b", &["root"])];
+        assert!(
+            cursor
+                .append(&next, 128, 200_000, || {
+                    count += 1;
+                    if count == 4 { Err(()) } else { Ok(()) }
+                })
+                .is_err()
+        );
+        assert_eq!(cursor.frontier, saved);
+        let (_, hidden) = cursor
+            .append(&next, 1, 200_000, || Ok::<_, ()>(()))
+            .unwrap();
+        assert!(hidden);
+        assert!(cursor.frontier.is_empty());
+        let (rows, hidden) = cursor
+            .append(&[commit("root", &[])], 128, 200_000, || Ok::<_, ()>(()))
+            .unwrap();
+        assert!(hidden);
+        assert!(rows[0].edges.is_empty());
     }
 }

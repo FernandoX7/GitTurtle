@@ -1,9 +1,12 @@
-//! macOS supplied-byte ImageIO and static CoreGraphics PDF rendering.
+//! macOS supplied-byte ImageIO, static CoreGraphics PDF rendering and PDFKit text.
 //!
 //! Every retained native reference stays on this worker stack. The public model
-//! contains only owned RGBA bytes; no UI-thread decoder or native PDF state.
+//! contains only owned pixels/text; no UI-thread decoder or native PDF state.
 use super::*;
 use std::{ffi::c_void, ptr};
+
+mod pdf_text;
+pub(super) use pdf_text::decode_pdf_page_text;
 
 type Ref = *const c_void;
 #[repr(C)]
@@ -282,7 +285,11 @@ pub(super) fn decode_image(bytes: &[u8], format: &str, max_edge: u32) -> Result<
     }
 }
 
-pub(super) fn decode_pdf(bytes: &[u8], check: impl Fn() -> Result<()>) -> Result<DocumentPreview> {
+pub(super) fn decode_pdf_page(
+    bytes: &[u8],
+    page_index: usize,
+    check: impl Fn() -> Result<()>,
+) -> Result<DocumentPreview> {
     let data = data(bytes)?;
     // SAFETY: provider/document creation uses only owned CFData. Borrowed pages
     // never escape this document or thread. All dimensions are checked before
@@ -304,8 +311,18 @@ pub(super) fn decode_pdf(bytes: &[u8], check: impl Fn() -> Result<()>) -> Result
         );
         let page_count = CGPDFDocumentGetNumberOfPages(document.raw);
         ensure!(page_count > 0, "PDF contains no pages");
+        ensure!(
+            page_count <= MAX_PDF_PAGES,
+            "PDF page count exceeds the 100,000-page navigation bound"
+        );
+        ensure!(
+            page_index < page_count,
+            "PDF page {} is outside this document's {page_count} pages",
+            page_index.saturating_add(1)
+        );
         let mut pages = Vec::new();
-        for index in 1..=page_count.min(MAX_PDF_PAGES) {
+        {
+            let index = page_index + 1;
             check()?;
             let page = CGPDFDocumentGetPage(document.raw, index);
             ensure!(!page.is_null(), "PDF page {index} is unavailable");
@@ -354,7 +371,7 @@ pub(super) fn decode_pdf(bytes: &[u8], check: impl Fn() -> Result<()>) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn pdf(pages: usize) -> Vec<u8> {
+    pub(super) fn pdf(pages: usize) -> Vec<u8> {
         let mut output = b"%PDF-1.4\n".to_vec();
         let mut offsets = vec![0usize];
         let mut objects = vec![
@@ -400,9 +417,10 @@ mod tests {
     }
     #[test]
     fn pdf_renders_supplied_pages_with_bounds_and_orientation() {
-        let document = super::decode_pdf(&pdf(10), || Ok(())).unwrap();
+        let document = super::decode_pdf_page(&pdf(10), 9, || Ok(())).unwrap();
         assert_eq!(document.page_count, 10);
-        assert_eq!(document.pages.len(), MAX_PDF_PAGES);
+        assert_eq!(document.pages.len(), 1);
+        assert_eq!(document.pages[0].format, "PDF page 10");
         let page = &document.pages[0];
         assert_eq!((page.width, page.height), (120, 80));
         assert_eq!(&page.rgba[..4], &[255, 0, 0, 255]);
@@ -410,13 +428,14 @@ mod tests {
     }
     #[test]
     fn pdf_rejects_corruption_and_honors_cancellation() {
-        assert!(super::decode_pdf(b"%PDF-1.7\ncorrupt", || Ok(())).is_err());
+        assert!(super::decode_pdf_page(b"%PDF-1.7\ncorrupt", 0, || Ok(())).is_err());
         assert!(
-            super::decode_pdf(&pdf(2), || bail!("cancelled"))
+            super::decode_pdf_page(&pdf(2), 0, || bail!("cancelled"))
                 .unwrap_err()
                 .to_string()
                 .contains("cancelled")
         );
+        assert!(super::decode_pdf_page(&pdf(2), 2, || Ok(())).is_err());
     }
     #[test]
     fn pdf_caps_output_and_rejects_unreasonable_page_geometry() {

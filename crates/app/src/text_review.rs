@@ -61,6 +61,7 @@ pub fn prepare(
     );
     let Content::Text {
         diagrams,
+        markdown,
         patch,
         old,
         new,
@@ -104,6 +105,7 @@ pub fn prepare(
     checkpoint()?;
     Ok(Arc::new(Content::Text {
         diagrams: diagrams.clone(),
+        markdown: markdown.clone(),
         patch, old: old.clone(), new: new.clone(), presentation, split,
         partial: None,
         partial_unavailable: Some("Review options are active. Partial staging is unavailable: reset to the original diff to select exact Git lines or hunks. Whole-file actions include every change.".into()),
@@ -535,6 +537,7 @@ mod tests {
         );
         let original = Arc::new(Content::Text {
             diagrams: None,
+            markdown: None,
             patch,
             old,
             new,
@@ -583,6 +586,7 @@ mod tests {
         let split = Arc::new(SplitPresentation::prepare(old, new, &presentation));
         Arc::new(Content::Text {
             diagrams: None,
+            markdown: None,
             old: old.into(),
             new: new.into(),
             patch: patch.into(),

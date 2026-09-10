@@ -404,7 +404,7 @@ impl GitTurtle {
                         self.recovery.amend = None;
                     } else if !succeeded {
                         form.update(cx, |form, cx| {
-                            form.error = self.operation_error.clone();
+                            form.error = self.tab_operation_error(repository);
                             cx.notify();
                         });
                     }
@@ -418,7 +418,7 @@ impl GitTurtle {
                         self.recovery.stash = None;
                     } else if !succeeded {
                         form.update(cx, |form, cx| {
-                            form.error = self.operation_error.clone();
+                            form.error = self.tab_operation_error(repository);
                             cx.notify();
                         });
                     }
@@ -1021,6 +1021,7 @@ impl StashBrowser {
         self.selected_file = Some(index);
         let generation = self.preview_generation;
         let response = self.preview_worker.submit(Job::Preview {
+            origins: Default::default(),
             repo: self.repository.clone(),
             file,
         });

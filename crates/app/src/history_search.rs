@@ -17,6 +17,7 @@ pub struct State {
 }
 
 struct Retained {
+    paging: history_paging::State,
     commits: Vec<Commit>,
     visible: Vec<usize>,
     graph: Vec<graph::GraphRow>,
@@ -41,6 +42,34 @@ struct Progress {
     paused: bool,
     error: Option<String>,
     retained_bytes: usize,
+}
+
+impl State {
+    pub(super) fn pinned_scope(&self) -> Option<HistoryScope> {
+        self.progress
+            .as_ref()
+            .and_then(|progress| progress.pinned.clone())
+            .or_else(|| {
+                self.normal
+                    .as_ref()
+                    .and_then(|normal| normal.paging.scope.clone())
+            })
+    }
+    pub(super) fn restore_pinned_scope(&mut self, scope: Option<HistoryScope>) {
+        if let Some(progress) = &mut self.progress {
+            progress.pinned = scope;
+        }
+    }
+    pub(super) fn retained_bytes(&self) -> usize {
+        self.normal.as_ref().map_or(0, |normal| {
+            repository_tabs::history_bytes(&normal.commits, &normal.graph)
+                + normal
+                    .files
+                    .iter()
+                    .map(repository_tabs::file_bytes)
+                    .sum::<usize>()
+        })
+    }
 }
 
 impl Progress {
@@ -93,6 +122,9 @@ impl GitTurtle {
     }
 
     pub(super) fn history_query_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.repository_tabs.switching {
+            return;
+        }
         let value = self.search.read(cx).value();
         if self
             .history_search
@@ -123,6 +155,7 @@ impl GitTurtle {
         self.error = None;
         if self.history_search.normal.is_none() {
             self.history_search.normal = Some(Retained {
+                paging: std::mem::take(&mut self.history_paging),
                 commits: std::mem::take(&mut self.commits),
                 visible: std::mem::take(&mut self.visible),
                 graph: std::mem::take(&mut self.graph),
@@ -184,6 +217,7 @@ impl GitTurtle {
         let Some(normal) = self.history_search.normal.take() else {
             return;
         };
+        self.history_paging = normal.paging;
         self.commits = normal.commits;
         self.visible = normal.visible;
         self.graph = normal.graph;
@@ -274,7 +308,9 @@ impl GitTurtle {
                         this.graph_notice = result.graph_notice;
                         this.graph_lanes =
                             this.graph.iter().map(|row| row.width).max().unwrap_or(1);
-                        if was_empty
+                        if this.repository_tabs.restoring.is_some() {
+                            this.restore_tab_selection(window, cx);
+                        } else if was_empty
                             && !this.commits.is_empty()
                             && this.mode == WorkspaceMode::History
                             && this.page == AppPage::Repository
@@ -446,6 +482,15 @@ impl GitTurtle {
         let Some(normal) = &mut self.history_search.normal else {
             return Some(snapshot);
         };
+        if normal.paging.is_deep(normal.visible.len()) {
+            self.refs = snapshot.refs;
+            self.branches = snapshot.branches;
+            self.worktrees = snapshot.worktrees;
+            self.repository = Some(snapshot.repository);
+            self.rebuild_navigation(cx);
+            return None;
+        }
+        normal.paging = history_paging::State::from_snapshot(&snapshot);
         let offset = normal.scroll.0.borrow().base_handle.offset();
         let height = self.settings.density.history_row_height();
         let top = ((-f32::from(offset.y)) / height).max(0.) as usize;

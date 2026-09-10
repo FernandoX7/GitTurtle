@@ -20,6 +20,14 @@ Branch/worktree filtering and the branch Switch/Create target belong to the last
 
 Quick Open's source inspector owns `file_focus` while the changed-file list is absent. Modal activation restores that visible destination after the dialog closes. Native editor Escape bubbles to the app's Back handler when Find and editor popovers have not consumed it; closing Find alone keeps the source inspection open.
 
+## Ordinary history paging
+
+`history_paging` keeps up to 5,000 rows and 64 MiB of commit/graph metadata in the visible window, plus at most one selected commit outside it. Older requests continue the same immutable traversal in 500-row pages; they never reread all previously loaded metadata. On reaching the window bound, Older advances to the next window while retaining the selected inspector/Compare identity. Previous and Newest navigate the captured ordering; returning to an earlier window rebuilds one pinned stream and discards bounded pages until its offset. This backward restore is linear in depth; there is no permanent 10,000-row ceiling and no full-history metadata cache.
+
+The worker owns one `HistoryTraversal` and `GraphCursor`. Incremental graph preparation preserves frontier lanes/colors across page and window boundaries, commits cursor state only after cancellation checks, and latches an honest node-only fallback if its lane/edge allowance is exceeded. The graph column has a bounded automatic viewport (25% of the history width, between 112 and 280 points, while honoring larger saved widths); shared horizontal lane navigation preserves actual spacing without allowing offscreen ancestry to push commit messages away.
+
+Search retains/restores ordinary paging state. Quiet local refresh updates navigation metadata while keeping a deep history window pinned; explicit Refresh captures current tips. `history_page_frame_ms` measures the page handler through its next frame callback, excluding pre-handler input dispatch, OS presentation and completed GPU work. Worker elapsed time remains a separate metric.
+
 ## Search and retained inspections
 
 Repository-wide search pins scope tips across pages, shares the replaceable read worker, and propagates cancellation to the core history process. Retain the ordinary history separately and restore it on clearing search. Foreground commit/file activation pauses search without discarding its results or cursor. Keep Restart explicit so users can search new commits/current tips after a write while quiet refresh preserves the captured search. An explicit History Refresh also restarts scope. Distinguish exhaustion from page, scan, time, byte, and UI-retention bounds; never present a bounded partial scan as an exhaustive no-match result.
@@ -35,3 +43,9 @@ Changed-file path filtering shares cached row identities with renderers. `path_f
 Filesystem callbacks only enqueue bounded local events. Resolve actual private/common Git directories and register watchers outside the UI thread; do not poll repository trees or invoke Git in the callback. Coalesce bursts, ignore passive access/lock noise, and defer quiet reads behind active previews, search, file-history inspections, status work or writes. Preserve refresh epochs and selection/status generations so superseded results cannot apply.
 
 Quiet snapshots update local metadata without navigating away, clearing search, or replacing an unchanged immutable preview. Refresh changed mutable editors in place and retain manual conflict drafts by conflict identity. A vanished scope keeps the displayed history with an explanation. Watcher errors surface with manual Refresh available. Neither a filesystem event nor focus regain may trigger a write or network action.
+
+## Repository tabs
+
+`repository_tabs.rs` owns canonical worktree tab identity, saved bookmarks, and retained `ReturnContext` chains. There is one active repository reader/watcher; switching invalidates pending reads, releases its history stream off the UI thread, pauses PDF/model/Markdown work throughout retained contexts, freezes GIF playback, and restores the new tab before a passive rescan. A selected immutable commit can remain outside the visible history window. Opening aliases deduplicates after core discovery; linked worktrees retain separate tabs and drafts.
+
+Up to eight tabs share a conservative 512 MiB retained-state admission allowance, including nested inspection/source/editor content reservations. Exceeding it refuses switching until a tab is explicitly closed. The 16 MiB application-data session restores cold identities and an addressable top comparison, not decoded content or every nested inspection. Accepted operations stay in the global serialized executor with their captured repository; late result and draft updates route by that path. See [the tab workflow and exact restart bounds](../../../docs/repository-tabs.md).

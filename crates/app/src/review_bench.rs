@@ -222,6 +222,7 @@ fn prepared_review_and_cached_paths_release_benchmark() {
     let split = Arc::new(SplitPresentation::prepare(&old, &new, &presentation));
     let original = Arc::new(Content::Text {
         diagrams: None,
+        markdown: None,
         patch: patch.clone(),
         old: old.clone(),
         new: new.clone(),

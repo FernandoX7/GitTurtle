@@ -135,6 +135,13 @@ impl GitTurtle {
             .cloned();
         (key, duration, timeline)
     }
+    pub(super) fn apply_motion_preferences(&mut self, cx: &App) {
+        if cx.reduce_motion() {
+            self.image_comparison
+                .playback
+                .pause(std::time::Instant::now());
+        }
+    }
     fn gif_step(&mut self, next: bool, cx: &mut Context<Self>) {
         let (key, duration, Some(timeline)) = self.gif_context() else {
             return;
@@ -161,7 +168,7 @@ impl GitTurtle {
         let (key, duration, timeline) = self.gif_context();
         timeline?;
         let p = palette(cx);
-        let playing = self.image_comparison.playback.playing(key);
+        let playing = !cx.reduce_motion() && self.image_comparison.playback.playing(key);
         let position =
             self.image_comparison
                 .playback
@@ -189,12 +196,12 @@ impl GitTurtle {
         }
         Some(div().flex().flex_col().gap_1().px_3().py_2().border_b_1().border_color(rgb(p.border))
             .child(div().flex().flex_wrap().items_center().gap_2()
-                .child(button("gif-playback-toggle", if playing { "Pause GIF" } else { "Play GIF" }, "", playing).on_click(cx.listener(|this, _, _, cx| { let (key, duration, _) = this.gif_context(); this.image_comparison.playback.toggle(key, duration, std::time::Instant::now()); cx.notify(); })))
+                .child(button("gif-playback-toggle", if playing { "Pause GIF" } else { "Play GIF" }, "", playing).toggled(playing).disabled(cx.reduce_motion()).on_click(cx.listener(|this, _, _, cx| { if cx.reduce_motion() { return; } let (key, duration, _) = this.gif_context(); this.image_comparison.playback.toggle(key, duration, std::time::Instant::now()); cx.notify(); })))
                 .child(button("gif-first-frame", "First frame", "", false).on_click(cx.listener(|this, _, _, cx| { let (key, _, _) = this.gif_context(); this.image_comparison.playback.seek(key, 0); cx.notify(); })))
                 .child(button("gif-previous-frame", "Previous frame", "", false).on_click(cx.listener(|this, _, _, cx| this.gif_step(false, cx))))
                 .child(button("gif-next-frame", "Next frame", "", false).on_click(cx.listener(|this, _, _, cx| this.gif_step(true, cx))))
                 .child(div().text_size(appearance::ui_text(11.)).text_color(rgb(p.muted)).child(format!("{:.2} / {:.2} s · {}", position as f64 / 1000., duration as f64 / 1000., labels.join(" · ")))))
-            .child(div().text_size(appearance::ui_text(10.)).text_color(rgb(p.muted)).child(if truncated { "Playback is limited to the decoded segment (120 frames, 30 seconds, 16 million output pixels). Open captured bytes in system preview for the complete animation." } else if self.is_quick_source() { "Frame controls pause playback for inspection." } else { "Both versions share one clock; a shorter animation holds its final frame. Frame controls pause playback for inspection." }))
+            .child(div().text_size(appearance::ui_text(10.)).text_color(rgb(p.muted)).child(if cx.reduce_motion() { "Reduce Motion is enabled. Use First, Previous, and Next frame for static inspection." } else if truncated { "Playback is limited to the decoded segment (120 frames, 30 seconds, 16 million output pixels). Open captured bytes in system preview for the complete animation." } else if self.is_quick_source() { "Frame controls pause playback for inspection." } else { "Both versions share one clock; a shorter animation holds its final frame. Frame controls pause playback for inspection." }))
             .into_any_element())
     }
     fn image_geometry(&self) -> Geometry {
@@ -561,7 +568,9 @@ impl GitTurtle {
             self.image_comparison
                 .playback
                 .position(key, duration, std::time::Instant::now());
-        let playing = timeline.is_some() && self.image_comparison.playback.playing(key);
+        let playing = !cx.reduce_motion()
+            && timeline.is_some()
+            && self.image_comparison.playback.playing(key);
         let mut view = div()
             .id(("image-composite", side.unwrap_or(2)))
             .relative()

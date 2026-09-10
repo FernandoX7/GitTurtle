@@ -366,6 +366,16 @@ impl GitTurtle {
             self.images = [old.render.clone(), new.render.clone()];
         }
         self.content = Some(content);
+        if let (
+            Some(view),
+            Some(Content::Text {
+                markdown: Some(markdown),
+                ..
+            }),
+        ) = (&self.markdown_view, self.content.as_deref())
+        {
+            view.update(cx, |view, cx| view.replace(markdown.clone(), cx));
+        }
         if self.page == AppPage::Repository {
             self.ensure_editor(window, cx);
         }
@@ -375,6 +385,17 @@ impl GitTurtle {
         let Some(snapshot) = self.retain_search_snapshot(snapshot, cx) else {
             return;
         };
+        if self.history_paging.is_deep(self.visible.len()) {
+            // Deep browsing remains pinned even when local refs move. Refresh
+            // navigation metadata without silently replacing its loaded window.
+            self.refs = snapshot.refs;
+            self.branches = snapshot.branches;
+            self.worktrees = snapshot.worktrees;
+            self.repository = Some(snapshot.repository);
+            self.rebuild_navigation(cx);
+            return;
+        }
+        self.history_paging = history_paging::State::from_snapshot(&snapshot);
         let selected = self
             .selected_commit
             .and_then(|index| self.commits.get(index))

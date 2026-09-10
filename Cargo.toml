@@ -1,7 +1,7 @@
 [workspace]
 members = ["crates/app", "crates/git-core", "crates/preview"]
 default-members = ["crates/app"]
-exclude = ["vendor/gpui-pre-macos", "vendor/mermaid-rs-renderer"]
+exclude = ["vendor/gpui-pre-macos", "vendor/mermaid-rs-renderer", "vendor/gpui-base"]
 resolver = "3"
 
 [workspace.package]
@@ -22,5 +22,6 @@ strip = "debuginfo"
 
 # Keep the matching GPUI 0.3.4 stack; supply a demand-driven macOS frame wakeup.
 [patch.crates-io]
+gpui-base = { path = "vendor/gpui-base" }
 gpui-pre-macos = { path = "vendor/gpui-pre-macos" }
 mermaid-rs-renderer = { path = "vendor/mermaid-rs-renderer" }

@@ -28,6 +28,39 @@ pub(super) struct State {
 }
 
 impl State {
+    pub(super) fn pause_for_tab(&mut self) {
+        self.task = None;
+        if self.pending.take().is_some() {
+            self.error = Some("Attribution paused on tab switch; Reload to continue.".into());
+        }
+        if let Some(previous) = &mut self.previous {
+            previous.pause_for_tab();
+        }
+    }
+    pub(super) fn retained_bytes(&self) -> usize {
+        self.previous
+            .as_ref()
+            .map_or(0, |previous| previous.retained_bytes())
+            + self.history.as_ref().map_or(0, |history| {
+                history.commits.iter().map(Commit::history_bytes).sum()
+            })
+            + self.data.as_ref().map_or(0, |data| {
+                data.lines
+                    .iter()
+                    .map(|line| {
+                        std::mem::size_of_val(line)
+                            + line.text.capacity()
+                            + line.attribution.as_ref().map_or(0, |attribution| {
+                                std::mem::size_of_val(attribution.as_ref())
+                                    + attribution.oid.capacity()
+                                    + attribution.author.capacity()
+                                    + attribution.subject.capacity()
+                                    + attribution.path.as_os_str().len()
+                            })
+                    })
+                    .sum()
+            })
+    }
     pub(super) fn is_visible(&self) -> bool {
         self.visible
     }

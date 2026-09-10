@@ -7,6 +7,7 @@ These instructions supplement the root agreements for `crates/git-core`. The [se
 | Concern | Source | Regression fixtures |
 | --- | --- | --- |
 | Repository discovery, refs/worktrees, object reads, patches, local LFS | `src/lib.rs` | `tests/repository.rs`, `tests/local_directories.rs` |
+| Captured document local-image paths, revision/index/worktree assets | `src/preview_assets.rs` | `tests/preview_assets.rs` |
 | Cancellable search and file history | `src/history.rs` | `tests/history.rs` |
 | Committed/working attribution and line history | `src/blame.rs` | `tests/blame.rs` |
 | Status, previews, staging, commit, checkout, init/clone, fetch/pull/push | `src/work.rs` | `tests/workflow.rs` |

@@ -320,6 +320,7 @@ impl SeriesBrowser {
         self.error = None;
         let generation = self.generation;
         let response = self.worker.submit(Job::Preview {
+            origins: Default::default(),
             repo: self.repo.clone(),
             file,
         });

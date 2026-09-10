@@ -105,6 +105,9 @@ impl GitTurtle {
 
     pub(super) fn capture_page_return_focus(&mut self, window: &Window, cx: &App) {
         if self.page == AppPage::Repository {
+            pdf_view::pause(self.content.as_deref());
+            model_view::pause(self.content.as_deref());
+            markdown_view::pause(self.content.as_deref());
             self.page_return_focus = window.focused(cx);
         }
     }
@@ -678,13 +681,13 @@ impl GitTurtle {
                     .justify_between()
                     .gap_3()
                     .child(setting_description(
-                        "Reopen the last project",
-                        "Continue where you left off when GitTurtle starts.",
+                        "Restore repository tabs on startup",
+                        "Reopen the selected tab and retain up to eight saved repository tabs.",
                         cx,
                     ))
                     .child(
                         Switch::new("settings-reopen-last")
-                            .accessibility_label("Reopen the last project")
+                            .accessibility_label("Restore repository tabs on startup")
                             .checked(self.settings.reopen_last)
                             .on_click(cx.listener(|this, checked: &bool, window, cx| {
                                 if this.settings.reopen_last != *checked {
@@ -1109,6 +1112,9 @@ fn theme_preview(
 fn setting_description(title: &'static str, description: &'static str, cx: &App) -> AnyElement {
     let p = palette(cx);
     div()
+        .id(title)
+        .role(Role::Label)
+        .aria_label(format!("{title}. {description}"))
         .flex_1()
         .min_w_0()
         .flex()

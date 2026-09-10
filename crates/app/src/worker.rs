@@ -28,6 +28,9 @@ pub struct Snapshot {
     pub branches: Vec<Branch>,
     pub worktrees: Vec<Worktree>,
     pub commits: Vec<Commit>,
+    pub history_scope: gitturtle_core::HistoryScope,
+    pub history_offset: usize,
+    pub history_next_offset: Option<usize>,
     pub graph: Vec<graph::GraphRow>,
     pub graph_notice: Option<String>,
     pub refs: HashMap<String, Vec<String>>,
@@ -53,6 +56,7 @@ pub enum Content {
     Conflict(Arc<crate::conflicts::Presentation>),
     Text {
         diagrams: Option<Arc<crate::rich_preview::Comparison>>,
+        markdown: Option<Arc<crate::markdown_view::Comparison>>,
         patch: String,
         old: String,
         new: String,
@@ -71,11 +75,12 @@ pub enum Content {
 impl Content {
     /// CPU allocations retained by a cache entry. UI-held Arcs and uploaded GPU
     /// textures have independent lifetimes and need their own presentation budget.
-    fn bytes(&self) -> usize {
+    pub(super) fn bytes(&self) -> usize {
         match self {
             Self::Rich(preview) => preview.retained_bytes(),
             Self::Text {
                 diagrams,
+                markdown,
                 patch,
                 old,
                 new,
@@ -87,6 +92,9 @@ impl Content {
                 diagrams
                     .as_ref()
                     .map_or(0, |preview| preview.retained_bytes())
+                    + markdown
+                        .as_ref()
+                        .map_or(0, |preview| preview.retained_bytes())
                     + patch.capacity()
                     + old.capacity()
                     + new.capacity()
@@ -134,6 +142,14 @@ pub enum Scope {
 }
 
 pub enum Job {
+    /// Drop the idle history process on the worker when leaving its tab.
+    ReleaseHistory,
+    HistoryPage {
+        repo: GitRepository,
+        scope: gitturtle_core::HistoryScope,
+        offset: usize,
+        limit: usize,
+    },
     ReviewText {
         content: Arc<Content>,
         options: crate::text_review::Options,
@@ -195,6 +211,7 @@ pub enum Job {
         repo: GitRepository,
         entry: gitturtle_core::StatusEntry,
         area: gitturtle_core::ChangeArea,
+        head: Option<String>,
     },
     Open {
         path: PathBuf,
@@ -209,10 +226,13 @@ pub enum Job {
     Preview {
         repo: GitRepository,
         file: FileChange,
+        origins: crate::markdown_view::Origins,
     },
 }
 
 pub enum Output {
+    HistoryReleased,
+    HistoryPage(HistoryPageResult),
     ReviewText(Arc<Content>, Duration),
     RevisionComparison(gitturtle_core::RevisionComparison),
     RevisionTargets(Vec<String>),
@@ -226,6 +246,13 @@ pub enum Output {
     Snapshot(Snapshot),
     Changes(Vec<FileChange>, Duration),
     Preview(Arc<Content>, Duration),
+}
+
+pub struct HistoryPageResult {
+    pub page: gitturtle_core::HistoryTraversalPage,
+    pub graph: Vec<graph::GraphRow>,
+    pub graph_notice: Option<String>,
+    pub elapsed: Duration,
 }
 
 pub struct SearchResult {
@@ -393,7 +420,7 @@ impl Worker {
                         state.active = Some(request.cancellation.clone());
                         request
                     };
-                    if request.reply.is_canceled() {
+                    if request.reply.is_canceled() && !matches!(request.job, Job::ReleaseHistory) {
                         continue;
                     }
                     let cancellation = Cancellation {
@@ -439,6 +466,12 @@ impl Worker {
         state.pending = None;
     }
 
+    /// Closing an inactive history stream must not join Git on the UI thread.
+    /// A subsequent Open also replaces it if this queued release is superseded.
+    pub fn release_history(&self) {
+        drop(self.submit(Job::ReleaseHistory));
+    }
+
     pub fn submit(&self, job: Job) -> oneshot::Receiver<Result<Output>> {
         let (reply, receiver) = oneshot::channel();
         let (lock, ready) = &*self.queue;
@@ -482,6 +515,13 @@ struct RetainedRepository {
 #[derive(Default)]
 struct RepositorySession {
     current: Option<RetainedRepository>,
+    history: Option<OrdinaryHistory>,
+}
+
+struct OrdinaryHistory {
+    path: PathBuf,
+    traversal: gitturtle_core::HistoryTraversal,
+    graph: graph::GraphCursor,
 }
 
 impl RepositorySession {
@@ -502,11 +542,78 @@ impl RepositorySession {
             return Ok(current.repository.as_ref().clone());
         }
         let repository = Arc::new(discovered);
+        self.history = None;
         self.current = Some(RetainedRepository {
             canonical_root,
             repository: Arc::clone(&repository),
         });
         Ok(repository.as_ref().clone())
+    }
+
+    fn history_page(
+        &mut self,
+        repo: &GitRepository,
+        scope: &gitturtle_core::HistoryScope,
+        offset: usize,
+        limit: usize,
+        cancellation: &Cancellation,
+    ) -> Result<HistoryPageResult> {
+        let start = Instant::now();
+        let matches = self.history.as_ref().is_some_and(|history| {
+            history.path == repo.path()
+                && history.traversal.scope() == scope
+                && history.traversal.offset() <= offset
+        });
+        if !matches {
+            self.history = None;
+            self.history = Some(OrdinaryHistory {
+                path: repo.path().to_owned(),
+                traversal: repo.history_traversal(scope, &cancellation.history)?,
+                graph: graph::GraphCursor::default(),
+            });
+        }
+        let result = (|| {
+            let history = self.history.as_mut().expect("History cursor initialized");
+            // Back/restore replays a captured stream once, discarding each
+            // bounded page and retaining only the ancestry frontier. Sequential
+            // browsing does not enter this loop or replay any prior records.
+            while history.traversal.offset() < offset {
+                cancellation.check()?;
+                let count =
+                    (offset - history.traversal.offset()).min(gitturtle_core::MAX_HISTORY_PAGE);
+                let page = history.traversal.next_page(count, &cancellation.history)?;
+                history
+                    .graph
+                    .append(&page.commits, GRAPH_LANE_LIMIT, GRAPH_EDGE_LIMIT, || {
+                        cancellation.check()
+                    })?;
+                ensure!(
+                    page.next_offset.is_some() || history.traversal.offset() == offset,
+                    "Saved history position is past the captured history"
+                );
+            }
+            let page = history.traversal.next_page(
+                limit.clamp(1, gitturtle_core::MAX_HISTORY_PAGE),
+                &cancellation.history,
+            )?;
+            let (graph, hidden) =
+                history
+                    .graph
+                    .append(&page.commits, GRAPH_LANE_LIMIT, GRAPH_EDGE_LIMIT, || {
+                        cancellation.check()
+                    })?;
+            cancellation.check()?;
+            Ok(HistoryPageResult {
+                page,
+                graph,
+                graph_notice: hidden.then(graph_notice),
+                elapsed: start.elapsed(),
+            })
+        })();
+        if result.is_err() {
+            self.history = None;
+        }
+        result
     }
 }
 
@@ -536,6 +643,7 @@ struct PreviewKey {
     old_mode: String,
     new_mode: String,
     preview_edge: u32,
+    origins: crate::markdown_view::Origins,
 }
 
 impl PreviewKey {
@@ -549,6 +657,7 @@ impl PreviewKey {
             old_mode: file.old_mode.clone(),
             new_mode: file.new_mode.clone(),
             preview_edge: PREVIEW_EDGE,
+            origins: Default::default(),
         }
     }
 }
@@ -619,6 +728,18 @@ fn execute(
     let start = Instant::now();
     cancellation.check()?;
     match job {
+        Job::ReleaseHistory => {
+            session.history = None;
+            Ok(Output::HistoryReleased)
+        }
+        Job::HistoryPage {
+            repo,
+            scope,
+            offset,
+            limit,
+        } => session
+            .history_page(&repo, &scope, offset, limit, cancellation)
+            .map(Output::HistoryPage),
         Job::ReviewText { content, options } => {
             let content = crate::text_review::prepare(&content, options, || cancellation.check())?;
             Ok(Output::ReviewText(content, start.elapsed()))
@@ -660,7 +781,22 @@ fn execute(
         Job::TrackedPreview { repo, entry, scope } => {
             let mut file = repo.tracked_path_change(&entry);
             if matches!(scope, gitturtle_core::PathScope::Revision(_)) {
-                return execute(Job::Preview { repo, file }, cache, cancellation, session);
+                return execute(
+                    Job::Preview {
+                        repo,
+                        file,
+                        origins: crate::markdown_view::Origins::revisions(
+                            None,
+                            match scope {
+                                gitturtle_core::PathScope::Revision(oid) => Some(oid),
+                                _ => None,
+                            },
+                        ),
+                    },
+                    cache,
+                    cancellation,
+                    session,
+                );
             }
             let (mode, bytes) = repo.read_tracked_working_file(&entry)?;
             cancellation.check()?;
@@ -688,6 +824,16 @@ fn execute(
                 prepared_text(String::new(), String::new(), source)
             };
             attach_mermaid(&mut content, &file, cancellation)?;
+            attach_markdown_assets(
+                &mut content,
+                &repo,
+                &file,
+                &crate::markdown_view::Origins {
+                    old: None,
+                    new: Some(gitturtle_core::PreviewAssetScope::Worktree),
+                },
+                cancellation,
+            )?;
             cancellation.check()?;
             Ok(Output::Preview(Arc::new(content), start.elapsed()))
         }
@@ -841,6 +987,7 @@ fn execute(
                             repo: repo.clone(),
                             entry: entry.clone(),
                             area,
+                            head: working.status.head.clone(),
                         },
                         cache,
                         cancellation,
@@ -868,7 +1015,12 @@ fn execute(
                 preview,
             })))
         }
-        Job::WorkingPreview { repo, entry, area } => {
+        Job::WorkingPreview {
+            repo,
+            entry,
+            area,
+            head,
+        } => {
             if entry.conflicted {
                 let presentation =
                     crate::conflicts::Presentation::prepare(repo.conflict_preview(&entry.path)?);
@@ -919,6 +1071,17 @@ fn execute(
             };
             cancellation.check()?;
             attach_mermaid(&mut content, &file, cancellation)?;
+            let origins = match area {
+                gitturtle_core::ChangeArea::Staged => crate::markdown_view::Origins {
+                    old: head.map(gitturtle_core::PreviewAssetScope::Revision),
+                    new: Some(gitturtle_core::PreviewAssetScope::Index),
+                },
+                gitturtle_core::ChangeArea::Unstaged => crate::markdown_view::Origins {
+                    old: Some(gitturtle_core::PreviewAssetScope::Index),
+                    new: Some(gitturtle_core::PreviewAssetScope::Worktree),
+                },
+            };
+            attach_markdown_assets(&mut content, &repo, &file, &origins, cancellation)?;
             if let Content::Text {
                 patch,
                 presentation,
@@ -944,7 +1107,9 @@ fn execute(
             ))
         }
         Job::Open { path, scope, limit } => {
-            let mut snapshot = read_snapshot(path, scope.as_ref(), limit, cancellation, session)?;
+            let mut snapshot =
+                read_snapshot(path.clone(), scope.as_ref(), limit, cancellation, session)
+                    .map_err(|error| crate::repository_access::explain(&path, error))?;
             cancellation.check()?;
             snapshot.elapsed = start.elapsed();
             Ok(Output::Snapshot(snapshot))
@@ -954,20 +1119,33 @@ fn execute(
             cancellation.check()?;
             Ok(Output::Changes(changes, start.elapsed()))
         }
-        Job::Preview { repo, file } => {
-            let key = PreviewKey::new(repo.path(), &file);
+        Job::Preview {
+            repo,
+            file,
+            origins,
+        } => {
+            let mut key = PreviewKey::new(repo.path(), &file);
+            key.origins = origins.clone();
             if let Some(content) = cache.get(&key) {
                 return Ok(Output::Preview(content, start.elapsed()));
             }
-            let content = text_content(&repo, &file, cancellation)?;
+            let mut content = text_content(&repo, &file, cancellation)?;
+            attach_markdown_assets(&mut content, &repo, &file, &origins, cancellation)?;
             let cacheable = match &content {
                 Content::Images { old, new } => old.message.is_none() && new.message.is_none(),
                 Content::Rich(preview) => {
                     preview.old.error.is_none() && preview.new.error.is_none()
                 }
-                Content::Text { old, new, .. } => ![old, new]
-                    .iter()
-                    .any(|source| detect_lfs_pointer(source.as_bytes()).is_some()),
+                Content::Text {
+                    old, new, markdown, ..
+                } => {
+                    markdown
+                        .as_ref()
+                        .is_none_or(|markdown| markdown.cacheable())
+                        && ![old, new]
+                            .iter()
+                            .any(|source| detect_lfs_pointer(source.as_bytes()).is_some())
+                }
                 _ => true,
             };
             cancellation.check()?;
@@ -981,12 +1159,7 @@ fn execute(
 }
 
 fn commit_metadata_bytes(commit: &Commit) -> usize {
-    std::mem::size_of::<Commit>()
-        + commit.oid.capacity()
-        + commit.parents.iter().map(String::capacity).sum::<usize>()
-        + commit.author.capacity()
-        + commit.subject.capacity()
-        + commit.body.capacity()
+    commit.history_bytes()
 }
 
 fn read_snapshot(
@@ -1005,18 +1178,35 @@ fn read_snapshot(
     let worktrees = repository.worktrees()?;
     cancellation.check()?;
     let oid = scope_oid(scope, &branches, &worktrees)?;
-    let commits = if let Some(oid) = oid {
-        // Git reports an all-zero HEAD for a worktree on an unborn branch.
-        if oid.bytes().all(|byte| byte == b'0') {
-            Vec::new()
-        } else {
-            repository.history_from(oid, limit)?
+    let scope = match oid {
+        Some(oid) if oid.bytes().all(|byte| byte == b'0') => {
+            gitturtle_core::HistoryScope::PinnedRefs(Vec::new())
         }
-    } else {
-        repository.history(limit)?
+        Some(oid) => gitturtle_core::HistoryScope::FromCommit(oid.to_owned()),
+        None => gitturtle_core::HistoryScope::AllRefs,
     };
-    cancellation.check()?;
-    let (graph, graph_notice) = layout_graph(&commits, cancellation)?;
+    let (commits, graph, graph_notice, history_scope, history_next_offset) = if limit == 0 {
+        (Vec::new(), Vec::new(), None, scope, None)
+    } else {
+        // An explicit or quiet refresh captures new tips and starts a new
+        // traversal. Ordinary subsequent pages use the immutable returned scope.
+        session.history = None;
+        let result = session.history_page(&repository, &scope, 0, limit, cancellation)?;
+        let pinned = session
+            .history
+            .as_ref()
+            .expect("Live history traversal")
+            .traversal
+            .scope()
+            .clone();
+        (
+            result.page.commits,
+            result.graph,
+            result.graph_notice,
+            pinned,
+            result.page.next_offset,
+        )
+    };
     cancellation.check()?;
     let mut refs: HashMap<String, Vec<String>> = HashMap::new();
     for branch in &branches {
@@ -1030,6 +1220,9 @@ fn read_snapshot(
         branches,
         worktrees,
         commits,
+        history_scope,
+        history_offset: 0,
+        history_next_offset,
         graph,
         graph_notice,
         refs,
@@ -1057,13 +1250,11 @@ fn layout_graph(
             Ok(node.clone())
         })
         .collect::<Result<_>>()?;
-    Ok((
-        rows,
-        Some(
-            "Graph connections hidden for this history. Select a branch to view a smaller graph."
-                .into(),
-        ),
-    ))
+    Ok((rows, Some(graph_notice())))
+}
+
+fn graph_notice() -> String {
+    "Graph connections hidden for this history. Select a branch to view a smaller graph.".into()
 }
 
 /// Preflight the graph's frontier and exact edge count without building lane
@@ -1356,6 +1547,7 @@ fn prepared_text(patch: String, old: String, new: String) -> Content {
     ));
     Content::Text {
         diagrams: None,
+        markdown: None,
         patch,
         old,
         new,
@@ -1372,14 +1564,48 @@ fn attach_mermaid(
     cancellation: &Cancellation,
 ) -> Result<()> {
     if let Content::Text {
-        old, new, diagrams, ..
+        old, new, markdown, ..
+    } = content
+        && markdown.is_none()
+    {
+        *markdown =
+            crate::markdown_view::prepare(old, new, file, || cancellation.check())?.map(Arc::new);
+    }
+    if let Content::Text {
+        old,
+        new,
+        diagrams,
+        markdown,
+        ..
     } = content
         && diagrams.is_none()
     {
-        *diagrams = crate::rich_preview::prepare_mermaid(old, new, file, || cancellation.check())?
-            .map(Arc::new);
+        *diagrams = if let Some(markdown) = markdown {
+            markdown.diagrams().map(Arc::new)
+        } else {
+            crate::rich_preview::prepare_mermaid(old, new, file, || cancellation.check())?
+                .map(Arc::new)
+        };
     }
     Ok(())
+}
+
+fn attach_markdown_assets(
+    content: &mut Content,
+    repo: &GitRepository,
+    file: &FileChange,
+    origins: &crate::markdown_view::Origins,
+    cancellation: &Cancellation,
+) -> Result<()> {
+    if let Content::Text {
+        markdown: Some(markdown),
+        ..
+    } = content
+        && let Some(markdown) = Arc::get_mut(markdown)
+    {
+        crate::markdown_view::capture_assets(markdown, repo, file, origins, &cancellation.history)?;
+    }
+    cancellation.check()
 }
 
 /// Compare prepared mutable content off UI before deciding whether native
@@ -1394,6 +1620,7 @@ fn content_unchanged(previous: &Content, next: &Content) -> bool {
                 partial_unavailable: au,
                 partial: ap,
                 diagrams: ad,
+                markdown: am,
                 ..
             },
             Content::Text {
@@ -1403,10 +1630,16 @@ fn content_unchanged(previous: &Content, next: &Content) -> bool {
                 partial_unavailable: bu,
                 partial: bp,
                 diagrams: bd,
+                markdown: bm,
                 ..
             },
         ) => {
             a == b
+                && match (am, bm) {
+                    (None, None) => true,
+                    (Some(a), Some(b)) => a.same_source(b),
+                    _ => false,
+                }
                 && match (ad, bd) {
                     (None, None) => true,
                     (Some(a), Some(b)) => a.old.same_source(&b.old) && a.new.same_source(&b.new),
@@ -1797,6 +2030,7 @@ mod tests {
         let metadata_bytes = presentation.retained_bytes() + split.retained_bytes();
         let content = Arc::new(Content::Text {
             diagrams: None,
+            markdown: None,
             patch,
             old,
             new,
@@ -2055,6 +2289,69 @@ mod image_tests {
     const SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1" fill="#ff0000"/></svg>"##;
     const LFS_OID: &str = "193f55b4f0be3159c3d9d19ba6d042895a869e1d9405d1bedf5a09d1f56ee6b7";
 
+    #[test]
+    fn ordinary_history_worker_continues_and_restores_the_same_graph_snapshot() {
+        let fixture = Fixture::new();
+        let mut input = Vec::new();
+        for index in 0..1203 {
+            let message = format!("commit {index}");
+            input.extend_from_slice(format!("commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> {} +0000\ndata {}\n{}\n", 1_700_000_000 + index, message.len(), message).as_bytes());
+        }
+        input.extend_from_slice(b"done\n");
+        fixture.git(&["fast-import", "--quiet"], &input);
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let expected = repo.history(2000).unwrap();
+        let expected_graph = graph::layout(&expected, || Ok::<_, ()>(())).unwrap();
+        let mut session = RepositorySession::default();
+        let mut cache = PreviewCache::default();
+        let Output::Snapshot(snapshot) = execute(
+            Job::Open {
+                path: fixture.0.clone(),
+                scope: None,
+                limit: 500,
+            },
+            &mut cache,
+            &active(),
+            &mut session,
+        )
+        .unwrap() else {
+            panic!("snapshot")
+        };
+        assert_eq!(snapshot.commits, expected[..500]);
+        assert_eq!(snapshot.graph, expected_graph[..500]);
+        let scope = snapshot.history_scope;
+        fixture.git(&["update-ref", "refs/heads/main", &expected[700].oid], b"");
+        let mut read = |offset, session: &mut RepositorySession| {
+            let Output::HistoryPage(result) = execute(
+                Job::HistoryPage {
+                    repo: repo.clone(),
+                    scope: scope.clone(),
+                    offset,
+                    limit: 500,
+                },
+                &mut cache,
+                &active(),
+                session,
+            )
+            .unwrap() else {
+                panic!("history page")
+            };
+            result
+        };
+        let page = read(500, &mut session);
+        assert_eq!(page.page.commits, expected[500..1000]);
+        assert_eq!(page.graph, expected_graph[500..1000]);
+        let page = read(1000, &mut session);
+        assert_eq!(page.page.commits, expected[1000..]);
+        assert_eq!(page.graph, expected_graph[1000..]);
+        assert_eq!(page.page.next_offset, None);
+        let previous = read(500, &mut session);
+        assert_eq!(previous.page.commits, expected[500..1000]);
+        assert_eq!(previous.graph, expected_graph[500..1000]);
+        execute(Job::ReleaseHistory, &mut cache, &active(), &mut session).unwrap();
+        assert!(session.history.is_none());
+    }
+
     struct Fixture(PathBuf);
 
     impl Fixture {
@@ -2153,6 +2450,7 @@ mod image_tests {
         let entry = repo.status().unwrap().entries.remove(0);
         let Output::WorkingPreview(file, content, _) = execute(
             Job::WorkingPreview {
+                head: None,
                 repo: repo.clone(),
                 entry,
                 area: gitturtle_core::ChangeArea::Unstaged,
@@ -2716,6 +3014,7 @@ mod image_tests {
     fn captured_preview(repo: &GitRepository, file: FileChange) -> Arc<Content> {
         let Output::Preview(content, _) = execute(
             Job::Preview {
+                origins: Default::default(),
                 repo: repo.clone(),
                 file,
             },
@@ -2766,7 +3065,7 @@ mod image_tests {
     }
 
     #[test]
-    fn model_worker_renders_obj_without_losing_captured_source_identity() {
+    fn model_worker_retains_obj_geometry_without_losing_captured_source_identity() {
         let fixture = Fixture::new();
         let repo = GitRepository::open(&fixture.0).unwrap();
         let source = b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
@@ -2776,10 +3075,11 @@ mod image_tests {
             panic!("ASCII model uses geometric preview");
         };
         assert_eq!(preview.new.metadata.format, "OBJ");
-        assert_eq!(preview.new.pages.len(), 4);
-        assert_eq!(preview.new.page_kind, "View");
-        assert_eq!(preview.new.pages[0].caption.as_deref(), Some("Isometric"));
-        assert!(preview.new.pages[0].render.is_some());
+        let model = preview.new.model.as_ref().expect("retained model geometry");
+        assert!(preview.new.pages.is_empty());
+        assert_eq!(model.bookmark().target, [0.5, 0.5, 0.]);
+        assert!(model.retained_bytes() > 0);
+        assert!(content.bytes() >= source.len() + model.retained_bytes());
         assert_eq!(preview.new.captured.as_deref(), Some(source.as_slice()));
         assert_eq!(
             preview.new.metadata.source.as_deref().unwrap().as_bytes(),
@@ -2860,6 +3160,7 @@ mod image_tests {
         let index = fs::read(fixture.0.join(".git/index")).unwrap();
         let Output::WorkingPreview(_, content, _) = execute(
             Job::WorkingPreview {
+                head: None,
                 repo: repo.clone(),
                 entry: repo.status().unwrap().entries.remove(0),
                 area: gitturtle_core::ChangeArea::Unstaged,
@@ -2988,6 +3289,7 @@ mod image_tests {
         let entry = repo.status().unwrap().entries.remove(0);
         let Output::WorkingPreview(_, content, _) = execute(
             Job::WorkingPreview {
+                head: None,
                 repo: repo.clone(),
                 entry,
                 area: gitturtle_core::ChangeArea::Unstaged,
@@ -3082,6 +3384,7 @@ mod image_tests {
         let mut preview = |expected_cached_entries| {
             let output = execute(
                 Job::Preview {
+                    origins: Default::default(),
                     repo: repository.clone(),
                     file: file.clone(),
                 },
@@ -3159,6 +3462,7 @@ mod image_tests {
         let mut session = RepositorySession::default();
         let missing = execute(
             Job::Preview {
+                origins: Default::default(),
                 repo: repo.clone(),
                 file: file.clone(),
             },
@@ -3179,7 +3483,11 @@ mod image_tests {
         fs::create_dir_all(&directory).unwrap();
         fs::write(directory.join(LFS_OID), SVG).unwrap();
         let available = execute(
-            Job::Preview { repo, file },
+            Job::Preview {
+                repo,
+                file,
+                origins: Default::default(),
+            },
             &mut cache,
             &active(),
             &mut session,

@@ -154,13 +154,14 @@ impl GitTurtle {
             let submit_owner = owner.clone();
             let cancel_owner = owner.clone();
             let owner = owner.clone();
-            let body = div().flex().flex_col().gap_3()
-                .child(div().text_size(crate::appearance::ui_text(13.)).child(prompt.message.clone()))
-                .child(div().text_size(crate::appearance::ui_text(12.)).child(if confirmation {
+            let guidance = if confirmation {
                     "Verify this host and fingerprint through a trusted source before continuing. Accepting lets SSH update its configured known-hosts file."
                 } else {
                     "Requested by the Git operation you started. Your configured credential helper may save this response, including in macOS Keychain. GitTurtle does not save it."
-                }));
+                };
+            let body = div().flex().flex_col().gap_3()
+                .child(div().id("git-authentication-message").role(Role::Label).aria_label(prompt.message.clone()).text_size(crate::appearance::ui_text(13.)).child(prompt.message.clone()))
+                .child(div().id("git-authentication-guidance").role(Role::Label).aria_label(guidance).text_size(crate::appearance::ui_text(12.)).child(guidance));
             let body = if confirmation { body } else {
                 let field = Input::new(&input).aria_label(format!("{}: {}", if prompt.secret { "Git authentication secret" } else { "Git username" }, prompt.message));
                 let field = if prompt.secret { field.content_type(InputContentType::Password) } else { field };

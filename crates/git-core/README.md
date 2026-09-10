@@ -82,9 +82,29 @@ Primary references: [porcelain status](https://git-scm.com/docs/git-status), [st
 
 Image callers must separately bound decoded pixels and GPU allocations. A generation check or queue policy belongs to the UI worker. Search and file-history calls accept `HistoryCancellation`; other core reads retain their individual deadlines rather than interrupting an already-running call on selection changes. Multiple calls may be needed for one interaction, so the per-request deadline is not an end-to-end interaction deadline. OS scheduling or uninterruptible filesystem I/O is outside these deadlines' guarantee.
 
-`history_page` reads current refs and can shift if another tool changes them. Reset paging on refresh, or use `history_from_page` with an immutable commit anchor. Remote-tracking branches describe locally available state, with freshness controlled by an explicit fetch in this client or another tool. Missing promisor objects return an explicit local-unavailability error.
+Ordinary application history uses `history_traversal` and `HistoryTraversal::next_page`: one topological Git process walks captured local tips once, with no growing-prefix or `--skip` replay. Pages contain at most 500 commits / 32 MiB of retained metadata; a 2 MiB record bound and eight 8 KiB pipe chunks bound read-ahead. Backpressure pauses the producer between requests. Cancellation and the 15-second page deadline close/reap the process and invalidate the cursor; a retry starts the visible captured scope again. The caller owns retention and closes idle traversals when leaving a tab. Git's internal revision-walk allocation is separate from the metadata/pipe bounds; these are not a process RSS cap.
+
+`history_page` remains a stateless compatibility API that reads current refs and can shift if another tool changes them. `history_from_page` pins an immutable anchor but still replays the skipped prefix. Search retains its existing pinned-tip/scanned-offset semantics. For streaming traversal, refresh explicitly creates a new scope; continued pages are unaffected by later ref movement. Remote-tracking branches describe locally available state, with freshness controlled by an explicit fetch in this client or another tool. Missing promisor objects return an explicit local-unavailability error.
 
 ## Verification
+
+`capture_preview_assets` resolves at most 32 supplied document image destinations
+against an explicit full commit OID, one stage-zero index metadata capture, or raw
+tracked working files. Paths are percent-decoded without losing filename bytes;
+relative parent components may remain within the repository, while schemes,
+absolute paths, repository escapes, `.git`, query parameters and fragments are
+refused. Tree/index entries must be regular blobs. Working traversal uses
+descriptor-relative no-follow opens for every component and refuses files that
+change during capture. This working mode is a bounded capture of individual files,
+not an atomic multi-file snapshot.
+
+The selected document's expected blob OID is checked when supplied. Captured
+revision/index resources retain their own immutable OIDs and never substitute
+current working bytes. Asset failures remain independent, encoded-byte budgets
+apply per image and across the batch, and active Git reads are cancellable. No
+filter, textconv, script, external URL, network fetch or Git write is part of this
+API. The preview caller still owns image decoding, pixel budgets and exact source
+identity. `tests/preview_assets.rs` covers these path, identity and refusal boundaries.
 
 ```sh
 cargo test --locked -p gitturtle-core
