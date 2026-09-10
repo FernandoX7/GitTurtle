@@ -1509,13 +1509,18 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         use std::{cell::RefCell, rc::Rc};
+        let find_shortcut = if cfg!(target_os = "macos") {
+            "cmd-f"
+        } else {
+            "ctrl-f"
+        };
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let output = captured.clone();
         cx.update(|cx| {
             gpui_kit::init(cx);
             image_lifetime::init(cx);
             cx.bind_keys([
-                KeyBinding::new("cmd-f", Search, Some("GitTurtleList")),
+                KeyBinding::new(find_shortcut, Search, Some("GitTurtleList")),
                 KeyBinding::new("escape", ClearSearch, Some("GitTurtle")),
             ]);
         });
@@ -1578,7 +1583,7 @@ mod tests {
         settle(cx);
         let editor = cx.read(|cx| document.read(cx).editor.as_ref().unwrap().clone());
         cx.update(|window, cx| assert!(editor.focus_handle(cx).is_focused(window)));
-        cx.simulate_keystrokes("cmd-f");
+        cx.simulate_keystrokes(find_shortcut);
         cx.simulate_input("Captured");
         settle(cx);
         cx.update(|window, cx| {
