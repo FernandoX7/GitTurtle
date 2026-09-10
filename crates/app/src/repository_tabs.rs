@@ -502,6 +502,10 @@ struct WarmTab {
     retained_commit: Option<usize>,
     history_scroll: UniformListScrollHandle,
     file_scroll: UniformListScrollHandle,
+    // Resize detection must compare with this tab's measured viewport, never
+    // with the preceding tab's independently retained panel geometry.
+    history_list_layout: Option<(Size<Pixels>, Pixels)>,
+    file_list_layout: Option<(Size<Pixels>, Pixels)>,
     nav_scroll: UniformListScrollHandle,
     horizontal: ScrollHandle,
     content_panels: Entity<ResizableState>,
@@ -756,6 +760,8 @@ impl GitTurtle {
             retained_commit,
             history_scroll: std::mem::take(&mut self.history_scroll),
             file_scroll: std::mem::take(&mut self.file_scroll),
+            history_list_layout: self.history_list_layout.take(),
+            file_list_layout: self.file_list_layout.take(),
             nav_scroll: std::mem::take(&mut self.nav_scroll),
             horizontal: std::mem::take(&mut self.history_horizontal),
             content_panels: std::mem::replace(
@@ -814,6 +820,8 @@ impl GitTurtle {
         self.automatic.retained_commit = warm.retained_commit;
         self.history_scroll = warm.history_scroll;
         self.file_scroll = warm.file_scroll;
+        self.history_list_layout = warm.history_list_layout;
+        self.file_list_layout = warm.file_list_layout;
         self.nav_scroll = warm.nav_scroll;
         self.history_horizontal = warm.horizontal;
         self.content_panels = warm.content_panels;
@@ -1138,6 +1146,8 @@ impl GitTurtle {
             self.files.clear();
             self.selected_commit = None;
             self.selected_file = None;
+            self.history_list_layout = None;
+            self.file_list_layout = None;
             self.repository = None;
             self.path = None;
             self.scope = None;
@@ -1970,6 +1980,100 @@ mod tests {
                 app._display_preferences_task = None;
             })
         });
+    }
+
+    #[gpui::test]
+    async fn warm_tabs_restore_measured_viewports_with_their_manual_scroll_positions(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::component::Root;
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.executor().allow_parking();
+        let fixture = tempfile::tempdir().unwrap();
+        let first = GitRepository::init(fixture.path().join("first"), "main").unwrap();
+        let second = GitRepository::init(fixture.path().join("second"), "main").unwrap();
+        let initial = first.path().to_owned();
+        let next = second.path().to_owned();
+        let destination = fixture.path().join("isolated-session.json");
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+        });
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let observed = captured.clone();
+        let (_, window_cx) = cx.add_window_view(move |window, cx| {
+            let app = cx.new(|cx| {
+                let mut app = GitTurtle::new(
+                    Some(initial),
+                    Preferences::default(),
+                    Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                );
+                app.repository_tabs.save_path = Some(destination);
+                app
+            });
+            *captured.borrow_mut() = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let app = observed.borrow_mut().take().unwrap();
+        settle_tab_test(&app, window_cx).await;
+        let first_history = Some((size(px(760.), px(440.)), px(34.)));
+        let first_files = Some((size(px(320.), px(260.)), px(44.)));
+        let second_history = Some((size(px(640.), px(380.)), px(34.)));
+        let second_files = Some((size(px(440.), px(210.)), px(44.)));
+        let history_offset = point(px(-30.), px(-680.));
+        let files_offset = point(px(0.), px(-352.));
+        window_cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                // These are the snapshots produced by each list's layout
+                // probe. Exercise the real tab ownership transfer together
+                // with its scroll handles before another frame can measure.
+                app.history_list_layout = first_history;
+                app.file_list_layout = first_files;
+                app.history_scroll
+                    .0
+                    .borrow()
+                    .base_handle
+                    .set_offset(history_offset);
+                app.file_scroll
+                    .0
+                    .borrow()
+                    .base_handle
+                    .set_offset(files_offset);
+                app.open_repository_tab(next, window, cx);
+                assert!(app.history_list_layout.is_none());
+                assert!(app.file_list_layout.is_none());
+            });
+        });
+        settle_tab_test(&app, window_cx).await;
+        window_cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.history_list_layout = second_history;
+                app.file_list_layout = second_files;
+                app.switch_repository_tab(0, window, cx);
+                assert_eq!(app.history_list_layout, first_history);
+                assert_eq!(app.file_list_layout, first_files);
+                assert_eq!(
+                    app.history_scroll.0.borrow().base_handle.offset(),
+                    history_offset
+                );
+                assert_eq!(
+                    app.file_scroll.0.borrow().base_handle.offset(),
+                    files_offset
+                );
+                app.close_repository_tab(0, window, cx);
+                assert_eq!(app.history_list_layout, second_history);
+                assert_eq!(app.file_list_layout, second_files);
+                app.close_repository_tab(0, window, cx);
+                assert!(app.history_list_layout.is_none());
+                assert!(app.file_list_layout.is_none());
+            });
+        });
+        settle_tab_test(&app, window_cx).await;
     }
 
     #[gpui::test]
