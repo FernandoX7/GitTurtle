@@ -89,6 +89,12 @@ same-document `#heading` link uses the rendered heading lookup; full browser URL
 and fragment semantics are not implemented. HTTP/HTTPS links require the explicit
 “Open in browser” action. Other schemes and remote image loads are refused.
 
+Captured local-document dialogs focus the displayed rendered view or exact-source
+editor when opened or switched. Exact source retains its editor and Find query
+across those switches. Find stays within the captured document; Escape closes
+Find before dismissing the dialog. Repository Search cannot change the page or
+focus behind an open dialog or sheet.
+
 The source/diff tabs retain the literal captured Markdown. Rendered text,
 Mermaid pixels, image bytes and linked-document contents never produce selected
 staging edits. Returning to History, changing application pages, replacing the

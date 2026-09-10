@@ -1525,7 +1525,10 @@ impl GitTurtle {
         }
     }
     fn search(&mut self, _: &Search, window: &mut Window, cx: &mut Context<Self>) {
-        if self.page != AppPage::Repository {
+        if self.page != AppPage::Repository
+            || window.has_active_dialog(cx)
+            || window.has_active_sheet(cx)
+        {
             return;
         }
         self.show_history(window, cx);

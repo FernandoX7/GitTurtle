@@ -896,40 +896,7 @@ impl View {
                 match result {
                     Ok((path, source, markdown)) => {
                         this.notice = None;
-                        let view = cx.new(|cx| LocalDocument {
-                            source,
-                            editor: None,
-                            rendered: markdown.map(|markdown| {
-                                cx.new(|cx| {
-                                    let mut view = View::new(markdown, true, cx);
-                                    view.depth = depth;
-                                    view
-                                })
-                            }),
-                            show_rendered: true,
-                        });
-                        window.open_alert_dialog(cx, move |dialog, _, _| {
-                            dialog
-                                .title(format!("Captured local document · {}", path.display()))
-                                .width(px(900.))
-                                .child(view.clone())
-                                .footer(
-                                    gpui_kit::component::dialog::DialogFooter::new().child(
-                                        button(
-                                            "close-local-markdown",
-                                            "Back to document",
-                                            "",
-                                            false,
-                                        )
-                                        .on_click(
-                                            |_, window, cx| {
-                                                window.close_dialog(cx);
-                                                window.refresh();
-                                            },
-                                        ),
-                                    ),
-                                )
-                        });
+                        open_local_document(path, source, markdown, depth, window, cx);
                     }
                     Err(error) => this.notice = Some(format!("{error:#}")),
                 }
@@ -1255,11 +1222,75 @@ pub(super) fn pause(content: Option<&Content>) {
         }
     }
 }
+fn open_local_document(
+    path: PathBuf,
+    source: Arc<str>,
+    markdown: Option<Arc<Comparison>>,
+    depth: usize,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<LocalDocument> {
+    let view = cx.new(|cx| LocalDocument {
+        source,
+        editor: None,
+        rendered: markdown.map(|markdown| {
+            cx.new(|cx| {
+                let mut view = View::new(markdown, true, cx);
+                view.depth = depth;
+                view
+            })
+        }),
+        show_rendered: true,
+    });
+    let document = view.clone();
+    window.open_alert_dialog(cx, move |dialog, _, _| {
+        dialog
+            .title(format!("Captured local document · {}", path.display()))
+            .width(px(900.))
+            .child(document.clone())
+            .footer(gpui_kit::component::dialog::DialogFooter::new().child(
+                button("close-local-markdown", "Back to document", "", false).on_click(
+                    |_, window, cx| {
+                        window.close_dialog(cx);
+                        window.refresh();
+                    },
+                ),
+            ))
+    });
+    let focus = view.clone();
+    window.defer(cx, move |window, cx| {
+        focus.update(cx, |this, cx| this.focus_visible(window, cx));
+    });
+    view
+}
 struct LocalDocument {
     source: Arc<str>,
     editor: Option<Entity<EditorState>>,
     rendered: Option<Entity<View>>,
     show_rendered: bool,
+}
+impl LocalDocument {
+    fn focus_visible(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.show_rendered
+            && let Some(rendered) = &self.rendered
+        {
+            rendered.read(cx).focus.clone().focus(window, cx);
+        } else {
+            let editor = self
+                .editor
+                .get_or_insert_with(|| text::editor(&self.source, "markdown", None, window, cx));
+            editor.focus_handle(cx).focus(window, cx);
+        }
+        cx.notify();
+    }
+    fn show_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_rendered = false;
+        self.focus_visible(window, cx);
+    }
+    fn show_rendered(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_rendered = true;
+        self.focus_visible(window, cx);
+    }
 }
 impl Render for LocalDocument {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1277,21 +1308,27 @@ impl Render for LocalDocument {
                     .flex()
                     .gap_2()
                     .child(
-                        button("local-document-source", "Exact source", "", source)
-                            .toggled(source)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.show_rendered = false;
-                                cx.notify();
-                            })),
+                        div()
+                            .debug_selector(|| "local-document-source-toggle".into())
+                            .child(
+                                button("local-document-source", "Exact source", "", source)
+                                    .toggled(source)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.show_source(window, cx);
+                                    })),
+                            ),
                     )
                     .child(
-                        button("local-document-rendered", "Rendered", "", !source)
-                            .toggled(!source)
-                            .disabled(self.rendered.is_none())
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.show_rendered = true;
-                                cx.notify();
-                            })),
+                        div()
+                            .debug_selector(|| "local-document-rendered-toggle".into())
+                            .child(
+                                button("local-document-rendered", "Rendered", "", !source)
+                                    .toggled(!source)
+                                    .disabled(self.rendered.is_none())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.show_rendered(window, cx);
+                                    })),
+                            ),
                     ),
             )
             .child(div().flex_1().min_h_0().child(if source {
@@ -1467,6 +1504,132 @@ impl Render for View {
 mod tests {
     use super::*;
     use core::prelude::v1::test;
+    #[gpui::test]
+    fn captured_document_source_find_keeps_modal_focus_and_repository_context(
+        cx: &mut TestAppContext,
+    ) {
+        use std::{cell::RefCell, rc::Rc};
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let output = captured.clone();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+            cx.bind_keys([
+                KeyBinding::new("cmd-f", Search, Some("GitTurtleList")),
+                KeyBinding::new("escape", ClearSearch, Some("GitTurtle")),
+            ]);
+        });
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let app = cx.new(|cx| {
+                let mut app = GitTurtle::new(
+                    None,
+                    Preferences::default(),
+                    repository_tabs::Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                );
+                app.page = AppPage::Repository;
+                app.mode = WorkspaceMode::Compare;
+                app
+            });
+            *output.borrow_mut() = Some(app.clone());
+            gpui_kit::component::Root::new(app, window, cx)
+        });
+        let app = captured.borrow().as_ref().unwrap().clone();
+        let source: Arc<str> = "# Companion\r\n\r\nCaptured target λ.\r\n".into();
+        let path = PathBuf::from("docs/companion.md");
+        let markdown = Arc::new(Comparison {
+            old: Arc::new(Document::notice(&path, false, "No file on this side")),
+            new: Arc::new(prepare_document(&source, &path, true, &|| Ok(())).unwrap()),
+        });
+        let document = cx.update(|window, cx| {
+            app.read(cx).file_focus.clone().focus(window, cx);
+            open_local_document(path, source.clone(), Some(markdown), 1, window, cx)
+        });
+        fn settle(cx: &mut VisualTestContext) {
+            for _ in 0..2 {
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+                cx.run_until_parked();
+            }
+        }
+        settle(cx);
+        cx.update(|window, cx| {
+            assert!(
+                document
+                    .read(cx)
+                    .rendered
+                    .as_ref()
+                    .unwrap()
+                    .read(cx)
+                    .focus
+                    .is_focused(window)
+            );
+            assert!(document.read(cx).editor.is_none());
+            // Even a fall-through application action must not move the page
+            // behind an open dialog or attach focus to background Search.
+            app.update(cx, |app, cx| app.search(&Search, window, cx));
+            assert!(matches!(app.read(cx).mode, WorkspaceMode::Compare));
+            assert!(!app.read(cx).search.focus_handle(cx).is_focused(window));
+        });
+        let toggle = cx.debug_bounds("local-document-source-toggle").unwrap();
+        cx.simulate_click(toggle.center(), Modifiers::default());
+        settle(cx);
+        let editor = cx.read(|cx| document.read(cx).editor.as_ref().unwrap().clone());
+        cx.update(|window, cx| assert!(editor.focus_handle(cx).is_focused(window)));
+        cx.simulate_keystrokes("cmd-f");
+        cx.simulate_input("Captured");
+        settle(cx);
+        cx.update(|window, cx| {
+            assert!(window.has_active_dialog(cx));
+            assert_eq!(editor.read(cx).search_session().query, "Captured");
+            assert_eq!(editor.read(cx).value().as_str(), source.as_ref());
+            assert!(crate::editor_find::panel_height(&editor, cx) > px(0.));
+            assert!(app.read(cx).search.read(cx).value().is_empty());
+            assert!(matches!(app.read(cx).mode, WorkspaceMode::Compare));
+        });
+        cx.simulate_keystrokes("escape");
+        settle(cx);
+        cx.update(|window, cx| {
+            assert!(window.has_active_dialog(cx));
+            assert!(editor.focus_handle(cx).is_focused(window));
+            assert_eq!(crate::editor_find::panel_height(&editor, cx), px(0.));
+        });
+        let toggle = cx.debug_bounds("local-document-rendered-toggle").unwrap();
+        cx.simulate_click(toggle.center(), Modifiers::default());
+        settle(cx);
+        cx.update(|window, cx| {
+            assert!(
+                document
+                    .read(cx)
+                    .rendered
+                    .as_ref()
+                    .unwrap()
+                    .read(cx)
+                    .focus
+                    .is_focused(window)
+            )
+        });
+        let toggle = cx.debug_bounds("local-document-source-toggle").unwrap();
+        cx.simulate_click(toggle.center(), Modifiers::default());
+        settle(cx);
+        cx.update(|window, cx| {
+            assert_eq!(
+                document.read(cx).editor.as_ref().unwrap().entity_id(),
+                editor.entity_id()
+            );
+            assert!(editor.focus_handle(cx).is_focused(window));
+            assert_eq!(editor.read(cx).search_session().query, "Captured");
+        });
+        cx.simulate_keystrokes("escape");
+        settle(cx);
+        cx.update(|window, cx| {
+            assert!(!window.has_active_dialog(cx));
+            assert!(matches!(app.read(cx).mode, WorkspaceMode::Compare));
+            assert!(app.read(cx).search.read(cx).value().is_empty());
+        });
+    }
     fn git(path: &std::path::Path, args: &[&str]) -> String {
         let output = std::process::Command::new("git")
             .args([

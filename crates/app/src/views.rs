@@ -28,6 +28,23 @@ fn reveal_resized_selection(
     }
 }
 
+fn history_scroll_viewport(
+    horizontal: &ScrollHandle,
+    content: impl IntoElement,
+) -> impl IntoElement {
+    div()
+        .id("history-horizontal")
+        .flex_1()
+        .min_h_0()
+        .min_w_0()
+        // Base Scrollbar paints an absolute overlay. Reserve its track inside
+        // the tracked viewport so Nearest reveals an entire row above it.
+        .pb(Scrollbar::width())
+        .overflow_x_scroll()
+        .track_scroll(horizontal)
+        .child(content)
+}
+
 impl GitTurtle {
     fn list_viewport_probe(&self, history: bool, cx: &Context<Self>) -> impl IntoElement {
         let owner = cx.entity().downgrade();
@@ -857,15 +874,8 @@ impl GitTurtle {
                         .child(self.render_columns_controls(cx)),
                 )
             })
-            .child(
-                div()
-                    .id("history-horizontal")
-                    .flex_1()
-                    .min_h_0()
-                    .min_w_0()
-                    .overflow_x_scroll()
-                    .track_scroll(&self.history_horizontal)
-                    .child(
+            .child(history_scroll_viewport(
+                &self.history_horizontal,
                         div()
                             .w(px(columns.content_width + 26.))
                             .h_full()
@@ -898,8 +908,7 @@ impl GitTurtle {
                                     .child(history)
                                     .child(self.list_viewport_probe(true, cx)),
                             ),
-                    ),
-            )
+            ))
             .child(Scrollbar::horizontal(&self.history_horizontal).mode(ScrollbarMode::Always))
             .into_any_element()
     }
@@ -2473,6 +2482,128 @@ impl Render for GitTurtle {
 mod tests {
     use super::*;
     use core::prelude::v1::test;
+
+    #[gpui::test]
+    fn resized_history_rows_clear_the_horizontal_scrollbar(cx: &mut TestAppContext) {
+        struct Probe {
+            vertical: UniformListScrollHandle,
+            horizontal: ScrollHandle,
+            row_height: Pixels,
+        }
+        impl Render for Probe {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let rows = uniform_list(
+                    "history-viewport-test-rows",
+                    8,
+                    cx.processor(|this, range: std::ops::Range<usize>, _, _| {
+                        range
+                            .map(|index| {
+                                div()
+                                    .id(("history-viewport-test-row", index))
+                                    .debug_selector(move || {
+                                        format!("history-viewport-test-row-{index}")
+                                    })
+                                    .h(this.row_height)
+                                    .w_full()
+                                    .flex()
+                                    .items_center()
+                                    .child(format!("Commit {index}: enlarged history text"))
+                                    .into_any_element()
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .size_full()
+                .track_scroll(&self.vertical);
+                div()
+                    .relative()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    // The fixed surrounding chrome leaves a short history pane
+                    // at the minimum window, as in the native regression.
+                    .child(div().h(px(430.)).flex_shrink_0())
+                    .child(history_scroll_viewport(
+                        &self.horizontal,
+                        div()
+                            .w(px(1800.))
+                            .h_full()
+                            .flex_shrink_0()
+                            .flex()
+                            .flex_col()
+                            .child(div().h(px(47.)).flex_shrink_0().child("History columns"))
+                            .child(
+                                div()
+                                    .border_1()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .overflow_hidden()
+                                    .child(rows),
+                            ),
+                    ))
+                    .child(Scrollbar::horizontal(&self.horizontal).mode(ScrollbarMode::Always))
+            }
+        }
+        cx.update(gpui_kit::init);
+        let (probe, cx) = cx.add_window_view(|_, _| Probe {
+            vertical: UniformListScrollHandle::new(),
+            horizontal: ScrollHandle::new(),
+            row_height: px(28.),
+        });
+        fn draw(cx: &mut VisualTestContext) {
+            for _ in 0..2 {
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+            }
+        }
+        fn assert_clear(cx: &mut VisualTestContext, probe: &Entity<Probe>, selector: &'static str) {
+            let row = cx.debug_bounds(selector).expect("selected row is rendered");
+            let (viewport, track_top) = cx.read(|cx| {
+                let probe = probe.read(cx);
+                (
+                    probe.vertical.0.borrow().base_handle.bounds(),
+                    probe.horizontal.bounds().bottom() - Scrollbar::width(),
+                )
+            });
+            assert!(
+                row.top() >= viewport.top(),
+                "row top must be inside its bordered viewport: {row:?} / {viewport:?}"
+            );
+            assert!(
+                row.bottom() <= viewport.bottom(),
+                "entire row must be inside its viewport: {row:?} / {viewport:?}"
+            );
+            assert!(
+                row.bottom() <= track_top,
+                "entire row must clear the painted horizontal track: {row:?}, track top={track_top:?}"
+            );
+        }
+        cx.simulate_resize(size(px(1480.), px(981.)));
+        draw(cx);
+        assert_clear(cx, &probe, "history-viewport-test-row-5");
+
+        probe.update(cx, |probe, cx| {
+            probe.row_height = px(28. * 18. / 13.);
+            cx.notify();
+        });
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        probe.update(cx, |probe, _| {
+            probe.vertical.scroll_to_item(5, ScrollStrategy::Nearest)
+        });
+        draw(cx);
+        assert_clear(cx, &probe, "history-viewport-test-row-5");
+
+        // The final item must also clear the track at the maximum scroll limit.
+        probe.update(cx, |probe, _| {
+            probe.vertical.scroll_to_item(7, ScrollStrategy::Nearest);
+            probe.horizontal.set_offset(point(px(-250.), px(0.)));
+        });
+        draw(cx);
+        assert_clear(cx, &probe, "history-viewport-test-row-7");
+        assert_eq!(
+            probe.read_with(cx, |probe, _| probe.horizontal.offset().x),
+            px(-250.)
+        );
+    }
 
     #[test]
     fn list_resize_reveals_selection_without_replacing_restored_or_manual_scroll() {
