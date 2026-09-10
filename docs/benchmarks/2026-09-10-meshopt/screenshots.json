@@ -1,0 +1,100 @@
+[
+  {
+    "file": "baseline-light-narrow.png",
+    "source": "baseline-artifact-D76A4494",
+    "width": 4718592,
+    "height": 4292935744,
+    "sha256": "9f6bb87d9aeffd63fb547b8b9fa1b7023662eb69eab4ec7d17da121fb4972f40"
+  },
+  {
+    "file": "deleted-avocado.png",
+    "source": "ad39e20",
+    "width": 4718592,
+    "height": 4292935744,
+    "sha256": "a423117c43fcfded3c6ca9d29d9d32c57d8c13ee95abd5fde37df2251f1a7216"
+  },
+  {
+    "file": "dense-native.png",
+    "source": "9360941",
+    "width": 4718592,
+    "height": 4292935744,
+    "sha256": "bfeec83e9f7fc3c00160d523aacf4e1a9b8ada4f4845afde2e51f7237bc5a8ca"
+  },
+  {
+    "file": "lfs-corrupt-source.png",
+    "source": "71598ae",
+    "width": 4718592,
+    "height": 4292935744,
+    "sha256": "6d7a0a0848f9302dcdd0e3c04d05519298096b59c8165854d48c656f330b19bf"
+  },
+  {
+    "file": "lfs-one-sided.png",
+    "source": "5201e24",
+    "width": 4718592,
+    "height": 4292935744,
+    "sha256": "69c295b1ab85a269c7b8c184f993a7fb4352d44d01c1ce3a6efd8de8f026ba88"
+  },
+  {
+    "file": "one-sided-failure.png",
+    "source": "5201e24",
+    "width": 4718592,
+    "height": 4292935744,
+    "sha256": "f34aa35ccae76057cc67399acb5bcb78f2a417aad6c2736d2e3ef813ead4a590"
+  },
+  {
+    "file": "raster-first-frame-failure.png",
+    "source": "5c6c244",
+    "width": 4718592,
+    "height": 4292935744,
+    "sha256": "6ffacd69fcef56feb5513697c6702d14700fc21bddc7aa2e61d30eb34b075592"
+  },
+  {
+    "file": "raster-retained-frame.png",
+    "source": "5c6c244",
+    "width": 4718592,
+    "height": 4292935744,
+    "sha256": "4119b7c12a4f661ef34ec06c06e608a86e082fc1591ec20525f870b4c1f31432"
+  },
+  {
+    "file": "union-dark-narrow.png",
+    "source": "9360941",
+    "width": 4718592,
+    "height": 4292935744,
+    "sha256": "a4ba80f0c1b9fbb9688f709f6d820f911a51a39f5cce5f95b2085282f290ff9a"
+  },
+  {
+    "file": "union-dark-wide.png",
+    "source": "9360941",
+    "width": 4718592,
+    "height": 4292935744,
+    "sha256": "4672064e400be4f4c5e7d001c320b8f866d184c1e460c327752db8a38fb81a45"
+  },
+  {
+    "file": "union-light-narrow-large-text.png",
+    "source": "9360941",
+    "width": 4718592,
+    "height": 4292935744,
+    "sha256": "2792084e0efe233913c0743e0708a96423fd70ff9a21d6feabefa52f0fc9e42f"
+  },
+  {
+    "file": "union-light-wide.png",
+    "source": "9360941",
+    "width": 4718592,
+    "height": 4292935744,
+    "sha256": "96806acd9355042d2f1eb65a5809ba0dcdc3c0c168e0a9f4f6845a3a8d0d2c4c"
+  },
+  {
+    "file": "unsupported-draco.png",
+    "source": "5c6c244",
+    "width": 4718592,
+    "height": 4292935744,
+    "sha256": "26e6179da36c94cf5ffd7e7ac3f0dd612392b83c06b5382b1c96261afc49029b"
+  },
+  {
+    "file": "working-comparison.png",
+    "source": "5c6c244",
+    "width": 4718592,
+    "height": 4292935744,
+    "sha256": "d51387706f3c15099b912b42f08cca4d48e35464213aa492a02d9d8e13e2b3ff"
+  }
+]

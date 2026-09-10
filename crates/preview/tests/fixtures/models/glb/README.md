@@ -7,7 +7,7 @@ surface shading, independent of their stored materials, textures and normals.
 
 ## Synthetic comparison and refusals
 
-The seven lowercase files were authored for GitTurtle in September 2026 and follow
+The seven files listed below were authored for GitTurtle in September 2026 and follow
 the repository license. Their deterministic source is
 [`scripts/create-glb-preview-fixtures.py`](../../../../../../scripts/create-glb-preview-fixtures.py).
 The generator uses only Python's standard library and never downloads resources.
@@ -120,6 +120,12 @@ resolvable side; no LFS commands or downloads are used. Its stdout manifest
 records refs/index/working hashes and local LFS-object hashes. Keep that manifest
 outside the watched fixture. The generator refuses an existing destination.
 
+`raster-limit.glb` pairs a valid Before arch with 1,000 coincident compressed
+triangles. The After geometry decodes within its independent limits, but its
+fitted 720-pixel solid render refuses the raster-sample budget; 360-pixel solid
+and 720-pixel wireframe render successfully. This is separate from decoder
+refusals and exercises the actions available when no settled frame exists.
+
 [`probe_models`](../../../../examples/probe_models.rs) reports actual decoding
 and independent 360-pixel solid, 720-pixel solid and 720-pixel wireframe outcomes
 for explicitly supplied files. Each outcome remains distinct: decoding success
@@ -131,6 +137,21 @@ private inputs, path manifests, exports and results outside this repository.
 ```sh
 cargo build --release --locked -p gitturtle-preview --example probe_models
 target/release/examples/probe_models /tmp/gitturtle-meshopt-fixture/assembly.glb
+```
+
+For complete transformed geometry expectations,
+[`reference-glb-geometry.cjs`](../../../../../../scripts/reference-glb-geometry.cjs)
+combines the same pinned upstream WASM decoder with a separate JavaScript
+accessor/scene-transform interpreter. It writes complete f64 triangles and hashes
+for known static fixtures. It is validation tooling, not a second production
+validator. It also hashes decoded normal/animation streams; those streams do not
+become geometry or animation playback. Compare exported coordinates with a small
+floating-point tolerance, since normalized integer divisions and transform
+arithmetic can differ in their final rounding between runtimes.
+
+```sh
+node scripts/reference-glb-geometry.cjs /tmp/meshoptimizer-js /tmp/reference-triangles /tmp/gitturtle-meshopt-fixture/assembly.glb
+target/release/examples/probe_models --triangles-directory /tmp/actual-triangles /tmp/gitturtle-meshopt-fixture/assembly.glb
 ```
 
 ## Release measurement harness

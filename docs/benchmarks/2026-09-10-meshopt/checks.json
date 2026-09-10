@@ -1,0 +1,37 @@
+{
+  "source_commit": "936094197bf4925d145b1a15090d07ea4b92f1cf",
+  "workspace_passed": 675,
+  "workspace_ignored": 5,
+  "isolated_mermaid_child_passes_also_reported": 1,
+  "format_command": "cargo fmt --all -- --check",
+  "format_passed": true,
+  "strict_signature_command": "codesign --verify --strict dist/GitTurtle.app",
+  "strict_signature_passed": true,
+  "runs": [
+    {
+      "command": "cargo test --locked --workspace",
+      "exit_code": 0,
+      "local_log": "workspace-complete-test.log",
+      "log_sha256": "2a9d8ddeab10a6325475a8518c4a7d6a34c9ad80d3eb65d504bbed7224d930a2"
+    },
+    {
+      "command": "cargo clippy --locked --workspace --all-targets -- -D warnings",
+      "exit_code": 0,
+      "local_log": "workspace-complete-clippy.log",
+      "log_sha256": "f59816b8066f690efbb2e8017e7015aebdb34e44b04a73151a967e042d8635e6"
+    },
+    {
+      "command": "cargo build --release --locked -p gitturtle --target-dir target",
+      "exit_code": 0,
+      "local_log": "build-final-header.log",
+      "log_sha256": "d3a9e556e1d73c999abf493203e7727e5a4c5d732e4b8f92fbd59b315acd8d65"
+    },
+    {
+      "command": "scripts/package-macos.sh --no-build",
+      "exit_code": 0,
+      "local_log": "package-final-header.log",
+      "log_sha256": "b072e5b6323d48e1fca5cebef8183c922707b1674f63adaa937bf1d48b603f7f"
+    }
+  ],
+  "known_notice": "Existing block 0.1.6 future-incompatibility notice; no new Clippy warnings."
+}

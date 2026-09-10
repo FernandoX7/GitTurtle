@@ -1,0 +1,345 @@
+{
+  "source_revision": "ad39e2011dfabbe02b66fa4c04e0d56781eb2c3a",
+  "preview_source_diff": "",
+  "benchmark_executable_sha256": "cb61978527d5c09373fcfc59d20208e6aa9388f9cc2bdae40fd572715cdb28c0",
+  "probe_executable_sha256": "2cb196b2a19e5ac05ce8b5c4abcbea8730995101715f1fa8d2beb7a5dbb0fbf9",
+  "samples": 100,
+  "warmups": 3,
+  "first_attempts": 1,
+  "hardware": "Apple M4 Max, Mac16,5;128GiB memory;16 logical CPUs",
+  "os": "macOS26.6.2 (25G83)",
+  "rustc": "1.98.0 (88d9e12ae 2026-08-18)",
+  "system_load_before": {
+    "load_average_1_5_15": [
+      22.38,
+      22.41,
+      17.15
+    ],
+    "cpu_user_percent": 27.99,
+    "cpu_system_percent": 14.4,
+    "cpu_idle_percent": 57.6,
+    "observed_local": "2026-09-10T14:43:58-05:00",
+    "conditions": "Ordinary desktop background load; release compilation complete; no coordinator build/test load; native layout inspection may overlap. No CPU isolation or thermal control."
+  },
+  "boundary": "CPU decode_geometry/render_model only; input bytes resident, fresh scene each row, fresh raster each call. Excludes input file I/O, camera fitting, output destruction, app cache/scheduling, GPUI/GPU/OS presentation. No native latency or peak-memory claim.",
+  "sanitization": "Only model/executable path comment lines replaced with portable labels. All first-attempt, warmup, measured timing rows and original summary lines preserved; p99 calculated separately from measured rows using nearest rank.",
+  "started_utc": "2026-09-10T19:44:58.518186+00:00",
+  "fixtures": [
+    {
+      "label": "meshopt-arch",
+      "input_bytes": 1656,
+      "input_sha256": "675d34888d8ee9d33df9ccfa8d290719f3ad5f2aa0bd3e6bbe8d782d0cbdefb0",
+      "raw_samples": "meshopt-arch.tsv",
+      "raw_sha256": "f399fe531bafe9888b81cc3ec01b3eab63d075731e796665768e1b138afbb2f5",
+      "triangles": 36,
+      "scene_retained_bytes": 2691,
+      "metrics": {
+        "decode_ms": {
+          "p50": 0.025,
+          "p95": 0.061417,
+          "p99": 0.081166,
+          "max": 0.081917
+        },
+        "render_360_solid_ms": {
+          "p50": 0.356833,
+          "p95": 0.402917,
+          "p99": 0.422084,
+          "max": 0.423
+        },
+        "render_720_solid_ms": {
+          "p50": 1.328292,
+          "p95": 1.562167,
+          "p99": 1.714042,
+          "max": 1.779375
+        },
+        "render_720_wireframe_ms": {
+          "p50": 0.054958,
+          "p95": 0.066291,
+          "p99": 0.071666,
+          "max": 0.076042
+        }
+      }
+    },
+    {
+      "label": "meshopt-avocado",
+      "input_bytes": 6396,
+      "input_sha256": "b838780639867ad51529bd5328e0b152ada1618bb4ebc22184e642cf4baa33b9",
+      "raw_samples": "meshopt-avocado.tsv",
+      "raw_sha256": "c6f981221bb3a744056909547c0fc2a79463c9b9371a360da35ef9401a243438",
+      "triangles": 682,
+      "scene_retained_bytes": 49203,
+      "metrics": {
+        "decode_ms": {
+          "p50": 0.053167,
+          "p95": 0.086667,
+          "p99": 0.096416,
+          "max": 0.099333
+        },
+        "render_360_solid_ms": {
+          "p50": 0.568292,
+          "p95": 0.66075,
+          "p99": 0.701541,
+          "max": 0.703416
+        },
+        "render_720_solid_ms": {
+          "p50": 1.828792,
+          "p95": 2.033417,
+          "p99": 2.232375,
+          "max": 2.234792
+        },
+        "render_720_wireframe_ms": {
+          "p50": 0.144708,
+          "p95": 0.173,
+          "p99": 0.267042,
+          "max": 0.26775
+        }
+      }
+    },
+    {
+      "label": "meshopt-dense-torus",
+      "input_bytes": 334452,
+      "input_sha256": "75aa3f33d8e0946b8ec0f0bd6832216be08051e11c94efe69b571760ea53d22e",
+      "raw_samples": "meshopt-dense-torus.tsv",
+      "raw_sha256": "8fa5a6ac3cde8f6ac91b2e25335287332a34199784c2a0520d5408b60b5227a7",
+      "triangles": 65536,
+      "scene_retained_bytes": 4718691,
+      "metrics": {
+        "decode_ms": {
+          "p50": 2.523916,
+          "p95": 2.833083,
+          "p99": 2.957166,
+          "max": 3.101
+        },
+        "render_360_solid_ms": {
+          "p50": 3.450417,
+          "p95": 3.717,
+          "p99": 3.760833,
+          "max": 3.973625
+        },
+        "render_720_solid_ms": {
+          "p50": 5.807334,
+          "p95": 6.09425,
+          "p99": 6.320375,
+          "max": 6.342125
+        },
+        "render_720_wireframe_ms": {
+          "p50": 3.201042,
+          "p95": 3.351833,
+          "p99": 3.520167,
+          "max": 3.661625
+        }
+      }
+    },
+    {
+      "label": "uncompressed-dense-torus",
+      "input_bytes": 1180340,
+      "input_sha256": "04e849de1c0e7bfa475f8d7310e715a089cca7346e347cbf1399bb2a4844ca8a",
+      "raw_samples": "uncompressed-dense-torus.tsv",
+      "raw_sha256": "08c1412d3468d4ec107d43e0dd61edd7de18486a75109889ffe0c7343cc964f6",
+      "triangles": 65536,
+      "scene_retained_bytes": 4718691,
+      "metrics": {
+        "decode_ms": {
+          "p50": 2.3155,
+          "p95": 2.582875,
+          "p99": 2.729,
+          "max": 2.884542
+        },
+        "render_360_solid_ms": {
+          "p50": 3.481625,
+          "p95": 3.706,
+          "p99": 3.8495,
+          "max": 5.717125
+        },
+        "render_720_solid_ms": {
+          "p50": 5.877417,
+          "p95": 6.217875,
+          "p99": 6.345209,
+          "max": 10.76775
+        },
+        "render_720_wireframe_ms": {
+          "p50": 3.207292,
+          "p95": 3.40625,
+          "p99": 3.429875,
+          "max": 3.589417
+        }
+      }
+    },
+    {
+      "label": "uncompressed-avocado",
+      "input_bytes": 8110040,
+      "input_sha256": "ccc9c3ce56423720b09399c2351537207cd5a65f859f9e6e2f30922762f3abd4",
+      "raw_samples": "uncompressed-avocado.tsv",
+      "raw_sha256": "7f9174a5e48e36afef08e7d0fa02dd8c49b1562ff4e24eb0ccb651d8ef22ec5c",
+      "triangles": 682,
+      "scene_retained_bytes": 49203,
+      "metrics": {
+        "decode_ms": {
+          "p50": 0.054458,
+          "p95": 0.086958,
+          "p99": 0.093083,
+          "max": 0.095167
+        },
+        "render_360_solid_ms": {
+          "p50": 0.59125,
+          "p95": 0.695583,
+          "p99": 0.728792,
+          "max": 0.748084
+        },
+        "render_720_solid_ms": {
+          "p50": 1.839709,
+          "p95": 2.055625,
+          "p99": 2.075333,
+          "max": 2.109875
+        },
+        "render_720_wireframe_ms": {
+          "p50": 0.146375,
+          "p95": 0.172167,
+          "p99": 0.177166,
+          "max": 0.188875
+        }
+      }
+    },
+    {
+      "label": "private-small",
+      "input_bytes": 13536,
+      "input_sha256": "0aed73e60f3d45746504c4f83acc17da843aead1a2cc800f485517f8143eb43e",
+      "raw_samples": "private-small.tsv",
+      "raw_sha256": "cc5553877a5d0abe0ad506b4b5b2f5c111247e800419857d8866c856dfda2b80",
+      "triangles": 544,
+      "scene_retained_bytes": 39267,
+      "metrics": {
+        "decode_ms": {
+          "p50": 0.050959,
+          "p95": 0.089542,
+          "p99": 0.093084,
+          "max": 0.093125
+        },
+        "render_360_solid_ms": {
+          "p50": 0.26525,
+          "p95": 0.333,
+          "p99": 0.358417,
+          "max": 0.366083
+        },
+        "render_720_solid_ms": {
+          "p50": 0.829708,
+          "p95": 0.938875,
+          "p99": 0.956792,
+          "max": 0.96075
+        },
+        "render_720_wireframe_ms": {
+          "p50": 0.116,
+          "p95": 0.135375,
+          "p99": 0.145042,
+          "max": 0.183417
+        }
+      }
+    },
+    {
+      "label": "private-assembly",
+      "input_bytes": 1161436,
+      "input_sha256": "4df46e85fc3515c9e9aa6beec1b11c8287c0eed4f6a793c6775e9376f82a54a4",
+      "raw_samples": "private-assembly.tsv",
+      "raw_sha256": "b543a516a32a481645c61bf51311db1af49e4ca0e1ccfa0d8a44c4f232c95234",
+      "triangles": 12448,
+      "scene_retained_bytes": 896355,
+      "metrics": {
+        "decode_ms": {
+          "p50": 0.9105,
+          "p95": 0.996458,
+          "p99": 1.07225,
+          "max": 2.644292
+        },
+        "render_360_solid_ms": {
+          "p50": 4.640125,
+          "p95": 4.887208,
+          "p99": 4.962,
+          "max": 7.403375
+        },
+        "render_720_solid_ms": {
+          "p50": 13.643375,
+          "p95": 14.20825,
+          "p99": 14.465583,
+          "max": 14.476917
+        },
+        "render_720_wireframe_ms": {
+          "p50": 1.369792,
+          "p95": 1.480375,
+          "p99": 1.661542,
+          "max": 1.747166
+        }
+      }
+    },
+    {
+      "label": "private-static-animation",
+      "input_bytes": 172056,
+      "input_sha256": "c16b6309fb51e5a9857931ea26d619caaced77cb91981f48a573da5a8b62bbd9",
+      "raw_samples": "private-static-animation.tsv",
+      "raw_sha256": "77c7ba9c9ab77faf521b0c7d9562e365fbad8df9200463ac258134aa77d89210",
+      "triangles": 12410,
+      "scene_retained_bytes": 893619,
+      "metrics": {
+        "decode_ms": {
+          "p50": 0.554583,
+          "p95": 0.620917,
+          "p99": 0.799,
+          "max": 1.073084
+        },
+        "render_360_solid_ms": {
+          "p50": 1.494791,
+          "p95": 1.611792,
+          "p99": 1.658375,
+          "max": 2.344167
+        },
+        "render_720_solid_ms": {
+          "p50": 3.315167,
+          "p95": 3.514666,
+          "p99": 3.584041,
+          "max": 3.935208
+        },
+        "render_720_wireframe_ms": {
+          "p50": 1.223291,
+          "p95": 1.308208,
+          "p99": 1.33475,
+          "max": 1.557
+        }
+      }
+    },
+    {
+      "label": "private-large",
+      "input_bytes": 708872,
+      "input_sha256": "db1c41999e77b57a951af1bf56eb751e4459d0fbe2165293a09e5c2635a09464",
+      "raw_samples": "private-large.tsv",
+      "raw_sha256": "79fcc460990eb27b8aa2e323731d7f8ae5e24a540f01271a546e19507af75389",
+      "triangles": 12000,
+      "scene_retained_bytes": 864099,
+      "metrics": {
+        "decode_ms": {
+          "p50": 0.55425,
+          "p95": 0.602083,
+          "p99": 0.699375,
+          "max": 0.753375
+        },
+        "render_360_solid_ms": {
+          "p50": 1.944541,
+          "p95": 2.112125,
+          "p99": 2.227209,
+          "max": 2.925333
+        },
+        "render_720_solid_ms": {
+          "p50": 4.488292,
+          "p95": 4.861542,
+          "p99": 5.19125,
+          "max": 5.631666
+        },
+        "render_720_wireframe_ms": {
+          "p50": 1.279,
+          "p95": 1.368125,
+          "p99": 1.713375,
+          "max": 1.787208
+        }
+      }
+    }
+  ],
+  "finished_utc": "2026-09-10T19:45:06.752688+00:00"
+}

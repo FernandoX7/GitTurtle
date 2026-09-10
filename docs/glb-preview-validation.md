@@ -1,5 +1,10 @@
 # GLB preview validation — September 10, 2026
 
+This is the earlier uncompressed GLB milestone. The later
+[meshopt validation record](meshopt-preview-validation.md) documents compression
+support, current corpus coverage and subsequent native refinements. Refusals and
+measurements below remain tied to the earlier named builds.
+
 This record covers native GLB static geometry and the shared model-control layout.
 The [support contract](interactive-3d.md#glb-20-static-geometry) defines the supported
 subset and independent limits; [fixture provenance](../crates/preview/tests/fixtures/models/glb/README.md)

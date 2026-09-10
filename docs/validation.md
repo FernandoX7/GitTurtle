@@ -14,6 +14,11 @@ keep baseline, integrated live, and final correction evidence separate.
 
 ## September 10 native GLB previews
 
+The later [meshopt validation record](meshopt-preview-validation.md) covers
+embedded compression, independently verified current corpus coverage, native
+comparison refinements and restart behavior. Its [release measurements](benchmarks/2026-09-10-meshopt.md)
+separate actual decode/render coverage and CPU timings from native observations.
+
 The [GLB validation record](glb-preview-validation.md) covers bounded static
 geometry, faithful revision placement and scale, native camera controls,
 History/Working Changes and retained-filter isolation, representative appearance

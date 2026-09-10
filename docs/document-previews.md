@@ -119,6 +119,12 @@ Geometry, raster samples and retained frame buffers have separate bounds.
 Neither model parsing nor frame preparation resolves material libraries, textures,
 external geometry, scripts or repository-relative resources.
 
+With `GITTURTLE_TRACE`, `model_frame_callback_ms` records dispatch through the
+next frame callback after a still-current result is published. It includes render
+lane waiting, CPU rasterization, pixel conversion and UI delivery, with edge and
+triangle count. It excludes pointer/key delivery, source decoding and completed
+GPU/OS presentation. Superseded results are omitted, never counted as zero.
+
 STL, OBJ, FBX, GLB 2.0 and 3MF use the documented retained-mesh decoders. GLB
 uses captured embedded geometry, nested static scene placements and glTF meters
 converted to Z-up millimeters. Appearance and animation playback are omitted;

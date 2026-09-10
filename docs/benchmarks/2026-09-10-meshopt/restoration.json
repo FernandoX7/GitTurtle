@@ -1,0 +1,41 @@
+{
+  "restored_files_sha256": {
+    "activity.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+    "preferences.json": "f8ba804c72551f828d7110a6c7b6402c521799153a019050076af463e14a3ca4",
+    "repository-session.json": "b3d3f8a8d9111cf64cd7e91f3f58682b1a30a6bf3039d81fa584979cb4a815fc"
+  },
+  "restored_byte_for_byte_before_relaunch": true,
+  "installed_executable_sha256_after": "3ce5c6e541c1c7d459982c63ea497705511680f837ec78fb32ea5a8e1e21d020",
+  "installed_executable_unchanged": true,
+  "fixture_integrity": {
+    "public": {
+      "head": true,
+      "refs": true,
+      "index": true,
+      "status": true,
+      "files": true,
+      "local_lfs": true
+    },
+    "private": {
+      "head": true,
+      "refs": true,
+      "index": true,
+      "status": true,
+      "files": true,
+      "local_lfs": true
+    }
+  },
+  "preferences_equal_after_relaunch": true,
+  "activity_equal_after_relaunch": true,
+  "native_tab_order_and_selected_repository_match": true,
+  "native_selected_commit_matches": true,
+  "native_appearance_matches": {
+    "theme": "Ember",
+    "density": "Comfortable",
+    "interface_points": 13,
+    "code_points": 12
+  },
+  "genuine_drafts_preserved_in_restored_files": true,
+  "no_fixture_tab_in_genuine_session": true,
+  "session_equal_after_relaunch": true
+}

@@ -1,0 +1,22 @@
+{
+  "source_revision": "999bcd9851741f44d53f97e4656ac87b892b7d7f",
+  "current_preview_source_unchanged_from_revision": true,
+  "harness_sha256": "6d7e0596abb22a3d578e454433f2da7f71c598c3e98f5a468e3ceb655f82d27d",
+  "results_sha256": "e4b909cfaccc9bf212dfb390dcb35e0b6c6486eddafffd41537e8bd679201dce",
+  "started_utc": "2026-09-10T19:29:00.200534+00:00",
+  "finished_utc": "2026-09-10T19:29:00.580523+00:00",
+  "files": 1379,
+  "decode_success": 94,
+  "render_360_success": 94,
+  "refusals": {
+    "GLB extension EXT_meshopt_compression is not supported for static geometry preview": 1255,
+    "GLB skins are unsupported; skinned geometry cannot be previewed faithfully": 17,
+    "The model has no renderable triangle geometry": 13
+  },
+  "render_refusals": {},
+  "raw_results": "corpus-baseline.jsonl",
+  "sanitized_raw_sha256": "b66c8ffc4765dcf0aef7a51979058d0891757c7dd00f3e583b44c84b8e09ddb7",
+  "boundary": "One supplied-byte geometry decode per captured current regular GLB and one 360-pixel solid raster for successful decodes. Single scan, not latency-series evidence; timings include ordinary desktop load. Baseline never reached compressed raster work.",
+  "source_identity_note": "Preview sources unchanged between documented release999bcd9 and task starting revision37c876d. Standalone Rust -O -C lto=thin harness linked the existing release preview library; helper and executable hashes remain in private provenance.",
+  "sanitization": "Original source filenames/paths never included; captured IDs replaced with corpus ordinals, coordinate bounds omitted. Input hashes, observed outcomes, counts, retained-byte accounting and timing samples preserved."
+}

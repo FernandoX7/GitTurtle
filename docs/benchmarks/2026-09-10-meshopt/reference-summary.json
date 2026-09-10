@@ -1,0 +1,298 @@
+{
+  "source_revision": "ad39e2011dfabbe02b66fa4c04e0d56781eb2c3a",
+  "probe_sha256": "2cb196b2a19e5ac05ce8b5c4abcbea8730995101715f1fa8d2beb7a5dbb0fbf9",
+  "reference_script_sha256": "346e56e4af46f6a1937e115bc52c1c31741e45adee9420b2250ecf4cc4e90228",
+  "upstream_decoder_sha256": "05e1d7b12b8fe408b07690d701328671d026c4ace808684c942f398b1f0801d5",
+  "node_version": "v26.5.0",
+  "input_selections": 19,
+  "renderable_selections": 17,
+  "distinct_renderable_input_hashes": 14,
+  "max_coordinate_error_mm": 4.547473508864641e-13,
+  "max_bound_error_mm": 5.684341886080802e-14,
+  "method": "Pinned official WASM decompression plus independent JavaScript normalized-accessor reading, scene traversal, matrix/TRS transforms, Y-up meters to Z-up millimeters. Compare every expanded f64 triangle coordinate in sequence and all6 bound coordinates against Rust exports; no partial sampling. Source normals/animation streams are additionally reference-decoded for filter hashes but are not evaluated geometry.",
+  "privacy": "Original filenames/paths, source bytes, decoded buffers, expanded coordinates and screenshots stay outside GitTurtle. Sanitized labels and reproducibility hashes only.",
+  "cases": [
+    {
+      "fixture": "private-current-a",
+      "input_sha256": "c16b6309fb51e5a9857931ea26d619caaced77cb91981f48a573da5a8b62bbd9",
+      "reference_decode_ok": true,
+      "actual_decode_ok": true,
+      "triangles": 12410,
+      "max_coordinate_error_mm": 0.0,
+      "binary_equal": true,
+      "reference_triangle_sha256": "7727fb95c533f41074621936eff9293806d2ffb97f303a9b4cc1b5dc7ae8c844",
+      "actual_triangle_sha256": "7727fb95c533f41074621936eff9293806d2ffb97f303a9b4cc1b5dc7ae8c844",
+      "max_bound_error_mm": 0.0,
+      "reference_decoded_filters": {
+        "NONE": 4,
+        "QUATERNION": 1,
+        "EXPONENTIAL": 1,
+        "OCTAHEDRAL": 1
+      }
+    },
+    {
+      "fixture": "private-empty-scene",
+      "input_sha256": "dfa720196375236be775762ce19232fa13a34c32b46f70d326d1541513a3d129",
+      "reference_decode_ok": false,
+      "actual_decode_ok": false,
+      "outcome": "Both refuse a selected scene with no triangles"
+    },
+    {
+      "fixture": "private-current-b",
+      "input_sha256": "0aed73e60f3d45746504c4f83acc17da843aead1a2cc800f485517f8143eb43e",
+      "reference_decode_ok": true,
+      "actual_decode_ok": true,
+      "triangles": 544,
+      "max_coordinate_error_mm": 0.0,
+      "binary_equal": true,
+      "reference_triangle_sha256": "322380312a2e588842d5d363c57c8ec1ca85235cbfff74a28a43467576889f48",
+      "actual_triangle_sha256": "322380312a2e588842d5d363c57c8ec1ca85235cbfff74a28a43467576889f48",
+      "max_bound_error_mm": 0.0,
+      "reference_decoded_filters": {
+        "NONE": 4,
+        "OCTAHEDRAL": 1
+      }
+    },
+    {
+      "fixture": "private-current-c",
+      "input_sha256": "db1c41999e77b57a951af1bf56eb751e4459d0fbe2165293a09e5c2635a09464",
+      "reference_decode_ok": true,
+      "actual_decode_ok": true,
+      "triangles": 12000,
+      "max_coordinate_error_mm": 1.1368683772161603e-13,
+      "binary_equal": false,
+      "reference_triangle_sha256": "6424b061b36d44498d679b2febae4e22d56096b54e2e167f8586d387065f21c7",
+      "actual_triangle_sha256": "c030d0a13ac1095444d350fac56dda1ccd2cd1d28327b09f30e84e96f6f74141",
+      "max_bound_error_mm": 5.684341886080802e-14,
+      "reference_decoded_filters": {
+        "NONE": 4
+      }
+    },
+    {
+      "fixture": "private-pair-a-after",
+      "input_sha256": "c16b6309fb51e5a9857931ea26d619caaced77cb91981f48a573da5a8b62bbd9",
+      "reference_decode_ok": true,
+      "actual_decode_ok": true,
+      "triangles": 12410,
+      "max_coordinate_error_mm": 0.0,
+      "binary_equal": true,
+      "reference_triangle_sha256": "7727fb95c533f41074621936eff9293806d2ffb97f303a9b4cc1b5dc7ae8c844",
+      "actual_triangle_sha256": "7727fb95c533f41074621936eff9293806d2ffb97f303a9b4cc1b5dc7ae8c844",
+      "max_bound_error_mm": 0.0,
+      "reference_decoded_filters": {
+        "NONE": 4,
+        "QUATERNION": 1,
+        "EXPONENTIAL": 1,
+        "OCTAHEDRAL": 1
+      }
+    },
+    {
+      "fixture": "private-pair-a-before",
+      "input_sha256": "7f89922472aac78e054b09cf9aa0b0a060cda4e6b3f0de2fe3b5dbe0dfe5d4de",
+      "reference_decode_ok": true,
+      "actual_decode_ok": true,
+      "triangles": 12410,
+      "max_coordinate_error_mm": 0.0,
+      "binary_equal": true,
+      "reference_triangle_sha256": "55a1fa74ca228176252a37ce21c3e0cab65f56ea71f4377600b8693a54d549e9",
+      "actual_triangle_sha256": "55a1fa74ca228176252a37ce21c3e0cab65f56ea71f4377600b8693a54d549e9",
+      "max_bound_error_mm": 0.0,
+      "reference_decoded_filters": {
+        "NONE": 4,
+        "QUATERNION": 1,
+        "EXPONENTIAL": 1,
+        "OCTAHEDRAL": 1
+      }
+    },
+    {
+      "fixture": "private-empty-history",
+      "input_sha256": "dfa720196375236be775762ce19232fa13a34c32b46f70d326d1541513a3d129",
+      "reference_decode_ok": false,
+      "actual_decode_ok": false,
+      "outcome": "Both refuse a selected scene with no triangles"
+    },
+    {
+      "fixture": "private-pair-b-after",
+      "input_sha256": "0aed73e60f3d45746504c4f83acc17da843aead1a2cc800f485517f8143eb43e",
+      "reference_decode_ok": true,
+      "actual_decode_ok": true,
+      "triangles": 544,
+      "max_coordinate_error_mm": 0.0,
+      "binary_equal": true,
+      "reference_triangle_sha256": "322380312a2e588842d5d363c57c8ec1ca85235cbfff74a28a43467576889f48",
+      "actual_triangle_sha256": "322380312a2e588842d5d363c57c8ec1ca85235cbfff74a28a43467576889f48",
+      "max_bound_error_mm": 0.0,
+      "reference_decoded_filters": {
+        "NONE": 4,
+        "OCTAHEDRAL": 1
+      }
+    },
+    {
+      "fixture": "private-pair-b-before",
+      "input_sha256": "4b4ffc1b51edd4329b7a4e855dd63453470dff0a431f6beff202e130272f33dd",
+      "reference_decode_ok": true,
+      "actual_decode_ok": true,
+      "triangles": 544,
+      "max_coordinate_error_mm": 0.0,
+      "binary_equal": true,
+      "reference_triangle_sha256": "4c6f5662b48a8a9b40f098d108cf2994b81fbf0f96b91a6ec086b661d3ae9fde",
+      "actual_triangle_sha256": "4c6f5662b48a8a9b40f098d108cf2994b81fbf0f96b91a6ec086b661d3ae9fde",
+      "max_bound_error_mm": 0.0,
+      "reference_decoded_filters": {
+        "NONE": 4,
+        "OCTAHEDRAL": 1
+      }
+    },
+    {
+      "fixture": "private-pair-c-after",
+      "input_sha256": "db1c41999e77b57a951af1bf56eb751e4459d0fbe2165293a09e5c2635a09464",
+      "reference_decode_ok": true,
+      "actual_decode_ok": true,
+      "triangles": 12000,
+      "max_coordinate_error_mm": 1.1368683772161603e-13,
+      "binary_equal": false,
+      "reference_triangle_sha256": "6424b061b36d44498d679b2febae4e22d56096b54e2e167f8586d387065f21c7",
+      "actual_triangle_sha256": "c030d0a13ac1095444d350fac56dda1ccd2cd1d28327b09f30e84e96f6f74141",
+      "max_bound_error_mm": 5.684341886080802e-14,
+      "reference_decoded_filters": {
+        "NONE": 4
+      }
+    },
+    {
+      "fixture": "private-pair-c-before",
+      "input_sha256": "008c8bd86e511bd349fb6d3cdee3f032d4b2231c0937d665ab931ca2cb174c73",
+      "reference_decode_ok": true,
+      "actual_decode_ok": true,
+      "triangles": 12000,
+      "max_coordinate_error_mm": 1.1368683772161603e-13,
+      "binary_equal": false,
+      "reference_triangle_sha256": "6424b061b36d44498d679b2febae4e22d56096b54e2e167f8586d387065f21c7",
+      "actual_triangle_sha256": "c030d0a13ac1095444d350fac56dda1ccd2cd1d28327b09f30e84e96f6f74141",
+      "max_bound_error_mm": 5.684341886080802e-14,
+      "reference_decoded_filters": {
+        "NONE": 3,
+        "OCTAHEDRAL": 1
+      }
+    },
+    {
+      "fixture": "public-arch-before",
+      "input_sha256": "359a68e7c27d44a59290cad541bf638cd546dcc343aa8a2ec01c41600ea9c6d1",
+      "reference_decode_ok": true,
+      "actual_decode_ok": true,
+      "triangles": 36,
+      "max_coordinate_error_mm": 0.0,
+      "binary_equal": true,
+      "reference_triangle_sha256": "ca86a1308838d5abb0c5c44d055c86176a557b063dbd588c2a3318921f684ba3",
+      "actual_triangle_sha256": "ca86a1308838d5abb0c5c44d055c86176a557b063dbd588c2a3318921f684ba3",
+      "max_bound_error_mm": 0.0,
+      "reference_decoded_filters": {
+        "NONE": 2
+      }
+    },
+    {
+      "fixture": "public-meshopt-avocado",
+      "input_sha256": "b838780639867ad51529bd5328e0b152ada1618bb4ebc22184e642cf4baa33b9",
+      "reference_decode_ok": true,
+      "actual_decode_ok": true,
+      "triangles": 682,
+      "max_coordinate_error_mm": 0.0,
+      "binary_equal": true,
+      "reference_triangle_sha256": "890ada4c94815ccfd61b87d1d7e8d20bd0d5d8a3d3bec58083d15550a8056357",
+      "actual_triangle_sha256": "890ada4c94815ccfd61b87d1d7e8d20bd0d5d8a3d3bec58083d15550a8056357",
+      "max_bound_error_mm": 0.0,
+      "reference_decoded_filters": {
+        "NONE": 2
+      }
+    },
+    {
+      "fixture": "public-meshopt-dense-torus",
+      "input_sha256": "75aa3f33d8e0946b8ec0f0bd6832216be08051e11c94efe69b571760ea53d22e",
+      "reference_decode_ok": true,
+      "actual_decode_ok": true,
+      "triangles": 65536,
+      "max_coordinate_error_mm": 0.0,
+      "binary_equal": true,
+      "reference_triangle_sha256": "8b015406e2f7be164ecf4095369c1457994e8eba0f9c7db55e2794d4c74dde93",
+      "actual_triangle_sha256": "8b015406e2f7be164ecf4095369c1457994e8eba0f9c7db55e2794d4c74dde93",
+      "max_bound_error_mm": 0.0,
+      "reference_decoded_filters": {
+        "NONE": 2
+      }
+    },
+    {
+      "fixture": "public-uncompressed-dense-torus",
+      "input_sha256": "04e849de1c0e7bfa475f8d7310e715a089cca7346e347cbf1399bb2a4844ca8a",
+      "reference_decode_ok": true,
+      "actual_decode_ok": true,
+      "triangles": 65536,
+      "max_coordinate_error_mm": 0.0,
+      "binary_equal": true,
+      "reference_triangle_sha256": "8b015406e2f7be164ecf4095369c1457994e8eba0f9c7db55e2794d4c74dde93",
+      "actual_triangle_sha256": "8b015406e2f7be164ecf4095369c1457994e8eba0f9c7db55e2794d4c74dde93",
+      "max_bound_error_mm": 0.0,
+      "reference_decoded_filters": {}
+    },
+    {
+      "fixture": "public-uncompressed-avocado",
+      "input_sha256": "ccc9c3ce56423720b09399c2351537207cd5a65f859f9e6e2f30922762f3abd4",
+      "reference_decode_ok": true,
+      "actual_decode_ok": true,
+      "triangles": 682,
+      "max_coordinate_error_mm": 0.0,
+      "binary_equal": true,
+      "reference_triangle_sha256": "99e37600658161173efc7e2f26816a1d018d3a76dfaf05b9ae27b02bded5cecc",
+      "actual_triangle_sha256": "99e37600658161173efc7e2f26816a1d018d3a76dfaf05b9ae27b02bded5cecc",
+      "max_bound_error_mm": 0.0,
+      "reference_decoded_filters": {}
+    },
+    {
+      "fixture": "private-33-node-assembly",
+      "input_sha256": "4df46e85fc3515c9e9aa6beec1b11c8287c0eed4f6a793c6775e9376f82a54a4",
+      "reference_decode_ok": true,
+      "actual_decode_ok": true,
+      "triangles": 12448,
+      "max_coordinate_error_mm": 4.547473508864641e-13,
+      "binary_equal": false,
+      "reference_triangle_sha256": "9e69c7f8a9ed42a6e03db5237f4607bfe3e0ab1b375a66e84a3886ae9314ee52",
+      "actual_triangle_sha256": "d0fa459538bd8a0212749d47c63f3ae45ed65a127ab88fc52dd8bf1a7af4564d",
+      "max_bound_error_mm": 0.0,
+      "reference_decoded_filters": {
+        "OCTAHEDRAL": 19,
+        "NONE": 58,
+        "EXPONENTIAL": 1,
+        "QUATERNION": 1
+      }
+    },
+    {
+      "fixture": "private-14-node-model",
+      "input_sha256": "982b5849f5b5c8a943bb76dd3c7f600aadd2be920eb28435ac9364e7937be107",
+      "reference_decode_ok": true,
+      "actual_decode_ok": true,
+      "triangles": 384,
+      "max_coordinate_error_mm": 0.0,
+      "binary_equal": true,
+      "reference_triangle_sha256": "3478bf7700512f09c2f8439aaa28810f480f3aef518e6dbf71437afc82decb9c",
+      "actual_triangle_sha256": "3478bf7700512f09c2f8439aaa28810f480f3aef518e6dbf71437afc82decb9c",
+      "max_bound_error_mm": 0.0,
+      "reference_decoded_filters": {
+        "NONE": 14,
+        "OCTAHEDRAL": 5
+      }
+    },
+    {
+      "fixture": "public-arch-after",
+      "input_sha256": "675d34888d8ee9d33df9ccfa8d290719f3ad5f2aa0bd3e6bbe8d782d0cbdefb0",
+      "reference_decode_ok": true,
+      "actual_decode_ok": true,
+      "triangles": 36,
+      "max_coordinate_error_mm": 0.0,
+      "binary_equal": true,
+      "reference_triangle_sha256": "eead7efbd62b81069a5eeaa6b1c8b232b87bf0ee40f767fa36d3faaae8aa40ee",
+      "actual_triangle_sha256": "eead7efbd62b81069a5eeaa6b1c8b232b87bf0ee40f767fa36d3faaae8aa40ee",
+      "max_bound_error_mm": 0.0,
+      "reference_decoded_filters": {
+        "NONE": 2
+      }
+    }
+  ]
+}

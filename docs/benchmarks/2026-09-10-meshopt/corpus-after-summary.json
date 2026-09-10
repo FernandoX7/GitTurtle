@@ -1,0 +1,48 @@
+{
+  "source_revision": "ad39e2011dfabbe02b66fa4c04e0d56781eb2c3a",
+  "probe_sha256": "2cb196b2a19e5ac05ce8b5c4abcbea8730995101715f1fa8d2beb7a5dbb0fbf9",
+  "started_utc": "2026-09-10T19:45:06.760597+00:00",
+  "finished_utc": "2026-09-10T19:45:13.517107+00:00",
+  "files": 1379,
+  "decode_success": 1224,
+  "refusals": {
+    "GLB skins are unsupported; skinned geometry cannot be previewed faithfully": 95,
+    "The model has no renderable triangle geometry": 60
+  },
+  "renders": {
+    "360-solid": {
+      "success": 1224,
+      "refusals": {}
+    },
+    "720-solid": {
+      "success": 1224,
+      "refusals": {}
+    },
+    "720-wire": {
+      "success": 1224,
+      "refusals": {}
+    }
+  },
+  "meshopt_files": 1255,
+  "meshopt_success": 1130,
+  "meshopt_refusals": {
+    "GLB skins are unsupported; skinned geometry cannot be previewed faithfully": 78,
+    "The model has no renderable triangle geometry": 47
+  },
+  "raw_results": "corpus-after.jsonl",
+  "raw_sha256": "0be6a48ff2154e1879e791923cc37e18fedb5c25bd917ad8b64ad1d50af9fa9e",
+  "boundary": "Actual one-pass captured-byte decode and independent fitted isometric360-solid/720-solid/720-wire renders. Coverage counts only; per-file scan samples are not controlled latency-series evidence. Captured source paths and geometry bounds omitted; ordinal labels substituted.",
+  "inventory": {
+    "input_bytes": 180048188,
+    "compressed_modes": {
+      "TRIANGLES": 1144,
+      "ATTRIBUTES": 8274
+    },
+    "compressed_filters": {
+      "NONE": 7601,
+      "OCTAHEDRAL": 1679,
+      "QUATERNION": 71,
+      "EXPONENTIAL": 67
+    }
+  }
+}
