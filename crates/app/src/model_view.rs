@@ -505,6 +505,18 @@ pub(super) fn render_comparison<T: 'static>(
         .into_any_element()
 }
 
+fn selected_standard_view(camera: ModelCamera) -> Option<ModelStandardView> {
+    ModelStandardView::ALL.into_iter().find(|view| {
+        let mut standard = camera;
+        standard.set_view(*view);
+        // Bookmarks and orbit normalize yaw, while standard views use signed
+        // angles. Equivalent orientations must retain the same visible label.
+        let yaw_distance = (standard.yaw - camera.yaw).rem_euclid(std::f64::consts::TAU);
+        yaw_distance.min(std::f64::consts::TAU - yaw_distance) < 1e-8
+            && (standard.pitch - camera.pitch).abs() < 1e-8
+    })
+}
+
 fn render_side<T: 'static>(
     index: usize,
     label: &'static str,
@@ -698,11 +710,7 @@ fn render_side<T: 'static>(
             })),
         );
     }
-    let selected_view = ModelStandardView::ALL.into_iter().find(|view| {
-        let mut standard = camera;
-        standard.set_view(*view);
-        (standard.yaw - camera.yaw).abs() < 1e-8 && (standard.pitch - camera.pitch).abs() < 1e-8
-    });
+    let selected_view = selected_standard_view(camera);
     let target = document.clone();
     let view_partner = partner.clone();
     let view_owner = cx.entity().downgrade();
@@ -1011,7 +1019,7 @@ fn orientation(camera: ModelCamera) -> Div {
         .w(px(88.))
         .h(px(88.))
         .rounded(px(5.))
-        .bg(rgb(0x1c222a))
+        .bg(rgba(0x1c222a80))
         .child(
             canvas(
                 |_, _, _| (),
@@ -1204,5 +1212,59 @@ mod tests {
             ..saved
         });
         assert!(restored.state.lock().unwrap().camera.span.is_finite());
+    }
+
+    #[test]
+    fn standard_view_labels_survive_serialized_camera_bookmark_restoration() {
+        for view in ModelStandardView::ALL {
+            let source = document();
+            source.change(None, Action::View(view));
+            source.change(None, Action::Pan(0.2, -0.1));
+            source.change(None, Action::Zoom(2.));
+            let before = source.state.lock().unwrap().camera;
+            assert_eq!(selected_standard_view(before), Some(view));
+            let saved = serde_json::to_vec(&source.bookmark()).unwrap();
+            let restored = document();
+            restored.restore(serde_json::from_slice(&saved).unwrap());
+            restored.configure(restored.scene.bounds);
+            let after = restored.state.lock().unwrap().camera;
+            assert_eq!(selected_standard_view(after), Some(view));
+            assert_eq!(after.target, before.target);
+            assert_eq!(after.span, before.span);
+            for (actual, expected) in after
+                .orientation_axes()
+                .into_iter()
+                .zip(before.orientation_axes())
+            {
+                for (actual, expected) in actual.direction.into_iter().zip(expected.direction) {
+                    assert!((actual - expected).abs() < 1e-12);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn standard_view_matching_wraps_yaw_and_preserves_custom_orientations() {
+        let document = document();
+        for view in ModelStandardView::ALL {
+            let mut camera = document.state.lock().unwrap().camera;
+            camera.set_view(view);
+            for turns in [-3., -1., 0., 1., 3.] {
+                let mut equivalent = camera;
+                equivalent.yaw += turns * std::f64::consts::TAU;
+                assert_eq!(selected_standard_view(equivalent), Some(view));
+                equivalent.yaw += 1e-4;
+                assert_eq!(selected_standard_view(equivalent), None);
+            }
+            camera.pitch += 1e-4;
+            assert_eq!(selected_standard_view(camera), None);
+        }
+        let mut camera = document.state.lock().unwrap().camera;
+        camera.set_view(ModelStandardView::Right);
+        camera.yaw = -1e-10;
+        assert_eq!(
+            selected_standard_view(camera),
+            Some(ModelStandardView::Right)
+        );
     }
 }
