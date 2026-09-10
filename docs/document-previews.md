@@ -119,7 +119,11 @@ Geometry, raster samples and retained frame buffers have separate bounds.
 Neither model parsing nor frame preparation resolves material libraries, textures,
 external geometry, scripts or repository-relative resources.
 
-STL, OBJ, FBX and 3MF use the documented retained-mesh decoders. STEP accepts
+STL, OBJ, FBX, GLB 2.0 and 3MF use the documented retained-mesh decoders. GLB
+uses captured embedded geometry, nested static scene placements and glTF meters
+converted to Z-up millimeters. Appearance and animation playback are omitted;
+unsupported deformation, compression and geometry extensions produce explicit
+errors. The selected scene and any fallback are disclosed. STEP accepts
 faceted B-rep faces, analytic `CSG_SOLID` sphere/cylinder/torus/block entities and
 nested mapped representations with supported placements. Declared supported
 length units normalize to millimeters; missing units stay unknown. Curved solids

@@ -4,6 +4,7 @@ use crate::*;
 use futures::channel::oneshot;
 use gitturtle_preview::model3d::{self, ModelBounds, ModelCamera, ModelScene, ModelStandardView};
 use gpui_kit::base::ElementExt;
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder;
 use std::sync::{
     Condvar, Mutex, OnceLock, Weak,
@@ -433,12 +434,48 @@ pub(super) fn render_comparison<T: 'static>(
         }
     }
     let view = cx.entity().downgrade();
-    div().size_full().flex().flex_col().min_w_0().min_h_0()
-        .child(div().px_3().py_1().text_size(appearance::ui_text(10.)).text_color(rgb(colors.muted))
-            .child("Drag to orbit · Shift-drag to pan · Scroll to zoom · Focus a model: arrows orbit, Shift-arrows pan, +/− zoom, F fits, 0 resets, W toggles edges"))
-        .child(div().flex_1().min_h_0().min_w_0().flex().children([("Before",&preview.old,&preview.new),(if quick {"Source"}else{"After"},&preview.new,&preview.old)]
-            .into_iter().enumerate().filter(|(i,_)|!quick || *i==1).map(|(index,(label,side,other))| render_side(index,label,side,if quick {None}else{other.model.clone()},owner.clone(),cx))))
-        .on_prepaint(move |_,window,cx|{let _=view.update(cx,|_,cx|request_pair(&documents,window,cx));})
+    div()
+        .size_full()
+        .flex()
+        .flex_col()
+        .min_w_0()
+        .min_h_0()
+        .child(
+            div()
+                .px_3()
+                .py_1()
+                .text_size(appearance::ui_text(10.))
+                .text_color(rgb(colors.muted))
+                .child("Drag to orbit · Shift-drag to pan · Scroll to zoom"),
+        )
+        .child(
+            div().flex_1().min_h_0().min_w_0().flex().children(
+                [
+                    ("Before", &preview.old, &preview.new),
+                    (
+                        if quick { "Source" } else { "After" },
+                        &preview.new,
+                        &preview.old,
+                    ),
+                ]
+                .into_iter()
+                .enumerate()
+                .filter(|(i, _)| !quick || *i == 1)
+                .map(|(index, (label, side, other))| {
+                    render_side(
+                        index,
+                        label,
+                        side,
+                        if quick { None } else { other.model.clone() },
+                        owner.clone(),
+                        cx,
+                    )
+                }),
+            ),
+        )
+        .on_prepaint(move |_, window, cx| {
+            let _ = view.update(cx, |_, cx| request_pair(&documents, window, cx));
+        })
         .into_any_element()
 }
 
@@ -454,17 +491,23 @@ fn render_side<T: 'static>(
     let mut header = div()
         .flex()
         .flex_col()
-        .gap_2()
-        .p_2()
+        .gap_1()
+        .px_2()
+        .py_1()
         .border_b_1()
         .border_color(rgb(colors.border));
+    let format = if side.model.is_some() {
+        side.metadata.format.as_str()
+    } else {
+        "3D"
+    };
     let mut source_actions = div().flex().flex_wrap().items_center().gap_2().child(
         div()
             .id(("model-source-label", index))
             .role(Role::Label)
-            .aria_label(format!("{label} · 3D"))
+            .aria_label(format!("{label} · {format}"))
             .font_weight(FontWeight::SEMIBOLD)
-            .child(format!("{label} · 3D")),
+            .child(format!("{label} · {format}")),
     );
     if let Some(source) = side.metadata.source.clone() {
         source_actions = source_actions.child(
@@ -512,6 +555,9 @@ fn render_side<T: 'static>(
             .child(
                 div()
                     .id(("model-unavailable", index))
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
                     .role(if side.error.is_some() {
                         Role::Alert
                     } else {
@@ -578,16 +624,52 @@ fn render_side<T: 'static>(
             })),
         );
     }
+    let selected_view = ModelStandardView::ALL.into_iter().find(|view| {
+        let mut standard = camera;
+        standard.set_view(*view);
+        (standard.yaw - camera.yaw).abs() < 1e-8 && (standard.pitch - camera.pitch).abs() < 1e-8
+    });
+    let target = document.clone();
+    let view_partner = partner.clone();
+    let view_owner = cx.entity().downgrade();
+    let mut views = div().flex().flex_wrap().items_center().gap_1().child(
+        button(
+            ("model-views", index),
+            selected_view.map_or("Custom view", |view| view.label()),
+            "",
+            false,
+        )
+        .dropdown_caret(true)
+        .accessibility_label(format!(
+            "{label}: Standard views, {}",
+            selected_view.map_or("Custom", |view| view.label())
+        ))
+        .tooltip("Choose Isometric, Front, Back, Left, Right, Top or Bottom")
+        .dropdown_menu(move |mut menu, _, _| {
+            menu = menu.label(format!("{label} standard view"));
+            for view in ModelStandardView::ALL {
+                let target = target.clone();
+                let partner = view_partner.clone();
+                let owner = view_owner.clone();
+                menu = menu.item(
+                    PopupMenuItem::new(view.label())
+                        .checked(selected_view == Some(view))
+                        .on_click(move |_, window, cx| {
+                            target.change(partner.as_deref(), Action::View(view));
+                            window.refresh();
+                            let _ = owner.update(cx, |_, cx| cx.notify());
+                        }),
+                );
+            }
+            menu
+        }),
+    );
     if let Some(partner) = partner.clone() {
         let target = document.clone();
-        controls = controls.child(
+        views = views.child(
             button(
                 ("model-link", index),
-                if linked {
-                    "Linked cameras"
-                } else {
-                    "Independent cameras"
-                },
+                if linked { "Linked" } else { "Independent" },
                 "",
                 linked,
             )
@@ -608,30 +690,6 @@ fn render_side<T: 'static>(
         );
     }
     header = header.child(controls);
-    let mut views = div().flex().flex_wrap().gap_1();
-    for (i, view) in ModelStandardView::ALL.into_iter().enumerate() {
-        let mut standard = camera;
-        standard.set_view(view);
-        let selected = (standard.yaw - camera.yaw).abs() < 1e-8
-            && (standard.pitch - camera.pitch).abs() < 1e-8;
-        let target = document.clone();
-        let partner = partner.clone();
-        views = views.child(
-            button(
-                ("model-standard", index * 7 + i),
-                view.label(),
-                "",
-                selected,
-            )
-            .toggled(selected)
-            .accessibility_label(format!("{label}: {} view", view.label()))
-            .on_click(cx.listener(move |_, _, window, cx| {
-                target.change(partner.as_deref(), Action::View(view));
-                window.refresh();
-                cx.notify();
-            })),
-        );
-    }
     let summary = format!(
         "{} triangles · view span {:.4} {}",
         document.scene.triangle_count(),
@@ -647,6 +705,7 @@ fn render_side<T: 'static>(
             .text_color(rgb(colors.muted))
             .child(summary),
     );
+    let first_frame = frame.is_none();
     let mut canvas = model_canvas(
         index,
         label,
@@ -680,7 +739,9 @@ fn render_side<T: 'static>(
                     .role(Role::Status)
                     .aria_label(format!(
                         "{label}: {}",
-                        if pending {
+                        if first_frame {
+                            "Preparing 3D view"
+                        } else if pending {
                             "Updating 3D view"
                         } else {
                             "3D view ready"
@@ -727,7 +788,7 @@ fn render_side<T: 'static>(
                 .aria_label(bounded_accessible_text(format!(
                     "{label} model details: {details}"
                 )))
-                .max_h(px(76.))
+                .max_h(px(48.))
                 .overflow_y_scroll()
                 .p_2()
                 .text_size(appearance::ui_text(10.))
@@ -777,7 +838,7 @@ fn model_canvas<T: 'static>(
         .focus_visible(|style|style.border_color(rgb(colors.accent))).tab_stop(true).track_focus(&focus).role(Role::Image)
         .aria_label(format!("{label} interactive 3D model, {} triangles",document.scene.triangle_count()))
         .aria_description(format!(
-            "Displayed orientation: yaw {:.1} degrees, elevation {:.1} degrees. Target X {:.4}, Y {:.4}, Z {:.4}; view span {:.4} {}. Arrows orbit; Shift and arrows pan; plus and minus zoom; F fits; zero resets; W toggles edges. Exact source is available above.",
+            "Displayed orientation: yaw {:.1} degrees, elevation {:.1} degrees. Target X {:.4}, Y {:.4}, Z {:.4}; view span {:.4} {}. Arrows orbit; Shift and arrows pan; plus and minus zoom; F fits; zero resets; W toggles edges. The captured original is available above.",
             camera.yaw.to_degrees(), camera.pitch.to_degrees(), camera.target[0], camera.target[1], camera.target[2], camera.span, document.scene.units.label()
         ))
         .cursor(CursorStyle::OpenHand)
@@ -906,6 +967,53 @@ mod tests {
             before.state.lock().unwrap().camera,
             after.state.lock().unwrap().camera
         );
+    }
+
+    #[test]
+    fn glb_initial_camera_fits_revision_union_and_retains_changed_placement() {
+        let before = Document::new(
+            model3d::decode_geometry(
+                include_bytes!("../../preview/tests/fixtures/models/glb/assembly-before.glb"),
+                "before.glb",
+                || Ok(()),
+            )
+            .unwrap()
+            .scene,
+        );
+        let after = Document::new(
+            model3d::decode_geometry(
+                include_bytes!("../../preview/tests/fixtures/models/glb/assembly-after.glb"),
+                "after.GLB",
+                || Ok(()),
+            )
+            .unwrap()
+            .scene,
+        );
+        let union = before.scene.bounds.union(after.scene.bounds);
+        before.configure(union);
+        after.configure(union);
+        let camera = before.state.lock().unwrap().camera;
+        assert_eq!(camera, after.state.lock().unwrap().camera);
+        for (actual, expected) in camera.target.into_iter().zip([1050., 0., 1800.]) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+        assert_ne!(camera.target, before.scene.bounds.center());
+        assert_ne!(camera.target, after.scene.bounds.center());
+        assert_eq!(before.scene.units, model3d::ModelUnits::Millimeters);
+        before.change(Some(&after), Action::View(ModelStandardView::Front));
+        before.change(Some(&after), Action::Zoom(2.));
+        let bookmark = before.bookmark();
+        before.pause();
+        before.configure(union);
+        assert_eq!(before.bookmark().target, bookmark.target);
+        assert_eq!(before.bookmark().span, bookmark.span);
+        before.change(Some(&after), Action::Reset);
+        assert_eq!(before.state.lock().unwrap().camera, camera);
+        assert_eq!(after.state.lock().unwrap().camera, camera);
+        before.set_linked(&after, false);
+        before.change(Some(&after), Action::Fit);
+        assert_eq!(before.bookmark().target, before.scene.bounds.center());
+        assert_eq!(after.state.lock().unwrap().camera, camera);
     }
     #[test]
     fn camera_edits_and_pause_invalidate_render_generation() {

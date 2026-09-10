@@ -3105,6 +3105,170 @@ mod image_tests {
         );
     }
 
+    const GLB_BEFORE: &[u8] =
+        include_bytes!("../../preview/tests/fixtures/models/glb/assembly-before.glb");
+    const GLB_AFTER: &[u8] =
+        include_bytes!("../../preview/tests/fixtures/models/glb/assembly-after.glb");
+
+    #[test]
+    fn glb_history_preserves_captured_revisions_absence_and_independent_errors() {
+        let fixture = Fixture::new();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        fs::write(fixture.0.join("assembly.GLB"), b"unrelated worktree").unwrap();
+        let mut file = added_file(&fixture, "assembly.GLB", GLB_AFTER);
+        file.old_path = Some("assembly.glb".into());
+        file.old_oid = Some(fixture.blob(GLB_BEFORE));
+        file.old_mode = "100644".into();
+        file.status = ChangeStatus::Renamed;
+        let content = captured_preview(&repo, file.clone());
+        let Content::Rich(sides) = &*content else {
+            panic!("native GLB comparison")
+        };
+        for (side, expected) in [(&sides.old, GLB_BEFORE), (&sides.new, GLB_AFTER)] {
+            assert_eq!(side.captured.as_deref(), Some(expected));
+            assert!(
+                side.metadata.source.is_none(),
+                "binary bytes are not staging text"
+            );
+            assert!(side.model.is_some(), "{:?}", side.error);
+            assert!(side.pages.is_empty(), "no eager fixed frames");
+        }
+        assert!(
+            content.bytes()
+                >= GLB_BEFORE.len()
+                    + GLB_AFTER.len()
+                    + sides.old.model.as_ref().unwrap().retained_bytes()
+                    + sides.new.model.as_ref().unwrap().retained_bytes()
+        );
+
+        file.old_oid = Some(fixture.blob(b"glTF truncated"));
+        let invalid = captured_preview(&repo, file.clone());
+        let Content::Rich(sides) = &*invalid else {
+            panic!("side-specific GLB error")
+        };
+        assert!(sides.old.error.is_some());
+        assert!(sides.old.present);
+        assert_eq!(
+            sides.old.captured.as_deref(),
+            Some(b"glTF truncated".as_slice())
+        );
+        assert!(sides.new.model.is_some());
+
+        for deleted in [false, true] {
+            let mut absent = added_file(&fixture, "assembly.GLB", GLB_AFTER);
+            if deleted {
+                std::mem::swap(&mut absent.old_path, &mut absent.new_path);
+                std::mem::swap(&mut absent.old_oid, &mut absent.new_oid);
+                std::mem::swap(&mut absent.old_mode, &mut absent.new_mode);
+                absent.status = ChangeStatus::Deleted;
+            }
+            let content = captured_preview(&repo, absent);
+            let Content::Rich(sides) = &*content else {
+                panic!("absent GLB side")
+            };
+            let (missing, present) = if deleted {
+                (&sides.new, &sides.old)
+            } else {
+                (&sides.old, &sides.new)
+            };
+            assert!(!missing.present);
+            assert!(missing.captured.is_none() && missing.error.is_none());
+            assert!(present.model.is_some());
+        }
+        assert_eq!(
+            fs::read(fixture.0.join("assembly.GLB")).unwrap(),
+            b"unrelated worktree"
+        );
+    }
+
+    #[test]
+    fn glb_working_preview_uses_current_bytes_without_caching_or_index_writes() {
+        let fixture = Fixture::new();
+        fs::write(fixture.0.join("assembly.glb"), GLB_BEFORE).unwrap();
+        fixture.git(&["add", "assembly.glb"], b"");
+        fixture.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "GLB"], b"");
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let index = fs::read(fixture.0.join(".git/index")).unwrap();
+        let mut cache = PreviewCache::default();
+        let mut session = RepositorySession::default();
+        for bytes in [GLB_AFTER, b"invalid GLB".as_slice(), GLB_AFTER] {
+            fs::write(fixture.0.join("assembly.glb"), bytes).unwrap();
+            let entry = repo.status().unwrap().entries.remove(0);
+            let Output::WorkingPreview(_, content, _) = execute(
+                Job::WorkingPreview {
+                    head: None,
+                    repo: repo.clone(),
+                    entry,
+                    area: gitturtle_core::ChangeArea::Unstaged,
+                },
+                &mut cache,
+                &active(),
+                &mut session,
+            )
+            .unwrap() else {
+                panic!("working GLB")
+            };
+            let Content::Rich(sides) = &*content else {
+                panic!("rich GLB")
+            };
+            assert_eq!(sides.old.captured.as_deref(), Some(GLB_BEFORE));
+            assert_eq!(sides.new.captured.as_deref(), Some(bytes));
+            assert!(sides.old.model.is_some());
+            assert_eq!(sides.new.model.is_some(), bytes == GLB_AFTER);
+            assert!(cache.entries.is_empty());
+        }
+        assert_eq!(fs::read(fixture.0.join(".git/index")).unwrap(), index);
+    }
+
+    #[test]
+    fn glb_lfs_miss_is_retryable_and_verified_local_bytes_enter_the_model_pipeline() {
+        use sha2::{Digest, Sha256};
+        let fixture = Fixture::new();
+        let oid = format!("{:x}", Sha256::digest(GLB_AFTER));
+        let pointer = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
+            GLB_AFTER.len()
+        );
+        let file = added_file(&fixture, "assembly.glb", pointer.as_bytes());
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let mut cache = PreviewCache::default();
+        let mut session = RepositorySession::default();
+        let mut preview = |expected_entries| {
+            let Output::Preview(content, _) = execute(
+                Job::Preview {
+                    origins: Default::default(),
+                    repo: repo.clone(),
+                    file: file.clone(),
+                },
+                &mut cache,
+                &active(),
+                &mut session,
+            )
+            .unwrap() else {
+                panic!("LFS GLB")
+            };
+            assert_eq!(cache.entries.len(), expected_entries);
+            content
+        };
+        let missing = preview(0);
+        assert!(matches!(&*missing, Content::Text { new, .. } if new == &pointer));
+        let directory = fixture
+            .0
+            .join(".git/lfs/objects")
+            .join(&oid[..2])
+            .join(&oid[2..4]);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join(&oid), GLB_AFTER).unwrap();
+        let available = preview(1);
+        let Content::Rich(sides) = &*available else {
+            panic!("resolved GLB geometry")
+        };
+        assert_eq!(sides.new.captured.as_deref(), Some(GLB_AFTER));
+        assert!(sides.new.model.is_some(), "{:?}", sides.new.error);
+        assert!(!sides.old.present);
+        assert!(Arc::ptr_eq(&available, &preview(1)));
+    }
+
     #[test]
     fn mermaid_history_keeps_literal_renamed_sources_and_failed_diagrams() {
         let fixture = Fixture::new();

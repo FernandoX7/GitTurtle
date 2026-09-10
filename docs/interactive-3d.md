@@ -1,7 +1,7 @@
 # Interactive 3D comparison and finite CAD support
 
 The September 2026 implementation retains immutable triangles for STL, OBJ, FBX,
-3MF and the STEP subset below. `decode_geometry` consumes supplied bytes;
+GLB, 3MF and the STEP subset below. `decode_geometry` consumes supplied bytes;
 `render_model` produces one requested orthographic frame on a background worker.
 Camera updates do no parsing, geometry conversion or pixel allocation.
 
@@ -16,6 +16,13 @@ and colors so direction is available without color alone.
 The native integration, runtime resource measurements and exercised build identity
 belong to the current milestone record; decoder tests alone do not establish
 native interaction or GPU cleanup.
+
+Each side groups Fit/Reset, zoom and edges separately from the standard-view menu
+and camera-link toggle. The menu retains all seven named views and a checked
+current view; custom orbit is labelled Custom view. Compact headers, short pointer
+hints and a scrollable details footer keep geometry visible at narrow widths and
+larger interface text. Unsupported and missing model sides use the same labelled
+comparison surface; errors are accessible, bounded and scrollable.
 
 ## Coordinates, units and source
 
@@ -32,6 +39,72 @@ All parsers remain supplied-byte operations. No geometry, material, texture,
 external cache, script or repository-relative path is resolved. Exact source and
 captured-byte identity remain with each original side. Neither retained triangles
 nor rendered frames can become a staging patch.
+
+## GLB 2.0 static geometry
+
+Case-insensitive `.glb` recognition enters the same native retained-model viewer.
+The decoder validates the binary container and the independent glTF asset version;
+JSON `.gltf` files are not part of this support. Indexed and non-indexed triangle
+primitives, multiple primitives per mesh, shared mesh instances, nested nodes and
+matrix or translation/rotation/scale placements retain their scene coordinates.
+The declared default scene is selected; when omitted, scene zero is used and the
+fallback is disclosed. Assets without scenes are refused. Other scenes are not
+merged into an invented assembly.
+
+glTF uses right-handed Y-up coordinates and meters. After composing node world
+transforms, GitTurtle converts `[x, y, z]` to `[1000*x, -1000*z, 1000*y]` in its
+right-handed Z-up/mm convention. This rotation preserves handedness and maps
+glTF's front to the existing Front view. Each revision keeps its placement and
+scale; only the shared camera fits the union of both bounds.
+
+This is flat-shaded static geometry inspection. Materials, vertex appearance,
+textures, authored lighting/cameras and animation playback are omitted. Node
+transforms use their authored static values, not a sampled animation frame.
+Skins, morph targets and unimplemented geometry, visibility or placement
+extensions are refused instead of showing undeformed or incomplete content.
+Draco, meshopt and GPU instancing extensions are not decoded. Known appearance
+extensions may be recognized solely to explain omitted appearance; they never
+enable texture decoding or resource access. Unknown required extensions are
+refused.
+
+The parser consumes the captured JSON and BIN slices only. Buffer URIs, including
+data URIs, cannot supply geometry. Image URIs and material references are never
+opened. Opening a preview does not fetch Git/LFS objects; verified locally present
+LFS content enters through the existing captured-byte path. Each original side
+keeps its bytes, absence and independent error state.
+
+POSITION supports core non-normalized FLOAT/VEC3 and signed/unsigned BYTE/SHORT
+VEC3 only with required `KHR_mesh_quantization`, including normalized integer
+values. Triangle indices are non-normalized unsigned BYTE/SHORT/INT SCALAR;
+primitive-restart sentinels are refused. Interleaved positions follow checked
+four-byte alignment and legal strides; indices remain tightly packed. Sparse
+position/index overrides support a base view or an implicit zero base, with
+strictly increasing in-range override indices. Other primitive modes, including
+strips, fans, lines and points, are refused instead of skipped. Authored normals,
+UVs and vertex colors do not affect the neutral geometry rendering.
+
+This finite geometry validator checks container boundaries, versions, references,
+tree structure, layouts and values needed for faithful static geometry. It is
+not a complete validator for omitted material, texture or animation semantics.
+
+### Specification and dependencies
+
+Implementation was checked against the current official
+[Khronos glTF 2.0 specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html),
+[extension registry](https://github.com/KhronosGroup/glTF/blob/main/extensions/README.md)
+and [mesh quantization extension](https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_mesh_quantization/README.md)
+on September 10, 2026.
+
+The adapter uses `serde` and `serde_json`, already present in the workspace lock,
+with bounded preflight and checked local accessor readers. Both use
+[MIT OR Apache-2.0 licensing](https://github.com/serde-rs/json/blob/master/Cargo.toml).
+The portable Rust [`gltf`/`gltf-json` 1.4.1 candidate](https://github.com/gltf-rs/gltf/blob/master/Cargo.toml)
+has the same dual license. Its optional import/resource helpers are unnecessary
+here, and its [utility accessor readers](https://github.com/gltf-rs/gltf/blob/master/src/accessor/util.rs)
+assume validated data; a separate allocation/range/cancellation boundary would
+still be required. Keeping the narrow adapter exposes those checks without adding
+image or filesystem import behavior. No native glTF library or new renderer is
+bundled.
 
 ## Implemented STEP subset
 
@@ -63,6 +136,19 @@ objects/instance visits. STEP has at most 40,000 records, 32 KiB per record,
 32 syntax/mapping levels, 256 points per faceted polygon and four million polygon
 candidate tests. Unit conversion chains stop at eight levels. Existing 3MF ZIP,
 XML and decompression limits remain independent of output geometry.
+
+GLB additionally limits JSON to 4 MiB, 250,000 structural tokens, 32 nesting
+levels, 16,384 entries per array/object and 64 KiB per string. Duplicate decoded
+object keys are refused before typed deserialization. The container has at most
+128 chunks. Nodes, meshes, scenes, primitives and selected instance visits each
+have a 4,096 cap; node depth is 32. Each accessor has at most 300,000 elements;
+cumulative decoded positions and indices are independently limited to 300,000
+each, and accessor work including sparse overrides to 900,000 elements. Both
+cached source triangles and expanded instance triangles are capped at 100,000.
+Unused meshes are not expanded. These limits bound geometry separately from
+JSON, original embedded appearance bytes, retained frames and raster samples.
+Parsing and expansion have cooperative checkpoints; bounded library calls are
+not a hard deadline or a process-memory sandbox.
 
 Frames have a 64–720 pixel edge, a separate 64-million raster-sample budget and
 cooperative cancellation per triangle and scanline block. Wireframe clips lines

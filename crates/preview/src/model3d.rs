@@ -11,6 +11,7 @@ use std::{
 };
 
 mod camera;
+mod glb;
 mod step;
 pub use camera::{
     ModelBounds, ModelCamera, ModelScene, ModelStandardView, ModelUnits, OrientationAxis,
@@ -55,7 +56,7 @@ pub fn is_model_path(path: &Path) -> bool {
     path.extension().and_then(|v| v.to_str()).is_some_and(|v| {
         matches!(
             v.to_ascii_lowercase().as_str(),
-            "stl" | "obj" | "fbx" | "3mf" | "step" | "stp"
+            "stl" | "obj" | "fbx" | "3mf" | "step" | "stp" | "glb"
         )
     })
 }
@@ -90,6 +91,10 @@ pub fn decode_geometry(
         "step" | "stp" => {
             let cad = step::decode(bytes, &check)?;
             ("STEP", cad.mesh, cad.units, cad.details)
+        }
+        "glb" => {
+            let model = glb::decode(bytes, &check)?;
+            ("GLB", model.mesh, ModelUnits::Millimeters, model.details)
         }
         _ => bail!("Unsupported 3D model format"),
     };

@@ -2289,6 +2289,8 @@ dependencies = [
  "mermaid-rs-renderer",
  "resvg 0.48.1",
  "roxmltree 0.21.1",
+ "serde",
+ "serde_json",
  "stl_io",
  "tempfile",
  "ufbx",

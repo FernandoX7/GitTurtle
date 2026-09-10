@@ -12,6 +12,7 @@ These instructions supplement the root agreements for `crates/preview`. The [sup
 | Container metadata and transformed text | [src/metadata.rs](src/metadata.rs) |
 | Static Mermaid | [src/mermaid.rs](src/mermaid.rs) |
 | Mesh decoding and retained camera/raster views | [src/model3d.rs](src/model3d.rs), [src/model3d/camera.rs](src/model3d/camera.rs), [src/model3d/tests.rs](src/model3d/tests.rs) |
+| GLB framing, embedded accessors and static scenes | [src/model3d/glb.rs](src/model3d/glb.rs); [GLB contract](../../docs/interactive-3d.md#glb-20-static-geometry), [GLB fixtures](tests/fixtures/models/glb/README.md) |
 | STEP faceted solids, analytic primitives, instances and units | [src/model3d/step.rs](src/model3d/step.rs), [scene.rs](src/model3d/step/scene.rs), [primitives.rs](src/model3d/step/primitives.rs) |
 
 Most tests are inline in the owning module. Checked-in binary fixtures and their provenance are documented in [tests/fixtures/README.md](tests/fixtures/README.md) and [model fixtures](tests/fixtures/models/README.md).

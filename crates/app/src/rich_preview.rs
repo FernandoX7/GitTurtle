@@ -310,7 +310,10 @@ pub(super) fn render_comparison<T: 'static>(
     if preview.old.pdf.is_some() || preview.new.pdf.is_some() {
         return crate::pdf_view::render_comparison(preview, quick, owner, cx);
     }
-    if preview.old.model.is_some() || preview.new.model.is_some() {
+    if [&preview.old, &preview.new]
+        .into_iter()
+        .any(|side| side.model.is_some() || gitturtle_preview::model3d::is_model_path(&side.name))
+    {
         return crate::model_view::render_comparison(preview, quick, owner, cx);
     }
     let colors = palette(cx);
@@ -586,6 +589,11 @@ mod tests {
             (
                 "mesh.3mf",
                 include_bytes!("../../preview/tests/fixtures/models/tetra.3mf").as_slice(),
+            ),
+            (
+                "mesh.GLB",
+                include_bytes!("../../preview/tests/fixtures/models/glb/assembly-before.glb")
+                    .as_slice(),
             ),
         ] {
             let side = Side::prepare(bytes.to_vec(), Path::new(name), || Ok(())).unwrap();

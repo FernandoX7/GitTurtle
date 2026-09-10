@@ -1,0 +1,84 @@
+{
+  "captured_on": "2026-09-10",
+  "assets": [
+    {
+      "file": "BoxInterleaved.glb",
+      "bytes": 1632,
+      "sha256": "b2ae631f118f1d13f829cdf9d9dc0fe7cb582de20b8c51d17f81f77a1cbf290c",
+      "source_url": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/90d7ede14c7e280af263824604b427a1ca02cb66/Models/BoxInterleaved/glTF-Binary/BoxInterleaved.glb",
+      "upstream_revision": "90d7ede14c7e280af263824604b427a1ca02cb66",
+      "license_source_url": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/90d7ede14c7e280af263824604b427a1ca02cb66/Models/BoxInterleaved/LICENSE.md",
+      "metadata_source_url": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/90d7ede14c7e280af263824604b427a1ca02cb66/Models/BoxInterleaved/metadata.json",
+      "legal": [
+        {
+          "license": "CC-BY-4.0",
+          "licenseUrl": "https://creativecommons.org/licenses/by/4.0/legalcode",
+          "artist": "Cesium",
+          "year": "2017",
+          "owner": "Cesium",
+          "what": "Everything",
+          "text": "Creative Commons Attribution 4.0 International",
+          "spdx": "CC-BY-4.0",
+          "icon": "https://licensebuttons.net/l/by/4.0/88x31.png"
+        }
+      ],
+      "modifications": "None; original GLB bytes captured unchanged",
+      "triangle_count_before_instancing": 12,
+      "meshes": 1,
+      "nodes": 2
+    },
+    {
+      "file": "Avocado.glb",
+      "bytes": 8110040,
+      "sha256": "ccc9c3ce56423720b09399c2351537207cd5a65f859f9e6e2f30922762f3abd4",
+      "source_url": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/90d7ede14c7e280af263824604b427a1ca02cb66/Models/Avocado/glTF-Binary/Avocado.glb",
+      "upstream_revision": "90d7ede14c7e280af263824604b427a1ca02cb66",
+      "license_source_url": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/90d7ede14c7e280af263824604b427a1ca02cb66/Models/Avocado/LICENSE.md",
+      "metadata_source_url": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/90d7ede14c7e280af263824604b427a1ca02cb66/Models/Avocado/metadata.json",
+      "legal": [
+        {
+          "license": "CC0-1.0",
+          "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/legalcode",
+          "artist": "Microsoft",
+          "year": "2017",
+          "owner": "Public",
+          "what": "Everything",
+          "text": "Creative Commons Zero v1.0 Universal",
+          "spdx": "CC0-1.0",
+          "icon": "https://licensebuttons.net/p/zero/1.0/88x31.png"
+        }
+      ],
+      "modifications": "None; original GLB bytes captured unchanged",
+      "triangle_count_before_instancing": 682,
+      "meshes": 1,
+      "nodes": 1
+    },
+    {
+      "file": "RiggedSimple.glb",
+      "bytes": 15104,
+      "sha256": "3a79dabb67bb0cd598a18d08b954d9d357c27c30672f82ef5d3f4e7fe6ca3401",
+      "source_url": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/90d7ede14c7e280af263824604b427a1ca02cb66/Models/RiggedSimple/glTF-Binary/RiggedSimple.glb",
+      "upstream_revision": "90d7ede14c7e280af263824604b427a1ca02cb66",
+      "license_source_url": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/90d7ede14c7e280af263824604b427a1ca02cb66/Models/RiggedSimple/LICENSE.md",
+      "metadata_source_url": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/90d7ede14c7e280af263824604b427a1ca02cb66/Models/RiggedSimple/metadata.json",
+      "legal": [
+        {
+          "license": "CC-BY-4.0",
+          "licenseUrl": "https://creativecommons.org/licenses/by/4.0/legalcode",
+          "artist": "Cesium",
+          "year": "2017",
+          "owner": "Cesium",
+          "what": "Everything",
+          "text": "Creative Commons Attribution 4.0 International",
+          "spdx": "CC-BY-4.0",
+          "icon": "https://licensebuttons.net/l/by/4.0/88x31.png"
+        }
+      ],
+      "modifications": "None; original GLB bytes captured unchanged",
+      "expected_result": "Explicit unsupported skin refusal; never show bind-pose geometry as evaluated skin",
+      "triangle_count_before_instancing": 188,
+      "meshes": 1,
+      "nodes": 5
+    }
+  ]
+}
