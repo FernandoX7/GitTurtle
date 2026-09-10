@@ -442,6 +442,31 @@ impl ConflictView {
         cx.notify();
     }
 
+    fn restore_saved_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((true, text)) = self.durable_saved.clone() else {
+            return;
+        };
+        if let Some(issue) = draft_issue(text.as_bytes(), self.draft_limit) {
+            self.draft_error = Some(issue);
+            cx.notify();
+            return;
+        }
+        self.open_resolution_editor(window, cx);
+        let Some(editor) = &self.resolution else {
+            return;
+        };
+        // set_value deliberately suppresses InputEvent::Change. Synchronize
+        // the accepted save payload and run the same guarded block review as
+        // a user edit instead of leaving the original conflict state active.
+        editor.update(cx, |editor, cx| editor.set_value(text.clone(), window, cx));
+        self.accepted_draft = text.clone();
+        self.accepted_selection = editor.read(cx).selected_range();
+        self.draft_error = None;
+        self.durable_saved = None;
+        cx.emit(ConflictEvent::Draft(text));
+        self.schedule_blocks(window, cx);
+    }
+
     fn prepare_readers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         for side in if self.base { vec![0] } else { vec![1, 2] } {
             if self.readers[side].is_none()
@@ -672,12 +697,8 @@ impl Render for ConflictView {
                     element.child(div().flex().flex_wrap().items_center().gap_2()
                         .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(if valid { p.muted } else { p.warning })).child(if valid { "Saved draft matches this operation, index stages and working file." } else { "Saved draft belongs to changed source state. Recover its text without replacing this file." }))
                         .child(button("copy-saved-conflict", "Copy saved text", "", false).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
-                        .child(button("restore-saved-conflict", "Restore saved draft", "", false).disabled(!valid).on_click(cx.listener(move |this, _, window, cx| {
-                            if !valid { return; }
-                            this.open_resolution_editor(window, cx);
-                            if let Some(editor) = &this.resolution { editor.update(cx, |editor, cx| editor.set_value(text.clone(), window, cx)); }
-                            this.durable_saved = None;
-                            cx.notify();
+                        .child(button("restore-saved-conflict", "Restore saved draft", "", false).debug_selector(|| "restore-saved-conflict".to_string()).disabled(!valid).on_click(cx.listener(move |this, _, window, cx| {
+                            this.restore_saved_draft(window, cx);
                         }))))
                 })
                 .child(div().flex().flex_wrap().items_center().gap_2()
@@ -698,7 +719,7 @@ impl Render for ConflictView {
                     .children(self.resolution.as_ref().map(|_| button("save-conflict-draft", "Save draft…", "", false).on_click(cx.listener(|this, _, _, cx| {
                         cx.emit(ConflictEvent::Resolve(ConflictResolution::Save { bytes: this.accepted_draft.as_bytes().to_vec() }));
                     }))))
-                    .children(self.resolution.as_ref().map(|_| button("save-conflict-resolution", "Save and stage result…", "", false).disabled(cannot_stage_draft).on_click(cx.listener(|this, _, _, cx| {
+                    .children(self.resolution.as_ref().map(|_| button("save-conflict-resolution", "Save and stage result…", "", false).debug_selector(|| "save-conflict-resolution".to_string()).disabled(cannot_stage_draft).on_click(cx.listener(|this, _, _, cx| {
                         cx.emit(ConflictEvent::Resolve(ConflictResolution::Manual { bytes: this.accepted_draft.as_bytes().to_vec() }));
                     }))))))
     }
@@ -809,6 +830,7 @@ mod tests {
     use super::*;
     use core::prelude::v1::test;
     use gitturtle_core::ConflictSide;
+    use std::{cell::RefCell, rc::Rc};
 
     fn snapshot() -> ConflictPreview {
         let side = |label: &str, oid: char, bytes: &[u8]| ConflictSide {
@@ -831,6 +853,105 @@ mod tests {
                 bytes: b"draft\n".to_vec(),
             }),
         }
+    }
+
+    #[gpui::test]
+    async fn restored_conflict_draft_recomputes_blocks_and_stages_exact_visible_text(
+        cx: &mut TestAppContext,
+    ) {
+        const ORIGINAL: &str = "<<<<<<< current\ncurrent\n=======\nincoming\n>>>>>>> incoming\n";
+        const RESTORED: &str = "Resolved together — 確認\n\nKeep this exact result.\n";
+        cx.executor().allow_parking();
+        cx.update(gpui_kit::init);
+        let captured = Rc::new(RefCell::new(None));
+        let observed = captured.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let mut snapshot = snapshot();
+            snapshot.working.as_mut().unwrap().bytes = ORIGINAL.as_bytes().to_vec();
+            let presentation = Arc::new(Presentation::prepare(snapshot));
+            let key = recovery_drafts::Key::conflict(
+                std::path::Path::new("isolated-conflict-fixture"),
+                &presentation.snapshot.path,
+                presentation.identity.durable.clone(),
+            );
+            let view = cx.new(|cx| {
+                let mut view =
+                    ConflictView::new(presentation, key, None, MAX_DIFF_BYTES, window, cx);
+                view.durable_saved = Some((true, RESTORED.into()));
+                view
+            });
+            *captured.borrow_mut() = Some(view.clone());
+            gpui_kit::component::Root::new(view, window, cx)
+        });
+        let view = observed.borrow_mut().take().unwrap();
+        cx.simulate_resize(size(px(1480.), px(981.)));
+        let drafts = Rc::new(RefCell::new(Vec::new()));
+        let resolutions = Rc::new(RefCell::new(Vec::new()));
+        let observed_drafts = drafts.clone();
+        let observed_resolutions = resolutions.clone();
+        let _subscription = cx.update(|_, cx| {
+            cx.subscribe(&view, move |_, event, _| match event {
+                ConflictEvent::Draft(text) => observed_drafts.borrow_mut().push(text.clone()),
+                ConflictEvent::Resolve(ConflictResolution::Manual { bytes }) => {
+                    observed_resolutions.borrow_mut().push(bytes.clone());
+                }
+                _ => {}
+            })
+        });
+        fn click(cx: &mut VisualTestContext, selector: &'static str) {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let bounds = cx
+                .debug_bounds(selector)
+                .expect("rendered conflict control");
+            cx.simulate_click(bounds.center(), Modifiers::default());
+        }
+        click(cx, "save-conflict-resolution");
+        assert!(
+            resolutions.borrow().is_empty(),
+            "original markers block staging"
+        );
+
+        // Hold the actual block worker so the test also exercises the pending
+        // state: restored text cannot become stageable before it is parsed.
+        let (release, wait) = std::sync::mpsc::channel();
+        let (started, ready) = futures::channel::oneshot::channel();
+        let held = cx.update(|_, cx| {
+            view.read(cx).block_executor.submit_read(move || {
+                let _ = started.send(());
+                wait.recv().map_err(|error| anyhow::anyhow!(error))?;
+                Ok(())
+            })
+        });
+        ready.await.unwrap();
+        click(cx, "restore-saved-conflict");
+        cx.read(|cx| {
+            let view = view.read(cx);
+            assert_eq!(view.resolution.as_ref().unwrap().read(cx).value(), RESTORED);
+            assert_eq!(view.accepted_draft, RESTORED);
+            assert!(view.block_pending);
+            assert!(view.durable_saved.is_none());
+        });
+        assert_eq!(drafts.borrow().as_slice(), &[RESTORED]);
+        click(cx, "save-conflict-resolution");
+        assert!(
+            resolutions.borrow().is_empty(),
+            "pending parsing blocks staging"
+        );
+        release.send(()).unwrap();
+        held.await.unwrap().unwrap();
+        let parse = cx.update(|_, cx| view.update(cx, |view, _| view.block_task.take()));
+        parse.expect("restoration schedules block review").await;
+        cx.read(|cx| {
+            let view = view.read(cx);
+            assert!(!view.block_pending);
+            assert!(view.blocks.is_empty());
+            assert!(view.block_issue.is_none());
+            assert_eq!(view.block_source, RESTORED);
+            assert!(view.readers.iter().all(Option::is_none));
+            assert_eq!(view.presentation.result.as_deref(), Some(ORIGINAL));
+        });
+        click(cx, "save-conflict-resolution");
+        assert_eq!(resolutions.borrow().as_slice(), &[RESTORED.as_bytes()]);
     }
 
     #[test]
