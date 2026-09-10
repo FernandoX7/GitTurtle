@@ -1,0 +1,290 @@
+{
+  "schema_version": 1,
+  "purpose": "Sanitized baseline native Markdown profiling observations; no improvement or leak claim",
+  "build": {
+    "source_commit": "eb3dd264c3d03eda7a3e937d307bf100c603ef02",
+    "source_basis": "Installed handoff recorded by coordinator; sample UUID agrees",
+    "checkout_documentation_commit": "b36efd036a4c61931844726ca526833aa1208098",
+    "executable_uuid": "37B51CFC-5658-3D0D-A83A-0C87DC4FA564",
+    "executable_sha256": "b2deab6aec9d33a77caab0fad7a814a927fbe862c7705f9effed3dcfdd70b610"
+  },
+  "environment": {
+    "platform": "macOS 26.6.2 (25G83) arm64",
+    "hardware_model": "Mac16,5",
+    "memory_bytes": 137438953472,
+    "logical_cpus": 16,
+    "vm_page_bytes": 16384,
+    "viewport": [
+      1480,
+      981
+    ],
+    "theme": "Midnight",
+    "density": "Comfortable",
+    "background_load": "Not controlled or quantitatively recorded",
+    "cache_state": "Fresh second process; SVG font database initialization appears in sample; OS/filesystem caches were not cleared"
+  },
+  "fixture": {
+    "markdown_bytes_before": 1156,
+    "markdown_bytes_after": 1153,
+    "markdown_sha256_before": "3560a659e94625de25819cc2a04d772b5e20f3b9302f86091b1be621987634b7",
+    "markdown_sha256_after": "a41e44528fed84d094b7055ff34b91a782a90d79ff1ad14302ea65974fe60ba2",
+    "mermaid": true,
+    "image_dimensions": [
+      320,
+      160
+    ],
+    "file_activation_samples": 1
+  },
+  "units": {
+    "memory": "MiB derived from rounded vmmap K/M/G output; heap live_bytes is exact tool count",
+    "vmmap_empty_category": "MALLOC_LARGE (empty) is the tool label, not independently attributed freed allocation stacks"
+  },
+  "snapshots": [
+    {
+      "phase": "before_markdown",
+      "source_file": "vm-before.txt",
+      "timestamp": "2026-09-10T03:39:37.445-05:00",
+      "launch_timestamp": "2026-09-10T03:39:24.881-05:00",
+      "physical_footprint_mib": 139.1,
+      "physical_footprint_peak_mib": 385.4,
+      "regions": {
+        "MALLOC_LARGE": {
+          "present_in_summary": false
+        },
+        "MALLOC_LARGE (empty)": {
+          "present_in_summary": false
+        },
+        "MALLOC_SMALL": {
+          "virtual_mib": 41.6,
+          "resident_mib": 18.7,
+          "dirty_mib": 18.7,
+          "region_count": 74
+        },
+        "MALLOC_SMALL (empty)": {
+          "virtual_mib": 30.4,
+          "resident_mib": 0.90625,
+          "dirty_mib": 0.90625,
+          "region_count": 19
+        },
+        "IOSurface": {
+          "virtual_mib": 67.7,
+          "resident_mib": 67.6,
+          "dirty_mib": 67.6,
+          "region_count": 14
+        },
+        "IOAccelerator (graphics)": {
+          "virtual_mib": 11.6,
+          "resident_mib": 9.359375,
+          "dirty_mib": 9.359375,
+          "region_count": 32
+        },
+        "owned unmapped": {
+          "virtual_mib": 5.75,
+          "resident_mib": 0.0,
+          "dirty_mib": 0.0,
+          "region_count": 46
+        },
+        "owned unmapped (graphics)": {
+          "virtual_mib": 36.0,
+          "resident_mib": 32.0,
+          "dirty_mib": 32.0,
+          "region_count": 23
+        }
+      },
+      "malloc_zones_total": {
+        "allocation_count": 57793,
+        "allocated_mib": 15.4,
+        "resident_mib": 20.5
+      }
+    },
+    {
+      "phase": "initial_markdown",
+      "source_file": "vm-initial-markdown.txt",
+      "timestamp": "2026-09-10T03:39:52.890-05:00",
+      "launch_timestamp": "2026-09-10T03:39:24.881-05:00",
+      "physical_footprint_mib": 794.9,
+      "physical_footprint_peak_mib": 794.9,
+      "regions": {
+        "MALLOC_LARGE": {
+          "virtual_mib": 4.265625,
+          "resident_mib": 4.265625,
+          "dirty_mib": 4.265625,
+          "region_count": 1
+        },
+        "MALLOC_LARGE (empty)": {
+          "virtual_mib": 416.6,
+          "resident_mib": 416.6,
+          "dirty_mib": 416.6,
+          "region_count": 10
+        },
+        "MALLOC_SMALL": {
+          "virtual_mib": 47.7,
+          "resident_mib": 22.7,
+          "dirty_mib": 22.7,
+          "region_count": 76
+        },
+        "MALLOC_SMALL (empty)": {
+          "virtual_mib": 24.3,
+          "resident_mib": 0.859375,
+          "dirty_mib": 0.859375,
+          "region_count": 17
+        },
+        "IOSurface": {
+          "virtual_mib": 67.7,
+          "resident_mib": 67.6,
+          "dirty_mib": 67.6,
+          "region_count": 14
+        },
+        "IOAccelerator (graphics)": {
+          "virtual_mib": 9.9,
+          "resident_mib": 9.9,
+          "dirty_mib": 9.9,
+          "region_count": 29
+        },
+        "owned unmapped": {
+          "virtual_mib": 8.875,
+          "resident_mib": 6.0,
+          "dirty_mib": 6.0,
+          "region_count": 71
+        },
+        "owned unmapped (graphics)": {
+          "virtual_mib": 260.0,
+          "resident_mib": 256.0,
+          "dirty_mib": 32.0,
+          "region_count": 51
+        }
+      },
+      "malloc_zones_total": {
+        "allocation_count": 62968,
+        "allocated_mib": 20.5,
+        "resident_mib": 28.8
+      }
+    },
+    {
+      "phase": "later_settled",
+      "source_file": "vm-second-settled.txt",
+      "timestamp": "2026-09-10T03:40:23.176-05:00",
+      "launch_timestamp": "2026-09-10T03:39:24.881-05:00",
+      "physical_footprint_mib": 575.6,
+      "physical_footprint_peak_mib": 802.0,
+      "regions": {
+        "MALLOC_LARGE": {
+          "present_in_summary": false
+        },
+        "MALLOC_LARGE (empty)": {
+          "virtual_mib": 420.9,
+          "resident_mib": 420.9,
+          "dirty_mib": 420.9,
+          "region_count": 11
+        },
+        "MALLOC_SMALL": {
+          "virtual_mib": 47.7,
+          "resident_mib": 23.5,
+          "dirty_mib": 23.5,
+          "region_count": 76
+        },
+        "MALLOC_SMALL (empty)": {
+          "virtual_mib": 24.3,
+          "resident_mib": 0.859375,
+          "dirty_mib": 0.859375,
+          "region_count": 17
+        },
+        "IOSurface": {
+          "virtual_mib": 67.7,
+          "resident_mib": 67.6,
+          "dirty_mib": 67.6,
+          "region_count": 14
+        },
+        "IOAccelerator (graphics)": {
+          "virtual_mib": 9.9,
+          "resident_mib": 7.65625,
+          "dirty_mib": 7.65625,
+          "region_count": 29
+        },
+        "owned unmapped": {
+          "virtual_mib": 12.0,
+          "resident_mib": 12.0,
+          "dirty_mib": 12.0,
+          "region_count": 96
+        },
+        "owned unmapped (graphics)": {
+          "virtual_mib": 76.0,
+          "resident_mib": 72.0,
+          "dirty_mib": 32.0,
+          "region_count": 28
+        }
+      },
+      "malloc_zones_total": {
+        "allocation_count": 64487,
+        "allocated_mib": 18.0,
+        "resident_mib": 25.4
+      }
+    }
+  ],
+  "heap": {
+    "source_file": "heap-initial-markdown.txt",
+    "timestamp": "2026-09-10T03:39:53.940-05:00",
+    "live_allocations": 65063,
+    "live_bytes": 19070169,
+    "live_mib": 18.18673,
+    "physical_footprint_mib": 801.6,
+    "physical_peak_mib": 801.6
+  },
+  "sample": {
+    "source_file": "initial-markdown-sample.txt",
+    "timestamp": "2026-09-10T03:39:50.548-05:00",
+    "requested_duration_seconds": 12,
+    "interval_ms": 1,
+    "main_thread_samples": 10325,
+    "reader_thread_samples": 10325,
+    "worker_attach_mermaid_inclusive_samples": 1043,
+    "svg_fontdb_initialization_inclusive_samples": 1034,
+    "main_runloop_mach_wait_inclusive_samples": 10307,
+    "observed_path": [
+      "worker::attach_mermaid",
+      "markdown_view::prepare_document",
+      "gitturtle_preview::mermaid::preview",
+      "decode_image / SVG decode",
+      "OnceLock fontdb initialization",
+      "fontdb::Database::load_system_fonts",
+      "filesystem read/open"
+    ],
+    "interpretation": "Off-UI-thread system-font initialization and file-read waits are visible; sampled time is not allocation-byte provenance or CPU utilization."
+  },
+  "native_trace": {
+    "source_file": "native-second.trace",
+    "commit_files_frame_ms": 41.21,
+    "file_preview_frame_ms": 1583.827,
+    "boundary": "Handler to prepared-preview frame callback; excludes input delivery, OS presentation and GPU completion",
+    "sample_count": 1
+  },
+  "derived_deltas_mib": {
+    "initial_minus_before_footprint": 655.8,
+    "settled_minus_before_footprint": 436.5,
+    "initial_minus_before_owned_unmapped_graphics_resident": 224.0,
+    "settled_minus_initial_footprint": -219.3
+  },
+  "profiling_limits": {
+    "xctrace_allocations": "Attachment failed; no usable allocation trace",
+    "later_malloc_logging": "Lite mode refused high-water-mark queries; freed allocation stacks unavailable",
+    "complete_peak_cause_identified": false,
+    "leak_established": false,
+    "performance_improvement_established": false,
+    "raw_capture_policy": "Raw captures retained privately; published artifacts omit user paths, process addresses and application state"
+  },
+  "private_source_sha256": {
+    "environment.json": "4a5cf454cd9badb33cafc4ab5d65ac0beb081d8bb919ebce1c1f4b559caa728f",
+    "vm-before.txt": "63a6d6b6c38ebdff2fd25d6e7ce9894b90ed0fbc197f2e57729407a929b73a09",
+    "vm-initial-markdown.txt": "43170fdb99afc7322d8df24c22d5072bbf87bcef82491fca15e39313b3b9ed44",
+    "vm-second-settled.txt": "e27c217d2809e2f33cc8ee4ea0b5d09bf6964edbb1266f80793c1c689222557c",
+    "heap-initial-markdown.txt": "02615e877c2699ce627c0b6e4852f3a49391d74a3bb9443b1dbdc907bbdb07fb",
+    "initial-markdown-sample.txt": "f47482c8a2627039bfd2d6b668de00e7d9a6d836c7939689228b936868fdd81f",
+    "initial-sample.log": "e85ccf02c0b4100a89d333b98df2a44d2eabfc1b77c58561863f94a1d49d5d55",
+    "native-second.trace": "880441f8a5919546bbb537cbd69528a7e009d90376018825123da4429fd5914a",
+    "allocations.log": "6b5220e5e32e1a075bc77ba7ab39a2c6867e9cd6fef989b26ada00288dd99c9b",
+    "large-allocation-peak.log": "2776577a517b517907f02607280a004555d7704fabe33c67b9df2e4031677fb5",
+    "large-heap-peak.log": "2776577a517b517907f02607280a004555d7704fabe33c67b9df2e4031677fb5",
+    "native-allocation.trace": "2144f8265cc1ca15394a3d47c8275b7c6611cf3061e62893eb6703d3d634d15d",
+    "native-allocation-clean.trace": "dd2b324a92a462fdd48c3d1c994c56c3df0df6bc341f3ad1d2b4f8f5a43ad5e3"
+  }
+}

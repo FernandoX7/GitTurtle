@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-10",
+  "compiled_source": "b4440f132999ebc45a81b1baa31eda4594bddd66",
+  "compiled_input_sha256": "8a407d51167f8761b24a447ca7a2689bd75db3d222b058456dee7ce780f37482",
+  "installed_path": "/Applications/GitTurtle.app",
+  "installed_at_utc": "2026-09-10T09:17:35.128206+00:00",
+  "uuid": "2475FAA0-21B2-398D-9F9C-A2D57C92543A",
+  "executable_sha256": "3ce5c6e541c1c7d459982c63ea497705511680f837ec78fb32ea5a8e1e21d020",
+  "checks": {
+    "compiled_inputs_unchanged": true,
+    "signature_verified": true,
+    "all_package_files_match": true,
+    "plist_equal_baseline": true,
+    "original_icon_icns_unchanged": true
+  },
+  "files_sha256": {
+    "Contents/Info.plist": "7bb42672a0c5377612a496e46230bfe06510f52d1eecab94f3747e041abf9f61",
+    "Contents/_CodeSignature/CodeResources": "8b50316fd3ac167097ca1fe4a81ade3d875206b483d890677fc1472e95c4899b",
+    "Contents/MacOS/gitturtle": "3ce5c6e541c1c7d459982c63ea497705511680f837ec78fb32ea5a8e1e21d020",
+    "Contents/Resources/AppIcon.icns": "5206a75c4c2ae53f7686565042bb7e4e67b1ca09ebc3d4f2e5a621f3be37fefb",
+    "Contents/Resources/Assets.car": "10c87d69648cafa9b023c736b1f959c49c849b480b8cad2a431d94ac214d69eb"
+  },
+  "installed_smoke": {
+    "pid": 61133,
+    "path": "/Applications/GitTurtle.app/Contents/MacOS/gitturtle",
+    "mapped_executable_inode_verified": true,
+    "checks": [
+      "mapped executable inode/path/hash",
+      "eight saved tabs",
+      "exact Unicode commit draft",
+      "exact offline review summary/range/unfinished composer",
+      "saved Braden Compact14point appearance",
+      "stale offline head refused;draft preserved",
+      "captured Markdown comparison restored"
+    ],
+    "result": "passed"
+  },
+  "restoration": {
+    "utc": "2026-09-10T09:21:25.737832+00:00",
+    "genuine_state_byte_exact_before_launch": true,
+    "restored_file_count": 3,
+    "original_backup_preserved": true,
+    "genuine_repository_tabs_restored": 3,
+    "global_appearance_unchanged": true,
+    "complete_captured_accessibility_settings_unchanged": true,
+    "genuine_final_pid": 72968,
+    "exact_installed_running_path_and_hash_verified": true,
+    "fixture_mode_disabled": true,
+    "after_launch_only_change": {
+      "only_field": "active development repository pinned history ref tip",
+      "old": "b36efd036a4c61931844726ca526833aa1208098",
+      "new": "b4440f132999ebc45a81b1baa31eda4594bddd66",
+      "reason": "Startup refresh resolves current repository tips; branch has the authorized milestone commits"
+    },
+    "note": "The active development repository ref tip can advance again with authorized final documentation commits; all other restored state matched at verification."
+  },
+  "limits": [
+    "Ad-hoc signed local macOS arm64 package; no notarization, application sandbox or universal binary claim.",
+    "Live GitHub, hosted CI, native Linux UI and large-PR native interaction not exercised.",
+    "Original state and unaltered native screenshots are private; only checks and hashes are published."
+  ],
+  "private_evidence_sha256": {
+    "final/source-inputs.json": "23c2a9195ad3afa6fad65a327308f95248489ce14a6ad00034f23c4c19dbdae5",
+    "final/gate-summary.json": "7817d027d652727d17c43a5866d5e60c6dbe99d83d66594b63c9a24b1c9d7a6a",
+    "final/package-identity.json": "caa6751c38daedfbf9094a464f14b1ca52a9ec683b44831ac4d474532057f46e",
+    "final/installed-identity.json": "13f6f13f3ab35ac687eabafc79de62f3e9c131535e81803c571b012f0f58cc40",
+    "final/restoration.json": "5016cd3d55137cfa5d7612c78e0ee34dc468bd9a7607ee83e32fb9aad82fd075",
+    "final/genuine-running-identity.json": "3bb8911fb1cd22f6a3a04dfd742978fbc9673a1110fbc7dd346870462c1e58b2",
+    "final/restored-state-differences.json": "38ac0db0549e9cfa2ede821e0781b37e974ff7c91a4d92dadd109e51400847d2",
+    "installed-smoke/running-identity.json": "3bea73e71214f9bd990c300c64413fcfb3d88184890abfbd2a68544a3c2fa414",
+    "installed-smoke/commit-draft.txt": "4b42747524b9c212796125b09cfd5493463ad81e82b029fd1d947d835cea5a98",
+    "installed-smoke/commit-draft.png": "ec2b1cb8fea6ef2a92f0650cfb1f56c5fa5a2f0395b9f8600f0604b663b9fa28",
+    "installed-smoke/inline-restored.txt": "f95f4c764e3fbccfe5e1bce6267158b8c80fa451af02c510c89f6b074a9f18cb",
+    "installed-smoke/inline-restored.png": "2c7059dfdaeea600068d36bbd746211ee9240bf7687127b295da6f8c1abdb6df",
+    "installed-smoke/review-restored.txt": "e86cdc8929762fe2ee8495901043a963058bc1ff2c48cdac8a8683865b434643",
+    "installed-smoke/review-restored.png": "1345c6729a0ea3e90f27cf65704f9fb263430c6a995f1c6ff8179cb91a1a123b",
+    "installed-smoke/stale-head-refusal.txt": "e86cdc8929762fe2ee8495901043a963058bc1ff2c48cdac8a8683865b434643",
+    "installed-smoke/stale-head-refusal.png": "f9123545fae4b8c879687516859f73b0ad88a5610c2450c98cb4cfe87946600e",
+    "installed-smoke/markdown-restored.txt": "6e94a2b97cb814e9fed13bac2b8ecaec242415b8b71d12f63d27d018acd10d79",
+    "installed-smoke/markdown-restored.png": "abf4c7bfa152be455f6740621f05a7e5f934262e8af4d48625056f17057e95c6",
+    "installed-smoke/genuine-restored.txt": "4f18ed3f0d251f47cbb044d6bf84dda2088075ba84eeecfc7f7d03ab07cdf860",
+    "installed-smoke/genuine-restored.png": "459271a618f87d688dfa77336f5e8385a27f280c7cb66bbd83be985e76aeeea9"
+  }
+}

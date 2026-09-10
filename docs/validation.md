@@ -1,8 +1,23 @@
 # Validation notes
 
-Current milestone: [native polish and pull-request review](native-polish-milestone.md), with the canonical [design contract](../DESIGN.md). The prior [review and recovery native/build verification](review-native-verification.md) and [macOS milestone evidence](macos-native-verification.md) remain tied to their named builds.
+Current milestone: [security, architecture and resource bounds](security-quality-milestone.md), with the canonical [design contract](../DESIGN.md). The prior [native polish](native-polish-milestone.md), [review and recovery native/build verification](review-native-verification.md) and [macOS milestone evidence](macos-native-verification.md) remain tied to their named builds.
 
 This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native interaction evidence is macOS-specific. Current platform execution and access limits belong in the active milestone and [environment report](benchmarks/2026-09-09-milestone-environment.md). The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Distribution is outside the current milestone.
+
+## Final September 10 security milestone
+
+[Source `b4440f1`](security-quality-milestone.md) passed the macOS and local
+Linux formatting, workspace tests, strict Clippy and release gates. The
+[20 minute 15 second native session](benchmarks/security-native-20260910.md)
+covered eight tabs, demanding history/status/diff and preview fixtures,
+same-path repository replacement, local cancellation and saved drafts.
+The [large offline PR probe](benchmarks/large-pr-probe.md) separately exercised
+300 files, 2,000 comments and 128 substantial drafts through actual backend APIs.
+The [installed identity and restoration record](benchmarks/security-installed-20260910.json)
+verifies UUID `2475FAA0-21B2-398D-9F9C-A2D57C92543A`, exact-path native smoke,
+genuine state restoration and unchanged system settings. Live authenticated
+GitHub, native Linux UI, hosted CI and maximum-size native PR interaction remain
+outside this evidence. No application-wide speedup or leak conclusion is claimed.
 
 ## Final September 10 native polish milestone
 
@@ -22,7 +37,7 @@ spoken VoiceOver and sleep/wake remain unverified.
 
 ## Current validation guidance
 
-The dated records below apply to their named builds, including the behavior and limitations those builds had. They do not establish native or package coverage for subsequent source changes. The [current feature overview](../README.md#current-source-features), [architecture and bounds](architecture.md), [active milestone](native-polish-milestone.md), [previous macOS milestone](macos-milestone.md), and [earlier everyday-work implementation record](everyday-work-plan.md) distinguish implemented behavior from build-specific evidence. Earlier package passes do not establish coverage for the ten current feature areas. The [preview matrix](file-previews.md), [profiles](profiles.md), [command palette](command-palette.md) and [rewritten-series review](rewritten-series.md) specify the corresponding implemented behavior; the active ledger records their native acceptance.
+The dated records below apply to their named builds, including the behavior and limitations those builds had. They do not establish native or package coverage for subsequent source changes. The [current feature overview](../README.md#current-source-features), [architecture and bounds](architecture.md), [active milestone](security-quality-milestone.md), [previous macOS milestone](macos-milestone.md), and [earlier everyday-work implementation record](everyday-work-plan.md) distinguish implemented behavior from build-specific evidence. Earlier package passes do not establish coverage for the ten current feature areas. The [preview matrix](file-previews.md), [profiles](profiles.md), [command palette](command-palette.md) and [rewritten-series review](rewritten-series.md) specify the corresponding implemented behavior; the active ledger records their native acceptance.
 
 For changes to the current workflows, use disposable repositories and local remotes for mutations, and select the relevant checks below. Record the exercised source/build identity and independently inspect Git results; the presence of a control or a passing core fixture does not by itself verify its native interaction.
 
@@ -49,7 +64,7 @@ Native checks should also cover narrow/wide layouts, long names, large lists, te
 
 ### Retained review and recovery workflow checks
 
-These rows describe required checks, not completed native passes. Record results and the exercised build in [the current milestone ledger](native-polish-milestone.md); keep final release, installed executable identity and platform/account-dependent evidence separate. Re-run a successful check only after relevant changes or a concrete unresolved concern.
+These rows describe required checks, not completed native passes. Record results and the exercised build in [the current milestone ledger](security-quality-milestone.md); keep final release, installed executable identity and platform/account-dependent evidence separate. Re-run a successful check only after relevant changes or a concrete unresolved concern.
 
 | Required feature | Current validation scope |
 | --- | --- |
