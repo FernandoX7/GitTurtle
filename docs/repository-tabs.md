@@ -26,6 +26,8 @@ Cold restoration applies the saved viewport without letting loading geometry rep
 
 Restart does not serialize decoded pixels, editor entities, every loaded search result, mutable working-file snapshots, or the full nested inspection stack. These survive warm tab switching; after process restart the addressable top comparison and repository history are restored. Objects that have been pruned or unavailable scopes produce the ordinary read error instead of substituting new revision contents. A cold comparison initially lists its captured file; selecting its commit loads the full changed-file list. The session is bounded to eight tabs; older saved files with more entries are normalized to that limit.
 
+Quick Open source inspections retain their exact scope while switching warm tabs. After restart, their underlying History selection is restored without selecting the inspected source as a commit change. Quick Open's source scope and inspection context are not serialized as an immutable comparison. Older saved comparisons with a present side but no captured blob identity also fall back to History; an absent side of a valid added/deleted comparison remains supported.
+
 Moving or removing a repository does not cause automatic filesystem searches or retarget a tab. The original tab remains available with an actionable opening error. Explicitly open its new location, or reconnect its volume/access and retry the existing tab. Drafts at the old canonical path remain saved; GitTurtle does not automatically assign them to a different worktree. Closing an unavailable tab retains its pinned/library entry and recoverable draft.
 
 ## Accepted operations

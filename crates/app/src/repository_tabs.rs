@@ -126,6 +126,17 @@ pub struct Bookmark {
     pub text_mode: String,
     pub compare: bool,
 }
+impl Bookmark {
+    fn retain_history_only(&mut self) {
+        self.comparison = None;
+        self.compare = false;
+        self.selected_file = None;
+        self.origins = [None, None];
+        self.pdf = [None, None];
+        self.model = [None, None];
+        self.markdown = None;
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SavedCommit {
@@ -196,6 +207,11 @@ impl SavedFile {
                 _ => gitturtle_core::ChangeStatus::Modified,
             },
         }
+    }
+    fn has_captured_sides(&self) -> bool {
+        (self.old_path.is_some() || self.new_path.is_some())
+            && self.old_path.is_some() == self.old_oid.is_some()
+            && self.new_path.is_some() == self.new_oid.is_some()
     }
 }
 
@@ -273,6 +289,14 @@ impl Session {
         }
         for tab in &mut self.tabs {
             let b = &mut tab.bookmark;
+            // Older sessions could save a mutable Quick Source as an Added
+            // comparison without a blob. It cannot be read as immutable history.
+            if b.comparison
+                .as_ref()
+                .is_some_and(|file| !file.has_captured_sides())
+            {
+                b.retain_history_only();
+            }
             while b.query.len() > 4096 {
                 b.query.pop();
             }
@@ -644,7 +668,7 @@ impl GitTurtle {
         } else {
             ([None, None], [None, None])
         };
-        Bookmark {
+        let mut bookmark = Bookmark {
             selection: selected.map(SavedCommit::new),
             comparison: (self.mode == WorkspaceMode::Compare)
                 .then(|| {
@@ -705,7 +729,14 @@ impl GitTurtle {
             }
             .into(),
             compare: self.mode == WorkspaceMode::Compare,
+        };
+        // Quick Open's source scope/inspection stack is retained only in warm
+        // tabs. Cold restoration can safely keep its underlying history
+        // selection, but must not label the source as that commit's file change.
+        if self.is_quick_source() {
+            bookmark.retain_history_only();
         }
+        bookmark
     }
     fn retain_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(repo) = self.repository.clone() else {
@@ -2668,6 +2699,115 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn cold_legacy_quick_source_restores_history_without_inventing_a_file_change(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::component::Root;
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.executor().allow_parking();
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = GitRepository::init(fixture.path().join("history"), "main").unwrap();
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args([
+                "-c",
+                "user.name=Session Fixture",
+                "-c",
+                "user.email=session@example.invalid",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "A commit with no changed files",
+            ])
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let selected = repo.history(1).unwrap().remove(0);
+        let source_path = PathBuf::from("lfs-corrupt.glb");
+        let source = FileChange {
+            old_path: None,
+            new_path: Some(source_path.clone()),
+            old_oid: None,
+            new_oid: None,
+            old_mode: "000000".into(),
+            new_mode: "100644".into(),
+            status: gitturtle_core::ChangeStatus::Added,
+        };
+        let destination = fixture.path().join("isolated-session.json");
+        let saved = Session {
+            version: 1,
+            tabs: vec![SavedTab {
+                path: SavedPath::new(repo.path()),
+                bookmark: Bookmark {
+                    selected_oid: Some(selected.oid.clone()),
+                    selection: Some(SavedCommit::new(&selected)),
+                    comparison: Some(SavedFile::new(&source)),
+                    selected_file: Some(SavedPath::new(&source_path)),
+                    compare: true,
+                    ..Default::default()
+                },
+            }],
+            ..Default::default()
+        };
+        // Reproduce a session written by the older Quick Open path, then use
+        // the production loader and cold startup rather than constructing a
+        // pre-sanitized in-memory bookmark.
+        std::fs::write(&destination, serde_json::to_vec(&saved).unwrap()).unwrap();
+        let restored = Session::load_at(&destination).unwrap();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+        });
+        let initial = repo.path().to_owned();
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let observed = captured.clone();
+        let (_, window_cx) = cx.add_window_view(move |window, cx| {
+            let app = cx.new(|cx| {
+                let mut app = GitTurtle::new(
+                    Some(initial),
+                    Preferences::default(),
+                    restored,
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                );
+                app.repository_tabs.save_path = Some(destination);
+                app
+            });
+            *captured.borrow_mut() = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let app = observed.borrow_mut().take().unwrap();
+        settle_tab_test(&app, window_cx).await;
+        window_cx.read(|cx| {
+            let app = app.read(cx);
+            assert!(app.mode == WorkspaceMode::History);
+            assert_eq!(app.commits[app.selected_commit.unwrap()].oid, selected.oid);
+            assert!(app.files.is_empty(), "the selected commit has no changes");
+            assert!(app.selected_file.is_none());
+            assert!(app.content.is_none());
+            assert!(app.repository_tabs.restoring.is_none());
+            let bookmark = app.tab_bookmark(cx);
+            assert!(!bookmark.compare);
+            assert!(bookmark.comparison.is_none());
+            assert!(bookmark.selected_file.is_none());
+        });
+    }
+
+    #[gpui::test]
     async fn startup_installs_root_before_restoring_six_tabs_and_respects_initial_path(
         cx: &mut TestAppContext,
     ) {
@@ -3119,20 +3259,87 @@ mod tests {
             selection: Some(SavedCommit::new(&commit("merge"))),
             comparison: Some(SavedFile::new(&file)),
             origins: [Some("parent-2".into()), Some("merge".into())],
+            model: [
+                Some(model_view::Bookmark {
+                    target: [1., 2., 3.],
+                    yaw: -std::f64::consts::FRAC_PI_4,
+                    pitch: 0.6,
+                    span: 42.,
+                    linked: false,
+                    wireframe: true,
+                }),
+                Some(model_view::Bookmark {
+                    target: [-1., -2., -3.],
+                    yaw: 1.2,
+                    pitch: -0.2,
+                    span: 13.,
+                    linked: false,
+                    wireframe: false,
+                }),
+            ],
             parent: 1,
             zoom: 2.5,
             text_mode: "markdown".into(),
             compare: true,
             ..Default::default()
         };
-        let restored: Bookmark =
-            serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
-        assert_eq!(restored.comparison.unwrap().file(), file);
-        assert_eq!(restored.selection.unwrap().commit(), commit("merge"));
+        let mut session = session(&["/fixture"], 0);
+        session.tabs[0].bookmark = saved.clone();
+        let mut restored: Session =
+            serde_json::from_slice(&serde_json::to_vec(&session).unwrap()).unwrap();
+        restored.normalize();
+        let restored = &restored.tabs[0].bookmark;
+        assert_eq!(restored.comparison.as_ref().unwrap().file(), file);
+        assert_eq!(
+            restored.selection.as_ref().unwrap().commit(),
+            commit("merge")
+        );
         assert_eq!(restored.origins, saved.origins);
         assert_eq!(restored.parent, 1);
         assert_eq!(restored.zoom, 2.5);
         assert_eq!(restored.text_mode, "markdown");
+        assert!(restored.compare);
+        assert_eq!(
+            serde_json::to_value(&restored.model).unwrap(),
+            serde_json::to_value(&saved.model).unwrap()
+        );
+    }
+    #[test]
+    fn captured_added_and_deleted_comparisons_keep_their_absent_side_on_restart() {
+        for added in [false, true] {
+            let file = FileChange {
+                old_path: (!added).then(|| PathBuf::from("model.glb")),
+                new_path: added.then(|| PathBuf::from("model.glb")),
+                old_oid: (!added).then(|| "deleted-blob".into()),
+                new_oid: added.then(|| "added-blob".into()),
+                old_mode: if added { "000000" } else { "100644" }.into(),
+                new_mode: if added { "100644" } else { "000000" }.into(),
+                status: if added {
+                    gitturtle_core::ChangeStatus::Added
+                } else {
+                    gitturtle_core::ChangeStatus::Deleted
+                },
+            };
+            let mut saved = session(&["/fixture"], 0);
+            saved.tabs[0].bookmark = Bookmark {
+                comparison: Some(SavedFile::new(&file)),
+                compare: true,
+                ..Default::default()
+            };
+            let mut restored: Session =
+                serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+            restored.normalize();
+            assert!(restored.tabs[0].bookmark.compare);
+            assert_eq!(
+                restored.tabs[0]
+                    .bookmark
+                    .comparison
+                    .as_ref()
+                    .unwrap()
+                    .file(),
+                file
+            );
+        }
     }
     #[test]
     #[cfg(unix)]
