@@ -451,7 +451,7 @@ impl Panel {
             .child(label("github-reply-context", format!("{} · #{} · {} · captured head {}",target.account,target.pull.number,target.pull.repository.label(),target.pull.head.sha)).text_color(rgb(p.muted)))
             .when(!valid,|element|element.child(label("github-reply-unavailable","Original context is unavailable on this page. Refresh or return to its conversation before sending. Your exact draft remains local.").text_color(rgb(p.warning))))
             .child(Textarea::new(&self.conversations.input).h(appearance::ui_size(100.)).aria_label("Reply to captured GitHub conversation, saved locally").disabled(self.pending))
-            .when_some(self.error.as_ref(),|element,error|element.child(div().id("github-reply-error-scroll").debug_selector(||"github-reply-outcome".into()).max_h(appearance::ui_size(84.)).overflow_y_scroll().child(label("github-reply-error",error.clone()).role(Role::Alert).a11y_synthetic_children(native_accessibility::assertive).text_color(rgb(p.warning)))))
+            .when_some(self.error.as_ref(),|element,error|element.child(div().id("github-reply-error-scroll").debug_selector(||"github-reply-outcome".into()).flex_shrink_0().max_h(appearance::ui_size(84.)).overflow_y_scroll().child(label("github-reply-error",error.clone()).role(Role::Alert).a11y_synthetic_children(native_accessibility::assertive).text_color(rgb(p.warning)))))
             .child(div().flex().flex_wrap().items_center().gap_2()
                 .child(button("github-review-reply","Review reply…","",true).disabled(self.pending||!valid).on_click(cx.listener(|this,_,window,cx|this.review_reply(window,cx))))
                 .child(button("github-close-reply","Save and close reply","",false).disabled(self.pending).on_click(cx.listener(|this,_,window,cx|{this.save_reply(window,cx);this.conversations.active=None;this.confirm=None;this.focus_visible_section(window,cx);cx.notify();})))
@@ -481,7 +481,7 @@ impl Panel {
                 .child(label("github-conversations-heading",format!("Conversations · {} unresolved on this page",unresolved)).font_weight(FontWeight::SEMIBOLD))
                 .child(div().flex_1())
                 .child(button("github-threads-refresh","Refresh conversations","refresh-cw",false).disabled(self.pending).on_click(cx.listener(|this,_,window,cx|this.thread_page(None,window,cx)))))
-            .child(div().id("github-threads").min_w_0().max_h(appearance::ui_size(360.)).overflow_y_scroll().flex().flex_col().gap_3()
+            .child(div().id("github-threads").debug_selector(||"github-threads".into()).flex_shrink_0().min_w_0().max_h(appearance::ui_size(360.)).overflow_y_scroll().flex().flex_col().gap_3()
                 .when(visible.is_empty(),|element|element.child(label("github-no-threads",if self.conversations.loaded{"No conversations for this file on the loaded page."}else{"Conversations are unavailable. Refresh conversations to load their current status."}).text_color(rgb(p.muted))))
                 .children(visible.into_iter().enumerate().map(|(index,thread)|{
                     let target=thread.target.clone(); let reply=target.clone(); let resolve=target.clone(); let refresh=target.clone(); let more=target.clone();
@@ -489,7 +489,7 @@ impl Panel {
                     let opening_missing=target.root_comment_id.as_ref().is_some_and(|root|!thread.comments.iter().any(|comment|&comment.id==root));
                     let can_reply=reply_matches(thread,&target,self.account.as_deref());
                     let can_resolve=if resolved{thread.viewer_can_unresolve}else{thread.viewer_can_resolve};
-                    div().id(("github-conversation",index)).min_w_0().p_3().bg(rgb(p.panel)).border_1().border_color(rgb(p.border)).rounded(px(6.)).flex().flex_col().gap_2()
+                    div().id(("github-conversation",index)).flex_shrink_0().min_w_0().p_3().bg(rgb(p.panel)).border_1().border_color(rgb(p.border)).rounded(px(6.)).flex().flex_col().gap_2()
                         .child(div().flex().flex_wrap().items_center().gap_2()
                             .child(label(("github-thread-path",index),thread.location()).font_weight(FontWeight::SEMIBOLD))
                             .child(div().flex_1())
@@ -654,6 +654,78 @@ mod tests {
             cx.debug_bounds("github-pr-list").unwrap().size.height >= px(60.),
             "refreshed PR rows must remain visible beside retained PR detail at enlarged text size"
         );
+        let (saved_before, attempts_before, density_before) = cx.update(|_, cx| {
+            let density = app.read(cx).settings.density;
+            app.update(cx, |app, _| {
+                app.settings.density = appearance::Density::Compact
+            });
+            panel.update(cx, |panel, cx| {
+                let previous = (panel.saved.clone(), panel.attempts.clone(), density);
+                panel.saved = (0..6)
+                    .map(|index| {
+                        let mut captured = target.clone();
+                        captured.thread_id = format!("recovery-geometry-{index}");
+                        Draft::Reply(ReplyDraft {
+                            target: captured,
+                            body: format!(
+                                "Exact old-head reply {index}\nPreserve this second line."
+                            ),
+                        })
+                    })
+                    .collect();
+                panel.attempts = (0..5)
+                    .map(|index| drafts::Attempt {
+                        destination: format!(
+                            "GitHub fixture conversation {index} · captured head {}",
+                            target.pull.head.sha
+                        ),
+                        outcome: "Previous outbound result retained for explicit verification"
+                            .into(),
+                        completed_reply_sha256: None,
+                    })
+                    .collect();
+                panel.review.recovery_open = true;
+                cx.notify();
+                previous
+            })
+        });
+        for font in [17., 15.] {
+            cx.update(|_, cx| {
+                gpui_kit::component::Theme::global_mut(cx).font_size = px(font);
+                panel.update(cx, |_, cx| cx.notify());
+            });
+            for _ in 0..3 {
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+                cx.run_until_parked();
+            }
+            let saved = cx
+                .debug_bounds("github-saved-drafts")
+                .expect("rendered recovery rows");
+            let attempts = cx
+                .debug_bounds("github-attempt-list")
+                .expect("rendered attempt rows");
+            assert!(
+                saved.size.height >= px(100.) && saved.size.height <= px(160.),
+                "six recovery rows need a visible bounded region at {font}px: {saved:?}"
+            );
+            assert!(
+                attempts.size.height >= px(70.) && attempts.size.height <= px(100.),
+                "five attempt rows need a visible bounded region at {font}px: {attempts:?}"
+            );
+            assert!(
+                cx.debug_bounds("github-threads").unwrap().size.height >= px(100.),
+                "conversation region must also resist sibling pressure"
+            );
+        }
+        cx.update(|_, cx| {
+            app.update(cx, |app, _| app.settings.density = density_before);
+            panel.update(cx, |panel, cx| {
+                panel.saved = saved_before;
+                panel.attempts = attempts_before;
+                panel.review.recovery_open = false;
+                cx.notify();
+            });
+        });
         cx.update(|window, cx| {
             gpui_kit::component::Theme::global_mut(cx).font_size = normal_font;
             panel.update(cx, |panel, cx| {
