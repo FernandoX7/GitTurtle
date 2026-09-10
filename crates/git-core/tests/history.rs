@@ -1,5 +1,6 @@
 use gitturtle_core::{
     ChangeStatus, GitRepository, HistoryCancellation, HistoryScope, HistorySearchStop,
+    HistoryTraversalStop, MAX_HISTORY_PAGE_BYTES,
 };
 use std::{
     fs,
@@ -12,6 +13,142 @@ use tempfile::TempDir;
 struct Fixture {
     _temp: TempDir,
     path: PathBuf,
+}
+
+#[test]
+fn ordinary_traversal_pages_continue_once_across_ref_moves_and_page_boundaries() {
+    let fixture = Fixture::new();
+    fixture.import_history(1223);
+    let repo = fixture.repo();
+    let tip = fixture.git(&["rev-parse", "HEAD"]);
+    let expected = repo.history_from(&tip, 2000).unwrap();
+    let cancel = HistoryCancellation::default();
+    let mut traversal = repo
+        .history_traversal(&HistoryScope::AllRefs, &cancel)
+        .unwrap();
+    let mut actual = Vec::new();
+    let mut page_count = 0;
+    loop {
+        let page = traversal.next_page(137, &cancel).unwrap();
+        assert_eq!(page.offset, actual.len());
+        actual.extend(page.commits);
+        page_count += 1;
+        if page_count == 1 {
+            fixture.git(&["update-ref", "refs/heads/main", &expected[900].oid]);
+            fixture.git(&["branch", "new-tip", &expected[17].oid]);
+        }
+        if page.next_offset.is_none() {
+            assert_eq!(page.stop, HistoryTraversalStop::Exhausted);
+            break;
+        }
+        assert_eq!(page.next_offset, Some(actual.len()));
+        assert_eq!(traversal.offset(), actual.len());
+    }
+    assert_eq!(actual, expected);
+    let mut refreshed = repo
+        .history_traversal(&HistoryScope::AllRefs, &cancel)
+        .unwrap();
+    assert_ne!(refreshed.next_page(1, &cancel).unwrap().commits[0].oid, tip);
+    // Captured scope can restore the same ordering after the worker closes it.
+    let mut restored = repo.history_traversal(traversal.scope(), &cancel).unwrap();
+    assert_eq!(
+        restored.next_page(1, &cancel).unwrap().commits,
+        expected[..1]
+    );
+}
+
+#[test]
+fn ordinary_traversal_keeps_merge_order_and_parents_across_one_row_pages() {
+    let fixture = Fixture::new();
+    fixture.import_history(3);
+    fixture.git(&["checkout", "-b", "side", "HEAD~1"]);
+    fixture.write("side", "side");
+    fixture.commit("side work");
+    fixture.git(&["checkout", "main"]);
+    fixture.git(&["merge", "--no-ff", "-m", "join", "side"]);
+    let repo = fixture.repo();
+    let tip = fixture.git(&["rev-parse", "HEAD"]);
+    let expected = repo.history_from(&tip, 100).unwrap();
+    let cancel = HistoryCancellation::default();
+    let mut traversal = repo
+        .history_traversal(&HistoryScope::FromCommit(tip), &cancel)
+        .unwrap();
+    let mut actual = Vec::new();
+    loop {
+        let page = traversal.next_page(1, &cancel).unwrap();
+        actual.extend(page.commits);
+        if page.next_offset.is_none() {
+            break;
+        }
+    }
+    assert_eq!(actual, expected);
+    assert_eq!(actual[0].parents.len(), 2);
+}
+
+#[test]
+fn ordinary_traversal_bounds_metadata_without_losing_the_deferred_record() {
+    let fixture = Fixture::new();
+    let message = "m".repeat(512 * 1024);
+    let mut input = Vec::new();
+    for index in 0..80 {
+        input.extend_from_slice(format!("commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> {} +0000\ndata {}\n{}\n", 1_700_000_000 + index, message.len(), message).as_bytes());
+    }
+    input.extend_from_slice(b"done\n");
+    fixture.git_input(&["fast-import", "--quiet"], &input);
+    drop(input);
+    let repo = fixture.repo();
+    let cancel = HistoryCancellation::default();
+    let mut traversal = repo
+        .history_traversal(&HistoryScope::AllRefs, &cancel)
+        .unwrap();
+    let mut seen = std::collections::HashSet::new();
+    let mut byte_stops = 0;
+    loop {
+        let page = traversal.next_page(500, &cancel).unwrap();
+        assert!(
+            page.commits
+                .iter()
+                .map(|commit| commit.history_bytes())
+                .sum::<usize>()
+                <= MAX_HISTORY_PAGE_BYTES
+        );
+        for commit in page.commits {
+            assert!(seen.insert(commit.oid));
+        }
+        byte_stops += usize::from(page.stop == HistoryTraversalStop::ByteLimit);
+        if page.next_offset.is_none() {
+            break;
+        }
+    }
+    assert_eq!(seen.len(), 80);
+    assert!(byte_stops > 0);
+}
+
+#[test]
+fn cancelled_ordinary_traversal_cannot_continue_after_a_partial_page() {
+    let fixture = Fixture::new();
+    fixture.import_history(620);
+    let repo = fixture.repo();
+    let cancel = HistoryCancellation::default();
+    let mut traversal = repo
+        .history_traversal(&HistoryScope::AllRefs, &cancel)
+        .unwrap();
+    assert_eq!(traversal.next_page(3, &cancel).unwrap().commits.len(), 3);
+    cancel.cancel();
+    assert!(
+        traversal
+            .next_page(3, &cancel)
+            .unwrap_err()
+            .to_string()
+            .contains("cancelled")
+    );
+    assert!(
+        traversal
+            .next_page(3, &HistoryCancellation::default())
+            .unwrap_err()
+            .to_string()
+            .contains("restart")
+    );
 }
 impl Fixture {
     fn new() -> Self {

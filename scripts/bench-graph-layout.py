@@ -33,10 +33,8 @@ def command(*args):
 
 
 def benchmark(stage, source, warmups, samples, directory):
-    engine = source[
-        source.index("#[derive(Clone, Debug, PartialEq, Eq)]"):
-        source.index("/// One coordinate system")
-    ]
+    end = "/// A shared horizontal lane viewport" if "/// A shared horizontal lane viewport" in source else "/// One coordinate system"
+    engine = source[source.index("#[derive(Clone, Debug, PartialEq, Eq)]"):source.index(end)]
     invocation = "layout(black_box(&commits))"
     if "pub fn layout<E>" in engine:
         invocation = (

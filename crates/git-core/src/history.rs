@@ -9,6 +9,133 @@ const MAX_HISTORY_RECORD: usize = 2 * 1024 * 1024;
 const MAX_FILE_HISTORY_BYTES: usize = 32 * 1024 * 1024;
 const MAX_HISTORY_REFS: usize = 16_384;
 const MAX_HISTORY_REF_BYTES: usize = MAX_HISTORY_REFS * 65;
+/// Metadata returned by one ordinary-history page, separate from the bounded
+/// process pipe queue and the caller's retained history window.
+pub const MAX_HISTORY_PAGE_BYTES: usize = 32 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HistoryTraversalStop {
+    Exhausted,
+    PageFull,
+    ByteLimit,
+}
+
+#[derive(Clone, Debug)]
+pub struct HistoryTraversalPage {
+    pub commits: Vec<Commit>,
+    /// Absolute row of the first commit in the captured traversal.
+    pub offset: usize,
+    /// A full page can require one final, empty read to establish exhaustion.
+    pub next_offset: Option<usize>,
+    pub stop: HistoryTraversalStop,
+}
+
+/// One immutable topological traversal, intended to be owned by a worker.
+/// Git walks the captured tips once; pages neither replay a growing prefix nor
+/// use `--skip`. Only a partial record, one deferred commit and eight 8 KiB pipe
+/// chunks can wait ahead of the current page. Git's own revision-walk memory is
+/// independent of this metadata bound. Drop closes and reaps the process.
+pub struct HistoryTraversal {
+    scope: HistoryScope,
+    offset: usize,
+    stream: Option<HistoryStream>,
+    deferred: Option<Commit>,
+    failed: bool,
+}
+
+impl HistoryTraversal {
+    pub fn scope(&self) -> &HistoryScope {
+        &self.scope
+    }
+
+    pub fn offset(&self) -> usize {
+        self.offset
+    }
+
+    /// Continue the same captured ordering. Cancellation/deadline/parse errors
+    /// close the process and invalidate the cursor: callers must visibly
+    /// restart, never silently accept a page after a partially consumed read.
+    pub fn next_page(
+        &mut self,
+        limit: usize,
+        cancellation: &HistoryCancellation,
+    ) -> Result<HistoryTraversalPage> {
+        ensure!(
+            (1..=MAX_HISTORY_PAGE).contains(&limit),
+            "History page must contain 1–500 results"
+        );
+        ensure!(
+            !self.failed,
+            "History traversal stopped; restart history to continue"
+        );
+        let result = self.read_page(limit, cancellation);
+        if result.is_err() {
+            self.stream = None;
+            self.deferred = None;
+            self.failed = true;
+        }
+        result
+    }
+
+    fn read_page(
+        &mut self,
+        limit: usize,
+        cancellation: &HistoryCancellation,
+    ) -> Result<HistoryTraversalPage> {
+        cancellation.check()?;
+        let start = Instant::now();
+        let offset = self.offset;
+        let mut commits = Vec::with_capacity(limit);
+        let mut bytes = 0usize;
+        let stop = loop {
+            cancellation.check()?;
+            if commits.len() == limit {
+                break HistoryTraversalStop::PageFull;
+            }
+            let next = if let Some(commit) = self.deferred.take() {
+                Some(commit)
+            } else if let Some(stream) = self.stream.as_mut() {
+                stream.next_commit(cancellation, start)?
+            } else {
+                None
+            };
+            let Some(commit) = next else {
+                self.stream = None;
+                break HistoryTraversalStop::Exhausted;
+            };
+            let commit_bytes = commit.history_bytes();
+            if bytes.saturating_add(commit_bytes) > MAX_HISTORY_PAGE_BYTES && !commits.is_empty() {
+                self.deferred = Some(commit);
+                break HistoryTraversalStop::ByteLimit;
+            }
+            bytes = bytes.saturating_add(commit_bytes);
+            commits.push(commit);
+        };
+        cancellation.check()?;
+        self.offset = offset
+            .checked_add(commits.len())
+            .context("History offset overflow")?;
+        Ok(HistoryTraversalPage {
+            commits,
+            offset,
+            next_offset: (stop != HistoryTraversalStop::Exhausted).then_some(self.offset),
+            stop,
+        })
+    }
+}
+
+impl Commit {
+    /// Retained metadata accounting for ordinary history windows.
+    pub fn history_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.oid.capacity()
+            + self.parents.capacity() * std::mem::size_of::<String>()
+            + self.parents.iter().map(String::capacity).sum::<usize>()
+            + self.author.capacity()
+            + self.subject.capacity()
+            + self.body.capacity()
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HistoryScope {
@@ -91,6 +218,57 @@ pub struct FileHistoryPage {
 }
 
 impl GitRepository {
+    /// Capture local refs/HEAD, then create one cancellable ordinary-history
+    /// stream. A FromCommit/PinnedRefs scope can also restore a captured tab's
+    /// snapshot. Ref changes become visible only in a new AllRefs traversal.
+    pub fn history_traversal(
+        &self,
+        scope: &HistoryScope,
+        cancellation: &HistoryCancellation,
+    ) -> Result<HistoryTraversal> {
+        cancellation.check()?;
+        let scope = match scope {
+            HistoryScope::AllRefs => self.pin_history_refs(cancellation)?,
+            other => other.clone(),
+        };
+        let mut command = history_command(&self.path);
+        let input = match &scope {
+            HistoryScope::PinnedRefs(refs) => {
+                ensure!(
+                    refs.len() <= MAX_HISTORY_REFS,
+                    "History scope exceeds 16,384 reference tips"
+                );
+                let mut input = Vec::new();
+                for oid in refs {
+                    validate_oid(oid)?;
+                    input.extend_from_slice(oid.as_bytes());
+                    input.push(b'\n');
+                }
+                command.arg("--stdin");
+                Some(input)
+            }
+            HistoryScope::FromCommit(oid) => {
+                validate_oid(oid)?;
+                command.arg(oid);
+                None
+            }
+            HistoryScope::AllRefs => unreachable!(),
+        };
+        command.arg("--");
+        let empty = matches!(&scope, HistoryScope::PinnedRefs(refs) if refs.is_empty());
+        Ok(HistoryTraversal {
+            scope,
+            offset: 0,
+            stream: if empty {
+                None
+            } else {
+                Some(HistoryStream::start(command, input)?)
+            },
+            deferred: None,
+            failed: false,
+        })
+    }
+
     /// Literal, case-insensitive substring search of subject, description,
     /// author name and full hash. An empty query lists history. Offsets count
     /// scanned commits, not matches. Each call inspects at most 50,000 commits,
@@ -464,6 +642,176 @@ enum ReadMessage {
     Error(std::io::Error),
 }
 
+/// Reusable pipe reader. The worker consumes only as far as the requested page;
+/// backpressure pauses Git naturally while the application browses that page.
+struct HistoryStream {
+    child: Child,
+    receive: Option<mpsc::Receiver<ReadMessage>>,
+    readers: Vec<JoinHandle<()>>,
+    writer: Option<JoinHandle<std::io::Result<()>>>,
+    chunk: Vec<u8>,
+    position: usize,
+    pending: Vec<u8>,
+    fields: Vec<Vec<u8>>,
+    record_bytes: usize,
+    stdout_done: bool,
+    stderr: Option<Vec<u8>>,
+}
+
+impl HistoryStream {
+    fn start(mut command: Command, input: Option<Vec<u8>>) -> Result<Self> {
+        isolate_process_group(&mut command);
+        command.stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        });
+        let mut child = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("Unable to start Git history traversal")?;
+        let writer = input.map(|bytes| {
+            let mut stdin = child.stdin.take().expect("Requested Git input pipe");
+            thread::spawn(move || stdin.write_all(&bytes))
+        });
+        let mut stdout = child.stdout.take().expect("Requested Git output pipe");
+        let stderr = child.stderr.take().expect("Requested Git error pipe");
+        let (send, receive) = mpsc::sync_channel(8);
+        let errors = send.clone();
+        let output_reader = thread::spawn(move || {
+            let mut chunk = [0u8; 8192];
+            loop {
+                let message = match stdout.read(&mut chunk) {
+                    Ok(0) => {
+                        let _ = send.send(ReadMessage::StdoutEnd);
+                        break;
+                    }
+                    Ok(n) => ReadMessage::Stdout(chunk[..n].to_vec()),
+                    Err(error) => {
+                        let _ = send.send(ReadMessage::Error(error));
+                        break;
+                    }
+                };
+                if send.send(message).is_err() {
+                    break;
+                }
+            }
+        });
+        let error_reader = thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let message = match stderr.take(128 * 1024 + 1).read_to_end(&mut bytes) {
+                Ok(_) => ReadMessage::Stderr(bytes),
+                Err(error) => ReadMessage::Error(error),
+            };
+            let _ = errors.send(message);
+        });
+        Ok(Self {
+            child,
+            receive: Some(receive),
+            readers: vec![output_reader, error_reader],
+            writer,
+            chunk: Vec::new(),
+            position: 0,
+            pending: Vec::new(),
+            fields: Vec::new(),
+            record_bytes: 0,
+            stdout_done: false,
+            stderr: None,
+        })
+    }
+
+    fn next_commit(
+        &mut self,
+        cancellation: &HistoryCancellation,
+        start: Instant,
+    ) -> Result<Option<Commit>> {
+        loop {
+            cancellation.check()?;
+            ensure!(
+                start.elapsed() < GIT_TIMEOUT,
+                "History page exceeded its 15 second time limit; restart history to continue"
+            );
+            while self.position < self.chunk.len() {
+                let byte = self.chunk[self.position];
+                self.position += 1;
+                self.record_bytes += 1;
+                ensure!(
+                    self.record_bytes <= MAX_HISTORY_RECORD,
+                    "One commit's metadata exceeds the 2 MiB history limit"
+                );
+                if byte != 0 {
+                    self.pending.push(byte);
+                    continue;
+                }
+                self.fields.push(std::mem::take(&mut self.pending));
+                if self.fields.len() == 6 {
+                    let commit = parse_commit_fields(&self.fields)?;
+                    self.fields.clear();
+                    self.record_bytes = 0;
+                    return Ok(Some(commit));
+                }
+            }
+            match self
+                .receive
+                .as_ref()
+                .expect("Live history pipe")
+                .recv_timeout(Duration::from_millis(5))
+            {
+                Ok(ReadMessage::Stdout(bytes)) => {
+                    self.chunk = bytes;
+                    self.position = 0;
+                }
+                Ok(ReadMessage::StdoutEnd) => self.stdout_done = true,
+                Ok(ReadMessage::Stderr(bytes)) => {
+                    ensure!(
+                        bytes.len() <= 128 * 1024,
+                        "Git history error output exceeded its limit"
+                    );
+                    self.stderr = Some(bytes);
+                }
+                Ok(ReadMessage::Error(error)) => return Err(error.into()),
+                Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {}
+            }
+            if self.stdout_done
+                && let Some(stderr) = &self.stderr
+                && let Some(status) = self.child.try_wait()?
+            {
+                ensure!(
+                    status.success(),
+                    "Git history read failed: {}",
+                    text(stderr).trim()
+                );
+                ensure!(
+                    self.pending.is_empty() && self.fields.is_empty(),
+                    "Incomplete commit metadata from Git"
+                );
+                if let Some(writer) = self.writer.take() {
+                    writer
+                        .join()
+                        .map_err(|_| anyhow::anyhow!("Git history input writer stopped"))??;
+                }
+                return Ok(None);
+            }
+        }
+    }
+}
+
+impl Drop for HistoryStream {
+    fn drop(&mut self) {
+        terminate_process_group(&self.child);
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        self.receive.take();
+        for reader in self.readers.drain(..) {
+            let _ = reader.join();
+        }
+        if let Some(writer) = self.writer.take() {
+            let _ = writer.join();
+        }
+    }
+}
+
 /// Drains both pipes through a bounded queue. Cancellation and the deadline
 /// cover the process and descendants which retain its pipes after it exits.
 pub(super) fn stream_history(
@@ -580,6 +928,55 @@ pub(super) fn stream_history(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn ordinary_traversal_cancellation_reaps_an_active_process_and_pipe_holders() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let marker = temp.path().join("survived");
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", "(sleep 0.3; touch \"$1\") & wait", "fixture"])
+            .arg(&marker);
+        let mut traversal = HistoryTraversal {
+            scope: HistoryScope::PinnedRefs(Vec::new()),
+            offset: 0,
+            stream: Some(HistoryStream::start(command, None).unwrap()),
+            deferred: None,
+            failed: false,
+        };
+        let cancel = HistoryCancellation::default();
+        let from_thread = cancel.clone();
+        let cancelling = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(25));
+            from_thread.cancel();
+        });
+        let started = Instant::now();
+        assert!(
+            traversal
+                .next_page(500, &cancel)
+                .unwrap_err()
+                .to_string()
+                .contains("cancelled")
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+        cancelling.join().unwrap();
+        assert!(traversal.stream.is_none());
+        thread::sleep(Duration::from_millis(350));
+        assert!(!marker.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dropping_an_idle_history_page_closes_its_backpressured_producer() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "while :; do printf 'unparsed record'; done"]);
+        let stream = HistoryStream::start(command, None).unwrap();
+        thread::sleep(Duration::from_millis(25));
+        let started = Instant::now();
+        drop(stream);
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
 
     #[cfg(unix)]
     #[test]

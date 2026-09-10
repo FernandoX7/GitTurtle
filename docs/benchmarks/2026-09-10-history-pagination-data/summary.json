@@ -1,0 +1,315 @@
+{
+  "started_utc": "2026-09-10T00:24:05.637818+00:00",
+  "hardware": "Apple M4 Max",
+  "memory_bytes": "137438953472",
+  "os": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "git": "git version 2.50.1 (Apple Git-155)",
+  "rust": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+  "source_base": "74d9ca11191a9fc44d55f7da25ee44df83d554af",
+  "source_sha256": {
+    "crates/git-core/src/history.rs": "3ccf3f57d28e9d6203e327135b165c89d0c019dca7556a6953c399c56437ac48",
+    "crates/git-core/src/lib.rs": "064f81fb90bf73600fb0bd466d7c14f5555a934e8999bbba10a9f5eaed2e477b",
+    "crates/app/src/graph.rs": "1d341347725de196ef18e7820e6528a8609653da2cdd7a66310ff8a727099121",
+    "crates/git-core/examples/history_pagination_bench.rs": "fc0da6c2a8ae3d545635f3a3bd0bb489c00ba643e47fe2de4ad357bdbee87641"
+  },
+  "executable_sha256": "30472082c490063d86a6d53854510ea4772900a21749367e6b2d6b111808f8fb",
+  "cache": "One full-prefix OS-cache warmup per fixture; new app-side repository handle per pass. No disk-cache flush. Alternating prefix/incremental order by sample.",
+  "other_load_start": "19:24  up 2 days, 11:49, 11 users, load averages: 3.71 4.94 4.79",
+  "cases": [
+    {
+      "fixture": "linear",
+      "commits": 120000,
+      "refs": 1,
+      "head": "fdc34560a47c0f6120f2928754d3352c37c9eebc",
+      "load_before": "19:24  up 2 days, 11:49, 11 users, load averages: 3.74 4.93 4.79",
+      "summary": {
+        "prefix": {
+          "initial": {
+            "n": 3,
+            "p50_ms": 414.571416,
+            "p95_ms": 418.129333,
+            "max_ms": 418.129333
+          },
+          "subsequent": {
+            "n": 597,
+            "p50_ms": 489.853791,
+            "p95_ms": 564.620458,
+            "max_ms": 603.243167
+          },
+          "deep_99500": {
+            "n": 3,
+            "p50_ms": 567.01575,
+            "p95_ms": 588.876917,
+            "max_ms": 588.876917
+          },
+          "total_per_pass": {
+            "n": 3,
+            "p50_ms": 97115.61667,
+            "p95_ms": 99792.991869,
+            "max_ms": 99792.991869
+          },
+          "peak_metadata_bytes": 41947090
+        },
+        "incremental": {
+          "initial": {
+            "n": 3,
+            "p50_ms": 429.328083,
+            "p95_ms": 435.642209,
+            "max_ms": 435.642209
+          },
+          "subsequent": {
+            "n": 597,
+            "p50_ms": 0.525167,
+            "p95_ms": 0.56775,
+            "max_ms": 0.946083
+          },
+          "deep_99500": {
+            "n": 3,
+            "p50_ms": 0.478291,
+            "p95_ms": 0.53225,
+            "max_ms": 0.53225
+          },
+          "total_per_pass": {
+            "n": 3,
+            "p50_ms": 530.01904,
+            "p95_ms": 539.833666,
+            "max_ms": 539.833666
+          },
+          "peak_metadata_bytes": 210140
+        },
+        "cancel": {
+          "n": 20,
+          "p50_ms": 7.6571245,
+          "p95_ms": 7.714333,
+          "max_ms": 7.752958
+        },
+        "selection": {
+          "n": 40,
+          "p50_ms": 10.9682295,
+          "p95_ms": 11.526458,
+          "max_ms": 21.764917
+        }
+      },
+      "cancel_outcomes": [
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled"
+      ],
+      "load_after": "19:29  up 2 days, 11:54, 11 users, load averages: 4.77 5.15 4.97"
+    },
+    {
+      "fixture": "many-refs",
+      "commits": 120000,
+      "refs": 9001,
+      "head": "4e80dfa69a93cbf56ca0084dfcd616b06120f571",
+      "load_before": "19:29  up 2 days, 11:54, 11 users, load averages: 4.63 5.12 4.96",
+      "summary": {
+        "prefix": {
+          "initial": {
+            "n": 3,
+            "p50_ms": 550.573916,
+            "p95_ms": 571.909833,
+            "max_ms": 571.909833
+          },
+          "subsequent": {
+            "n": 597,
+            "p50_ms": 638.499,
+            "p95_ms": 721.409375,
+            "max_ms": 785.085917
+          },
+          "deep_99500": {
+            "n": 3,
+            "p50_ms": 710.686667,
+            "p95_ms": 726.648292,
+            "max_ms": 726.648292
+          },
+          "total_per_pass": {
+            "n": 3,
+            "p50_ms": 127142.058789,
+            "p95_ms": 129546.43158,
+            "max_ms": 129546.43158
+          },
+          "peak_metadata_bytes": 41947090
+        },
+        "incremental": {
+          "initial": {
+            "n": 3,
+            "p50_ms": 578.507625,
+            "p95_ms": 608.567958,
+            "max_ms": 608.567958
+          },
+          "subsequent": {
+            "n": 597,
+            "p50_ms": 0.521917,
+            "p95_ms": 0.63275,
+            "max_ms": 1.211375
+          },
+          "deep_99500": {
+            "n": 3,
+            "p50_ms": 0.515,
+            "p95_ms": 0.544917,
+            "max_ms": 0.544917
+          },
+          "total_per_pass": {
+            "n": 3,
+            "p50_ms": 689.906585,
+            "p95_ms": 707.217707,
+            "max_ms": 707.217707
+          },
+          "peak_metadata_bytes": 210140
+        },
+        "cancel": {
+          "n": 20,
+          "p50_ms": 6.6045835,
+          "p95_ms": 6.667667,
+          "max_ms": 6.682208
+        },
+        "selection": {
+          "n": 40,
+          "p50_ms": 10.753167,
+          "p95_ms": 12.010917,
+          "max_ms": 23.032542
+        }
+      },
+      "cancel_outcomes": [
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled"
+      ],
+      "load_after": "19:35  up 2 days, 12:01, 11 users, load averages: 4.71 5.02 4.96"
+    },
+    {
+      "fixture": "merge-heavy",
+      "commits": 120001,
+      "refs": 21,
+      "head": "bb48a5cd5f8f434a924cd84ad6bb254688181479",
+      "load_before": "19:35  up 2 days, 12:01, 11 users, load averages: 4.44 4.95 4.93",
+      "summary": {
+        "prefix": {
+          "initial": {
+            "n": 3,
+            "p50_ms": 428.483917,
+            "p95_ms": 439.855459,
+            "max_ms": 439.855459
+          },
+          "subsequent": {
+            "n": 597,
+            "p50_ms": 512.4665,
+            "p95_ms": 585.434417,
+            "max_ms": 644.268667
+          },
+          "deep_99500": {
+            "n": 3,
+            "p50_ms": 606.248083,
+            "p95_ms": 644.268667,
+            "max_ms": 644.268667
+          },
+          "total_per_pass": {
+            "n": 3,
+            "p50_ms": 102575.900626,
+            "p95_ms": 103002.087953,
+            "max_ms": 103002.087953
+          },
+          "peak_metadata_bytes": 43280452
+        },
+        "incremental": {
+          "initial": {
+            "n": 3,
+            "p50_ms": 440.090083,
+            "p95_ms": 446.858792,
+            "max_ms": 446.858792
+          },
+          "subsequent": {
+            "n": 597,
+            "p50_ms": 0.517541,
+            "p95_ms": 0.573208,
+            "max_ms": 0.673625
+          },
+          "deep_99500": {
+            "n": 3,
+            "p50_ms": 0.511458,
+            "p95_ms": 0.536,
+            "max_ms": 0.536
+          },
+          "total_per_pass": {
+            "n": 3,
+            "p50_ms": 542.705414,
+            "p95_ms": 549.642331,
+            "max_ms": 549.642331
+          },
+          "peak_metadata_bytes": 216820
+        },
+        "cancel": {
+          "n": 20,
+          "p50_ms": 7.6249795,
+          "p95_ms": 7.669167,
+          "max_ms": 7.684458
+        },
+        "selection": {
+          "n": 40,
+          "p50_ms": 11.200645999999999,
+          "p95_ms": 11.338417,
+          "max_ms": 22.108875
+        }
+      },
+      "cancel_outcomes": [
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled",
+        "cancelled"
+      ],
+      "load_after": "19:41  up 2 days, 12:06, 11 users, load averages: 5.14 5.06 4.97"
+    }
+  ],
+  "finished_utc": "2026-09-10T00:41:05.720752+00:00"
+}

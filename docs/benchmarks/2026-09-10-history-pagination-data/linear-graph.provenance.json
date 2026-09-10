@@ -1,0 +1,8 @@
+{
+  "graph_source_sha256": "1d341347725de196ef18e7820e6528a8609653da2cdd7a66310ff8a727099121",
+  "harness_sha256": "ab420faa10ce79bd73e7d5f6ee57fbe7e51a4c13030d4bee3f371ee4e3be5680",
+  "fixture_identities_sha256": "1dcde39695f5e4bb5ce3da23d07d8112d47e4e58f08488288e6fb27c346be513",
+  "commits": 100000,
+  "samples": 5,
+  "scope": "Graph preparation/preflight only; no Git or UI frame timings. Scroll_clone measures 60 Arc row clones averaged over 200 simulated frames; excludes rendering."
+}
