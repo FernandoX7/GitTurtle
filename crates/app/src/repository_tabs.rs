@@ -837,6 +837,45 @@ impl GitTurtle {
         }
         self.page = AppPage::Repository;
         self.restore_inspection_context(warm.context, window, cx);
+        // A retained keyboard target can be a tab button that has since been
+        // removed. Keep application shortcuts attached during the transition,
+        // then recover the exact editor/control only after this tree is drawn.
+        let retained_focus = window.focused(cx);
+        self.app_focus.focus(window, cx);
+        let path = self.path.clone();
+        let owner = cx.entity().downgrade();
+        window.on_next_frame(move |window, _| {
+            // Frame callbacks run before drawing. The second callback sees
+            // the restored workspace rather than the previous tab's tree.
+            window.on_next_frame(move |window, cx| {
+                let _ = owner.update(cx, |this, cx| {
+                    if this.page != AppPage::Repository
+                        || this.path != path
+                        || !this.app_focus.is_focused(window)
+                        || window.has_active_dialog(cx)
+                        || window.has_active_sheet(cx)
+                    {
+                        return;
+                    }
+                    let fallback = if this.mode == WorkspaceMode::History {
+                        &this.focus
+                    } else {
+                        &this.file_focus
+                    };
+                    let focus = retained_focus
+                        .as_ref()
+                        .filter(|focus| this.app_focus.contains(focus, window))
+                        .or_else(|| {
+                            this.app_focus
+                                .contains(fallback, window)
+                                .then_some(fallback)
+                        })
+                        .unwrap_or(&this.app_focus);
+                    focus.focus(window, cx);
+                    window.refresh();
+                });
+            });
+        });
         self.repository_tabs.switching = false;
         if let Some(path) = self.path.clone() {
             self.branch_input_scope.opened(&path);
@@ -1746,6 +1785,9 @@ impl GitTurtle {
                                     .when(selected, |el| el.bg(rgb(colors.selected)))
                                     .child(
                                         button(("repository-tab", index), label, "", selected)
+                                            .debug_selector(move || {
+                                                format!("repository-tab-{index}").into()
+                                            })
                                             .role(Role::Tab)
                                             .accessibility_label(format!(
                                                 "Repository tab {}, {}{}{}",
@@ -1772,6 +1814,9 @@ impl GitTurtle {
                                     )
                                     .child(
                                         button(("close-repository-tab", index), "", "close", false)
+                                            .debug_selector(move || {
+                                                format!("repository-tab-close-{index}").into()
+                                            })
                                             .accessibility_label(format!(
                                                 "Close repository tab {}; drafts remain saved",
                                                 tab.path.display()
@@ -1925,6 +1970,154 @@ mod tests {
                 app._display_preferences_task = None;
             })
         });
+    }
+
+    #[gpui::test]
+    async fn closing_warm_tabs_keeps_open_repository_keyboard_shortcut_reachable(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::component::Root;
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.executor().allow_parking();
+        let fixture = tempfile::tempdir().unwrap();
+        let paths = (0..4)
+            .map(|index| {
+                GitRepository::init(fixture.path().join(format!("repository-{index}")), "main")
+                    .unwrap()
+                    .path()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        let initial = paths[0].clone();
+        let destination = fixture.path().join("isolated-session.json");
+        let open_key = if cfg!(target_os = "macos") {
+            "cmd-o"
+        } else {
+            "ctrl-o"
+        };
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+            cx.bind_keys([KeyBinding::new(open_key, OpenRepository, Some("GitTurtle"))]);
+        });
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let observed = captured.clone();
+        let (_, window_cx) = cx.add_window_view(move |window, cx| {
+            let app = cx.new(|cx| {
+                let mut app = GitTurtle::new(
+                    Some(initial),
+                    Preferences::default(),
+                    Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                );
+                app.repository_tabs.save_path = Some(destination);
+                app
+            });
+            *captured.borrow_mut() = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let app = observed.borrow_mut().take().unwrap();
+        settle_tab_test(&app, window_cx).await;
+        for path in paths.iter().skip(1) {
+            window_cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.open_repository_tab(path.clone(), window, cx)
+                });
+            });
+            settle_tab_test(&app, window_cx).await;
+        }
+        fn draw(cx: &mut VisualTestContext) {
+            for _ in 0..3 {
+                cx.update(|window, cx| {
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                });
+                cx.executor().run_until_parked();
+            }
+        }
+        fn click(cx: &mut VisualTestContext, selector: &'static str) {
+            draw(cx);
+            let bounds = cx.debug_bounds(selector).expect("rendered tab control");
+            cx.simulate_click(bounds.center(), Modifiers::default());
+        }
+        // The toolkit leaves mouse focus unchanged. Keyboard navigation can
+        // focus the fourth tab before a mouse switch captures that handle in
+        // the first workspace. The close sequence then removes its target.
+        click(window_cx, "repository-tab-0");
+        settle_tab_test(&app, window_cx).await;
+        draw(window_cx);
+        let retired_focus = window_cx.update(|window, cx| {
+            window.blur(cx);
+            for _ in 0..7 {
+                window.focus_next(cx);
+            }
+            let focus = window.focused(cx).expect("keyboard-focused fourth tab");
+            assert!(app.read(cx).app_focus.contains(&focus, window));
+            focus
+        });
+        click(window_cx, "repository-tab-3");
+        settle_tab_test(&app, window_cx).await;
+        for selector in [
+            "repository-tab-close-3",
+            "repository-tab-close-2",
+            "repository-tab-close-1",
+        ] {
+            click(window_cx, selector);
+            settle_tab_test(&app, window_cx).await;
+        }
+        draw(window_cx);
+        let attached = window_cx.update(|window, cx| {
+            let app = app.read(cx);
+            assert_eq!(app.repository_tabs.tabs.len(), 1);
+            assert_eq!(app.path.as_deref(), Some(paths[0].as_path()));
+            assert!(
+                !app.app_focus.contains(&retired_focus, window),
+                "the previously keyboard-focused tab has been removed"
+            );
+            window
+                .focused(cx)
+                .is_some_and(|focus| app.app_focus.contains(&focus, window))
+        });
+        assert!(!window_cx.did_prompt_for_paths());
+        window_cx.simulate_keystrokes(open_key);
+        assert!(
+            window_cx.did_prompt_for_paths(),
+            "Open shortcut must reach the native picker after repeated warm closes; attached focus={attached}"
+        );
+        assert!(
+            attached,
+            "the restored focus must belong to the visible workspace"
+        );
+        window_cx.simulate_path_prompt_response(|_| None);
+        settle_tab_test(&app, window_cx).await;
+
+        // A surviving editor target must still be restored exactly; fixing a
+        // removed tab must not replace every warm return with generic focus.
+        window_cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.search.read(cx).focus_handle(cx).focus(window, cx);
+                app.open_repository_tab(paths[1].clone(), window, cx);
+            });
+        });
+        settle_tab_test(&app, window_cx).await;
+        click(window_cx, "repository-tab-close-1");
+        settle_tab_test(&app, window_cx).await;
+        draw(window_cx);
+        window_cx.update(|window, cx| {
+            assert!(
+                app.read(cx)
+                    .search
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window),
+                "warm return must retain the surviving search input focus"
+            );
+        });
+        settle_tab_test(&app, window_cx).await;
     }
 
     #[gpui::test]
