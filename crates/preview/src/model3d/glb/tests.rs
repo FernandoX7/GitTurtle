@@ -80,7 +80,9 @@ pub(super) fn add_indices(document: &mut Value, bin: &mut Vec<u8>, kind: u32, va
 #[test]
 fn glb_case_insensitive_detection_retained_units_orientation_and_rendering() {
     assert!(is_model_path(Path::new("example.GlB")));
-    let (document, bin) = triangle();
+    let (mut document, bin) = triangle();
+    document["materials"] = json!([{ "doubleSided": true }]);
+    document["meshes"][0]["primitives"][0]["material"] = json!(0);
     let geometry = decoded(&document, &bin);
     assert_eq!(geometry.format, "GLB");
     assert_eq!(geometry.scene.units, ModelUnits::Millimeters);
@@ -482,24 +484,21 @@ fn glb_refuses_geometry_extensions_even_optional_undeclared_or_on_unselected_nod
 }
 
 #[test]
-fn glb_refuses_skins_morphs_unsupported_modes_without_partial_meshes() {
-    for (field, value, message) in [
-        ("skin", json!(0), "skinned"),
-        ("weights", json!([0]), "morph"),
-    ] {
+fn glb_refuses_malformed_deformation_and_unsupported_modes_without_partial_meshes() {
+    for (field, value, message) in [("skin", json!(0), "skin"), ("weights", json!([0]), "morph")] {
         let (mut document, bin) = triangle();
         document["nodes"][0][field] = value;
         expect_error(&document, &bin, message);
     }
     let (mut document, bin) = triangle();
     document["skins"] = json!([{}]);
-    expect_error(&document, &bin, "skins");
+    expect_error(&document, &bin, "Invalid GLB glTF JSON");
     let (mut document, bin) = triangle();
     document["meshes"][0]["weights"] = json!([0]);
     expect_error(&document, &bin, "morph");
     let (mut document, bin) = triangle();
     document["meshes"][0]["primitives"][0]["targets"] = json!([{"POSITION":0}]);
-    expect_error(&document, &bin, "morph");
+    assert_eq!(decoded(&document, &bin).scene.triangle_count(), 1);
     for mode in [0, 1, 2, 3, 5, 6, 7] {
         let (mut document, bin) = triangle();
         document["meshes"][0]["primitives"]
@@ -570,7 +569,12 @@ fn glb_refs_include_ignored_attributes_and_unused_meshes() {
     expect_error(&document, &bin, "missing accessor");
     let (mut document, bin) = triangle();
     document["meshes"][0]["primitives"][0]["material"] = json!(99);
-    expect_error(&document, &bin, "missing material");
+    assert!(
+        decoded(&document, &bin)
+            .details
+            .iter()
+            .any(|v| v.contains("missing material"))
+    );
     let (mut document, bin) = triangle();
     document["accessors"]
         .as_array_mut()
@@ -818,11 +822,6 @@ fn glb_permissive_real_assets_and_changed_assembly_bounds() {
 fn glb_checked_in_refusals_explain_unsupported_content() {
     for (name, bytes, message) in [
         (
-            "RiggedSimple.glb",
-            include_bytes!("../../../tests/fixtures/models/glb/RiggedSimple.glb").as_slice(),
-            "skins",
-        ),
-        (
             "external-buffer.glb",
             include_bytes!("../../../tests/fixtures/models/glb/external-buffer.glb").as_slice(),
             "external",
@@ -835,12 +834,12 @@ fn glb_checked_in_refusals_explain_unsupported_content() {
         (
             "morph-target.glb",
             include_bytes!("../../../tests/fixtures/models/glb/morph-target.glb").as_slice(),
-            "morph",
+            "inconsistent morph target counts",
         ),
         (
             "skinned.glb",
             include_bytes!("../../../tests/fixtures/models/glb/skinned.glb").as_slice(),
-            "skins",
+            "requires JOINTS_0",
         ),
     ] {
         let error = decode_geometry(bytes, name, || Ok(()))

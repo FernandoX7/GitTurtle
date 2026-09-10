@@ -1,5 +1,6 @@
 //! Retained, immutable geometry and an orthographic camera. Camera edits are
 //! constant work; callers render changed frames on their cancellable worker.
+use super::appearance::{AlphaMode, SceneAppearance, linear_to_srgb, srgb_to_linear};
 use super::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,6 +48,9 @@ pub struct ModelScene {
     pub bounds: ModelBounds,
     pub units: ModelUnits,
     format: String,
+    appearance: Option<Arc<SceneAppearance>>,
+    animation_source: Option<Arc<glb::GlbAnimation>>,
+    reverse_winding: Option<Box<[bool]>>,
 }
 
 impl ModelScene {
@@ -57,6 +61,9 @@ impl ModelScene {
             bounds: ModelBounds { minimum, maximum },
             units,
             format: format.into(),
+            appearance: None,
+            animation_source: None,
+            reverse_winding: None,
         })
     }
 
@@ -64,7 +71,93 @@ impl ModelScene {
     pub fn retained_bytes(&self) -> usize {
         std::mem::size_of_val(self.triangles.as_ref())
             + self.format.capacity()
+            + self
+                .appearance
+                .as_ref()
+                .map_or(0, |value| value.retained_bytes())
+            + self
+                .animation_source
+                .as_ref()
+                .map_or(0, |value| value.retained_bytes())
+            + self
+                .reverse_winding
+                .as_ref()
+                .map_or(0, |value| std::mem::size_of_val(value.as_ref()))
             + std::mem::size_of::<Self>()
+    }
+
+    pub(super) fn set_appearance(&mut self, appearance: Arc<SceneAppearance>) {
+        self.appearance = Some(appearance);
+    }
+
+    pub(super) fn set_animation_source(&mut self, source: Arc<glb::GlbAnimation>) {
+        self.animation_source = Some(source);
+    }
+
+    pub(super) fn set_reverse_winding(&mut self, reverse: Vec<bool>) {
+        self.reverse_winding = Some(reverse.into_boxed_slice());
+    }
+
+    /// The supported shading contract for the native details/status surface.
+    pub fn appearance_label(&self) -> &'static str {
+        let Some(appearance) = &self.appearance else {
+            return "Geometry only";
+        };
+        let unlit = appearance.materials.iter().any(|m| m.unlit);
+        let lit = appearance.materials.iter().any(|m| !m.unlit);
+        match (unlit, lit) {
+            (true, true) => "Unlit and base-color inspection",
+            (true, false) => "Unlit appearance",
+            _ => "Base-color inspection",
+        }
+    }
+
+    pub fn animation_clips(&self) -> &[glb::ModelAnimationClip] {
+        self.animation_source
+            .as_ref()
+            .map_or(&[], |source| source.clips())
+    }
+
+    /// Evaluate on a cancellable worker; the caller retains its camera unchanged.
+    pub fn evaluate_animation(
+        &self,
+        clip: usize,
+        time_seconds: f64,
+        check: &impl Fn() -> Result<()>,
+    ) -> Result<Self> {
+        let source = self
+            .animation_source
+            .as_ref()
+            .context("This model has no animation clips")?;
+        let frame = source.evaluate(clip, time_seconds, check)?;
+        let mut minimum = [f64::INFINITY; 3];
+        let mut maximum = [f64::NEG_INFINITY; 3];
+        for (index, triangle) in frame.triangles.iter().enumerate() {
+            if index.is_multiple_of(256) {
+                check()?;
+            }
+            for point in triangle {
+                for axis in 0..3 {
+                    minimum[axis] = minimum[axis].min(point[axis]);
+                    maximum[axis] = maximum[axis].max(point[axis]);
+                }
+            }
+        }
+        ensure!(
+            minimum.iter().chain(&maximum).all(|v| v.is_finite()),
+            "Animation produced no finite geometry"
+        );
+        // A valid animated scale may collapse all triangles. Keep the captured
+        // topology and camera; rasterization then correctly produces background.
+        Ok(Self {
+            triangles: frame.triangles.into_boxed_slice(),
+            bounds: ModelBounds { minimum, maximum },
+            units: self.units,
+            format: self.format.clone(),
+            appearance: self.appearance.clone(),
+            animation_source: self.animation_source.clone(),
+            reverse_winding: Some(frame.reverse_winding.into_boxed_slice()),
+        })
     }
 
     pub fn triangle_count(&self) -> usize {
@@ -259,6 +352,21 @@ pub fn render_model(
     } else {
         vec![f64::NEG_INFINITY; size * size]
     };
+    let appearance = scene.appearance.as_deref();
+    let has_blend = !wireframe
+        && appearance.is_some_and(|a| a.materials.iter().any(|m| m.alpha == AlphaMode::Blend));
+    let mut heads = if has_blend {
+        vec![u32::MAX; size * size]
+    } else {
+        Vec::new()
+    };
+    let mut fragments = Vec::<Fragment>::new();
+    // Keep opaque RGB in linear light until transparent compositing has finished.
+    let mut linear = if has_blend {
+        vec![[srgb_to_linear(28), srgb_to_linear(34), srgb_to_linear(42)]; size * size]
+    } else {
+        Vec::new()
+    };
     let (right, up, forward) = camera.basis();
     let project = |point| {
         let relative = subtract(point, camera.target);
@@ -270,7 +378,7 @@ pub fn render_model(
     };
     let mut work = 0u64;
     let light_direction = normalize([-0.4, 0.6, 1.]);
-    for triangle in scene.triangles() {
+    for (triangle_index, triangle) in scene.triangles().iter().enumerate() {
         check()?;
         let p = triangle.map(project);
         if wireframe {
@@ -283,18 +391,38 @@ pub fn render_model(
         if signed_area.abs() < 1e-8 {
             continue;
         }
+        let face = appearance.and_then(|a| a.triangles.get(triangle_index));
+        let material = face
+            .zip(appearance)
+            .map(|(face, appearance)| &appearance.materials[face.material]);
+        if let (Some(face), Some(material)) = (face, material) {
+            let reverse = scene
+                .reverse_winding
+                .as_ref()
+                .and_then(|v| v.get(triangle_index))
+                .copied()
+                .unwrap_or(face.reverse_winding);
+            // Screen Y points down, so front-facing CCW glTF has negative area.
+            if !material.double_sided && ((signed_area > 0.) != reverse) {
+                continue;
+            }
+        }
         let normal = normalize(cross(
             subtract(triangle[1], triangle[0]),
             subtract(triangle[2], triangle[0]),
         ));
         let normal = [dot(normal, right), dot(normal, up), dot(normal, forward)];
-        let light = 0.28 + 0.72 * dot(normal, light_direction).abs();
-        let color = [
+        let light = (0.28 + 0.72 * dot(normal, light_direction).abs()) as f32;
+        let neutral = [
             (70. + 66. * light) as u8,
             (130. + 70. * light) as u8,
             (149. + 74. * light) as u8,
             255,
         ];
+        let lod = match (appearance, face, material.and_then(|m| m.texture)) {
+            (Some(a), Some(f), Some(t)) => a.textures[t].lod(f.uv, p, signed_area),
+            _ => 0.,
+        };
         let min_x = p.iter().map(|v| v[0]).fold(f64::INFINITY, f64::min);
         let max_x = p.iter().map(|v| v[0]).fold(f64::NEG_INFINITY, f64::max);
         let min_y = p.iter().map(|v| v[1]).fold(f64::INFINITY, f64::min);
@@ -322,18 +450,110 @@ pub fn render_model(
             }
             for x in xmin..=xmax {
                 let sample = [x as f64 + 0.5, y as f64 + 0.5, 0.];
-                let a = edge_value(p[1], p[2], sample) / signed_area;
-                let b = edge_value(p[2], p[0], sample) / signed_area;
-                let c = 1. - a - b;
-                if a < -1e-8 || b < -1e-8 || c < -1e-8 {
+                let raw = [
+                    edge_value(p[1], p[2], sample),
+                    edge_value(p[2], p[0], sample),
+                    edge_value(p[0], p[1], sample),
+                ];
+                // A half-open top-left rule ensures shared triangle edges never
+                // double-composite a transparent surface.
+                if !(0..3)
+                    .all(|i| covered_edge(raw[i], p[(i + 1) % 3], p[(i + 2) % 3], signed_area))
+                {
                     continue;
                 }
-                let z = a * p[0][2] + b * p[1][2] + c * p[2][2];
+                let barycentric = raw.map(|value| value / signed_area);
+                let z = (0..3).map(|i| barycentric[i] * p[i][2]).sum::<f64>();
                 let pixel = y * size + x;
-                if z > depth[pixel] {
-                    depth[pixel] = z;
-                    rgba[pixel * 4..pixel * 4 + 4].copy_from_slice(&color);
+                if z <= depth[pixel] {
+                    continue;
                 }
+                if let (Some(appearance), Some(face), Some(material)) = (appearance, face, material)
+                {
+                    let mut color = appearance.color(face, barycentric, lod, light);
+                    match material.alpha {
+                        AlphaMode::Mask(cutoff) if color[3] < cutoff => continue,
+                        AlphaMode::Blend => {
+                            color[3] = color[3].clamp(0., 1.);
+                            if color[3] <= 0. {
+                                continue;
+                            }
+                            ensure!(
+                                fragments.len() < MAX_TRANSPARENT_FRAGMENTS,
+                                "Transparent model exceeds the 2-million-fragment preview limit; use wireframe to inspect geometry"
+                            );
+                            if fragments.len() == fragments.capacity() {
+                                let additional =
+                                    (MAX_TRANSPARENT_FRAGMENTS - fragments.len()).min(16_384);
+                                fragments.reserve_exact(additional);
+                            }
+                            let next = heads[pixel];
+                            heads[pixel] = fragments.len() as u32;
+                            fragments.push(Fragment {
+                                depth: z,
+                                color,
+                                next,
+                            });
+                            continue;
+                        }
+                        _ => {}
+                    }
+                    depth[pixel] = z;
+                    if has_blend {
+                        linear[pixel].copy_from_slice(&color[..3]);
+                    } else {
+                        for c in 0..3 {
+                            rgba[pixel * 4 + c] = linear_to_srgb(color[c]);
+                        }
+                    }
+                } else {
+                    depth[pixel] = z;
+                    rgba[pixel * 4..pixel * 4 + 4].copy_from_slice(&neutral);
+                    if has_blend {
+                        linear[pixel] = [
+                            srgb_to_linear(neutral[0]),
+                            srgb_to_linear(neutral[1]),
+                            srgb_to_linear(neutral[2]),
+                        ];
+                    }
+                }
+            }
+        }
+    }
+    if has_blend {
+        let mut sorted = [0u32; MAX_TRANSPARENT_LAYERS];
+        for pixel in 0..size * size {
+            if pixel.is_multiple_of(size * 16) {
+                check()?;
+            }
+            let mut length = 0;
+            let mut index = heads[pixel];
+            while index != u32::MAX {
+                let fragment = &fragments[index as usize];
+                if fragment.depth > depth[pixel] {
+                    ensure!(
+                        length < MAX_TRANSPARENT_LAYERS,
+                        "Transparent overlap exceeds the 32-layer-per-pixel preview limit; use wireframe to inspect geometry"
+                    );
+                    sorted[length] = index;
+                    length += 1;
+                }
+                index = fragment.next;
+            }
+            sorted[..length].sort_unstable_by(|a, b| {
+                fragments[*a as usize]
+                    .depth
+                    .total_cmp(&fragments[*b as usize].depth)
+                    .then(a.cmp(b))
+            });
+            for &index in &sorted[..length] {
+                let source = fragments[index as usize].color;
+                for (c, value) in linear[pixel].iter_mut().enumerate() {
+                    *value = source[c] * source[3] + *value * (1. - source[3]);
+                }
+            }
+            for c in 0..3 {
+                rgba[pixel * 4 + c] = linear_to_srgb(linear[pixel][c]);
             }
         }
     }
@@ -350,6 +570,23 @@ pub fn render_model(
             if wireframe { "wireframe" } else { "mesh" }
         ),
     })
+}
+
+const MAX_TRANSPARENT_FRAGMENTS: usize = 2_000_000;
+const MAX_TRANSPARENT_LAYERS: usize = 32;
+struct Fragment {
+    depth: f64,
+    color: [f32; 4],
+    next: u32,
+}
+fn covered_edge(value: f64, mut a: Point, mut b: Point, area: f64) -> bool {
+    let value = if area < 0. {
+        std::mem::swap(&mut a, &mut b);
+        -value
+    } else {
+        value
+    };
+    value > 0. || (value == 0. && (b[1] < a[1] || (b[1] == a[1] && b[0] > a[0])))
 }
 
 fn line(a: Point, b: Point, edge: usize, rgba: &mut [u8], work: &mut u64) -> Result<()> {

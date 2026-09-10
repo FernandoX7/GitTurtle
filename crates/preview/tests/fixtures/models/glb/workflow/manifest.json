@@ -1,0 +1,78 @@
+{
+  "generator": "scripts/create-glb-workflow-fixtures.py",
+  "license": "Repository license",
+  "files": {
+    "material-before.glb": {
+      "bytes": 996,
+      "sha256": "1b4cc0d0481eb362630ab7ec8a8cd84d8b9213c25e9f2bf810419f81c6c1b521"
+    },
+    "material-after.glb": {
+      "bytes": 996,
+      "sha256": "163051686e90610c3709b06abdbc6939be81b01716532153ea12046eb2480a93"
+    },
+    "texture-before.glb": {
+      "bytes": 1312,
+      "sha256": "5067375be0d191e056690a9c1e5dd0b89527eb2347f4ba768eedd444636985f0"
+    },
+    "texture-after.glb": {
+      "bytes": 1312,
+      "sha256": "0770293f0869628319500fb70abb8b17d5357999b52e951cede5e2d9b670bed7"
+    },
+    "vertex-color.glb": {
+      "bytes": 1148,
+      "sha256": "f94223b299c064c0709b924d0022628b32acd9ad96e62058e99c2e02070668a1"
+    },
+    "alpha-blend.glb": {
+      "bytes": 996,
+      "sha256": "9509958dd78b23c7c3b230a91cb166df2fbbd3fe2ffef3fc79c8f0ad1462b904"
+    },
+    "alpha-mask.glb": {
+      "bytes": 1316,
+      "sha256": "fdf3b432a3e8a303c6edbe9e4f15a5b0eec531c5325ed554764f1a9c116c4ec2"
+    },
+    "double-sided.glb": {
+      "bytes": 992,
+      "sha256": "be6b7156303fab3d3cbae2eb73210f885a505ff27b4d5198810a2a1730cadc64"
+    },
+    "sampler-repeat.glb": {
+      "bytes": 1312,
+      "sha256": "c9aaf67e66300ab77d60591ca5e063dd67ded2c9c8de4e74907ac95d3c8e3af4"
+    },
+    "sampler-mirror.glb": {
+      "bytes": 1312,
+      "sha256": "83d677481fbf9fed44d68d6d8746487f75270ba9a146e20dc2c8e89bc3e80db6"
+    },
+    "sampler-clamp.glb": {
+      "bytes": 1312,
+      "sha256": "73e1ff8485c8d85ef025f2064e52376d8b6de198fad29a0098024e34e29a69c9"
+    },
+    "morph-animation.glb": {
+      "bytes": 2612,
+      "sha256": "c21261dd894775721b16760e99e2f4e1e7c9910cbf5ce41fd69afac39beba40a"
+    },
+    "skin-animated.glb": {
+      "bytes": 2656,
+      "sha256": "f7d0636d5a44fcd40243d7bd0d6a48de8b0adf79a0979ee8cd625aff3c87b742"
+    },
+    "skin-morph-animation.glb": {
+      "bytes": 3296,
+      "sha256": "08034cb21dcd2dc1a49839c86767829ed40262e026229d7e918581120e8ac861"
+    },
+    "trs-animation.glb": {
+      "bytes": 3332,
+      "sha256": "0418a515d43a1ff6dabb7a73033c1526576764c7a1ba41ae236f6b747e5de18d"
+    },
+    "texture-jpeg.glb": {
+      "bytes": 1820,
+      "sha256": "fd1e6c6e424055d2b56c8f6f1f821ac7fd6aa0d19def3d6c0698855d0b39116b"
+    },
+    "malformed-texture.glb": {
+      "bytes": 1312,
+      "sha256": "a7960810d4597a9a9b2f43c0534983582f859cf518b4bd9eacba9e0db15ec1ed"
+    },
+    "external-texture.glb": {
+      "bytes": 1324,
+      "sha256": "96481919465df98b58f9321f8af30a8a5ab8b0fe3bf8d83c136c936165d3ae77"
+    }
+  }
+}

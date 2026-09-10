@@ -1,4 +1,4 @@
-//! Supplied-byte, untextured mesh previews. All parsing and rasterization stays on
+//! Supplied-byte mesh previews. All parsing, deformation and rasterization stays on
 //! the preview worker; only owned geometry and RGBA views leave this module.
 
 use crate::{ImagePreview, MAX_INPUT_BYTES};
@@ -10,6 +10,7 @@ use std::{
     sync::Arc,
 };
 
+mod appearance;
 mod camera;
 mod glb;
 mod step;
@@ -17,6 +18,7 @@ pub use camera::{
     ModelBounds, ModelCamera, ModelScene, ModelStandardView, ModelUnits, OrientationAxis,
     render_model,
 };
+pub use glb::ModelAnimationClip;
 
 pub const MODEL_VIEW_EDGE: u32 = 720;
 pub const MAX_MODEL_TRIANGLES: usize = 100_000;
@@ -78,6 +80,7 @@ pub fn decode_geometry(
         .and_then(|v| v.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
+    let mut glb_resources = None;
     let (format, mesh, units, mut details) = match ext.as_str() {
         "stl" => ("STL", stl(bytes, &check)?, ModelUnits::Unknown, vec!["Untextured mesh; STL does not define units".into()]),
         "obj" => ("OBJ", fbx_or_obj(bytes, true, &check)?, ModelUnits::Unknown, vec!["Untextured mesh; OBJ does not define units; material libraries and textures are not loaded".into()]),
@@ -94,6 +97,7 @@ pub fn decode_geometry(
         }
         "glb" => {
             let model = glb::decode(bytes, &check)?;
+            glb_resources = Some((model.appearance, model.animation_source, model.reverse_winding));
             ("GLB", model.mesh, ModelUnits::Millimeters, model.details)
         }
         _ => bail!("Unsupported 3D model format"),
@@ -113,7 +117,15 @@ pub fn decode_geometry(
         "The model contains only degenerate triangles"
     );
     let (minimum, maximum) = bounds(&mesh)?;
-    let scene = Arc::new(ModelScene::new(mesh, units, format)?);
+    let mut scene = ModelScene::new(mesh, units, format)?;
+    if let Some((appearance, animation, reverse)) = glb_resources {
+        scene.set_appearance(appearance);
+        if let Some(animation) = animation {
+            scene.set_animation_source(animation);
+        }
+        scene.set_reverse_winding(reverse);
+    }
+    let scene = Arc::new(scene);
     details.push(format!(
         "{} triangles · extent {:.4} × {:.4} × {:.4}",
         scene.triangle_count(),
@@ -142,16 +154,22 @@ pub fn decode_model(
     } = decode_geometry(bytes, name, &check)?;
     let mut work = 0;
     let mut views = Vec::with_capacity(4);
-    for (caption, eye, up) in [
-        ("Isometric", [1., -1., 0.8], [0., 0., 1.]),
-        ("Front", [0., -1., 0.], [0., 0., 1.]),
-        ("Right", [1., 0., 0.], [0., 0., 1.]),
-        ("Top", [0., 0., 1.], [0., 1., 0.]),
+    for (view, eye, up) in [
+        (ModelStandardView::Isometric, [1., -1., 0.8], [0., 0., 1.]),
+        (ModelStandardView::Front, [0., -1., 0.], [0., 0., 1.]),
+        (ModelStandardView::Right, [1., 0., 0.], [0., 0., 1.]),
+        (ModelStandardView::Top, [0., 0., 1.], [0., 1., 0.]),
     ] {
         check()?;
         views.push(ModelView {
-            caption: caption.into(),
-            image: rasterize(scene.triangles(), eye, up, &format, &mut work, &check)?,
+            caption: view.label().into(),
+            image: if format == "GLB" {
+                let mut camera = ModelCamera::fit(scene.bounds);
+                camera.set_view(view);
+                render_model(&scene, &camera, MODEL_VIEW_EDGE, false, &check)?
+            } else {
+                rasterize(scene.triangles(), eye, up, &format, &mut work, &check)?
+            },
         });
     }
     Ok(ModelPreview {

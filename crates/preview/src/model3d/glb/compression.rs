@@ -3,7 +3,7 @@
 //! their bounded, whole-stream calls cannot be interrupted. Cancellation runs
 //! immediately around each call and between independently filterable blocks.
 
-use super::{Decoder, Document, MAX_VERTICES, view};
+use super::{Decoder, Document, MAX_VERTICES, validate_accessor, view};
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 
@@ -102,10 +102,9 @@ pub(super) fn validate(document: &Document, check: &impl Fn() -> Result<()>) -> 
     let mut plain_references = vec![false; document.buffers.len()];
     for source in &document.buffer_views {
         check()?;
-        *plain_references
-            .get_mut(source.buffer)
-            .context("GLB buffer view references a missing buffer")? |=
-            source.extensions.meshopt.is_none();
+        if let Some(plain) = plain_references.get_mut(source.buffer) {
+            *plain |= source.extensions.meshopt.is_none();
+        }
         if let Some(compressed) = &source.extensions.meshopt {
             ensure!(
                 declared,
@@ -197,6 +196,7 @@ impl<F: Fn() -> Result<()>> Decoder<'_, F> {
             .accessors
             .get(index)
             .context("GLB references a missing accessor")?;
+        validate_accessor(self.document, accessor)?;
         let sources = [
             accessor.buffer_view,
             accessor.sparse.as_ref().map(|v| v.indices.buffer_view),

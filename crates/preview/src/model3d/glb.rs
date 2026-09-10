@@ -1,14 +1,19 @@
-//! Bounded static GLB 2.0 subset. This module has no resource resolver: geometry
-//! must be in the supplied BIN chunk. Khronos glTF 2.0 and KHR_mesh_quantization
-//! define the layouts below; material/texture appearance is deliberately omitted.
+//! Bounded supplied-byte GLB geometry, appearance, deformation and animation.
+//! This module has no resource resolver; external resources are never loaded.
 
 use super::{MAX_MODEL_TRIANGLES, MAX_OBJECTS, MAX_VERTICES, Point, Triangle, valid_point};
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+mod appearance;
 mod compression;
+mod deformation;
 use compression::{BufferExtensions, DecodedView, ViewExtensions};
+pub(super) use deformation::GlbAnimation;
+pub use deformation::ModelAnimationClip;
+use deformation::{RetainedMesh, Skin};
+use std::sync::Arc;
 
 const MAX_JSON_BYTES: usize = 4 * 1024 * 1024;
 const MAX_JSON_TOKENS: usize = 250_000;
@@ -28,6 +33,9 @@ const IDENTITY: Matrix = [
 pub(super) struct Decoded {
     pub mesh: Vec<Triangle>,
     pub details: Vec<String>,
+    pub animation_source: Option<Arc<GlbAnimation>>,
+    pub appearance: Arc<super::appearance::SceneAppearance>,
+    pub reverse_winding: Vec<bool>,
 }
 
 #[derive(Deserialize)]
@@ -48,9 +56,17 @@ struct Document {
     #[serde(default)]
     buffers: Vec<Buffer>,
     #[serde(default)]
-    skins: Vec<serde::de::IgnoredAny>,
+    skins: Vec<Skin>,
     #[serde(default)]
-    materials: Vec<serde::de::IgnoredAny>,
+    animations: Vec<serde_json::Value>,
+    #[serde(default)]
+    materials: Vec<serde_json::Value>,
+    #[serde(default)]
+    images: Vec<serde_json::Value>,
+    #[serde(default)]
+    textures: Vec<serde_json::Value>,
+    #[serde(default)]
+    samplers: Vec<serde_json::Value>,
     #[serde(default)]
     extensions_used: Vec<String>,
     #[serde(default)]
@@ -67,7 +83,7 @@ struct Scene {
     #[serde(default)]
     nodes: Vec<usize>,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 struct Node {
     mesh: Option<usize>,
     skin: Option<usize>,
@@ -91,7 +107,7 @@ struct Primitive {
     mode: Option<u32>,
     material: Option<usize>,
     #[serde(default)]
-    targets: Vec<serde::de::IgnoredAny>,
+    targets: Vec<BTreeMap<String, usize>>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -179,21 +195,34 @@ pub(super) fn decode(bytes: &[u8], check: &impl Fn() -> Result<()>) -> Result<De
         accessor_work: 0,
         source_triangles: 0,
         meshes: HashMap::new(),
-        output: Vec::new(),
-        visits: 0,
+        deformation_components: 0,
+        retained_deformation_bytes: 0,
+        appearance: appearance::Builder::default(),
         decoded_views: HashMap::new(),
         compressed_bytes: 0,
         decompressed_bytes: 0,
     };
-    for &root in roots {
-        decoder.expand(root, IDENTITY, &transforms, 0)?;
-    }
+    let mut details = vec![format!(
+        "GLB scene {scene} ({}) · meters converted to millimeters, right-handed Z-up",
+        if document.scene.is_some() {
+            "declared default"
+        } else {
+            "first scene; no default declared"
+        }
+    )];
+    let mut source = decoder.deformation_source(roots, transforms, &mut details)?;
+    let frame = source.default_frame(check)?;
+    let appearance_triangles = source.take_appearance_triangles();
+    let (appearance, appearance_details) = decoder.appearance.finish(appearance_triangles);
+    details.extend(appearance_details);
+    details.push(format!("{} animation playback clip(s); authored default pose shown until a clip is selected. External resources are never loaded.", source.clips().len()));
+    let animation_source = (!source.clips().is_empty()).then(|| Arc::new(source));
     Ok(Decoded {
-        mesh: decoder.output,
-        details: vec![
-            format!("Static untextured geometry · scene {scene} ({}) · meters converted to millimeters, right-handed Z-up", if document.scene.is_some() { "declared default" } else { "first scene; no default declared" }),
-            "Materials, textures, lights and animation playback are omitted; node transforms use the authored default pose. External resources are never loaded.".into(),
-        ],
+        mesh: frame.triangles,
+        details,
+        animation_source,
+        appearance,
+        reverse_winding: frame.reverse_winding,
     })
 }
 
@@ -594,6 +623,140 @@ fn view(document: &Document, index: usize) -> Result<&BufferView> {
         .get(index)
         .context("GLB references a missing buffer view")
 }
+fn validate_view(document: &Document, source: &BufferView) -> Result<()> {
+    let buffer = document
+        .buffers
+        .get(source.buffer)
+        .context("GLB buffer view references a missing buffer")?;
+    ensure!(
+        source.byte_length > 0
+            && source
+                .byte_offset
+                .checked_add(source.byte_length)
+                .is_some_and(|v| v <= buffer.byte_length),
+        "GLB buffer view range exceeds its buffer"
+    );
+    ensure!(
+        source
+            .byte_stride
+            .is_none_or(|v| (4..=252).contains(&v) && v.is_multiple_of(4)),
+        "Unsupported GLB byteStride; expected a multiple of four from 4 through 252"
+    );
+    ensure!(
+        source.target.is_none_or(|v| v == 34962 || v == 34963),
+        "Invalid GLB buffer view target"
+    );
+    Ok(())
+}
+fn validate_accessor(document: &Document, accessor: &Accessor) -> Result<()> {
+    ensure!(
+        accessor.count > 0 && accessor.count <= MAX_VERTICES,
+        "GLB accessor exceeds the 300,000-element preview limit"
+    );
+    let component = component_size(accessor.component_type)?;
+    let size = element_size(accessor)?;
+    let payload = element_payload(accessor)?;
+    let components = match accessor.kind.as_str() {
+        "SCALAR" => 1,
+        "VEC2" => 2,
+        "VEC3" => 3,
+        "VEC4" | "MAT2" => 4,
+        "MAT3" => 9,
+        _ => 16,
+    };
+    for bound in [&accessor.min, &accessor.max].into_iter().flatten() {
+        ensure!(
+            bound.len() == components && bound.iter().all(|v| v.is_finite()),
+            "Invalid GLB accessor min/max bounds"
+        );
+    }
+    if let (Some(min), Some(max)) = (&accessor.min, &accessor.max) {
+        ensure!(
+            min.iter().zip(max).all(|(a, b)| a <= b),
+            "GLB accessor min exceeds max"
+        );
+    }
+    ensure!(
+        !accessor.normalized || matches!(accessor.component_type, 5120..=5123),
+        "Unsupported GLB normalized component type"
+    );
+    ensure!(
+        accessor.byte_offset.is_multiple_of(component),
+        "Misaligned GLB accessor byteOffset"
+    );
+    if let Some(index) = accessor.buffer_view {
+        let source = view(document, index)?;
+        validate_view(document, source)?;
+        ensure!(
+            source
+                .byte_offset
+                .checked_add(accessor.byte_offset)
+                .is_some_and(|v| v.is_multiple_of(component)),
+            "Misaligned GLB accessor buffer position"
+        );
+        let stride = source.byte_stride.unwrap_or(size);
+        ensure!(
+            stride >= size,
+            "GLB accessor element exceeds its byteStride"
+        );
+        checked_range(
+            accessor.byte_offset,
+            accessor.count,
+            stride,
+            payload,
+            source.byte_length,
+        )?;
+    } else {
+        ensure!(
+            accessor.byte_offset == 0,
+            "GLB accessor without a buffer view cannot have a byteOffset"
+        );
+    }
+    if let Some(sparse) = &accessor.sparse {
+        ensure!(
+            sparse.count > 0 && sparse.count <= accessor.count,
+            "Invalid GLB sparse accessor count"
+        );
+        ensure!(
+            matches!(sparse.indices.component_type, 5121 | 5123 | 5125),
+            "Unsupported GLB sparse index component type"
+        );
+        for (index, offset, component, size, payload) in [
+            (
+                sparse.indices.buffer_view,
+                sparse.indices.byte_offset,
+                component_size(sparse.indices.component_type)?,
+                component_size(sparse.indices.component_type)?,
+                component_size(sparse.indices.component_type)?,
+            ),
+            (
+                sparse.values.buffer_view,
+                sparse.values.byte_offset,
+                component,
+                size,
+                payload,
+            ),
+        ] {
+            let source = view(document, index)?;
+            validate_view(document, source)?;
+            ensure!(
+                source.byte_stride.is_none() && source.target.is_none(),
+                "GLB sparse buffer views cannot declare byteStride or target"
+            );
+            ensure!(
+                offset.is_multiple_of(component)
+                    && source
+                        .byte_offset
+                        .checked_add(offset)
+                        .is_some_and(|v| v.is_multiple_of(component)),
+                "Misaligned GLB sparse accessor data"
+            );
+            checked_range(offset, sparse.count, size, payload, source.byte_length)?;
+        }
+    }
+    Ok(())
+}
+
 fn validate_document(
     document: &Document,
     bin: Option<&[u8]>,
@@ -607,10 +770,6 @@ fn validate_document(
                 .as_deref()
                 .is_none_or(|v| v == "2.0"),
         "Only glTF asset version 2.0 is supported"
-    );
-    ensure!(
-        document.skins.is_empty(),
-        "GLB skins are unsupported; skinned geometry cannot be previewed faithfully"
     );
     for names in [&document.extensions_used, &document.extensions_required] {
         let mut unique = HashSet::new();
@@ -640,7 +799,7 @@ fn validate_document(
     let mut primitive_count = 0usize;
     for mesh in &document.meshes {
         check()?;
-        ensure!(mesh.weights.is_none(), "GLB morph weights are unsupported");
+        deformation::validate_mesh_weights(mesh)?;
         primitive_count += mesh.primitives.len();
         ensure!(
             primitive_count <= MAX_OBJECTS,
@@ -648,16 +807,6 @@ fn validate_document(
         );
         for primitive in &mesh.primitives {
             check()?;
-            ensure!(
-                primitive.targets.is_empty(),
-                "GLB morph targets are unsupported"
-            );
-            ensure!(
-                primitive
-                    .material
-                    .is_none_or(|v| v < document.materials.len()),
-                "GLB primitive references a missing material"
-            );
             let position = *primitive
                 .attributes
                 .get("POSITION")
@@ -666,7 +815,10 @@ fn validate_document(
                 .accessors
                 .get(position)
                 .context("GLB POSITION references a missing accessor")?;
-            for &attribute in primitive.attributes.values() {
+            for (name, &attribute) in &primitive.attributes {
+                if name.starts_with("COLOR_") || name.starts_with("TEXCOORD_") {
+                    continue;
+                }
                 let attribute = document
                     .accessors
                     .get(attribute)
@@ -706,146 +858,44 @@ fn validate_document(
         );
     }
     compression::validate(document, check)?;
-    for source in &document.buffer_views {
-        check()?;
-        let buffer = document
-            .buffers
-            .get(source.buffer)
-            .context("GLB buffer view references a missing buffer")?;
-        ensure!(
-            source.byte_length > 0
-                && source
-                    .byte_offset
-                    .checked_add(source.byte_length)
-                    .is_some_and(|v| v <= buffer.byte_length),
-            "GLB buffer view range exceeds its buffer"
-        );
-        ensure!(
-            source
-                .byte_stride
-                .is_none_or(|v| (4..=252).contains(&v) && v.is_multiple_of(4)),
-            "Unsupported GLB byteStride; expected a multiple of four from 4 through 252"
-        );
-        ensure!(
-            source.target.is_none_or(|v| v == 34962 || v == 34963),
-            "Invalid GLB buffer view target"
-        );
-    }
-    for accessor in &document.accessors {
-        check()?;
-        ensure!(
-            accessor.count > 0 && accessor.count <= MAX_VERTICES,
-            "GLB accessor exceeds the 300,000-element preview limit"
-        );
-        let component = component_size(accessor.component_type)?;
-        let size = element_size(accessor)?;
-        let payload = element_payload(accessor)?;
-        let components = match accessor.kind.as_str() {
-            "SCALAR" => 1,
-            "VEC2" => 2,
-            "VEC3" => 3,
-            "VEC4" | "MAT2" => 4,
-            "MAT3" => 9,
-            _ => 16,
-        };
-        for bound in [&accessor.min, &accessor.max].into_iter().flatten() {
-            ensure!(
-                bound.len() == components && bound.iter().all(|v| v.is_finite()),
-                "Invalid GLB accessor min/max bounds"
+    // Geometry/deformation errors remain fatal. Appearance and animation-only
+    // accessors are checked when selected, allowing their own disclosed fallback.
+    let mut geometry_accessors = HashSet::new();
+    for mesh in &document.meshes {
+        for primitive in &mesh.primitives {
+            geometry_accessors.extend(
+                primitive
+                    .attributes
+                    .iter()
+                    .filter(|(name, _)| {
+                        !name.starts_with("COLOR_") && !name.starts_with("TEXCOORD_")
+                    })
+                    .map(|(_, &index)| index),
             );
-        }
-        if let (Some(min), Some(max)) = (&accessor.min, &accessor.max) {
-            ensure!(
-                min.iter().zip(max).all(|(a, b)| a <= b),
-                "GLB accessor min exceeds max"
-            );
-        }
-        ensure!(
-            !accessor.normalized || matches!(accessor.component_type, 5120..=5123),
-            "Unsupported GLB normalized component type"
-        );
-        ensure!(
-            accessor.byte_offset.is_multiple_of(component),
-            "Misaligned GLB accessor byteOffset"
-        );
-        if let Some(index) = accessor.buffer_view {
-            let source = view(document, index)?;
-            ensure!(
-                source
-                    .byte_offset
-                    .checked_add(accessor.byte_offset)
-                    .is_some_and(|v| v.is_multiple_of(component)),
-                "Misaligned GLB accessor buffer position"
-            );
-            let stride = source.byte_stride.unwrap_or(size);
-            ensure!(
-                stride >= size,
-                "GLB accessor element exceeds its byteStride"
-            );
-            checked_range(
-                accessor.byte_offset,
-                accessor.count,
-                stride,
-                payload,
-                source.byte_length,
-            )?;
-        } else {
-            ensure!(
-                accessor.byte_offset == 0,
-                "GLB accessor without a buffer view cannot have a byteOffset"
-            );
-        }
-        if let Some(sparse) = &accessor.sparse {
-            ensure!(
-                sparse.count > 0 && sparse.count <= accessor.count,
-                "Invalid GLB sparse accessor count"
-            );
-            ensure!(
-                matches!(sparse.indices.component_type, 5121 | 5123 | 5125),
-                "Unsupported GLB sparse index component type"
-            );
-            for (index, offset, component, size, payload) in [
-                (
-                    sparse.indices.buffer_view,
-                    sparse.indices.byte_offset,
-                    component_size(sparse.indices.component_type)?,
-                    component_size(sparse.indices.component_type)?,
-                    component_size(sparse.indices.component_type)?,
-                ),
-                (
-                    sparse.values.buffer_view,
-                    sparse.values.byte_offset,
-                    component,
-                    size,
-                    payload,
-                ),
-            ] {
-                let source = view(document, index)?;
-                ensure!(
-                    source.byte_stride.is_none() && source.target.is_none(),
-                    "GLB sparse buffer views cannot declare byteStride or target"
-                );
-                ensure!(
-                    offset.is_multiple_of(component)
-                        && source
-                            .byte_offset
-                            .checked_add(offset)
-                            .is_some_and(|v| v.is_multiple_of(component)),
-                    "Misaligned GLB sparse accessor data"
-                );
-                checked_range(offset, sparse.count, size, payload, source.byte_length)?;
+            geometry_accessors.extend(primitive.indices);
+            for target in &primitive.targets {
+                geometry_accessors.extend(target.values().copied());
             }
         }
+    }
+    for skin in &document.skins {
+        geometry_accessors.extend(skin.inverse_bind_matrices);
+    }
+    for index in geometry_accessors {
+        check()?;
+        validate_accessor(
+            document,
+            document
+                .accessors
+                .get(index)
+                .context("GLB geometry references a missing accessor")?,
+        )?;
     }
     let mut parents = vec![0u8; document.nodes.len()];
     let mut transforms = Vec::with_capacity(document.nodes.len());
     for node in &document.nodes {
         check()?;
-        ensure!(node.skin.is_none(), "GLB skinned nodes are unsupported");
-        ensure!(
-            node.weights.is_none(),
-            "GLB node morph weights are unsupported"
-        );
+        deformation::validate_node(document, node)?;
         ensure!(
             node.mesh.is_none_or(|v| v < document.meshes.len()),
             "GLB node references a missing mesh"
@@ -993,58 +1043,21 @@ struct Decoder<'a, F> {
     indices: usize,
     accessor_work: usize,
     source_triangles: usize,
-    meshes: HashMap<usize, Vec<Triangle>>,
-    output: Vec<Triangle>,
-    visits: usize,
+    meshes: HashMap<usize, RetainedMesh>,
+    deformation_components: usize,
+    retained_deformation_bytes: usize,
+    appearance: appearance::Builder,
     decoded_views: HashMap<usize, DecodedView>,
     compressed_bytes: usize,
     decompressed_bytes: usize,
 }
 impl<F: Fn() -> Result<()>> Decoder<'_, F> {
-    fn expand(
-        &mut self,
-        index: usize,
-        parent: Matrix,
-        transforms: &[Matrix],
-        depth: usize,
-    ) -> Result<()> {
-        (self.check)()?;
-        self.visits += 1;
-        ensure!(
-            self.visits <= MAX_OBJECTS && depth < MAX_NODE_DEPTH,
-            "GLB exceeds node instance or nesting preview limits"
-        );
-        let node = &self.document.nodes[index];
-        let world = compose(parent, transforms[index])?;
-        if let Some(mesh_index) = node.mesh {
-            if !self.meshes.contains_key(&mesh_index) {
-                let mesh = self.decode_mesh(mesh_index)?;
-                self.meshes.insert(mesh_index, mesh);
-            }
-            let mesh = &self.meshes[&mesh_index];
-            ensure!(
-                mesh.len() <= MAX_MODEL_TRIANGLES.saturating_sub(self.output.len()),
-                "GLB instances exceed the 100,000 expanded triangle preview limit"
-            );
-            for source in mesh {
-                (self.check)()?;
-                self.output.push([
-                    transform_point(world, source[0])?,
-                    transform_point(world, source[1])?,
-                    transform_point(world, source[2])?,
-                ]);
-            }
-        }
-        for &child in &node.children {
-            self.expand(child, world, transforms, depth + 1)?;
-        }
-        Ok(())
-    }
     fn data(&self, index: usize) -> Result<&[u8]> {
         if let Some(decoded) = self.decoded_views.get(&index) {
             return Ok(decoded.bytes());
         }
         let source = view(self.document, index)?;
+        validate_view(self.document, source)?;
         ensure!(
             source.extensions.meshopt.is_none(),
             "GLB compressed buffer view was not prepared"
@@ -1239,78 +1252,6 @@ impl<F: Fn() -> Result<()>> Decoder<'_, F> {
             );
         }
         Ok(indices)
-    }
-    fn decode_mesh(&mut self, index: usize) -> Result<Vec<Triangle>> {
-        let source = &self.document.meshes[index];
-        ensure!(
-            !source.primitives.is_empty(),
-            "GLB selected mesh contains no primitives"
-        );
-        let mut mesh = Vec::new();
-        for primitive in &source.primitives {
-            (self.check)()?;
-            ensure!(
-                primitive.mode.unwrap_or(4) == 4,
-                "GLB primitive mode is unsupported; only TRIANGLES static geometry is rendered"
-            );
-            let position = *primitive
-                .attributes
-                .get("POSITION")
-                .context("GLB primitive has no POSITION attribute")?;
-            let accessor = self
-                .document
-                .accessors
-                .get(position)
-                .context("GLB POSITION references a missing accessor")?;
-            for &index in primitive.attributes.values() {
-                let attribute = self
-                    .document
-                    .accessors
-                    .get(index)
-                    .context("GLB attribute references a missing accessor")?;
-                ensure!(
-                    attribute.count == accessor.count,
-                    "GLB primitive attribute counts do not match POSITION"
-                );
-            }
-            let element_count = if let Some(index) = primitive.indices {
-                self.document
-                    .accessors
-                    .get(index)
-                    .context("GLB indices reference a missing accessor")?
-                    .count
-            } else {
-                accessor.count
-            };
-            ensure!(
-                element_count >= 3 && element_count.is_multiple_of(3),
-                "GLB TRIANGLES requires an element count divisible by three"
-            );
-            let triangles = element_count / 3;
-            ensure!(
-                triangles <= MAX_MODEL_TRIANGLES.saturating_sub(self.source_triangles),
-                "GLB exceeds the 100,000 source triangle preview limit"
-            );
-            self.source_triangles += triangles;
-            let positions = self.positions(position)?;
-            if let Some(index) = primitive.indices {
-                let indices = self.indices(index, positions.len())?;
-                for (i, triangle) in indices.as_chunks::<3>().0.iter().enumerate() {
-                    if i.is_multiple_of(256) {
-                        (self.check)()?;
-                    }
-                    mesh.push(triangle.map(|index| positions[index]));
-                }
-            } else {
-                for (i, triangle) in positions.as_chunks::<3>().0.iter().enumerate() {
-                    if i.is_multiple_of(256) {
-                        (self.check)()?;
-                    }
-                    mesh.push(*triangle);
-                }
-            }
-        }
-        Ok(mesh)
     }
 }
 fn read_index(data: &[u8], offset: usize, kind: u32) -> Result<usize> {

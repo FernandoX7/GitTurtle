@@ -1,7 +1,9 @@
 # Interactive 3D comparison and finite CAD support
 
-The September 2026 implementation retains immutable triangles for STL, OBJ, FBX,
-GLB, 3MF and the STEP subset below. `decode_geometry` consumes supplied bytes;
+The September 2026 implementation retains supplied-byte model scenes for STL,
+OBJ, FBX, GLB, 3MF and the STEP subset below. GLB scenes also retain bounded
+appearance and supported animation evaluation data. `decode_geometry` consumes
+supplied bytes;
 `render_model` produces one requested orthographic frame on a background worker.
 Camera updates do no parsing, geometry conversion or pixel allocation.
 
@@ -20,7 +22,7 @@ native interaction or GPU cleanup.
 Each side groups Fit/Reset, zoom and edges beside the standard-view menu and
 camera-link toggle, wrapping as space requires. The menu retains all seven named
 views and a checked current view; custom orbit is labelled Custom view. Geometry
-counts and the geometry-only disclosure lead the scrollable details footer.
+counts and the applicable appearance/shading disclosure lead the scrollable details footer.
 Updating status overlays the canvas without reserving an empty row. Unsupported
 and missing sides use the same labelled comparison surface; errors are accessible,
 bounded and scrollable, and a usable opposite side keeps its controls. Orientation
@@ -37,12 +39,15 @@ FBX remains a static default-pose mesh. OBJ and STL preserve source coordinates;
 neither establishes physical units. A camera link between unknown and known units
 does not establish physical equivalence.
 
-All parsers remain supplied-byte operations. No geometry, material, texture,
-external cache, script or repository-relative path is resolved. Exact source and
+All parsers remain supplied-byte operations. GLB can decode embedded PNG/JPEG
+material textures from its captured BIN chunk. No external geometry, material,
+texture, cache, script or repository-relative path is resolved. Exact source and
 captured-byte identity remain with each original side. Neither retained triangles
 nor rendered frames can become a staging patch.
 
-## GLB 2.0 static geometry
+<a id="glb-20-static-geometry"></a>
+
+## GLB 2.0 appearance, deformation and animation
 
 Case-insensitive `.glb` recognition enters the same native retained-model viewer.
 The decoder validates the binary container and the independent glTF asset version;
@@ -59,29 +64,113 @@ right-handed Z-up/mm convention. This rotation preserves handedness and maps
 glTF's front to the existing Front view. Each revision keeps its placement and
 scale; only the shared camera fits the union of both bounds.
 
-This is flat-shaded static geometry inspection. Materials, vertex appearance,
-textures, authored lighting/cameras and animation playback are omitted. Node
-transforms use their authored static values, not a sampled animation frame.
-Skins, morph targets and unimplemented geometry, visibility or placement
-extensions are refused instead of showing undeformed or incomplete content.
-Draco and GPU instancing extensions are not decoded. Known appearance
-extensions may be recognized solely to explain omitted appearance; they never
-enable texture decoding or resource access. Unknown required extensions are
-refused.
+### Appearance and shading
 
-The parser consumes the captured JSON and BIN slices only. Buffer URIs, including
-data URIs, cannot supply geometry. Image URIs and material references are never
-opened. Opening a preview does not fetch Git/LFS objects; verified locally present
-LFS content enters through the existing captured-byte path. Each original side
-keeps its bytes, absence and independent error state.
+`KHR_materials_unlit` uses the glTF unlit equation: linear `baseColorFactor` ×
+linear `COLOR_0` × sampled base-color texture, with authored alpha mode and
+sidedness. RGB texels are decoded from sRGB before filtering; alpha stays linear.
+Linear RGB is converted to sRGB for display without tone mapping. VEC3 colors
+have implicit alpha one; VEC4 colors retain alpha. FLOAT and normalized unsigned
+BYTE/SHORT colors are supported. Material-only and texture-only changes therefore
+remain visible with identical scene geometry and camera settings.
+
+Core metallic/roughness materials use **base-color inspection with simplified
+flat diffuse lighting**, identified in the native viewer and details. This is not
+physically based material reproduction. Metallic/roughness values/maps, authored
+normals, normal/occlusion/emissive maps, environment illumination, authored lights
+and cameras are omitted. Known unsupported material extensions are named in the
+details. Wireframe remains a geometry inspection view with neutral edge colors.
+
+Embedded PNG/JPEG textures support the material's selected `TEXCOORD_n`, including
+FLOAT and normalized unsigned BYTE/SHORT coordinates, with additional integer UV
+layouts under required `KHR_mesh_quantization`. Image coordinates use the encoded
+top row at V=0; image orientation and color profiles are ignored as required by
+glTF. Samplers implement REPEAT, MIRRORED_REPEAT and CLAMP_TO_EDGE independently
+on each axis, NEAREST/LINEAR magnification and all six core minification modes.
+Missing sampler settings use repeat wrapping and linear/trilinear filtering.
+Linear-light area-averaged mipmaps include non-power-of-two images. Orthographic
+UV derivatives select mip levels; anisotropic filtering is not implemented.
+
+OPAQUE ignores alpha. MASK discards samples below `alphaCutoff` (default 0.5)
+without writing depth. BLEND sorts surviving fragments **at each pixel** and
+composites back to front in linear light, including intersecting triangles; a
+half-open shared-edge rule prevents duplicate transparent edge contributions.
+This is bounded single-sample rasterization, without antialiasing or alpha-to-
+coverage. Exceeding a transparency/raster cap returns a specific frame error;
+wireframe can still inspect independently valid geometry. Single-sided materials
+cull backfaces and double-sided materials retain them. Mirrored unskinned node
+transforms correct the winding convention; skinned faces use their posed vertex
+winding without reapplying the ignored mesh-node transform.
+
+Only captured BIN image bytes are decoded. Resource URIs, including data URIs,
+are never opened. Unsupported texture-coordinate extensions (including
+`KHR_texture_transform`), absent image resources, malformed image headers,
+mismatched MIME types, invalid appearance accessor ranges and appearance memory
+limits omit the affected resource with a warning while retaining valid geometry,
+base-color factors and other valid appearance inputs. Texture extensions can use
+a valid core PNG/JPEG fallback with an explicit extension disclosure. Malformed
+materials fall back to neutral double-sided geometry. Structural geometry errors,
+unsupported geometry/visibility extensions, Draco, GPU instancing and unknown
+required extensions still refuse the affected side.
+
+### Default deformation and animation
+
+The initial view evaluates authored node/mesh morph weights and supported skins
+in the default pose. Morph POSITION deltas are applied before skinning. Node
+weights override mesh weights; unspecified weights are zero. Joint world
+transforms and inverse bind matrices produce weighted world-space positions;
+missing inverse bind matrices mean identity. The skinned mesh node transform is
+not applied a second time. JOINTS_0/WEIGHTS_0 and optional JOINTS_1/WEIGHTS_1 provide
+up to eight influences. Integer weights are normalized; valid near-unit weight
+sums are normalized before evaluation. Joints must belong to the selected scene
+and share a root, with a declared skeleton ancestral to every joint. Invalid
+skins or morph geometry are refused rather than displaying an undeformed stand-in.
+Morph NORMAL/TANGENT data does not alter the disclosed flat inspection shading.
+
+Supported animation clips target translation, rotation, scale and morph weights,
+including animated joint hierarchies. STEP holds the left key, LINEAR interpolates
+vectors/weights and uses shortest-path quaternion slerp, and CUBICSPLINE uses
+interval-scaled Hermite tangents followed by quaternion normalization. Before the
+first key and after the last key, channels hold their endpoint values. Nonfinite
+values, invalid key order/layout, duplicate targets and unsupported channels are
+explicit errors. A malformed or unsupported optional clip is unavailable with a
+reason; default geometry and other valid clips remain available. Animation does
+not target matrix-authored nodes or material properties. An animated zero scale
+may collapse all triangles and correctly display background at that timestamp.
+
+The native viewer starts at Default pose. Each side selects its own clip; Play
+selects the first positive-duration clip when neither side has a playable
+selection. Playback shares seconds across Before/After: shorter clips hold their
+last pose until the longest selected clip loops. Clip selection and timeline
+scrubbing pause both sides. The timeline supports pointer/keyboard scrubbing,
+Start and 1/30-second stepping, and shows comparison time/duration alongside each
+side's displayed pose time. Exact endpoint poses remain available by scrubbing.
+Reduce Motion disables automatic playback while preserving clip selection,
+scrubbing and stepping.
+
+Evaluation and raster preparation run on the cancellable model worker. Playback
+samples at most 30 times per second and skips elapsed samples when rendering is
+slower; it does not cancel every in-flight frame to chase the clock. Playing,
+scrubbing and dragging use 360-pixel frames, settling at 720 pixels. Hidden,
+replaced, closed and paused previews request no animation loop. Late generations
+cannot overwrite a newer selection or reopen Compare. Cameras remain independent
+of pose evaluation; initial linked cameras fit default union bounds, and explicit
+Fit uses the currently displayed pose bounds. Camera bookmarks do not resume
+playback after navigation or restart.
+
+The parser consumes the captured JSON and BIN slices only. Buffer URIs cannot
+supply geometry, image URIs are never opened, and opening a preview does not fetch
+Git/LFS objects. Verified locally present LFS content enters through the existing
+captured-byte path. Each original side keeps its bytes, absence and independent
+error state.
 
 `EXT_meshopt_compression` opens directly through this same pipeline. Selected
 embedded buffer views are decompressed once and reused by ordinary and sparse
 accessors. ATTRIBUTES, TRIANGLES and INDICES modes support their legal NONE,
 OCTAHEDRAL, QUATERNION and EXPONENTIAL filters. Quantized accessors still require
 `KHR_mesh_quantization`; decoding does not undo the author's quantization or
-change transforms, placement or physical units. Compression of animation data
-does not enable animation playback or deformation evaluation.
+change transforms, placement or physical units. The same bounded decompressed
+views supply supported appearance, skin, morph and animation accessors when selected.
 
 Compressed ranges must refer to the captured BIN buffer. Required-extension
 placeholder buffers are accepted at indices above zero with checked fallback
@@ -98,12 +187,14 @@ primitive-restart sentinels are refused. Interleaved positions follow checked
 four-byte alignment and legal strides; indices remain tightly packed. Sparse
 position/index overrides support a base view or an implicit zero base, with
 strictly increasing in-range override indices. Other primitive modes, including
-strips, fans, lines and points, are refused instead of skipped. Authored normals,
-UVs and vertex colors do not affect the neutral geometry rendering.
+strips, fans, lines and points, are refused instead of skipped. Authored normals
+do not affect flat inspection shading; supported UVs and vertex colors follow
+the appearance contract above.
 
-This finite geometry validator checks container boundaries, versions, references,
-tree structure, layouts and values needed for faithful static geometry. It is
-not a complete validator for omitted material, texture or animation semantics.
+The finite validator checks container boundaries, versions, references, tree
+structure and layouts needed by the selected geometry and supported resources.
+Appearance and animation resource validation is isolated so an optional resource
+failure can preserve useful default geometry. It is not a complete glTF validator.
 
 ### Specification and dependencies
 
@@ -183,7 +274,7 @@ cumulative decoded positions and indices are independently limited to 300,000
 each, and accessor work including sparse overrides to 900,000 elements. Both
 cached source triangles and expanded instance triangles are capped at 100,000.
 Unused meshes are not expanded. These limits bound geometry separately from
-JSON, original embedded appearance bytes, retained frames and raster samples.
+JSON, decoded appearance/deformation data, retained frames and raster samples.
 Parsing and expansion have cooperative checkpoints; bounded library calls are
 not a hard deadline or a process-memory sandbox.
 
@@ -196,14 +287,46 @@ array of at most 1.2 MB to detect values that would overflow a two-byte index.
 These limits supplement the original captured-input, accessor, triangle,
 instance, retained-frame and raster limits rather than replacing them.
 
-Frames have a 64–720 pixel edge, a separate 64-million raster-sample budget and
-cooperative cancellation per triangle and scanline block. Wireframe clips lines
-before sampling, including at extreme zoom. A solid 720-pixel frame allocates about
-2.1 MB RGBA plus 4.1 MB depth; it does not retain a second projected geometry copy.
-`ModelScene::retained_bytes` accounts for coordinates and metadata. Pixel conversion
-and GPU lifetime tracking stay in the app worker/presentation layer. The legacy
-`decode_model` wrapper still prepares four fixed views for existing static consumers;
-interactive consumers use `decode_geometry` to avoid that work.
+Appearance independently caps each decoded image at 4,194,304 pixels and a 4,096
+pixel edge; the codec allocation allowance is 32 MiB. Unique linear RGBA32F texture
+images and all generated mip levels share a 96 MiB retained budget. Samplers
+referencing the same image share storage. Appearance attribute decoding has a
+16 MiB cumulative work allowance, including repeated selected source reads;
+expanded per-triangle colors/UVs/material indices are separately bounded by the
+100,000-triangle cap (about 8 MiB). Up to 32 distinct appearance diagnostics are
+retained. Failed image decodes are not repeatedly attempted through other sampler
+references. Image codec calls are bounded but not interruptible internally;
+cooperative checks surround decoding and run through conversion and mip creation.
+
+Deformation limits are 256 joints per skin, 1,024 joints total, eight morph targets
+and eight skin influences per vertex. Decoding allows four million scalar
+components and 64 MiB of retained evaluation data, independently of textures and
+expanded scene triangles. A requested frame allows eight million charged
+vertex/morph/influence operations. Animation allows 64 clips, 256 channels and
+samplers per clip, 100,000 cumulative channel keyframes, one million cumulative
+animation scalar components (including timestamps/tangents), and timestamp values
+within 0–86,400 seconds. Sources without valid animation clips release evaluation
+data after preparing the default scene. Animated frames share immutable appearance
+and evaluator storage and retain only their current evaluated triangles/bounds.
+The application does not cache every animation frame.
+
+Frames have a 64–720 pixel edge, an independent 64-million candidate raster-sample
+budget and cooperative cancellation per triangle and scanline block. Wireframe
+clips lines before sampling, including at extreme zoom. A solid 720-pixel frame
+allocates about 2.1 MB RGBA plus 4.1 MB depth. BLEND additionally allows two million
+fragments (about 64 MB), 32 visible transparent layers per pixel, and pixel head
+and linear-color buffers (about 8.3 MB at 720 pixels); it explicitly refuses
+excess overlap. Temporary evaluated geometry and per-frame vertex/joint arrays
+are bounded separately from these pixels and retained textures.
+
+`ModelScene::retained_bytes` uses precomputed appearance/evaluator accounting and
+counts current geometry, metadata and winding overrides. Shared storage can be
+conservatively counted more than once across retained consumers. Pixel conversion
+and GPU lifetime tracking remain in the app worker/presentation layer. The legacy
+`decode_model` wrapper prepares four fixed views; its GLB views use the same
+appearance renderer with a separate 64-million sample cap per view. Interactive
+consumers use `decode_geometry` and render only the requested view. These are
+allocation/work bounds, not a process-memory sandbox or hard wall-clock deadline.
 
 ## Maintained CAD kernel investigation
 
