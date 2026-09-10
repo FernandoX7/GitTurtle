@@ -435,6 +435,21 @@ fn restore_selected_identity(
     Some(index)
 }
 
+fn restore_list_viewport(
+    scroll: &UniformListScrollHandle,
+    y: f32,
+    layout: &mut Option<(Size<Pixels>, Pixels)>,
+) {
+    let mut state = scroll.0.borrow_mut();
+    // Cold reads queue initial item navigation before their saved bookmark is
+    // applied. A direct offset alone leaves that request active for prepaint.
+    state.deferred_scroll_to_item = None;
+    state.base_handle.set_offset(point(px(0.), px(y)));
+    // A loading/empty layout is not the restored list's resize baseline.
+    // Its first populated paint must preserve intentional manual scrolling.
+    *layout = None;
+}
+
 pub(super) fn file_bytes(file: &FileChange) -> usize {
     std::mem::size_of::<FileChange>()
         + file.old_path.as_ref().map_or(0, |p| p.as_os_str().len())
@@ -1374,11 +1389,11 @@ impl GitTurtle {
             self.status =
                 "Saved selection is unavailable; choose a commit from the restored history".into();
         }
-        self.history_scroll
-            .0
-            .borrow()
-            .base_handle
-            .set_offset(point(px(0.), px(history_y)));
+        restore_list_viewport(
+            &self.history_scroll,
+            history_y,
+            &mut self.history_list_layout,
+        );
         self.history_horizontal
             .set_offset(point(px(horizontal_x), px(0.)));
         if selected.is_none() {
@@ -1400,11 +1415,10 @@ impl GitTurtle {
                 self.selected_file = Some(index);
             }
         }
-        self.file_scroll
-            .0
-            .borrow()
-            .base_handle
-            .set_offset(point(px(0.), px(saved.file_y)));
+        restore_list_viewport(&self.file_scroll, saved.file_y, &mut self.file_list_layout);
+        // Seed the completed layout without reapplying the history offset:
+        // a wheel scroll made during the selected commit's read must survive.
+        self.history_list_layout = None;
         self.save_repository_session(window, cx);
     }
 
@@ -1435,11 +1449,11 @@ impl GitTurtle {
         self.pane = Pane::Files;
         self.sidebar = false;
         self.refresh_file_filter(cx);
-        self.history_scroll
-            .0
-            .borrow()
-            .base_handle
-            .set_offset(point(px(0.), px(saved.history_y)));
+        restore_list_viewport(
+            &self.history_scroll,
+            saved.history_y,
+            &mut self.history_list_layout,
+        );
         self.history_horizontal
             .set_offset(point(px(saved.horizontal_x), px(0.)));
         self.repository_tabs.document_restore = Some(saved.clone());
@@ -1980,6 +1994,230 @@ mod tests {
                 app._display_preferences_task = None;
             })
         });
+    }
+
+    #[gpui::test]
+    async fn cold_tab_restores_rendered_history_offset_without_revealing_manual_selection(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::component::Root;
+        use std::{
+            cell::RefCell,
+            io::Write,
+            process::{Command, Stdio},
+            rc::Rc,
+        };
+
+        fn draw(cx: &mut VisualTestContext) {
+            for _ in 0..3 {
+                cx.update(|window, cx| {
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                });
+                cx.executor().run_until_parked();
+            }
+        }
+
+        cx.executor().allow_parking();
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = GitRepository::init(fixture.path().join("history"), "main").unwrap();
+        let mut input = String::new();
+        for index in 0..500 {
+            let message = format!("history commit {index}");
+            input.push_str(&format!(
+                "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> {} +0000\ndata {}\n{}\n",
+                1_700_000_000 + index,
+                message.len(),
+                message
+            ));
+        }
+        input.push_str("done\n");
+        let mut command = Command::new("git");
+        command
+            .arg("-C")
+            .arg(repo.path())
+            .args(["fast-import", "--quiet"])
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for name in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_COMMON_DIR",
+            "GIT_INDEX_FILE",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_PARAMETERS",
+        ] {
+            command.env_remove(name);
+        }
+        let mut import = command.spawn().unwrap();
+        import
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        let imported = import.wait_with_output().unwrap();
+        assert!(
+            imported.status.success(),
+            "{}",
+            String::from_utf8_lossy(&imported.stderr)
+        );
+        let destination = fixture.path().join("isolated-session.json");
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+            cx.bind_keys([KeyBinding::new("end", LastRow, Some("GitTurtleList"))]);
+        });
+        let mut expected_y = None;
+        let mut expected_oid = None;
+        // Save End at a resized viewport, restore it cold, then restore an
+        // intentional manual scroll away from that same selected commit.
+        for pass in 0..3 {
+            let saved = if pass == 0 {
+                Session::default()
+            } else {
+                Session::load_at(&destination).unwrap()
+            };
+            if pass > 0 {
+                assert_eq!(Some(px(saved.tabs[0].bookmark.history_y)), expected_y);
+            }
+            let initial = repo.path().to_owned();
+            let save_path = destination.clone();
+            let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+            let observed = captured.clone();
+            let (_, window_cx) = cx.add_window_view(move |window, cx| {
+                let app = cx.new(|cx| {
+                    let mut app = GitTurtle::new(
+                        Some(initial),
+                        Preferences::default(),
+                        saved,
+                        activity::State::default(),
+                        recovery_drafts::State::default(),
+                        window,
+                        cx,
+                    );
+                    app.repository_tabs.save_path = Some(save_path);
+                    app
+                });
+                *captured.borrow_mut() = Some(app.clone());
+                Root::new(app, window, cx)
+            });
+            let app = observed.borrow_mut().take().unwrap();
+            window_cx.simulate_resize(size(px(1480.), px(981.)));
+            settle_tab_test(&app, window_cx).await;
+            draw(window_cx);
+            if pass == 0 {
+                window_cx.simulate_resize(size(px(1000.), px(680.)));
+                draw(window_cx);
+                window_cx.update(|window, cx| {
+                    let focus = app.read(cx).focus.clone();
+                    window.focus(&focus, cx);
+                });
+                window_cx.simulate_keystrokes("end");
+                settle_tab_test(&app, window_cx).await;
+                window_cx.simulate_resize(size(px(1480.), px(981.)));
+                draw(window_cx);
+            }
+            window_cx.read(|cx| {
+                let app = app.read(cx);
+                assert_eq!(app.visible.len(), 500);
+                assert_eq!(app.selected_commit, Some(499));
+                let oid = &app.commits[499].oid;
+                if let Some(expected) = &expected_oid {
+                    assert_eq!(oid, expected);
+                }
+                let scroll = app.history_scroll.0.borrow();
+                let offset = scroll.base_handle.offset().y;
+                if let Some(expected) = expected_y {
+                    assert_eq!(
+                        offset, expected,
+                        "cold first layout must retain the saved viewport"
+                    );
+                }
+                let measured = scroll
+                    .last_item_size
+                    .as_ref()
+                    .expect("rendered list geometry");
+                let row_height = measured.contents.height / app.visible.len() as f32;
+                let selected_bottom = offset + row_height * app.visible.len();
+                if pass < 2 {
+                    assert!(selected_bottom <= measured.item.height + px(1.));
+                    assert!(selected_bottom - row_height >= px(0.));
+                } else {
+                    assert!(
+                        selected_bottom > measured.item.height,
+                        "manual scroll stays away from selection"
+                    );
+                }
+            });
+            if pass == 1 {
+                let manual_y = window_cx.update(|window, cx| {
+                    let (position, delta) = app.update(cx, |app, cx| {
+                        // A real file read is still pending when the wheel
+                        // event arrives; its reply must not reset the viewport.
+                        app.repository_tabs.restoring = Some(app.tab_bookmark(cx));
+                        app.select_commit(499, window, cx);
+                        let scroll = &app.history_scroll.0.borrow().base_handle;
+                        (scroll.bounds().center(), -scroll.offset().y / 2.)
+                    });
+                    window.dispatch_event(
+                        gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                            position,
+                            delta: gpui::ScrollDelta::Pixels(point(px(0.), delta)),
+                            modifiers: Modifiers::default(),
+                            touch_phase: gpui::TouchPhase::Moved,
+                        }),
+                        cx,
+                    );
+                    let app = app.read(cx);
+                    assert!(app.repository_tabs.restoring.is_some());
+                    let moved = app.history_scroll.0.borrow().base_handle.offset().y;
+                    assert_ne!(
+                        Some(moved),
+                        expected_y,
+                        "the actual wheel event must scroll"
+                    );
+                    moved
+                });
+                settle_tab_test(&app, window_cx).await;
+                draw(window_cx);
+                window_cx.read(|cx| {
+                    assert_eq!(
+                        app.read(cx)
+                            .history_scroll
+                            .0
+                            .borrow()
+                            .base_handle
+                            .offset()
+                            .y,
+                        manual_y,
+                        "the completed file read must preserve the newer wheel scroll"
+                    );
+                });
+            }
+            let completion = window_cx.update(|_, cx| {
+                app.update(cx, |app, cx| {
+                    expected_y = Some(app.history_scroll.0.borrow().base_handle.offset().y);
+                    expected_oid = Some(app.commits[499].oid.clone());
+                    app.queue_session_snapshot(cx)
+                })
+            });
+            completion.await.unwrap();
+            window_cx.update(|window, _| window.remove_window());
+            let closing = window_cx.cx.update(|cx| {
+                app.read(cx)
+                    .repository_tabs
+                    .save_completion
+                    .clone()
+                    .unwrap()
+            });
+            closing.await.unwrap();
+        }
     }
 
     #[gpui::test]

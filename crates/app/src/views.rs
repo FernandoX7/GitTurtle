@@ -52,6 +52,11 @@ impl GitTurtle {
             |_, _, _| (),
             move |bounds, _, window, cx| {
                 let _ = owner.update(cx, |this, cx| {
+                    // Cold loading geometry must not reveal selection over a
+                    // saved viewport or a wheel scroll made during restoration.
+                    if this.repository_tabs.restoring.is_some() {
+                        return;
+                    }
                     let row_height = px(if history {
                         this.settings.density.history_row_height()
                     } else {
