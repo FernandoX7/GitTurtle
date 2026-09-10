@@ -1,0 +1,144 @@
+{
+  "source": "4ebe8fc834f7c03674828407e78ece29c6aa4d9c",
+  "executable_sha256": "1fc08c8560041f9232b0c9cad824dfd9488bf904343b981b19c1e532b80d6503",
+  "pid": 34554,
+  "marked_workload_seconds": 1318.0995919704437,
+  "sample_span_seconds": 1365.0045864999993,
+  "samples": 274,
+  "operator_corrections": [
+    "Marked workload is 21m58.100s, replacing the approximate 21m45s note.",
+    "After native picker cancellation, focus returned to the Commit History list; no search-input focus is claimed.",
+    "Cycle 1 remains in all resource data but is not a successful Find/Escape cycle: immediate CmdF from companion Exact source activated background History search.",
+    "Only cycles 2, 3, and 4 are matched successful companion cycles, each requiring explicit editor focus before Find."
+  ],
+  "native_failures_pending_rebuild": [
+    {
+      "surface": "History",
+      "condition": "1000x680, interface 18, code 24",
+      "observed": "The UniformList viewport included the absolute 16px horizontal scrollbar. A rendered regression placed a 39px row at y640 (bottom679) against scrollbar top664, covering 15px.",
+      "status": "Observed on this measured executable. Coordinator reports correction aa39920 reserves Scrollbar::width() inside the tracked viewport and passes the rendered geometry test; rebuilt affected native evidence is separate."
+    },
+    {
+      "surface": "Markdown companion Exact source",
+      "condition": "Immediate CmdF after Exact source without explicit editor focus",
+      "observed": "Find activated the background repository History search.",
+      "status": "Observed on this measured executable; cycles 2-4 used explicit focus workaround. Correction and affected native checks are separate."
+    }
+  ],
+  "successful_companion_cycles": [
+    {
+      "cycle": 2,
+      "requires_explicit_editor_focus_workaround": true,
+      "active_duration_seconds": 7.038264036178589,
+      "active_cpu_seconds": 0.5300000000000011,
+      "start_rss_mib": 172.0625,
+      "return_rss_mib": 172.3125,
+      "settlement_duration_seconds": 37.43165302276611,
+      "settled_last_sample_rss_mib": 171.484375,
+      "settlement_samples": 8,
+      "settlement_cpu_average_percent_one_core": 0.7142569646062918,
+      "trace_bytes_start": 5817,
+      "trace_bytes_end": 5817
+    },
+    {
+      "cycle": 3,
+      "requires_explicit_editor_focus_workaround": true,
+      "active_duration_seconds": 6.5970458984375,
+      "active_cpu_seconds": 0.46999999999999886,
+      "start_rss_mib": 171.484375,
+      "return_rss_mib": 171.546875,
+      "settlement_duration_seconds": 26.977074146270752,
+      "settled_last_sample_rss_mib": 171.5,
+      "settlement_samples": 5,
+      "settlement_cpu_average_percent_one_core": 0.7499971437857053,
+      "trace_bytes_start": 5817,
+      "trace_bytes_end": 5817
+    },
+    {
+      "cycle": 4,
+      "requires_explicit_editor_focus_workaround": true,
+      "active_duration_seconds": 6.556750059127808,
+      "active_cpu_seconds": 0.46000000000000085,
+      "start_rss_mib": 171.5,
+      "return_rss_mib": 171.546875,
+      "settlement_duration_seconds": 49.468196868896484,
+      "settled_last_sample_rss_mib": 171.5,
+      "settlement_samples": 10,
+      "settlement_cpu_average_percent_one_core": 0.7778266202596158,
+      "trace_bytes_start": 5817,
+      "trace_bytes_end": 5817
+    }
+  ],
+  "child_resources": {
+    "first": {
+      "utc": "2026-09-10T04:52:23.325477+00:00",
+      "app_rss_mib": 116.875,
+      "child_rss_mib": 4.25,
+      "combined_rss_mib": 121.125,
+      "git_children": 1
+    },
+    "last": {
+      "utc": "2026-09-10T05:15:08.229404+00:00",
+      "app_rss_mib": 235.0625,
+      "child_rss_mib": 138.53125,
+      "combined_rss_mib": 373.59375,
+      "git_children": 4
+    },
+    "max_child_rss": {
+      "utc": "2026-09-10T05:11:48.245759+00:00",
+      "app_rss_mib": 231.96875,
+      "child_rss_mib": 149.796875,
+      "combined_rss_mib": 381.765625,
+      "git_children": 7
+    },
+    "max_combined_rss": {
+      "utc": "2026-09-10T05:04:13.251968+00:00",
+      "app_rss_mib": 586.1875,
+      "child_rss_mib": 12.671875,
+      "combined_rss_mib": 598.859375,
+      "git_children": 3
+    },
+    "sum_caveat": "Sum of non-atomic app/child RSS snapshots; shared resident pages may be counted more than once. Child CPU time was not collected."
+  },
+  "post_quit_child_proof": {
+    "checked_utc": "2026-09-10T05:19:50.361252+00:00",
+    "pids": [
+      20775,
+      25606,
+      34936,
+      55057
+    ],
+    "all_observed_child_pids_absent": true,
+    "method": "Read-only ps returned exit 1 with empty output for all four exact final-sample child PIDs."
+  },
+  "initial_markdown_peak": {
+    "max_rss_mib": 586.1875,
+    "peak_utc": "2026-09-10T05:04:13.251968+00:00",
+    "phase": "markdown-tab",
+    "first_companion_cycle_start_utc": "2026-09-10T05:04:36.802918+00:00",
+    "pre_companion_settled_rss_mib": 165.671875,
+    "classification": "Transient initial Markdown/diff allocation; root cause not established. Peak predates the first companion open and RSS fell before the first three-image retirement."
+  },
+  "image_retention": {
+    "tracks": 30,
+    "retires": 22,
+    "peak_retained": 13,
+    "last_retained_before_quit": 8,
+    "last_retirement_images": 3,
+    "last_retirement_byte_start": 8052,
+    "last_retirement_byte_end": 8111,
+    "window_close_trace_records": 0,
+    "classification": "Recorded partial retirement and process exit; no claim of all images retiring before quit, exact remaining owners, or GPU completion."
+  },
+  "trace_parse_warnings": {
+    "count": 48,
+    "classification": "All 48 are preserved layout-state lines unrecognized by the numeric callback/lifecycle parser; no malformed JSON, count consistency anomaly, collection error, or failure trace record."
+  },
+  "limitations": [
+    "One warm-filesystem mixed session on macOS under variable background load; no matched baseline or speedup claim.",
+    "5-second process samples and 30-second FD/background samples miss shorter spikes.",
+    "Frame callback metrics include request/worker/scheduling delay, not direct render CPU duration or input-to-visible/GPU completion.",
+    "RSS excludes GPU/driver allocations and does not establish allocations by subsystem or absence of leaks.",
+    "Native Linux UI and hosted CI were not exercised by this session."
+  ]
+}

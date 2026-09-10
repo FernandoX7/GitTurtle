@@ -1,0 +1,352 @@
+{
+  "schema": 1,
+  "source_identity_basis": "Build identities recorded by the native capture coordinator; JPEG bytes do not independently encode a Git commit.",
+  "sources": {
+    "baseline": "ed9aa2102ff2d35d4d6cb714d2cf6724ed79eb64",
+    "themes": "4ebe8fc834f7c03674828407e78ece29c6aa4d9c",
+    "markdown_and_gif": "28a5d43522dedc7fb33bbbb68046f588ab6c8bca",
+    "aurora_after": "eb3dd264c3d03eda7a3e937d307bf100c603ef02",
+    "pr_and_conflict": "cc4ffac27d3d1333547261e70d4986c5c1bb06a6"
+  },
+  "copy_policy": "Full original JPEG bytes; no re-encoding, cropping, compositing, overlays, or metadata changes. Four baseline files originally carried .png suffixes despite containing JPEG data; only their copied suffixes changed.",
+  "metadata_check": {
+    "exif_present": true,
+    "exif_fields": [
+      "ExifImageWidth",
+      "ExifImageHeight"
+    ],
+    "gps_or_identity_or_capture_time_exif_fields": false,
+    "iptc_payload_bytes": 0,
+    "xmp_or_comment_present": false,
+    "other_metadata": "JFIF density and ICC color profile retained; Photoshop resource contains empty IPTC and its digest."
+  },
+  "visible_content_check": "All 32 images inspected. Only disposable fixture repositories and fixture profiles are visible. No genuine personal profile or missing real-repository screenshot is included.",
+  "files": {
+    "before-aurora-compare-braden.jpeg": {
+      "source_filename": "before-aurora-compare-braden.png",
+      "source_commit": "ed9aa2102ff2d35d4d6cb714d2cf6724ed79eb64",
+      "sha256": "9ae863f0ac8e39ce7eb2a47d8e56d0309b5d63fbfd9b6be52dfd8c47496af6fb",
+      "bytes": 127603,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "before-aurora-compare-midnight.jpeg": {
+      "source_filename": "before-aurora-compare-midnight.png",
+      "source_commit": "ed9aa2102ff2d35d4d6cb714d2cf6724ed79eb64",
+      "sha256": "a948787e642225d3f3e7b8a6aa70a2d999523cb62102f9d800bae11bc6c9c7b1",
+      "bytes": 123967,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "before-aurora-history-braden.jpeg": {
+      "source_filename": "before-aurora-history-braden.png",
+      "source_commit": "ed9aa2102ff2d35d4d6cb714d2cf6724ed79eb64",
+      "sha256": "e1e2cb4fdac8d8091cf3b7daf6c8414800875b404ac968364782a41ba79c5214",
+      "bytes": 126299,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "before-aurora-history-midnight.jpeg": {
+      "source_filename": "before-aurora-history-midnight.png",
+      "source_commit": "ed9aa2102ff2d35d4d6cb714d2cf6724ed79eb64",
+      "sha256": "fd139ac976720cf32f7150af2839b8e7fabb82c94bf43b79e399f91c4ff71984",
+      "bytes": 123091,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "release-aurora-compare-braden.jpeg": {
+      "source_filename": "complete-aurora-compare-braden.jpeg",
+      "source_commit": "eb3dd264c3d03eda7a3e937d307bf100c603ef02",
+      "sha256": "7719e6ae52a443867194914bc7905671c8ded0a28bcee72ea119cf110717c74c",
+      "bytes": 119403,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "release-aurora-compare-midnight.jpeg": {
+      "source_filename": "complete-aurora-compare-midnight.jpeg",
+      "source_commit": "eb3dd264c3d03eda7a3e937d307bf100c603ef02",
+      "sha256": "05cf6750f1763df6ef197f2deb3bcda895be1cc10859abc1049ecd5fd2818e6b",
+      "bytes": 116719,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "release-aurora-history-braden.jpeg": {
+      "source_filename": "complete-aurora-history-braden.jpeg",
+      "source_commit": "eb3dd264c3d03eda7a3e937d307bf100c603ef02",
+      "sha256": "5989dc31b57ca545eda8d68b7e65e2e6901ae9caeb39b7a2befdec1ea903e9b5",
+      "bytes": 121308,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "release-aurora-history-midnight.jpeg": {
+      "source_filename": "complete-aurora-history-midnight.jpeg",
+      "source_commit": "eb3dd264c3d03eda7a3e937d307bf100c603ef02",
+      "sha256": "0e2a4506c29a7ac45a593cca5689a23d7e9f59e47ad37e964d54cde609bf0eff",
+      "bytes": 117440,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "release-conflict-restored.jpeg": {
+      "source_filename": "release-conflict-restored.jpeg",
+      "source_commit": "cc4ffac27d3d1333547261e70d4986c5c1bb06a6",
+      "sha256": "51dc40f2c98d0c01ff3a92a406345556ae57eb70bbf810f0146b21c3c7ff0790",
+      "bytes": 119051,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "release-pr-range-midnight.jpeg": {
+      "source_filename": "release-pr-range-midnight.jpeg",
+      "source_commit": "cc4ffac27d3d1333547261e70d4986c5c1bb06a6",
+      "sha256": "fbda622cac1ae8318d6a866bf4ea21c12aaf6a3858ef964bf6aeedf11f89e4a7",
+      "bytes": 132003,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "theme-braden-comfortable.jpeg": {
+      "source_filename": "theme-braden-comfortable.jpeg",
+      "source_commit": "4ebe8fc834f7c03674828407e78ece29c6aa4d9c",
+      "sha256": "1bb58762457f5c9dcaa56b0c97b7f6a00e647b83db2dc5819a50b6284235ec89",
+      "bytes": 126576,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "theme-braden-compact.jpeg": {
+      "source_filename": "theme-braden-compact.jpeg",
+      "source_commit": "4ebe8fc834f7c03674828407e78ece29c6aa4d9c",
+      "sha256": "96ec8940624189f27b84e707b5fc9223e04d26f23ea270e2ffdaf1215f0af748",
+      "bytes": 127065,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "theme-catppuccin-mocha-comfortable.jpeg": {
+      "source_filename": "theme-catppuccin-mocha-comfortable.jpeg",
+      "source_commit": "4ebe8fc834f7c03674828407e78ece29c6aa4d9c",
+      "sha256": "42b63cf68d70eb0b08277b0ce2bab39a580748b5e09aefd47ff91fd90d30d917",
+      "bytes": 120129,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "theme-catppuccin-mocha-compact.jpeg": {
+      "source_filename": "theme-catppuccin-mocha-compact.jpeg",
+      "source_commit": "4ebe8fc834f7c03674828407e78ece29c6aa4d9c",
+      "sha256": "82e8998d903630281888ac50aa043ee53587ed9c98ce35f86f152d7fc679c010",
+      "bytes": 121153,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "theme-deep-sea-comfortable.jpeg": {
+      "source_filename": "theme-deep-sea-comfortable.jpeg",
+      "source_commit": "4ebe8fc834f7c03674828407e78ece29c6aa4d9c",
+      "sha256": "2afb326761b06aea12d4fa7fdc5935be095db63fd01fbbf45b2aea8afaa876ba",
+      "bytes": 126819,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "theme-deep-sea-compact.jpeg": {
+      "source_filename": "theme-deep-sea-compact.jpeg",
+      "source_commit": "4ebe8fc834f7c03674828407e78ece29c6aa4d9c",
+      "sha256": "58583e5778632fc211584af47b501bb8eb85f9cef57fd67ab47677d2a36eda4e",
+      "bytes": 127719,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "theme-ember-comfortable.jpeg": {
+      "source_filename": "theme-ember-comfortable.jpeg",
+      "source_commit": "4ebe8fc834f7c03674828407e78ece29c6aa4d9c",
+      "sha256": "c1f1965bb812054bb1a0f4e50f7930064b545d16c3592c34a410c7f37705254b",
+      "bytes": 125385,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "theme-ember-compact.jpeg": {
+      "source_filename": "theme-ember-compact.jpeg",
+      "source_commit": "4ebe8fc834f7c03674828407e78ece29c6aa4d9c",
+      "sha256": "620a432158db04e95036f3967a4f45c7578e6bc95235f3f4bdefc882d39de4de",
+      "bytes": 126530,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "theme-graphite-comfortable.jpeg": {
+      "source_filename": "theme-graphite-comfortable.jpeg",
+      "source_commit": "4ebe8fc834f7c03674828407e78ece29c6aa4d9c",
+      "sha256": "ce05bc6a28217ca4bca9d6434ed7f960b6477ec6f023ca37d8f9c6e43b637db2",
+      "bytes": 121444,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "theme-graphite-compact.jpeg": {
+      "source_filename": "theme-graphite-compact.jpeg",
+      "source_commit": "4ebe8fc834f7c03674828407e78ece29c6aa4d9c",
+      "sha256": "bd0d5c8ab130157d91ecbd0ba95f908098597048e210a13b4f622c7583b0f340",
+      "bytes": 122534,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "theme-midnight-comfortable.jpeg": {
+      "source_filename": "theme-midnight-comfortable.jpeg",
+      "source_commit": "4ebe8fc834f7c03674828407e78ece29c6aa4d9c",
+      "sha256": "7e31a62448a3723357cd7100db7091f866d59cb9c83db9b8c452dc5600e4c284",
+      "bytes": 123098,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "theme-midnight-compact.jpeg": {
+      "source_filename": "theme-midnight-compact.jpeg",
+      "source_commit": "4ebe8fc834f7c03674828407e78ece29c6aa4d9c",
+      "sha256": "aab31bb288554b95dc714ab962a309c4008fbc8a16d0beecce767ba2dc7832ed",
+      "bytes": 124058,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "theme-nord-comfortable.jpeg": {
+      "source_filename": "theme-nord-comfortable.jpeg",
+      "source_commit": "4ebe8fc834f7c03674828407e78ece29c6aa4d9c",
+      "sha256": "ab06202b72a9eeca8ee08c8fc793be2f6115193d1c805bd3455dbe3e67c8f9f9",
+      "bytes": 119665,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "theme-nord-compact.jpeg": {
+      "source_filename": "theme-nord-compact.jpeg",
+      "source_commit": "4ebe8fc834f7c03674828407e78ece29c6aa4d9c",
+      "sha256": "95d463f7d2a4e7ee30e4cfa2a6de78dc20ffe6fbf8363d9bfcb1736e97e76cf6",
+      "bytes": 120543,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "theme-porcelain-comfortable.jpeg": {
+      "source_filename": "theme-porcelain-comfortable.jpeg",
+      "source_commit": "4ebe8fc834f7c03674828407e78ece29c6aa4d9c",
+      "sha256": "7e1eb2a0e9a080f0ea637c5e9a76848a4bb8d9f59112e1a5e5c77d16f28d74a8",
+      "bytes": 128112,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "theme-porcelain-compact.jpeg": {
+      "source_filename": "theme-porcelain-compact.jpeg",
+      "source_commit": "4ebe8fc834f7c03674828407e78ece29c6aa4d9c",
+      "sha256": "1a4f7ae26950468677d159e8498b199ea65ff6b185cd7cacf2d3bb67e7f0e106",
+      "bytes": 128845,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "theme-sandstone-comfortable.jpeg": {
+      "source_filename": "theme-sandstone-comfortable.jpeg",
+      "source_commit": "4ebe8fc834f7c03674828407e78ece29c6aa4d9c",
+      "sha256": "65fc8e33b6ab1abf677a44c57306e2a47a92479632890b826d55155452abbb0d",
+      "bytes": 126866,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "theme-sandstone-compact.jpeg": {
+      "source_filename": "theme-sandstone-compact.jpeg",
+      "source_commit": "4ebe8fc834f7c03674828407e78ece29c6aa4d9c",
+      "sha256": "7b5c481998ab7ee2ce738cea8248e56a9e6155578d0d78f7bb67c272e76e7829",
+      "bytes": 127915,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "theme-tokyo-night-comfortable.jpeg": {
+      "source_filename": "theme-tokyo-night-comfortable.jpeg",
+      "source_commit": "4ebe8fc834f7c03674828407e78ece29c6aa4d9c",
+      "sha256": "2a1db4112e110bd55c9743b14737ca4a2c159951ac6db785374e84f51eacc185",
+      "bytes": 121864,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "theme-tokyo-night-compact.jpeg": {
+      "source_filename": "theme-tokyo-night-compact.jpeg",
+      "source_commit": "4ebe8fc834f7c03674828407e78ece29c6aa4d9c",
+      "sha256": "234f97824bd9dd0a4d3f07a80d08da69f7da37ae13b9f33d725bc6737421a5bc",
+      "bytes": 123116,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "verified-gif-reduce-motion-on.jpeg": {
+      "source_filename": "verified-gif-reduce-motion-on.jpeg",
+      "source_commit": "28a5d43522dedc7fb33bbbb68046f588ab6c8bca",
+      "sha256": "712cfab0d73c0e2ac1bd99caa88ee691c41de9af8cff2f391ded8edfb76544d8",
+      "bytes": 122193,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    },
+    "verified-markdown-modal-find.jpeg": {
+      "source_filename": "verified-markdown-modal-find.jpeg",
+      "source_commit": "28a5d43522dedc7fb33bbbb68046f588ab6c8bca",
+      "sha256": "1f6b0b9caab399c8c717b8ae0f84ce4e7dcf1656a3af522ba1de05e370429780",
+      "bytes": 116073,
+      "format": "JPEG",
+      "raster_width": 1123,
+      "raster_height": 768,
+      "byte_identical_to_capture": true
+    }
+  },
+  "aurora_after_package_identity": {
+    "source_commit": "eb3dd264c3d03eda7a3e937d307bf100c603ef02",
+    "executable_sha256": "b2deab6aec9d33a77caab0fad7a814a927fbe862c7705f9effed3dcfdd70b610",
+    "executable_uuid": "37B51CFC-5658-3D0D-A83A-0C87DC4FA564",
+    "basis": "Final package executable identity supplied by the native capture coordinator; package and installation checks are recorded in the milestone ledger."
+  }
+}

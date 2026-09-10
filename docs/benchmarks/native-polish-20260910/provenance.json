@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "measured_source": "4ebe8fc834f7c03674828407e78ece29c6aa4d9c",
+  "measured_executable_sha256": "1fc08c8560041f9232b0c9cad824dfd9488bf904343b981b19c1e532b80d6503",
+  "frozen_projection_manifest_sha256": "2c5e3c41ba01149acbaf8fca30f463a8dfa4f00f72e57f2e04fc620864405773",
+  "unchanged_projection_files_sha256": {
+    "automatic-report.md": "649447875750be71e2b9644d19c26b534586cb8cfabf3b1234e708e4074d4461",
+    "callbacks.csv": "42985a3bdb68175c1107eff6299771497d20d67d34c24636af22f5d59c920e6b",
+    "image-lifecycle.json": "c6341b042357fd0bae39b3c998687bbf6a308e46103d8de086726dd59a0e1681",
+    "interpretation.json": "c4fa6ca6b34c370f1eab7efe8d10c9d64164b045fa22273238d1db2c502ac157",
+    "resource-timeline.png": "d65d2f372b5b13072132a05033e18d8b519802b8d47b6ef26854a742204ab9ee",
+    "resource-timeline.svg": "4a23a1b71cc25c9f5a3c7dfa11e37c4a74080c2d3e75ec630f052a9d07006312",
+    "resources.csv": "4962bd22c8f3e5c6f41dd46421830c8ee8053b2daa84534a6753c95728a4ba4d",
+    "summary.json": "8c7068ce5713f20b00769eb818db9f77fb451426f90bf069af5332ec8953cbcb"
+  },
+  "report_origin": {
+    "filename": "draft-report.md",
+    "sha256": "de86833f9f6cfcac6a213c3f8cb0cbdd1fac8830487d104caac2c52ee138a3f0"
+  },
+  "report_publication_edits": [
+    "Renamed to README.md and removed publication-draft title.",
+    "Added relative links to included evidence and repository source files, retaining measured-commit line labels.",
+    "Added CSV units, freshness and nearest-rank calculation explanation with a reproduction snippet.",
+    "Added coordinator completion links for later affected native retests, final eb3dd264 gates, installed identity and restoration; original 4ebe8fc measurements and raw projections are unchanged."
+  ],
+  "remeasured": false
+}

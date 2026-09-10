@@ -1,0 +1,17 @@
+line,byte_start,byte_end,metric,value,phase
+2,116,155,commit_files_frame_ms,51.582,before-mixed-marker
+3,155,194,commit_files_frame_ms,41.398,themes
+44,4713,4751,file_preview_frame_ms,4.418,themes
+50,5307,5346,commit_files_frame_ms,43.536,markdown-tab
+51,5346,5386,file_preview_frame_ms,541.912,markdown-tab
+56,5592,5632,file_preview_frame_ms,136.941,markdown-correction
+59,5730,5768,file_preview_frame_ms,3.045,markdown-correction
+61,5817,5856,commit_files_frame_ms,37.233,pdf-preview
+62,5856,5894,file_preview_frame_ms,6.9,pdf-preview
+67,6090,6129,commit_files_frame_ms,31.875,model-preview
+68,6129,6167,file_preview_frame_ms,2.412,model-preview
+80,6736,6776,file_preview_frame_ms,265.082,model-preview
+83,6876,6914,file_preview_frame_ms,2.738,model-preview
+99,7711,7750,commit_files_frame_ms,33.477,deep-history
+102,7975,8013,history_page_frame_ms,7.678,deep-history
+103,8013,8052,commit_files_frame_ms,33.358,deep-history

@@ -1,0 +1,592 @@
+{
+  "schema_version": 1,
+  "scope": "Sanitized final milestone validation and installation evidence. Assertions below are transcribed or explicitly derived from retained coordinator proof records and gate logs; this file does not represent a new execution.",
+  "compiled_source": "eb3dd264c3d03eda7a3e937d307bf100c603ef02",
+  "privacy_policy": "Explicit whitelist only. Omit home directories, temporary host/container mount identities, container image IDs, user/private repository identities, raw application-state contents and hashes, hardware identifiers, and raw process arguments other than the installed application path. Evidence paths are relative to the private milestone evidence root; raw files remain private.",
+  "compiled_inputs": {
+    "manifest_evidence": "completion/source-inputs.json",
+    "manifest_file_sha256": "e13453854e8ae3b0535af2dff4e492c37bae18c1da303e8f34b8d2af26fca17b",
+    "recorded_input_set_sha256": "8fd35d831e72dca00e2526b8253bd7ca242e034701e44d12c180c41d0ca5c976",
+    "file_count": 814,
+    "unchanged_through_build": true,
+    "verification_evidence": "completion/package-identity.json"
+  },
+  "macos": {
+    "architecture": "arm64",
+    "stages": [
+      {
+        "command": [
+          "cargo",
+          "fmt",
+          "--all",
+          "--",
+          "--check"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 1.42,
+        "duration_scope": "recorded command wall time",
+        "result_evidence": "completion/fmt.json",
+        "log_evidence": "completion/fmt.log"
+      },
+      {
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "--workspace"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 78.557,
+        "duration_scope": "recorded command wall time",
+        "result_evidence": "completion/test.json",
+        "log_evidence": "completion/test.log"
+      },
+      {
+        "command": [
+          "cargo",
+          "clippy",
+          "--locked",
+          "--workspace",
+          "--all-targets",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 16.352,
+        "duration_scope": "recorded command wall time",
+        "result_evidence": "completion/clippy.json",
+        "log_evidence": "completion/clippy.log"
+      },
+      {
+        "command": [
+          "cargo",
+          "build",
+          "--release",
+          "--locked",
+          "-p",
+          "gitturtle"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 59.222,
+        "duration_scope": "recorded command wall time",
+        "result_evidence": "completion/release.json",
+        "log_evidence": "completion/release.log"
+      }
+    ],
+    "workspace_tests": {
+      "passed": 570,
+      "failed": 0,
+      "ignored": 3,
+      "top_level_harness_summaries": 25,
+      "count_method": "Sum the 25 complete harness summaries, including two zero-test doc-test harnesses. Exclude the one nested preview subprocess summary with filtered tests; its test is already included in the enclosing preview suite.",
+      "excluded_nested_subprocess_summaries": 1,
+      "ignored_tests": [
+        {
+          "test": "working_selection::benchmarks::prepared_review_and_cached_paths_release_benchmark",
+          "reason": "Opt-in release CPU benchmark: run scripts/bench-app-review.py for fixture, source identity, raw samples and report"
+        },
+        {
+          "test": "configured_openpgp_signs_real_commits_and_tags_in_an_isolated_keyring",
+          "reason": "Requires GnuPG; run explicitly to verify configured OpenPGP signing with an isolated generated keyring"
+        },
+        {
+          "test": "configured_ssh_agent_fetches_over_loopback_and_rejects_unknown_hosts",
+          "reason": "Requires a runnable local sshd; binds only loopback and uses generated fixture keys with strict host verification"
+        }
+      ]
+    },
+    "warning": "The logs retain the upstream future-incompatibility notice for block v0.1.6; commands exited successfully."
+  },
+  "linux": {
+    "scope": "Executed Linux container gates and ELF/linkage inspection; no native Linux UI interaction or hosted CI.",
+    "platform": "Linux 7.0.12-linuxkit aarch64",
+    "toolchain": {
+      "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+      "cargo": "cargo 1.98.0 (797e8a9bc 2026-08-05)",
+      "git": "git version 2.43.0"
+    },
+    "stages": [
+      {
+        "command": [
+          "cargo",
+          "fetch",
+          "--locked"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 0.798,
+        "duration_scope": "Docker stage wall time",
+        "result_evidence": "completion/linux/fetch.json",
+        "log_evidence": "completion/linux/fetch.log"
+      },
+      {
+        "command": [
+          "cargo",
+          "fmt",
+          "--all",
+          "--",
+          "--check"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 2.358,
+        "duration_scope": "Docker stage wall time",
+        "result_evidence": "completion/linux/format.json",
+        "log_evidence": "completion/linux/format.log"
+      },
+      {
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "--offline",
+          "--workspace",
+          "--no-fail-fast"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 35.279,
+        "duration_scope": "Docker stage wall time",
+        "result_evidence": "completion/linux/tests.json",
+        "log_evidence": "completion/linux/tests.log"
+      },
+      {
+        "command": [
+          "cargo",
+          "clippy",
+          "--locked",
+          "--offline",
+          "--workspace",
+          "--all-targets",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 5.245,
+        "duration_scope": "Docker stage wall time",
+        "result_evidence": "completion/linux/clippy.json",
+        "log_evidence": "completion/linux/clippy.log"
+      },
+      {
+        "command": [
+          "cargo",
+          "build",
+          "--release",
+          "--locked",
+          "--offline",
+          "-p",
+          "gitturtle"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 107.859,
+        "duration_scope": "Docker stage wall time",
+        "result_evidence": "completion/linux/release.json",
+        "log_evidence": "completion/linux/release.log"
+      },
+      {
+        "command_description": "Recorded container identity script executes the following commands in sequence.",
+        "commands_in_container": [
+          [
+            "uname",
+            "-srm"
+          ],
+          [
+            "rustc",
+            "--version"
+          ],
+          [
+            "cargo",
+            "--version"
+          ],
+          [
+            "git",
+            "--version"
+          ],
+          [
+            "sha256sum",
+            "/qa-target/release/gitturtle"
+          ],
+          [
+            "readelf",
+            "-h",
+            "/qa-target/release/gitturtle"
+          ],
+          [
+            "ldd",
+            "/qa-target/release/gitturtle"
+          ]
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 0.191,
+        "duration_scope": "Docker stage wall time",
+        "result_evidence": "completion/linux/identity.json",
+        "log_evidence": "completion/linux/identity.log"
+      }
+    ],
+    "command_note": "Cargo arrays are the exact in-container commands. Host bind paths, volume names and image identifiers from the Docker wrapper are omitted. Durations include the full recorded Docker stage.",
+    "source_archive_sha256": "f4a11beca80498fe33f4da1fbcdbf92714278e7e624691face6181a3fc4ccc38",
+    "source_manifest_file_sha256": "7676a6274b564c1352f5fcbd334479a77877014e8e531a4b1f056486667b58e1",
+    "source_manifest_evidence": "completion/linux/source-info.json",
+    "source_files_verified": 1010,
+    "symlinks_verified": 0,
+    "source_files_unchanged": true,
+    "stage_logs_verified": true,
+    "all_stages_passed": true,
+    "post_gate_evidence": "completion/linux/post-gate-verification.json",
+    "runner_manifest_evidence": "completion/linux/manifest.json",
+    "retained_evidence_index": "completion/linux/evidence-sha256.json",
+    "all_retained_evidence_index_hashes_rechecked": true,
+    "workspace_tests": {
+      "passed": 563,
+      "failed": 0,
+      "ignored": 3,
+      "top_level_harness_summaries": 25,
+      "count_method": "Sum the 25 complete harness summaries, including two zero-test doc-test harnesses. Exclude the one nested preview subprocess summary with filtered tests; its test is already included in the enclosing preview suite.",
+      "excluded_nested_subprocess_summaries": 1,
+      "ignored_tests": [
+        {
+          "test": "working_selection::benchmarks::prepared_review_and_cached_paths_release_benchmark",
+          "reason": "Opt-in release CPU benchmark: run scripts/bench-app-review.py for fixture, source identity, raw samples and report"
+        },
+        {
+          "test": "configured_openpgp_signs_real_commits_and_tags_in_an_isolated_keyring",
+          "reason": "Requires GnuPG; run explicitly to verify configured OpenPGP signing with an isolated generated keyring"
+        },
+        {
+          "test": "configured_ssh_agent_fetches_over_loopback_and_rejects_unknown_hosts",
+          "reason": "Requires a runnable local sshd; binds only loopback and uses generated fixture keys with strict host verification"
+        }
+      ]
+    },
+    "binary": {
+      "sha256": "61d752d9789eaf328d7412f8bff15eae8fe620422a760809058c04015282c85a",
+      "bytes": 80313408,
+      "format": "ELF64 little-endian AArch64 PIE",
+      "dynamic_dependencies_resolved": true
+    },
+    "native_ui_run": false,
+    "hosted_ci_run": false
+  },
+  "package_and_installation": {
+    "source": "eb3dd264c3d03eda7a3e937d307bf100c603ef02",
+    "installed_bundle_path": "/Applications/GitTurtle.app",
+    "executable_path": "/Applications/GitTurtle.app/Contents/MacOS/gitturtle",
+    "executable_sha256": "b2deab6aec9d33a77caab0fad7a814a927fbe862c7705f9effed3dcfdd70b610",
+    "executable_uuid": "37B51CFC-5658-3D0D-A83A-0C87DC4FA564",
+    "architecture": "arm64",
+    "plist": {
+      "CFBundleDisplayName": "GitTurtle",
+      "CFBundleExecutable": "gitturtle",
+      "CFBundleIconFile": "AppIcon",
+      "CFBundleIconName": "AppIcon",
+      "CFBundleIdentifier": "com.gitturtle.desktop",
+      "CFBundleName": "GitTurtle",
+      "CFBundlePackageType": "APPL",
+      "CFBundleShortVersionString": "0.1.0",
+      "CFBundleVersion": "0.1.0",
+      "NSHighResolutionCapable": true,
+      "NSPrincipalClass": "NSApplication",
+      "NSSupportsAutomaticGraphicsSwitching": true
+    },
+    "bundle_files_sha256": {
+      "Contents/Info.plist": "7bb42672a0c5377612a496e46230bfe06510f52d1eecab94f3747e041abf9f61",
+      "Contents/_CodeSignature/CodeResources": "f8cff677b29afb9041610c2ed14d581aaab31a762b6590abccc48abb12d3be79",
+      "Contents/MacOS/gitturtle": "b2deab6aec9d33a77caab0fad7a814a927fbe862c7705f9effed3dcfdd70b610",
+      "Contents/Resources/AppIcon.icns": "5206a75c4c2ae53f7686565042bb7e4e67b1ca09ebc3d4f2e5a621f3be37fefb",
+      "Contents/Resources/Assets.car": "e560a2cd1a8e548b5c3758a9d2c3b83f7db7fec8cd4db48e90b9e97951ffe137"
+    },
+    "all_five_installed_file_hashes_equal_tested_candidate": true,
+    "original_icon_icns_unchanged": true,
+    "signature": {
+      "kind": "local ad-hoc development signature",
+      "kind_basis": "Coordinator declaration; the retained package proof records signature validity, and installed-smoke proof records strict verification.",
+      "package_valid_on_disk": true,
+      "package_satisfies_designated_requirement": true,
+      "installed_strict_verification_passed": true,
+      "notarization_or_developer_id_distribution_claimed": false
+    },
+    "package_evidence": "completion/package-identity.json",
+    "installation_evidence": "completion/installation-proof.json",
+    "original_bundle_backup_hashes_verified": true
+  },
+  "installed_launch_identity": {
+    "scope": "Recorded installed launch; normal Quit later left no GitTurtle process.",
+    "observed_pid": 9709,
+    "process_executable_path": "/Applications/GitTurtle.app/Contents/MacOS/gitturtle",
+    "hashed_executable": {
+      "path": "/Applications/GitTurtle.app/Contents/MacOS/gitturtle",
+      "sha256": "b2deab6aec9d33a77caab0fad7a814a927fbe862c7705f9effed3dcfdd70b610",
+      "size": 50918368,
+      "device": 16777232,
+      "inode": 985694019,
+      "stable_during_hash": true
+    },
+    "mapped_executable": {
+      "kind": "txt",
+      "path": "/Applications/GitTurtle.app/Contents/MacOS/gitturtle",
+      "device": 16777232,
+      "inode": 985694019
+    },
+    "mapped_path_device_inode_equal_hashed_executable": true,
+    "uuid": "37B51CFC-5658-3D0D-A83A-0C87DC4FA564",
+    "evidence": "completion/installed-running.json"
+  },
+  "restoration_and_installed_smoke": {
+    "completed_utc": "2026-09-10T06:21:47.079442+00:00",
+    "application_state_files_recorded_byte_identical_before_launch": [
+      "activity.json",
+      "preferences.json",
+      "repository-session.json"
+    ],
+    "application_state_files_recorded_byte_identical_after_smoke": [
+      "activity.json",
+      "preferences.json",
+      "repository-session.json"
+    ],
+    "before_launch_and_after_smoke_equality_records_agree": true,
+    "private_state_hashes_published": false,
+    "desktop_preferences_restored_before_launch": true,
+    "desktop_preferences_equal_after_smoke": true,
+    "task_only_state_files_removed": [
+      "github-attempts.json",
+      "github-drafts.json",
+      "recovery-drafts.json"
+    ],
+    "additional_smoke_state_files_removed_count": 0,
+    "no_process_after_normal_quit": true,
+    "all_five_installed_files_still_match_tested_candidate": true,
+    "smoke_outcomes": [
+      "Original repository tabs restored.",
+      "Original History selection and changed file restored.",
+      "Selected file opened in read-only native Compare.",
+      "Escape returned to History with selection and focus.",
+      "Settings displayed the restored original appearance, typography and density choices.",
+      "Back retained context.",
+      "Normal Quit completed."
+    ],
+    "evidence": "completion/restoration-and-installed-smoke.json",
+    "system_settings": {
+      "keyboard_navigation_setting_equal": true,
+      "dark_appearance_restored": true,
+      "increase_contrast_restored": true,
+      "reduce_motion_restored": true,
+      "reduce_transparency_restored": true,
+      "voiceover_off_restored": true,
+      "differentiate_without_color_semantics_restored": true,
+      "representation_note": "differentiateWithoutColor was absent before QA and explicitly false afterward. The default false behavior is restored; this is semantic equality, not byte-identical system preferences. Other listed settings have matching recorded before/after values.",
+      "evidence": "recovery-final/system-preferences-comparison.json",
+      "post_smoke_appearance_accessibility_keyboard_unchanged": true,
+      "post_smoke_representation_note": "The only recorded export difference after installed smoke was fractional-second precision in NSLinguisticDataAssetsRequestTime. Its raw timestamp is omitted; appearance, accessibility and keyboard values were unchanged.",
+      "post_smoke_evidence": "completion/system-post-smoke-differences.json"
+    }
+  },
+  "native_regression_proofs": {
+    "cold_history_scroll": {
+      "source": "eb3dd264c3d03eda7a3e937d307bf100c603ef02",
+      "manual_scroll_visible_rows_equal_after_restart": true,
+      "first_visible_change": 119552,
+      "offscreen_selected_commit_identity_recorded": true,
+      "saved_manual_history_y": -15298.0,
+      "saved_end_history_y": -16311.0,
+      "cold_end_native_passed": true,
+      "evidence": "completion/cold-scroll-native-proof.json"
+    },
+    "U15_conflict_restore": {
+      "exercised_source": "cc4ffac27d3d1333547261e70d4986c5c1bb06a6",
+      "exact_restored_editor_index_working_match": true,
+      "unrelated_preserved": true,
+      "scope": "Native conflict-restore proof belongs to the recorded earlier correction source; it is not relabeled as a new final-source native run. Private fixture commit, paths and text hashes are omitted.",
+      "evidence": "recovery-final/conflict-retest-proof.json"
+    }
+  },
+  "separate_resource_measurements": {
+    "measured_source": "4ebe8fc834f7c03674828407e78ece29c6aa4d9c",
+    "report": "README.md",
+    "scope": "The 21m58.100s mixed native session, resource samples and image-lifetime observations retain their earlier measured executable identity. They are not measurements of this final installed executable; no comparative speedup or leak conclusion is inferred."
+  },
+  "limitations": {
+    "live_github": "Not verified; successful provider submission evidence uses the offline fixture.",
+    "spoken_voiceover": "Not verified; enabling VoiceOver and keyboard-only interaction do not establish spoken-feedback usability.",
+    "native_linux_ui": "Not exercised; Linux gates are container execution and binary/linkage checks.",
+    "hosted_ci": "Not executed.",
+    "sleep_wake": "Not exercised or claimed.",
+    "signature_distribution": "Local ad-hoc signature only; no notarized or Developer ID distribution claim."
+  },
+  "retained_raw_evidence": [
+    {
+      "path": "completion/fmt.json",
+      "sha256": "1e04658523fa69dcc598f22ba23cbbd8a3431a400d255c2dece58d4bd81e0176",
+      "bytes": 300
+    },
+    {
+      "path": "completion/fmt.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "completion/test.json",
+      "sha256": "d87ed3dc9d85b758b4b170bea5a57a84397cf00027956a6757b9046c43a1d1ed",
+      "bytes": 301
+    },
+    {
+      "path": "completion/test.log",
+      "sha256": "a70eccc0a02c3f2e875fbf6e53455c4ebd62d5d73a4e49704db7057c25f24901",
+      "bytes": 56592
+    },
+    {
+      "path": "completion/clippy.json",
+      "sha256": "cf045905ea8f6bd1e9be6ae345139010a70c7fb3dc6c0f47a17e1950d4917ec6",
+      "bytes": 360
+    },
+    {
+      "path": "completion/clippy.log",
+      "sha256": "3a8cc58c7090a4696f739e8de55b9e6c041da1c1ee0fc47b30a7e637337dbc2c",
+      "bytes": 395
+    },
+    {
+      "path": "completion/release.json",
+      "sha256": "2adb23c5b022ca330bf8cd81cec2116087db5cc13595b9ab93ddbe2bd485372a",
+      "bytes": 328
+    },
+    {
+      "path": "completion/release.log",
+      "sha256": "68a3ca3f31a346421923b9521dca04083c23a16e137a8057dd3c63f1eeaf3f27",
+      "bytes": 385
+    },
+    {
+      "path": "completion/linux/fetch.json",
+      "sha256": "8c648773211c0b328e1d0b5893bdba73e72083d4345208460cc14aca35e0cfa4",
+      "bytes": 1118
+    },
+    {
+      "path": "completion/linux/fetch.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "completion/linux/format.json",
+      "sha256": "7228354fc44d304db916d9c66163b7e378971d979600c732c21ba8cfd46c23c3",
+      "bytes": 1169
+    },
+    {
+      "path": "completion/linux/format.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "completion/linux/tests.json",
+      "sha256": "1346857f29e7e7d1275e593a61d6210e680c18d886b40828fd79b3a0508d5343",
+      "bytes": 1205
+    },
+    {
+      "path": "completion/linux/tests.log",
+      "sha256": "12481c83ee098b036dde2985f6725bf7d1f3d9cbe72a909913d2cbcb92219e0d",
+      "bytes": 56130
+    },
+    {
+      "path": "completion/linux/clippy.json",
+      "sha256": "1ff4b2c725f8e80bc83d10951897f25ba162dd12535d510903eed84d4bd0d23c",
+      "bytes": 1243
+    },
+    {
+      "path": "completion/linux/clippy.log",
+      "sha256": "ef7daca560a949c7859d6d3ff273ab5ed8f256ae4ccad1c5bbd69261b46c8bed",
+      "bytes": 477
+    },
+    {
+      "path": "completion/linux/release.json",
+      "sha256": "e2a9476b3e9bba01f88cdf3bdfd9db8441ca2e53b12731bade6d9d04689360c1",
+      "bytes": 1215
+    },
+    {
+      "path": "completion/linux/release.log",
+      "sha256": "4c1eb5dd1d5cbfa45099017257499bf49ced97203075e4934b70b248d8873137",
+      "bytes": 468
+    },
+    {
+      "path": "completion/linux/identity.json",
+      "sha256": "c5af66f522381fc84f8264c5dd19cb4ad2090ccb7d49a732ba6a82aebf380ba0",
+      "bytes": 1558
+    },
+    {
+      "path": "completion/linux/identity.log",
+      "sha256": "8f0956598a9f54f35019a1206968e10632af57e3acf099a664864f7018d2c358",
+      "bytes": 2407
+    },
+    {
+      "path": "completion/source-inputs.json",
+      "sha256": "e13453854e8ae3b0535af2dff4e492c37bae18c1da303e8f34b8d2af26fca17b",
+      "bytes": 98125
+    },
+    {
+      "path": "completion/package-identity.json",
+      "sha256": "6813be7633e32a4f71f448fb4b1afb6f89fa31e5a5b91fe7bbff73031f5845b3",
+      "bytes": 1763
+    },
+    {
+      "path": "completion/linux/source-info.json",
+      "sha256": "7676a6274b564c1352f5fcbd334479a77877014e8e531a4b1f056486667b58e1",
+      "bytes": 122614
+    },
+    {
+      "path": "completion/linux/post-gate-verification.json",
+      "sha256": "65c86a97941d9e9df392865234055c60890c6ed9c75b7d4f0baa247a03515aad",
+      "bytes": 5252
+    },
+    {
+      "path": "completion/linux/manifest.json",
+      "sha256": "5b9023e396a27cf879e5a0f936dc44ebe47aaceaa5c78d6056a3fb5024c4cc06",
+      "bytes": 133384
+    },
+    {
+      "path": "completion/linux/evidence-sha256.json",
+      "sha256": "08393ed2d7550dd91b98cccaa4be31dbb187838c19fc47074339b3c6029a3c37",
+      "bytes": 1561
+    },
+    {
+      "path": "completion/installation-proof.json",
+      "sha256": "1b724ad0be2347fbde7077e9b87caa88e683ce70b919544fccd43bb8e1b3d946",
+      "bytes": 1207
+    },
+    {
+      "path": "completion/installed-running.json",
+      "sha256": "1f55086a937c116bd7d52194ef208f2199442213a657697df49a2e7b1a533c72",
+      "bytes": 895
+    },
+    {
+      "path": "completion/restoration-and-installed-smoke.json",
+      "sha256": "32d907627404e8c50c58e05851934baf3827853d17330eba98b2f85091f7a072",
+      "bytes": 976
+    },
+    {
+      "path": "recovery-final/system-preferences-comparison.json",
+      "sha256": "742331391d16b908a4a0db966531ff11855808a43a1f5352c75bc49760084795",
+      "bytes": 612
+    },
+    {
+      "path": "completion/cold-scroll-native-proof.json",
+      "sha256": "ba67f308b0a76af9c2c81c90524f0125d5f99b975f885eaf0fe8ebc14e0cc0a1",
+      "bytes": 341
+    },
+    {
+      "path": "recovery-final/conflict-retest-proof.json",
+      "sha256": "993e4810ade7477e423ea5056fff36a2cc16c9c7d974ab4a4c695f31bac51821",
+      "bytes": 347
+    },
+    {
+      "path": "completion/system-post-smoke-differences.json",
+      "sha256": "c4ccc585f672e237e650d4f8153c71fc3dd26640f0a51136ee8f9fa6feeffd95",
+      "bytes": 414
+    }
+  ],
+  "private_evidence_retention": {
+    "repository_relative_root": ".local/native-polish-20260910",
+    "versioned": false,
+    "mode": "0700",
+    "manifest_path": "durable-copy-manifest.json",
+    "manifest_sha256": "e36036029621de1ff4b744066e89770942d0155aa74c2928a0f4f4be4e11ce37",
+    "recorded_regular_file_count": 3308,
+    "all_regular_files_byte_identical": true,
+    "symlinks_preserved_without_following": true,
+    "this_summary_raw_evidence_hashes_rechecked_against_durable_copy": true
+  }
+}

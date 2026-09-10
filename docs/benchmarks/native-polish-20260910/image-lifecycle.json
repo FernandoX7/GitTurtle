@@ -1,0 +1,372 @@
+[
+  {
+    "line": 52,
+    "byte_start": 5386,
+    "byte_end": 5435,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 1
+  },
+  {
+    "line": 53,
+    "byte_start": 5435,
+    "byte_end": 5484,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 2
+  },
+  {
+    "line": 54,
+    "byte_start": 5484,
+    "byte_end": 5533,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 3
+  },
+  {
+    "line": 55,
+    "byte_start": 5533,
+    "byte_end": 5592,
+    "kind": "lifecycle",
+    "event": "image_retire",
+    "images": 3,
+    "frames": 3,
+    "retained_images": 0
+  },
+  {
+    "line": 57,
+    "byte_start": 5632,
+    "byte_end": 5681,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 1
+  },
+  {
+    "line": 58,
+    "byte_start": 5681,
+    "byte_end": 5730,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 2
+  },
+  {
+    "line": 60,
+    "byte_start": 5768,
+    "byte_end": 5817,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 3
+  },
+  {
+    "line": 63,
+    "byte_start": 5894,
+    "byte_end": 5943,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 4
+  },
+  {
+    "line": 64,
+    "byte_start": 5943,
+    "byte_end": 5992,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 5
+  },
+  {
+    "line": 65,
+    "byte_start": 5992,
+    "byte_end": 6041,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 6
+  },
+  {
+    "line": 66,
+    "byte_start": 6041,
+    "byte_end": 6090,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 7
+  },
+  {
+    "line": 69,
+    "byte_start": 6167,
+    "byte_end": 6216,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 8
+  },
+  {
+    "line": 70,
+    "byte_start": 6216,
+    "byte_end": 6265,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 9
+  },
+  {
+    "line": 71,
+    "byte_start": 6265,
+    "byte_end": 6324,
+    "kind": "lifecycle",
+    "event": "image_retire",
+    "images": 2,
+    "frames": 2,
+    "retained_images": 7
+  },
+  {
+    "line": 72,
+    "byte_start": 6324,
+    "byte_end": 6373,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 8
+  },
+  {
+    "line": 73,
+    "byte_start": 6373,
+    "byte_end": 6422,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 9
+  },
+  {
+    "line": 74,
+    "byte_start": 6422,
+    "byte_end": 6481,
+    "kind": "lifecycle",
+    "event": "image_retire",
+    "images": 2,
+    "frames": 2,
+    "retained_images": 7
+  },
+  {
+    "line": 75,
+    "byte_start": 6481,
+    "byte_end": 6530,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 8
+  },
+  {
+    "line": 76,
+    "byte_start": 6530,
+    "byte_end": 6579,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 9
+  },
+  {
+    "line": 77,
+    "byte_start": 6579,
+    "byte_end": 6638,
+    "kind": "lifecycle",
+    "event": "image_retire",
+    "images": 2,
+    "frames": 2,
+    "retained_images": 7
+  },
+  {
+    "line": 78,
+    "byte_start": 6638,
+    "byte_end": 6687,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 8
+  },
+  {
+    "line": 79,
+    "byte_start": 6687,
+    "byte_end": 6736,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 9
+  },
+  {
+    "line": 81,
+    "byte_start": 6776,
+    "byte_end": 6826,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 10
+  },
+  {
+    "line": 82,
+    "byte_start": 6826,
+    "byte_end": 6876,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 11
+  },
+  {
+    "line": 84,
+    "byte_start": 6914,
+    "byte_end": 6964,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 12
+  },
+  {
+    "line": 85,
+    "byte_start": 6964,
+    "byte_end": 7014,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 13
+  },
+  {
+    "line": 86,
+    "byte_start": 7014,
+    "byte_end": 7074,
+    "kind": "lifecycle",
+    "event": "image_retire",
+    "images": 2,
+    "frames": 2,
+    "retained_images": 11
+  },
+  {
+    "line": 87,
+    "byte_start": 7074,
+    "byte_end": 7133,
+    "kind": "lifecycle",
+    "event": "image_retire",
+    "images": 2,
+    "frames": 2,
+    "retained_images": 9
+  },
+  {
+    "line": 88,
+    "byte_start": 7133,
+    "byte_end": 7183,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 10
+  },
+  {
+    "line": 89,
+    "byte_start": 7183,
+    "byte_end": 7233,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 11
+  },
+  {
+    "line": 90,
+    "byte_start": 7233,
+    "byte_end": 7283,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 12
+  },
+  {
+    "line": 91,
+    "byte_start": 7283,
+    "byte_end": 7333,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 13
+  },
+  {
+    "line": 92,
+    "byte_start": 7333,
+    "byte_end": 7393,
+    "kind": "lifecycle",
+    "event": "image_retire",
+    "images": 2,
+    "frames": 2,
+    "retained_images": 11
+  },
+  {
+    "line": 93,
+    "byte_start": 7393,
+    "byte_end": 7452,
+    "kind": "lifecycle",
+    "event": "image_retire",
+    "images": 2,
+    "frames": 2,
+    "retained_images": 9
+  },
+  {
+    "line": 94,
+    "byte_start": 7452,
+    "byte_end": 7502,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 10
+  },
+  {
+    "line": 95,
+    "byte_start": 7502,
+    "byte_end": 7552,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 11
+  },
+  {
+    "line": 96,
+    "byte_start": 7552,
+    "byte_end": 7611,
+    "kind": "lifecycle",
+    "event": "image_retire",
+    "images": 2,
+    "frames": 2,
+    "retained_images": 9
+  },
+  {
+    "line": 97,
+    "byte_start": 7611,
+    "byte_end": 7661,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 10
+  },
+  {
+    "line": 98,
+    "byte_start": 7661,
+    "byte_end": 7711,
+    "kind": "lifecycle",
+    "event": "image_track",
+    "frames": 1,
+    "retained_images": 11
+  },
+  {
+    "line": 104,
+    "byte_start": 8052,
+    "byte_end": 8111,
+    "kind": "lifecycle",
+    "event": "image_retire",
+    "images": 3,
+    "frames": 3,
+    "retained_images": 8
+  }
+]

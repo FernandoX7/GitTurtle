@@ -4,13 +4,25 @@ Current milestone: [native polish and pull-request review](native-polish-milesto
 
 This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native interaction evidence is macOS-specific. Current platform execution and access limits belong in the active milestone and [environment report](benchmarks/2026-09-09-milestone-environment.md). The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Distribution is outside the current milestone.
 
+## Final September 10 native polish milestone
+
+[Final source `eb3dd26`](native-polish-milestone.md#final-corrections-installation-and-restoration)
+passed macOS and Linux formatting, workspace tests, strict all-target Clippy and
+release builds. The exact installed `/Applications/GitTurtle.app` passed bundle,
+running-identity and native Compare/Back/Settings checks; original application
+state and system settings were restored. [Validation identities and log hashes](benchmarks/native-polish-20260910/validation.json),
+[32 unaltered native visuals](benchmarks/native-polish-20260910/visuals/README.md)
+and the separately identified [21 min 58 sec resource session](benchmarks/native-polish-20260910/README.md)
+retain their exercised source boundaries. Live GitHub, hosted CI, native Linux UI,
+spoken VoiceOver and sleep/wake remain unverified.
+
 ## Final September 9 consistency milestone
 
 [Source `92ea02c` installation and restoration](consistency-milestone.md#final-build-installation-and-state-restoration) records the installed UUID/signature/resource checks, 461 macOS and 457 Linux passing tests, native workflow coverage and original-state restoration. The [mixed native session](benchmarks/2026-09-09-milestone-native.md), [graph measurements](benchmarks/2026-09-09-milestone-graph.md) and [image-retention correction](benchmarks/2026-09-09-preview-lifetime.md) preserve distinct measurement boundaries and raw observations. That milestone ended with an original-repository access limitation; the current milestone records successful reopening of the unchanged build without permission changes. Its hosted/Keychain/hardware/Linux-window and tool-specific limits remain explicit in that record.
 
 ## Current validation guidance
 
-The dated records below apply to their named builds, including the behavior and limitations those builds had. They do not establish native or package coverage for subsequent source changes. The [current feature overview](../README.md#current-source-features), [architecture and bounds](architecture.md), [active milestone](next-milestone.md), [previous macOS milestone](macos-milestone.md), and [earlier everyday-work implementation record](everyday-work-plan.md) distinguish implemented behavior from build-specific evidence. Earlier package passes do not establish coverage for the ten current feature areas. The [preview matrix](file-previews.md), [profiles](profiles.md), [command palette](command-palette.md) and [rewritten-series review](rewritten-series.md) specify the corresponding implemented behavior; the active ledger records their native acceptance.
+The dated records below apply to their named builds, including the behavior and limitations those builds had. They do not establish native or package coverage for subsequent source changes. The [current feature overview](../README.md#current-source-features), [architecture and bounds](architecture.md), [active milestone](native-polish-milestone.md), [previous macOS milestone](macos-milestone.md), and [earlier everyday-work implementation record](everyday-work-plan.md) distinguish implemented behavior from build-specific evidence. Earlier package passes do not establish coverage for the ten current feature areas. The [preview matrix](file-previews.md), [profiles](profiles.md), [command palette](command-palette.md) and [rewritten-series review](rewritten-series.md) specify the corresponding implemented behavior; the active ledger records their native acceptance.
 
 For changes to the current workflows, use disposable repositories and local remotes for mutations, and select the relevant checks below. Record the exercised source/build identity and independently inspect Git results; the presence of a control or a passing core fixture does not by itself verify its native interaction.
 
@@ -37,7 +49,7 @@ Native checks should also cover narrow/wide layouts, long names, large lists, te
 
 ### Retained review and recovery workflow checks
 
-These rows describe required checks, not completed native passes. Record results and the exercised build in [the current milestone ledger](next-milestone.md); keep final release, installed executable identity and platform/account-dependent evidence separate. Re-run a successful check only after relevant changes or a concrete unresolved concern.
+These rows describe required checks, not completed native passes. Record results and the exercised build in [the current milestone ledger](native-polish-milestone.md); keep final release, installed executable identity and platform/account-dependent evidence separate. Re-run a successful check only after relevant changes or a concrete unresolved concern.
 
 | Required feature | Current validation scope |
 | --- | --- |
@@ -374,4 +386,4 @@ Process RSS snapshots were about 142.3 MiB after the outbound traversal and 143.
 - Incremental graph preparation preserves a bounded frontier across pages, with at most128 simultaneous lanes and200,000 parent/edge budget entries as defined by the worker. Above the budget, the UI explains why connections are hidden and shows isolated nodes instead of incomplete ancestry lines.
 - The preview cache is limited to 32 entries and 128 MiB of retained CPU content allocations. UI-held references and GPU resources have separate lifetimes. Search and file history can terminate active Git processes; other reads/decodes retain their individual bounds and cancellation checkpoints. Input/allocation limits are not a process sandbox or a hard end-to-end deadline.
 - Blame and line history have bounded text/output/lineage, explicit uncommitted and shallow-boundary states, and cancellable Git reads. Tag actions preserve configured signing and captured local/remote identities; ignore actions preserve destination content, tracked files and unrelated index/worktree data. Their current semantics do not retroactively expand the historical native evidence.
-- Available Linux/aarch64 checks and candidate failures are recorded by exact snapshot in the [current Linux evidence](benchmarks/2026-09-09-next-linux-validation.md). Earlier source `92ea02c` passed457 unique tests as recorded in its [environment evidence](benchmarks/2026-09-09-milestone-environment.md#image-lifetime-correction-linux-validation). Linux native-window interaction, hosted CI execution, live-provider sign-in, real Keychain unlock and hardware-backed signing remain unverified here. A quality workflow is authored; local .app packaging is for development verification. Distribution, installers, notarization and publishing are outside this milestone.
+- Available Linux/aarch64 checks and candidate failures are recorded by exact snapshot in the [current Linux evidence](benchmarks/native-polish-20260910/validation.json). Earlier source `92ea02c` passed457 unique tests as recorded in its [environment evidence](benchmarks/2026-09-09-milestone-environment.md#image-lifetime-correction-linux-validation). Linux native-window interaction, hosted CI execution, live-provider sign-in, real Keychain unlock and hardware-backed signing remain unverified here. A quality workflow is authored; local .app packaging is for development verification. Distribution, installers, notarization and publishing are outside this milestone.
