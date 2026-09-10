@@ -1,6 +1,6 @@
 # Validation notes
 
-Current milestone: [workspaces, interactive previews, collaboration and accessibility](next-milestone.md), with the canonical [design contract](../DESIGN.md). The prior [review and recovery native/build verification](review-native-verification.md) and [macOS milestone evidence](macos-native-verification.md) remain tied to their named builds.
+Current milestone: [native polish and pull-request review](native-polish-milestone.md), with the canonical [design contract](../DESIGN.md). The prior [review and recovery native/build verification](review-native-verification.md) and [macOS milestone evidence](macos-native-verification.md) remain tied to their named builds.
 
 This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native interaction evidence is macOS-specific. Current platform execution and access limits belong in the active milestone and [environment report](benchmarks/2026-09-09-milestone-environment.md). The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Distribution is outside the current milestone.
 

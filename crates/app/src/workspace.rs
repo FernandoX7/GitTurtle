@@ -62,11 +62,9 @@ impl GitTurtle {
             return;
         };
         cx.spawn_in(window, async move |this, cx| {
-            let result = response
-                .await
-                .unwrap_or_else(|_| Err(anyhow::anyhow!("Draft save ended without a result")));
+            let result = response.await;
             let _ = this.update_in(cx, |this, _, cx| {
-                this.draft_save_error = result.err().map(|error| format!("{error:#}"));
+                this.draft_save_error = result.err();
                 cx.notify();
             });
         })
@@ -1369,7 +1367,7 @@ impl GitTurtle {
         let branch_picker = self.render_branch_picker(cx);
         div().flex().flex_col().flex_shrink_0().bg(rgb(p.panel)).border_b_1().border_color(rgb(p.border))
             .child(
-                div().min_h(crate::appearance::ui_size(54.)).px_4().py_2().flex().flex_wrap().items_center().gap_2()
+                div().min_h(crate::appearance::ui_size(46.)).px_3().py_1().flex().flex_wrap().items_center().gap_2()
                     .child(branch_picker)
                     .children(self.work_status.as_ref().map(|status| {
                         let tooltip = status.upstream.as_ref().map_or_else(
@@ -1408,7 +1406,7 @@ impl GitTurtle {
                             }
                         };
                         action_button(id, label, id).when(id == "push", |button| button.primary())
-                            .disabled(unavailable).tooltip(tooltip)
+                            .disabled(unavailable).accessibility_label(format!("{label}: {tooltip}")).tooltip(tooltip)
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 let remote = this.remote_name.read(cx).value().trim().to_owned();
                                 let branch = this.remote_branch.read(cx).value().trim().to_owned();
@@ -1435,7 +1433,7 @@ impl GitTurtle {
                         .child(div().flex().flex_col().gap_1()
                             .child(action_field_label("Find or create a branch", p.muted))
                             .child(div().flex().items_center().gap_1()
-                                .child(div().w(px(170.)).child(Input::new(&self.branch_name).text_size(crate::appearance::ui_text(12.)).disabled(busy)))
+                                .child(div().w(appearance::ui_size(170.)).child(Input::new(&self.branch_name).aria_label("Branch to switch to or create").text_size(crate::appearance::ui_text(12.)).disabled(busy)))
                                 .child(button("checkout-branch", "Switch", "branch", false).disabled(busy || branch_empty)
                                     .tooltip("Switch to the named local branch")
                                     .on_click(cx.listener(|this, _, window, cx| {
@@ -1449,12 +1447,12 @@ impl GitTurtle {
                                         this.write(WriteCommand::CreateBranch { name, start_point: None }, "Creating branch…", window, cx);
                                     })))))
                         .child(div().w(px(1.)).h(crate::appearance::ui_size(32.)).mx_1().bg(rgb(p.border)))
-                        .child(div().w(px(120.)).flex().flex_col().gap_1()
+                        .child(div().w(appearance::ui_size(120.)).flex().flex_col().gap_1()
                             .child(action_field_label("Remote", p.muted))
-                            .child(Input::new(&self.remote_name).text_size(crate::appearance::ui_text(12.)).disabled(busy)))
-                        .child(div().w(px(200.)).flex().flex_col().gap_1()
+                            .child(Input::new(&self.remote_name).aria_label("Git remote target").text_size(crate::appearance::ui_text(12.)).disabled(busy)))
+                        .child(div().w(appearance::ui_size(200.)).flex().flex_col().gap_1()
                             .child(action_field_label("Remote branch", p.muted))
-                            .child(Input::new(&self.remote_branch).text_size(crate::appearance::ui_text(12.)).disabled(busy))))
+                            .child(Input::new(&self.remote_branch).aria_label("Remote branch target").text_size(crate::appearance::ui_text(12.)).disabled(busy))))
                     .child(div().flex().items_center().gap_1p5().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))
                         .child(icon("remote", 12., p.muted))
                         .child(div().min_w_0().truncate().child(remote.map_or_else(
@@ -1477,7 +1475,7 @@ fn action_button(id: impl Into<ElementId>, label: impl Into<SharedString>, symbo
         .icon(
             Icon::default()
                 .path(format!("icons/{symbol}.svg"))
-                .size(px(16.)),
+                .size(appearance::ui_size(16.)),
         )
 }
 

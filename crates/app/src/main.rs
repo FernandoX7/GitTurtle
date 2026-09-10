@@ -286,6 +286,14 @@ struct GitTurtle {
     column_drag: Option<(columns::ColumnId, Pixels, f32)>,
     column_menu: bool,
     git_actions_open: bool,
+    layout_trace: Option<(
+        Size<Pixels>,
+        appearance::ThemeChoice,
+        appearance::Density,
+        u8,
+        u8,
+        bool,
+    )>,
     history_horizontal: ScrollHandle,
     worker: Worker,
     task: Option<Task<()>>,
@@ -486,7 +494,8 @@ impl GitTurtle {
             settings_drafts,
             column_drag: None,
             column_menu: false,
-            git_actions_open: true,
+            git_actions_open: false,
+            layout_trace: None,
             history_horizontal: ScrollHandle::new(),
             worker: Worker::new(),
             task: None,
@@ -561,6 +570,7 @@ impl GitTurtle {
         this.load_profiles(window, cx);
         this.install_draft_quit_observer(cx);
         this.install_tab_quit_observer(window, cx);
+        this.draft_saver.install_quit_observer(cx);
         this.subscriptions.push(cx.subscribe_in(
             &file_filter,
             window,
@@ -1572,9 +1582,9 @@ fn button(
         .ghost()
         .h(appearance::ui_size(28.))
         .min_w(appearance::ui_size(28.))
-        .px(appearance::ui_size(10.))
+        .px(appearance::ui_size(if label.is_empty() { 6. } else { 10. }))
         .gap(appearance::ui_size(6.))
-        .rounded(px(7.))
+        .rounded(appearance::ui_size(7.))
         .selected(active)
         .text_size(crate::appearance::ui_text(12.));
     if active {
@@ -1583,7 +1593,9 @@ fn button(
         button = button.secondary().hover(|style| style.opacity(0.9));
     }
     if label.is_empty() {
-        button = button.accessibility_label(format!("{} file path", symbol));
+        button = button
+            .w(appearance::ui_size(28.))
+            .accessibility_label(format!("{} file path", symbol));
     } else {
         button = button.label(label);
     }
@@ -1591,13 +1603,16 @@ fn button(
         button = button.icon(
             Icon::default()
                 .path(format!("icons/{symbol}.svg"))
-                .size(px(16.)),
+                .size(appearance::ui_size(16.)),
         );
     }
     button
 }
 fn empty(title: &str, detail: &str) -> AnyElement {
     div()
+        .id(SharedString::from(format!("empty-state:{title}")))
+        .role(Role::Label)
+        .aria_label(format!("{title}. {detail}"))
         .size_full()
         .flex()
         .flex_col()

@@ -2,7 +2,10 @@
 use crate::*;
 use anyhow::{Result, ensure};
 use futures::FutureExt;
-use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
+    component::menu::{DropdownMenu, PopupMenuItem},
+    prelude::FluentBuilder,
+};
 use serde::{Deserialize, Serialize};
 use std::{fs::File, io::Read, path::Path};
 
@@ -1115,6 +1118,8 @@ impl GitTurtle {
                 );
             } else {
                 self.page = AppPage::Projects;
+                self.page_return_focus = None;
+                self.app_focus.focus(window, cx);
                 self.hub
                     .update(cx, |hub, cx| hub.set_can_go_back(false, cx));
             }
@@ -1595,6 +1600,95 @@ impl GitTurtle {
         }
         self.save_repository_session(window, cx);
     }
+    fn repository_tabs_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let owner = cx.entity().downgrade();
+        button("repository-workspaces", "Workspaces", "worktree", false)
+            .dropdown_caret(true)
+            .accessibility_label("Workspaces and tab actions")
+            .tooltip("Switch, pin or reorder tabs; manage saved workspaces")
+            .dropdown_menu(move |mut menu, _, cx| {
+                let Some(view) = owner.upgrade() else {
+                    return menu;
+                };
+                let this = view.read(cx);
+                let active = this.repository_tabs.active;
+                let active_path = active
+                    .and_then(|index| this.repository_tabs.tabs.get(index))
+                    .map(|tab| tab.path.clone());
+                menu = menu
+                    .max_h(appearance::ui_size(440.))
+                    .scrollable(true)
+                    .label("Open repositories");
+                for (index, tab) in this.repository_tabs.tabs.iter().enumerate() {
+                    let path = tab.path.clone();
+                    let target = path.clone();
+                    let owner = owner.clone();
+                    let name = path
+                        .file_name()
+                        .unwrap_or(path.as_os_str())
+                        .to_string_lossy();
+                    menu = menu.item(
+                        PopupMenuItem::new(format!("{}  {}", index + 1, name))
+                            .checked(active == Some(index))
+                            .on_click(move |_, window, cx| {
+                                let _ = owner.update(cx, |this, cx| {
+                                    if let Some(index) = this.repository_tabs.find(&target) {
+                                        this.switch_repository_tab(index, window, cx);
+                                    }
+                                });
+                            }),
+                    );
+                }
+                if let Some(path) = active_path {
+                    let pinned = this.tab_is_pinned(&path);
+                    let pin_owner = owner.clone();
+                    let pin_path = path.clone();
+                    menu = menu.separator().item(
+                        PopupMenuItem::new(if pinned {
+                            "Unpin current repository"
+                        } else {
+                            "Pin current repository"
+                        })
+                        .disabled(this.repository.is_none())
+                        .on_click(move |_, window, cx| {
+                            let _ = pin_owner.update(cx, |this, cx| {
+                                if this.path.as_ref() == Some(&pin_path) {
+                                    this.toggle_repository_pin(window, cx);
+                                }
+                            });
+                        }),
+                    );
+                    for (direction, label, disabled) in [
+                        (-1, "Move current tab left", active == Some(0)),
+                        (
+                            1,
+                            "Move current tab right",
+                            active.is_none_or(|index| index + 1 >= this.repository_tabs.tabs.len()),
+                        ),
+                    ] {
+                        let owner = owner.clone();
+                        let target = path.clone();
+                        menu = menu.item(PopupMenuItem::new(label).disabled(disabled).on_click(
+                            move |_, window, cx| {
+                                let _ = owner.update(cx, |this, cx| {
+                                    if this.path.as_ref() == Some(&target) {
+                                        this.move_repository_tab(direction, window, cx);
+                                    }
+                                });
+                            },
+                        ));
+                    }
+                }
+                let library_owner = owner.clone();
+                menu.separator()
+                    .item(PopupMenuItem::new("Manage saved workspaces…").on_click(
+                        move |_, window, cx| {
+                            let _ = library_owner
+                                .update(cx, |this, cx| this.open_repository_library(window, cx));
+                        },
+                    ))
+            })
+    }
     pub(super) fn render_repository_tabs(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
         div()
@@ -1660,7 +1754,7 @@ impl GitTurtle {
                                                 if selected { ", selected" } else { "" },
                                                 if busy { ", Git operation running" } else { "" }
                                             ))
-                                            .max_w(px(220.))
+                                            .max_w(appearance::ui_size(220.))
                                             .tooltip(format!(
                                                 "{}\nSwitch tab {} · {}⌥{}",
                                                 tab.path.display(),
@@ -1677,7 +1771,7 @@ impl GitTurtle {
                                             })),
                                     )
                                     .child(
-                                        button(("close-repository-tab", index), "×", "", false)
+                                        button(("close-repository-tab", index), "", "close", false)
                                             .accessibility_label(format!(
                                                 "Close repository tab {}; drafts remain saved",
                                                 tab.path.display()
@@ -1694,60 +1788,14 @@ impl GitTurtle {
                     ),
             )
             .child(
-                button("new-repository-tab", "+", "", false)
+                button("new-repository-tab", "", "plus", false)
                     .accessibility_label("Open repository tab")
                     .tooltip("Open a repository tab")
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.choose_repository(&OpenRepository, window, cx)
                     })),
             )
-            .child(
-                button(
-                    "pin-repository-tab",
-                    if self
-                        .path
-                        .as_deref()
-                        .is_some_and(|path| self.tab_is_pinned(path))
-                    {
-                        "Unpin"
-                    } else {
-                        "Pin"
-                    },
-                    "",
-                    false,
-                )
-                .disabled(self.repository.is_none())
-                .on_click(
-                    cx.listener(|this, _, window, cx| this.toggle_repository_pin(window, cx)),
-                ),
-            )
-            .child(
-                button("repository-tab-move-left", "←", "", false)
-                    .accessibility_label("Move repository tab left")
-                    .tooltip("Move active repository tab left")
-                    .disabled(self.repository_tabs.active.is_none_or(|index| index == 0))
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.move_repository_tab(-1, window, cx)),
-                    ),
-            )
-            .child(
-                button("repository-tab-move-right", "→", "", false)
-                    .accessibility_label("Move repository tab right")
-                    .tooltip("Move active repository tab right")
-                    .disabled(
-                        self.repository_tabs
-                            .active
-                            .is_none_or(|index| index + 1 >= self.repository_tabs.tabs.len()),
-                    )
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.move_repository_tab(1, window, cx)),
-                    ),
-            )
-            .child(
-                button("repository-workspaces", "Workspaces", "", false).on_click(
-                    cx.listener(|this, _, window, cx| this.open_repository_library(window, cx)),
-                ),
-            )
+            .child(self.repository_tabs_menu(cx))
             .into_any_element()
     }
 }
@@ -1877,6 +1925,62 @@ mod tests {
                 app._display_preferences_task = None;
             })
         });
+    }
+
+    #[gpui::test]
+    async fn closing_the_last_repository_tab_keeps_application_actions_reachable(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::component::Root;
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.executor().allow_parking();
+        let fixture = tempfile::tempdir().unwrap();
+        let repository = GitRepository::init(fixture.path().join("repository"), "main").unwrap();
+        let path = repository.path().to_owned();
+        let destination = fixture.path().join("isolated-session.json");
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+        });
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let observed = captured.clone();
+        let (_, window_cx) = cx.add_window_view(move |window, cx| {
+            let app = cx.new(|cx| {
+                let mut app = GitTurtle::new(
+                    Some(path),
+                    Preferences::default(),
+                    Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                );
+                app.repository_tabs.save_path = Some(destination);
+                app
+            });
+            *captured.borrow_mut() = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let app = observed.borrow_mut().take().unwrap();
+        settle_tab_test(&app, window_cx).await;
+        window_cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            app.update(cx, |app, cx| {
+                assert_eq!(app.repository_tabs.tabs.len(), 1);
+                app.focus.focus(window, cx);
+                app.page_return_focus = Some(app.focus.clone());
+                app.close_repository_tab(0, window, cx);
+                assert!(app.page == AppPage::Projects);
+                assert!(app.page_return_focus.is_none());
+                assert!(app.app_focus.is_focused(window));
+            });
+            window.draw(cx).clear(cx);
+            window.dispatch_action(Box::new(ShowSettings), cx);
+        });
+        window_cx.executor().run_until_parked();
+        assert!(app.read_with(window_cx, |app, _| app.page == AppPage::Settings));
+        settle_tab_test(&app, window_cx).await;
     }
 
     #[gpui::test]

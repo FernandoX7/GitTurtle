@@ -149,6 +149,7 @@ impl RenderOnce for Icon {
         let text_color = self.text_color.unwrap_or_else(|| window.text_style().color);
         let text_size = window.text_style().font_size.to_pixels(window.rem_size());
         let has_base_size = self.style.size.width.is_some() || self.style.size.height.is_some();
+        let explicit_size = self.style.size.clone();
 
         let mut base = self.base;
         *base.style() = self.style;
@@ -162,6 +163,17 @@ impl RenderOnce for Icon {
                 Size::Small => this.size_3p5(),
                 Size::Medium => this.size_4(),
                 Size::Large => this.size_6(),
+            })
+            // Keep a component's default for each unspecified dimension while
+            // preserving geometry explicitly supplied on its Icon.
+            .map(|mut this| {
+                if explicit_size.width.is_some() {
+                    this.style().size.width = explicit_size.width;
+                }
+                if explicit_size.height.is_some() {
+                    this.style().size.height = explicit_size.height;
+                }
+                this
             })
             .path(self.path)
     }

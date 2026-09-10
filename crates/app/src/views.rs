@@ -9,11 +9,13 @@ impl GitTurtle {
     pub(super) fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         let busy = self.operation_busy.is_some();
+        let back_label = self.back_label();
+        let back_to_projects = back_label == "Back to Projects";
         if self.page == AppPage::Settings {
             return div()
-                .min_h(appearance::ui_size(56.))
-                .px_4()
-                .py_2()
+                .min_h(appearance::ui_size(48.))
+                .px_3()
+                .py_1p5()
                 .flex()
                 .items_center()
                 .gap_3()
@@ -21,41 +23,66 @@ impl GitTurtle {
                 .border_b_1()
                 .border_color(rgb(p.border))
                 .child(
-                    button("page-back", self.back_label(), "arrow-left", false).on_click(
-                        cx.listener(|this, _, window, cx| this.return_from_page(window, cx)),
-                    ),
+                    button("page-back", "", "arrow-left", false)
+                        .accessibility_label(back_label)
+                        .tooltip(format!("{back_label} · {}[", primary_label()))
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.return_from_page(window, cx)),
+                        ),
                 )
-                .child(app_icon(28.))
+                .child(app_icon(f32::from(appearance::ui_size(28.))))
                 .child(
                     div()
-                        .text_size(appearance::ui_text(15.))
+                        .text_size(appearance::ui_text(14.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .child("Settings"),
                 )
                 .into_any_element();
         }
         div()
-            .min_h(crate::appearance::ui_size(56.))
-            .py_2()
+            .min_h(appearance::ui_size(48.))
+            .py_1p5()
             .flex_wrap()
             .flex_shrink_0()
             .flex()
             .items_center()
-            .gap_3()
-            .px_4()
+            .gap_2()
+            .px_3()
             .bg(rgb(p.panel))
             .border_b_1()
             .border_color(rgb(p.border))
             .child(
-                button("page-back", self.back_label(), "arrow-left", false)
-                    .disabled(busy && self.mode == WorkspaceMode::History)
-                    .tooltip(format!("{} · {}[", self.back_label(), primary_label()))
-                    .on_click(cx.listener(|this, _, window, cx| this.navigate_back(window, cx))),
+                button(
+                    "page-back",
+                    if back_to_projects { "Projects" } else { "" },
+                    if back_to_projects {
+                        "folder"
+                    } else {
+                        "arrow-left"
+                    },
+                    false,
+                )
+                .accessibility_label(back_label)
+                .disabled(busy && self.mode == WorkspaceMode::History)
+                .tooltip(format!("{back_label} · {}[", primary_label()))
+                .on_click(cx.listener(|this, _, window, cx| this.navigate_back(window, cx))),
             )
-            .child(app_icon(32.))
+            .child(app_icon(f32::from(appearance::ui_size(28.))))
             .child(
                 div()
                     .id("repository-heading")
+                    .role(Role::Label)
+                    .aria_label(format!(
+                        "Repository {}. {}",
+                        self.repository
+                            .as_ref()
+                            .map(|repo| repo.name())
+                            .unwrap_or_default(),
+                        self.path
+                            .as_ref()
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_default(),
+                    ))
                     .tooltip({
                         let path = self
                             .path
@@ -64,14 +91,14 @@ impl GitTurtle {
                             .unwrap_or_else(|| "GitTurtle".into());
                         move |window, cx| Tooltip::new(path.clone()).build(window, cx)
                     })
-                    .w(px(160.))
-                    .min_w_0()
+                    .w(appearance::ui_size(200.))
+                    .min_w(appearance::ui_size(100.))
                     .flex()
                     .flex_col()
                     .gap_0p5()
                     .child(
                         div()
-                            .text_size(crate::appearance::ui_text(14.))
+                            .text_size(appearance::ui_text(14.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .truncate()
                             .child(
@@ -83,7 +110,7 @@ impl GitTurtle {
                     )
                     .child(
                         div()
-                            .text_size(crate::appearance::ui_text(11.))
+                            .text_size(appearance::ui_text(11.))
                             .text_color(rgb(p.muted))
                             .truncate()
                             .child(
@@ -94,66 +121,90 @@ impl GitTurtle {
                             ),
                     ),
             )
-            .child(
-                button(
-                    "projects",
-                    "Projects",
-                    "folder",
-                    self.page == AppPage::Projects,
-                )
-                .disabled(busy)
-                .on_click(cx.listener(|this, _, window, cx| this.show_projects(window, cx))),
-            )
-            .when(self.repository.is_some(), |el| {
-                el.child(
-                    button(
-                        "history-tab",
-                        "History",
-                        "commit",
-                        self.page == AppPage::Repository && self.mode != WorkspaceMode::Working,
+            .when(self.repository.is_some(), |header| {
+                header
+                    .child(
+                        div()
+                            .flex()
+                            .flex_shrink_0()
+                            .items_center()
+                            .gap_0p5()
+                            .p_0p5()
+                            .rounded(appearance::ui_size(9.))
+                            .bg(rgb(p.subtle))
+                            .child(
+                                button(
+                                    "history-tab",
+                                    "History",
+                                    "",
+                                    self.mode != WorkspaceMode::Working,
+                                )
+                                .toggled(self.mode != WorkspaceMode::Working)
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| {
+                                        this.show_history(window, cx)
+                                    }),
+                                ),
+                            )
+                            .child(
+                                button(
+                                    "changes-tab",
+                                    self.work_status
+                                        .as_ref()
+                                        .map(|status| {
+                                            if status.entries.is_empty() {
+                                                "Changes".into()
+                                            } else {
+                                                format!("Changes · {}", status.entries.len())
+                                            }
+                                        })
+                                        .unwrap_or_else(|| "Changes".into()),
+                                    "",
+                                    self.mode == WorkspaceMode::Working,
+                                )
+                                .toggled(self.mode == WorkspaceMode::Working)
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| {
+                                        this.show_working(window, cx)
+                                    }),
+                                ),
+                            ),
                     )
-                    .on_click(cx.listener(|this, _, window, cx| this.show_history(window, cx))),
-                )
-                .child(
-                    button(
-                        "changes-tab",
-                        self.work_status
-                            .as_ref()
-                            .map(|status| {
-                                if status.entries.is_empty() {
-                                    "Changes".into()
-                                } else {
-                                    format!("Changes · {}", status.entries.len())
-                                }
-                            })
-                            .unwrap_or_else(|| "Changes".into()),
-                        "changes",
-                        self.page == AppPage::Repository && self.mode == WorkspaceMode::Working,
+                    .child(
+                        button("pull-requests", "Pull requests", "", false)
+                            .disabled(busy)
+                            .tooltip("Discover pull requests and review captured changes")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.open_github(window, cx)),
+                            ),
                     )
-                    .on_click(cx.listener(|this, _, window, cx| this.show_working(window, cx))),
-                )
             })
             .child(div().flex_1())
             .children(self.operation_busy.map(|label| {
+                let progress = self
+                    .operation_progress()
+                    .unwrap_or_else(|| label.to_owned());
+                let description = format!(
+                    "{}{}",
+                    progress,
+                    self.operation_repository
+                        .as_ref()
+                        .map_or(String::new(), |path| format!(" in {}", path.display()))
+                );
                 div()
                     .id("operation-progress")
                     .role(Role::Status)
-                    .aria_label(format!(
-                        "{}{}",
-                        self.operation_progress()
-                            .unwrap_or_else(|| label.to_owned()),
-                        self.operation_repository
-                            .as_ref()
-                            .map_or(String::new(), |path| format!(" in {}", path.display()))
-                    ))
+                    .aria_label(description.clone())
+                    .tooltip(move |window, cx| Tooltip::new(description.clone()).build(window, cx))
                     .a11y_synthetic_children(|builder| {
                         builder.parent_node().set_live(gpui::accesskit::Live::Off)
                     })
-                    .text_size(crate::appearance::ui_text(11.))
+                    .max_w(appearance::ui_size(180.))
+                    .truncate()
+                    .text_size(appearance::ui_text(11.))
                     .text_color(rgb(p.accent))
                     .child(
-                        self.operation_progress()
-                            .unwrap_or_else(|| label.to_owned())
+                        progress
                             + &self
                                 .operation_repository
                                 .as_ref()
@@ -170,9 +221,21 @@ impl GitTurtle {
             .when(busy, |header| {
                 header.child(self.render_operation_cancel(cx))
             })
+            .when(!back_to_projects, |header| {
+                header.child(
+                    button("projects", "", "folder", false)
+                        .accessibility_label("Projects")
+                        .tooltip("Open Projects")
+                        .disabled(busy)
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.show_projects(window, cx)),
+                        ),
+                )
+            })
             .child(self.render_profile_button(cx))
             .child(
-                button("settings", "Settings", "settings", false)
+                button("settings", "", "settings", false)
+                    .accessibility_label("Settings")
                     .tooltip(format!("Settings · {},", primary_label()))
                     .on_click(cx.listener(|this, _, window, cx| this.show_settings(window, cx))),
             )
@@ -182,7 +245,7 @@ impl GitTurtle {
     pub(super) fn render_rail(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
         div()
-            .w(px(44.))
+            .w(appearance::ui_size(44.))
             .h_full()
             .flex_shrink_0()
             .flex()
@@ -214,7 +277,7 @@ impl GitTurtle {
                     })),
             )
             .child(div().flex_1())
-            .child(app_icon(24.))
+            .child(app_icon(f32::from(appearance::ui_size(24.))))
             .into_any_element()
     }
 
@@ -519,7 +582,9 @@ impl GitTurtle {
                 } else {
                     "No commits yet"
                 },
-                if self.repository.is_none() {
+                if self.loading.is_some() {
+                    "Loading commit history from this repository."
+                } else if self.repository.is_none() {
                     "Open a Git repository to explore branches, worktrees and changes."
                 } else if self.commits.is_empty() {
                     "Add files to your project, then open Changes to make your first commit."
@@ -1060,6 +1125,8 @@ impl GitTurtle {
             .child(
                 div()
                     .id("commit-metadata")
+                    .role(Role::Group)
+                    .aria_label("Selected commit details")
                     .max_h(px(260.))
                     .overflow_y_scroll()
                     .flex_shrink_0()
@@ -1093,6 +1160,9 @@ impl GitTurtle {
                     )
                     .child(
                         div()
+                            .id("commit-subject")
+                            .role(Role::Label)
+                            .aria_label(commit.subject.clone())
                             .text_size(crate::appearance::ui_text(15.))
                             .line_height(relative(1.35))
                             .font_weight(FontWeight::MEDIUM)
@@ -1100,6 +1170,14 @@ impl GitTurtle {
                     )
                     .child(
                         div()
+                            .id("commit-author-and-identity")
+                            .role(Role::Label)
+                            .aria_label(format!(
+                                "{} · {}. Commit {}",
+                                commit.author,
+                                full_date(commit.timestamp),
+                                commit.oid,
+                            ))
                             .flex()
                             .items_center()
                             .gap_2()
@@ -1128,6 +1206,13 @@ impl GitTurtle {
                             )
                             .child(
                                 div()
+                                    .id("commit-author-name")
+                                    .tooltip({
+                                        let author = commit.author.clone();
+                                        move |window, cx| {
+                                            Tooltip::new(author.clone()).build(window, cx)
+                                        }
+                                    })
                                     .min_w_0()
                                     .flex_1()
                                     .flex()
@@ -1411,15 +1496,13 @@ impl GitTurtle {
             .map(|file| file.path().to_string_lossy().into_owned())
             .unwrap_or("File comparison".into());
         let copy_path = path.clone();
-        let mut toolbar = div()
-            .h(crate::appearance::ui_size(42.))
-            .flex_shrink_0()
+        let mut path_controls = div()
+            .min_h(appearance::ui_size(28.))
+            .min_w(appearance::ui_size(220.))
+            .flex_1()
             .flex()
             .items_center()
-            .gap_2()
-            .px_3()
-            .border_b_1()
-            .border_color(rgb(colors.border))
+            .gap_1()
             .children(
                 self.working_selected
                     .filter(|_| self.mode == WorkspaceMode::Working)
@@ -1450,7 +1533,8 @@ impl GitTurtle {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(crate::appearance::ui_text(11.))
+                    .text_size(crate::appearance::ui_text(12.))
+                    .font_weight(FontWeight::MEDIUM)
                     .tooltip(move |window, cx| Tooltip::new(path.clone()).build(window, cx))
                     .child(
                         file.map(|file| file.path().display().to_string())
@@ -1459,6 +1543,7 @@ impl GitTurtle {
             )
             .children(file.map(|_| {
                 button("copy-path", "", "copy", false)
+                    .accessibility_label("Copy file path")
                     .tooltip("Copy file path")
                     .on_click(move |_, _, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(copy_path.clone()))
@@ -1486,7 +1571,7 @@ impl GitTurtle {
         if let Some(index) =
             blame_index.filter(|_| matches!(self.content.as_deref(), Some(Content::Text { .. })))
         {
-            toolbar = toolbar.child(
+            path_controls = path_controls.child(
                 button("open-blame", "Blame", "", false)
                     .tooltip(
                         "Line attribution and history; working files include uncommitted lines",
@@ -1496,6 +1581,20 @@ impl GitTurtle {
                     ),
             );
         }
+        // Keep the path and its actions together. At narrow widths or larger
+        // interface sizes, modes form another row instead of crushing the path.
+        let mut toolbar = div()
+            .min_h(appearance::ui_size(42.))
+            .flex_shrink_0()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_1p5()
+            .px_3()
+            .py_1()
+            .border_b_1()
+            .border_color(rgb(colors.border))
+            .child(path_controls);
         let content = if let Some(error) = &self.error {
             empty("Preview unavailable", error)
         } else if file.is_none()
@@ -1525,11 +1624,14 @@ impl GitTurtle {
                 } => {
                     let mut modes = div()
                         .flex()
+                        .flex_wrap()
+                        .min_w_0()
+                        .max_w(relative(1.))
                         .items_center()
                         .gap_0p5()
                         .p_0p5()
-                        .rounded(px(7.))
-                        .bg(rgb(colors.panel));
+                        .rounded(appearance::ui_size(9.))
+                        .bg(rgb(colors.subtle));
                     for (mode, name) in [
                         (TextMode::Unified, "Diff"),
                         (TextMode::Split, "Split"),
@@ -1802,6 +1904,30 @@ impl GitTurtle {
 
 impl Render for GitTurtle {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        static TRACE_LAYOUT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *TRACE_LAYOUT.get_or_init(|| std::env::var_os("GITTURTLE_TRACE").is_some()) {
+            let layout = (
+                window.viewport_size(),
+                self.settings.theme,
+                self.settings.density,
+                self.settings.interface_text_size,
+                self.settings.code_text_size,
+                self.git_actions_open,
+            );
+            if self.layout_trace != Some(layout) {
+                self.layout_trace = Some(layout);
+                eprintln!(
+                    "gitturtle.layout viewport={:.0}x{:.0} configured_theme={:?} density={:?} interface={} code={} targets={}",
+                    f32::from(layout.0.width),
+                    f32::from(layout.0.height),
+                    layout.1,
+                    layout.2,
+                    layout.3,
+                    layout.4,
+                    layout.5
+                );
+            }
+        }
         image_lifetime::after_draw(window, cx);
         if self.dialog_layer_subscription.is_none()
             && let Some(Some(root)) = window.root::<Root>()

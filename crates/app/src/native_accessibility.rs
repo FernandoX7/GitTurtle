@@ -258,6 +258,8 @@ impl GitTurtle {
 }
 
 #[cfg(test)]
+mod control_tests;
+#[cfg(test)]
 mod dialog_tests;
 #[cfg(test)]
 mod input_tests;

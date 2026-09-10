@@ -113,7 +113,7 @@ The worker retains at most 32 content entries and 128 MiB of counted CPU payload
 
 | Interaction | Bound |
 | --- | --- |
-| Ordinary history | 500-row increments, up to 10,000 loaded commits |
+| Ordinary history | 500-row pages, a visible window of at most 5,000 rows or 64 MiB, plus one retained selection |
 | Search results | 500 per page; up to 10,000 matches or 64 MiB of retained metadata |
 | Core search call | 4 KiB query; 50,000 scanned commits, 64 MiB output, or 15 seconds; at most 16,384 captured tips |
 | File history | 100 rows per UI page; 32 MiB output and 15 seconds per prefix read; 1,000 rename candidates |
@@ -133,7 +133,7 @@ The worker retains at most 32 content entries and 128 MiB of counted CPU payload
 
 The [Git service budgets](../crates/git-core/README.md#budgets-and-behavior) describe raw-object, partial-staging, stash, and write limits. Bounds report incomplete or unavailable work rather than silently truncating editable content.
 
-The UI traces distinguish commit selection through changed-file presentation (`gitturtle.commit_files_frame_ms`) from file activation through preview preparation (`gitturtle.file_preview_frame_ms`). Each ends at a GPUI frame callback and checks the selection generation and workspace mode. These are separate from worker timings and do not measure OS display presentation or completed GPU execution. Back transitions need their own interaction checks; absence of a preview trace is not a zero-latency result. See [validation](validation.md) for the recorded builds, measurements, and limits, and [design](../DESIGN.md) for the intended interaction language. Incremental ordinary-history traversal remains follow-up work. Current format subsets are specified in the [preview matrix](file-previews.md), and executed Linux gates are distinguished from unverified Linux desktop interaction in the [environment report](benchmarks/2026-09-09-milestone-environment.md).
+The UI traces distinguish commit selection through changed-file presentation (`gitturtle.commit_files_frame_ms`) from file activation through preview preparation (`gitturtle.file_preview_frame_ms`). Each ends at a GPUI frame callback and checks the selection generation and workspace mode. These are separate from worker timings and do not measure OS display presentation or completed GPU execution. Back transitions need their own interaction checks; absence of a preview trace is not a zero-latency result. See [validation](validation.md) for the recorded builds, measurements, and limits, and [design](../DESIGN.md) for the intended interaction language. Ordinary history uses captured incremental traversal; Previous and Newest rebuild a bounded earlier window without retaining all history. Current format subsets are specified in the [preview matrix](file-previews.md), and executed Linux gates are distinguished from unverified Linux desktop interaction in the [environment report](benchmarks/2026-09-09-milestone-environment.md).
 
 Graph rows hold immutable edges in `Arc<[Edge]>`, prepared by the worker. Visible-row render callbacks share those buffers instead of copying the edge vectors on each redraw. This adds a one-time conversion cost during layout; the [construction and clone benchmark](benchmarks/2026-09-08-shared-graph-edges.json) records both sides of that tradeoff separately from native frame measurements. Empty rows and node-only fallback share empty storage.
 

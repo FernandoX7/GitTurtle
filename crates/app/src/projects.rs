@@ -452,16 +452,19 @@ impl ProjectHub {
                     .child(
                         div().flex().items_center().gap_2()
                             .child(hub_icon("clock", 16., colors.muted_foreground))
-                            .child(div().text_size(crate::appearance::ui_text(15.)).font_weight(FontWeight::SEMIBOLD).child("Recently opened")),
+                            .child(hub_text("recent-projects-heading", "Recently opened").role(Role::Heading).text_size(crate::appearance::ui_text(15.)).font_weight(FontWeight::SEMIBOLD)),
                     )
                     .child(
-                        div().px_2().py_0p5().rounded(px(6.))
+                        hub_text("recent-projects-count", if searching { format!("{} of {}", self.filtered.len(), self.recent.len()) } else { self.recent.len().to_string() })
+                            .role(Role::Status)
+                            .aria_label(if searching { format!("{} matching projects out of {} recent projects", self.filtered.len(), self.recent.len()) } else { format!("{} recent projects", self.recent.len()) })
+                            .a11y_synthetic_children(crate::native_accessibility::polite)
+                            .px_2().py_0p5().rounded(px(6.))
                             .bg(colors.secondary).text_size(crate::appearance::ui_text(11.))
-                            .text_color(colors.muted_foreground)
-                            .child(if searching { format!("{} of {}", self.filtered.len(), self.recent.len()) } else { self.recent.len().to_string() }),
+                            .text_color(colors.muted_foreground),
                     ),
             )
-            .child(Input::new(&self.search).disabled(self.unavailable()).prefix(Icon::default().path("icons/search.svg").size(px(15.)))
+            .child(Input::new(&self.search).aria_label("Find a recent project by name or folder").disabled(self.unavailable()).prefix(Icon::default().path("icons/search.svg").size(px(15.)))
                 .when(!query.is_empty(), |input| input.suffix(
                     Button::new("hub-clear-search-input")
                         .icon(Icon::default().path("icons/close.svg"))
@@ -492,8 +495,8 @@ impl ProjectHub {
                                 .gap_3()
                                 .text_center()
                                 .child(hub_icon("folder", 28., colors.muted_foreground))
-                                .child(div().text_size(crate::appearance::ui_text(15.)).font_weight(FontWeight::MEDIUM).child(if self.recent.is_empty() { "Your next project starts here" } else { "No matching projects" }))
-                                .child(div().max_w(px(240.)).text_size(crate::appearance::ui_text(12.)).line_height(relative(1.5)).text_color(colors.muted_foreground).child(if self.recent.is_empty() { "Open, clone, or create a repository. It will be waiting here next time." } else { "Try another project name or folder." }))
+                                .child(hub_text("recent-projects-empty-heading", if self.recent.is_empty() { "Your next project starts here" } else { "No matching projects" }).role(Role::Heading).text_size(crate::appearance::ui_text(15.)).font_weight(FontWeight::MEDIUM))
+                                .child(hub_text("recent-projects-empty-description", if self.recent.is_empty() { "Open, clone, or create a repository. It will be waiting here next time." } else { "Try another project name or folder." }).max_w(px(240.)).text_size(crate::appearance::ui_text(12.)).line_height(relative(1.5)).text_color(colors.muted_foreground))
                                 .when(searching, |empty| empty.child(Button::new("hub-clear-search").label("Clear search").disabled(self.unavailable()).on_click(cx.listener(|this, _, window, cx| this.clear_search(window, cx))))),
                         )
                     })
@@ -516,13 +519,16 @@ impl ProjectHub {
             .flex_col()
             .gap_2()
             .child(
-                div()
+                hub_text(label, label)
                     .text_size(crate::appearance::ui_text(12.))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(Theme::global(cx).colors.foreground)
-                    .child(label),
+                    .text_color(Theme::global(cx).colors.foreground),
             )
-            .child(Input::new(input).disabled(self.unavailable()))
+            .child(
+                Input::new(input)
+                    .aria_label(label)
+                    .disabled(self.unavailable()),
+            )
             .into_any_element()
     }
 
@@ -564,6 +570,9 @@ impl ProjectHub {
             .gap_5()
             .child(
                 div()
+                    .id("project-action-tabs")
+                    .role(Role::TabList)
+                    .aria_label("Project action")
                     .flex()
                     .gap_1()
                     .bg(colors.background)
@@ -577,6 +586,7 @@ impl ProjectHub {
                         ]
                         .map(|(mode, label, symbol)| {
                             Button::new(label)
+                                .role(Role::Tab)
                                 .ghost()
                                 .flex_1()
                                 .h(crate::appearance::ui_size(32.))
@@ -588,7 +598,6 @@ impl ProjectHub {
                                         .size(px(14.)),
                                 )
                                 .selected(self.mode == mode)
-                                .toggled(self.mode == mode)
                                 .disabled(self.unavailable())
                                 .when(self.mode == mode && !self.unavailable(), |button| {
                                     button.hover(|style| style.opacity(0.9))
@@ -621,18 +630,17 @@ impl ProjectHub {
                                     .child(hub_icon(symbol, 21., rgb(tint).into())),
                             )
                             .child(
-                                div()
+                                hub_text("project-action-heading", title)
+                                    .role(Role::Heading)
                                     .text_size(crate::appearance::ui_text(19.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(title),
+                                    .font_weight(FontWeight::SEMIBOLD),
                             ),
                     )
                     .child(
-                        div()
+                        hub_text("project-action-description", description)
                             .text_size(crate::appearance::ui_text(12.))
                             .line_height(relative(1.55))
-                            .text_color(colors.muted_foreground)
-                            .child(description),
+                            .text_color(colors.muted_foreground),
                     ),
             )
             .when(self.mode == ProjectMode::Open, |panel| {
@@ -733,10 +741,9 @@ impl ProjectHub {
                                     .flex_col()
                                     .gap_2()
                                     .child(
-                                        div()
+                                        hub_text("project-parent-label", "Parent folder")
                                             .text_size(crate::appearance::ui_text(12.))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .child("Parent folder"),
+                                            .font_weight(FontWeight::MEDIUM),
                                     )
                                     .child(
                                         div()
@@ -745,6 +752,7 @@ impl ProjectHub {
                                             .child(
                                                 div().flex_1().min_w_0().child(
                                                     Input::new(&self.parent)
+                                                        .aria_label("Parent folder")
                                                         .disabled(self.unavailable()),
                                                 ),
                                             )
@@ -775,6 +783,8 @@ impl ProjectHub {
                         panel.child(
                             div()
                                 .id("hub-destination-preview")
+                                .role(Role::Label)
+                                .aria_label(format!("New repository folder: {display}"))
                                 .tooltip(move |window, cx| {
                                     Tooltip::new(tooltip.clone()).build(window, cx)
                                 })
@@ -835,6 +845,9 @@ impl ProjectHub {
                 panel.child(
                     div()
                         .id("project-hub-error")
+                        .role(Role::Alert)
+                        .aria_label(error.clone())
+                        .a11y_synthetic_children(crate::native_accessibility::assertive)
                         .max_h(px(110.))
                         .overflow_y_scroll()
                         .flex_shrink_0()
@@ -879,16 +892,38 @@ impl Render for ProjectHub {
                     .border_b_1()
                     .border_color(colors.border)
                     .when(self.can_go_back, |header| {
-                        header.child(Button::new("hub-back").ghost().label("Back to repository").icon(Icon::default().path("icons/arrow-left.svg").size(px(15.))).disabled(self.unavailable()).on_click(cx.listener(|this, _, _, cx| {
-                            if !this.unavailable() {
-                                cx.emit(ProjectEvent::Back);
-                            }
-                        })))
+                        header.child(
+                            Button::new("hub-back")
+                                .ghost()
+                                .label("Back to repository")
+                                .icon(Icon::default().path("icons/arrow-left.svg").size(px(15.)))
+                                .disabled(self.unavailable())
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if !this.unavailable() {
+                                        cx.emit(ProjectEvent::Back);
+                                    }
+                                })),
+                        )
                     })
                     .child(crate::app_icon(32.))
-                    .child(div().text_size(crate::appearance::ui_text(16.)).font_weight(FontWeight::SEMIBOLD).child("GitTurtle"))
-                    .child(div().w(px(1.)).h(crate::appearance::ui_size(18.)).bg(colors.border))
-                    .child(div().text_size(crate::appearance::ui_text(12.)).text_color(colors.muted_foreground).child("Projects"))
+                    .child(
+                        div()
+                            .text_size(crate::appearance::ui_text(16.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("GitTurtle"),
+                    )
+                    .child(
+                        div()
+                            .w(px(1.))
+                            .h(crate::appearance::ui_size(18.))
+                            .bg(colors.border),
+                    )
+                    .child(
+                        div()
+                            .text_size(crate::appearance::ui_text(12.))
+                            .text_color(colors.muted_foreground)
+                            .child("Projects"),
+                    )
                     .child(div().flex_1()),
             )
             .child(
@@ -916,18 +951,44 @@ impl Render for ProjectHub {
                                     .flex()
                                     .flex_col()
                                     .gap_2()
-                                    .child(div().text_size(crate::appearance::ui_text(32.)).font_weight(FontWeight::SEMIBOLD).child("Your projects"))
-                                    .child(div().text_size(crate::appearance::ui_text(14.)).text_color(colors.muted_foreground).child("Pick up where you left off, or start something new.")),
+                                    .child(
+                                        hub_text("project-hub-heading", "Your projects")
+                                            .role(Role::Heading)
+                                            .text_size(crate::appearance::ui_text(32.))
+                                            .font_weight(FontWeight::SEMIBOLD),
+                                    )
+                                    .child(
+                                        hub_text(
+                                            "project-hub-description",
+                                            "Pick up where you left off, or start something new.",
+                                        )
+                                        .text_size(crate::appearance::ui_text(14.))
+                                        .text_color(colors.muted_foreground),
+                                    ),
                             )
                             .child(
                                 div()
                                     .w_full()
-                                    .h(px(if self.error.is_some() { 750. } else if self.mode == ProjectMode::Open { 590. } else { 650. }))
+                                    .h(px(if self.error.is_some() {
+                                        750.
+                                    } else if self.mode == ProjectMode::Open {
+                                        590.
+                                    } else {
+                                        650.
+                                    }))
                                     .flex_shrink_0()
                                     .flex()
                                     .gap_6()
-                                    .when(compact, |body| body.flex_col().h_auto().child(self.render_action(true, cx)).child(self.render_recent(true, cx)))
-                                    .when(!compact, |body| body.child(self.render_recent(false, cx)).child(self.render_action(false, cx))),
+                                    .when(compact, |body| {
+                                        body.flex_col()
+                                            .h_auto()
+                                            .child(self.render_action(true, cx))
+                                            .child(self.render_recent(true, cx))
+                                    })
+                                    .when(!compact, |body| {
+                                        body.child(self.render_recent(false, cx))
+                                            .child(self.render_action(false, cx))
+                                    }),
                             ),
                     ),
             )
@@ -940,6 +1001,15 @@ fn hub_icon(name: &str, dimension: f32, color: Hsla) -> Svg {
         .size(px(dimension))
         .text_color(color)
         .flex_shrink_0()
+}
+
+fn hub_text(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Stateful<Div> {
+    let text = text.into();
+    div()
+        .id(id)
+        .role(Role::Label)
+        .aria_label(text.clone())
+        .child(text)
 }
 
 fn unique_recent(paths: Vec<PathBuf>) -> Vec<PathBuf> {
@@ -1017,6 +1087,51 @@ fn validate_branch(branch: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use core::prelude::v1::test;
+
+    #[gpui::test]
+    fn populated_project_inputs_keep_their_names_across_modes(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (hub, cx) =
+            cx.add_window_view(|window, cx| ProjectHub::new(vec![], "main".into(), window, cx));
+        for mode in [ProjectMode::Clone, ProjectMode::Create, ProjectMode::Open] {
+            cx.update(|window, cx| {
+                hub.update(cx, |hub, cx| {
+                    hub.change_mode(mode, window, cx);
+                    hub.parent.update(cx, |input, cx| {
+                        input.set_value("/fixture/projects", window, cx)
+                    });
+                    hub.name.update(cx, |input, cx| {
+                        input.set_value("A multilingual 项目", window, cx)
+                    });
+                });
+                window.draw(cx).clear(cx);
+                hub.update(cx, |hub, cx| {
+                    let mut inputs = vec![(&hub.search, "Find a recent project by name or folder")];
+                    if mode != ProjectMode::Open {
+                        inputs.extend([
+                            (&hub.parent, "Parent folder"),
+                            (&hub.name, "Project folder name"),
+                        ]);
+                        inputs.push(if mode == ProjectMode::Clone {
+                            (&hub.source, "Repository URL or local path")
+                        } else {
+                            (&hub.branch, "Initial branch")
+                        });
+                    }
+                    for (input, label) in inputs {
+                        input.update(cx, |state, cx| {
+                            let element = Render::render(state, window, cx).into_element();
+                            let mut node = gpui::accesskit::Node::new(element.a11y_role().unwrap());
+                            element.write_a11y_info(&mut node);
+                            assert_eq!(node.role(), Role::TextInput);
+                            assert_eq!(node.label(), Some(label));
+                            assert!(node.supports_action(gpui::AccessibleAction::SetValue));
+                        });
+                    }
+                });
+            });
+        }
+    }
 
     #[test]
     fn clone_names_support_https_ssh_and_local_sources() {

@@ -7,10 +7,16 @@ use crate::{
 };
 use anyhow::Result;
 use futures::channel::oneshot;
+use futures::{
+    FutureExt,
+    future::{BoxFuture, Shared},
+};
 use std::{
+    cell::RefCell,
     collections::HashMap,
     hash::Hash,
     path::PathBuf,
+    rc::Rc,
     sync::{Arc, Mutex},
 };
 
@@ -34,16 +40,58 @@ impl<K, V> Default for CoalescingSaver<K, V> {
     }
 }
 
-pub type DraftSaver = CoalescingSaver<PathBuf, CommitDraft>;
+type SaveCompletion = Shared<BoxFuture<'static, std::result::Result<(), String>>>;
+
+#[derive(Default)]
+pub struct DraftSaver {
+    saver: CoalescingSaver<PathBuf, CommitDraft>,
+    completion: Rc<RefCell<Option<SaveCompletion>>>,
+}
 
 impl DraftSaver {
+    /// The app owns this observer even after its last window and composer have
+    /// disappeared. Await the accepted save itself; an unrelated earlier session
+    /// save or an extra barrier in a full executor cannot cover this completion.
+    pub fn install_quit_observer(&self, cx: &mut gpui_kit::App) {
+        let completion = self.completion.clone();
+        cx.on_app_quit(move |_| {
+            let completion = completion.borrow().clone();
+            async move {
+                if let Some(completion) = completion {
+                    let _ = completion.await;
+                }
+            }
+        })
+        .detach();
+    }
+
     pub fn queue(
         &self,
         executor: &SerialExecutor,
         worktree: PathBuf,
         draft: CommitDraft,
-    ) -> Option<oneshot::Receiver<Result<()>>> {
+    ) -> Option<SaveCompletion> {
         self.queue_with(executor, worktree, draft, Preferences::save_commit_drafts)
+    }
+
+    fn queue_with(
+        &self,
+        executor: &SerialExecutor,
+        worktree: PathBuf,
+        draft: CommitDraft,
+        save: impl FnMut(&HashMap<PathBuf, CommitDraft>) -> Result<()> + Send + 'static,
+    ) -> Option<SaveCompletion> {
+        let response = self.saver.queue_with(executor, worktree, draft, save)?;
+        let completion = response
+            .map(|result| match result {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(error)) => Err(format!("{error:#}")),
+                Err(_) => Err("Draft save ended without a result".into()),
+            })
+            .boxed()
+            .shared();
+        *self.completion.borrow_mut() = Some(completion.clone());
+        Some(completion)
     }
 }
 
@@ -126,6 +174,7 @@ impl<K, V> Drop for Scheduled<K, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui_kit::gpui;
     use std::sync::mpsc;
 
     fn draft(title: &str) -> CommitDraft {
@@ -135,10 +184,94 @@ mod tests {
         }
     }
 
+    #[gpui::test]
+    async fn final_commit_draft_survives_window_removal_with_a_full_save_queue(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::*;
+
+        struct Composer {
+            saver: DraftSaver,
+        }
+        impl Render for Composer {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+            }
+        }
+
+        cx.executor().allow_parking();
+        cx.executor().set_block_on_ticks(100..=100);
+        let fixture = tempfile::tempdir().unwrap();
+        let destination = fixture.path().join("saved-draft.json");
+        let executor = SerialExecutor::new("draft-window-close-test");
+        let (release, gate) = mpsc::channel();
+        let (started, running) = oneshot::channel();
+        let blocker = executor.submit(move || {
+            let _ = started.send(());
+            gate.recv()?;
+            Ok(())
+        });
+        running.await.unwrap();
+        let queued: Vec<_> = (0..7).map(|_| executor.submit(|| Ok(()))).collect();
+        let (composer, window_cx) = cx.add_window_view(|_, cx| {
+            let saver = DraftSaver::default();
+            saver.install_quit_observer(cx);
+            Composer { saver }
+        });
+        let output = destination.clone();
+        composer.update(window_cx, |composer, _| {
+            drop(composer.saver.queue_with(
+                &executor,
+                "/fixture/worktree".into(),
+                draft("Earlier title"),
+                move |drafts| {
+                    std::fs::write(&output, serde_json::to_vec(drafts)?)?;
+                    Ok(())
+                },
+            ));
+            assert!(
+                composer
+                    .saver
+                    .queue_with(
+                        &executor,
+                        "/fixture/worktree".into(),
+                        draft("Final title\nwith exact spacing  "),
+                        |_| unreachable!("final edit coalesces into the accepted save"),
+                    )
+                    .is_none()
+            );
+        });
+        assert!(executor.submit(|| Ok(())).await.unwrap().is_err());
+        let weak = composer.downgrade();
+        drop(composer);
+        window_cx.update(|window, _| window.remove_window());
+        assert!(weak.upgrade().is_none());
+        assert!(!destination.exists());
+        window_cx
+            .executor()
+            .spawn(async move {
+                release.send(()).unwrap();
+            })
+            .detach();
+        cx.quit();
+        // Inspect before awaiting or draining any external replies: GPUI's real
+        // app shutdown must own and finish the accepted composer save itself.
+        let restored: HashMap<PathBuf, CommitDraft> =
+            serde_json::from_slice(&std::fs::read(destination).unwrap()).unwrap();
+        assert_eq!(
+            restored[&PathBuf::from("/fixture/worktree")],
+            draft("Final title\nwith exact spacing  ")
+        );
+        blocker.await.unwrap().unwrap();
+        for response in queued {
+            response.await.unwrap().unwrap();
+        }
+    }
+
     #[test]
     fn coalesces_typing_and_keeps_distinct_worktrees_after_dropped_reply() {
         let executor = SerialExecutor::new("draft-coalescing-test");
-        let saver = DraftSaver::default();
+        let saver = CoalescingSaver::<PathBuf, CommitDraft>::default();
         let (release, gate) = mpsc::channel();
         let first = executor.submit(move || {
             gate.recv()?;
@@ -186,7 +319,7 @@ mod tests {
     #[test]
     fn save_failure_preserves_all_drafts_and_retry_saves_latest_text() {
         let executor = SerialExecutor::new("draft-failure-test");
-        let saver = DraftSaver::default();
+        let saver = CoalescingSaver::<PathBuf, CommitDraft>::default();
         let (started, running) = mpsc::channel();
         let (release, gate) = mpsc::channel();
         let failed = saver
@@ -236,7 +369,7 @@ mod tests {
     #[test]
     fn rejected_job_retains_pending_worktrees_for_the_next_retry() {
         let executor = SerialExecutor::new("draft-full-executor-test");
-        let saver = DraftSaver::default();
+        let saver = CoalescingSaver::<PathBuf, CommitDraft>::default();
         let (started, running) = mpsc::channel();
         let (release, gate) = mpsc::channel();
         let first = executor.submit(move || {
