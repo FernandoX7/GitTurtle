@@ -935,7 +935,7 @@ impl Panel {
                     this.notice = Some(format!("{notice}. The local draft remains available; submitting it again creates another outbound action."));
                     if matches!(sent_action, Action::Create(_)) {
                         this.create = false; this.review.show_list = true;
-                        this.notice = Some(format!("{notice}. Refresh PRs to open the new pull request."));
+                        this.notice = Some("Pull request created. Refresh PRs to open it.".into());
                         this.focus_visible_section(window, cx);
                     }
                 }

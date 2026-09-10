@@ -1,6 +1,8 @@
 //! Supported GitHub CLI OAuth handoff, native credential storage, and bounded API
 //! subprocesses. No token appears in an argument, preference, log, or diagnostic.
 use super::*;
+#[cfg(target_os = "macos")]
+use anyhow::Context as _;
 use std::{
     io::{Read, Write},
     process::{Command, Stdio},
@@ -41,6 +43,45 @@ fn decode_stored_credential(
         ),
     }
 }
+/// Caller holds KEYCHAIN_ACCESS until this read restores the interaction policy.
+#[cfg(target_os = "macos")]
+fn read_credential_without_interaction() -> Result<Option<Credential>> {
+    use security_framework::os::macos::keychain::SecKeychain;
+    // The existing item lives in the legacy login Keychain, where per-query
+    // LocalAuthentication flags do not prevent every authorization prompt.
+    // Preserve an already-disabled policy; the library's guard restores true
+    // on drop, so only create one when true was the original setting.
+    let interaction_allowed = SecKeychain::user_interaction_allowed().map_err(|_| {
+        anyhow!("Could not check GitHub Keychain access policy. Connect the account explicitly.")
+    })?;
+    let _interaction = if interaction_allowed {
+        Some(SecKeychain::disable_user_interaction().map_err(|_| anyhow!(
+            "Could not request GitHub Keychain access without a dialog. Connect the account explicitly."
+        ))?)
+    } else {
+        None
+    };
+    decode_stored_credential(security_framework::passwords::get_generic_password(
+        SERVICE, ACCOUNT,
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn verify_saved_credential(
+    expected: &Credential,
+    restored: Result<Option<Credential>>,
+) -> Result<()> {
+    let restored = restored?.ok_or_else(|| {
+        anyhow!(
+            "The saved GitHub authorization was not found in Keychain. Connect the account again."
+        )
+    })?;
+    ensure!(
+        restored.login == expected.login && restored.token == expected.token,
+        "The GitHub authorization in Keychain changed during connection. Connect the intended account again."
+    );
+    Ok(())
+}
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Credential {
     pub login: String,
@@ -64,27 +105,8 @@ pub(crate) struct SecureStore;
 #[cfg(target_os = "macos")]
 impl CredentialStore for SecureStore {
     fn load(&self) -> Result<Option<Credential>> {
-        use security_framework::os::macos::keychain::SecKeychain;
         let _access = keychain_access()?;
-        // The existing item lives in the legacy login Keychain, where per-query
-        // LocalAuthentication flags do not prevent every authorization prompt.
-        // Preserve an already-disabled policy; the library's guard restores true
-        // on drop, so only create one when true was the original setting.
-        let interaction_allowed = SecKeychain::user_interaction_allowed().map_err(|_| {
-            anyhow!(
-                "Could not check GitHub Keychain access policy. Connect the account explicitly."
-            )
-        })?;
-        let _interaction = if interaction_allowed {
-            Some(SecKeychain::disable_user_interaction().map_err(|_| anyhow!(
-                "Could not request GitHub Keychain access without a dialog. Connect the account explicitly."
-            ))?)
-        } else {
-            None
-        };
-        decode_stored_credential(security_framework::passwords::get_generic_password(
-            SERVICE, ACCOUNT,
-        ))
+        read_credential_without_interaction()
     }
     fn save(&self, credential: &Credential) -> Result<()> {
         let _access = keychain_access()?;
@@ -97,7 +119,20 @@ impl CredentialStore for SecureStore {
             anyhow!(
                 "Keychain could not save GitHub authorization. No plaintext credential was stored."
             )
-        })
+        })?;
+        // Updating a legacy password preserves its ACL. Explicit connection
+        // therefore reads it with normal macOS authorization, then verifies the
+        // exact account/token using the same noninteractive policy as Refresh.
+        // GitTurtle does not edit ACLs or bypass the user's macOS approval.
+        verify_saved_credential(
+            credential,
+            decode_stored_credential(security_framework::passwords::get_generic_password(
+                SERVICE, ACCOUNT,
+            )),
+        )
+        .context("GitHub authorization was saved, but Keychain read access was not approved. Choose Connect GitHub CLI account and complete its macOS authorization dialog.")?;
+        verify_saved_credential(credential, read_credential_without_interaction())
+            .context("GitHub authorization was saved, but Keychain still requires permission for stored reads. Connect again and approve ongoing access for this GitTurtle build in the macOS dialog.")
     }
     fn remove(&self) -> Result<()> {
         let _access = keychain_access()?;
@@ -164,7 +199,15 @@ impl GhTransport {
             "GitHub returned an invalid account"
         );
         client.0.credential.login = user.login.clone();
+        ensure!(
+            !control.is_cancelled(),
+            "GitHub account connection cancelled before saving authorization"
+        );
         SecureStore.save(&client.0.credential)?;
+        ensure!(
+            !control.is_cancelled(),
+            "GitHub account connection cancelled; authorization may be stored in Keychain"
+        );
         Ok(user.login)
     }
 }
@@ -453,6 +496,43 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(!invalid.contains("invalid-fixture-secret"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn saved_credential_requires_exact_read_back_and_noninteractive_access() {
+        let expected = Credential {
+            login: "fixture-reviewer".into(),
+            token: "fixture-secret".into(),
+        };
+        verify_saved_credential(&expected, Ok(Some(expected.clone()))).unwrap();
+        for restored in [
+            None,
+            Some(Credential {
+                login: "other-reviewer".into(),
+                token: expected.token.clone(),
+            }),
+            Some(Credential {
+                login: expected.login.clone(),
+                token: "other-fixture-secret".into(),
+            }),
+        ] {
+            let error = verify_saved_credential(&expected, Ok(restored))
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains("fixture-secret"));
+            assert!(!error.contains("other-reviewer"));
+            assert!(error.contains("Connect"));
+        }
+        // An update or interactive read may succeed while the next read still
+        // requires approval. That result cannot establish a usable connection.
+        let denied =
+            decode_stored_credential(Err(security_framework::base::Error::from_code(-25308)));
+        let error = verify_saved_credential(&expected, denied)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Connect GitHub CLI account"));
+        assert!(!error.contains("fixture-secret"));
     }
 
     #[cfg(target_os = "macos")]
