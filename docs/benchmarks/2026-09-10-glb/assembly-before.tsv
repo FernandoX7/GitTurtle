@@ -1,0 +1,45 @@
+# fixture=assembly-before; source identity in manifest.json
+# executable=bench_model; binary identity in manifest.json
+# profile=release; input_bytes=1196
+# cache=input bytes resident before timing; no application cache; fresh decode per row; render uses that row's retained scene
+# boundary=decode_geometry and render_model CPU calls; excludes file I/O, camera fit, output destruction, native scheduling, GPUI, GPU and OS presentation
+# raster=fit isometric; each render allocates a fresh frame; 360 solid, 720 solid, 720 all-edge wireframe
+phase	sample	decode_ms	render_360_solid_ms	render_720_solid_ms	render_720_wireframe_ms	triangles	scene_retained_bytes
+first	0	0.409708	0.972250	3.128792	0.118542	36	2691
+warmup	0	0.058666	0.749250	2.484041	0.102833	36	2691
+warmup	1	0.037916	0.800833	2.472375	0.101375	36	2691
+warmup	2	0.057167	0.714584	2.210958	0.089083	36	2691
+measured	0	0.033458	0.614291	2.174959	0.088709	36	2691
+measured	1	0.028833	0.602916	1.978959	0.079708	36	2691
+measured	2	0.024667	0.555208	1.981417	0.085167	36	2691
+measured	3	0.044542	0.571459	1.976875	0.080333	36	2691
+measured	4	0.034583	0.549333	1.790083	0.075458	36	2691
+measured	5	0.023833	0.500875	1.776791	0.074917	36	2691
+measured	6	0.028875	0.496792	1.546583	0.059166	36	2691
+measured	7	0.026125	0.386125	1.632208	0.068042	36	2691
+measured	8	0.022083	0.450458	1.651916	0.067625	36	2691
+measured	9	0.019834	0.454792	1.675000	0.069417	36	2691
+measured	10	0.030291	0.457250	1.587584	0.064833	36	2691
+measured	11	0.018500	0.437125	1.571625	0.063542	36	2691
+measured	12	0.018292	0.423834	1.551500	0.063542	36	2691
+measured	13	0.019167	0.425500	1.561792	0.071375	36	2691
+measured	14	0.018083	0.412917	1.492250	0.060417	36	2691
+measured	15	0.013584	0.401125	1.464583	0.060334	36	2691
+measured	16	0.013417	0.401667	1.470625	0.060291	36	2691
+measured	17	0.013375	0.394666	1.439583	0.059250	36	2691
+measured	18	0.013500	0.402708	1.418541	0.058458	36	2691
+measured	19	0.012708	0.389916	1.410917	0.058750	36	2691
+measured	20	0.016917	0.388958	1.419709	0.058167	36	2691
+measured	21	0.012791	0.385250	1.383459	0.056417	36	2691
+measured	22	0.015208	0.371000	1.401042	0.055916	36	2691
+measured	23	0.012500	0.377500	1.330125	0.054875	36	2691
+measured	24	0.014084	0.363875	1.344250	0.054875	36	2691
+measured	25	0.020584	0.366042	1.319250	0.054875	36	2691
+measured	26	0.018375	0.369333	1.338541	0.053500	36	2691
+measured	27	0.015292	0.352166	1.290125	0.053291	36	2691
+measured	28	0.012500	0.353541	1.283625	0.052750	36	2691
+measured	29	0.013667	0.347875	1.273500	0.052459	36	2691
+# summary metric=decode_ms; n=30; nearest_rank_p50_ms=0.018292; nearest_rank_p95_ms=0.034583; max_ms=0.044542
+# summary metric=render_360_solid_ms; n=30; nearest_rank_p50_ms=0.401667; nearest_rank_p95_ms=0.602916; max_ms=0.614291
+# summary metric=render_720_solid_ms; n=30; nearest_rank_p50_ms=1.470625; nearest_rank_p95_ms=1.981417; max_ms=2.174959
+# summary metric=render_720_wireframe_ms; n=30; nearest_rank_p50_ms=0.060291; nearest_rank_p95_ms=0.085167; max_ms=0.088709

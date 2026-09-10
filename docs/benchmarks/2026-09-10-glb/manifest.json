@@ -1,0 +1,94 @@
+{
+  "source_revision": "999bcd9851741f44d53f97e4656ac87b892b7d7f",
+  "source_clean_before_build": true,
+  "benchmark_binary_sha256": "a273f841f509d7789ee2e1d1a0e1f26b2f5f35980c90343b6f51ba15e9a3223e",
+  "benchmark_binary_bytes": 1657520,
+  "started_utc": "2026-09-10T18:05:31.442756+00:00",
+  "finished_utc": "2026-09-10T18:05:32.551077+00:00",
+  "samples_per_fixture": 30,
+  "warmups_per_fixture": 3,
+  "first_attempt_rows_per_fixture": 1,
+  "fixture_order": [
+    "assembly-before",
+    "BoxInterleaved",
+    "Avocado",
+    "dense-torus",
+    "tetra-obj"
+  ],
+  "fixtures": [
+    {
+      "fixture": "assembly-before",
+      "bytes": 1196,
+      "sha256": "db98b3123aa86a34ab83203863a5eb1d0299682e3fd9ba278cb5c3cecab4195d",
+      "raw_samples": "assembly-before.tsv",
+      "raw_samples_sha256": "4275afc099a053bb9e7748434d4bda6bf2869e3504bb189addff7f4eee454004",
+      "triangles": 36,
+      "scene_retained_bytes": 2691
+    },
+    {
+      "fixture": "BoxInterleaved",
+      "bytes": 1632,
+      "sha256": "b2ae631f118f1d13f829cdf9d9dc0fe7cb582de20b8c51d17f81f77a1cbf290c",
+      "raw_samples": "BoxInterleaved.tsv",
+      "raw_samples_sha256": "af533a51ced9c29f3bd52edefa7665425dcff23d5529d2c1538a6a28ea6af7bb",
+      "triangles": 12,
+      "scene_retained_bytes": 963
+    },
+    {
+      "fixture": "Avocado",
+      "bytes": 8110040,
+      "sha256": "ccc9c3ce56423720b09399c2351537207cd5a65f859f9e6e2f30922762f3abd4",
+      "raw_samples": "Avocado.tsv",
+      "raw_samples_sha256": "8f5d3d97adb826ce0b54ee84f9369517b9457d190e2a8dfb9bdf2be405a986a7",
+      "triangles": 682,
+      "scene_retained_bytes": 49203
+    },
+    {
+      "fixture": "dense-torus",
+      "bytes": 1180340,
+      "sha256": "04e849de1c0e7bfa475f8d7310e715a089cca7346e347cbf1399bb2a4844ca8a",
+      "raw_samples": "dense-torus.tsv",
+      "raw_samples_sha256": "a17b2c213ec20adb07b9ef1726c2bbfa5e1b0edf63166bee4e6b11bd5eefec6f",
+      "triangles": 65536,
+      "scene_retained_bytes": 4718691
+    },
+    {
+      "fixture": "tetra-obj",
+      "bytes": 97,
+      "sha256": "21fbead4d895512fdbd6a0754890671f5688d3e82fc0e4231914d629c236a498",
+      "raw_samples": "tetra-obj.tsv",
+      "raw_samples_sha256": "3a6226e1bdda505f430fa62a72c778062fdee0e057ec8e49c4ac664074811cb0",
+      "triangles": 4,
+      "scene_retained_bytes": 387
+    }
+  ],
+  "build_command": "cargo build --release --locked -p gitturtle-preview --example bench_model",
+  "rustc": "1.98.0 (88d9e12ae 2026-08-18)",
+  "rustc_host": "aarch64-apple-darwin",
+  "llvm": "22.1.8",
+  "hardware": {
+    "cpu": "Apple M4 Max",
+    "model": "Mac16,5",
+    "logical_cpus": 16,
+    "memory_bytes": 137438953472
+  },
+  "os": {
+    "name": "macOS",
+    "version": "26.6.2",
+    "build": "25G83"
+  },
+  "system_load_before_measurement": {
+    "observed_local_time": "2026-09-10 13:05:06 America/Chicago",
+    "load_average_1_5_15_minutes": [
+      20.33,
+      14.35,
+      11.51
+    ],
+    "cpu_user_percent": 17.73,
+    "cpu_system_percent": 11.59,
+    "cpu_idle_percent": 70.67,
+    "note": "Normal desktop background load; GitTurtle closed, release build completed, no other task builds or native QA active. No isolated CPU or thermal controls."
+  },
+  "timing_boundary": "Resident captured bytes; each row decodes a fresh scene; each render allocates a fresh frame. File I/O, camera fitting, output destruction, application cache/scheduling, GPUI, GPU upload and OS presentation excluded.",
+  "raw_metadata_normalization": "Only the two command-specific local model/executable path comments were replaced with portable labels. All timing rows, first attempts, warmups, other comments and summaries are unchanged."
+}
