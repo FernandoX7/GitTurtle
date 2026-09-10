@@ -1,7 +1,11 @@
-//! Deliberately bounded STEP faceted-BREP subset. Unsupported CAD geometry is an
+//! Bounded STEP faceted B-rep, analytic CSG primitives and mapped instances.
+//! Unsupported CAD geometry is an
 //! explicit error, never silently replaced with a bounding box or vertex cloud.
 
 use super::*;
+
+mod primitives;
+mod scene;
 
 const MAX_STEP_BYTES: usize = 4 * 1024 * 1024;
 const MAX_RECORDS: usize = 40_000;
@@ -13,10 +17,10 @@ struct Record<'a> {
     args: &'a str,
 }
 
-pub(super) fn faceted(bytes: &[u8], check: &impl Fn() -> Result<()>) -> Result<Vec<Triangle>> {
+pub(super) fn decode(bytes: &[u8], check: &impl Fn() -> Result<()>) -> Result<scene::StepGeometry> {
     ensure!(
         bytes.len() <= MAX_STEP_BYTES,
-        "STEP exceeds the 4 MiB faceted preview limit"
+        "STEP exceeds the 4 MiB preview limit"
     );
     let text = std::str::from_utf8(bytes).context("STEP preview requires a text exchange file")?;
     let text = without_comments(text)?;
@@ -54,35 +58,7 @@ pub(super) fn faceted(bytes: &[u8], check: &impl Fn() -> Result<()>) -> Result<V
             .strip_prefix('(')
             .and_then(|v| v.strip_suffix(')'))
             .context("Invalid STEP entity parameters")?;
-        ensure!(
-            !name.contains("TRANSFORM")
-                && !matches!(
-                    name,
-                    "MAPPED_ITEM"
-                        | "REPRESENTATION_MAP"
-                        | "ADVANCED_BREP_SHAPE_REPRESENTATION"
-                        | "MANIFOLD_SOLID_BREP"
-                        | "BREP_WITH_VOIDS"
-                        | "FACETED_BREP_WITH_VOIDS"
-                ),
-            "STEP curved solids or assembly transforms are not supported; open the captured source in a CAD application"
-        );
-        // Complex unit/context entities are harmless to this subset. Complex
-        // geometry is rejected so it cannot hide an assembly placement.
-        ensure!(
-            !name.is_empty()
-                || ![
-                    "TRANSFORM",
-                    "MAPPED_ITEM",
-                    "REPRESENTATION_MAP",
-                    "BREP",
-                    "SHELL",
-                    "FACE"
-                ]
-                .iter()
-                .any(|token| args.contains(token)),
-            "STEP complex geometry is not supported by the faceted preview"
-        );
+        scene::validate_record(&Record { name, args })?;
         ensure!(
             records.insert(id, Record { name, args }).is_none(),
             "Duplicate STEP entity ID"
@@ -92,91 +68,83 @@ pub(super) fn faceted(bytes: &[u8], check: &impl Fn() -> Result<()>) -> Result<V
         text.trim_start().starts_with("ISO-10303-21;") && saw_end,
         "Invalid STEP exchange header or end marker"
     );
-    let mut roots: Vec<_> = records
-        .iter()
-        .filter(|(_, record)| record.name == "FACETED_BREP")
-        .collect();
-    roots.sort_by_key(|(id, _)| **id);
-    ensure!(
-        !roots.is_empty(),
-        "STEP native preview supports faceted B-rep solids only. Curved CAD surfaces require an external CAD application"
-    );
-    ensure!(
-        roots.len() <= MAX_OBJECTS,
-        "STEP exceeds the solid preview limit"
-    );
-    let mut mesh = Vec::new();
-    let mut work = 0;
-    for (_, solid) in roots {
+    scene::prepare(&records, check)
+}
+
+fn faceted_solid(
+    solid: &Record<'_>,
+    records: &HashMap<usize, Record<'_>>,
+    mesh: &mut Vec<Triangle>,
+    work: &mut usize,
+    check: &impl Fn() -> Result<()>,
+) -> Result<()> {
+    let solid_fields = fields(solid)?;
+    ensure!(solid_fields.len() == 2, "Invalid STEP faceted solid");
+    let shell = get(records, solid_fields[1], "CLOSED_SHELL")?;
+    let shell_fields = fields(shell)?;
+    ensure!(shell_fields.len() == 2, "Invalid STEP closed shell");
+    for face in aggregate(shell_fields[1], MAX_RECORDS)? {
         check()?;
-        let solid_fields = fields(solid)?;
-        ensure!(solid_fields.len() == 2, "Invalid STEP faceted solid");
-        let shell = get(&records, solid_fields[1], "CLOSED_SHELL")?;
-        let shell_fields = fields(shell)?;
-        ensure!(shell_fields.len() == 2, "Invalid STEP closed shell");
-        for face in aggregate(shell_fields[1], MAX_RECORDS)? {
-            check()?;
-            let face = records
-                .get(&reference(face)?)
-                .context("STEP references a missing face")?;
+        let face = records
+            .get(&reference(face)?)
+            .context("STEP references a missing face")?;
+        ensure!(
+            matches!(face.name, "FACE" | "FACE_SURFACE"),
+            "STEP preview requires faceted polygon faces; curved surfaces are not rendered"
+        );
+        let face_fields = fields(face)?;
+        if face.name == "FACE_SURFACE" {
+            ensure!(face_fields.len() == 4, "Invalid STEP face surface");
+            get(records, face_fields[2], "PLANE")?;
             ensure!(
-                matches!(face.name, "FACE" | "FACE_SURFACE"),
-                "STEP preview requires faceted polygon faces; curved surfaces are not rendered"
+                matches!(face_fields[3], ".T." | ".F."),
+                "Invalid STEP surface orientation"
             );
-            let face_fields = fields(face)?;
-            if face.name == "FACE_SURFACE" {
-                ensure!(face_fields.len() == 4, "Invalid STEP face surface");
-                get(&records, face_fields[2], "PLANE")?;
-                ensure!(
-                    matches!(face_fields[3], ".T." | ".F."),
-                    "Invalid STEP surface orientation"
-                );
-            } else {
-                ensure!(face_fields.len() == 2, "Invalid STEP face");
-            }
-            let bounds = aggregate(face_fields[1], 1024)?;
-            ensure!(
-                bounds.len() == 1,
-                "STEP faces with holes are not supported by the faceted preview"
-            );
-            let bound_id = reference(bounds[0])?;
-            let bound = records
-                .get(&bound_id)
-                .context("Missing STEP face boundary")?;
-            ensure!(
-                matches!(bound.name, "FACE_OUTER_BOUND" | "FACE_BOUND"),
-                "Unsupported STEP face boundary"
-            );
-            let bound_fields = fields(bound)?;
-            ensure!(bound_fields.len() == 3, "Invalid STEP face boundary");
-            let polygon = get(&records, bound_fields[1], "POLY_LOOP")?;
-            let polygon_fields = fields(polygon)?;
-            ensure!(polygon_fields.len() == 2, "Invalid STEP polygon");
-            let mut points = Vec::new();
-            for point in aggregate(polygon_fields[1], MAX_POLYGON_POINTS)? {
-                let point = get(&records, point, "CARTESIAN_POINT")?;
-                let point_fields = fields(point)?;
-                ensure!(point_fields.len() == 2, "Invalid STEP point");
-                let values = aggregate(point_fields[1], 3)?;
-                ensure!(
-                    values.len() == 3,
-                    "STEP preview requires three-dimensional points"
-                );
-                let mut point = [0.; 3];
-                for (target, value) in point.iter_mut().zip(values) {
-                    *target = value.parse().context("Invalid STEP coordinate")?;
-                }
-                points.push(valid_point(point)?);
-            }
-            match bound_fields[2] {
-                ".T." => {}
-                ".F." => points.reverse(),
-                _ => bail!("Invalid STEP boundary orientation"),
-            }
-            triangulate(&points, &mut mesh, &mut work, check)?;
+        } else {
+            ensure!(face_fields.len() == 2, "Invalid STEP face");
         }
+        let bounds = aggregate(face_fields[1], 1024)?;
+        ensure!(
+            bounds.len() == 1,
+            "STEP faces with holes are not supported by the faceted preview"
+        );
+        let bound_id = reference(bounds[0])?;
+        let bound = records
+            .get(&bound_id)
+            .context("Missing STEP face boundary")?;
+        ensure!(
+            matches!(bound.name, "FACE_OUTER_BOUND" | "FACE_BOUND"),
+            "Unsupported STEP face boundary"
+        );
+        let bound_fields = fields(bound)?;
+        ensure!(bound_fields.len() == 3, "Invalid STEP face boundary");
+        let polygon = get(records, bound_fields[1], "POLY_LOOP")?;
+        let polygon_fields = fields(polygon)?;
+        ensure!(polygon_fields.len() == 2, "Invalid STEP polygon");
+        let mut points = Vec::new();
+        for point in aggregate(polygon_fields[1], MAX_POLYGON_POINTS)? {
+            let point = get(records, point, "CARTESIAN_POINT")?;
+            let point_fields = fields(point)?;
+            ensure!(point_fields.len() == 2, "Invalid STEP point");
+            let values = aggregate(point_fields[1], 3)?;
+            ensure!(
+                values.len() == 3,
+                "STEP preview requires three-dimensional points"
+            );
+            let mut point = [0.; 3];
+            for (target, value) in point.iter_mut().zip(values) {
+                *target = value.parse().context("Invalid STEP coordinate")?;
+            }
+            points.push(valid_point(point)?);
+        }
+        match bound_fields[2] {
+            ".T." => {}
+            ".F." => points.reverse(),
+            _ => bail!("Invalid STEP boundary orientation"),
+        }
+        triangulate(&points, mesh, work, check)?;
     }
-    Ok(mesh)
+    Ok(())
 }
 
 fn reference(text: &str) -> Result<usize> {

@@ -1,5 +1,5 @@
 //! Supplied-byte, untextured mesh previews. All parsing and rasterization stays on
-//! the preview worker; only owned RGBA views leave this module.
+//! the preview worker; only owned geometry and RGBA views leave this module.
 
 use crate::{ImagePreview, MAX_INPUT_BYTES};
 use anyhow::{Context, Result, bail, ensure};
@@ -7,9 +7,15 @@ use std::{
     collections::HashMap,
     io::{Cursor, Read},
     path::Path,
+    sync::Arc,
 };
 
+mod camera;
 mod step;
+pub use camera::{
+    ModelBounds, ModelCamera, ModelScene, ModelStandardView, ModelUnits, OrientationAxis,
+    render_model,
+};
 
 pub const MODEL_VIEW_EDGE: u32 = 720;
 pub const MAX_MODEL_TRIANGLES: usize = 100_000;
@@ -35,6 +41,14 @@ pub struct ModelPreview {
     pub format: String,
     pub details: Vec<String>,
     pub views: Vec<ModelView>,
+    pub scene: Arc<ModelScene>,
+}
+
+#[derive(Debug)]
+pub struct ModelGeometry {
+    pub format: String,
+    pub details: Vec<String>,
+    pub scene: Arc<ModelScene>,
 }
 
 pub fn is_model_path(path: &Path) -> bool {
@@ -48,11 +62,11 @@ pub fn is_model_path(path: &Path) -> bool {
 
 /// File names are hints only, never paths to open. External geometry, materials,
 /// textures, caches, and scripts are not resolved.
-pub fn decode_model(
+pub fn decode_geometry(
     bytes: &[u8],
     name: &str,
     check: impl Fn() -> Result<()>,
-) -> Result<ModelPreview> {
+) -> Result<ModelGeometry> {
     check()?;
     ensure!(
         bytes.len() <= MAX_INPUT_BYTES,
@@ -63,15 +77,20 @@ pub fn decode_model(
         .and_then(|v| v.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let (format, mesh, mut details) = match ext.as_str() {
-        "stl" => ("STL", stl(bytes, &check)?, vec!["Untextured mesh; STL does not define units".into()]),
-        "obj" => ("OBJ", fbx_or_obj(bytes, true, &check)?, vec!["Untextured mesh; material libraries and textures are not loaded".into()]),
-        "fbx" => ("FBX", fbx_or_obj(bytes, false, &check)?, vec!["Static mesh at its default pose, Z-up axes; materials, textures, animation, and external caches are not loaded".into()]),
+    let (format, mesh, units, mut details) = match ext.as_str() {
+        "stl" => ("STL", stl(bytes, &check)?, ModelUnits::Unknown, vec!["Untextured mesh; STL does not define units".into()]),
+        "obj" => ("OBJ", fbx_or_obj(bytes, true, &check)?, ModelUnits::Unknown, vec!["Untextured mesh; OBJ does not define units; material libraries and textures are not loaded".into()]),
+        "fbx" => ("FBX", fbx_or_obj(bytes, false, &check)?, ModelUnits::Millimeters, vec!["Static mesh at its default pose, Z-up axes; declared FBX units converted to millimeters (FBX defaults to centimeters when unspecified); materials, textures, animation, and external caches are not loaded".into()]),
         "3mf" => {
-            let (mesh, unit) = three_mf(bytes, &check)?;
-            ("3MF", mesh, vec![format!("Core build geometry · units: {unit}; materials and textures are not rendered")])
+            let (mut mesh, unit) = three_mf(bytes, &check)?;
+            let factor = match unit.as_str() { "micron" => 0.001, "centimeter" => 10., "inch" => 25.4, "foot" => 304.8, "meter" => 1000., _ => 1. };
+            for triangle in &mut mesh { check()?; for point in triangle { *point = valid_point(point.map(|v| v * factor))?; } }
+            ("3MF", mesh, ModelUnits::Millimeters, vec![format!("Core build geometry · source units: {unit}, displayed in millimeters; materials and textures are not rendered")])
         }
-        "step" | "stp" => ("STEP", step::faceted(bytes, &check)?, vec!["Faceted B-rep surfaces in source coordinates; curved CAD surfaces and assembly transforms require an external CAD application".into()]),
+        "step" | "stp" => {
+            let cad = step::decode(bytes, &check)?;
+            ("STEP", cad.mesh, cad.units, cad.details)
+        }
         _ => bail!("Unsupported 3D model format"),
     };
     ensure!(
@@ -89,13 +108,33 @@ pub fn decode_model(
         "The model contains only degenerate triangles"
     );
     let (minimum, maximum) = bounds(&mesh)?;
+    let scene = Arc::new(ModelScene::new(mesh, units, format)?);
     details.push(format!(
         "{} triangles · extent {:.4} × {:.4} × {:.4}",
-        mesh.len(),
+        scene.triangle_count(),
         maximum[0] - minimum[0],
         maximum[1] - minimum[1],
         maximum[2] - minimum[2]
     ));
+    Ok(ModelGeometry {
+        format: format.into(),
+        details,
+        scene,
+    })
+}
+
+/// Legacy fixed views for secondary static surfaces. Interactive consumers use
+/// `decode_geometry` and render only the requested camera with `render_model`.
+pub fn decode_model(
+    bytes: &[u8],
+    name: &str,
+    check: impl Fn() -> Result<()>,
+) -> Result<ModelPreview> {
+    let ModelGeometry {
+        format,
+        details,
+        scene,
+    } = decode_geometry(bytes, name, &check)?;
     let mut work = 0;
     let mut views = Vec::with_capacity(4);
     for (caption, eye, up) in [
@@ -107,13 +146,14 @@ pub fn decode_model(
         check()?;
         views.push(ModelView {
             caption: caption.into(),
-            image: rasterize(&mesh, eye, up, format, &mut work, &check)?,
+            image: rasterize(scene.triangles(), eye, up, &format, &mut work, &check)?,
         });
     }
     Ok(ModelPreview {
-        format: format.into(),
+        format,
         details,
         views,
+        scene,
     })
 }
 
@@ -194,6 +234,7 @@ fn fbx_or_obj(bytes: &[u8], obj: bool, check: &impl Fn() -> Result<()>) -> Resul
         } else {
             ufbx::axes_right_handed_z_up()
         },
+        target_unit_meters: if obj { 0. } else { 0.001 },
         open_main_file_with_default: false,
         open_file_cb: ufbx::OpenFileCb::Ref(&deny_file),
         progress_cb: ufbx::ProgressCb::Ref(&progress),

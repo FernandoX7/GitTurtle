@@ -69,7 +69,8 @@ fn fbx_node_placement_is_applied_and_invalid_obj_indices_are_refused() {
     let moved = fbx_or_obj(placed.as_bytes(), false, &|| Ok(())).unwrap();
     assert_eq!(base.len(), moved.len());
     let delta = subtract(moved[0][0], base[0][0]);
-    assert!((dot(delta, delta) - 155.).abs() < 1e-6);
+    // Missing FBX GlobalSettings use its centimeter default; output is mm.
+    assert!((dot(delta, delta) - 15_500.).abs() < 1e-6);
     for (before, after) in base.iter().flatten().zip(moved.iter().flatten()) {
         let actual = subtract(*after, *before);
         assert!((0..3).all(|axis| (actual[axis] - delta[axis]).abs() < 1e-6));
@@ -273,5 +274,296 @@ fn step_concave_face_triangulates_without_filling_the_notch() {
             &|| Ok(())
         )
         .is_err()
+    );
+}
+
+#[test]
+fn interactive_camera_preserves_revision_scale_and_translation() {
+    let before = decode_geometry(OBJ, "before.obj", || Ok(())).unwrap();
+    let after_source = std::str::from_utf8(OBJ)
+        .unwrap()
+        .replace("v 2 0 0", "v 4 0 0");
+    let after = decode_geometry(after_source.as_bytes(), "after.obj", || Ok(())).unwrap();
+    let bounds = before.scene.bounds.union(after.scene.bounds);
+    let mut camera = ModelCamera::fit(bounds);
+    camera.set_view(ModelStandardView::Front);
+    let origin = camera.project([0., 0., 0.]);
+    let old_tip = camera.project([2., 0., 0.]);
+    let new_tip = camera.project([4., 0., 0.]);
+    assert!(((new_tip[0] - origin[0]) / (old_tip[0] - origin[0]) - 2.).abs() < 1e-12);
+    let translated = camera.project([12., 0., 0.]);
+    assert!(translated[0] > new_tip[0]);
+    let a = render_model(&before.scene, &camera, 256, false, || Ok(())).unwrap();
+    let b = render_model(&after.scene, &camera, 256, false, || Ok(())).unwrap();
+    assert_ne!(a.rgba, b.rgba);
+    assert!(before.scene.retained_bytes() >= 4 * std::mem::size_of::<Triangle>());
+}
+
+#[test]
+fn orbit_pan_zoom_fit_and_wireframe_change_requested_frame_only() {
+    let geometry = decode_geometry(OBJ, "tetra.obj", || Ok(())).unwrap();
+    let mut camera = ModelCamera::fit(geometry.scene.bounds);
+    let initial = camera;
+    let render = |camera: &ModelCamera, wire| {
+        render_model(&geometry.scene, camera, 256, wire, || Ok(()))
+            .unwrap()
+            .rgba
+    };
+    let frame = render(&camera, false);
+    camera.orbit(0.4, 0.2);
+    assert_ne!(render(&camera, false), frame);
+    camera = initial;
+    let point = camera.project([0., 0., 0.]);
+    camera.pan(0.1, -0.2);
+    let panned = camera.project([0., 0., 0.]);
+    assert!((panned[0] - point[0] - 0.1).abs() < 1e-12);
+    assert!((panned[1] - point[1] + 0.2).abs() < 1e-12);
+    camera.zoom(2.);
+    assert_eq!(camera.span, initial.span / 2.);
+    camera.fit_bounds(geometry.scene.bounds);
+    assert_eq!(camera, initial);
+    assert_ne!(render(&camera, true), frame);
+    let copy = camera;
+    camera.zoom(f64::NAN);
+    camera.pan(f64::INFINITY, 0.);
+    camera.orbit(f64::NAN, 0.);
+    assert_eq!(camera, copy);
+    for view in ModelStandardView::ALL {
+        camera.set_view(view);
+        let axes = camera.orientation_axes();
+        for axis in axes {
+            assert!((dot(axis.direction, axis.direction) - 1.).abs() < 1e-12);
+        }
+        assert!(
+            render(&camera, false)
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|p| *p != [28, 34, 42, 255])
+        );
+    }
+}
+
+#[test]
+fn known_model_units_normalize_and_frames_are_cancellable_and_bounded() {
+    let source = core_model(THREE_MF_OBJECT, "<item objectid=\"1\"/>");
+    let mm = decode_geometry(
+        &three_mf_bytes(&source, zip::CompressionMethod::Stored),
+        "mm.3mf",
+        || Ok(()),
+    )
+    .unwrap();
+    let inch_source = source.replace("unit=\"millimeter\"", "unit=\"inch\"");
+    let inch = decode_geometry(
+        &three_mf_bytes(&inch_source, zip::CompressionMethod::Stored),
+        "inch.3mf",
+        || Ok(()),
+    )
+    .unwrap();
+    assert_eq!(mm.scene.units, ModelUnits::Millimeters);
+    for (a, b) in mm
+        .scene
+        .triangles()
+        .iter()
+        .flatten()
+        .zip(inch.scene.triangles().iter().flatten())
+    {
+        assert!((0..3).all(|i| (b[i] - a[i] * 25.4).abs() < 1e-12));
+    }
+    let camera = ModelCamera::fit(mm.scene.bounds);
+    assert!(render_model(&mm.scene, &camera, 721, false, || Ok(())).is_err());
+    assert!(
+        render_model(&mm.scene, &camera, 256, false, || bail!("cancelled camera"))
+            .unwrap_err()
+            .to_string()
+            .contains("cancelled camera")
+    );
+    let invalid = ModelCamera {
+        span: f64::NAN,
+        ..camera
+    };
+    assert!(render_model(&mm.scene, &invalid, 256, true, || Ok(())).is_err());
+}
+
+fn step_document(entities: &str) -> String {
+    format!(
+        "ISO-10303-21;\nHEADER;\nFILE_SCHEMA(('AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF'));\nENDSEC;\nDATA;\n{entities}\nENDSEC;\nEND-ISO-10303-21;"
+    )
+}
+
+const STEP_MM: &str = "#100=(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.));\n#101=(GEOMETRIC_REPRESENTATION_CONTEXT(3) GLOBAL_UNIT_ASSIGNED_CONTEXT((#100)) REPRESENTATION_CONTEXT('',''));";
+
+#[test]
+fn step_curved_csg_sphere_has_curvature_and_measured_volume() {
+    let source = step_document(&format!(
+        "#1=CARTESIAN_POINT('',(10.,20.,30.));\n#2=SPHERE('',2.,#1);\n#3=CSG_SOLID('',#2);\n#4=CSG_SHAPE_REPRESENTATION('',(#3),#101);\n{STEP_MM}"
+    ));
+    let model = decode_geometry(source.as_bytes(), "sphere.step", || Ok(())).unwrap();
+    assert_eq!(model.scene.units, ModelUnits::Millimeters);
+    assert_eq!(model.scene.bounds.minimum, [8., 18., 28.]);
+    assert_eq!(model.scene.bounds.maximum, [12., 22., 32.]);
+    assert_eq!(model.scene.triangle_count(), 3968);
+    let center = [10., 20., 30.];
+    for p in model.scene.triangles().iter().flatten() {
+        let relative = subtract(*p, center);
+        assert!((dot(relative, relative) - 4.).abs() < 1e-12);
+    }
+    let volume: f64 = model
+        .scene
+        .triangles()
+        .iter()
+        .map(|t| {
+            dot(
+                subtract(t[0], center),
+                cross(subtract(t[1], center), subtract(t[2], center)),
+            ) / 6.
+        })
+        .sum();
+    let analytic = 4. / 3. * std::f64::consts::PI * 8.;
+    assert!((volume - analytic).abs() / analytic < 0.006);
+    assert!(model.details.iter().any(|v| v.contains("64 segments")));
+}
+
+#[test]
+fn step_cylinder_torus_and_block_use_analytic_dimensions_and_placements() {
+    let common = format!(
+        "#1=CARTESIAN_POINT('',(10.,20.,30.));\n#2=DIRECTION('',(1.,0.,0.));\n#3=AXIS1_PLACEMENT('',#1,#2);\n#4=AXIS2_PLACEMENT_3D('',#1,$,$);\n#6=CSG_SOLID('',#5);\n#7=CSG_SHAPE_REPRESENTATION('',(#6),#101);\n{STEP_MM}"
+    );
+    for (primitive, minimum, maximum, count) in [
+        (
+            "RIGHT_CIRCULAR_CYLINDER('',#3,6.,2.)",
+            [10., 18., 28.],
+            [16., 22., 32.],
+            256,
+        ),
+        ("TORUS('',#3,5.,2.)", [8., 13., 23.], [12., 27., 37.], 4096),
+        (
+            "BLOCK('',#4,2.,3.,4.)",
+            [10., 20., 30.],
+            [12., 23., 34.],
+            12,
+        ),
+    ] {
+        let source = step_document(&format!("{common}\n#5={primitive};"));
+        let model = decode_geometry(source.as_bytes(), "solid.step", || Ok(())).unwrap();
+        for axis in 0..3 {
+            assert!((model.scene.bounds.minimum[axis] - minimum[axis]).abs() < 1e-12);
+            assert!((model.scene.bounds.maximum[axis] - maximum[axis]).abs() < 1e-12);
+        }
+        assert_eq!(model.scene.triangle_count(), count);
+        let camera = ModelCamera::fit(model.scene.bounds);
+        let frame = render_model(&model.scene, &camera, 256, false, || Ok(())).unwrap();
+        assert!(
+            frame
+                .rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|p| *p != [28, 34, 42, 255])
+        );
+    }
+}
+
+fn mapped_step() -> String {
+    format!(
+        "{STEP_MM}\n#1=CARTESIAN_POINT('',(3.,0.,0.));\n#2=SPHERE('',1.,#1);\n#3=CSG_SOLID('',#2);\n#4=AXIS2_PLACEMENT_3D('',#1,$,$);\n#5=CSG_SHAPE_REPRESENTATION('',(#3,#4),#101);\n#6=REPRESENTATION_MAP(#4,#5);\n#7=CARTESIAN_POINT('',(10.,0.,0.));\n#8=CARTESIAN_TRANSFORMATION_OPERATOR_3D('',$,$,#7,2.,$);\n#9=MAPPED_ITEM('',#6,#8);\n#10=SHAPE_REPRESENTATION('',(#9),#101);"
+    )
+}
+
+#[test]
+fn step_mapped_instances_apply_inverse_origin_scale_and_nested_placement() {
+    let entities = mapped_step();
+    let source = step_document(&entities);
+    let model = decode_geometry(source.as_bytes(), "mapped.step", || Ok(())).unwrap();
+    assert_eq!(model.scene.triangle_count(), 3968);
+    assert_eq!(model.scene.bounds.minimum, [8., -2., -2.]);
+    assert_eq!(model.scene.bounds.maximum, [12., 2., 2.]);
+    let nested = format!(
+        "{entities}\n#11=REPRESENTATION_MAP(#4,#10);\n#12=MAPPED_ITEM('',#11,#8);\n#13=SHAPE_REPRESENTATION('',(#12),#101);"
+    );
+    let source = step_document(&nested);
+    let model = decode_geometry(source.as_bytes(), "nested.step", || Ok(())).unwrap();
+    assert_eq!(model.scene.triangle_count(), 3968);
+    assert_eq!(model.scene.bounds.minimum, [20., -4., -4.]);
+    assert_eq!(model.scene.bounds.maximum, [28., 4., 4.]);
+}
+
+#[test]
+fn step_unit_conversion_is_attached_to_context_and_mixed_units_are_refused() {
+    let source =
+        step_document(&mapped_step().replace("SI_UNIT(.MILLI.,.METRE.)", "SI_UNIT($,.METRE.)"));
+    let model = decode_geometry(source.as_bytes(), "meters.step", || Ok(())).unwrap();
+    assert_eq!(model.scene.bounds.minimum, [8000., -2000., -2000.]);
+    let inch = mapped_step().replace(
+        "GLOBAL_UNIT_ASSIGNED_CONTEXT((#100))",
+        "GLOBAL_UNIT_ASSIGNED_CONTEXT((#103))",
+    );
+    let source = step_document(&format!(
+        "{inch}\n#102=LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(25.4),#100);\n#103=(CONVERSION_BASED_UNIT('inch',#102) LENGTH_UNIT() NAMED_UNIT(*));"
+    ));
+    let model = decode_geometry(source.as_bytes(), "inch.step", || Ok(())).unwrap();
+    assert!((model.scene.bounds.minimum[0] - 203.2).abs() < 1e-10);
+    let mixed = mapped_step().replace(
+        "#10=SHAPE_REPRESENTATION('',(#9),#101)",
+        "#10=SHAPE_REPRESENTATION('',(#9),#105)",
+    );
+    let source = step_document(&format!(
+        "{mixed}\n#104=(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT($,.METRE.));\n#105=(GEOMETRIC_REPRESENTATION_CONTEXT(3) GLOBAL_UNIT_ASSIGNED_CONTEXT((#104)) REPRESENTATION_CONTEXT('',''));"
+    ));
+    assert!(
+        decode_geometry(source.as_bytes(), "mixed.step", || Ok(()))
+            .unwrap_err()
+            .to_string()
+            .contains("mixed")
+    );
+}
+
+#[test]
+fn step_mapped_cycles_geometry_expansion_and_invalid_analytic_parameters_fail() {
+    let entities = mapped_step();
+    for invalid in [
+        entities.replace("SPHERE('',1.,#1)", "SPHERE('',-1.,#1)"),
+        entities.replace("SPHERE('',1.,#1)", "SPHERE('',NaN,#1)"),
+        entities.replace(
+            "#8=CARTESIAN_TRANSFORMATION_OPERATOR_3D('',$,$,#7,2.,$)",
+            "#8=CARTESIAN_TRANSFORMATION_OPERATOR_3D('',$,$,#7,0.,$)",
+        ),
+        entities.replace(
+            "#6=REPRESENTATION_MAP(#4,#5)",
+            "#6=REPRESENTATION_MAP(#4,#10)",
+        ),
+        entities.replace("#3=CSG_SOLID('',#2)", "#3=MANIFOLD_SOLID_BREP('',#2)"),
+        entities.replace(
+            "#3=CSG_SOLID('',#2)",
+            "#3=CSG_SOLID('',#200)\n;#200=BOOLEAN_RESULT(.UNION.,#2,#2)",
+        ),
+    ] {
+        let source = step_document(&invalid);
+        assert!(decode_geometry(source.as_bytes(), "invalid.step", || Ok(())).is_err());
+    }
+    let instances = std::iter::repeat_n("#9", 26).collect::<Vec<_>>().join(",");
+    let source = step_document(&entities.replace(
+        "#10=SHAPE_REPRESENTATION('',(#9),#101)",
+        &format!("#10=SHAPE_REPRESENTATION('',({instances}),#101)"),
+    ));
+    assert!(
+        decode_geometry(source.as_bytes(), "large.step", || Ok(()))
+            .unwrap_err()
+            .to_string()
+            .contains("triangle limit")
+    );
+    let checks = std::cell::Cell::new(0);
+    let source = step_document(&entities);
+    assert!(
+        decode_geometry(source.as_bytes(), "cancelled.step", || {
+            checks.set(checks.get() + 1);
+            if checks.get() > 150 {
+                bail!("cancelled tessellation");
+            }
+            Ok(())
+        })
+        .unwrap_err()
+        .to_string()
+        .contains("cancelled tessellation")
     );
 }
