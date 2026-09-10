@@ -15,9 +15,11 @@ For source interaction checks, launch the current source with `cargo run --locke
 
 Use a user-authorized repository for passive inspection. Development tests of staging, commits, identity, branches, clone/create, and network actions use disposable repositories and local remotes. Do not modify a user's repository to manufacture test state. `python3 scripts/create-demo-repo.py --output /path/to/empty-or-new-directory` creates a demonstration repository and linked worktree; inspect its options when changing fixture setup. Never run fixture setup against a working repository.
 
+For GitHub panel interaction checks, use the [offline native review fixture](../../../docs/github-collaboration.md#offline-native-review-fixture). Launch the intended executable with `GITTURTLE_GITHUB_FIXTURE=review`; fixture transport has no credential or network path, but drafts and attempt records still use normal app-data stores. Preserve genuine application state before disposable UI QA and restore fixture-induced changes after quitting the app, including tabs/drafts and any system settings changed for the check. Fixture evidence cannot establish a live account or hosted result; use existing specific authorization for those checks.
+
 ## Check the affected interaction
 
-Use the current validation matrix for precise staging/commits, conflicts/integration, stash/recovery, branch/remote management, search/file history, authentication/cancellation, blame/line history, tags/ignore, and macOS conventions. Follow its linked feature documents only for the affected workflow. Include its refusal, stale-target, retained-state, and Git-result checks when those semantics change. The table below supplements that matrix with native presentation and input checks; neither table requires a full pass for every edit.
+Use the current validation matrix and follow its linked feature documents only for the affected workflow. Include its refusal, stale-target, retained-state, and Git-result checks when those semantics change. Repository tabs, incremental history, document/model views, GitHub review, and accessibility have dedicated rows there. The table below supplements that matrix with native presentation and input checks; neither table requires a full pass for every edit.
 
 | Changed area | Useful native checks |
 | --- | --- |

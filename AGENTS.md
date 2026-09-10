@@ -14,21 +14,23 @@ GitTurtle is a beautiful, fast native Git client for history inspection and ever
 
 ## Find the relevant code
 
-Read the affected crate's instructions before edits or reviews, including when starting at the repository root. Each guide routes to its modules, tests, and conditional contracts; load only the relevant references. For cross-crate changes, trace the core model/command, worker result, and native consumer together.
+Read the affected crate's instructions before edits or reviews, including when starting at the repository root; dependency patches use the vendor guide below. Each guide routes to its modules, tests, and conditional contracts; load only the relevant references. For cross-crate changes, trace the core model/command, worker result, and native consumer together.
 
 | Concern | Entry points |
 | --- | --- |
-| Native pages, navigation/focus, Git forms, editors, image comparison, appearance | [App guide](crates/app/AGENTS.md); [design](DESIGN.md) |
-| Scheduling, cancellation, local refresh, caches and resource bounds | [App guide](crates/app/AGENTS.md); [architecture](docs/architecture.md); performance skill below |
-| Git reads, history/search, attribution, status, staging, integration/recovery, branches/remotes, tags/ignore and authentication | [Git core guide](crates/git-core/AGENTS.md); [Git service notes](crates/git-core/README.md) |
-| Supplied-byte image decoding, formats and limits | [Preview guide](crates/preview/AGENTS.md); app worker handles render-image conversion |
+| Native pages/tabs, navigation/focus, Git forms, editors, appearance and accessibility | [App guide](crates/app/AGENTS.md); [design](DESIGN.md) |
+| Scheduling, history paging, cancellation, local refresh, retained sessions and resource bounds | [App guide](crates/app/AGENTS.md); [architecture](docs/architecture.md); performance skill below |
+| Git reads, revision inspection, attribution, staging, integration/recovery, worktrees, rewrite review, profiles and authentication | [Git core guide](crates/git-core/AGENTS.md); [Git service notes](crates/git-core/README.md) |
+| GitHub accounts, PR inspection, comments/reviews and local draft recovery | [App guide](crates/app/AGENTS.md); [GitHub collaboration](docs/github-collaboration.md) |
+| Image/animation, PDF, Markdown/Mermaid, mesh/CAD and local LFS previews | [Preview guide](crates/preview/AGENTS.md); [app guide](crates/app/AGENTS.md); [support matrix](docs/file-previews.md); local assets and LFS belong to Git core |
+| Vendored toolkit, macOS backend and Mermaid patches | [Vendor guide](vendor/AGENTS.md); patch provenance, consumers and focused checks |
 | App icon and control artwork | [Asset conventions](assets/icons/README.md), `assets/AppIcon.icon`, `scripts/render-app-icon.sh`, `scripts/package-macos.sh` |
 | Current native workflows, packaging and evidence | [Validation matrix](docs/validation.md#current-validation-guidance), `scripts/package-macos.sh`, `docs/benchmarks/` |
 | CI and platform build setup | [Quality workflow](.github/workflows/quality.yml), `Cargo.toml`; configured jobs are not evidence of an executed hosted run |
 
 ## Architecture and non-negotiable behavior
 
-- `crates/git-core` owns Git operations and byte-safe paths; `crates/preview` owns bounded decoding; `crates/app` owns GPUI presentation and scheduling. The UI receives owned models and submits typed writes to a serialized background executor. Accepted writes stay separate from replaceable reads and are never silently retried after an uncertain result.
+- `crates/git-core` owns Git operations and byte-safe paths; `crates/preview` owns bounded supplied-byte decoding; `crates/app` owns GPUI presentation, scheduling and explicit GitHub collaboration. The UI receives owned models and submits typed Git writes to a serialized background executor. Accepted writes stay separate from replaceable reads and are never silently retried after an uncertain result.
 - Perform repository reads, diff computation, parsing, and image decoding off the UI thread. Load metadata before file content; virtualize lists. Generation checks prevent stale results, and queues/concurrency/input limits bound underlying work.
 - In History, commit selection loads changed files only; explicit file activation enters Compare. Back retains history context, and a late preview must never reopen Compare.
 - History, previews, attribution, and status reads do not mutate repositories or fetch objects. Explicit writes act only on the captured repository and reviewed target; preserve unrelated index/worktree state and surface conflicts/failures. Preferences/caches belong in the application data directory.

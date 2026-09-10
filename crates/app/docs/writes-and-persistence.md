@@ -14,6 +14,12 @@ Branch management belongs in the compact picker and navigator context menus; ord
 
 Tag and ignore actions also prepare exact captured reviews before entering the existing operation executor. Authentication prompts and cancellation are transient and operation-scoped; credentials never enter preferences. Preserve configured authentication mechanisms and explicit process cancellation described in [authentication](../../../docs/authentication.md). Native menu and editor/Finder handoff actions remain explicit local interactions.
 
+## GitHub collaboration
+
+`github` owns the provider client, transport and stores; `github_view` owns native PR inspection and review forms. Its [collaboration contract](../../../docs/github-collaboration.md) is the authority for account connection, explicit network actions, pagination, inline positions, durable attempts and recovery. Opening or warm-restoring the panel uses local state only. Accepted outbound work uses the existing operation executor with captured account/repository/head/base identities; a pending attempt must be stored before sending. Lost replies and uncertain outcomes preserve drafts and require explicit verification, never automatic replay or remapping to a newer head.
+
+Credentials stay in the platform credential store and transient transport state, separately from coalesced text drafts and attempt records. Draft persistence uses the preference executor and shared bounded store reader; invalid stores remain recoverable. PR creation does not implicitly push, and captured local comparisons do not implicitly fetch. Native offline fixtures establish UI/model behavior only; actual hosted account and write evidence remains separate.
+
 ## Working changes and recovery
 
 Distinguish HEAD-to-index from index-to-worktree previews, including files present in both lists. Pass both paths when staging a rename. Passive status/preview reads stay read-only. Real operations use core's stale-checked plans and commands; mutation checks use disposable fixtures.

@@ -1,6 +1,20 @@
-# Image preview guidance
+# Preview decoder guidance
 
-These instructions supplement the root agreements for `crates/preview`. Raster/SVG decoding and focused fixtures live in [src/lib.rs](src/lib.rs), SVG expansion preflight in [src/svg_limits.rs](src/svg_limits.rs), supplied-byte native ImageIO/PDF rendering in [src/native.rs](src/native.rs), bounded container/encoding metadata in [src/metadata.rs](src/metadata.rs), static Mermaid in [src/mermaid.rs](src/mermaid.rs), and bounded mesh/CAD views in [src/model3d.rs](src/model3d.rs). The [support matrix](../../docs/file-previews.md) distinguishes rendered, source, metadata and external support; [document preview contracts](../../docs/document-previews.md) describe native PDF/text, Markdown resources and retained model behavior. [examples/render_icon.rs](examples/render_icon.rs) builds macOS iconset PNGs through the same decoder.
+These instructions supplement the root agreements for `crates/preview`. The [support matrix](../../docs/file-previews.md) distinguishes rendered, source, metadata and external support; [document preview contracts](../../docs/document-previews.md) describe native PDF/text, Markdown resources and retained model behavior.
+
+## Find the relevant decoder
+
+| Concern | Source and focused fixtures |
+| --- | --- |
+| Raster/SVG decode, alpha and orientation | [src/lib.rs](src/lib.rs); [src/svg_limits.rs](src/svg_limits.rs) for SVG preflight |
+| Composited GIF animation and budgets | [src/animation.rs](src/animation.rs) |
+| Supplied-byte ImageIO/PDF pages and selected-page text | [src/native.rs](src/native.rs), [src/native/pdf_text.rs](src/native/pdf_text.rs) |
+| Container metadata and transformed text | [src/metadata.rs](src/metadata.rs) |
+| Static Mermaid | [src/mermaid.rs](src/mermaid.rs) |
+| Mesh decoding and retained camera/raster views | [src/model3d.rs](src/model3d.rs), [src/model3d/camera.rs](src/model3d/camera.rs), [src/model3d/tests.rs](src/model3d/tests.rs) |
+| STEP faceted solids, analytic primitives, instances and units | [src/model3d/step.rs](src/model3d/step.rs), [scene.rs](src/model3d/step/scene.rs), [primitives.rs](src/model3d/step/primitives.rs) |
+
+Most tests are inline in the owning module. Checked-in binary fixtures and their provenance are documented in [tests/fixtures/README.md](tests/fixtures/README.md) and [model fixtures](tests/fixtures/models/README.md).
 
 ## Decoder contracts
 
@@ -10,13 +24,12 @@ These instructions supplement the root agreements for `crates/preview`. Raster/S
 - SVG previews are static and self-contained. Preserve explicit refusals for DTDs, linked or embedded image resources, nonfragment `href` values, and filters; disabling `resources_dir` alone does not prevent absolute-path reads. Bound `use` and marker expansion before usvg and font loading, independently from XML size/depth. Keep renderer-compatible namespace/fragment resolution and refuse marker CSS that the structural preflight cannot account for. Keep both image resolvers disabled and load system fonts once, only when text appears. Adding unsupported features requires bounded behavior and honest preview results.
 - Native ImageIO, CoreGraphics and PDFKit references remain on one worker stack and consume supplied CFData only. Return owned pixels/text; never send native document references to the UI. PDF pages are capped independently from source bytes and pixel bounds, with cancellation between phases. [Selected-page text](src/native/pdf_text.rs) uses a scoped autorelease pool and caps returned UTF-8 independently at 256 KiB; absence and truncation stay explicit. Text-layer order may differ from visual layout; no OCR is requested. Generic container metadata never decompresses archives, installs fonts or executes document actions. Dedicated 3MF geometry decoding may decompress bounded selected XML members in memory, with no filesystem extraction. Decoded UTF-16 and PDF text are explicitly transformed source and never a Git patch.
 - Mermaid retains exact literal source separately from its static diagram. Bound source/graph complexity before layout and generated SVG before rasterization. Refuse source configuration/actions/resources; do not call the renderer's filesystem/CLI helpers or restore its disabled disk font cache. Keep cancellation between phases and individual diagrams, with honest errors/caps and no claim of complete Mermaid compatibility.
-- Mesh/CAD decoders never load repository-relative materials, textures, geometry references, scripts or caches. Bound expanded geometry and raster work independently of compressed input bytes, preserve finite coordinates and supported transforms, and label fixed views, default poses and unsupported CAD geometry explicitly. Views are inspection aids, not geometry edits or manufacturing validation.
+- Mesh/CAD decoders never load repository-relative materials, textures, geometry references, scripts or caches. Bound expanded geometry and raster work independently of compressed input bytes and preserve finite coordinates, supported transforms and explicit units. STEP retains its finite supported geometry/placement contract; refuse unsupported geometry rather than inventing a bounding box or point cloud. Label tessellated analytic geometry, default poses and unknown physical scale honestly.
+- `decode_geometry` returns immutable retained `ModelScene` geometry; interactive consumers render only the requested camera through `render_model` on a cancellable worker. Account for retained triangles as well as pixels. Initial linked cameras fit both revisions' union bounds so normalization cannot hide size or position changes; preserve explicit independent-camera inspection. `decode_model` retains fixed views for secondary static consumers. Views remain inspection aids rather than geometry edits or manufacturing validation.
 
-## App icon pipeline
+## App icon consumer
 
-The production app icon uses the layered `assets/AppIcon.icon` source and Xcode 26 or later. Follow the [asset conventions](../../assets/icons/README.md) and [render script](../../scripts/render-app-icon.sh) for static previews, embedded branding, and the fallback ICNS. `render_icon` remains a standalone decoder example that accepts square images of at least 1024 pixels and preserves alpha; it does not produce the native appearance catalog.
-
-The [package script](../../scripts/package-macos.sh) compiles the layered source on every run, including `--no-build`, and ships the generated appearance catalog, fallback ICNS, and icon metadata. After an icon change, inspect small and large rendered sizes and verify the packaged appearances using the [native QA procedure](../../.agents/skills/gitturtle-native-qa/SKILL.md). Keep artwork regeneration scoped to asset changes.
+[examples/render_icon.rs](examples/render_icon.rs) is a standalone decoder example for square images of at least 1024 pixels and preserves alpha. The production icon uses layered `assets/AppIcon.icon`; follow the [asset conventions](../../assets/icons/README.md) for its render and package pipeline. The decoder example does not produce the native appearance catalog.
 
 ## Verification
 
