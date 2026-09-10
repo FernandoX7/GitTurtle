@@ -12,6 +12,7 @@ pub(super) struct State {
     pub total: u32,
     pub loaded: bool,
     pub pagination_notice: Option<String>,
+    pub invalid_threads: std::collections::HashSet<String>,
     pub active: Option<CapturedThread>,
     pub input: Entity<TextareaState>,
     pub deferred: DeferredDraft,
@@ -27,6 +28,7 @@ impl State {
             total: 0,
             loaded: false,
             pagination_notice: None,
+            invalid_threads: Default::default(),
             active: None,
             input: cx.new(|cx| {
                 TextareaState::new(window, cx)
@@ -45,6 +47,7 @@ impl State {
         self.total = 0;
         self.loaded = false;
         self.pagination_notice = None;
+        self.invalid_threads.clear();
         self.active = None;
     }
 }
@@ -93,6 +96,12 @@ impl Panel {
                 .as_ref()
                 .map_or(0, CapturedThread::retained_bytes)
             + self.conversations.input.read(cx).value().len() * 3
+            + self
+                .conversations
+                .invalid_threads
+                .iter()
+                .map(String::len)
+                .sum::<usize>()
             + self
                 .conversations
                 .pagination_notice
@@ -145,6 +154,7 @@ impl Panel {
         }
     }
     pub(super) fn receive_threads(&mut self, page: CursorPage<Thread>, cursor: Option<String>) {
+        self.conversations.invalid_threads.clear();
         self.conversations.threads = page.items;
         self.conversations.total = page.total_count;
         let had_next = page.next_cursor.is_some();
@@ -152,6 +162,32 @@ impl Panel {
             accept_page_cursor(&mut self.conversations.cursors, cursor, page.next_cursor);
         self.conversations.pagination_notice = (had_next && self.conversations.next_cursor.is_none()).then(||"Further conversation pages are unavailable: the provider repeated a cursor or this inspection reached its 1,000-page limit. Refresh conversations to start a new inspection.".into());
         self.conversations.loaded = true;
+    }
+    fn invalidate_thread_context(&mut self, target: Option<&CapturedThread>) {
+        for thread in &mut self.conversations.threads {
+            if target.is_none_or(|target| &thread.target == target) {
+                thread.viewer_can_reply = false;
+                thread.viewer_can_resolve = false;
+                thread.viewer_can_unresolve = false;
+                self.conversations
+                    .invalid_threads
+                    .insert(thread.target.thread_id.clone());
+            }
+        }
+        self.confirm = None;
+    }
+    fn receive_thread(&mut self, thread: Thread) {
+        if let Some(old) = self
+            .conversations
+            .threads
+            .iter_mut()
+            .find(|old| old.target == thread.target)
+        {
+            self.conversations
+                .invalid_threads
+                .remove(&thread.target.thread_id);
+            *old = thread;
+        }
     }
     pub(super) fn restore_reply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let saved = self.saved.iter().find_map(|draft| match draft {
@@ -183,6 +219,7 @@ impl Panel {
         let fixture = self.review.fixture;
         let moved = self.review.fixture_moved;
         let requested = cursor.clone();
+        self.confirm = None;
         self.run(
             false,
             move |control| {
@@ -195,7 +232,8 @@ impl Panel {
             move |result, this, _, _| match result {
                 Ok(page) => this.receive_threads(page, cursor),
                 Err(error) => {
-                    this.error = Some(format!("Conversations could not be loaded: {error:#}"))
+                    this.invalidate_thread_context(None);
+                    this.error = Some(format!("Conversations could not be loaded: {error:#}. Cached conversation actions are disabled until a successful explicit refresh."))
                 }
             },
             window,
@@ -212,6 +250,8 @@ impl Panel {
         self.save_draft(window, cx);
         let fixture = self.review.fixture;
         let moved = self.review.fixture_moved;
+        let captured = target.clone();
+        self.confirm = None;
         self.run(
             false,
             move |control| {
@@ -221,20 +261,12 @@ impl Panel {
                     &control,
                 )
             },
-            |result, this, _, _| match result {
-                Ok(thread) => {
-                    if let Some(old) = this
-                        .conversations
-                        .threads
-                        .iter_mut()
-                        .find(|old| old.target.thread_id == thread.target.thread_id)
-                    {
-                        *old = thread;
-                    }
-                }
+            move |result, this, _, _| match result {
+                Ok(thread) => this.receive_thread(thread),
                 Err(error) => {
+                    this.invalidate_thread_context(Some(&captured));
                     this.error = Some(format!(
-                        "Conversation context could not be loaded: {error:#}"
+                        "Conversation context could not be loaded: {error:#}. This conversation’s actions are disabled until a successful explicit refresh."
                     ))
                 }
             },
@@ -451,7 +483,7 @@ impl Panel {
                 .when(visible.is_empty(),|element|element.child(label("github-no-threads",if self.conversations.loaded{"No conversations for this file on the loaded page."}else{"Conversations are unavailable. Refresh conversations to load their current status."}).text_color(rgb(p.muted))))
                 .children(visible.into_iter().enumerate().map(|(index,thread)|{
                     let target=thread.target.clone(); let reply=target.clone(); let resolve=target.clone(); let refresh=target.clone(); let more=target.clone();
-                    let resolved=thread.is_resolved; let cursor=thread.next_comments_cursor.clone();
+                    let resolved=thread.is_resolved; let stale=self.conversations.invalid_threads.contains(&target.thread_id); let cursor=thread.next_comments_cursor.clone();
                     let opening_missing=target.root_comment_id.as_ref().is_some_and(|root|!thread.comments.iter().any(|comment|&comment.id==root));
                     let can_reply=reply_matches(thread,&target,self.account.as_deref());
                     let can_resolve=if resolved{thread.viewer_can_unresolve}else{thread.viewer_can_resolve};
@@ -459,7 +491,8 @@ impl Panel {
                         .child(div().flex().flex_wrap().items_center().gap_2()
                             .child(label(("github-thread-path",index),thread.location()).font_weight(FontWeight::SEMIBOLD))
                             .child(div().flex_1())
-                            .child(label(("github-thread-status",index),if resolved{"Resolved"}else{"Unresolved"}).px_2().py_1().rounded(px(4.)).bg(rgb(p.subtle)).text_color(rgb(if resolved{p.muted}else{p.accent}))))
+                            .child(label(("github-thread-status",index),if stale{"Status needs refresh"}else if resolved{"Resolved"}else{"Unresolved"}).px_2().py_1().rounded(px(4.)).bg(rgb(p.subtle)).text_color(rgb(if resolved{p.muted}else{p.accent}))))
+                        .when(stale,|element|element.child(label(("github-thread-stale",index),"The last refresh could not validate this conversation. Comments and drafts are retained; refresh successfully before replying or changing its status.").text_color(rgb(p.warning))))
                         .when(thread.is_outdated,|element|element.child(label(("github-thread-outdated",index),format!("Outdated context · original commit {}",target.original_commit_id.as_deref().unwrap_or("unavailable"))).text_color(rgb(p.muted))))
                         .when(opening_missing && !thread.context_incomplete,|element|element.child(label(("github-thread-earlier",index),"Earlier comments are on a previous page. Opening comments returns to the start of this exact conversation.").text_color(rgb(p.muted))))
                         .when(thread.context_incomplete,|element|element.child(label(("github-thread-incomplete",index),"Opening or earlier context is unavailable on this page. Replies keep their original conversation identity.").text_color(rgb(p.warning))))
@@ -477,7 +510,7 @@ impl Panel {
                             .child(button(("github-thread-reload",index),if opening_missing{"Opening comments"}else{"Refresh thread"},"refresh-cw",false).disabled(self.pending).on_click(cx.listener(move|this,_,window,cx|this.thread_comments(refresh.clone(),None,window,cx))))
                             .when(cursor.is_some(),|element|element.child(button(("github-thread-more",index),"Next comment page","",false).disabled(self.pending).on_click(cx.listener(move|this,_,window,cx|this.thread_comments(more.clone(),cursor.clone(),window,cx)))))
                             .child(label(("github-thread-count",index),format!("{} of {} comments",thread.comments.len(),thread.comments_total)).text_color(rgb(p.muted))))
-                        .when(!can_reply || !can_resolve,|element|element.child(label(("github-thread-permissions",index),"Unavailable actions need complete context and GitHub permission; refresh to check again.").text_color(rgb(p.muted))))
+                        .when(!stale && (!can_reply || !can_resolve),|element|element.child(label(("github-thread-permissions",index),"Unavailable actions need complete context and GitHub permission; refresh to check again.").text_color(rgb(p.muted))))
                 })))
             .when_some(self.conversations.pagination_notice.as_ref(),|element,notice|element.child(label("github-thread-pagination-limit",notice.clone()).text_color(rgb(p.warning))))
             .child(div().flex().flex_wrap().items_center().gap_2()
@@ -682,6 +715,96 @@ mod tests {
             confirmation.bottom() <= viewport.bottom(),
             "confirmation must reveal its send action"
         );
+        // Exercise actual asynchronous refresh failures with a moved provider head.
+        // A failed single-thread read invalidates only its exact context; a failed
+        // page read invalidates every retained thread whose snapshot it checked.
+        for whole_page in [false, true] {
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.review.fixture = true;
+                    panel.review.fixture_moved = true;
+                    if whole_page {
+                        panel.thread_page(None, window, cx);
+                    } else {
+                        panel.thread_comments(target.clone(), None, window, cx);
+                    }
+                })
+            });
+            app.read_with(cx, |app, _| app.operations.submit(|| Ok(())))
+                .await
+                .unwrap()
+                .unwrap();
+            cx.executor().run_until_parked();
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| {
+                    assert!(
+                        panel
+                            .error
+                            .as_ref()
+                            .is_some_and(|error| error.contains("could not be loaded"))
+                    );
+                    assert_eq!(panel.conversations.active.as_ref(), Some(&target));
+                    assert_eq!(
+                        panel.conversations.input.read(cx).value(),
+                        " Exact reply\r\n  café\n"
+                    );
+                    let thread = &panel.conversations.threads[0];
+                    assert!(
+                        !thread.reply_available()
+                            && !thread.viewer_can_resolve
+                            && !thread.viewer_can_unresolve,
+                        "all rendered action buttons use the invalidated availability"
+                    );
+                    assert!(
+                        !thread.comments.is_empty(),
+                        "failed refresh retains visible conversation text"
+                    );
+                    assert_eq!(
+                        panel.conversations.invalid_threads.len(),
+                        if whole_page {
+                            panel.conversations.threads.len()
+                        } else {
+                            1
+                        }
+                    );
+                    if !whole_page {
+                        assert!(
+                            panel.conversations.threads[1].viewer_can_reply,
+                            "unrelated conversation keeps its validated permissions"
+                        );
+                    }
+                    panel.review_reply(window, cx);
+                    assert!(
+                        panel.confirm.is_none(),
+                        "composer cannot review an unvalidated target"
+                    );
+                    panel.review_resolution(target.clone(), true, window, cx);
+                    assert!(
+                        panel.confirm.is_none(),
+                        "resolution cannot use stale cached permissions"
+                    );
+                    panel.review.fixture_moved = false;
+                    if whole_page {
+                        panel.thread_page(None, window, cx);
+                    } else {
+                        panel.thread_comments(target.clone(), None, window, cx);
+                    }
+                })
+            });
+            app.read_with(cx, |app, _| app.operations.submit(|| Ok(())))
+                .await
+                .unwrap()
+                .unwrap();
+            cx.executor().run_until_parked();
+            cx.update(|window, cx| panel.update(cx, |panel, cx| {
+                assert!(panel.conversations.invalid_threads.is_empty());
+                assert!(panel.conversations.threads[0].reply_available());
+                assert!(panel.conversations.threads[0].viewer_can_resolve);
+                assert_eq!(panel.conversations.input.read(cx).value(), " Exact reply\r\n  café\n");
+                panel.review_reply(window, cx);
+                assert!(matches!(panel.confirm.as_ref().map(|confirmation|&confirmation.action), Some(Action::Reply {target:captured,..}) if captured == &target));
+            }));
+        }
         cx.update(|window, cx| {
             panel.update(cx, |panel, cx| {
                 panel.account = Some("another-account".into());

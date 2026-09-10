@@ -304,7 +304,9 @@ impl Panel {
                         + attempt
                             .completed_reply_sha256
                             .as_ref()
-                            .map_or(0, String::len)
+                            .map_or(0, |receipts| {
+                                receipts.iter().map(String::len).sum::<usize>()
+                            })
                 })
                 .sum::<usize>()
             + self.account.as_ref().map_or(0, String::len)

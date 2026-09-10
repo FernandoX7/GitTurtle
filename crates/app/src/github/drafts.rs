@@ -9,6 +9,8 @@ const VERSION: u32 = 1;
 const MAX_STORE: usize = 16 * 1024 * 1024;
 const MAX_DRAFTS: usize = 128;
 const MAX_ATTEMPTS_BYTES: usize = 1024 * 1024;
+const MAX_ATTEMPTS: usize = 128;
+const MAX_REPLY_RECEIPTS: usize = 128;
 /// Exact text tied to the authoritative conversation and connected account that
 /// were captured when composition began. A changed target gets its own entry.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -523,7 +525,7 @@ mod tests {
         assert_eq!(reopened[0].outcome, "Accepted action 91");
     }
     #[test]
-    fn confirmed_reply_remains_completed_when_draft_cleanup_fails() {
+    fn earlier_completed_reply_stays_suppressed_after_later_success_and_failed_saves() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("drafts.json");
         let attempts = temp.path().join("attempts.json");
@@ -547,6 +549,28 @@ mod tests {
         too_large.target.thread_id = "PRRT_oversize".into();
         assert!(save_batch_at(&path, [Draft::Reply(cleared), Draft::Reply(too_large)]).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), before);
+        let later = reply("A later reply also accepted by GitHub\n");
+        let mut failed_save = vec![Draft::Reply(later.clone())];
+        failed_save.extend((0..MAX_DRAFTS).map(|index| {
+            let mut other = reply("Another pending draft");
+            other.target.thread_id = format!("PRRT_new_{index}");
+            Draft::Reply(other)
+        }));
+        assert!(save_batch_at(&path, failed_save).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        record_attempt_at(
+            &attempts,
+            later.target.destination(),
+            "Second reply started".into(),
+        )
+        .unwrap();
+        record_reply_outcome_at(
+            &attempts,
+            later.target.destination(),
+            "GitHub accepted the later reply".into(),
+            Some(&later),
+        )
+        .unwrap();
         let Draft::Reply(restored) = load_at(&path).unwrap().entries.remove(0) else {
             panic!("reply expected");
         };
@@ -554,8 +578,112 @@ mod tests {
             &attempts_at(&attempts).unwrap(),
             &restored
         ));
+        assert!(reply_was_completed(
+            &attempts_at(&attempts).unwrap(),
+            &later
+        ));
         let encoded = std::fs::read_to_string(&attempts).unwrap();
         assert!(!encoded.contains("Exact reply accepted by GitHub"));
+    }
+
+    #[test]
+    fn legacy_single_reply_receipt_migrates_without_retiring_its_proof() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("attempts.json");
+        let original = reply("Previously sent reply\n");
+        let destination = original.target.destination();
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&json!([{
+                "destination": destination,
+                "outcome": "Accepted",
+                "completed_reply_sha256": reply_fingerprint(&original),
+            }]))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(reply_was_completed(&attempts_at(&path).unwrap(), &original));
+        let next = reply("Next sent reply\n");
+        record_reply_outcome_at(&path, destination, "Accepted next".into(), Some(&next)).unwrap();
+        let reopened = attempts_at(&path).unwrap();
+        assert!(reply_was_completed(&reopened, &original));
+        assert!(reply_was_completed(&reopened, &next));
+        assert_eq!(
+            reopened[0].completed_reply_sha256.as_ref().unwrap().len(),
+            2
+        );
+    }
+
+    #[test]
+    fn reply_receipt_limit_refuses_growth_without_forgetting_completed_text() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("attempts.json");
+        let replies: Vec<_> = (0..MAX_REPLY_RECEIPTS)
+            .map(|index| reply(&format!("Accepted reply {index}\n")))
+            .collect();
+        let destination = replies[0].target.destination();
+        let original = serde_json::to_vec(&vec![Attempt {
+            destination: destination.clone(),
+            outcome: "Accepted".into(),
+            completed_reply_sha256: Some(replies.iter().map(reply_fingerprint).collect()),
+        }])
+        .unwrap();
+        std::fs::write(&path, &original).unwrap();
+        assert!(
+            record_reply_outcome_at(
+                &path,
+                destination.clone(),
+                "A further reply was accepted".into(),
+                Some(&reply("Beyond the receipt allowance\n")),
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        let reopened = attempts_at(&path).unwrap();
+        assert!(
+            replies
+                .iter()
+                .all(|reply| reply_was_completed(&reopened, reply))
+        );
+        // Re-observing an already recorded success does not consume capacity.
+        record_reply_outcome_at(&path, destination, "Accepted".into(), Some(&replies[0])).unwrap();
+        assert_eq!(
+            attempts_at(&path).unwrap()[0]
+                .completed_reply_sha256
+                .as_ref()
+                .unwrap()
+                .len(),
+            MAX_REPLY_RECEIPTS
+        );
+    }
+
+    #[test]
+    fn new_attempts_cannot_evict_unretired_reply_receipts() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("attempts.json");
+        let protected = reply("Accepted while draft cleanup failed\n");
+        let attempts: Vec<_> = (0..MAX_ATTEMPTS)
+            .map(|index| Attempt {
+                destination: format!("Destination {index}"),
+                outcome: "Accepted".into(),
+                completed_reply_sha256: Some(vec![reply_fingerprint(&protected)]),
+            })
+            .collect();
+        let original = serde_json::to_vec(&attempts).unwrap();
+        std::fs::write(&path, &original).unwrap();
+        assert!(record_attempt_at(&path, "New destination".into(), "Pending".into()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        // An ordinary attempt without reply evidence remains eligible for the
+        // existing latest-destination retention policy.
+        let mut with_disposable = attempts;
+        with_disposable[MAX_ATTEMPTS - 1].completed_reply_sha256 = None;
+        std::fs::write(&path, serde_json::to_vec(&with_disposable).unwrap()).unwrap();
+        record_attempt_at(&path, "New destination".into(), "Pending".into()).unwrap();
+        let reopened = attempts_at(&path).unwrap();
+        assert_eq!(reopened.len(), MAX_ATTEMPTS);
+        assert_eq!(reopened[0].destination, "Destination 0");
+        assert!(reply_was_completed(&reopened, &protected));
+        assert_eq!(reopened.last().unwrap().destination, "New destination");
     }
 
     #[test]
@@ -683,10 +811,31 @@ mod tests {
 pub(crate) struct Attempt {
     pub destination: String,
     pub outcome: String,
-    /// The operation executor records this with confirmed provider success.
-    /// A failed subsequent preference cleanup must not revive completed text.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub completed_reply_sha256: Option<String>,
+    /// Retain every confirmed reply until cleanup can be proved durable. The
+    /// field keeps its original name and accepts the legacy single digest.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_reply_receipts",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub completed_reply_sha256: Option<Vec<String>>,
+}
+fn deserialize_reply_receipts<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Encoding {
+        Single(String),
+        Multiple(Vec<String>),
+    }
+    Ok(
+        Option::<Encoding>::deserialize(deserializer)?.map(|encoded| match encoded {
+            Encoding::Single(receipt) => vec![receipt],
+            Encoding::Multiple(receipts) => receipts,
+        }),
+    )
 }
 fn attempts_path() -> Result<PathBuf> {
     Ok(path()?.with_file_name("github-attempts.json"))
@@ -703,8 +852,19 @@ fn attempts_at(path: &Path) -> Result<Vec<Attempt>> {
     let attempts: Vec<Attempt> = serde_json::from_slice(&bytes)
         .map_err(|_| anyhow!("GitHub attempt record is invalid and was preserved"))?;
     ensure!(
-        attempts.len() <= 128,
+        attempts.len() <= MAX_ATTEMPTS,
         "GitHub attempt record exceeds its entry limit"
+    );
+    ensure!(
+        attempts.iter().all(
+            |attempt| attempt
+                .completed_reply_sha256
+                .as_ref()
+                .is_none_or(|receipts| receipts.len() <= MAX_REPLY_RECEIPTS
+                    && receipts.iter().all(|receipt| receipt.len() == 64
+                        && receipt.bytes().all(|byte| byte.is_ascii_hexdigit())))
+        ),
+        "GitHub reply receipts are invalid or exceed their limit; the attempt store was preserved"
     );
     Ok(attempts)
 }
@@ -728,9 +888,12 @@ fn reply_fingerprint(reply: &ReplyDraft) -> String {
 }
 pub(crate) fn reply_was_completed(attempts: &[Attempt], reply: &ReplyDraft) -> bool {
     let fingerprint = reply_fingerprint(reply);
-    attempts
-        .iter()
-        .any(|attempt| attempt.completed_reply_sha256.as_ref() == Some(&fingerprint))
+    attempts.iter().any(|attempt| {
+        attempt
+            .completed_reply_sha256
+            .as_ref()
+            .is_some_and(|receipts| receipts.contains(&fingerprint))
+    })
 }
 fn record_reply_outcome_at(
     path: &Path,
@@ -749,19 +912,37 @@ fn record_reply_outcome_at(
         .find(|attempt| attempt.destination == destination)
     {
         attempt.outcome = outcome;
-        // Pending, failed and resolution attempts share this captured target;
-        // none can erase proof that the earlier exact reply was accepted.
-        if completed_reply_sha256.is_some() {
-            attempt.completed_reply_sha256 = completed_reply_sha256;
+        // A later reply can succeed while every preference save still fails.
+        // Never replace earlier proof: its original text may remain on disk.
+        if let Some(receipt) = completed_reply_sha256 {
+            let receipts = attempt.completed_reply_sha256.get_or_insert_default();
+            if !receipts.contains(&receipt) {
+                ensure!(
+                    receipts.len() < MAX_REPLY_RECEIPTS,
+                    "This conversation reached its 128 completed-reply receipt limit. Prior receipts were preserved; inspect GitHub before sending again."
+                );
+                receipts.push(receipt);
+            }
         }
     } else {
-        if attempts.len() == 128 {
-            attempts.remove(0);
+        if attempts.len() == MAX_ATTEMPTS {
+            let disposable = attempts
+                .iter()
+                .position(|attempt| {
+                    attempt
+                        .completed_reply_sha256
+                        .as_ref()
+                        .is_none_or(Vec::is_empty)
+                })
+                .ok_or_else(|| anyhow!(
+                    "The GitHub attempt store is full of completed-reply receipts. Existing receipts were preserved; this attempt was not recorded."
+                ))?;
+            attempts.remove(disposable);
         }
         attempts.push(Attempt {
             destination,
             outcome,
-            completed_reply_sha256,
+            completed_reply_sha256: completed_reply_sha256.map(|receipt| vec![receipt]),
         });
     }
     let bytes = serde_json::to_vec_pretty(&attempts)?;
