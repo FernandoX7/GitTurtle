@@ -10,6 +10,8 @@ use std::sync::{
     Condvar, Mutex, OnceLock, Weak,
     atomic::{AtomicU64, Ordering},
 };
+mod playback;
+use playback::{Playback, Pose};
 
 const FRAME_BYTES: usize = 720 * 720 * 4;
 const CANCELLED: &str = "3D render request superseded";
@@ -96,15 +98,26 @@ struct State {
     drag: Option<Drag>,
     bounds: Bounds<Pixels>,
     focus: Option<FocusHandle>,
+    playback: Playback,
+    frame_pose: Option<Pose>,
+    frame_bounds: Option<ModelBounds>,
+    timeline_focus: Option<FocusHandle>,
+    timeline_bounds: Bounds<Pixels>,
+    scrubbing: bool,
 }
 impl State {
     fn edge(&self) -> u32 {
-        if self.drag.is_some() { 360 } else { 720 }
+        if self.drag.is_some() || self.scrubbing || self.playback.playing() {
+            360
+        } else {
+            720
+        }
     }
     fn dirty(&self) -> bool {
         self.frame_camera != Some(self.camera)
             || self.frame_wireframe != self.wireframe
             || self.frame_edge != self.edge()
+            || self.frame_pose != Some(self.playback.pose)
     }
 }
 
@@ -142,6 +155,12 @@ impl Document {
                 drag: None,
                 bounds: Bounds::default(),
                 focus: None,
+                playback: Playback::default(),
+                frame_pose: None,
+                frame_bounds: None,
+                timeline_focus: None,
+                timeline_bounds: Bounds::default(),
+                scrubbing: false,
             }),
             scene,
             generation: Arc::new(AtomicU64::new(0)),
@@ -197,6 +216,10 @@ impl Document {
     pub fn pause(&self) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.drag = None;
+        state.scrubbing = false;
+        // Freeze the last requested pose; hidden views must not catch up or
+        // silently resume when their retained document becomes visible again.
+        state.playback.pause();
         self.invalidate(&mut state);
     }
     fn configure(&self, fit: ModelBounds) {
@@ -209,6 +232,21 @@ impl Document {
         }
     }
     fn change(&self, partner: Option<&Document>, action: Action) {
+        let fit = matches!(action, Action::Fit).then(|| {
+            let bounds = |document: &Document| {
+                document
+                    .state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .frame_bounds
+                    .unwrap_or(document.scene.bounds)
+            };
+            let own = bounds(self);
+            (
+                own,
+                partner.map_or(own, |partner| own.union(bounds(partner))),
+            )
+        });
         let (camera, wireframe, linked) = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             let before = (state.camera, state.wireframe);
@@ -217,11 +255,8 @@ impl Document {
                 Action::Pan(x, y) => state.camera.pan(x, y),
                 Action::Zoom(factor) => state.camera.zoom(factor),
                 Action::Fit => {
-                    let fit = if state.linked {
-                        state.fit
-                    } else {
-                        self.scene.bounds
-                    };
+                    let (own, shared) = fit.expect("fit bounds are captured before camera edits");
+                    let fit = if state.linked { shared } else { own };
                     state.camera.fit_bounds(fit);
                 }
                 Action::Reset => {
@@ -290,18 +325,33 @@ struct Request {
     camera: ModelCamera,
     edge: u32,
     wireframe: bool,
+    pose: Pose,
 }
 
 fn request_pair<T: 'static>(documents: &[Arc<Document>], window: &mut Window, cx: &mut Context<T>) {
     if !window.is_window_active() {
-        for document in documents {
-            document.pause();
-        }
+        playback::pause_documents(documents);
         return;
     }
+    if cx.reduce_motion()
+        && documents.iter().any(|document| {
+            document
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .playback
+                .playing()
+        })
+    {
+        playback::pause_documents(documents);
+    }
+    let now = std::time::Instant::now();
     let mut requests = Vec::with_capacity(2);
     for document in documents {
         let mut state = document.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !state.pending {
+            state.playback.tick(now);
+        }
         if state.pending || state.error.is_some() || !state.dirty() {
             continue;
         }
@@ -314,6 +364,7 @@ fn request_pair<T: 'static>(documents: &[Arc<Document>], window: &mut Window, cx
             camera: state.camera,
             edge: state.edge(),
             wireframe: state.wireframe,
+            pose: state.playback.pose,
         });
     }
     if requests.is_empty() {
@@ -334,6 +385,7 @@ fn request_pair<T: 'static>(documents: &[Arc<Document>], window: &mut Window, cx
                 r.camera,
                 r.edge,
                 r.wireframe,
+                r.pose,
             )
         })
         .collect();
@@ -351,19 +403,35 @@ fn request_pair<T: 'static>(documents: &[Arc<Document>], window: &mut Window, cx
         let mut frames = Vec::with_capacity(requests.len());
         for request in &requests {
             check()?;
-            let frame = model3d::render_model(
-                &request.scene,
-                &request.camera,
-                request.edge,
-                request.wireframe,
-                check,
-            );
+            let evaluated = request
+                .pose
+                .clip
+                .map(|clip| {
+                    request
+                        .scene
+                        .evaluate_animation(clip, request.pose.seconds, &check)
+                })
+                .transpose();
+            let frame = evaluated.and_then(|evaluated| {
+                let scene = evaluated.as_ref().unwrap_or(&request.scene);
+                model3d::render_model(
+                    scene,
+                    &request.camera,
+                    request.edge,
+                    request.wireframe,
+                    check,
+                )
+                .map(|frame| (frame, scene.bounds))
+            });
             check()?;
-            frames.push(frame.and_then(|frame| worker::render_image(&frame)));
+            frames.push(frame.and_then(|(frame, bounds)| {
+                worker::render_image(&frame).map(|frame| (frame, bounds))
+            }));
         }
         check()?;
         Ok(frames)
     });
+    let pause_targets: Vec<_> = documents.iter().map(Arc::downgrade).collect();
     cx.spawn_in(window, async move |owner, cx| {
         let result = response.await.ok();
         let shared_error = match &result {
@@ -376,7 +444,8 @@ fn request_pair<T: 'static>(documents: &[Arc<Document>], window: &mut Window, cx
         };
         let mut changed = false;
         let mut completed = Vec::with_capacity(2);
-        for (weak, generation, camera, edge, wireframe) in consumers {
+        let mut failed = false;
+        for (weak, generation, camera, edge, wireframe, pose) in consumers {
             let frame = frames.next();
             let Some(document) = weak.upgrade() else {
                 continue;
@@ -387,19 +456,27 @@ fn request_pair<T: 'static>(documents: &[Arc<Document>], window: &mut Window, cx
             }
             state.pending = false;
             changed = true;
-            if let Some(Ok(frame)) = frame {
+            if let Some(Ok((frame, bounds))) = frame {
                 state.frame = Some(frame);
                 state.frame_camera = Some(camera);
                 state.frame_edge = edge;
                 state.frame_wireframe = wireframe;
+                state.frame_pose = Some(pose);
+                state.frame_bounds = Some(bounds);
                 if trace_started.is_some() {
                     completed.push((weak, generation, edge));
                 }
             } else if let Some(Err(error)) = frame {
                 state.error = Some(format!("{error:#}"));
+                failed = true;
             } else if let Some(error) = &shared_error {
                 state.error = Some(error.clone());
+                failed = true;
             }
+        }
+        if failed {
+            let documents: Vec<_> = pause_targets.into_iter().filter_map(|target| target.upgrade()).collect();
+            playback::stop_on_error(&documents);
         }
         if changed {
             let _ = owner.update_in(cx, |_, window, cx| {
@@ -427,11 +504,11 @@ fn request_pair<T: 'static>(documents: &[Arc<Document>], window: &mut Window, cx
 
 pub(super) fn pause(content: Option<&Content>) {
     if let Some(Content::Rich(comparison)) = content {
-        for side in [&comparison.old, &comparison.new] {
-            if let Some(document) = &side.model {
-                document.pause();
-            }
-        }
+        let documents: Vec<_> = [&comparison.old, &comparison.new]
+            .into_iter()
+            .filter_map(|side| side.model.clone())
+            .collect();
+        playback::pause_documents(&documents);
     }
 }
 
@@ -474,6 +551,7 @@ pub(super) fn render_comparison<T: 'static>(
                     .child("Drag to orbit · Shift-drag to pan · Scroll to zoom"),
             )
         })
+        .children(playback::controls(&documents, cx))
         .child(
             div().flex_1().min_h_0().min_w_0().flex().children(
                 [
@@ -500,7 +578,22 @@ pub(super) fn render_comparison<T: 'static>(
             ),
         )
         .on_prepaint(move |_, window, cx| {
-            let _ = view.update(cx, |_, cx| request_pair(&documents, window, cx));
+            let _ = view.update(cx, |_, cx| {
+                request_pair(&documents, window, cx);
+                if window.is_window_active()
+                    && !cx.reduce_motion()
+                    && documents.iter().any(|document| {
+                        document
+                            .state
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .playback
+                            .playing()
+                    })
+                {
+                    window.request_animation_frame();
+                }
+            });
         })
         .into_any_element()
 }
@@ -787,6 +880,13 @@ fn render_side<T: 'static>(
             .child(controls)
             .child(views),
     );
+    header = header.children(playback::clip_control(
+        index,
+        label,
+        &document,
+        partner.clone(),
+        cx,
+    ));
     let first_frame = frame.is_none();
     let mut canvas = model_canvas(
         index,
@@ -912,9 +1012,13 @@ fn render_side<T: 'static>(
                     div()
                         .id(("model-summary", index))
                         .role(Role::Label)
-                        .aria_label(format!("{label}: Geometry only · {summary}"))
+                        .aria_label(format!(
+                            "{label}: {} · {summary}",
+                            document.scene.appearance_label()
+                        ))
                         .child(format!(
-                            "Geometry only · {} triangles · {}",
+                            "{} · {} triangles · {}",
+                            document.scene.appearance_label(),
                             document.scene.triangle_count(),
                             document.scene.units.label()
                         )),

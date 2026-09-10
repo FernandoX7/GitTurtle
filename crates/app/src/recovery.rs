@@ -835,6 +835,12 @@ struct StashBrowser {
     restore_index: bool,
 }
 
+impl Drop for StashBrowser {
+    fn drop(&mut self) {
+        crate::model_view::pause(self.content.as_deref());
+    }
+}
+
 impl StashBrowser {
     fn new(
         owner: WeakEntity<GitTurtle>,
@@ -883,6 +889,7 @@ impl StashBrowser {
     }
 
     fn clear_preview(&mut self) {
+        crate::model_view::pause(self.content.as_deref());
         self.preview_generation = self.preview_generation.wrapping_add(1);
         self.preview_worker.cancel();
         self.preview_task = None;

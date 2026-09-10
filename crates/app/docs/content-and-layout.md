@@ -70,6 +70,26 @@ cycles with process/resource observations when evaluating preview cleanup.
 
 `rich_preview` owns shared comparison presentation and static metadata/page surfaces. Interactive PDF navigation belongs to `pdf_view`: initial preparation uses the repository worker; later pages use a separate serialized render lane and bounded per-side page/text cache. `model_view` retains decoded geometry and uses one active render with one replaceable pending pair. Hidden or retained views cancel pending work and schedule no idle frames. Their generation checks, retained-memory reservations and `image_lifetime` registration must follow the content into tabs and nested inspections.
 
+GLB appearance and deformation data stay immutable and share their texture and
+animation storage with evaluated frames. The model worker evaluates the requested
+pose, rasterizes, and converts pixels before publishing the current generation.
+Each side chooses a clip or Default pose; both use one comparison clock in seconds.
+The shorter clip holds its endpoint until the longest loops. Playback requests at
+most 30 samples per second at 360 pixels, skips elapsed samples while a frame is
+pending, and uses 720 pixels for paused inspection. No frame history is cached.
+Clip changes, scrubbing, lifecycle pauses and failures stop both clocks together;
+hidden views invalidate their work, including stash preview replacement/closure.
+Reduce Motion disables Play and leaves clip selection, scrubbing and stepping
+available. A paused comparison never resumes automatically.
+
+Playback preserves the camera. Fit uses the displayed poses' bounds (their union
+for linked cameras); Reset restores the initial authored comparison framing.
+The timeline and per-side displayed-pose time distinguish requested comparison
+time from the last completed frame. Appearance labels distinguish unlit rendering,
+base-color inspection and geometry-only output; bounded details explain omitted
+appearance resources and unsupported clips. Source bytes remain independent on
+each side and never become a rendering-resource resolver.
+
 `markdown_view` prepares native blocks and captured local resources off the UI thread. Resource reads use core's explicit revision/index/working scope and byte-safe resolver. Remote images and arbitrary URL schemes are refused; HTTP/HTTPS navigation requires an explicit browser action. Keep exact source/diff available; rendered documents, diagrams, PDF text and model frames never become staging input. PDF and decoded-encoding views never acquire partial staging actions. Consult the [document preview contract](../../../docs/document-previews.md) and [interactive 3D contract](../../../docs/interactive-3d.md) for finite format support, external-resource restrictions and separate input/output bounds.
 
 Before/After retain independent captured identities and absent sides; Quick Open uses a single Source side. System Quick Look receives an explicit, private, read-only copy of captured bytes with a safe suffix, never a substituted working path. Images also retain captured bytes and optional literal SVG source for system inspection/copy, counted in the cache. The [file support matrix](../../../docs/file-previews.md) owns codec, encoding and external-viewer limits.
