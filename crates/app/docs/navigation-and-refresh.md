@@ -40,6 +40,11 @@ Return contexts retain conflict views and subscriptions alongside text editors, 
 
 Changed-file path filtering shares cached row identities with renderers. `path_filter` normalizes old/new paths and matches queries on a lazy serial background lane, with cancellation checkpoints and explicit 100,000-path, 16 MiB index, 64 KiB single-path and 4,096-byte query limits. Replacements call `refresh_file_filter`; clears reset its state. Generation and file-snapshot identity checks reject stale replies, and a matching reply clears a selected preview only if that file is hidden. Rendering does not scan or lowercase paths. New revision inspections start with an empty path query; Back restores the preceding query, text review options and editor entities. Working Changes shares this executor and normalization code: status snapshots are shared through `Arc`, directory grouping and matching run off the UI thread, and refreshed entries cancel the previous index. The pending state hides stale rows and disables selection actions; accepted results reconcile literal path/area identities and quiet-refresh scroll anchors. Counts and conflict summaries are prepared with the rows. Filtering never narrows the meaning of Stage all or Unstage all: those actions are disabled while a query is present.
 
+Working Changes previews use their own status-path filter. The retained History
+path query never filters a working preview, including quiet refresh results;
+returning to History reapplies that query to the retained changed-file list.
+Superseded History filter replies cannot clear a Working Changes selection.
+
 ## Local refresh
 
 Filesystem callbacks only enqueue bounded local events. Resolve actual private/common Git directories and register watchers outside the UI thread; do not poll repository trees or invoke Git in the callback. Coalesce bursts, ignore passive access/lock noise, and defer quiet reads behind active previews, search, file-history inspections, status work or writes. Preserve refresh epochs and selection/status generations so superseded results cannot apply.

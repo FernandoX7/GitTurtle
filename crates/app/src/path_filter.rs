@@ -1,6 +1,6 @@
 //! A coalesced, bounded in-memory path index. Rendering only shares ready row
 //! identities; Unicode normalization and matching happen on one background lane.
-use crate::{FileChange, GitTurtle, SerialExecutor};
+use crate::{FileChange, GitTurtle, SerialExecutor, WorkspaceMode};
 use anyhow::{Result, ensure};
 use gpui_kit::{App, Context, ScrollStrategy, Task};
 use std::sync::{
@@ -152,7 +152,13 @@ impl GitTurtle {
     }
 
     fn schedule_file_filter(&mut self, cx: &mut Context<Self>) {
-        let query = self.file_filter.read(cx).value().to_string();
+        // Working Changes owns a separate status-path filter. Its one-file
+        // preview snapshot must not be hidden by a retained History query.
+        let query = if self.mode == WorkspaceMode::Working {
+            String::new()
+        } else {
+            self.file_filter.read(cx).value().to_string()
+        };
         let ticket = self.file_paths.cancellation.fetch_add(1, Ordering::Relaxed) + 1;
         self.file_paths.task = None;
         self.file_paths.error = None;
@@ -211,6 +217,7 @@ impl GitTurtle {
                 if this.file_paths.cancellation.load(Ordering::Relaxed) != ticket
                     || this.file_paths.identity != identity
                     || identity != Some((this.files.as_ptr() as usize, this.files.len()))
+                    || this.mode == WorkspaceMode::Working
                 {
                     return;
                 }
@@ -246,7 +253,124 @@ impl GitTurtle {
 #[cfg(test)]
 mod tests {
     use super::{Index, MAX_QUERY_BYTES, checkpoint, matching, prepare_index};
+    use gpui_kit as gpui;
     use std::sync::atomic::AtomicU64;
+
+    #[gpui::test]
+    async fn working_preview_survives_retained_history_filter_and_late_reply(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::{
+            AppPage, Content, FileChange, GitTurtle, Output, Preferences, WorkspaceMode, activity,
+            image_lifetime, recovery_drafts, repository_tabs,
+        };
+        use gitturtle_core::ChangeStatus;
+        use gpui::{AppContext, Entity, component::Root};
+        use std::{cell::RefCell, rc::Rc, sync::Arc, sync::mpsc, time::Duration};
+
+        fn file(path: &str) -> FileChange {
+            FileChange {
+                old_oid: None,
+                new_oid: None,
+                old_mode: "000000".into(),
+                new_mode: "100644".into(),
+                status: ChangeStatus::Added,
+                old_path: None,
+                new_path: Some(path.into()),
+            }
+        }
+
+        cx.executor().allow_parking();
+        cx.update(|cx| {
+            gpui::init(cx);
+            image_lifetime::init(cx);
+        });
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let observed = captured.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let app = cx.new(|cx| {
+                GitTurtle::new(
+                    None,
+                    Preferences::default(),
+                    repository_tabs::Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                )
+            });
+            *captured.borrow_mut() = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let app = observed.borrow_mut().take().unwrap();
+        let (release, blocked) = cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let (release, wait) = mpsc::channel();
+                let blocked = app.file_paths.executor().submit_read(move || {
+                    wait.recv()?;
+                    Ok(())
+                });
+                app.files = vec![file("external.glb"), file("other.glb")];
+                app.selected_file = Some(0);
+                app.file_filter.update(cx, |input, cx| {
+                    input.set_value("external", window, cx);
+                });
+                app.refresh_file_filter(cx);
+                assert!(app.file_paths.pending);
+                app.retained_history_files =
+                    Some((std::mem::take(&mut app.files), app.selected_file.take()));
+                app.mode = WorkspaceMode::Working;
+                app.page = AppPage::Repository;
+                for path in ["working-added.GLB", "assembly.glb"] {
+                    app.receive(
+                        Output::WorkingPreview(
+                            file(path),
+                            Arc::new(Content::Notice("Captured working comparison".into())),
+                            Duration::ZERO,
+                        ),
+                        window,
+                        cx,
+                    );
+                    assert!(!app.file_paths.pending);
+                    assert_eq!(app.filtered_file_indices(cx).as_ref(), &[0]);
+                    assert_eq!(app.selected_file, Some(0));
+                }
+                (release, blocked)
+            })
+        });
+        release.send(()).unwrap();
+        blocked.await.unwrap().unwrap();
+        let drained = cx.update(|_, cx| {
+            app.update(cx, |app, _| {
+                app.file_paths.executor().submit_read(|| Ok(()))
+            })
+        });
+        drained.await.unwrap().unwrap();
+        cx.executor().run_until_parked();
+        let history_filter = cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                assert_eq!(app.selected_file, Some(0));
+                assert!(app.content.is_some());
+                assert_eq!(app.files[0].path(), std::path::Path::new("assembly.glb"));
+                assert_eq!(app.file_filter.read(cx).value().as_ref(), "external");
+                app.back_to_history(window, cx);
+                assert!(app.mode == WorkspaceMode::History);
+                app.file_paths.task.take().expect("History query reapplied")
+            })
+        });
+        history_filter.await;
+        cx.executor().run_until_parked();
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                assert_eq!(app.filtered_file_indices(cx).as_ref(), &[0]);
+                assert_eq!(app.selected_file, Some(0));
+                assert_eq!(app.files[0].path(), std::path::Path::new("external.glb"));
+                assert_eq!(app.file_filter.read(cx).value().as_ref(), "external");
+                app._display_preferences_task = None;
+            });
+        });
+    }
+
     #[test]
     fn matching_keeps_original_indices_and_covers_unicode_renamed_paths() {
         let index: Index = vec![

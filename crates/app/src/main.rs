@@ -1278,6 +1278,10 @@ impl GitTurtle {
             return;
         }
         let was_working = self.mode == WorkspaceMode::Working;
+        if self.mode != WorkspaceMode::History {
+            self.mode = WorkspaceMode::History;
+            self.sidebar = self.history_sidebar;
+        }
         if was_working {
             self.invalidate_read();
             self.clear_preview();
@@ -1285,10 +1289,6 @@ impl GitTurtle {
             self.files = files;
             self.refresh_file_filter(cx);
             self.selected_file = selected;
-        }
-        if self.mode != WorkspaceMode::History {
-            self.mode = WorkspaceMode::History;
-            self.sidebar = self.history_sidebar;
         }
         if was_working
             && self.files.is_empty()
