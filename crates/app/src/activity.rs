@@ -4,8 +4,6 @@ use gpui_kit::component::{WindowExt, dialog::DialogButtonProps};
 use gpui_kit::prelude::FluentBuilder;
 use serde::{Deserialize, Serialize};
 use std::{
-    fs,
-    io::Read,
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -119,17 +117,11 @@ impl State {
     }
     fn read() -> anyhow::Result<Vec<Entry>> {
         let path = preferences::settings_path()?.with_file_name("activity.json");
-        let file = match fs::File::open(path) {
-            Ok(file) => file,
+        let bytes = match preferences::read_store(&path, BYTE_LIMIT) {
+            Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
             Err(e) => return Err(e.into()),
         };
-        let mut bytes = Vec::new();
-        file.take(BYTE_LIMIT + 1).read_to_end(&mut bytes)?;
-        anyhow::ensure!(
-            bytes.len() as u64 <= BYTE_LIMIT,
-            "Activity file exceeds its 2 MiB limit"
-        );
         let mut entries: Vec<Entry> = serde_json::from_slice(&bytes)?;
         if entries.len() > LIMIT {
             entries.drain(..entries.len() - LIMIT);

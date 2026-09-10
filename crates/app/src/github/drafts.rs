@@ -6,6 +6,7 @@ use std::path::Path;
 const VERSION: u32 = 1;
 const MAX_STORE: usize = 16 * 1024 * 1024;
 const MAX_DRAFTS: usize = 128;
+const MAX_ATTEMPTS_BYTES: usize = 1024 * 1024;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) enum Draft {
     Pull(NewPull),
@@ -69,8 +70,8 @@ pub(crate) fn path() -> Result<PathBuf> {
     Ok(crate::preferences::settings_path()?.with_file_name("github-drafts.json"))
 }
 fn load_at(path: &Path) -> Result<Store> {
-    let metadata = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
+    let bytes = match crate::preferences::read_store(path, MAX_STORE as u64) {
+        Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(Store {
                 version: VERSION,
@@ -79,11 +80,7 @@ fn load_at(path: &Path) -> Result<Store> {
         }
         Err(error) => return Err(error.into()),
     };
-    ensure!(
-        metadata.file_type().is_file() && metadata.len() <= MAX_STORE as u64,
-        "GitHub draft store is unsafe or exceeds its size limit"
-    );
-    let store: Store = serde_json::from_slice(&std::fs::read(path)?)
+    let store: Store = serde_json::from_slice(&bytes)
         .map_err(|_| anyhow!("GitHub draft store is invalid; it was preserved for recovery"))?;
     ensure!(
         store.version == VERSION && store.entries.len() <= MAX_DRAFTS,
@@ -94,26 +91,30 @@ fn load_at(path: &Path) -> Result<Store> {
 pub(crate) fn load() -> Result<Vec<Draft>> {
     Ok(load_at(&path()?)?.entries)
 }
+#[cfg(test)]
 pub(crate) fn save(draft: Draft) -> Result<()> {
     save_at(&path()?, draft)
 }
 pub(crate) fn save_batch(batch: &std::collections::HashMap<String, Draft>) -> Result<()> {
-    for draft in batch.values() {
-        save(draft.clone())?;
-    }
-    Ok(())
+    save_batch_at(&path()?, batch.values().cloned())
 }
+#[cfg(test)]
 fn save_at(path: &Path, draft: Draft) -> Result<()> {
+    save_batch_at(path, [draft])
+}
+fn save_batch_at(path: &Path, drafts: impl IntoIterator<Item = Draft>) -> Result<()> {
     let mut store = load_at(path)?;
-    let key = draft.key();
-    if let Some(entry) = store.entries.iter_mut().find(|entry| entry.key() == key) {
-        *entry = draft;
-    } else {
-        ensure!(
-            store.entries.len() < MAX_DRAFTS,
-            "GitHub draft store is full. Explicitly discard an older draft before saving another."
-        );
-        store.entries.push(draft);
+    for draft in drafts {
+        let key = draft.key();
+        if let Some(entry) = store.entries.iter_mut().find(|entry| entry.key() == key) {
+            *entry = draft;
+        } else {
+            ensure!(
+                store.entries.len() < MAX_DRAFTS,
+                "GitHub draft store is full. Explicitly discard an older draft before saving another."
+            );
+            store.entries.push(draft);
+        }
     }
     let bytes = serde_json::to_vec_pretty(&store)?;
     ensure!(
@@ -159,6 +160,75 @@ mod tests {
         assert!(save_at(&path, draft("replacement")).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"invalid");
     }
+    #[test]
+    fn a_failed_coalesced_batch_preserves_every_previous_draft() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("drafts.json");
+        let create = |index: usize, text: &str| {
+            let Draft::Pull(mut pull) = draft(text) else {
+                unreachable!()
+            };
+            pull.head = format!("feature-{index}");
+            Draft::Pull(pull)
+        };
+        save_batch_at(&path, (0..127).map(|index| create(index, "Original text"))).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        assert!(
+            save_batch_at(
+                &path,
+                [
+                    create(0, "An update before the overflow"),
+                    create(127, "A new draft before the overflow"),
+                    create(128, "This draft exceeds the entry limit"),
+                ]
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(load_at(&path).unwrap().entries.len(), 127);
+        save_batch_at(
+            &path,
+            [create(0, "Updated exact text\n"), create(127, "New text")],
+        )
+        .unwrap();
+        let restored = load_at(&path).unwrap();
+        assert_eq!(restored.entries.len(), 128);
+        assert_eq!(restored.entries[0].text(), "Updated exact text\n");
+        assert_eq!(restored.entries[127].text(), "New text");
+    }
+
+    #[test]
+    fn attempt_byte_and_json_escape_overflow_cannot_poison_the_existing_store() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("attempts.json");
+        let attempts: Vec<_> = (0..127)
+            .map(|index| Attempt {
+                destination: format!("{index:03}{}", "d".repeat(4093)),
+                outcome: "x".repeat(4096),
+            })
+            .collect();
+        let original = serde_json::to_vec_pretty(&attempts).unwrap();
+        assert!(original.len() <= MAX_ATTEMPTS_BYTES);
+        std::fs::write(&path, &original).unwrap();
+        // Both inputs satisfy the individual 4 KiB limits. A 128th entry and
+        // escaped control characters nevertheless exceed the encoded budget.
+        for (destination, outcome) in [
+            ("new".repeat(1365), "x".repeat(4096)),
+            (attempts[0].destination.clone(), "\u{1}".repeat(4096)),
+        ] {
+            assert!(record_attempt_at(&path, destination, outcome).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+            assert_eq!(attempts_at(&path).unwrap().len(), 127);
+        }
+        record_attempt_at(
+            &path,
+            attempts[0].destination.clone(),
+            "Observed success".into(),
+        )
+        .unwrap();
+        assert_eq!(attempts_at(&path).unwrap()[0].outcome, "Observed success");
+    }
+
     #[test]
     fn pending_attempt_survives_reopen_until_an_observed_outcome_is_recorded() {
         let temp = tempfile::tempdir().unwrap();
@@ -273,16 +343,12 @@ pub(crate) fn attempts() -> Result<Vec<Attempt>> {
     attempts_at(&attempts_path()?)
 }
 fn attempts_at(path: &Path) -> Result<Vec<Attempt>> {
-    let metadata = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
+    let bytes = match crate::preferences::read_store(path, MAX_ATTEMPTS_BYTES as u64) {
+        Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
         Err(error) => return Err(error.into()),
     };
-    ensure!(
-        metadata.file_type().is_file() && metadata.len() <= 1024 * 1024,
-        "GitHub attempt record is unsafe or too large"
-    );
-    let attempts: Vec<Attempt> = serde_json::from_slice(&std::fs::read(path)?)
+    let attempts: Vec<Attempt> = serde_json::from_slice(&bytes)
         .map_err(|_| anyhow!("GitHub attempt record is invalid and was preserved"))?;
     ensure!(
         attempts.len() <= 128,
@@ -313,5 +379,10 @@ fn record_attempt_at(path: &Path, destination: String, outcome: String) -> Resul
             outcome,
         });
     }
-    crate::preferences::atomic_write(path, &serde_json::to_vec_pretty(&attempts)?)
+    let bytes = serde_json::to_vec_pretty(&attempts)?;
+    ensure!(
+        bytes.len() <= MAX_ATTEMPTS_BYTES,
+        "GitHub attempt record exceeds its 1 MiB limit. Existing outcomes were preserved; this attempt was not recorded."
+    );
+    crate::preferences::atomic_write(path, &bytes)
 }

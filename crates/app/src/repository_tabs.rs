@@ -1,13 +1,13 @@
 //! Local repository tabs: one active reader/watch session and bounded retained views.
 use crate::*;
-use anyhow::{Result, ensure};
+use anyhow::{Context as _, Result, ensure};
 use futures::FutureExt;
 use gpui_kit::{
     component::menu::{DropdownMenu, PopupMenuItem},
     prelude::FluentBuilder,
 };
 use serde::{Deserialize, Serialize};
-use std::{fs::File, io::Read, path::Path};
+use std::path::Path;
 
 pub const MAX_TABS: usize = 8;
 const MAX_SESSION_BYTES: usize = 16 * 1024 * 1024;
@@ -229,14 +229,7 @@ impl Session {
             .unwrap_or_default()
     }
     fn load_at(path: &Path) -> Result<Self> {
-        let mut bytes = Vec::new();
-        File::open(path)?
-            .take(MAX_SESSION_BYTES as u64 + 1)
-            .read_to_end(&mut bytes)?;
-        ensure!(
-            bytes.len() <= MAX_SESSION_BYTES,
-            "Repository session exceeds 16 MiB"
-        );
+        let bytes = preferences::read_store(path, MAX_SESSION_BYTES as u64)?;
         let mut session: Self = serde_json::from_slice(&bytes)?;
         ensure!(
             session.version == 1,
@@ -310,6 +303,18 @@ impl Session {
         self.save_at(&session_path()?)
     }
     fn save_at(mut self, path: &Path) -> Result<()> {
+        match Self::load_at(path) {
+            Ok(_) => {}
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) => {}
+            Err(error) => {
+                return Err(error).context(
+                    "The existing repository session could not be read and was preserved for recovery",
+                );
+            }
+        }
         self.normalize();
         let bytes = serde_json::to_vec_pretty(&self)?;
         ensure!(
@@ -2976,7 +2981,7 @@ mod tests {
         let loaded = Session::load_at(&path).unwrap();
         assert_eq!(loaded.tabs[0].path.path(), unavailable);
         assert!(!unavailable.exists());
-        let file = File::create(&path).unwrap();
+        let file = std::fs::File::create(&path).unwrap();
         file.set_len(MAX_SESSION_BYTES as u64 + 1).unwrap();
         assert!(
             Session::load_at(&path)
@@ -2990,6 +2995,26 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("version")
+        );
+    }
+    #[test]
+    fn saving_a_session_preserves_corrupt_and_unsupported_restart_data() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("session.json");
+        for original in [b"{truncated".as_slice(), br#"{"version":999}"#] {
+            std::fs::write(&path, original).unwrap();
+            // Startup may show an empty/default view, but a later navigation
+            // or quit save cannot replace the original recovery material.
+            let recovered = Session::load_at(&path).unwrap_or_default();
+            assert!(recovered.save_at(&path).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+        }
+        std::fs::remove_file(&path).unwrap();
+        session(&["/fixture/one"], 0).save_at(&path).unwrap();
+        session(&["/fixture/two"], 0).save_at(&path).unwrap();
+        assert_eq!(
+            Session::load_at(&path).unwrap().tabs[0].path.path(),
+            Path::new("/fixture/two")
         );
     }
     #[test]

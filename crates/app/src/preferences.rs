@@ -268,14 +268,7 @@ impl Preferences {
     }
 
     fn load_from(path: &Path) -> Result<Self> {
-        let mut bytes = Vec::new();
-        File::open(path)?
-            .take(MAX_SETTINGS_BYTES + 1)
-            .read_to_end(&mut bytes)?;
-        ensure!(
-            bytes.len() as u64 <= MAX_SETTINGS_BYTES,
-            "Settings are too large"
-        );
+        let bytes = read_store(path, MAX_SETTINGS_BYTES)?;
         let stored: StoredPreferences = serde_json::from_slice(&bytes)?;
         ensure!(
             matches!(stored.version, 1..=3),
@@ -434,6 +427,47 @@ impl Drop for PendingFile {
     }
 }
 
+/// Open app data once, reject links and special files, and bound the bytes from
+/// that descriptor. A path metadata check alone cannot constrain a later open
+/// or a file that grows while it is being read. Nonblocking open also prevents a
+/// FIFO from stalling startup or the serialized persistence executor.
+pub(super) fn read_store(path: &Path, limit: u64) -> std::io::Result<Vec<u8>> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(not(unix))]
+    if !fs::symlink_metadata(path)?.file_type().is_file() {
+        return Err(std::io::Error::other(
+            "Saved application data must be a regular file",
+        ));
+    }
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > limit {
+        return Err(std::io::Error::other(
+            "Saved application data is not a regular file or exceeds its size limit",
+        ));
+    }
+    read_store_contents(file, limit)
+}
+
+fn read_store_contents(reader: impl Read, limit: u64) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    reader
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(std::io::Error::other(
+            "Saved application data exceeds its size limit",
+        ));
+    }
+    Ok(bytes)
+}
+
 pub(super) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let directory = path
         .parent()
@@ -491,6 +525,68 @@ pub(super) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn store_reads_bound_the_descriptor_even_after_observed_file_growth() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("store.json");
+        fs::write(&path, b"{}").unwrap();
+        let file = File::open(&path).unwrap();
+        assert_eq!(file.metadata().unwrap().len(), 2);
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(&[b' '; 4096])
+            .unwrap();
+        assert!(read_store_contents(file, 32).is_err());
+        assert!(read_store(&path, 32).is_err());
+        fs::write(&path, [b'x'; 32]).unwrap();
+        assert_eq!(read_store(&path, 32).unwrap(), [b'x'; 32]);
+        assert!(read_store(fixture.path(), 32).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn store_reads_refuse_links_and_fifos_and_saves_preserve_them() {
+        use std::{
+            ffi::CString,
+            os::unix::{ffi::OsStrExt, fs::symlink},
+        };
+
+        let fixture = tempfile::tempdir().unwrap();
+        let target = fixture.path().join("original.json");
+        let original = br#"{"version":3,"settings":{"theme":"daylight"}}"#;
+        fs::write(&target, original).unwrap();
+        let link = fixture.path().join("linked.json");
+        symlink(&target, &link).unwrap();
+        let dangling = fixture.path().join("dangling.json");
+        symlink(fixture.path().join("absent.json"), &dangling).unwrap();
+        let fifo = fixture.path().join("fifo.json");
+        let fifo_name = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        // SAFETY: the C string is valid for this call and the disposable path
+        // does not exist. No process writes to this FIFO.
+        assert_eq!(unsafe { libc::mkfifo(fifo_name.as_ptr(), 0o600) }, 0);
+        let start = std::time::Instant::now();
+        for path in [&link, &dangling, &fifo] {
+            assert!(read_store(path, MAX_SETTINGS_BYTES).is_err());
+            assert!(Preferences::save_settings_at(&AppSettings::default(), path).is_err());
+        }
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(
+            fs::symlink_metadata(&dangling)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(fs::read(target).unwrap(), original);
+    }
 
     #[test]
     fn text_sizes_migrate_independently_and_reject_unsupported_values() {

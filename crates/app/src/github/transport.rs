@@ -135,6 +135,10 @@ impl Transport for GhTransport {
             "Invalid GitHub API destination"
         );
         let mut command = gh_command()?;
+        // API routing and credential lookup must not inherit CLI api_host or
+        // http_unix_socket overrides. The explicit `auth token` handoff above
+        // still uses the user's CLI configuration to identify their account.
+        let _configuration = isolate_api_configuration(&mut command)?;
         command.env("GH_TOKEN", &self.credential.token).args([
             "api",
             "--hostname",
@@ -154,7 +158,7 @@ impl Transport for GhTransport {
         if input.is_some() {
             command.args(["--input", "-"]);
         }
-        command.arg(&request.endpoint);
+        command.arg(format!("https://api.github.com/{}", request.endpoint));
         let (_, bytes) = run(
             command,
             input.as_deref(),
@@ -164,6 +168,14 @@ impl Transport for GhTransport {
         )?;
         parse_response(&bytes)
     }
+}
+fn isolate_api_configuration(command: &mut Command) -> Result<tempfile::TempDir> {
+    let directory = tempfile::Builder::new()
+        .prefix("gitturtle-github-api-")
+        .tempdir()
+        .map_err(|_| anyhow!("Could not prepare isolated GitHub API configuration"))?;
+    command.env("GH_CONFIG_DIR", directory.path());
+    Ok(directory)
 }
 fn gh_command() -> Result<Command> {
     let executable=["/opt/homebrew/bin/gh","/usr/local/bin/gh","/usr/bin/gh"].into_iter().map(std::path::Path::new).find(|path|path.is_file()).ok_or_else(||anyhow!("Install GitHub CLI from cli.github.com, sign in with its browser flow, then connect the account."))?;
@@ -427,5 +439,184 @@ mod tests {
         );
         handle.join().unwrap();
         assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deadlines_include_descendants_holding_stdout_after_the_parent_exits() {
+        let fixture = tempfile::tempdir().unwrap();
+        let marker = fixture.path().join("started");
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "printf started > \"$1\"; sleep 30 &", "fixture"]);
+        command.arg(&marker);
+        let start = Instant::now();
+        let error = run(
+            command,
+            None,
+            &OperationControl::default(),
+            1024,
+            Duration::from_millis(100),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("deadline"));
+        assert_eq!(std::fs::read(marker).unwrap(), b"started");
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "requires installed gh; dummy token, Unix socket and loopback proxy only"]
+    fn installed_cli_api_isolation_blocks_configured_token_rerouting() {
+        use std::{net::TcpListener, os::unix::net::UnixListener};
+
+        fn read_headers(stream: &mut impl Read) -> String {
+            let mut bytes = Vec::new();
+            let mut byte = [0];
+            while !bytes.ends_with(b"\r\n\r\n") {
+                assert!(bytes.len() < 16384);
+                assert_eq!(stream.read(&mut byte).unwrap(), 1);
+                bytes.push(byte[0]);
+            }
+            String::from_utf8(bytes).unwrap()
+        }
+        fn await_connection<T>(mut accept: impl FnMut() -> std::io::Result<T>) -> T {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                match accept() {
+                    Ok(connection) => return connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "fixture connection deadline");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("fixture accept failed: {error}"),
+                }
+            }
+        }
+
+        let fixture = tempfile::Builder::new()
+            .prefix("gh-origin-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let configuration = fixture.path().join("cli-config");
+        std::fs::create_dir(&configuration).unwrap();
+        let socket_path = fixture.path().join("api.sock");
+        let config_bytes = format!("version: 1\nhttp_unix_socket: {}\n", socket_path.display());
+        std::fs::write(configuration.join("config.yml"), &config_bytes).unwrap();
+        std::fs::write(
+            configuration.join("hosts.yml"),
+            "github.com:\n    user: fixture\n    api_host: override.invalid\n",
+        )
+        .unwrap();
+        let socket = UnixListener::bind(&socket_path).unwrap();
+        socket.set_nonblocking(true).unwrap();
+        let accepting = socket.try_clone().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = await_connection(|| accepting.accept());
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let request = read_headers(&mut stream);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+                .unwrap();
+            request
+        });
+        let mut inherited = gh_command().unwrap();
+        inherited
+            .env("GH_CONFIG_DIR", &configuration)
+            .env("GH_TOKEN", "fixture-dummy-token");
+        inherited.args([
+            "api",
+            "--hostname",
+            "github.com",
+            "--include",
+            "--method",
+            "GET",
+            "user",
+        ]);
+        assert!(
+            run(
+                inherited,
+                None,
+                &OperationControl::default(),
+                16384,
+                Duration::from_secs(3)
+            )
+            .unwrap()
+            .0
+        );
+        let request = server.join().unwrap().to_ascii_lowercase();
+        assert!(request.contains("host: override.invalid\r\n"));
+        assert!(request.contains("authorization: token fixture-dummy-token\r\n"));
+
+        // The isolated command must use normal HTTPS. A local refusing proxy
+        // prevents DNS/TLS/provider traffic and observes only its CONNECT line.
+        let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+        proxy.set_nonblocking(true).unwrap();
+        let proxy_url = format!("http://{}", proxy.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = await_connection(|| proxy.accept());
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let request = read_headers(&mut stream);
+            stream.write_all(b"HTTP/1.1 502 Fixture Refusal\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            request
+        });
+        let mut isolated = gh_command().unwrap();
+        isolated
+            .env("GH_CONFIG_DIR", &configuration)
+            .env("GH_TOKEN", "fixture-dummy-token");
+        for key in [
+            "HTTPS_PROXY",
+            "https_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ] {
+            isolated.env(key, &proxy_url);
+        }
+        isolated.env("NO_PROXY", "").env("no_proxy", "");
+        let private = isolate_api_configuration(&mut isolated).unwrap();
+        isolated.args([
+            "api",
+            "--hostname",
+            "github.com",
+            "--include",
+            "--method",
+            "GET",
+            "https://api.github.com/user",
+        ]);
+        let (success, _) = run(
+            isolated,
+            None,
+            &OperationControl::default(),
+            16384,
+            Duration::from_secs(3),
+        )
+        .unwrap();
+        assert!(!success);
+        let request = server.join().unwrap();
+        assert!(request.starts_with("CONNECT api.github.com:443 HTTP/1.1\r\n"));
+        assert!(!request.contains("fixture-dummy-token"));
+        assert_eq!(
+            socket.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        assert_eq!(
+            std::fs::read(configuration.join("config.yml")).unwrap(),
+            config_bytes.as_bytes()
+        );
+        for entry in std::fs::read_dir(private.path()).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_file() {
+                let bytes = std::fs::read(entry.path()).unwrap();
+                assert!(!String::from_utf8_lossy(&bytes).contains("fixture-dummy-token"));
+            }
+        }
+        let private_path = private.path().to_owned();
+        drop(private);
+        assert!(!private_path.exists());
     }
 }

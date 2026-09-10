@@ -12,8 +12,6 @@ use gpui_kit::prelude::FluentBuilder;
 use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,
-    fs::File,
-    io::Read,
     path::Path,
     rc::Rc,
     time::{SystemTime, UNIX_EPOCH},
@@ -268,18 +266,11 @@ fn validate(entries: &HashMap<Key, Draft>) -> Result<()> {
 }
 
 fn read(path: &Path) -> Result<HashMap<Key, Draft>> {
-    let file = match File::open(path) {
-        Ok(file) => file,
+    let bytes = match preferences::read_store(path, (MAX_BYTES * 2) as u64) {
+        Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
         Err(error) => return Err(error.into()),
     };
-    let mut bytes = Vec::new();
-    file.take((MAX_BYTES * 2 + 1) as u64)
-        .read_to_end(&mut bytes)?;
-    ensure!(
-        bytes.len() <= MAX_BYTES * 2,
-        "Recovery store exceeds its input limit"
-    );
     let store: Store = serde_json::from_slice(&bytes).context("Read recovery draft store")?;
     ensure!(
         store.version == 1,

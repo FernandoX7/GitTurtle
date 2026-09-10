@@ -4,7 +4,6 @@ use gitturtle_core::{GitProfile, ProfileIdentity, ProfileSigning};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -158,17 +157,11 @@ impl Store {
         Self::load_at(&Self::path()?)
     }
     fn load_at(path: &Path) -> Result<Self> {
-        let file = match fs::File::open(path) {
-            Ok(file) => file,
+        let bytes = match crate::preferences::read_store(path, MAX_BYTES) {
+            Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
             Err(e) => return Err(e.into()),
         };
-        let mut bytes = Vec::new();
-        file.take(MAX_BYTES + 1).read_to_end(&mut bytes)?;
-        ensure!(
-            bytes.len() as u64 <= MAX_BYTES,
-            "Saved profiles exceed the 512 KiB limit"
-        );
         let store: Self = serde_json::from_slice(&bytes)
             .context("Read saved profiles; the existing file was preserved")?;
         store.validate()?;
