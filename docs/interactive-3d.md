@@ -17,12 +17,14 @@ The native integration, runtime resource measurements and exercised build identi
 belong to the current milestone record; decoder tests alone do not establish
 native interaction or GPU cleanup.
 
-Each side groups Fit/Reset, zoom and edges separately from the standard-view menu
-and camera-link toggle. The menu retains all seven named views and a checked
-current view; custom orbit is labelled Custom view. Compact headers, short pointer
-hints and a scrollable details footer keep geometry visible at narrow widths and
-larger interface text. Unsupported and missing model sides use the same labelled
-comparison surface; errors are accessible, bounded and scrollable.
+Each side groups Fit/Reset, zoom and edges beside the standard-view menu and
+camera-link toggle, wrapping as space requires. The menu retains all seven named
+views and a checked current view; custom orbit is labelled Custom view. Geometry
+counts and the geometry-only disclosure lead the scrollable details footer.
+Updating status overlays the canvas without reserving an empty row. Unsupported
+and missing sides use the same labelled comparison surface; errors are accessible,
+bounded and scrollable, and a usable opposite side keeps its controls. Orientation
+indicators appear only after a completed frame exists.
 
 ## Coordinates, units and source
 
@@ -62,7 +64,7 @@ textures, authored lighting/cameras and animation playback are omitted. Node
 transforms use their authored static values, not a sampled animation frame.
 Skins, morph targets and unimplemented geometry, visibility or placement
 extensions are refused instead of showing undeformed or incomplete content.
-Draco, meshopt and GPU instancing extensions are not decoded. Known appearance
+Draco and GPU instancing extensions are not decoded. Known appearance
 extensions may be recognized solely to explain omitted appearance; they never
 enable texture decoding or resource access. Unknown required extensions are
 refused.
@@ -72,6 +74,22 @@ data URIs, cannot supply geometry. Image URIs and material references are never
 opened. Opening a preview does not fetch Git/LFS objects; verified locally present
 LFS content enters through the existing captured-byte path. Each original side
 keeps its bytes, absence and independent error state.
+
+`EXT_meshopt_compression` opens directly through this same pipeline. Selected
+embedded buffer views are decompressed once and reused by ordinary and sparse
+accessors. ATTRIBUTES, TRIANGLES and INDICES modes support their legal NONE,
+OCTAHEDRAL, QUATERNION and EXPONENTIAL filters. Quantized accessors still require
+`KHR_mesh_quantization`; decoding does not undo the author's quantization or
+change transforms, placement or physical units. Compression of animation data
+does not enable animation playback or deformation evaluation.
+
+Compressed ranges must refer to the captured BIN buffer. Required-extension
+placeholder buffers are accepted at indices above zero with checked fallback
+ranges; fallback descriptors may name resources that are never opened. Marked
+fallback buffers cannot provide ordinary or compressed data. Supported compressed
+views always use their compressed payload; malformed streams never silently fall
+back to another representation. Newer bitstream versions outside the EXT
+specification are refused explicitly.
 
 POSITION supports core non-normalized FLOAT/VEC3 and signed/unsigned BYTE/SHORT
 VEC3 only with required `KHR_mesh_quantization`, including normalized integer
@@ -105,6 +123,25 @@ assume validated data; a separate allocation/range/cancellation boundary would
 still be required. Keeping the narrow adapter exposes those checks without adding
 image or filesystem import behavior. No native glTF library or new renderer is
 bundled.
+
+The meshopt adapter uses pinned [`meshopt` 0.6.2](https://crates.io/crates/meshopt/0.6.2),
+whose Rust wrapper is MIT OR Apache-2.0 and whose bundled meshoptimizer 0.25 decoder
+is MIT. Its C++11 implementation targets the platform toolchain on macOS and
+Linux and supports native SIMD; only supplied byte pointers enter its decoder
+and filter calls. The [official extension specification](https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Vendor/EXT_meshopt_compression/README.md)
+defines modes, filters, fallback buffers and supported bitstreams. The native
+decoder does not allocate its output or expose an interruption callback: the
+adapter owns checked allocations and checks cancellation immediately before and
+after each bounded whole-stream call. Filters and index conversion have additional
+block checkpoints. This is cooperative cancellation, not a hard deadline.
+
+The [published wrapper's build](https://github.com/gwihlidal/meshopt-rs/blob/585fe7f5120df13f494bcde7134d8b115fc28213/build.rs)
+uses checked-in bindings and the existing C++ toolchain. The evaluated
+[pure Rust alternative](https://github.com/yzsolt/meshopt-rs) has MIT licensing,
+an older mostly-0.22 implementation and no SIMD or cancellation callback. The
+upstream-aligned native decoder was selected for broader current stream coverage
+and its maintained reference implementation. Platform source support is separate
+from the executed build evidence in the milestone validation record.
 
 ## Implemented STEP subset
 
@@ -149,6 +186,15 @@ Unused meshes are not expanded. These limits bound geometry separately from
 JSON, original embedded appearance bytes, retained frames and raster samples.
 Parsing and expansion have cooperative checkpoints; bounded library calls are
 not a hard deadline or a process-memory sandbox.
+
+Meshopt independently caps each selected view at 16 MiB compressed input, 16 MiB
+decompressed output and 300,000 elements. Cumulative touched compressed ranges and
+aligned decompressed view storage each stop at 32 MiB. A shared view is decoded
+once; temporary view storage is released when geometry preparation completes and
+is not retained in `ModelScene`. Index decoding uses an additional temporary u32
+array of at most 1.2 MB to detect values that would overflow a two-byte index.
+These limits supplement the original captured-input, accessor, triangle,
+instance, retained-frame and raster limits rather than replacing them.
 
 Frames have a 64–720 pixel edge, a separate 64-million raster-sample budget and
 cooperative cancellation per triangle and scanline block. Wireframe clips lines

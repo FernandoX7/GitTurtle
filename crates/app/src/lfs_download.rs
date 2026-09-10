@@ -15,46 +15,59 @@ fn label(id: &'static str, value: impl Into<SharedString>) -> Stateful<Div> {
         .child(value)
 }
 
+pub(super) fn preview_targets(
+    content: &Content,
+    file: &FileChange,
+) -> Vec<(usize, LfsDownloadTarget)> {
+    let pointers = match content {
+        Content::Images { old, new } => [old.lfs_pointer.clone(), new.lfs_pointer.clone()],
+        Content::Text { old, new, .. } => [old, new].map(|bytes| {
+            gitturtle_preview::detect_lfs_pointer(bytes.as_bytes())
+                .map(|_| bytes.as_bytes().to_vec())
+        }),
+        Content::Rich(preview) => [&preview.old, &preview.new].map(|side| {
+            side.captured.as_deref().and_then(|bytes| {
+                gitturtle_preview::detect_lfs_pointer(bytes).map(|_| bytes.to_vec())
+            })
+        }),
+        _ => [None, None],
+    };
+    pointers
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, pointer)| {
+            let pointer = pointer?;
+            let path = if index == 0 {
+                file.old_path.clone()
+            } else {
+                file.new_path.clone()
+            }?;
+            let blob_oid = if index == 0 {
+                file.old_oid.clone()
+            } else {
+                file.new_oid.clone()
+            };
+            Some((
+                index,
+                LfsDownloadTarget {
+                    path,
+                    blob_oid,
+                    pointer,
+                },
+            ))
+        })
+        .collect()
+}
+
 impl GitTurtle {
     pub(super) fn render_lfs_download_actions(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(file) = self.selected_file.and_then(|index| self.files.get(index)) else {
             return div().into_any_element();
         };
-        let pointers = match self.content.as_deref() {
-            Some(Content::Images { old, new }) => {
-                [old.lfs_pointer.clone(), new.lfs_pointer.clone()]
-            }
-            Some(Content::Text { old, new, .. }) => [old, new].map(|bytes| {
-                gitturtle_preview::detect_lfs_pointer(bytes.as_bytes())
-                    .map(|_| bytes.as_bytes().to_vec())
-            }),
-            _ => [None, None],
-        };
-        let targets = pointers
-            .into_iter()
-            .enumerate()
-            .filter_map(|(index, pointer)| {
-                let pointer = pointer?;
-                let path = if index == 0 {
-                    file.old_path.clone()
-                } else {
-                    file.new_path.clone()
-                }?;
-                let blob_oid = if index == 0 {
-                    file.old_oid.clone()
-                } else {
-                    file.new_oid.clone()
-                };
-                Some((
-                    index,
-                    LfsDownloadTarget {
-                        path,
-                        blob_oid,
-                        pointer,
-                    },
-                ))
-            })
-            .collect::<Vec<_>>();
+        let targets = self
+            .content
+            .as_deref()
+            .map_or_else(Vec::new, |content| preview_targets(content, file));
         if targets.is_empty() {
             return div().into_any_element();
         }

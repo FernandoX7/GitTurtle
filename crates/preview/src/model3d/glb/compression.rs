@@ -398,6 +398,20 @@ fn decode_view(
     Ok(output)
 }
 fn validate_filter_input(source: &Compression, bytes: &[u8]) -> Result<()> {
+    if source.filter() == "EXPONENTIAL" {
+        // EXT Appendix B constrains the signed high-byte exponent even when
+        // the mantissa is zero. Out-of-range decoding is unspecified and may
+        // yield an apparently valid finite zero, so output checks cannot replace
+        // validation of the encoded value.
+        for component in bytes.as_chunks::<4>().0 {
+            let exponent = component[3] as i8;
+            ensure!(
+                (-100..=100).contains(&exponent),
+                "GLB meshopt EXPONENTIAL filter exponent is outside the supported -100 through 100 range"
+            );
+        }
+        return Ok(());
+    }
     if !matches!(source.filter(), "OCTAHEDRAL" | "QUATERNION") {
         return Ok(());
     }

@@ -289,6 +289,67 @@ fn meshopt_exponential_positions_and_oct_quantization_use_filtered_bytes() {
 }
 
 #[test]
+fn meshopt_exponential_exponent_boundaries_preserve_finite_reference_values() {
+    for exponent in [-100i8, 100] {
+        let mantissas = [-8_388_608i32, -1, 0, 1, 8_388_607];
+        let raw: Vec<u8> = mantissas
+            .iter()
+            .flat_map(|&mantissa| {
+                (((exponent as u8 as u32) << 24) | (mantissa as u32 & 0x00ff_ffff)).to_le_bytes()
+            })
+            .collect();
+        let encoded = encode(&raw, mantissas.len(), 4, "ATTRIBUTES");
+        let source = Compression {
+            buffer: 0,
+            byte_offset: 0,
+            byte_length: encoded.len(),
+            count: mantissas.len(),
+            byte_stride: 4,
+            mode: "ATTRIBUTES".into(),
+            filter: Some("EXPONENTIAL".into()),
+        };
+        let actual = decode_view(&source, &encoded, &|| Ok(())).unwrap();
+        for (bytes, mantissa) in actual.bytes().as_chunks::<4>().0.iter().zip(mantissas) {
+            let expected = 2f32.powi(exponent as i32) * mantissa as f32;
+            assert!(expected.is_finite());
+            assert_eq!(f32::from_le_bytes(*bytes), expected);
+        }
+    }
+}
+
+#[test]
+fn meshopt_exponential_refuses_out_of_range_exponents_even_with_zero_mantissa() {
+    for exponent in [-128i8, -127, -101, -100, 100, 101, 127] {
+        for mantissa in [0u32, 0x007f_ffff] {
+            let (mut document, _) = triangle();
+            let word = ((exponent as u8 as u32) << 24) | mantissa;
+            let mut bin = [word, 0, 0, 1, 0, 0, 0, 1, 0]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect();
+            compress_view(
+                &mut document,
+                &mut bin,
+                0,
+                3,
+                12,
+                "ATTRIBUTES",
+                "EXPONENTIAL",
+            );
+            if !(-100..=100).contains(&exponent) {
+                expect_error(&document, &bin, "EXPONENTIAL filter exponent");
+            } else if mantissa == 0 {
+                let scene = decoded(&document, &bin).scene;
+                assert_eq!(
+                    scene.triangles(),
+                    &[[[0., 0., 0.], [1000., 0., 0.], [0., 0., 1000.]]]
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn meshopt_sparse_indices_and_values_preserve_implicit_base() {
     let (mut document, mut bin) = triangle();
     document["accessors"][0]
@@ -478,10 +539,12 @@ fn meshopt_rejects_invalid_filtered_components_and_nonfinite_positions() {
         };
         assert!(decode_view(&source, &bytes, &|| Ok(())).is_err());
     }
-    let (mut document, mut bin) = triangle();
-    bin[..4].copy_from_slice(&f32::NAN.to_le_bytes());
-    compress_view(&mut document, &mut bin, 0, 3, 12, "ATTRIBUTES", "NONE");
-    expect_error(&document, &bin, "non-finite");
+    for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let (mut document, mut bin) = triangle();
+        bin[..4].copy_from_slice(&invalid.to_le_bytes());
+        compress_view(&mut document, &mut bin, 0, 3, 12, "ATTRIBUTES", "NONE");
+        expect_error(&document, &bin, "non-finite");
+    }
 }
 
 #[test]

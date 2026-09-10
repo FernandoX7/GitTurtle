@@ -319,6 +319,12 @@ fn request_pair<T: 'static>(documents: &[Arc<Document>], window: &mut Window, cx
     if requests.is_empty() {
         return;
     }
+    // Optional native evidence: request dispatch through the frame callback
+    // after publication. This includes lane wait, CPU raster/pixel conversion
+    // and UI delivery, but excludes input delivery and completed GPU work.
+    let trace_started = std::env::var_os("GITTURTLE_TRACE")
+        .is_some()
+        .then(std::time::Instant::now);
     let consumers: Vec<_> = requests
         .iter()
         .map(|r| {
@@ -369,6 +375,7 @@ fn request_pair<T: 'static>(documents: &[Arc<Document>], window: &mut Window, cx
             _ => Vec::new().into_iter(),
         };
         let mut changed = false;
+        let mut completed = Vec::with_capacity(2);
         for (weak, generation, camera, edge, wireframe) in consumers {
             let frame = frames.next();
             let Some(document) = weak.upgrade() else {
@@ -385,6 +392,9 @@ fn request_pair<T: 'static>(documents: &[Arc<Document>], window: &mut Window, cx
                 state.frame_camera = Some(camera);
                 state.frame_edge = edge;
                 state.frame_wireframe = wireframe;
+                if trace_started.is_some() {
+                    completed.push((weak, generation, edge));
+                }
             } else if let Some(Err(error)) = frame {
                 state.error = Some(format!("{error:#}"));
             } else if let Some(error) = &shared_error {
@@ -395,6 +405,20 @@ fn request_pair<T: 'static>(documents: &[Arc<Document>], window: &mut Window, cx
             let _ = owner.update_in(cx, |_, window, cx| {
                 window.refresh();
                 cx.notify();
+                if let Some(start) = trace_started
+                    && !completed.is_empty()
+                {
+                    window.on_next_frame(move |_, _| {
+                        for (weak, generation, edge) in completed {
+                            if let Some(document) = weak.upgrade() {
+                                let state = document.state.lock().unwrap_or_else(|e| e.into_inner());
+                                if state.generation == generation && !state.pending {
+                                    eprintln!("gitturtle.model_frame_callback_ms={:.3} edge={edge} triangles={}", start.elapsed().as_secs_f64() * 1000., document.scene.triangle_count());
+                                }
+                            }
+                        }
+                    });
+                }
             });
         }
     })
@@ -440,14 +464,16 @@ pub(super) fn render_comparison<T: 'static>(
         .flex_col()
         .min_w_0()
         .min_h_0()
-        .child(
-            div()
-                .px_3()
-                .py_1()
-                .text_size(appearance::ui_text(10.))
-                .text_color(rgb(colors.muted))
-                .child("Drag to orbit · Shift-drag to pan · Scroll to zoom"),
-        )
+        .when(!documents.is_empty(), |element| {
+            element.child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .text_size(appearance::ui_text(10.))
+                    .text_color(rgb(colors.muted))
+                    .child("Drag to orbit · Shift-drag to pan · Scroll to zoom"),
+            )
+        })
         .child(
             div().flex_1().min_h_0().min_w_0().flex().children(
                 [
@@ -497,28 +523,63 @@ fn render_side<T: 'static>(
         .border_b_1()
         .border_color(rgb(colors.border));
     let format = if side.model.is_some() {
-        side.metadata.format.as_str()
+        side.metadata.format.clone()
     } else {
-        "3D"
+        side.name
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.to_ascii_uppercase())
+            .filter(|extension| {
+                matches!(
+                    extension.as_str(),
+                    "GLB" | "OBJ" | "STL" | "FBX" | "3MF" | "STEP" | "STP"
+                )
+            })
+            .unwrap_or_else(|| "3D".into())
+    };
+    let lfs_pointer = side
+        .captured
+        .as_deref()
+        .is_some_and(|bytes| gitturtle_preview::detect_lfs_pointer(bytes).is_some());
+    let source_label = if side.present {
+        format!("{label} · {format}")
+    } else {
+        label.into()
     };
     let mut source_actions = div().flex().flex_wrap().items_center().gap_2().child(
         div()
             .id(("model-source-label", index))
             .role(Role::Label)
-            .aria_label(format!("{label} · {format}"))
+            .aria_label(source_label.clone())
             .font_weight(FontWeight::SEMIBOLD)
-            .child(format!("{label} · {format}")),
+            .child(source_label),
     );
     if let Some(source) = side.metadata.source.clone() {
         source_actions = source_actions.child(
-            button(("model-source", index), "Copy source", "copy", false)
-                .accessibility_label(format!("Copy exact {label} model source"))
-                .on_click(move |_, _, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(source.to_string()))
-                }),
+            button(
+                ("model-source", index),
+                if lfs_pointer {
+                    "Copy pointer"
+                } else {
+                    "Copy source"
+                },
+                "copy",
+                false,
+            )
+            .accessibility_label(format!(
+                "Copy exact {label} {}",
+                if lfs_pointer {
+                    "LFS pointer"
+                } else {
+                    "model source"
+                }
+            ))
+            .on_click(move |_, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(source.to_string()))
+            }),
         );
     }
-    if side.captured.is_some() {
+    if side.captured.is_some() && !lfs_pointer {
         let side = side.clone();
         source_actions = source_actions.child(
             button(
@@ -568,7 +629,20 @@ fn render_side<T: 'static>(
                         element.a11y_synthetic_children(native_accessibility::assertive)
                     })
                     .p_3()
-                    .child(message),
+                    .when(side.error.is_some(), |element| {
+                        element.child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .mb_2()
+                                .child("This version can’t be displayed"),
+                        )
+                    })
+                    .child(
+                        div()
+                            .text_size(appearance::ui_text(12.))
+                            .text_color(rgb(colors.muted))
+                            .child(message),
+                    ),
             )
             .into_any_element();
     };
@@ -689,21 +763,21 @@ fn render_side<T: 'static>(
             })),
         );
     }
-    header = header.child(controls);
     let summary = format!(
         "{} triangles · view span {:.4} {}",
         document.scene.triangle_count(),
         camera.span,
         document.scene.units.label()
     );
-    header = header.child(views).child(
+    header = header.child(
         div()
-            .id(("model-summary", index))
-            .role(Role::Label)
-            .aria_label(format!("{label}: {summary}"))
-            .text_size(appearance::ui_text(10.))
-            .text_color(rgb(colors.muted))
-            .child(summary),
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_x_3()
+            .gap_y_1()
+            .child(controls)
+            .child(views),
     );
     let first_frame = frame.is_none();
     let mut canvas = model_canvas(
@@ -714,6 +788,7 @@ fn render_side<T: 'static>(
         focus,
         frame,
         display_camera,
+        error.is_some(),
         cx,
     );
     if let Some(error) = error {
@@ -722,9 +797,33 @@ fn render_side<T: 'static>(
             .min_h_0()
             .flex()
             .flex_col()
-            .child(div().id(("model-render-error",index)).role(Role::Alert).a11y_synthetic_children(native_accessibility::assertive).aria_label(format!("{label}: {error}. Previous completed view retained. Fit or Reset to try another view.")).p_2().text_color(rgb(colors.warning)).child(format!(
-                "{error} · Previous completed view retained. Fit or Reset to try another view."
-            )))
+            .child(
+                div()
+                    .id(("model-render-error", index))
+                    .role(Role::Alert)
+                    .a11y_synthetic_children(native_accessibility::assertive)
+                    .aria_label(format!(
+                        "{label}: {error}. {} Fit or Reset to try another view.",
+                        if first_frame {
+                            "No completed view is available."
+                        } else {
+                            "Previous completed view retained."
+                        }
+                    ))
+                    .max_h(px(96.))
+                    .overflow_y_scroll()
+                    .p_2()
+                    .text_size(appearance::ui_text(12.))
+                    .text_color(rgb(colors.warning))
+                    .child(format!(
+                        "{error} · {} Fit or Reset to try another view.",
+                        if first_frame {
+                            "No completed view is available."
+                        } else {
+                            "Previous completed view retained."
+                        }
+                    )),
+            )
             .child(canvas)
             .into_any_element();
     } else {
@@ -733,6 +832,8 @@ fn render_side<T: 'static>(
             .min_h_0()
             .flex()
             .flex_col()
+            .relative()
+            .child(canvas)
             .child(
                 div()
                     .id(("model-render-status", index))
@@ -753,14 +854,20 @@ fn render_side<T: 'static>(
                             builder.parent_node().set_busy();
                         }
                     })
-                    .px_2()
-                    .h(px(16.))
-                    .flex_shrink_0()
+                    .absolute()
+                    .top_1()
+                    .left_2()
+                    .when(pending && !first_frame, |element| {
+                        element.px_2().py_1().rounded_md().bg(rgb(colors.panel))
+                    })
                     .text_size(appearance::ui_text(10.))
                     .text_color(rgb(colors.muted))
-                    .child(if pending { "Updating view…" } else { "" }),
+                    .child(if pending && !first_frame {
+                        "Updating view…"
+                    } else {
+                        ""
+                    }),
             )
-            .child(canvas)
             .into_any_element();
     }
     let details = side
@@ -793,6 +900,17 @@ fn render_side<T: 'static>(
                 .p_2()
                 .text_size(appearance::ui_text(10.))
                 .text_color(rgb(colors.muted))
+                .child(
+                    div()
+                        .id(("model-summary", index))
+                        .role(Role::Label)
+                        .aria_label(format!("{label}: Geometry only · {summary}"))
+                        .child(format!(
+                            "Geometry only · {} triangles · {}",
+                            document.scene.triangle_count(),
+                            document.scene.units.label()
+                        )),
+                )
                 .child(details),
         )
         .into_any_element()
@@ -820,6 +938,7 @@ fn model_canvas<T: 'static>(
     focus: FocusHandle,
     frame: Option<Arc<RenderImage>>,
     camera: ModelCamera,
+    failed: bool,
     cx: &mut Context<T>,
 ) -> AnyElement {
     let colors = palette(cx);
@@ -834,12 +953,13 @@ fn model_canvas<T: 'static>(
     let key = document.clone();
     let key_partner = partner;
     let measured = document.clone();
+    let has_frame = frame.is_some();
     div().id(("model-canvas",index)).flex_1().min_h_0().min_w_0().relative().overflow_hidden().bg(rgb(0x1c222a)).border_1().border_color(rgb(colors.border))
         .focus_visible(|style|style.border_color(rgb(colors.accent))).tab_stop(true).track_focus(&focus).role(Role::Image)
         .aria_label(format!("{label} interactive 3D model, {} triangles",document.scene.triangle_count()))
         .aria_description(format!(
-            "Displayed orientation: yaw {:.1} degrees, elevation {:.1} degrees. Target X {:.4}, Y {:.4}, Z {:.4}; view span {:.4} {}. Arrows orbit; Shift and arrows pan; plus and minus zoom; F fits; zero resets; W toggles edges. The captured original is available above.",
-            camera.yaw.to_degrees(), camera.pitch.to_degrees(), camera.target[0], camera.target[1], camera.target[2], camera.span, document.scene.units.label()
+            "{} Orientation: yaw {:.1} degrees, elevation {:.1} degrees. Target X {:.4}, Y {:.4}, Z {:.4}; view span {:.4} {}. Arrows orbit; Shift and arrows pan; plus and minus zoom; F fits; zero resets; W toggles edges. The captured original is available above.",
+            if has_frame { "Completed view." } else { "No completed view yet." }, camera.yaw.to_degrees(), camera.pitch.to_degrees(), camera.target[0], camera.target[1], camera.target[2], camera.span, document.scene.units.label()
         ))
         .cursor(CursorStyle::OpenHand)
         .on_mouse_down(MouseButton::Left,cx.listener(move |_,event:&MouseDownEvent,window,cx|{
@@ -880,8 +1000,8 @@ fn model_canvas<T: 'static>(
             if let Some(action)=action {key.change(key_partner.as_deref(),action);window.refresh();cx.stop_propagation();cx.notify();}
         }))
         .on_prepaint(move |bounds,_,_|{measured.state.lock().unwrap_or_else(|e|e.into_inner()).bounds=bounds;})
-        .child(if let Some(frame)=frame {gif_playback::static_image(frame)}else{div().size_full().flex().items_center().justify_center().text_color(rgb(0xb9c8d3)).child("Preparing model…").into_any_element()})
-        .child(orientation(camera).absolute().right_2().bottom_2()).into_any_element()
+        .child(if let Some(frame)=frame {gif_playback::static_image(frame)}else{div().size_full().flex().items_center().justify_center().text_color(rgb(0xb9c8d3)).child(if failed { "No 3D view available" } else { "Preparing model…" }).into_any_element()})
+        .when(has_frame, |element| element.child(orientation(camera).absolute().right_2().bottom_2())).into_any_element()
 }
 
 fn orientation(camera: ModelCamera) -> Div {

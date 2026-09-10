@@ -122,8 +122,11 @@ external geometry, scripts or repository-relative resources.
 STL, OBJ, FBX, GLB 2.0 and 3MF use the documented retained-mesh decoders. GLB
 uses captured embedded geometry, nested static scene placements and glTF meters
 converted to Z-up millimeters. Appearance and animation playback are omitted;
-unsupported deformation, compression and geometry extensions produce explicit
-errors. The selected scene and any fallback are disclosed. STEP accepts
+EXT_meshopt_compression uses bounded embedded-view decoding, while unsupported
+deformation, Draco and geometry extensions produce explicit errors. The selected
+scene and any fallback are disclosed. A missing or corrupt local LFS model keeps
+its exact pointer and explicit download action, while the opposite available
+model remains usable; preview activation never downloads an object. STEP accepts
 faceted B-rep faces, analytic `CSG_SOLID` sphere/cylinder/torus/block entities and
 nested mapped representations with supported placements. Declared supported
 length units normalize to millimeters; missing units stay unknown. Curved solids

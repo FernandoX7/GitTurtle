@@ -1402,18 +1402,19 @@ fn supplied_nontext_content(
             new: Box::new(new),
         }));
     }
-    // A pointer is an identity, not the document itself. Resolve both sides via
-    // the existing verified LFS path, or retain its literal text/download action.
-    if [old, new]
-        .iter()
-        .any(|bytes| detect_lfs_pointer(bytes).is_some())
-    {
-        return Ok(None);
-    }
     let model = [file.old_path.as_deref(), file.new_path.as_deref()]
         .into_iter()
         .flatten()
         .any(gitturtle_preview::model3d::is_model_path);
+    // Models keep independently usable sides when only one LFS object is local.
+    // Other documents retain their existing literal-pointer comparison path.
+    if !model
+        && [old, new]
+            .iter()
+            .any(|bytes| detect_lfs_pointer(bytes).is_some())
+    {
+        return Ok(None);
+    }
     if !model
         && ![old, new]
             .iter()
@@ -1439,16 +1440,50 @@ fn supplied_nontext_content(
                 )),
             )));
         }
-        Ok(Arc::new(crate::rich_preview::Side::prepare(
-            bytes.to_vec(),
-            path,
-            || cancellation.check(),
-        )?))
+        Ok(Arc::new(if model {
+            captured_model_side(repo, bytes.to_vec(), path, cancellation)?
+        } else {
+            crate::rich_preview::Side::prepare(bytes.to_vec(), path, || cancellation.check())?
+        }))
     };
     Ok(Some(Content::Rich(crate::rich_preview::Comparison {
         old: side(old, file.old_path.as_deref())?,
         new: side(new, file.new_path.as_deref())?,
     })))
+}
+
+fn captured_model_side(
+    repo: &GitRepository,
+    bytes: Vec<u8>,
+    path: &Path,
+    cancellation: &Cancellation,
+) -> Result<crate::rich_preview::Side> {
+    cancellation.check()?;
+    let Some(pointer) = detect_lfs_pointer(&bytes) else {
+        return crate::rich_preview::Side::prepare(bytes, path, || cancellation.check());
+    };
+    let local = repo.local_lfs_object(&pointer.oid, pointer.size, MAX_INPUT_BYTES);
+    cancellation.check()?;
+    let error = match local {
+        Ok(Some(local)) => {
+            return crate::rich_preview::Side::prepare(local, path, || cancellation.check());
+        }
+        Ok(None) => format!(
+            "This model’s LFS object is unavailable in the local store ({} bytes). No download was attempted.",
+            pointer.size
+        ),
+        Err(error) => format!(
+            "This model’s local LFS object could not be verified: {error:#}. No download was attempted."
+        ),
+    };
+    let mut side = crate::rich_preview::Side::unavailable(path, true, Some(error));
+    side.metadata = metadata::inspect(&bytes, path);
+    side.metadata.format = "Git LFS pointer".into();
+    // Keep the captured identity available to Copy and explicit download actions.
+    // Its error prevents immutable caching while the local store can change.
+    side.metadata.source = std::str::from_utf8(&bytes).ok().map(Arc::from);
+    side.captured = Some(bytes.into());
+    Ok(side)
 }
 
 fn nontext_history_content(
@@ -1524,6 +1559,10 @@ fn nontext_history_content(
             false,
         )));
     }
+    let model = [file.old_path.as_deref(), file.new_path.as_deref()]
+        .into_iter()
+        .flatten()
+        .any(gitturtle_preview::model3d::is_model_path);
     // Keep readable and missing sides independent; a missing historical object
     // never substitutes a working file and is never cached as permanently absent.
     let side = |bytes: Result<Vec<u8>>,
@@ -1537,6 +1576,7 @@ fn nontext_history_content(
             )));
         };
         Ok(Arc::new(match bytes {
+            Ok(bytes) if model => captured_model_side(repo, bytes, path, cancellation)?,
             Ok(bytes) => crate::rich_preview::Side::prepare(bytes, path, || cancellation.check())?,
             Err(error) => {
                 crate::rich_preview::Side::unavailable(path, true, Some(format!("{error:#}")))
@@ -3109,22 +3149,35 @@ mod image_tests {
         include_bytes!("../../preview/tests/fixtures/models/glb/assembly-before.glb");
     const GLB_AFTER: &[u8] =
         include_bytes!("../../preview/tests/fixtures/models/glb/assembly-after.glb");
+    const MESHOPT_GLB_BEFORE: &[u8] =
+        include_bytes!("../../preview/tests/fixtures/models/glb/meshopt-arch-before.glb");
+    const MESHOPT_GLB_AFTER: &[u8] =
+        include_bytes!("../../preview/tests/fixtures/models/glb/meshopt-arch-after.glb");
 
     #[test]
     fn glb_history_preserves_captured_revisions_absence_and_independent_errors() {
+        check_glb_history(GLB_BEFORE, GLB_AFTER);
+    }
+
+    #[test]
+    fn meshopt_glb_history_preserves_captured_revisions_absence_and_independent_errors() {
+        check_glb_history(MESHOPT_GLB_BEFORE, MESHOPT_GLB_AFTER);
+    }
+
+    fn check_glb_history(before: &[u8], after: &[u8]) {
         let fixture = Fixture::new();
         let repo = GitRepository::open(&fixture.0).unwrap();
         fs::write(fixture.0.join("assembly.GLB"), b"unrelated worktree").unwrap();
-        let mut file = added_file(&fixture, "assembly.GLB", GLB_AFTER);
+        let mut file = added_file(&fixture, "assembly.GLB", after);
         file.old_path = Some("assembly.glb".into());
-        file.old_oid = Some(fixture.blob(GLB_BEFORE));
+        file.old_oid = Some(fixture.blob(before));
         file.old_mode = "100644".into();
         file.status = ChangeStatus::Renamed;
         let content = captured_preview(&repo, file.clone());
         let Content::Rich(sides) = &*content else {
             panic!("native GLB comparison")
         };
-        for (side, expected) in [(&sides.old, GLB_BEFORE), (&sides.new, GLB_AFTER)] {
+        for (side, expected) in [(&sides.old, before), (&sides.new, after)] {
             assert_eq!(side.captured.as_deref(), Some(expected));
             assert!(
                 side.metadata.source.is_none(),
@@ -3135,8 +3188,8 @@ mod image_tests {
         }
         assert!(
             content.bytes()
-                >= GLB_BEFORE.len()
-                    + GLB_AFTER.len()
+                >= before.len()
+                    + after.len()
                     + sides.old.model.as_ref().unwrap().retained_bytes()
                     + sides.new.model.as_ref().unwrap().retained_bytes()
         );
@@ -3154,8 +3207,17 @@ mod image_tests {
         );
         assert!(sides.new.model.is_some());
 
+        file.old_oid = Some(fixture.blob(b""));
+        let empty = captured_preview(&repo, file.clone());
+        let Content::Rich(sides) = &*empty else {
+            panic!("present empty GLB side")
+        };
+        assert!(sides.old.present && sides.old.error.is_some());
+        assert_eq!(sides.old.captured.as_deref(), Some(b"".as_slice()));
+        assert!(sides.new.model.is_some());
+
         for deleted in [false, true] {
-            let mut absent = added_file(&fixture, "assembly.GLB", GLB_AFTER);
+            let mut absent = added_file(&fixture, "assembly.GLB", after);
             if deleted {
                 std::mem::swap(&mut absent.old_path, &mut absent.new_path);
                 std::mem::swap(&mut absent.old_oid, &mut absent.new_oid);
@@ -3183,15 +3245,24 @@ mod image_tests {
 
     #[test]
     fn glb_working_preview_uses_current_bytes_without_caching_or_index_writes() {
+        check_glb_working_preview(GLB_BEFORE, GLB_AFTER);
+    }
+
+    #[test]
+    fn meshopt_glb_working_preview_uses_current_bytes_without_caching_or_index_writes() {
+        check_glb_working_preview(MESHOPT_GLB_BEFORE, MESHOPT_GLB_AFTER);
+    }
+
+    fn check_glb_working_preview(before: &[u8], after: &[u8]) {
         let fixture = Fixture::new();
-        fs::write(fixture.0.join("assembly.glb"), GLB_BEFORE).unwrap();
+        fs::write(fixture.0.join("assembly.glb"), before).unwrap();
         fixture.git(&["add", "assembly.glb"], b"");
         fixture.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "GLB"], b"");
         let repo = GitRepository::open(&fixture.0).unwrap();
         let index = fs::read(fixture.0.join(".git/index")).unwrap();
         let mut cache = PreviewCache::default();
         let mut session = RepositorySession::default();
-        for bytes in [GLB_AFTER, b"invalid GLB".as_slice(), GLB_AFTER] {
+        for bytes in [after, b"invalid GLB".as_slice(), after] {
             fs::write(fixture.0.join("assembly.glb"), bytes).unwrap();
             let entry = repo.status().unwrap().entries.remove(0);
             let Output::WorkingPreview(_, content, _) = execute(
@@ -3211,10 +3282,10 @@ mod image_tests {
             let Content::Rich(sides) = &*content else {
                 panic!("rich GLB")
             };
-            assert_eq!(sides.old.captured.as_deref(), Some(GLB_BEFORE));
+            assert_eq!(sides.old.captured.as_deref(), Some(before));
             assert_eq!(sides.new.captured.as_deref(), Some(bytes));
             assert!(sides.old.model.is_some());
-            assert_eq!(sides.new.model.is_some(), bytes == GLB_AFTER);
+            assert_eq!(sides.new.model.is_some(), bytes == after);
             assert!(cache.entries.is_empty());
         }
         assert_eq!(fs::read(fixture.0.join(".git/index")).unwrap(), index);
@@ -3222,12 +3293,21 @@ mod image_tests {
 
     #[test]
     fn glb_lfs_miss_is_retryable_and_verified_local_bytes_enter_the_model_pipeline() {
+        check_glb_lfs_retry(GLB_AFTER);
+    }
+
+    #[test]
+    fn meshopt_glb_lfs_miss_is_retryable_and_verified_local_bytes_enter_the_model_pipeline() {
+        check_glb_lfs_retry(MESHOPT_GLB_AFTER);
+    }
+
+    fn check_glb_lfs_retry(bytes: &[u8]) {
         use sha2::{Digest, Sha256};
         let fixture = Fixture::new();
-        let oid = format!("{:x}", Sha256::digest(GLB_AFTER));
+        let oid = format!("{:x}", Sha256::digest(bytes));
         let pointer = format!(
             "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
-            GLB_AFTER.len()
+            bytes.len()
         );
         let file = added_file(&fixture, "assembly.glb", pointer.as_bytes());
         let repo = GitRepository::open(&fixture.0).unwrap();
@@ -3251,22 +3331,291 @@ mod image_tests {
             content
         };
         let missing = preview(0);
-        assert!(matches!(&*missing, Content::Text { new, .. } if new == &pointer));
+        let Content::Rich(sides) = &*missing else {
+            panic!("unavailable LFS model retains its captured pointer")
+        };
+        assert!(!sides.old.present && sides.old.error.is_none());
+        assert!(sides.new.present && sides.new.error.is_some());
+        assert_eq!(sides.new.captured.as_deref(), Some(pointer.as_bytes()));
+        let targets = crate::lfs_download::preview_targets(&missing, &file);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].0, 1);
+        assert_eq!(targets[0].1.pointer, pointer.as_bytes());
+        assert_eq!(targets[0].1.blob_oid, file.new_oid);
         let directory = fixture
             .0
             .join(".git/lfs/objects")
             .join(&oid[..2])
             .join(&oid[2..4]);
         fs::create_dir_all(&directory).unwrap();
-        fs::write(directory.join(&oid), GLB_AFTER).unwrap();
+        fs::write(directory.join(&oid), bytes).unwrap();
         let available = preview(1);
         let Content::Rich(sides) = &*available else {
             panic!("resolved GLB geometry")
         };
-        assert_eq!(sides.new.captured.as_deref(), Some(GLB_AFTER));
+        assert_eq!(sides.new.captured.as_deref(), Some(bytes));
         assert!(sides.new.model.is_some(), "{:?}", sides.new.error);
         assert!(!sides.old.present);
+        assert!(crate::lfs_download::preview_targets(&available, &file).is_empty());
         assert!(Arc::ptr_eq(&available, &preview(1)));
+    }
+
+    #[test]
+    fn meshopt_glb_lfs_comparison_keeps_verified_side_and_retries_missing_or_corrupt_side() {
+        use sha2::{Digest, Sha256};
+        for unavailable_side in [0, 1] {
+            let fixture = Fixture::new();
+            let bytes = [MESHOPT_GLB_BEFORE, MESHOPT_GLB_AFTER];
+            let oids = bytes.map(|bytes| format!("{:x}", Sha256::digest(bytes)));
+            let pointers: [String; 2] = std::array::from_fn(|i| {
+                format!(
+                    "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
+                    oids[i],
+                    bytes[i].len()
+                )
+            });
+            let objects: [PathBuf; 2] = std::array::from_fn(|i| {
+                let directory = fixture
+                    .0
+                    .join(".git/lfs/objects")
+                    .join(&oids[i][..2])
+                    .join(&oids[i][2..4]);
+                fs::create_dir_all(&directory).unwrap();
+                directory.join(&oids[i])
+            });
+            let available_side = 1 - unavailable_side;
+            fs::write(&objects[available_side], bytes[available_side]).unwrap();
+            let mut file = added_file(&fixture, "after.GLB", pointers[1].as_bytes());
+            file.old_path = Some("before.glb".into());
+            file.old_oid = Some(fixture.blob(pointers[0].as_bytes()));
+            file.old_mode = "100644".into();
+            file.status = ChangeStatus::Renamed;
+            let repo = GitRepository::open(&fixture.0).unwrap();
+            let mut cache = PreviewCache::default();
+            let mut session = RepositorySession::default();
+            let mut preview = |expected_cached| {
+                let Output::Preview(content, _) = execute(
+                    Job::Preview {
+                        repo: repo.clone(),
+                        file: file.clone(),
+                        origins: Default::default(),
+                    },
+                    &mut cache,
+                    &active(),
+                    &mut session,
+                )
+                .unwrap() else {
+                    panic!("LFS model comparison")
+                };
+                assert_eq!(cache.entries.len(), expected_cached);
+                content
+            };
+            for corrupt in [false, true] {
+                if corrupt {
+                    // Preserve size so verification must check the SHA-256 too.
+                    let mut damaged = bytes[unavailable_side].to_vec();
+                    damaged[0] ^= 1;
+                    fs::write(&objects[unavailable_side], damaged).unwrap();
+                }
+                let content = preview(0);
+                let Content::Rich(comparison) = &*content else {
+                    panic!("independent LFS model sides")
+                };
+                let sides = [&comparison.old, &comparison.new];
+                let usable = sides[available_side];
+                assert!(usable.model.is_some(), "{:?}", usable.error);
+                assert_eq!(usable.captured.as_deref(), Some(bytes[available_side]));
+                let unavailable = sides[unavailable_side];
+                assert!(unavailable.present && unavailable.model.is_none());
+                let error = unavailable.error.as_deref().unwrap();
+                assert!(error.contains(if corrupt {
+                    "SHA-256 verification"
+                } else {
+                    "unavailable in the local store"
+                }));
+                assert_eq!(
+                    unavailable.captured.as_deref(),
+                    Some(pointers[unavailable_side].as_bytes())
+                );
+                assert_eq!(
+                    unavailable.metadata.source.as_deref(),
+                    Some(pointers[unavailable_side].as_str())
+                );
+                let targets = crate::lfs_download::preview_targets(&content, &file);
+                assert_eq!(targets.len(), 1);
+                assert_eq!(targets[0].0, unavailable_side);
+                assert_eq!(targets[0].1.pointer, pointers[unavailable_side].as_bytes());
+                assert_eq!(
+                    Some(&targets[0].1.path),
+                    [file.old_path.as_ref(), file.new_path.as_ref()][unavailable_side]
+                );
+                assert_eq!(
+                    targets[0].1.blob_oid.as_ref(),
+                    [file.old_oid.as_ref(), file.new_oid.as_ref()][unavailable_side]
+                );
+            }
+            fs::write(&objects[unavailable_side], bytes[unavailable_side]).unwrap();
+            let resolved = preview(1);
+            let Content::Rich(comparison) = &*resolved else {
+                panic!("both verified LFS models")
+            };
+            for (side, bytes) in [&comparison.old, &comparison.new].into_iter().zip(bytes) {
+                assert!(side.model.is_some() && side.error.is_none());
+                assert_eq!(side.captured.as_deref(), Some(bytes));
+            }
+            assert!(crate::lfs_download::preview_targets(&resolved, &file).is_empty());
+            assert!(Arc::ptr_eq(&resolved, &preview(1)));
+        }
+    }
+
+    #[test]
+    fn meshopt_glb_cache_reserves_geometry_and_frames_before_any_raster_is_requested() {
+        let fixture = Fixture::new();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let file = added_file(&fixture, "arch.glb", MESHOPT_GLB_AFTER);
+        let key = PreviewKey::new(repo.path(), &file);
+        let content = captured_preview(&repo, file);
+        let weak = {
+            let Content::Rich(sides) = &*content else {
+                panic!("retained compressed GLB")
+            };
+            let model = sides.new.model.as_ref().unwrap();
+            assert!(sides.new.pages.is_empty());
+            assert!(model.retained_bytes() >= 36 * 3 * 3 * 8 + 2 * 720 * 720 * 4);
+            assert!(content.bytes() >= MESHOPT_GLB_AFTER.len() + model.retained_bytes());
+            Arc::downgrade(model)
+        };
+        let weight = content.bytes();
+        let mut insufficient = PreviewCache::with_limits(weight - 1, 1);
+        insufficient.insert(key.clone(), content.clone());
+        assert!(insufficient.entries.is_empty());
+        assert_eq!(insufficient.bytes, 0);
+        let mut cache = PreviewCache::with_limits(weight, 1);
+        cache.insert(key.clone(), content.clone());
+        assert_eq!(cache.bytes, weight);
+        assert!(Arc::ptr_eq(&cache.get(&key).unwrap(), &content));
+        cache.remove(&key);
+        assert_eq!(cache.bytes, 0);
+        assert!(
+            weak.upgrade().is_some(),
+            "the active view still owns its model"
+        );
+        drop(content);
+        assert!(
+            weak.upgrade().is_none(),
+            "the last content owner releases the model"
+        );
+    }
+
+    #[test]
+    fn meshopt_glb_working_lfs_keeps_pointer_targets_and_retries_without_index_or_worktree_writes()
+    {
+        use sha2::{Digest, Sha256};
+        let fixture = Fixture::new();
+        let oids = [MESHOPT_GLB_BEFORE, MESHOPT_GLB_AFTER]
+            .map(|bytes| format!("{:x}", Sha256::digest(bytes)));
+        let pointers: [String; 2] = std::array::from_fn(|i| {
+            format!(
+                "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
+                oids[i],
+                [MESHOPT_GLB_BEFORE, MESHOPT_GLB_AFTER][i].len()
+            )
+        });
+        let path = fixture.0.join("assembly.glb");
+        fs::write(&path, &pointers[0]).unwrap();
+        fixture.git(&["add", "assembly.glb"], b"");
+        fixture.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "LFS"], b"");
+        let index = fs::read(fixture.0.join(".git/index")).unwrap();
+        fs::write(&path, &pointers[1]).unwrap();
+        let objects: [PathBuf; 2] = std::array::from_fn(|i| {
+            let directory = fixture
+                .0
+                .join(".git/lfs/objects")
+                .join(&oids[i][..2])
+                .join(&oids[i][2..4]);
+            fs::create_dir_all(&directory).unwrap();
+            directory.join(&oids[i])
+        });
+        fs::write(&objects[0], MESHOPT_GLB_BEFORE).unwrap();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let mut cache = PreviewCache::default();
+        for available in [false, true] {
+            if available {
+                fs::write(&objects[1], MESHOPT_GLB_AFTER).unwrap();
+            }
+            let entry = repo.status().unwrap().entries.remove(0);
+            let Output::WorkingPreview(file, content, _) = execute(
+                Job::WorkingPreview {
+                    repo: repo.clone(),
+                    entry,
+                    area: gitturtle_core::ChangeArea::Unstaged,
+                    head: None,
+                },
+                &mut cache,
+                &active(),
+                &mut RepositorySession::default(),
+            )
+            .unwrap() else {
+                panic!("working LFS comparison")
+            };
+            let Content::Rich(sides) = &*content else {
+                panic!("working LFS model sides")
+            };
+            assert!(sides.old.model.is_some() && sides.old.error.is_none());
+            assert_eq!(sides.old.captured.as_deref(), Some(MESHOPT_GLB_BEFORE));
+            assert_eq!(sides.new.model.is_some(), available);
+            let targets = crate::lfs_download::preview_targets(&content, &file);
+            if available {
+                assert!(targets.is_empty());
+                assert_eq!(sides.new.captured.as_deref(), Some(MESHOPT_GLB_AFTER));
+            } else {
+                assert_eq!(targets.len(), 1);
+                assert_eq!(targets[0].0, 1);
+                assert_eq!(targets[0].1.path, Path::new("assembly.glb"));
+                assert!(targets[0].1.blob_oid.is_none());
+                assert_eq!(targets[0].1.pointer, pointers[1].as_bytes());
+            }
+            assert!(cache.entries.is_empty());
+            assert_eq!(fs::read(fixture.0.join(".git/index")).unwrap(), index);
+            assert_eq!(fs::read(&path).unwrap(), pointers[1].as_bytes());
+        }
+    }
+
+    #[test]
+    fn meshopt_glb_cancellation_is_propagated_instead_of_retaining_a_failed_side() {
+        use std::cell::Cell;
+        let calls = Cell::new(0);
+        let prepared = crate::rich_preview::Side::prepare(
+            MESHOPT_GLB_AFTER.to_vec(),
+            Path::new("arch.glb"),
+            || {
+                calls.set(calls.get() + 1);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(prepared.model.is_some(), "{:?}", prepared.error);
+        let checkpoints = calls.get();
+        drop(prepared);
+        for stop_at in [1, checkpoints / 2, checkpoints] {
+            let cancellation = active();
+            calls.set(0);
+            let result = crate::rich_preview::Side::prepare(
+                MESHOPT_GLB_AFTER.to_vec(),
+                Path::new("arch.glb"),
+                || {
+                    calls.set(calls.get() + 1);
+                    if calls.get() >= stop_at {
+                        cancellation.history.cancel();
+                    }
+                    cancellation.check()
+                },
+            );
+            let error = result
+                .err()
+                .expect("cancelled preparation must not retain content");
+            assert!(error.to_string().contains("superseded"));
+        }
     }
 
     #[test]
