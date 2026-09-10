@@ -1,0 +1,66 @@
+{
+  "conflict-keyboard-188ec47.jpeg": {
+    "sha256": "7be01fed783b38d8b29abd5d4ab585ba08cf570e98be39491ff3e89368bc2373",
+    "source": "188ec47199a0dc31f333fff6673d1d6afd7766f1",
+    "unaltered": true
+  },
+  "commit-inactive-target-188ec47.jpeg": {
+    "sha256": "0da8edbd0bf175ca528d6b57b8ac2a312a2683e625130932e4eddbe52fee63f6",
+    "source": "188ec47199a0dc31f333fff6673d1d6afd7766f1",
+    "unaltered": true
+  },
+  "user-graph-before.png": {
+    "sha256": "c2008fa054532e80ae2cbc7ec162882d674514fab79bef94037a2bb3596afa97",
+    "source": "user-provided, build not inferred",
+    "unaltered": true
+  },
+  "model-linked-188ec47.jpeg": {
+    "sha256": "d23e919bc7c899cbb82dd00dc12b6cf04f97637477c2fd5d727c2fb4ab0c0e8d",
+    "source": "188ec47199a0dc31f333fff6673d1d6afd7766f1",
+    "unaltered": true
+  },
+  "pdf-dialog-188ec47.jpeg": {
+    "sha256": "bf605e102d5e5ecb6664da62ed42de4a14ca30e9a5767b562beb7e432827e9d9",
+    "source": "188ec47199a0dc31f333fff6673d1d6afd7766f1",
+    "unaltered": true
+  },
+  "history-deep-188ec47.jpeg": {
+    "sha256": "e26712bda5657930257e5b439bc4bf4e866c1920067d844d292156b702552e23",
+    "source": "188ec47199a0dc31f333fff6673d1d6afd7766f1",
+    "unaltered": true
+  },
+  "pdf-reader-188ec47.jpeg": {
+    "sha256": "cf17b07a764178199b54733002c181f6aa39e07b7a6f861f00b23ca9f098283b",
+    "source": "188ec47199a0dc31f333fff6673d1d6afd7766f1",
+    "unaltered": true
+  },
+  "markdown-table-images-188ec47.jpeg": {
+    "sha256": "ad169b3c80698f9ef83df723bc89407536bb1ad55ee646929329c00a00c0df55",
+    "source": "188ec47199a0dc31f333fff6673d1d6afd7766f1",
+    "unaltered": true
+  },
+  "stage-confirmation-bfc4423.jpeg": {
+    "source": "bfc4423a3e4be045834479c0776a2cb8ccd3e384",
+    "uuid": "57CE2CF1-65D6-36E7-8CC2-5DD06FEE50DF",
+    "sha256": "b7b138fbea3bfe6ee50d31fbb582476c5c2bc925583327f639d2d6ee3877e757",
+    "unaltered": true
+  },
+  "github-single-draft-bfc4423.jpeg": {
+    "source": "bfc4423a3e4be045834479c0776a2cb8ccd3e384",
+    "uuid": "57CE2CF1-65D6-36E7-8CC2-5DD06FEE50DF",
+    "sha256": "e821e75cf0916458ac3c9f2e471607eb4aab0f3dd4e37f4d0e68cb65bd567a1e",
+    "unaltered": true
+  },
+  "original-graph-ed9aa21.jpeg": {
+    "source": "ed9aa2102ff2d35d4d6cb714d2cf6724ed79eb64",
+    "uuid": "2CC15A0C-CB56-343B-929B-BAB099A289D8",
+    "sha256": "3ff8ffa2ae059a0c2423fb93a62c0347f0c622f7e22ca0ebdc3130ef3a1c60c8",
+    "unaltered": true
+  },
+  "pdf-restart-ed9aa21.jpeg": {
+    "source": "ed9aa2102ff2d35d4d6cb714d2cf6724ed79eb64",
+    "uuid": "2CC15A0C-CB56-343B-929B-BAB099A289D8",
+    "sha256": "865dda161b3e7df89402dca1b3c48fba90217239ac74893f7925bac91ac42f4d",
+    "unaltered": true
+  }
+}

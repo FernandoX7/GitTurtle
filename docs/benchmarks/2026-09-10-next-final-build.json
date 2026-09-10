@@ -1,0 +1,97 @@
+{
+  "source": "ed9aa2102ff2d35d4d6cb714d2cf6724ed79eb64",
+  "input_map_sha256": "38087d22b795c2eeea7b40ef4977af0042025e38c8f1d7f7bc5f2da0ac16d629",
+  "inputs_unchanged": true,
+  "macos_unique_tests": 549,
+  "linux_unique_tests": 542,
+  "ignored_opt_in_tests_per_platform": 3,
+  "macos_gates": [
+    {
+      "name": "fmt",
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "started_unix": 1789009932.085784,
+      "seconds": 1.2914361953735352,
+      "exit_code": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "tests",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "--workspace"
+      ],
+      "started_unix": 1789009933.378057,
+      "seconds": 65.89769005775452,
+      "exit_code": 0,
+      "sha256": "e3dac123011f45868d37c0188ebae1ceb8c64782a11bd7c8f7615651d1815cc8"
+    },
+    {
+      "name": "clippy",
+      "argv": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "started_unix": 1789009999.276604,
+      "seconds": 15.663264989852905,
+      "exit_code": 0,
+      "sha256": "8dff33c6540d4982352b21e5989818b5f690c61ab2ab23994aa7640f18729862"
+    },
+    {
+      "name": "release",
+      "argv": [
+        "cargo",
+        "build",
+        "--release",
+        "--locked",
+        "-p",
+        "gitturtle"
+      ],
+      "started_unix": 1789010014.940927,
+      "seconds": 84.11174178123474,
+      "exit_code": 0,
+      "sha256": "bbf66340fa917eb440af0e7acc5cd80817ff1f468879d516e64181c1aae3a5f9"
+    }
+  ],
+  "installed": {
+    "source": "ed9aa2102ff2d35d4d6cb714d2cf6724ed79eb64",
+    "uuid": "2CC15A0C-CB56-343B-929B-BAB099A289D8",
+    "executable_sha256": "c7fe1c6ae9351196a53cbb0d2c7b0848421493bf49b87182993863086b12b5b2",
+    "input_map_sha256": "38087d22b795c2eeea7b40ef4977af0042025e38c8f1d7f7bc5f2da0ac16d629",
+    "plist": {
+      "CFBundleDisplayName": "GitTurtle",
+      "CFBundleExecutable": "gitturtle",
+      "CFBundleIconFile": "AppIcon",
+      "CFBundleIconName": "AppIcon",
+      "CFBundleIdentifier": "com.gitturtle.desktop",
+      "CFBundleName": "GitTurtle",
+      "CFBundlePackageType": "APPL",
+      "CFBundleShortVersionString": "0.1.0",
+      "CFBundleVersion": "0.1.0",
+      "NSHighResolutionCapable": true,
+      "NSPrincipalClass": "NSApplication",
+      "NSSupportsAutomaticGraphicsSwitching": true
+    },
+    "assets": {
+      "AppIcon.icns": "5206a75c4c2ae53f7686565042bb7e4e67b1ca09ebc3d4f2e5a621f3be37fefb",
+      "Assets.car": "6db9543cee42fe2cf13d0801f6e9e269dd40948542d14afb808f68ccf4b3abad"
+    },
+    "signature": "ad-hoc; deep strict verification passed",
+    "installed_path": "/Applications/GitTurtle.app",
+    "installed_unix": 1789010432.400268
+  },
+  "evidence": "Private raw logs, full input map, application state backups and runtime identity are retained in .local/next-milestone-20260910/native; see milestone ledger for source-specific native coverage."
+}

@@ -92,7 +92,7 @@ Inspection of the exercised resource implementation explains what a useful nativ
 
 For the next build, record markers before/after three identical short orbit/pan/zoom/fit cycles on the same model pair, allowing 30–60 seconds to settle after each. Then repeat a fixed PDF sweep across more than four pages on each side three times, again with settled intervals. Close the model/PDF tabs and any retained source dialogs, show Projects so a real image-free frame runs cleanup, and collect sixty seconds of settled samples. Compare successive post-warm plateaus, idle CPU, threads, FDs and Git children. Preserve a completed preview while testing a replaced frame so live-image correctness is exercised alongside retirement.
 
-These steps remain **pending** for a corrected final candidate. The interrupted session did not establish repeated native release of model/PDF replacement frames. RSS excludes GPU and driver allocations; resource plateaus plus source/unit-test retirement behavior are indirect evidence and cannot prove GPU allocation release. A new sustained native session must also revisit the crash, new-tab query isolation and deep graph continuity.
+These steps were **pending at the end of Session A**. The interrupted session did not establish repeated native release of model/PDF replacement frames. [Session B below](#session-b-measured-188ec47-completed-review-and-window-cleanup) records the completed repeated cycles and image retirement, including its shorter settling intervals. RSS excludes GPU and driver allocations; resource plateaus plus source/unit-test retirement behavior are indirect evidence and cannot prove GPU allocation release. A new sustained native session must also revisit the crash, new-tab query isolation and deep graph continuity.
 
 ### Raw evidence
 
@@ -105,3 +105,107 @@ Final frozen copy: `/tmp/gitturtle-next-20260910/resource-analysis-preliminary-2
 | `release-trace.log` | 3,757 | `857b67ac4cb406ea6fbe389bc758341cd98bef3479abf5f350fbe54bcbfe4d37` |
 
 Observer: `/tmp/gitturtle-next-20260910/observe-native.py`, SHA-256 `a72a1c57dd7aac48b8eaebca20ecc3951c968732765c4f87dfe6e269dfc3511d`. Analysis: `/tmp/gitturtle-next-20260910/analyze-preliminary.py`; derived `summary.json` is beside the frozen raw files. Observer footer: executable unchanged, 396 samples, zero collection errors, three imported markers, target unavailable after the abort.
+
+
+## Session B: measured `188ec47`, completed review and window cleanup
+
+The corrected release completed a coordinator-marked **21m43.822s mixed-review interval**, from `02:17:46.110641Z` to `02:39:29.933136Z`. Resource samples span **22m15.001s**. The coordinator then closed the actual final window; the trace recorded retirement of the remaining ten images and `image_window_closed retained_images=0`, followed by process disappearance. There are no panic/failure trace records, sampler errors, parser warnings or image-count inconsistencies in this session. This supplies sustained native and cleanup evidence for **this compiled source**; it does not establish that later corrections were exercised or installed.
+
+Two further UI corrections—confirmation-dialog titles and GitHub PR-draft debounce—were pending after this run. Their eventual release identity and native checks belong in separate final packaging evidence. Session A above remains the failed earlier run.
+
+### Build, observation and activity boundaries
+
+| Item | Exercised value |
+| --- | --- |
+| Source | `188ec47199a0dc31f333fff6673d1d6afd7766f1` |
+| App PID | `14206`; sole recognized GitTurtle process throughout observation |
+| Packaged executable | `/private/tmp/gitturtle-next-20260910/FinalGitTurtle.app/Contents/MacOS/gitturtle` |
+| Executable SHA-256, start/end verified | `f70097158c2b54b84c023ecee4c53e0916ea70791131de3d84602696a0bf5afe` |
+| Packaged/raw executable UUID | `6B923D29-D3B9-3579-B79E-10939AE21C31` |
+| Hardware / OS | Apple M4 Max, 16 logical CPUs, 128 GiB RAM; macOS 26.6.2, build 25G83 |
+| First / last sample UTC | `02:17:46.418015Z` / `02:40:01.358136Z` |
+| Observer footer UTC | `02:40:06.325624Z`, `target_unavailable`, executable unchanged |
+| Sampling | 268 five-second samples; 45 fresh FD/background snapshots; 18 operator markers |
+
+The process started at approximately `02:17:22Z`; the first sample was about 24 seconds after launch. The coordinator described a fresh process with warm filesystem caches and a restored captured PDF at Before 12 / After 20, linked at 125% zoom. The marked review includes startup, dialogs, tool/settling intervals and navigation, rather than twenty-one minutes of continuous input. The initial marker interval alone lasted 274.13 seconds and had essentially flat RSS. The coordinator reported compiler/container validation stopped before launch; no compiler appeared in the 45 fresh background snapshots. Ordinary desktop load remained: one-minute load average ranged 4.68–10.59, median 7.46.
+
+Markers report the six-tab no-CLI startup, three PDF page 9–20 sweeps, three linked model camera cycles, captured commit/tab-switch handling, a 120,000-commit merge-heavy history window, search cancellation, eight-tab admission, alias deduplication, independent queries, missing-folder recovery and conflict-source inspection. No conflict resolution write is claimed. The deep graph was observed continuous at rows 5001–6000 while retaining the original inspected commit. These are coordinator native observations; the resource sampler does not itself inspect UI correctness.
+
+The corrections in the action record are retained. Marker 3 initially overstated Find/Escape completion; marker 4 explicitly withdrew that claim after a stale tool state prevented the actions. The second PDF attempt initially entered invalid `920`, and the modal blocked underlying paging. Marker 14 records the explicit focus/select correction, successful page 9 entry and observed pages 10–20. That failed attempt is included in its elapsed interval and resource samples. The markers alone do not turn the withdrawn Find/Escape claim into a pass.
+
+### Resource distribution and transient peak
+
+| Metric | First → last | Median | p95 | Maximum |
+| --- | ---: | ---: | ---: | ---: |
+| Target RSS, MiB | 161.61 → 275.39 | 217.55 | 275.38 | **685.33** |
+| Target five-second interval CPU, % of one logical CPU | — | 1.40 | 9.80 | 18.00 |
+| Target threads | 14 → 16 | 16 | 21 | 23 |
+| Fresh numeric FDs | 9 → 9 | 9 | 17 | 17 |
+| Sampled Git descendants | 1 → 1 | 1 | 5 | 5 |
+| All sampled descendants | 1 → 1 | 1 | 5 | 5 |
+
+Target cumulative CPU increased 32.69 seconds over 1,335.001 seconds of samples, averaging 2.45% of one logical CPU. `ps`'s independently reported average CPU reached 35.3%; it is not the five-second interval metric. Sampler collection took median 64.22 ms, p95 117.64 ms and maximum 133.17 ms. The longest monotonic sample gap was 5.00544 seconds, with scheduling lag at most 8.22 ms. These show no sampler stall; they do not prove that every UI interaction was responsive.
+
+The RSS peak is preserved, not hidden by the later plateau:
+
+| UTC | Target RSS, MiB | Context |
+| --- | ---: | --- |
+| `02:34:56Z` | 257.73 | Tab workflow before the rise |
+| `02:35:01Z` | 335.20 | Initial rise |
+| `02:35:06Z` | 682.41 | Elevated plateau, continuing through `02:35:21Z` |
+| `02:35:26Z` | **685.33** | Peak |
+| `02:35:31Z` | 574.08 | First decrease |
+| `02:35:41Z` | 262.66 | Returned near the preceding working level |
+
+These samples lie between tab-workflow markers at `02:34:08.769577Z` and `02:35:51.532403Z`, trace bytes `[3847, 4086)`. The coordinator recalled Markdown companion-link loading followed by Escape/tab navigation near the peak. That supplies temporal context, not allocation attribution: there is no inner open/close marker or per-line trace timestamp to determine which action allocated or released the transient memory. The trace interval adds four registered images but records neither pixel sizes nor editor allocations.
+
+There were three Git children throughout `02:35:01Z`–`02:35:41Z`; fresh FD counts before/during the rise were both 13. One child was replaced near the initial rise, while aggregate child RSS fell from about 133 MiB to 12.6 MiB. The target's sampled interval CPU reached 12.0% during the initial increase and 3.80% at peak RSS. The evidence does not support growing child-process accumulation as the cause of the target's rise. It also does not support a retained-memory leak claim from this transient. The 512 MiB tab allowance is a conservative retained-state admission estimate, **not an RSS cap**; it does not account for every transient allocation, allocator reserve or native framework allocation.
+
+### Image lifetime and repeated preview cycles
+
+The full trace contains **75 tracked images / 75 frames and 75 retired images / 75 frames** across 48 retirement batches. The registry reached at most 16 retained images and ended at zero. All frames in this exercised set were single-frame images; this run does not exercise multi-frame GIF retirement. Two initial images were registered before the first marker at byte 98, and are included in the totals.
+
+Trace byte offsets are half-open intervals captured by the operator markers. They give ordering, not per-event wall-clock timestamps. Counts below describe the marked intervals; the action notes are required to interpret intervals whose phase labels were not updated at every step.
+
+| Reported action interval | Trace bytes | Images tracked / retired | Retained before → after |
+| --- | ---: | ---: | ---: |
+| Initial PDF sweep/dialog interval | 98–1364 | 15 / 9 | 2 → 8 |
+| Model cycle 1 | 1701–2655 | 12 / 12 | 10 → 10 |
+| Model cycle 2, ending at deep-history marker | 2655–3233 | 8 / 8 | 10 → 10 |
+| Conflict inspection plus reported model cycle 3 | 4086–4769 | 8 / 8 | 14 → 14 |
+| Corrected actual PDF sweep 2 | 4769–6089 | 12 / 12 | 14 → 14 |
+| Actual PDF sweep 3, while phase label still says `pdf-settled` | 6089–7409 | 12 / 12 | 14 → 14 |
+| Explicit preview/tab closure | 7409–7508 | 0 / 4 | 14 → 10 |
+| Projects quiet interval | 7508–7508 | 0 / 0 | 10 → 10 |
+| Actual final window closure | 7508–7617 | 0 / 10 | 10 → **0** |
+
+The two later PDF endpoint markers reported RSS 280,160 and 280,192 KiB: **273.594 and 273.625 MiB**, a 32 KiB difference at the same captured Before 12 / After 20 endpoint. Both sweeps retired as many images as they registered. The following 27.16-second marker interval contained no image-track/retire events and sampled RSS 273.594–273.625 MiB. Model replacement counts also balanced in the reported cycle intervals, but interleaved history and other views changed the retained working set; these are not equal-work isolated model RSS benchmarks. The third model settlement interval measured **24.49 seconds**, despite its next marker's approximate “about 30 seconds” wording.
+
+After explicit closure of preview/history/operations/conflict tabs, one linked-worktree tab remained while Projects was shown. The final quiet interval was **33.903 seconds**, not a full minute. Its seven samples ranged 275.375–275.406 MiB, with 16–17 threads, one fresh FD observation of 9 and one Git child. Marker endpoint cumulative CPU increased 0.37 seconds over 33.903 seconds, averaging **1.09% of one logical CPU**. The first five-second CPU interval overlaps the preceding active cleanup; the marker endpoint calculation better isolates this quiet period.
+
+The quiet interval produced no lifecycle events. Ten images remained legitimately referenced until final window closure. After the `02:40:03.836360Z` close-request marker, the trace logged `image_retire images=10 frames=10 retained_images=0` and then `image_window_closed retained_images=0`. These retirement records are emitted after actual GPUI `App::drop_image` calls. The coordinator's subsequent process check found neither the app nor its Git children remaining. The observer footer's `target_unavailable` is a disappearance classification, not an independently measured exit code; normal closure is established by the coordinator action and matching window-close trace, with no panic record.
+
+This is direct native evidence that the exercised replacement and close paths invoked image retirement and emptied the registry. It does not measure completed GPU execution or GPU/driver resident bytes, and RSS need not return to launch levels while caches and the process are still alive. The originally proposed full sixty-second settled sample was not collected.
+
+### All native callback timings
+
+| Recorded metric | n | Median, ms | p95, ms | Maximum, ms |
+| --- | ---: | ---: | ---: | ---: |
+| Commit selection → changed-file callback | 9 | 30.763 | 51.545 | 51.545 |
+| History file activation → preview callback | 2 | 4.232 | 5.266 | 5.266 |
+| Older-history request → page callback | 11 | 7.862 | 10.243 | 10.243 |
+| Working file activation → preview callback | 3 | 49.603 | **130.851** | **130.851** |
+
+All **25 values**, including the 130.851 ms working-preview maximum, are retained in the durable trace. Small sample counts make p95 equal the maximum. The callback boundary is the same handler-to-matching-frame callback described for Session A; it excludes physical input delivery, OS presentation and completed GPU work. Superseded callbacks may be absent. There are no separately recorded worker-only durations, so no paired backend distribution or callback-minus-worker estimate is claimed. The differing actions, caches and small counts do not justify a speed comparison with Session A.
+
+### Durable data and reproduction
+
+The [sanitized evidence folder](2026-09-10-next-native-resources-data/188ec47/README.md) retains every resource sample as numeric CSV, exact event and trace logs, a structured summary, and file hashes. The resource projection removes private paths, executable command strings and background-process identities. The full original observer log and frozen analysis remain outside the repository at `/tmp/gitturtle-next-20260910/final-native-analysis-188ec47/`.
+
+| Original frozen file | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `resources.jsonl` | 1,149,193 | `0f8bb82aad00b4ec229f3c0470aab3ea44ad75eae148bd0ff1c39528ff71cb24` |
+| `events.jsonl` | 11,982 | `b2027d43f2e93ba1ab27c371e57f1bc7a06002f675e90d358e750fbc70275f96` |
+| `trace.log` | 7,617 | `a7ce9f1e435a948697ea0a05383f28744932dd2d9bc5a5c0340ce06275033335` |
+
+The read-only analyzer verified PID, source and executable hash, copied stable complete files, reconciled the 268-sample footer, and reported zero malformed records, crossing trace boundaries or lifecycle-count inconsistencies. Preparation tests and the earlier failed session remain separate evidence. No application source changes, build, native interaction or process action was performed while producing this analysis.

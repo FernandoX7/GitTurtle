@@ -1,0 +1,149 @@
+gitturtle.image_track frames=1 retained_images=1
+gitturtle.image_track frames=1 retained_images=2
+gitturtle.image_track frames=1 retained_images=3
+gitturtle.image_track frames=1 retained_images=4
+gitturtle.image_track frames=1 retained_images=5
+gitturtle.image_track frames=1 retained_images=6
+gitturtle.image_track frames=1 retained_images=7
+gitturtle.image_track frames=1 retained_images=8
+gitturtle.image_retire images=1 frames=1 retained_images=7
+gitturtle.image_track frames=1 retained_images=8
+gitturtle.image_retire images=1 frames=1 retained_images=7
+gitturtle.image_track frames=1 retained_images=8
+gitturtle.image_track frames=1 retained_images=9
+gitturtle.image_retire images=1 frames=1 retained_images=8
+gitturtle.image_track frames=1 retained_images=9
+gitturtle.image_retire images=1 frames=1 retained_images=8
+gitturtle.image_retire images=1 frames=1 retained_images=7
+gitturtle.image_track frames=1 retained_images=8
+gitturtle.image_retire images=1 frames=1 retained_images=7
+gitturtle.image_track frames=1 retained_images=8
+gitturtle.image_retire images=1 frames=1 retained_images=7
+gitturtle.image_track frames=1 retained_images=8
+gitturtle.image_track frames=1 retained_images=9
+gitturtle.image_retire images=1 frames=1 retained_images=8
+gitturtle.image_retire images=1 frames=1 retained_images=7
+gitturtle.image_track frames=1 retained_images=8
+gitturtle.commit_files_frame_ms=40.052
+gitturtle.working_preview_frame_ms=49.603
+gitturtle.working_preview_frame_ms=33.595
+gitturtle.commit_files_frame_ms=30.016
+gitturtle.file_preview_frame_ms=5.266
+gitturtle.file_preview_frame_ms=3.198
+gitturtle.image_track frames=1 retained_images=9
+gitturtle.image_track frames=1 retained_images=10
+gitturtle.image_retire images=2 frames=2 retained_images=8
+gitturtle.image_track frames=1 retained_images=9
+gitturtle.image_track frames=1 retained_images=10
+gitturtle.image_track frames=1 retained_images=11
+gitturtle.image_track frames=1 retained_images=12
+gitturtle.image_retire images=2 frames=2 retained_images=10
+gitturtle.image_track frames=1 retained_images=11
+gitturtle.image_track frames=1 retained_images=12
+gitturtle.image_retire images=2 frames=2 retained_images=10
+gitturtle.image_track frames=1 retained_images=11
+gitturtle.image_track frames=1 retained_images=12
+gitturtle.image_retire images=2 frames=2 retained_images=10
+gitturtle.image_retire images=2 frames=2 retained_images=8
+gitturtle.image_track frames=1 retained_images=9
+gitturtle.image_track frames=1 retained_images=10
+gitturtle.image_retire images=2 frames=2 retained_images=8
+gitturtle.image_track frames=1 retained_images=9
+gitturtle.image_track frames=1 retained_images=10
+gitturtle.image_track frames=1 retained_images=11
+gitturtle.image_track frames=1 retained_images=12
+gitturtle.image_track frames=1 retained_images=13
+gitturtle.image_track frames=1 retained_images=14
+gitturtle.image_retire images=4 frames=4 retained_images=10
+gitturtle.image_track frames=1 retained_images=11
+gitturtle.image_track frames=1 retained_images=12
+gitturtle.image_retire images=2 frames=2 retained_images=10
+gitturtle.image_retire images=2 frames=2 retained_images=8
+gitturtle.image_track frames=1 retained_images=9
+gitturtle.image_track frames=1 retained_images=10
+gitturtle.commit_files_frame_ms=36.459
+gitturtle.history_page_frame_ms=6.510
+gitturtle.history_page_frame_ms=8.233
+gitturtle.history_page_frame_ms=8.064
+gitturtle.history_page_frame_ms=3.128
+gitturtle.history_page_frame_ms=7.862
+gitturtle.history_page_frame_ms=3.111
+gitturtle.history_page_frame_ms=4.355
+gitturtle.history_page_frame_ms=10.243
+gitturtle.history_page_frame_ms=4.139
+gitturtle.history_page_frame_ms=7.961
+gitturtle.history_page_frame_ms=7.988
+gitturtle.commit_files_frame_ms=21.221
+gitturtle.commit_files_frame_ms=33.021
+gitturtle.commit_files_frame_ms=16.776
+gitturtle.commit_files_frame_ms=25.161
+gitturtle.image_track frames=1 retained_images=11
+gitturtle.image_track frames=1 retained_images=12
+gitturtle.image_track frames=1 retained_images=13
+gitturtle.image_track frames=1 retained_images=14
+gitturtle.commit_files_frame_ms=51.545
+gitturtle.working_preview_frame_ms=130.851
+gitturtle.image_track frames=1 retained_images=15
+gitturtle.image_track frames=1 retained_images=16
+gitturtle.image_retire images=2 frames=2 retained_images=14
+gitturtle.image_track frames=1 retained_images=15
+gitturtle.image_track frames=1 retained_images=16
+gitturtle.image_retire images=2 frames=2 retained_images=14
+gitturtle.image_track frames=1 retained_images=15
+gitturtle.image_track frames=1 retained_images=16
+gitturtle.image_retire images=2 frames=2 retained_images=14
+gitturtle.image_track frames=1 retained_images=15
+gitturtle.image_track frames=1 retained_images=16
+gitturtle.image_retire images=2 frames=2 retained_images=14
+gitturtle.image_retire images=1 frames=1 retained_images=13
+gitturtle.image_track frames=1 retained_images=14
+gitturtle.image_retire images=1 frames=1 retained_images=13
+gitturtle.image_track frames=1 retained_images=14
+gitturtle.image_retire images=1 frames=1 retained_images=13
+gitturtle.image_track frames=1 retained_images=14
+gitturtle.image_retire images=1 frames=1 retained_images=13
+gitturtle.image_track frames=1 retained_images=14
+gitturtle.image_retire images=1 frames=1 retained_images=13
+gitturtle.image_track frames=1 retained_images=14
+gitturtle.image_retire images=1 frames=1 retained_images=13
+gitturtle.image_track frames=1 retained_images=14
+gitturtle.image_retire images=1 frames=1 retained_images=13
+gitturtle.image_track frames=1 retained_images=14
+gitturtle.image_retire images=1 frames=1 retained_images=13
+gitturtle.image_track frames=1 retained_images=14
+gitturtle.image_retire images=1 frames=1 retained_images=13
+gitturtle.image_track frames=1 retained_images=14
+gitturtle.image_retire images=1 frames=1 retained_images=13
+gitturtle.image_track frames=1 retained_images=14
+gitturtle.image_retire images=1 frames=1 retained_images=13
+gitturtle.image_track frames=1 retained_images=14
+gitturtle.image_retire images=1 frames=1 retained_images=13
+gitturtle.image_track frames=1 retained_images=14
+gitturtle.image_retire images=1 frames=1 retained_images=13
+gitturtle.image_track frames=1 retained_images=14
+gitturtle.image_retire images=1 frames=1 retained_images=13
+gitturtle.image_track frames=1 retained_images=14
+gitturtle.image_retire images=1 frames=1 retained_images=13
+gitturtle.image_track frames=1 retained_images=14
+gitturtle.image_retire images=1 frames=1 retained_images=13
+gitturtle.image_track frames=1 retained_images=14
+gitturtle.image_retire images=1 frames=1 retained_images=13
+gitturtle.image_track frames=1 retained_images=14
+gitturtle.image_retire images=1 frames=1 retained_images=13
+gitturtle.image_track frames=1 retained_images=14
+gitturtle.image_retire images=1 frames=1 retained_images=13
+gitturtle.image_track frames=1 retained_images=14
+gitturtle.image_retire images=1 frames=1 retained_images=13
+gitturtle.image_track frames=1 retained_images=14
+gitturtle.image_retire images=1 frames=1 retained_images=13
+gitturtle.image_track frames=1 retained_images=14
+gitturtle.image_retire images=1 frames=1 retained_images=13
+gitturtle.image_track frames=1 retained_images=14
+gitturtle.image_retire images=1 frames=1 retained_images=13
+gitturtle.image_track frames=1 retained_images=14
+gitturtle.image_retire images=1 frames=1 retained_images=13
+gitturtle.image_track frames=1 retained_images=14
+gitturtle.image_retire images=4 frames=4 retained_images=10
+gitturtle.commit_files_frame_ms=30.763
+gitturtle.image_retire images=10 frames=10 retained_images=0
+gitturtle.image_window_closed retained_images=0

@@ -1,6 +1,6 @@
 # Linux validation of the next milestone checkpoint
 
-Latest completed gate: **`58f09ff690e0dbd863a8c29d6699640248d0a136` passed Linux/aarch64 formatting, all 533 workspace tests, strict Clippy and the release build** (three opt-in tests ignored). [Final candidate evidence](#final-candidate-58f09ff) follows the preserved earlier checkpoint records below.
+Latest completed gate: **`ed9aa2102ff2d35d4d6cb714d2cf6724ed79eb64` passed Linux/aarch64 formatting, 542 workspace tests, strict Clippy and the release build** (three opt-in tests ignored). [Delivery candidate evidence](#delivery-candidate-ed9aa21) follows the preserved earlier checkpoint records, including the separate passing bfc4423 and 188ec47 results.
 
 Executed September 9, 2026 against commit `0a0fb5a2f42379743baedf6d6ab0c98f38c1d49a`. Linux/aarch64 formatting, workspace tests, strict Clippy and release gates passed without source changes or an overlay.
 
@@ -94,3 +94,75 @@ Evidence is retained at `/tmp/gitturtle-linux-58f09ff-qxvwi9j1`: source archive,
 | `tests.log` | `0a8e81b5d8ce2acc31ccb447ae492b04f2fbc2385f84b152123091c83b085fe0` |
 | `clippy.log` | `b9dc09eb9e043c16e188f5eb7c4a437bb1d0c3310d52b1aa704972f339492c30` |
 | `release.log` | `7416be5cf424b8889b22de18789ba464193df7dfb9a0028ef39a16311d98863f` |
+
+## Final candidate 188ec47
+
+All applicable gates passed against immutable commit `188ec47199a0dc31f333fff6673d1d6afd7766f1`, exported with `git archive --format=tar 188ec47199a0dc31f333fff6673d1d6afd7766f1` and independently verified from the tar commit header. Archive SHA-256: `5f10d6a4a5348a19c871e1e7dde86b0e526de7cd52dce3269f4d0ec4580c52fa`. The same Ubuntu/aarch64 image ID and isolated read-only source/root, task-owned caches, six-CPU/12-GiB limits and offline gate policy described above were used, without an overlay. This snapshot includes saved-session startup deferral, isolated test persistence, nested component dialog titles and GitHub draft-validation feedback.
+
+| Exact command inside the container | Result | Wall time |
+| --- | --- | --- |
+| `cargo fetch --locked` | Passed | 0.690 s |
+| `cargo fmt --all -- --check` | Passed | 1.590 s |
+| `cargo test --locked --offline --workspace --no-fail-fast` | 537 unique passed; zero failed; three ignored | 33.230 s |
+| `cargo clippy --locked --offline --workspace --all-targets -- -D warnings` | Passed | 5.881 s |
+| `cargo build --release --locked --offline -p gitturtle` | Passed | 80.105 s |
+
+The complete passing total is **537**: app 260, core unit 23, core integration 209 and preview 45. The Mermaid child summary is counted once; doc-test suites have zero tests. The existing opt-in CPU/OpenPGP/loopback-sshd tests remain ignored. Full-app startup/opening tests, component-title extraction, destination validation, retained draft text and delayed save feedback all passed in the combined run. The macOS-only NSWorkspace observer is outside Linux execution coverage.
+
+The release executable is ELF64 little-endian AArch64 PIE, with all listed shared libraries resolved. SHA-256: `cfb11528b9956d67c31a0391fac1561d0f98e8781d9e990dca79dc3ba5cc9266`. Identity inspection passed in 0.219 s. Gate times include compilation, warm caches and container overhead; they are not application performance measurements.
+
+Evidence is retained under `/tmp/gitturtle-linux-188ec47-fxx55iyy`: immutable archive, source/image identity, exact Docker argv, full stage logs, per-stage exits/timings, parsed test identities and SHA-256 manifest. Every task container exited and was removed; no validation Docker workload remains running. Earlier 58f09ff results remain scoped to their own source and artifact. No native Linux desktop, screen-reader session, hosted CI or GitHub account action was exercised.
+
+| Current log | SHA-256 |
+| --- | --- |
+| `tests.log` | `b24b673fd3ab7d5fd82560a6c7613d57c5e3e7de36346a0fe0c2581c09dff3e4` |
+| `clippy.log` | `e10a9573d9cd014b67d3e0f2f53520e4b56fa224dd321cffb960589e7f865076` |
+| `release.log` | `7416be5cf424b8889b22de18789ba464193df7dfb9a0028ef39a16311d98863f` |
+
+## Delivery candidate bfc4423
+
+All applicable gates passed against immutable commit `bfc4423a3e4be045834479c0776a2cb8ccd3e384`, exported with `git archive --format=tar bfc4423a3e4be045834479c0776a2cb8ccd3e384` and independently verified from its tar commit header. Archive SHA-256: `72b453d9d234218f332feb1bd66e2f04b3e19f3dd344ae7d619c4f7c6bbfb8f6`. This uses the same verified Ubuntu/aarch64 image ID, task-owned cache volumes, read-only source/root, six-CPU/12-GiB limits and offline gate policy described above. Uncommitted documentation/evidence changes were excluded from the source archive; no overlay was applied. This candidate includes the final native confirmation titles and GitHub draft debounce, ordered save feedback and shutdown completion ownership.
+
+| Exact command inside the container | Result | Wall time |
+| --- | --- | --- |
+| `cargo fetch --locked` | Passed | 1.293 s |
+| `cargo fmt --all -- --check` | Passed | 2.560 s |
+| `cargo test --locked --offline --workspace --no-fail-fast` | 541 unique passed; zero failed; three ignored | 34.560 s |
+| `cargo clippy --locked --offline --workspace --all-targets -- -D warnings` | Passed | 6.093 s |
+| `cargo build --release --locked --offline -p gitturtle` | Passed | 84.595 s |
+
+The complete passing total is **541**: app 264, core unit 23, core integration 209 and preview 45. The Mermaid child summary is counted once; doc-test suites have zero tests. Three existing opt-in CPU/OpenPGP/loopback-sshd tests remain ignored. All seven GitHub view regressions passed in the combined suite, including preservation of previous destinations while typing, out-of-order save replies, actual window removal followed by shutdown, and a full executor queue that accepts the final coalesced save but refuses an extra barrier. The macOS-only NSWorkspace observer is outside Linux execution coverage.
+
+The release executable is ELF64 little-endian AArch64 PIE, with all listed shared libraries resolved. SHA-256: `4de8ddbb0ab9aaa1386194b67c411b7278270e2b69207eb880bee9e9dbf82c5d`. Identity inspection passed in 0.214 s. Gate times include compilation, warm caches and container overhead; they are not application performance measurements.
+
+Evidence is retained under `/tmp/gitturtle-linux-bfc4423-qoqiumm6`: immutable archive, source/image identity, exact Docker argv, full stage logs, per-stage exits/timings, parsed test identities and SHA-256 manifest. All task containers exited and were removed, with cleanup verified at `2026-09-10T02:57:20.122630+00:00`; no validation Docker workload remains running. The passing 188ec47 and earlier records retain their original scope. No Linux desktop window, Linux screen reader, hosted CI or GitHub account action was exercised.
+
+| Delivery log | SHA-256 |
+| --- | --- |
+| `tests.log` | `326d5a7dd0ad04a0ce3a58c699aab69a3780b1730540c80f271490fcab88baa1` |
+| `clippy.log` | `e10a9573d9cd014b67d3e0f2f53520e4b56fa224dd321cffb960589e7f865076` |
+| `release.log` | `e36dab664f267c816183506dbd8412da14afb2aa8952ac2c480771f78c568948` |
+
+## Delivery candidate ed9aa21
+
+All applicable gates passed against immutable commit `ed9aa2102ff2d35d4d6cb714d2cf6724ed79eb64`, exported with `git archive --format=tar ed9aa2102ff2d35d4d6cb714d2cf6724ed79eb64` and independently verified from its tar commit header. Archive SHA-256: `e8997ca762d79e70a79a6461ac930ff36b791c8ed7c7f0cd211e561580f63023`. This uses the same verified Ubuntu/aarch64 image ID, task-owned cache volumes, read-only source/root, six-CPU/12-GiB limits and offline gate policy described above. Uncommitted documentation/evidence changes were excluded from the source archive; no overlay was applied. This candidate adds final repository-session metadata saves and app-owned session completion across last-window closure, including accepted writes in a full preference queue.
+
+| Exact command inside the container | Result | Wall time |
+| --- | --- | --- |
+| `cargo fetch --locked` | Passed | 0.503 s |
+| `cargo fmt --all -- --check` | Passed | 1.616 s |
+| `cargo test --locked --offline --workspace --no-fail-fast` | 542 unique passed; zero failed; three ignored | 31.291 s |
+| `cargo clippy --locked --offline --workspace --all-targets -- -D warnings` | Passed | 5.686 s |
+| `cargo build --release --locked --offline -p gitturtle` | Passed | 146.065 s |
+
+The complete passing total is **542**: app 265, core unit 23, core integration 209 and preview 45. The Mermaid child summary is counted once; doc-test suites have zero tests. Three existing opt-in CPU/OpenPGP/loopback-sshd tests remain ignored. All seven GitHub view regressions passed again. The repository-tab session regression also passed, exercising two disposable repositories, a current query with a dialog open, a saturated preference queue, window removal and root release before shutdown, then restoration of both repositories. The macOS-only NSWorkspace observer is outside Linux execution coverage.
+
+The release executable is ELF64 little-endian AArch64 PIE, with all listed shared libraries resolved. SHA-256: `70e0f9e4557481270c8dcf0935930669a73c1ba0cbff5835defdf569b1d94db3`. Identity inspection passed in 0.269 s. Gate times include compilation, warm caches and container overhead; they are not application performance measurements.
+
+Evidence is retained under `/tmp/gitturtle-linux-ed9aa21-23if41wj`: immutable archive, source/image identity, exact Docker argv, full stage logs, per-stage exits/timings, parsed test identities and SHA-256 manifest. All task containers exited and were removed, with cleanup verified at `2026-09-10T03:16:14.667345+00:00`; no validation Docker workload remains running. The passing bfc4423, 188ec47 and earlier records retain their original scope. No Linux desktop window, Linux screen reader, hosted CI or GitHub account action was exercised.
+
+| Delivery log | SHA-256 |
+| --- | --- |
+| `tests.log` | `afc58b0e31cc9fd791e5bdb3fd3d80cf0895b24c6c84dddb2c717a2c9df2b4d1` |
+| `clippy.log` | `6e12d85e7475fc7ae7081bad1f6ae4d541a72c38fd872492bff010eb67d0eff2` |
+| `release.log` | `50f4ed787f6975f2667db0ec2a0234190fe9dc4d4fd3a6bff6fca25ab512298b` |

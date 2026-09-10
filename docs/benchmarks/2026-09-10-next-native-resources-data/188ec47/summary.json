@@ -1,0 +1,6199 @@
+{
+  "schema_version": 1,
+  "frozen_at_utc": "2026-09-10T02:41:03.334232+00:00",
+  "analyzer_sha256": "cb679a6e31b0210b937b6a989fe244d6ae653be2f642440ae6dd4d6b7bf581f4",
+  "resource_footer_checks": {
+    "sample_count_matches": true,
+    "footer_present": true,
+    "executable_unchanged": true,
+    "end_hash_matches_header": true
+  },
+  "overall": {
+    "samples": 268,
+    "first": {
+      "utc": "2026-09-10T02:17:46.418015+00:00",
+      "elapsed_seconds": 0.0005352919979486614,
+      "rss_kib": 165488,
+      "cpu_time_seconds": 0.69,
+      "threads": 14,
+      "fd_count": 9,
+      "fd_sample_fresh": true,
+      "fd_sample_elapsed_seconds": 0.0005352919979486614,
+      "git_children": 1
+    },
+    "last": {
+      "utc": "2026-09-10T02:40:01.358136+00:00",
+      "elapsed_seconds": 1335.0017039590166,
+      "rss_kib": 282000,
+      "cpu_time_seconds": 33.38,
+      "threads": 16,
+      "fd_count": 9,
+      "fd_sample_fresh": false,
+      "fd_sample_elapsed_seconds": 1320.0049690419983,
+      "git_children": 1
+    },
+    "sample_span_seconds": 1335.0011686670186,
+    "cpu_time_delta_seconds": 32.690000000000005,
+    "cpu_average_percent_one_core": 2.448686994981476,
+    "rss_mib": {
+      "n": 268,
+      "first": 161.609375,
+      "last": 275.390625,
+      "min": 161.609375,
+      "p50": 217.5546875,
+      "p95": 275.375,
+      "max": 685.328125
+    },
+    "cpu_percent_interval": {
+      "n": 267,
+      "first": 0.5999996150403897,
+      "last": 1.6007825825807571,
+      "min": 0.0,
+      "p50": 1.4009663633432499,
+      "p95": 9.801460499935779,
+      "max": 18.001092518723098
+    },
+    "cpu_percent_ps": {
+      "n": 268,
+      "first": 0.4,
+      "last": 0.7,
+      "min": 0.0,
+      "p50": 1.0,
+      "p95": 10.3,
+      "max": 35.3
+    },
+    "threads": {
+      "n": 268,
+      "first": 14,
+      "last": 16,
+      "min": 12,
+      "p50": 16.0,
+      "p95": 21,
+      "max": 23
+    },
+    "numeric_fd_fresh": {
+      "n": 45,
+      "first": 9,
+      "last": 9,
+      "min": 9,
+      "p50": 9,
+      "p95": 17,
+      "max": 17
+    },
+    "git_children": {
+      "n": 268,
+      "first": 1,
+      "last": 1,
+      "min": 1,
+      "p50": 1.0,
+      "p95": 5,
+      "max": 5
+    },
+    "all_descendants": {
+      "n": 268,
+      "first": 1,
+      "last": 1,
+      "min": 1,
+      "p50": 1.0,
+      "p95": 5,
+      "max": 5
+    },
+    "collection_ms": {
+      "n": 268,
+      "first": 98.14687501057051,
+      "last": 55.97645798115991,
+      "min": 49.86812500283122,
+      "p50": 64.22083299548831,
+      "p95": 117.63920800876804,
+      "max": 133.16712499363348
+    },
+    "schedule_lag_ms": {
+      "n": 268,
+      "first": 0.5352919979486614,
+      "last": 1.7039590165950358,
+      "min": 0.14545899466611445,
+      "p50": 4.253688006429002,
+      "p95": 5.766624992247671,
+      "max": 8.215000008931383
+    },
+    "sample_gap_seconds": {
+      "n": 267,
+      "first": 5.000003207998816,
+      "last": 4.997555625013774,
+      "min": 4.995034958992619,
+      "p50": 5.000013124983525,
+      "p95": 5.00415133300703,
+      "max": 5.005439540982479
+    },
+    "errors": []
+  },
+  "last_60_seconds": {
+    "samples": 13,
+    "first": {
+      "utc": "2026-09-10T02:39:01.369869+00:00",
+      "elapsed_seconds": 1275.0050682500005,
+      "rss_kib": 280176,
+      "cpu_time_seconds": 31.3,
+      "threads": 19,
+      "fd_count": 13,
+      "fd_sample_fresh": false,
+      "fd_sample_elapsed_seconds": 1260.0050725420006,
+      "git_children": 3
+    },
+    "last": {
+      "utc": "2026-09-10T02:40:01.358136+00:00",
+      "elapsed_seconds": 1335.0017039590166,
+      "rss_kib": 282000,
+      "cpu_time_seconds": 33.38,
+      "threads": 16,
+      "fd_count": 9,
+      "fd_sample_fresh": false,
+      "fd_sample_elapsed_seconds": 1320.0049690419983,
+      "git_children": 1
+    },
+    "sample_span_seconds": 59.99663570901612,
+    "cpu_time_delta_seconds": 2.080000000000002,
+    "cpu_average_percent_one_core": 3.4668610588233792,
+    "rss_mib": {
+      "n": 13,
+      "first": 273.609375,
+      "last": 275.390625,
+      "min": 273.609375,
+      "p50": 275.375,
+      "p95": 275.40625,
+      "max": 275.40625
+    },
+    "cpu_percent_interval": {
+      "n": 13,
+      "first": 0.7996761046279512,
+      "last": 1.6007825825807571,
+      "min": 0.7996761046279512,
+      "p50": 1.4001472019539523,
+      "p95": 10.601979654605673,
+      "max": 10.601979654605673
+    },
+    "cpu_percent_ps": {
+      "n": 13,
+      "first": 0.8,
+      "last": 0.7,
+      "min": 0.7,
+      "p50": 0.9,
+      "p95": 11.3,
+      "max": 11.3
+    },
+    "threads": {
+      "n": 13,
+      "first": 19,
+      "last": 16,
+      "min": 16,
+      "p50": 17,
+      "p95": 21,
+      "max": 21
+    },
+    "numeric_fd_fresh": {
+      "n": 2,
+      "first": 15,
+      "last": 9,
+      "min": 9,
+      "p50": 12.0,
+      "p95": 15,
+      "max": 15
+    },
+    "git_children": {
+      "n": 13,
+      "first": 3,
+      "last": 1,
+      "min": 1,
+      "p50": 1,
+      "p95": 4,
+      "max": 4
+    },
+    "all_descendants": {
+      "n": 13,
+      "first": 3,
+      "last": 1,
+      "min": 1,
+      "p50": 1,
+      "p95": 4,
+      "max": 4
+    },
+    "collection_ms": {
+      "n": 13,
+      "first": 64.1206250002142,
+      "last": 55.97645798115991,
+      "min": 52.05429199850187,
+      "p50": 61.43562501529232,
+      "p95": 123.23612501495518,
+      "max": 123.23612501495518
+    },
+    "schedule_lag_ms": {
+      "n": 13,
+      "first": 5.068250000476837,
+      "last": 1.7039590165950358,
+      "min": 0.3567500098142773,
+      "p50": 4.969041998265311,
+      "p95": 5.798083991976455,
+      "max": 5.798083991976455
+    },
+    "sample_gap_seconds": {
+      "n": 12,
+      "first": 5.000618374993792,
+      "last": 4.997555625013774,
+      "min": 4.995328749995679,
+      "p50": 4.99990299998899,
+      "p95": 5.004659958998673,
+      "max": 5.004659958998673
+    },
+    "errors": []
+  },
+  "five_minute_blocks": [
+    {
+      "elapsed_start_seconds": 0,
+      "resources": {
+        "samples": 60,
+        "first": {
+          "utc": "2026-09-10T02:17:46.418015+00:00",
+          "elapsed_seconds": 0.0005352919979486614,
+          "rss_kib": 165488,
+          "cpu_time_seconds": 0.69,
+          "threads": 14,
+          "fd_count": 9,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 0.0005352919979486614,
+          "git_children": 1
+        },
+        "last": {
+          "utc": "2026-09-10T02:22:41.363360+00:00",
+          "elapsed_seconds": 295.0033691250137,
+          "rss_kib": 208096,
+          "cpu_time_seconds": 3.09,
+          "threads": 16,
+          "fd_count": 9,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 270.0006460000004,
+          "git_children": 1
+        },
+        "sample_span_seconds": 295.00283383301576,
+        "cpu_time_delta_seconds": 2.4,
+        "cpu_average_percent_one_core": 0.8135515068843382,
+        "rss_mib": {
+          "n": 60,
+          "first": 161.609375,
+          "last": 203.21875,
+          "min": 161.609375,
+          "p50": 161.640625,
+          "p95": 163.03125,
+          "max": 203.21875
+        },
+        "cpu_percent_interval": {
+          "n": 59,
+          "first": 0.5999996150403897,
+          "last": 4.601622992413032,
+          "min": 0.4000753974887479,
+          "p50": 0.6001321941195971,
+          "p95": 3.1971282058092334,
+          "max": 4.601622992413032
+        },
+        "cpu_percent_ps": {
+          "n": 60,
+          "first": 0.4,
+          "last": 4.7,
+          "min": 0.3,
+          "p50": 0.5,
+          "p95": 0.6,
+          "max": 4.7
+        },
+        "threads": {
+          "n": 60,
+          "first": 14,
+          "last": 16,
+          "min": 13,
+          "p50": 14.0,
+          "p95": 14,
+          "max": 16
+        },
+        "numeric_fd_fresh": {
+          "n": 10,
+          "first": 9,
+          "last": 9,
+          "min": 9,
+          "p50": 9.0,
+          "p95": 9,
+          "max": 9
+        },
+        "git_children": {
+          "n": 60,
+          "first": 1,
+          "last": 1,
+          "min": 1,
+          "p50": 1.0,
+          "p95": 1,
+          "max": 1
+        },
+        "all_descendants": {
+          "n": 60,
+          "first": 1,
+          "last": 1,
+          "min": 1,
+          "p50": 1.0,
+          "p95": 1,
+          "max": 1
+        },
+        "collection_ms": {
+          "n": 60,
+          "first": 98.14687501057051,
+          "last": 55.62270898371935,
+          "min": 49.86812500283122,
+          "p50": 77.30777100368869,
+          "p95": 125.49437501002103,
+          "max": 127.98837499576621
+        },
+        "schedule_lag_ms": {
+          "n": 60,
+          "first": 0.5352919979486614,
+          "last": 3.369125013705343,
+          "min": 0.5352919979486614,
+          "p50": 3.9736254984745756,
+          "p95": 5.2694170153699815,
+          "max": 6.752167013473809
+        },
+        "sample_gap_seconds": {
+          "n": 59,
+          "first": 5.000003207998816,
+          "last": 4.998236500017811,
+          "min": 4.995464957988588,
+          "p50": 5.000015625002561,
+          "p95": 5.00410837502568,
+          "max": 5.0044912089942954
+        },
+        "errors": []
+      }
+    },
+    {
+      "elapsed_start_seconds": 300,
+      "resources": {
+        "samples": 60,
+        "first": {
+          "utc": "2026-09-10T02:22:46.426325+00:00",
+          "elapsed_seconds": 300.00511245901,
+          "rss_kib": 214016,
+          "cpu_time_seconds": 3.57,
+          "threads": 16,
+          "fd_count": 9,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 300.00511245901,
+          "git_children": 1
+        },
+        "last": {
+          "utc": "2026-09-10T02:27:41.384518+00:00",
+          "elapsed_seconds": 595.0049681669916,
+          "rss_kib": 219904,
+          "cpu_time_seconds": 9.13,
+          "threads": 13,
+          "fd_count": 9,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 570.0028811669908,
+          "git_children": 1
+        },
+        "sample_span_seconds": 294.9998557079816,
+        "cpu_time_delta_seconds": 5.5600000000000005,
+        "cpu_average_percent_one_core": 1.8847466845895027,
+        "rss_mib": {
+          "n": 60,
+          "first": 209.0,
+          "last": 214.75,
+          "min": 209.0,
+          "p50": 214.140625,
+          "p95": 214.75,
+          "max": 214.859375
+        },
+        "cpu_percent_interval": {
+          "n": 60,
+          "first": 9.596653965378337,
+          "last": 0.0,
+          "min": 0.0,
+          "p50": 2.400896111635982,
+          "p95": 3.2004265099679943,
+          "max": 9.999947334276822
+        },
+        "cpu_percent_ps": {
+          "n": 60,
+          "first": 4.6,
+          "last": 0.0,
+          "min": 0.0,
+          "p50": 1.65,
+          "p95": 3.8,
+          "max": 4.6
+        },
+        "threads": {
+          "n": 60,
+          "first": 16,
+          "last": 13,
+          "min": 12,
+          "p50": 15.0,
+          "p95": 17,
+          "max": 17
+        },
+        "numeric_fd_fresh": {
+          "n": 10,
+          "first": 9,
+          "last": 9,
+          "min": 9,
+          "p50": 9.0,
+          "p95": 9,
+          "max": 9
+        },
+        "git_children": {
+          "n": 60,
+          "first": 1,
+          "last": 1,
+          "min": 1,
+          "p50": 1.0,
+          "p95": 1,
+          "max": 1
+        },
+        "all_descendants": {
+          "n": 60,
+          "first": 1,
+          "last": 1,
+          "min": 1,
+          "p50": 1.0,
+          "p95": 1,
+          "max": 1
+        },
+        "collection_ms": {
+          "n": 60,
+          "first": 116.86124998959713,
+          "last": 76.28900001873262,
+          "min": 52.49366699717939,
+          "p50": 58.403499497217126,
+          "p95": 116.86124998959713,
+          "max": 133.16712499363348
+        },
+        "schedule_lag_ms": {
+          "n": 60,
+          "first": 5.11245900997892,
+          "last": 4.968166991602629,
+          "min": 0.3473339893389493,
+          "p50": 4.5049585023662075,
+          "p95": 5.145208997419104,
+          "max": 5.176209000637755
+        },
+        "sample_gap_seconds": {
+          "n": 59,
+          "first": 5.000026333000278,
+          "last": 5.004345666995505,
+          "min": 4.9952090839797165,
+          "p50": 5.000126875005662,
+          "p95": 5.004033250006614,
+          "max": 5.004721791017801
+        },
+        "errors": []
+      }
+    },
+    {
+      "elapsed_start_seconds": 600,
+      "resources": {
+        "samples": 60,
+        "first": {
+          "utc": "2026-09-10T02:27:46.423073+00:00",
+          "elapsed_seconds": 600.0006807919999,
+          "rss_kib": 219904,
+          "cpu_time_seconds": 9.13,
+          "threads": 13,
+          "fd_count": 9,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 600.0006807919999,
+          "git_children": 1
+        },
+        "last": {
+          "utc": "2026-09-10T02:32:41.365891+00:00",
+          "elapsed_seconds": 895.0042256250163,
+          "rss_kib": 257584,
+          "cpu_time_seconds": 16.4,
+          "threads": 18,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 870.002059749997,
+          "git_children": 3
+        },
+        "sample_span_seconds": 295.00354483301635,
+        "cpu_time_delta_seconds": 7.269999999999998,
+        "cpu_average_percent_one_core": 2.464377166760862,
+        "rss_mib": {
+          "n": 60,
+          "first": 214.75,
+          "last": 251.546875,
+          "min": 214.75,
+          "p50": 219.3984375,
+          "p95": 251.5,
+          "max": 251.6875
+        },
+        "cpu_percent_interval": {
+          "n": 60,
+          "first": 0.0,
+          "last": 2.7988721715015923,
+          "min": 0.0,
+          "p50": 1.5999826537722805,
+          "p95": 5.795700700526863,
+          "max": 18.001092518723098
+        },
+        "cpu_percent_ps": {
+          "n": 60,
+          "first": 0.0,
+          "last": 2.0,
+          "min": 0.0,
+          "p50": 1.0,
+          "p95": 11.2,
+          "max": 28.8
+        },
+        "threads": {
+          "n": 60,
+          "first": 13,
+          "last": 18,
+          "min": 13,
+          "p50": 17.0,
+          "p95": 19,
+          "max": 19
+        },
+        "numeric_fd_fresh": {
+          "n": 10,
+          "first": 9,
+          "last": 13,
+          "min": 9,
+          "p50": 12.0,
+          "p95": 13,
+          "max": 13
+        },
+        "git_children": {
+          "n": 60,
+          "first": 1,
+          "last": 3,
+          "min": 1,
+          "p50": 3.0,
+          "p95": 3,
+          "max": 3
+        },
+        "all_descendants": {
+          "n": 60,
+          "first": 1,
+          "last": 3,
+          "min": 1,
+          "p50": 3.0,
+          "p95": 3,
+          "max": 5
+        },
+        "collection_ms": {
+          "n": 60,
+          "first": 119.15437498828396,
+          "last": 59.54774998826906,
+          "min": 51.169499987736344,
+          "p50": 65.26149999990594,
+          "p95": 111.03712499607354,
+          "max": 121.71541599673219
+        },
+        "schedule_lag_ms": {
+          "n": 60,
+          "first": 0.6807919999118894,
+          "last": 4.225625016260892,
+          "min": 0.14545899466611445,
+          "p50": 3.5249795037088916,
+          "p95": 5.151916993781924,
+          "max": 6.080541992560029
+        },
+        "sample_gap_seconds": {
+          "n": 59,
+          "first": 5.002914500015322,
+          "last": 5.002014791010879,
+          "min": 4.995034958992619,
+          "p50": 4.999996583996108,
+          "p95": 5.0043552910210565,
+          "max": 5.00455095799407
+        },
+        "errors": []
+      }
+    },
+    {
+      "elapsed_start_seconds": 900,
+      "resources": {
+        "samples": 60,
+        "first": {
+          "utc": "2026-09-10T02:32:46.407248+00:00",
+          "elapsed_seconds": 900.0022788339993,
+          "rss_kib": 257584,
+          "cpu_time_seconds": 16.5,
+          "threads": 18,
+          "fd_count": 13,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 900.0022788339993,
+          "git_children": 3
+        },
+        "last": {
+          "utc": "2026-09-10T02:37:41.375457+00:00",
+          "elapsed_seconds": 1195.0024527499918,
+          "rss_kib": 280224,
+          "cpu_time_seconds": 28.66,
+          "threads": 19,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1170.0037132500147,
+          "git_children": 3
+        },
+        "sample_span_seconds": 295.0001739159925,
+        "cpu_time_delta_seconds": 12.16,
+        "cpu_average_percent_one_core": 4.122031468179004,
+        "rss_mib": {
+          "n": 60,
+          "first": 251.546875,
+          "last": 273.65625,
+          "min": 251.546875,
+          "p50": 262.8359375,
+          "p95": 682.40625,
+          "max": 685.328125
+        },
+        "cpu_percent_interval": {
+          "n": 60,
+          "first": 2.0007790197245336,
+          "last": 1.4008994592718702,
+          "min": 0.9991451729539665,
+          "p50": 2.899148963521388,
+          "p95": 10.801481062326177,
+          "max": 13.393820538505544
+        },
+        "cpu_percent_ps": {
+          "n": 60,
+          "first": 2.4,
+          "last": 0.3,
+          "min": 0.0,
+          "p50": 1.9,
+          "p95": 11.6,
+          "max": 35.3
+        },
+        "threads": {
+          "n": 60,
+          "first": 18,
+          "last": 19,
+          "min": 16,
+          "p50": 20.0,
+          "p95": 21,
+          "max": 23
+        },
+        "numeric_fd_fresh": {
+          "n": 10,
+          "first": 13,
+          "last": 13,
+          "min": 13,
+          "p50": 15.0,
+          "p95": 17,
+          "max": 17
+        },
+        "git_children": {
+          "n": 60,
+          "first": 3,
+          "last": 3,
+          "min": 3,
+          "p50": 4.0,
+          "p95": 5,
+          "max": 5
+        },
+        "all_descendants": {
+          "n": 60,
+          "first": 3,
+          "last": 3,
+          "min": 3,
+          "p50": 4.0,
+          "p95": 5,
+          "max": 5
+        },
+        "collection_ms": {
+          "n": 60,
+          "first": 102.86862499197014,
+          "last": 72.01758399605751,
+          "min": 50.36829199525528,
+          "p50": 61.46489550883416,
+          "p95": 117.0879160054028,
+          "max": 128.25216699275188
+        },
+        "schedule_lag_ms": {
+          "n": 60,
+          "first": 2.278833999298513,
+          "last": 2.45274999178946,
+          "min": 0.43483401532284915,
+          "p50": 3.7167920090723783,
+          "p95": 6.206791993463412,
+          "max": 7.919541996670887
+        },
+        "sample_gap_seconds": {
+          "n": 59,
+          "first": 4.9999881660041865,
+          "last": 4.996789707976859,
+          "min": 4.99535433301935,
+          "p50": 4.9999881660041865,
+          "p95": 5.00427779200254,
+          "max": 5.005164667003555
+        },
+        "errors": []
+      }
+    },
+    {
+      "elapsed_start_seconds": 1200,
+      "resources": {
+        "samples": 28,
+        "first": {
+          "utc": "2026-09-10T02:37:46.409344+00:00",
+          "elapsed_seconds": 1200.0038953339972,
+          "rss_kib": 280288,
+          "cpu_time_seconds": 29.22,
+          "threads": 19,
+          "fd_count": 13,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 1200.0038953339972,
+          "git_children": 3
+        },
+        "last": {
+          "utc": "2026-09-10T02:40:01.358136+00:00",
+          "elapsed_seconds": 1335.0017039590166,
+          "rss_kib": 282000,
+          "cpu_time_seconds": 33.38,
+          "threads": 16,
+          "fd_count": 9,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1320.0049690419983,
+          "git_children": 1
+        },
+        "sample_span_seconds": 134.9978086250194,
+        "cpu_time_delta_seconds": 4.160000000000004,
+        "cpu_average_percent_one_core": 3.081531502155823,
+        "rss_mib": {
+          "n": 28,
+          "first": 273.71875,
+          "last": 275.390625,
+          "min": 273.5625,
+          "p50": 273.625,
+          "p95": 275.390625,
+          "max": 275.40625
+        },
+        "cpu_percent_interval": {
+          "n": 28,
+          "first": 11.19676954386871,
+          "last": 1.6007825825807571,
+          "min": 0.0,
+          "p50": 1.0004850744488847,
+          "p95": 11.800020355052734,
+          "max": 13.58522052723721
+        },
+        "cpu_percent_ps": {
+          "n": 28,
+          "first": 13.5,
+          "last": 0.7,
+          "min": 0.0,
+          "p50": 0.8,
+          "p95": 11.3,
+          "max": 13.5
+        },
+        "threads": {
+          "n": 28,
+          "first": 19,
+          "last": 16,
+          "min": 16,
+          "p50": 18.0,
+          "p95": 20,
+          "max": 21
+        },
+        "numeric_fd_fresh": {
+          "n": 5,
+          "first": 13,
+          "last": 9,
+          "min": 9,
+          "p50": 13,
+          "p95": 15,
+          "max": 15
+        },
+        "git_children": {
+          "n": 28,
+          "first": 3,
+          "last": 1,
+          "min": 1,
+          "p50": 3.0,
+          "p95": 4,
+          "max": 4
+        },
+        "all_descendants": {
+          "n": 28,
+          "first": 3,
+          "last": 1,
+          "min": 1,
+          "p50": 3.0,
+          "p95": 4,
+          "max": 4
+        },
+        "collection_ms": {
+          "n": 28,
+          "first": 104.48495799209923,
+          "last": 55.97645798115991,
+          "min": 52.05429199850187,
+          "p50": 61.12872848461848,
+          "p95": 117.63920800876804,
+          "max": 123.23612501495518
+        },
+        "schedule_lag_ms": {
+          "n": 28,
+          "first": 3.8953339972067624,
+          "last": 1.7039590165950358,
+          "min": 0.3270840097684413,
+          "p50": 4.992875503376126,
+          "p95": 7.481792010366917,
+          "max": 8.215000008931383
+        },
+        "sample_gap_seconds": {
+          "n": 27,
+          "first": 4.999991374992533,
+          "last": 4.997555625013774,
+          "min": 4.995328749995679,
+          "p50": 4.999991374992533,
+          "p95": 5.004659958998673,
+          "max": 5.005439540982479
+        },
+        "errors": []
+      }
+    }
+  ],
+  "sample_phase_counts": {
+    "startup": 55,
+    "pdf-cycle": 79,
+    "operations": 18,
+    "pdf-dialog": 11,
+    "model-cycle": 25,
+    "deep-history": 22,
+    "tabs": 21,
+    "conflict": 10,
+    "pdf-settled": 16,
+    "preview-close": 4,
+    "final-idle": 7
+  },
+  "declared_mixed_intervals": [
+    {
+      "start_marker_line": 1,
+      "end_marker_line": 17,
+      "start_time_unix": 1789006666.110641,
+      "end_time_unix": 1789007969.933136,
+      "declared_duration_seconds": 1303.822494983673,
+      "interpretation": "Operator-declared interval, not proof of continuous activity or stability."
+    }
+  ],
+  "phases": [
+    {
+      "phase": "startup",
+      "cycle": null,
+      "start_marker_line": 1,
+      "end_marker_line": 2,
+      "start_time_unix": 1789006666.110641,
+      "end_time_unix": 1789006940.240735,
+      "duration_seconds": 274.1300940513611,
+      "end_source": "next_phase_marker",
+      "trace_start_byte": 98,
+      "trace_end_byte": 98,
+      "trace_attribution_available": true,
+      "trace_crossing_records": [],
+      "resources": {
+        "samples": 55,
+        "first": {
+          "utc": "2026-09-10T02:17:46.418015+00:00",
+          "elapsed_seconds": 0.0005352919979486614,
+          "rss_kib": 165488,
+          "cpu_time_seconds": 0.69,
+          "threads": 14,
+          "fd_count": 9,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 0.0005352919979486614,
+          "git_children": 1
+        },
+        "last": {
+          "utc": "2026-09-10T02:22:16.433129+00:00",
+          "elapsed_seconds": 270.0006460000004,
+          "rss_kib": 165520,
+          "cpu_time_seconds": 2.46,
+          "threads": 14,
+          "fd_count": 9,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 270.0006460000004,
+          "git_children": 1
+        },
+        "sample_span_seconds": 270.00011070800247,
+        "cpu_time_delta_seconds": 1.77,
+        "cpu_average_percent_one_core": 0.6555552867584582,
+        "rss_mib": {
+          "n": 55,
+          "first": 161.609375,
+          "last": 161.640625,
+          "min": 161.609375,
+          "p50": 161.640625,
+          "p95": 161.640625,
+          "max": 161.640625
+        },
+        "cpu_percent_interval": {
+          "n": 54,
+          "first": 0.5999996150403897,
+          "last": 0.6005446990880151,
+          "min": 0.4000753974887479,
+          "p50": 0.6001021899555823,
+          "p95": 0.8003174058869781,
+          "max": 0.9999956250149364
+        },
+        "cpu_percent_ps": {
+          "n": 55,
+          "first": 0.4,
+          "last": 0.6,
+          "min": 0.3,
+          "p50": 0.5,
+          "p95": 0.6,
+          "max": 0.6
+        },
+        "threads": {
+          "n": 55,
+          "first": 14,
+          "last": 14,
+          "min": 14,
+          "p50": 14,
+          "p95": 14,
+          "max": 14
+        },
+        "numeric_fd_fresh": {
+          "n": 10,
+          "first": 9,
+          "last": 9,
+          "min": 9,
+          "p50": 9.0,
+          "p95": 9,
+          "max": 9
+        },
+        "git_children": {
+          "n": 55,
+          "first": 1,
+          "last": 1,
+          "min": 1,
+          "p50": 1,
+          "p95": 1,
+          "max": 1
+        },
+        "all_descendants": {
+          "n": 55,
+          "first": 1,
+          "last": 1,
+          "min": 1,
+          "p50": 1,
+          "p95": 1,
+          "max": 1
+        },
+        "collection_ms": {
+          "n": 55,
+          "first": 98.14687501057051,
+          "last": 127.98837499576621,
+          "min": 49.86812500283122,
+          "p50": 77.68983297864906,
+          "p95": 126.12987498869188,
+          "max": 127.98837499576621
+        },
+        "schedule_lag_ms": {
+          "n": 55,
+          "first": 0.5352919979486614,
+          "last": 0.6460000004153699,
+          "min": 0.5352919979486614,
+          "p50": 3.911417006747797,
+          "p95": 5.27920899912715,
+          "max": 6.752167013473809
+        },
+        "sample_gap_seconds": {
+          "n": 54,
+          "first": 5.000003207998816,
+          "last": 4.995464957988588,
+          "min": 4.995464957988588,
+          "p50": 5.0000187500118045,
+          "p95": 5.003459416999249,
+          "max": 5.004418041004101
+        },
+        "errors": []
+      },
+      "start_resource_bracket": {
+        "before": null,
+        "after": {
+          "utc": "2026-09-10T02:17:46.418015+00:00",
+          "elapsed_seconds": 0.0005352919979486614,
+          "rss_kib": 165488,
+          "cpu_time_seconds": 0.69,
+          "threads": 14,
+          "fd_count": 9,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 0.0005352919979486614,
+          "git_children": 1
+        }
+      },
+      "end_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:22:16.433129+00:00",
+          "elapsed_seconds": 270.0006460000004,
+          "rss_kib": 165520,
+          "cpu_time_seconds": 2.46,
+          "threads": 14,
+          "fd_count": 9,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 270.0006460000004,
+          "git_children": 1
+        },
+        "after": {
+          "utc": "2026-09-10T02:22:21.364518+00:00",
+          "elapsed_seconds": 275.0051372089947,
+          "rss_kib": 166944,
+          "cpu_time_seconds": 2.62,
+          "threads": 15,
+          "fd_count": 9,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 270.0006460000004,
+          "git_children": 1
+        }
+      },
+      "marker_endpoint_cpu": {
+        "cpu_delta_seconds": 1.9299999999999997,
+        "collection_end_span_seconds": 274.1303038597107,
+        "percent_one_cpu": 0.7040447454462019,
+        "start": {
+          "pid": 14206,
+          "rss_kib": 165488,
+          "cpu_time_seconds": 0.68,
+          "cpu_percent_ps": 0.5
+        },
+        "end": {
+          "pid": 14206,
+          "rss_kib": 166944,
+          "cpu_time_seconds": 2.61,
+          "cpu_percent_ps": 15.5
+        }
+      },
+      "trace": {
+        "metrics": {},
+        "lifecycle": {
+          "events": 0,
+          "track_events": 0,
+          "tracked_images": 0,
+          "tracked_frames": 0,
+          "retire_events": 0,
+          "retired_images": 0,
+          "retired_frames": 0,
+          "entering_retained_images": 2,
+          "inferred_first_before_images": null,
+          "last_retained_images": 2,
+          "retained_images_statistics": null,
+          "first_record": null,
+          "last_record": null,
+          "window_closed_records": [],
+          "count_consistency_anomalies": []
+        },
+        "failure_records": []
+      }
+    },
+    {
+      "phase": "pdf-cycle",
+      "cycle": 1,
+      "start_marker_line": 2,
+      "end_marker_line": 3,
+      "start_time_unix": 1789006940.240735,
+      "end_time_unix": 1789007294.564818,
+      "duration_seconds": 354.3240828514099,
+      "end_source": "next_phase_marker",
+      "trace_start_byte": 98,
+      "trace_end_byte": 1364,
+      "trace_attribution_available": true,
+      "trace_crossing_records": [],
+      "resources": {
+        "samples": 71,
+        "first": {
+          "utc": "2026-09-10T02:22:21.364518+00:00",
+          "elapsed_seconds": 275.0051372089947,
+          "rss_kib": 166944,
+          "cpu_time_seconds": 2.62,
+          "threads": 15,
+          "fd_count": 9,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 270.0006460000004,
+          "git_children": 1
+        },
+        "last": {
+          "utc": "2026-09-10T02:28:11.366387+00:00",
+          "elapsed_seconds": 625.0033134999976,
+          "rss_kib": 219904,
+          "cpu_time_seconds": 9.14,
+          "threads": 13,
+          "fd_count": 9,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 600.0006807919999,
+          "git_children": 1
+        },
+        "sample_span_seconds": 349.9981762910029,
+        "cpu_time_delta_seconds": 6.5200000000000005,
+        "cpu_average_percent_one_core": 1.862866849505811,
+        "rss_mib": {
+          "n": 71,
+          "first": 163.03125,
+          "last": 214.75,
+          "min": 162.984375,
+          "p50": 214.140625,
+          "p95": 214.75,
+          "max": 214.859375
+        },
+        "cpu_percent_interval": {
+          "n": 71,
+          "first": 3.1971282058092334,
+          "last": 0.0,
+          "min": 0.0,
+          "p50": 2.4000093600379286,
+          "p95": 3.601093592327949,
+          "max": 9.999947334276822
+        },
+        "cpu_percent_ps": {
+          "n": 71,
+          "first": 0.7,
+          "last": 0.0,
+          "min": 0.0,
+          "p50": 1.5,
+          "p95": 4.0,
+          "max": 4.7
+        },
+        "threads": {
+          "n": 71,
+          "first": 15,
+          "last": 13,
+          "min": 12,
+          "p50": 15,
+          "p95": 17,
+          "max": 17
+        },
+        "numeric_fd_fresh": {
+          "n": 11,
+          "first": 9,
+          "last": 9,
+          "min": 9,
+          "p50": 9,
+          "p95": 9,
+          "max": 9
+        },
+        "git_children": {
+          "n": 71,
+          "first": 1,
+          "last": 1,
+          "min": 1,
+          "p50": 1,
+          "p95": 1,
+          "max": 1
+        },
+        "all_descendants": {
+          "n": 71,
+          "first": 1,
+          "last": 1,
+          "min": 1,
+          "p50": 1,
+          "p95": 1,
+          "max": 1
+        },
+        "collection_ms": {
+          "n": 71,
+          "first": 54.890125000383705,
+          "last": 59.92566701024771,
+          "min": 52.49366699717939,
+          "p50": 59.01758398977108,
+          "p95": 117.35050001880154,
+          "max": 133.16712499363348
+        },
+        "schedule_lag_ms": {
+          "n": 71,
+          "first": 5.137208994710818,
+          "last": 3.3134999976027757,
+          "min": 0.3473339893389493,
+          "p50": 4.47245899704285,
+          "p95": 5.156375002115965,
+          "max": 5.193499993765727
+        },
+        "sample_gap_seconds": {
+          "n": 70,
+          "first": 4.9988986249954905,
+          "last": 4.998161583003821,
+          "min": 4.9952090839797165,
+          "p50": 5.000028916503652,
+          "p95": 5.003599082992878,
+          "max": 5.004721791017801
+        },
+        "errors": []
+      },
+      "start_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:22:16.433129+00:00",
+          "elapsed_seconds": 270.0006460000004,
+          "rss_kib": 165520,
+          "cpu_time_seconds": 2.46,
+          "threads": 14,
+          "fd_count": 9,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 270.0006460000004,
+          "git_children": 1
+        },
+        "after": {
+          "utc": "2026-09-10T02:22:21.364518+00:00",
+          "elapsed_seconds": 275.0051372089947,
+          "rss_kib": 166944,
+          "cpu_time_seconds": 2.62,
+          "threads": 15,
+          "fd_count": 9,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 270.0006460000004,
+          "git_children": 1
+        }
+      },
+      "end_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:28:11.366387+00:00",
+          "elapsed_seconds": 625.0033134999976,
+          "rss_kib": 219904,
+          "cpu_time_seconds": 9.14,
+          "threads": 13,
+          "fd_count": 9,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 600.0006807919999,
+          "git_children": 1
+        },
+        "after": {
+          "utc": "2026-09-10T02:28:16.425117+00:00",
+          "elapsed_seconds": 630.0002568339987,
+          "rss_kib": 219904,
+          "cpu_time_seconds": 9.14,
+          "threads": 13,
+          "fd_count": 9,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 630.0002568339987,
+          "git_children": 1
+        }
+      },
+      "marker_endpoint_cpu": {
+        "cpu_delta_seconds": 6.530000000000001,
+        "collection_end_span_seconds": 354.3241548538208,
+        "percent_one_cpu": 1.8429451987810437,
+        "start": {
+          "pid": 14206,
+          "rss_kib": 166944,
+          "cpu_time_seconds": 2.61,
+          "cpu_percent_ps": 15.5
+        },
+        "end": {
+          "pid": 14206,
+          "rss_kib": 219904,
+          "cpu_time_seconds": 9.14,
+          "cpu_percent_ps": 0.0
+        }
+      },
+      "trace": {
+        "metrics": {},
+        "lifecycle": {
+          "events": 24,
+          "track_events": 15,
+          "tracked_images": 15,
+          "tracked_frames": 15,
+          "retire_events": 9,
+          "retired_images": 9,
+          "retired_frames": 9,
+          "entering_retained_images": 2,
+          "inferred_first_before_images": 2,
+          "last_retained_images": 8,
+          "retained_images_statistics": {
+            "n": 24,
+            "first": 3,
+            "last": 8,
+            "min": 3,
+            "p50": 8.0,
+            "p95": 9,
+            "max": 9
+          },
+          "first_record": {
+            "line": 3,
+            "byte_start": 98,
+            "byte_end": 147,
+            "text": "gitturtle.image_track frames=1 retained_images=3",
+            "kind": "lifecycle",
+            "event": "image_track",
+            "frames": 1,
+            "retained_images": 3
+          },
+          "last_record": {
+            "line": 26,
+            "byte_start": 1315,
+            "byte_end": 1364,
+            "text": "gitturtle.image_track frames=1 retained_images=8",
+            "kind": "lifecycle",
+            "event": "image_track",
+            "frames": 1,
+            "retained_images": 8
+          },
+          "window_closed_records": [],
+          "count_consistency_anomalies": []
+        },
+        "failure_records": []
+      }
+    },
+    {
+      "phase": "operations",
+      "cycle": null,
+      "start_marker_line": 3,
+      "end_marker_line": 4,
+      "start_time_unix": 1789007294.564818,
+      "end_time_unix": 1789007304.947019,
+      "duration_seconds": 10.382201194763184,
+      "end_source": "next_phase_marker",
+      "trace_start_byte": 1364,
+      "trace_end_byte": 1364,
+      "trace_attribution_available": true,
+      "trace_crossing_records": [],
+      "resources": {
+        "samples": 2,
+        "first": {
+          "utc": "2026-09-10T02:28:16.425117+00:00",
+          "elapsed_seconds": 630.0002568339987,
+          "rss_kib": 219904,
+          "cpu_time_seconds": 9.14,
+          "threads": 13,
+          "fd_count": 9,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 630.0002568339987,
+          "git_children": 1
+        },
+        "last": {
+          "utc": "2026-09-10T02:28:21.375627+00:00",
+          "elapsed_seconds": 635.0022620839882,
+          "rss_kib": 219904,
+          "cpu_time_seconds": 9.14,
+          "threads": 13,
+          "fd_count": 9,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 630.0002568339987,
+          "git_children": 1
+        },
+        "sample_span_seconds": 5.002005249989452,
+        "cpu_time_delta_seconds": 0.0,
+        "cpu_average_percent_one_core": 0.0,
+        "rss_mib": {
+          "n": 2,
+          "first": 214.75,
+          "last": 214.75,
+          "min": 214.75,
+          "p50": 214.75,
+          "p95": 214.75,
+          "max": 214.75
+        },
+        "cpu_percent_interval": {
+          "n": 2,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "p50": 0.0,
+          "p95": 0.0,
+          "max": 0.0
+        },
+        "cpu_percent_ps": {
+          "n": 2,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "p50": 0.0,
+          "p95": 0.0,
+          "max": 0.0
+        },
+        "threads": {
+          "n": 2,
+          "first": 13,
+          "last": 13,
+          "min": 13,
+          "p50": 13.0,
+          "p95": 13,
+          "max": 13
+        },
+        "numeric_fd_fresh": {
+          "n": 1,
+          "first": 9,
+          "last": 9,
+          "min": 9,
+          "p50": 9,
+          "p95": 9,
+          "max": 9
+        },
+        "git_children": {
+          "n": 2,
+          "first": 1,
+          "last": 1,
+          "min": 1,
+          "p50": 1.0,
+          "p95": 1,
+          "max": 1
+        },
+        "all_descendants": {
+          "n": 2,
+          "first": 1,
+          "last": 1,
+          "min": 1,
+          "p50": 1.0,
+          "p95": 1,
+          "max": 1
+        },
+        "collection_ms": {
+          "n": 2,
+          "first": 121.71541599673219,
+          "last": 70.26183302514255,
+          "min": 70.26183302514255,
+          "p50": 95.98862451093737,
+          "p95": 121.71541599673219,
+          "max": 121.71541599673219
+        },
+        "schedule_lag_ms": {
+          "n": 2,
+          "first": 0.2568339987192303,
+          "last": 2.262083988171071,
+          "min": 0.2568339987192303,
+          "p50": 1.2594589934451506,
+          "p95": 2.262083988171071,
+          "max": 2.262083988171071
+        },
+        "sample_gap_seconds": {
+          "n": 1,
+          "first": 5.002005249989452,
+          "last": 5.002005249989452,
+          "min": 5.002005249989452,
+          "p50": 5.002005249989452,
+          "p95": 5.002005249989452,
+          "max": 5.002005249989452
+        },
+        "errors": []
+      },
+      "start_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:28:11.366387+00:00",
+          "elapsed_seconds": 625.0033134999976,
+          "rss_kib": 219904,
+          "cpu_time_seconds": 9.14,
+          "threads": 13,
+          "fd_count": 9,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 600.0006807919999,
+          "git_children": 1
+        },
+        "after": {
+          "utc": "2026-09-10T02:28:16.425117+00:00",
+          "elapsed_seconds": 630.0002568339987,
+          "rss_kib": 219904,
+          "cpu_time_seconds": 9.14,
+          "threads": 13,
+          "fd_count": 9,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 630.0002568339987,
+          "git_children": 1
+        }
+      },
+      "end_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:28:21.375627+00:00",
+          "elapsed_seconds": 635.0022620839882,
+          "rss_kib": 219904,
+          "cpu_time_seconds": 9.14,
+          "threads": 13,
+          "fd_count": 9,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 630.0002568339987,
+          "git_children": 1
+        },
+        "after": {
+          "utc": "2026-09-10T02:28:26.373038+00:00",
+          "elapsed_seconds": 640.0008603339957,
+          "rss_kib": 219904,
+          "cpu_time_seconds": 9.16,
+          "threads": 13,
+          "fd_count": 9,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 630.0002568339987,
+          "git_children": 1
+        }
+      },
+      "marker_endpoint_cpu": {
+        "cpu_delta_seconds": 0.019999999999999574,
+        "collection_end_span_seconds": 10.382013320922852,
+        "percent_one_cpu": 0.19264086243940384,
+        "start": {
+          "pid": 14206,
+          "rss_kib": 219904,
+          "cpu_time_seconds": 9.14,
+          "cpu_percent_ps": 0.0
+        },
+        "end": {
+          "pid": 14206,
+          "rss_kib": 219904,
+          "cpu_time_seconds": 9.16,
+          "cpu_percent_ps": 4.1
+        }
+      },
+      "trace": {
+        "metrics": {},
+        "lifecycle": {
+          "events": 0,
+          "track_events": 0,
+          "tracked_images": 0,
+          "tracked_frames": 0,
+          "retire_events": 0,
+          "retired_images": 0,
+          "retired_frames": 0,
+          "entering_retained_images": 8,
+          "inferred_first_before_images": null,
+          "last_retained_images": 8,
+          "retained_images_statistics": null,
+          "first_record": null,
+          "last_record": null,
+          "window_closed_records": [],
+          "count_consistency_anomalies": []
+        },
+        "failure_records": []
+      }
+    },
+    {
+      "phase": "pdf-dialog",
+      "cycle": null,
+      "start_marker_line": 4,
+      "end_marker_line": 5,
+      "start_time_unix": 1789007304.947019,
+      "end_time_unix": 1789007357.603227,
+      "duration_seconds": 52.6562077999115,
+      "end_source": "next_phase_marker",
+      "trace_start_byte": 1364,
+      "trace_end_byte": 1445,
+      "trace_attribution_available": true,
+      "trace_crossing_records": [],
+      "resources": {
+        "samples": 11,
+        "first": {
+          "utc": "2026-09-10T02:28:26.373038+00:00",
+          "elapsed_seconds": 640.0008603339957,
+          "rss_kib": 219904,
+          "cpu_time_seconds": 9.16,
+          "threads": 13,
+          "fd_count": 9,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 630.0002568339987,
+          "git_children": 1
+        },
+        "last": {
+          "utc": "2026-09-10T02:29:16.407335+00:00",
+          "elapsed_seconds": 690.0048231669934,
+          "rss_kib": 224128,
+          "cpu_time_seconds": 10.2,
+          "threads": 16,
+          "fd_count": 11,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 690.0048231669934,
+          "git_children": 2
+        },
+        "sample_span_seconds": 50.003962832997786,
+        "cpu_time_delta_seconds": 1.0399999999999991,
+        "cpu_average_percent_one_core": 2.0798351592120206,
+        "rss_mib": {
+          "n": 11,
+          "first": 214.75,
+          "last": 218.875,
+          "min": 214.75,
+          "p50": 217.265625,
+          "p95": 218.875,
+          "max": 218.875
+        },
+        "cpu_percent_interval": {
+          "n": 11,
+          "first": 0.40011217144665717,
+          "last": 2.9982084205636563,
+          "min": 0.0,
+          "p50": 1.9989464053176107,
+          "p95": 3.4017051618511025,
+          "max": 3.4017051618511025
+        },
+        "cpu_percent_ps": {
+          "n": 11,
+          "first": 0.0,
+          "last": 7.4,
+          "min": 0.0,
+          "p50": 0.9,
+          "p95": 20.3,
+          "max": 20.3
+        },
+        "threads": {
+          "n": 11,
+          "first": 13,
+          "last": 16,
+          "min": 13,
+          "p50": 15,
+          "p95": 16,
+          "max": 16
+        },
+        "numeric_fd_fresh": {
+          "n": 2,
+          "first": 11,
+          "last": 11,
+          "min": 11,
+          "p50": 11.0,
+          "p95": 11,
+          "max": 11
+        },
+        "git_children": {
+          "n": 11,
+          "first": 1,
+          "last": 2,
+          "min": 1,
+          "p50": 2,
+          "p95": 2,
+          "max": 2
+        },
+        "all_descendants": {
+          "n": 11,
+          "first": 1,
+          "last": 2,
+          "min": 1,
+          "p50": 2,
+          "p95": 2,
+          "max": 2
+        },
+        "collection_ms": {
+          "n": 11,
+          "first": 69.07129101455212,
+          "last": 99.61541701341048,
+          "min": 54.525415995158255,
+          "p50": 64.68741601565853,
+          "p95": 101.98300000047311,
+          "max": 101.98300000047311
+        },
+        "schedule_lag_ms": {
+          "n": 11,
+          "first": 0.860333995660767,
+          "last": 4.823166993446648,
+          "min": 0.6423339946195483,
+          "p50": 3.2777090091258287,
+          "p95": 5.509959009941667,
+          "max": 5.509959009941667
+        },
+        "sample_gap_seconds": {
+          "n": 10,
+          "first": 5.000776416010922,
+          "last": 5.002987749991007,
+          "min": 4.995542624994414,
+          "p50": 5.001504333005869,
+          "p95": 5.00344720899011,
+          "max": 5.00344720899011
+        },
+        "errors": []
+      },
+      "start_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:28:21.375627+00:00",
+          "elapsed_seconds": 635.0022620839882,
+          "rss_kib": 219904,
+          "cpu_time_seconds": 9.14,
+          "threads": 13,
+          "fd_count": 9,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 630.0002568339987,
+          "git_children": 1
+        },
+        "after": {
+          "utc": "2026-09-10T02:28:26.373038+00:00",
+          "elapsed_seconds": 640.0008603339957,
+          "rss_kib": 219904,
+          "cpu_time_seconds": 9.16,
+          "threads": 13,
+          "fd_count": 9,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 630.0002568339987,
+          "git_children": 1
+        }
+      },
+      "end_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:29:16.407335+00:00",
+          "elapsed_seconds": 690.0048231669934,
+          "rss_kib": 224128,
+          "cpu_time_seconds": 10.2,
+          "threads": 16,
+          "fd_count": 11,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 690.0048231669934,
+          "git_children": 2
+        },
+        "after": {
+          "utc": "2026-09-10T02:29:21.368617+00:00",
+          "elapsed_seconds": 695.0004054169985,
+          "rss_kib": 224176,
+          "cpu_time_seconds": 10.36,
+          "threads": 16,
+          "fd_count": 11,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 690.0048231669934,
+          "git_children": 2
+        }
+      },
+      "marker_endpoint_cpu": {
+        "cpu_delta_seconds": 1.1500000000000004,
+        "collection_end_span_seconds": 52.65639281272888,
+        "percent_one_cpu": 2.183970337827633,
+        "start": {
+          "pid": 14206,
+          "rss_kib": 219904,
+          "cpu_time_seconds": 9.16,
+          "cpu_percent_ps": 4.1
+        },
+        "end": {
+          "pid": 14206,
+          "rss_kib": 224176,
+          "cpu_time_seconds": 10.31,
+          "cpu_percent_ps": 6.0
+        }
+      },
+      "trace": {
+        "metrics": {
+          "commit_files_frame_ms": {
+            "statistics": {
+              "n": 1,
+              "first": 40.052,
+              "last": 40.052,
+              "min": 40.052,
+              "p50": 40.052,
+              "p95": 40.052,
+              "max": 40.052
+            },
+            "records": [
+              {
+                "line": 27,
+                "byte_start": 1364,
+                "byte_end": 1403,
+                "text": "gitturtle.commit_files_frame_ms=40.052",
+                "kind": "callback",
+                "metric": "commit_files_frame_ms",
+                "value": 40.052
+              }
+            ]
+          },
+          "working_preview_frame_ms": {
+            "statistics": {
+              "n": 1,
+              "first": 49.603,
+              "last": 49.603,
+              "min": 49.603,
+              "p50": 49.603,
+              "p95": 49.603,
+              "max": 49.603
+            },
+            "records": [
+              {
+                "line": 28,
+                "byte_start": 1403,
+                "byte_end": 1445,
+                "text": "gitturtle.working_preview_frame_ms=49.603",
+                "kind": "callback",
+                "metric": "working_preview_frame_ms",
+                "value": 49.603
+              }
+            ]
+          }
+        },
+        "lifecycle": {
+          "events": 0,
+          "track_events": 0,
+          "tracked_images": 0,
+          "tracked_frames": 0,
+          "retire_events": 0,
+          "retired_images": 0,
+          "retired_frames": 0,
+          "entering_retained_images": 8,
+          "inferred_first_before_images": null,
+          "last_retained_images": 8,
+          "retained_images_statistics": null,
+          "first_record": null,
+          "last_record": null,
+          "window_closed_records": [],
+          "count_consistency_anomalies": []
+        },
+        "failure_records": []
+      }
+    },
+    {
+      "phase": "operations",
+      "cycle": null,
+      "start_marker_line": 5,
+      "end_marker_line": 6,
+      "start_time_unix": 1789007357.603227,
+      "end_time_unix": 1789007405.05189,
+      "duration_seconds": 47.448662996292114,
+      "end_source": "next_phase_marker",
+      "trace_start_byte": 1445,
+      "trace_end_byte": 1526,
+      "trace_attribution_available": true,
+      "trace_crossing_records": [],
+      "resources": {
+        "samples": 9,
+        "first": {
+          "utc": "2026-09-10T02:29:21.368617+00:00",
+          "elapsed_seconds": 695.0004054169985,
+          "rss_kib": 224176,
+          "cpu_time_seconds": 10.36,
+          "threads": 16,
+          "fd_count": 11,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 690.0048231669934,
+          "git_children": 2
+        },
+        "last": {
+          "utc": "2026-09-10T02:30:01.366246+00:00",
+          "elapsed_seconds": 735.001341708994,
+          "rss_kib": 224544,
+          "cpu_time_seconds": 11.67,
+          "threads": 19,
+          "fd_count": 11,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 720.004977042001,
+          "git_children": 3
+        },
+        "sample_span_seconds": 40.00093629199546,
+        "cpu_time_delta_seconds": 1.3100000000000005,
+        "cpu_average_percent_one_core": 3.2749233428872095,
+        "rss_mib": {
+          "n": 9,
+          "first": 218.921875,
+          "last": 219.28125,
+          "min": 218.875,
+          "p50": 219.140625,
+          "p95": 219.28125,
+          "max": 219.28125
+        },
+        "cpu_percent_interval": {
+          "n": 9,
+          "first": 3.2028298603198215,
+          "last": 3.8028061537970435,
+          "min": 1.1989156306865514,
+          "p50": 3.602780476105504,
+          "p95": 5.795700700526863,
+          "max": 5.795700700526863
+        },
+        "cpu_percent_ps": {
+          "n": 9,
+          "first": 1.1,
+          "last": 3.7,
+          "min": 1.1,
+          "p50": 1.2,
+          "p95": 19.6,
+          "max": 19.6
+        },
+        "threads": {
+          "n": 9,
+          "first": 16,
+          "last": 19,
+          "min": 15,
+          "p50": 16,
+          "p95": 19,
+          "max": 19
+        },
+        "numeric_fd_fresh": {
+          "n": 1,
+          "first": 11,
+          "last": 11,
+          "min": 11,
+          "p50": 11,
+          "p95": 11,
+          "max": 11
+        },
+        "git_children": {
+          "n": 9,
+          "first": 2,
+          "last": 3,
+          "min": 2,
+          "p50": 2,
+          "p95": 3,
+          "max": 3
+        },
+        "all_descendants": {
+          "n": 9,
+          "first": 2,
+          "last": 5,
+          "min": 2,
+          "p50": 2,
+          "p95": 5,
+          "max": 5
+        },
+        "collection_ms": {
+          "n": 9,
+          "first": 65.31145799090154,
+          "last": 62.17504100641236,
+          "min": 51.169499987736344,
+          "p50": 65.21154200891033,
+          "p95": 107.28120800922625,
+          "max": 107.28120800922625
+        },
+        "schedule_lag_ms": {
+          "n": 9,
+          "first": 0.40541699854657054,
+          "last": 1.3417089940048754,
+          "min": 0.40541699854657054,
+          "p50": 2.206375007517636,
+          "p95": 5.1267920061945915,
+          "max": 5.1267920061945915
+        },
+        "sample_gap_seconds": {
+          "n": 8,
+          "first": 5.004522292001639,
+          "last": 4.996310416987399,
+          "min": 4.996141207986511,
+          "p50": 5.000027125002816,
+          "p95": 5.004522292001639,
+          "max": 5.004522292001639
+        },
+        "errors": []
+      },
+      "start_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:29:16.407335+00:00",
+          "elapsed_seconds": 690.0048231669934,
+          "rss_kib": 224128,
+          "cpu_time_seconds": 10.2,
+          "threads": 16,
+          "fd_count": 11,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 690.0048231669934,
+          "git_children": 2
+        },
+        "after": {
+          "utc": "2026-09-10T02:29:21.368617+00:00",
+          "elapsed_seconds": 695.0004054169985,
+          "rss_kib": 224176,
+          "cpu_time_seconds": 10.36,
+          "threads": 16,
+          "fd_count": 11,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 690.0048231669934,
+          "git_children": 2
+        }
+      },
+      "end_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:30:01.366246+00:00",
+          "elapsed_seconds": 735.001341708994,
+          "rss_kib": 224544,
+          "cpu_time_seconds": 11.67,
+          "threads": 19,
+          "fd_count": 11,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 720.004977042001,
+          "git_children": 3
+        },
+        "after": {
+          "utc": "2026-09-10T02:30:06.364893+00:00",
+          "elapsed_seconds": 740.0042131670052,
+          "rss_kib": 224720,
+          "cpu_time_seconds": 11.96,
+          "threads": 17,
+          "fd_count": 11,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 720.004977042001,
+          "git_children": 3
+        }
+      },
+      "marker_endpoint_cpu": {
+        "cpu_delta_seconds": 1.5899999999999999,
+        "collection_end_span_seconds": 47.448429107666016,
+        "percent_one_cpu": 3.3510066189801657,
+        "start": {
+          "pid": 14206,
+          "rss_kib": 224176,
+          "cpu_time_seconds": 10.31,
+          "cpu_percent_ps": 6.0
+        },
+        "end": {
+          "pid": 14206,
+          "rss_kib": 224720,
+          "cpu_time_seconds": 11.9,
+          "cpu_percent_ps": 10.8
+        }
+      },
+      "trace": {
+        "metrics": {
+          "commit_files_frame_ms": {
+            "statistics": {
+              "n": 1,
+              "first": 30.016,
+              "last": 30.016,
+              "min": 30.016,
+              "p50": 30.016,
+              "p95": 30.016,
+              "max": 30.016
+            },
+            "records": [
+              {
+                "line": 30,
+                "byte_start": 1487,
+                "byte_end": 1526,
+                "text": "gitturtle.commit_files_frame_ms=30.016",
+                "kind": "callback",
+                "metric": "commit_files_frame_ms",
+                "value": 30.016
+              }
+            ]
+          },
+          "working_preview_frame_ms": {
+            "statistics": {
+              "n": 1,
+              "first": 33.595,
+              "last": 33.595,
+              "min": 33.595,
+              "p50": 33.595,
+              "p95": 33.595,
+              "max": 33.595
+            },
+            "records": [
+              {
+                "line": 29,
+                "byte_start": 1445,
+                "byte_end": 1487,
+                "text": "gitturtle.working_preview_frame_ms=33.595",
+                "kind": "callback",
+                "metric": "working_preview_frame_ms",
+                "value": 33.595
+              }
+            ]
+          }
+        },
+        "lifecycle": {
+          "events": 0,
+          "track_events": 0,
+          "tracked_images": 0,
+          "tracked_frames": 0,
+          "retire_events": 0,
+          "retired_images": 0,
+          "retired_frames": 0,
+          "entering_retained_images": 8,
+          "inferred_first_before_images": null,
+          "last_retained_images": 8,
+          "retained_images_statistics": null,
+          "first_record": null,
+          "last_record": null,
+          "window_closed_records": [],
+          "count_consistency_anomalies": []
+        },
+        "failure_records": []
+      }
+    },
+    {
+      "phase": "operations",
+      "cycle": null,
+      "start_marker_line": 6,
+      "end_marker_line": 7,
+      "start_time_unix": 1789007405.05189,
+      "end_time_unix": 1789007437.458881,
+      "duration_seconds": 32.40699100494385,
+      "end_source": "next_phase_marker",
+      "trace_start_byte": 1526,
+      "trace_end_byte": 1701,
+      "trace_attribution_available": true,
+      "trace_crossing_records": [],
+      "resources": {
+        "samples": 7,
+        "first": {
+          "utc": "2026-09-10T02:30:06.364893+00:00",
+          "elapsed_seconds": 740.0042131670052,
+          "rss_kib": 224720,
+          "cpu_time_seconds": 11.96,
+          "threads": 17,
+          "fd_count": 11,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 720.004977042001,
+          "git_children": 3
+        },
+        "last": {
+          "utc": "2026-09-10T02:30:36.384575+00:00",
+          "elapsed_seconds": 770.0048131670046,
+          "rss_kib": 241776,
+          "cpu_time_seconds": 12.35,
+          "threads": 18,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 750.00440062501,
+          "git_children": 3
+        },
+        "sample_span_seconds": 30.000599999999395,
+        "cpu_time_delta_seconds": 0.3899999999999988,
+        "cpu_average_percent_one_core": 1.2999740005200118,
+        "rss_mib": {
+          "n": 7,
+          "first": 219.453125,
+          "last": 236.109375,
+          "min": 219.390625,
+          "p50": 219.453125,
+          "p95": 236.109375,
+          "max": 236.109375
+        },
+        "cpu_percent_interval": {
+          "n": 7,
+          "first": 5.796671020511974,
+          "last": 0.8002028314107459,
+          "min": 0.8000413154167227,
+          "p50": 1.1989087633158952,
+          "p95": 5.796671020511974,
+          "max": 5.796671020511974
+        },
+        "cpu_percent_ps": {
+          "n": 7,
+          "first": 2.6,
+          "last": 0.9,
+          "min": 0.6,
+          "p50": 0.9,
+          "p95": 2.6,
+          "max": 2.6
+        },
+        "threads": {
+          "n": 7,
+          "first": 17,
+          "last": 18,
+          "min": 15,
+          "p50": 17,
+          "p95": 18,
+          "max": 18
+        },
+        "numeric_fd_fresh": {
+          "n": 1,
+          "first": 13,
+          "last": 13,
+          "min": 13,
+          "p50": 13,
+          "p95": 13,
+          "max": 13
+        },
+        "git_children": {
+          "n": 7,
+          "first": 3,
+          "last": 3,
+          "min": 3,
+          "p50": 3,
+          "p95": 3,
+          "max": 3
+        },
+        "all_descendants": {
+          "n": 7,
+          "first": 3,
+          "last": 3,
+          "min": 3,
+          "p50": 3,
+          "p95": 3,
+          "max": 3
+        },
+        "collection_ms": {
+          "n": 7,
+          "first": 57.95158300315961,
+          "last": 77.17558299191296,
+          "min": 57.95158300315961,
+          "p50": 63.65037499926984,
+          "p95": 110.13654200360179,
+          "max": 110.13654200360179
+        },
+        "schedule_lag_ms": {
+          "n": 7,
+          "first": 4.2131670052185655,
+          "last": 4.813167004613206,
+          "min": 1.529583998490125,
+          "p50": 4.2131670052185655,
+          "p95": 6.080541992560029,
+          "max": 6.080541992560029
+        },
+        "sample_gap_seconds": {
+          "n": 6,
+          "first": 4.999241499986965,
+          "last": 4.998732625012053,
+          "min": 4.997387167008128,
+          "p50": 4.999491645983653,
+          "p95": 5.00455095799407,
+          "max": 5.00455095799407
+        },
+        "errors": []
+      },
+      "start_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:30:01.366246+00:00",
+          "elapsed_seconds": 735.001341708994,
+          "rss_kib": 224544,
+          "cpu_time_seconds": 11.67,
+          "threads": 19,
+          "fd_count": 11,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 720.004977042001,
+          "git_children": 3
+        },
+        "after": {
+          "utc": "2026-09-10T02:30:06.364893+00:00",
+          "elapsed_seconds": 740.0042131670052,
+          "rss_kib": 224720,
+          "cpu_time_seconds": 11.96,
+          "threads": 17,
+          "fd_count": 11,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 720.004977042001,
+          "git_children": 3
+        }
+      },
+      "end_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:30:36.384575+00:00",
+          "elapsed_seconds": 770.0048131670046,
+          "rss_kib": 241776,
+          "cpu_time_seconds": 12.35,
+          "threads": 18,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 750.00440062501,
+          "git_children": 3
+        },
+        "after": {
+          "utc": "2026-09-10T02:30:41.366071+00:00",
+          "elapsed_seconds": 775.0024023340084,
+          "rss_kib": 248864,
+          "cpu_time_seconds": 12.67,
+          "threads": 18,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 750.00440062501,
+          "git_children": 3
+        }
+      },
+      "marker_endpoint_cpu": {
+        "cpu_delta_seconds": 0.46999999999999886,
+        "collection_end_span_seconds": 32.40705895423889,
+        "percent_one_cpu": 1.4503013083157987,
+        "start": {
+          "pid": 14206,
+          "rss_kib": 224720,
+          "cpu_time_seconds": 11.9,
+          "cpu_percent_ps": 10.8
+        },
+        "end": {
+          "pid": 14206,
+          "rss_kib": 241776,
+          "cpu_time_seconds": 12.37,
+          "cpu_percent_ps": 0.8
+        }
+      },
+      "trace": {
+        "metrics": {
+          "file_preview_frame_ms": {
+            "statistics": {
+              "n": 2,
+              "first": 5.266,
+              "last": 3.198,
+              "min": 3.198,
+              "p50": 4.232,
+              "p95": 5.266,
+              "max": 5.266
+            },
+            "records": [
+              {
+                "line": 31,
+                "byte_start": 1526,
+                "byte_end": 1564,
+                "text": "gitturtle.file_preview_frame_ms=5.266",
+                "kind": "callback",
+                "metric": "file_preview_frame_ms",
+                "value": 5.266
+              },
+              {
+                "line": 32,
+                "byte_start": 1564,
+                "byte_end": 1602,
+                "text": "gitturtle.file_preview_frame_ms=3.198",
+                "kind": "callback",
+                "metric": "file_preview_frame_ms",
+                "value": 3.198
+              }
+            ]
+          }
+        },
+        "lifecycle": {
+          "events": 2,
+          "track_events": 2,
+          "tracked_images": 2,
+          "tracked_frames": 2,
+          "retire_events": 0,
+          "retired_images": 0,
+          "retired_frames": 0,
+          "entering_retained_images": 8,
+          "inferred_first_before_images": 8,
+          "last_retained_images": 10,
+          "retained_images_statistics": {
+            "n": 2,
+            "first": 9,
+            "last": 10,
+            "min": 9,
+            "p50": 9.5,
+            "p95": 10,
+            "max": 10
+          },
+          "first_record": {
+            "line": 33,
+            "byte_start": 1602,
+            "byte_end": 1651,
+            "text": "gitturtle.image_track frames=1 retained_images=9",
+            "kind": "lifecycle",
+            "event": "image_track",
+            "frames": 1,
+            "retained_images": 9
+          },
+          "last_record": {
+            "line": 34,
+            "byte_start": 1651,
+            "byte_end": 1701,
+            "text": "gitturtle.image_track frames=1 retained_images=10",
+            "kind": "lifecycle",
+            "event": "image_track",
+            "frames": 1,
+            "retained_images": 10
+          },
+          "window_closed_records": [],
+          "count_consistency_anomalies": []
+        },
+        "failure_records": []
+      }
+    },
+    {
+      "phase": "model-cycle",
+      "cycle": 1,
+      "start_marker_line": 7,
+      "end_marker_line": 8,
+      "start_time_unix": 1789007437.458881,
+      "end_time_unix": 1789007475.684606,
+      "duration_seconds": 38.225725173950195,
+      "end_source": "next_phase_marker",
+      "trace_start_byte": 1701,
+      "trace_end_byte": 2655,
+      "trace_attribution_available": true,
+      "trace_crossing_records": [],
+      "resources": {
+        "samples": 7,
+        "first": {
+          "utc": "2026-09-10T02:30:41.366071+00:00",
+          "elapsed_seconds": 775.0024023340084,
+          "rss_kib": 248864,
+          "cpu_time_seconds": 12.67,
+          "threads": 18,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 750.00440062501,
+          "git_children": 3
+        },
+        "last": {
+          "utc": "2026-09-10T02:31:11.374291+00:00",
+          "elapsed_seconds": 805.0051276670129,
+          "rss_kib": 248896,
+          "cpu_time_seconds": 13.04,
+          "threads": 18,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 780.005126834003,
+          "git_children": 3
+        },
+        "sample_span_seconds": 30.00272533300449,
+        "cpu_time_delta_seconds": 0.3699999999999992,
+        "cpu_average_percent_one_core": 1.2332213020427873,
+        "rss_mib": {
+          "n": 7,
+          "first": 243.03125,
+          "last": 243.0625,
+          "min": 243.03125,
+          "p50": 243.0625,
+          "p95": 243.0625,
+          "max": 243.0625
+        },
+        "cpu_percent_interval": {
+          "n": 7,
+          "first": 6.403087354854593,
+          "last": 0.9999668510967374,
+          "min": 0.9991704221693742,
+          "p50": 1.2000105600965139,
+          "p95": 6.403087354854593,
+          "max": 6.403087354854593
+        },
+        "cpu_percent_ps": {
+          "n": 7,
+          "first": 0.8,
+          "last": 0.9,
+          "min": 0.8,
+          "p50": 0.9,
+          "p95": 1.0,
+          "max": 1.0
+        },
+        "threads": {
+          "n": 7,
+          "first": 18,
+          "last": 18,
+          "min": 18,
+          "p50": 18,
+          "p95": 18,
+          "max": 18
+        },
+        "numeric_fd_fresh": {
+          "n": 1,
+          "first": 13,
+          "last": 13,
+          "min": 13,
+          "p50": 13,
+          "p95": 13,
+          "max": 13
+        },
+        "git_children": {
+          "n": 7,
+          "first": 3,
+          "last": 3,
+          "min": 3,
+          "p50": 3,
+          "p95": 3,
+          "max": 3
+        },
+        "all_descendants": {
+          "n": 7,
+          "first": 3,
+          "last": 3,
+          "min": 3,
+          "p50": 3,
+          "p95": 3,
+          "max": 3
+        },
+        "collection_ms": {
+          "n": 7,
+          "first": 61.070790980011225,
+          "last": 66.70324999140576,
+          "min": 54.74908402538858,
+          "p50": 66.70324999140576,
+          "p95": 118.98324999492615,
+          "max": 118.98324999492615
+        },
+        "schedule_lag_ms": {
+          "n": 7,
+          "first": 2.4023340083658695,
+          "last": 5.127667012857273,
+          "min": 0.8105839951895177,
+          "p50": 5.082833988126367,
+          "p95": 5.127667012857273,
+          "max": 5.127667012857273
+        },
+        "sample_gap_seconds": {
+          "n": 6,
+          "first": 5.002724499994656,
+          "last": 5.000165750010638,
+          "min": 4.995720709004672,
+          "p50": 5.000086395506514,
+          "p95": 5.00415133300703,
+          "max": 5.00415133300703
+        },
+        "errors": []
+      },
+      "start_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:30:36.384575+00:00",
+          "elapsed_seconds": 770.0048131670046,
+          "rss_kib": 241776,
+          "cpu_time_seconds": 12.35,
+          "threads": 18,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 750.00440062501,
+          "git_children": 3
+        },
+        "after": {
+          "utc": "2026-09-10T02:30:41.366071+00:00",
+          "elapsed_seconds": 775.0024023340084,
+          "rss_kib": 248864,
+          "cpu_time_seconds": 12.67,
+          "threads": 18,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 750.00440062501,
+          "git_children": 3
+        }
+      },
+      "end_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:31:11.374291+00:00",
+          "elapsed_seconds": 805.0051276670129,
+          "rss_kib": 248896,
+          "cpu_time_seconds": 13.04,
+          "threads": 18,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 780.005126834003,
+          "git_children": 3
+        },
+        "after": {
+          "utc": "2026-09-10T02:31:16.414129+00:00",
+          "elapsed_seconds": 810.003293124988,
+          "rss_kib": 249888,
+          "cpu_time_seconds": 13.31,
+          "threads": 18,
+          "fd_count": 13,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 810.003293124988,
+          "git_children": 3
+        }
+      },
+      "marker_endpoint_cpu": {
+        "cpu_delta_seconds": 0.9300000000000015,
+        "collection_end_span_seconds": 38.22587013244629,
+        "percent_one_cpu": 2.4329073393952996,
+        "start": {
+          "pid": 14206,
+          "rss_kib": 241776,
+          "cpu_time_seconds": 12.37,
+          "cpu_percent_ps": 0.8
+        },
+        "end": {
+          "pid": 14206,
+          "rss_kib": 249872,
+          "cpu_time_seconds": 13.3,
+          "cpu_percent_ps": 23.4
+        }
+      },
+      "trace": {
+        "metrics": {},
+        "lifecycle": {
+          "events": 18,
+          "track_events": 12,
+          "tracked_images": 12,
+          "tracked_frames": 12,
+          "retire_events": 6,
+          "retired_images": 12,
+          "retired_frames": 12,
+          "entering_retained_images": 10,
+          "inferred_first_before_images": 10,
+          "last_retained_images": 10,
+          "retained_images_statistics": {
+            "n": 18,
+            "first": 8,
+            "last": 10,
+            "min": 8,
+            "p50": 10.0,
+            "p95": 12,
+            "max": 12
+          },
+          "first_record": {
+            "line": 35,
+            "byte_start": 1701,
+            "byte_end": 1760,
+            "text": "gitturtle.image_retire images=2 frames=2 retained_images=8",
+            "kind": "lifecycle",
+            "event": "image_retire",
+            "images": 2,
+            "frames": 2,
+            "retained_images": 8
+          },
+          "last_record": {
+            "line": 52,
+            "byte_start": 2605,
+            "byte_end": 2655,
+            "text": "gitturtle.image_track frames=1 retained_images=10",
+            "kind": "lifecycle",
+            "event": "image_track",
+            "frames": 1,
+            "retained_images": 10
+          },
+          "window_closed_records": [],
+          "count_consistency_anomalies": []
+        },
+        "failure_records": []
+      }
+    },
+    {
+      "phase": "model-cycle",
+      "cycle": 1,
+      "start_marker_line": 8,
+      "end_marker_line": 9,
+      "start_time_unix": 1789007475.684606,
+      "end_time_unix": 1789007539.984685,
+      "duration_seconds": 64.30007886886597,
+      "end_source": "next_phase_marker",
+      "trace_start_byte": 2655,
+      "trace_end_byte": 3233,
+      "trace_attribution_available": true,
+      "trace_crossing_records": [],
+      "resources": {
+        "samples": 13,
+        "first": {
+          "utc": "2026-09-10T02:31:16.414129+00:00",
+          "elapsed_seconds": 810.003293124988,
+          "rss_kib": 249888,
+          "cpu_time_seconds": 13.31,
+          "threads": 18,
+          "fd_count": 13,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 810.003293124988,
+          "git_children": 3
+        },
+        "last": {
+          "utc": "2026-09-10T02:32:16.415317+00:00",
+          "elapsed_seconds": 870.002059749997,
+          "rss_kib": 256432,
+          "cpu_time_seconds": 15.74,
+          "threads": 17,
+          "fd_count": 13,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 870.002059749997,
+          "git_children": 3
+        },
+        "sample_span_seconds": 59.99876662500901,
+        "cpu_time_delta_seconds": 2.4299999999999997,
+        "cpu_average_percent_one_core": 4.050083254523292,
+        "rss_mib": {
+          "n": 13,
+          "first": 244.03125,
+          "last": 250.421875,
+          "min": 244.03125,
+          "p50": 244.953125,
+          "p95": 250.421875,
+          "max": 250.421875
+        },
+        "cpu_percent_interval": {
+          "n": 13,
+          "first": 5.401982032611322,
+          "last": 2.8010749595703555,
+          "min": 0.6001365359860378,
+          "p50": 3.001313174167845,
+          "p95": 18.001092518723098,
+          "max": 18.001092518723098
+        },
+        "cpu_percent_ps": {
+          "n": 13,
+          "first": 6.2,
+          "last": 28.8,
+          "min": 0.0,
+          "p50": 2.1,
+          "p95": 28.8,
+          "max": 28.8
+        },
+        "threads": {
+          "n": 13,
+          "first": 18,
+          "last": 17,
+          "min": 17,
+          "p50": 18,
+          "p95": 19,
+          "max": 19
+        },
+        "numeric_fd_fresh": {
+          "n": 3,
+          "first": 13,
+          "last": 13,
+          "min": 13,
+          "p50": 13,
+          "p95": 13,
+          "max": 13
+        },
+        "git_children": {
+          "n": 13,
+          "first": 3,
+          "last": 3,
+          "min": 3,
+          "p50": 3,
+          "p95": 3,
+          "max": 3
+        },
+        "all_descendants": {
+          "n": 13,
+          "first": 3,
+          "last": 3,
+          "min": 3,
+          "p50": 3,
+          "p95": 3,
+          "max": 3
+        },
+        "collection_ms": {
+          "n": 13,
+          "first": 108.37337502744049,
+          "last": 111.03712499607354,
+          "min": 53.782458999194205,
+          "p50": 67.29158302186988,
+          "p95": 111.03712499607354,
+          "max": 111.03712499607354
+        },
+        "schedule_lag_ms": {
+          "n": 13,
+          "first": 3.2931249879766256,
+          "last": 2.059749996988103,
+          "min": 0.14545899466611445,
+          "p50": 3.2931249879766256,
+          "p95": 5.135499988682568,
+          "max": 5.135499988682568
+        },
+        "sample_gap_seconds": {
+          "n": 12,
+          "first": 4.999997709004674,
+          "last": 4.998081166006159,
+          "min": 4.995034958992619,
+          "p50": 4.9998471250000875,
+          "p95": 5.0043552910210565,
+          "max": 5.0043552910210565
+        },
+        "errors": []
+      },
+      "start_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:31:11.374291+00:00",
+          "elapsed_seconds": 805.0051276670129,
+          "rss_kib": 248896,
+          "cpu_time_seconds": 13.04,
+          "threads": 18,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 780.005126834003,
+          "git_children": 3
+        },
+        "after": {
+          "utc": "2026-09-10T02:31:16.414129+00:00",
+          "elapsed_seconds": 810.003293124988,
+          "rss_kib": 249888,
+          "cpu_time_seconds": 13.31,
+          "threads": 18,
+          "fd_count": 13,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 810.003293124988,
+          "git_children": 3
+        }
+      },
+      "end_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:32:16.415317+00:00",
+          "elapsed_seconds": 870.002059749997,
+          "rss_kib": 256432,
+          "cpu_time_seconds": 15.74,
+          "threads": 17,
+          "fd_count": 13,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 870.002059749997,
+          "git_children": 3
+        },
+        "after": {
+          "utc": "2026-09-10T02:32:21.361177+00:00",
+          "elapsed_seconds": 875.001669624995,
+          "rss_kib": 257728,
+          "cpu_time_seconds": 16.0,
+          "threads": 19,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 870.002059749997,
+          "git_children": 3
+        }
+      },
+      "marker_endpoint_cpu": {
+        "cpu_delta_seconds": 2.67,
+        "collection_end_span_seconds": 64.29993391036987,
+        "percent_one_cpu": 4.152414843414637,
+        "start": {
+          "pid": 14206,
+          "rss_kib": 249872,
+          "cpu_time_seconds": 13.3,
+          "cpu_percent_ps": 23.4
+        },
+        "end": {
+          "pid": 14206,
+          "rss_kib": 257712,
+          "cpu_time_seconds": 15.97,
+          "cpu_percent_ps": 2.7
+        }
+      },
+      "trace": {
+        "metrics": {},
+        "lifecycle": {
+          "events": 11,
+          "track_events": 8,
+          "tracked_images": 8,
+          "tracked_frames": 8,
+          "retire_events": 3,
+          "retired_images": 8,
+          "retired_frames": 8,
+          "entering_retained_images": 10,
+          "inferred_first_before_images": 10,
+          "last_retained_images": 10,
+          "retained_images_statistics": {
+            "n": 11,
+            "first": 11,
+            "last": 10,
+            "min": 8,
+            "p50": 11,
+            "p95": 14,
+            "max": 14
+          },
+          "first_record": {
+            "line": 53,
+            "byte_start": 2655,
+            "byte_end": 2705,
+            "text": "gitturtle.image_track frames=1 retained_images=11",
+            "kind": "lifecycle",
+            "event": "image_track",
+            "frames": 1,
+            "retained_images": 11
+          },
+          "last_record": {
+            "line": 63,
+            "byte_start": 3183,
+            "byte_end": 3233,
+            "text": "gitturtle.image_track frames=1 retained_images=10",
+            "kind": "lifecycle",
+            "event": "image_track",
+            "frames": 1,
+            "retained_images": 10
+          },
+          "window_closed_records": [],
+          "count_consistency_anomalies": []
+        },
+        "failure_records": []
+      }
+    },
+    {
+      "phase": "deep-history",
+      "cycle": null,
+      "start_marker_line": 9,
+      "end_marker_line": 10,
+      "start_time_unix": 1789007539.984685,
+      "end_time_unix": 1789007648.769577,
+      "duration_seconds": 108.78489208221436,
+      "end_source": "next_phase_marker",
+      "trace_start_byte": 3233,
+      "trace_end_byte": 3847,
+      "trace_attribution_available": true,
+      "trace_crossing_records": [],
+      "resources": {
+        "samples": 22,
+        "first": {
+          "utc": "2026-09-10T02:32:21.361177+00:00",
+          "elapsed_seconds": 875.001669624995,
+          "rss_kib": 257728,
+          "cpu_time_seconds": 16.0,
+          "threads": 19,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 870.002059749997,
+          "git_children": 3
+        },
+        "last": {
+          "utc": "2026-09-10T02:34:06.359123+00:00",
+          "elapsed_seconds": 980.002708709013,
+          "rss_kib": 262720,
+          "cpu_time_seconds": 19.16,
+          "threads": 21,
+          "fd_count": 17,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 960.0027937919949,
+          "git_children": 5
+        },
+        "sample_span_seconds": 105.00103908401798,
+        "cpu_time_delta_seconds": 3.16,
+        "cpu_average_percent_one_core": 3.009494027455751,
+        "rss_mib": {
+          "n": 22,
+          "first": 251.6875,
+          "last": 256.5625,
+          "min": 251.5,
+          "p50": 253.921875,
+          "p95": 256.546875,
+          "max": 256.5625
+        },
+        "cpu_percent_interval": {
+          "n": 22,
+          "first": 5.200405761661644,
+          "last": 3.0014270284800455,
+          "min": 1.1987923466602288,
+          "p50": 2.1003825567660206,
+          "p95": 8.197919300846019,
+          "max": 13.393820538505544
+        },
+        "cpu_percent_ps": {
+          "n": 22,
+          "first": 1.1,
+          "last": 0.8,
+          "min": 0.8,
+          "p50": 1.3,
+          "p95": 8.8,
+          "max": 13.4
+        },
+        "threads": {
+          "n": 22,
+          "first": 19,
+          "last": 21,
+          "min": 17,
+          "p50": 20.0,
+          "p95": 21,
+          "max": 23
+        },
+        "numeric_fd_fresh": {
+          "n": 3,
+          "first": 13,
+          "last": 17,
+          "min": 13,
+          "p50": 17,
+          "p95": 17,
+          "max": 17
+        },
+        "git_children": {
+          "n": 22,
+          "first": 3,
+          "last": 5,
+          "min": 3,
+          "p50": 5.0,
+          "p95": 5,
+          "max": 5
+        },
+        "all_descendants": {
+          "n": 22,
+          "first": 3,
+          "last": 5,
+          "min": 3,
+          "p50": 5.0,
+          "p95": 5,
+          "max": 5
+        },
+        "collection_ms": {
+          "n": 22,
+          "first": 57.29100000462495,
+          "last": 54.613124986644834,
+          "min": 52.393833990208805,
+          "p50": 59.60883348598145,
+          "p95": 106.41341700102203,
+          "max": 114.08137498074211
+        },
+        "schedule_lag_ms": {
+          "n": 22,
+          "first": 1.6696249949745834,
+          "last": 2.7087090129498392,
+          "min": 0.43483401532284915,
+          "p50": 2.6610630011418834,
+          "p95": 5.1173339888919145,
+          "max": 5.471792013850063
+        },
+        "sample_gap_seconds": {
+          "n": 21,
+          "first": 5.003418500011321,
+          "last": 4.997622750001028,
+          "min": 4.996551082993392,
+          "p50": 4.999996583996108,
+          "p95": 5.003418500011321,
+          "max": 5.005036957998527
+        },
+        "errors": []
+      },
+      "start_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:32:16.415317+00:00",
+          "elapsed_seconds": 870.002059749997,
+          "rss_kib": 256432,
+          "cpu_time_seconds": 15.74,
+          "threads": 17,
+          "fd_count": 13,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 870.002059749997,
+          "git_children": 3
+        },
+        "after": {
+          "utc": "2026-09-10T02:32:21.361177+00:00",
+          "elapsed_seconds": 875.001669624995,
+          "rss_kib": 257728,
+          "cpu_time_seconds": 16.0,
+          "threads": 19,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 870.002059749997,
+          "git_children": 3
+        }
+      },
+      "end_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:34:06.359123+00:00",
+          "elapsed_seconds": 980.002708709013,
+          "rss_kib": 262720,
+          "cpu_time_seconds": 19.16,
+          "threads": 21,
+          "fd_count": 17,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 960.0027937919949,
+          "git_children": 5
+        },
+        "after": {
+          "utc": "2026-09-10T02:34:11.368760+00:00",
+          "elapsed_seconds": 985.0060218340077,
+          "rss_kib": 262832,
+          "cpu_time_seconds": 19.45,
+          "threads": 21,
+          "fd_count": 17,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 960.0027937919949,
+          "git_children": 5
+        }
+      },
+      "marker_endpoint_cpu": {
+        "cpu_delta_seconds": 3.4000000000000004,
+        "collection_end_span_seconds": 108.78546094894409,
+        "percent_one_cpu": 3.1254176526362385,
+        "start": {
+          "pid": 14206,
+          "rss_kib": 257712,
+          "cpu_time_seconds": 15.97,
+          "cpu_percent_ps": 2.7
+        },
+        "end": {
+          "pid": 14206,
+          "rss_kib": 262752,
+          "cpu_time_seconds": 19.37,
+          "cpu_percent_ps": 6.4
+        }
+      },
+      "trace": {
+        "metrics": {
+          "commit_files_frame_ms": {
+            "statistics": {
+              "n": 5,
+              "first": 36.459,
+              "last": 25.161,
+              "min": 16.776,
+              "p50": 25.161,
+              "p95": 36.459,
+              "max": 36.459
+            },
+            "records": [
+              {
+                "line": 64,
+                "byte_start": 3233,
+                "byte_end": 3272,
+                "text": "gitturtle.commit_files_frame_ms=36.459",
+                "kind": "callback",
+                "metric": "commit_files_frame_ms",
+                "value": 36.459
+              },
+              {
+                "line": 76,
+                "byte_start": 3691,
+                "byte_end": 3730,
+                "text": "gitturtle.commit_files_frame_ms=21.221",
+                "kind": "callback",
+                "metric": "commit_files_frame_ms",
+                "value": 21.221
+              },
+              {
+                "line": 77,
+                "byte_start": 3730,
+                "byte_end": 3769,
+                "text": "gitturtle.commit_files_frame_ms=33.021",
+                "kind": "callback",
+                "metric": "commit_files_frame_ms",
+                "value": 33.021
+              },
+              {
+                "line": 78,
+                "byte_start": 3769,
+                "byte_end": 3808,
+                "text": "gitturtle.commit_files_frame_ms=16.776",
+                "kind": "callback",
+                "metric": "commit_files_frame_ms",
+                "value": 16.776
+              },
+              {
+                "line": 79,
+                "byte_start": 3808,
+                "byte_end": 3847,
+                "text": "gitturtle.commit_files_frame_ms=25.161",
+                "kind": "callback",
+                "metric": "commit_files_frame_ms",
+                "value": 25.161
+              }
+            ]
+          },
+          "history_page_frame_ms": {
+            "statistics": {
+              "n": 11,
+              "first": 6.51,
+              "last": 7.988,
+              "min": 3.111,
+              "p50": 7.862,
+              "p95": 10.243,
+              "max": 10.243
+            },
+            "records": [
+              {
+                "line": 65,
+                "byte_start": 3272,
+                "byte_end": 3310,
+                "text": "gitturtle.history_page_frame_ms=6.510",
+                "kind": "callback",
+                "metric": "history_page_frame_ms",
+                "value": 6.51
+              },
+              {
+                "line": 66,
+                "byte_start": 3310,
+                "byte_end": 3348,
+                "text": "gitturtle.history_page_frame_ms=8.233",
+                "kind": "callback",
+                "metric": "history_page_frame_ms",
+                "value": 8.233
+              },
+              {
+                "line": 67,
+                "byte_start": 3348,
+                "byte_end": 3386,
+                "text": "gitturtle.history_page_frame_ms=8.064",
+                "kind": "callback",
+                "metric": "history_page_frame_ms",
+                "value": 8.064
+              },
+              {
+                "line": 68,
+                "byte_start": 3386,
+                "byte_end": 3424,
+                "text": "gitturtle.history_page_frame_ms=3.128",
+                "kind": "callback",
+                "metric": "history_page_frame_ms",
+                "value": 3.128
+              },
+              {
+                "line": 69,
+                "byte_start": 3424,
+                "byte_end": 3462,
+                "text": "gitturtle.history_page_frame_ms=7.862",
+                "kind": "callback",
+                "metric": "history_page_frame_ms",
+                "value": 7.862
+              },
+              {
+                "line": 70,
+                "byte_start": 3462,
+                "byte_end": 3500,
+                "text": "gitturtle.history_page_frame_ms=3.111",
+                "kind": "callback",
+                "metric": "history_page_frame_ms",
+                "value": 3.111
+              },
+              {
+                "line": 71,
+                "byte_start": 3500,
+                "byte_end": 3538,
+                "text": "gitturtle.history_page_frame_ms=4.355",
+                "kind": "callback",
+                "metric": "history_page_frame_ms",
+                "value": 4.355
+              },
+              {
+                "line": 72,
+                "byte_start": 3538,
+                "byte_end": 3577,
+                "text": "gitturtle.history_page_frame_ms=10.243",
+                "kind": "callback",
+                "metric": "history_page_frame_ms",
+                "value": 10.243
+              },
+              {
+                "line": 73,
+                "byte_start": 3577,
+                "byte_end": 3615,
+                "text": "gitturtle.history_page_frame_ms=4.139",
+                "kind": "callback",
+                "metric": "history_page_frame_ms",
+                "value": 4.139
+              },
+              {
+                "line": 74,
+                "byte_start": 3615,
+                "byte_end": 3653,
+                "text": "gitturtle.history_page_frame_ms=7.961",
+                "kind": "callback",
+                "metric": "history_page_frame_ms",
+                "value": 7.961
+              },
+              {
+                "line": 75,
+                "byte_start": 3653,
+                "byte_end": 3691,
+                "text": "gitturtle.history_page_frame_ms=7.988",
+                "kind": "callback",
+                "metric": "history_page_frame_ms",
+                "value": 7.988
+              }
+            ]
+          }
+        },
+        "lifecycle": {
+          "events": 0,
+          "track_events": 0,
+          "tracked_images": 0,
+          "tracked_frames": 0,
+          "retire_events": 0,
+          "retired_images": 0,
+          "retired_frames": 0,
+          "entering_retained_images": 10,
+          "inferred_first_before_images": null,
+          "last_retained_images": 10,
+          "retained_images_statistics": null,
+          "first_record": null,
+          "last_record": null,
+          "window_closed_records": [],
+          "count_consistency_anomalies": []
+        },
+        "failure_records": []
+      }
+    },
+    {
+      "phase": "tabs",
+      "cycle": null,
+      "start_marker_line": 10,
+      "end_marker_line": 11,
+      "start_time_unix": 1789007648.769577,
+      "end_time_unix": 1789007751.532403,
+      "duration_seconds": 102.76282596588135,
+      "end_source": "next_phase_marker",
+      "trace_start_byte": 3847,
+      "trace_end_byte": 4086,
+      "trace_attribution_available": true,
+      "trace_crossing_records": [],
+      "resources": {
+        "samples": 21,
+        "first": {
+          "utc": "2026-09-10T02:34:11.368760+00:00",
+          "elapsed_seconds": 985.0060218340077,
+          "rss_kib": 262832,
+          "cpu_time_seconds": 19.45,
+          "threads": 21,
+          "fd_count": 17,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 960.0027937919949,
+          "git_children": 5
+        },
+        "last": {
+          "utc": "2026-09-10T02:35:51.361509+00:00",
+          "elapsed_seconds": 1085.0050609589962,
+          "rss_kib": 269344,
+          "cpu_time_seconds": 23.94,
+          "threads": 21,
+          "fd_count": 15,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1080.0032869999995,
+          "git_children": 4
+        },
+        "sample_span_seconds": 99.99903912498849,
+        "cpu_time_delta_seconds": 4.490000000000002,
+        "cpu_average_percent_one_core": 4.490043143702576,
+        "rss_mib": {
+          "n": 21,
+          "first": 256.671875,
+          "last": 263.03125,
+          "min": 256.625,
+          "p50": 262.65625,
+          "p95": 682.40625,
+          "max": 685.328125
+        },
+        "cpu_percent_interval": {
+          "n": 21,
+          "first": 5.796159319936699,
+          "last": 10.596240540752463,
+          "min": 0.9991451729539665,
+          "p50": 2.6024179934684013,
+          "p95": 10.596240540752463,
+          "max": 12.000190202996118
+        },
+        "cpu_percent_ps": {
+          "n": 21,
+          "first": 3.6,
+          "last": 11.2,
+          "min": 0.0,
+          "p50": 1.6,
+          "p95": 15.6,
+          "max": 35.3
+        },
+        "threads": {
+          "n": 21,
+          "first": 21,
+          "last": 21,
+          "min": 16,
+          "p50": 20,
+          "p95": 21,
+          "max": 21
+        },
+        "numeric_fd_fresh": {
+          "n": 4,
+          "first": 17,
+          "last": 15,
+          "min": 13,
+          "p50": 14.0,
+          "p95": 17,
+          "max": 17
+        },
+        "git_children": {
+          "n": 21,
+          "first": 5,
+          "last": 4,
+          "min": 3,
+          "p50": 3,
+          "p95": 5,
+          "max": 5
+        },
+        "all_descendants": {
+          "n": 21,
+          "first": 5,
+          "last": 4,
+          "min": 3,
+          "p50": 3,
+          "p95": 5,
+          "max": 5
+        },
+        "collection_ms": {
+          "n": 21,
+          "first": 60.93770798179321,
+          "last": 55.0457909994293,
+          "min": 52.546082995831966,
+          "p50": 63.66766698192805,
+          "p95": 121.78883398883045,
+          "max": 128.25216699275188
+        },
+        "schedule_lag_ms": {
+          "n": 21,
+          "first": 6.02183400769718,
+          "last": 5.060958996182308,
+          "min": 2.0825419924221933,
+          "p50": 3.8773750129621476,
+          "p95": 6.360333994962275,
+          "max": 7.919541996670887
+        },
+        "sample_gap_seconds": {
+          "n": 20,
+          "first": 4.999097749998327,
+          "last": 5.001773958996637,
+          "min": 4.99535433301935,
+          "p50": 4.999587854006677,
+          "p95": 5.00352749999729,
+          "max": 5.00427779200254
+        },
+        "errors": []
+      },
+      "start_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:34:06.359123+00:00",
+          "elapsed_seconds": 980.002708709013,
+          "rss_kib": 262720,
+          "cpu_time_seconds": 19.16,
+          "threads": 21,
+          "fd_count": 17,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 960.0027937919949,
+          "git_children": 5
+        },
+        "after": {
+          "utc": "2026-09-10T02:34:11.368760+00:00",
+          "elapsed_seconds": 985.0060218340077,
+          "rss_kib": 262832,
+          "cpu_time_seconds": 19.45,
+          "threads": 21,
+          "fd_count": 17,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 960.0027937919949,
+          "git_children": 5
+        }
+      },
+      "end_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:35:51.361509+00:00",
+          "elapsed_seconds": 1085.0050609589962,
+          "rss_kib": 269344,
+          "cpu_time_seconds": 23.94,
+          "threads": 21,
+          "fd_count": 15,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1080.0032869999995,
+          "git_children": 4
+        },
+        "after": {
+          "utc": "2026-09-10T02:35:56.369010+00:00",
+          "elapsed_seconds": 1090.0062067919935,
+          "rss_kib": 269344,
+          "cpu_time_seconds": 24.07,
+          "threads": 21,
+          "fd_count": 15,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1080.0032869999995,
+          "git_children": 4
+        }
+      },
+      "marker_endpoint_cpu": {
+        "cpu_delta_seconds": 4.579999999999998,
+        "collection_end_span_seconds": 102.76228308677673,
+        "percent_one_cpu": 4.456888132908118,
+        "start": {
+          "pid": 14206,
+          "rss_kib": 262752,
+          "cpu_time_seconds": 19.37,
+          "cpu_percent_ps": 6.4
+        },
+        "end": {
+          "pid": 14206,
+          "rss_kib": 269344,
+          "cpu_time_seconds": 23.95,
+          "cpu_percent_ps": 9.5
+        }
+      },
+      "trace": {
+        "metrics": {
+          "commit_files_frame_ms": {
+            "statistics": {
+              "n": 1,
+              "first": 51.545,
+              "last": 51.545,
+              "min": 51.545,
+              "p50": 51.545,
+              "p95": 51.545,
+              "max": 51.545
+            },
+            "records": [
+              {
+                "line": 84,
+                "byte_start": 4047,
+                "byte_end": 4086,
+                "text": "gitturtle.commit_files_frame_ms=51.545",
+                "kind": "callback",
+                "metric": "commit_files_frame_ms",
+                "value": 51.545
+              }
+            ]
+          }
+        },
+        "lifecycle": {
+          "events": 4,
+          "track_events": 4,
+          "tracked_images": 4,
+          "tracked_frames": 4,
+          "retire_events": 0,
+          "retired_images": 0,
+          "retired_frames": 0,
+          "entering_retained_images": 10,
+          "inferred_first_before_images": 10,
+          "last_retained_images": 14,
+          "retained_images_statistics": {
+            "n": 4,
+            "first": 11,
+            "last": 14,
+            "min": 11,
+            "p50": 12.5,
+            "p95": 14,
+            "max": 14
+          },
+          "first_record": {
+            "line": 80,
+            "byte_start": 3847,
+            "byte_end": 3897,
+            "text": "gitturtle.image_track frames=1 retained_images=11",
+            "kind": "lifecycle",
+            "event": "image_track",
+            "frames": 1,
+            "retained_images": 11
+          },
+          "last_record": {
+            "line": 83,
+            "byte_start": 3997,
+            "byte_end": 4047,
+            "text": "gitturtle.image_track frames=1 retained_images=14",
+            "kind": "lifecycle",
+            "event": "image_track",
+            "frames": 1,
+            "retained_images": 14
+          },
+          "window_closed_records": [],
+          "count_consistency_anomalies": []
+        },
+        "failure_records": []
+      }
+    },
+    {
+      "phase": "conflict",
+      "cycle": null,
+      "start_marker_line": 11,
+      "end_marker_line": 12,
+      "start_time_unix": 1789007751.532403,
+      "end_time_unix": 1789007804.293612,
+      "duration_seconds": 52.76120901107788,
+      "end_source": "next_phase_marker",
+      "trace_start_byte": 4086,
+      "trace_end_byte": 4769,
+      "trace_attribution_available": true,
+      "trace_crossing_records": [],
+      "resources": {
+        "samples": 10,
+        "first": {
+          "utc": "2026-09-10T02:35:56.369010+00:00",
+          "elapsed_seconds": 1090.0062067919935,
+          "rss_kib": 269344,
+          "cpu_time_seconds": 24.07,
+          "threads": 21,
+          "fd_count": 15,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1080.0032869999995,
+          "git_children": 4
+        },
+        "last": {
+          "utc": "2026-09-10T02:36:41.360766+00:00",
+          "elapsed_seconds": 1135.0051584999892,
+          "rss_kib": 269184,
+          "cpu_time_seconds": 26.03,
+          "threads": 20,
+          "fd_count": 15,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1110.005129208992,
+          "git_children": 4
+        },
+        "sample_span_seconds": 44.99895170799573,
+        "cpu_time_delta_seconds": 1.9600000000000009,
+        "cpu_average_percent_one_core": 4.3556570222317745,
+        "rss_mib": {
+          "n": 10,
+          "first": 263.03125,
+          "last": 262.875,
+          "min": 262.828125,
+          "p50": 262.859375,
+          "p95": 263.03125,
+          "max": 263.03125
+        },
+        "cpu_percent_interval": {
+          "n": 10,
+          "first": 2.5994043033551684,
+          "last": 4.6003415753654835,
+          "min": 2.5994043033551684,
+          "p50": 4.5998995346864415,
+          "p95": 5.199739493035051,
+          "max": 5.199739493035051
+        },
+        "cpu_percent_ps": {
+          "n": 10,
+          "first": 3.5,
+          "last": 3.3,
+          "min": 1.6,
+          "p50": 4.1,
+          "p95": 11.6,
+          "max": 11.6
+        },
+        "threads": {
+          "n": 10,
+          "first": 21,
+          "last": 20,
+          "min": 20,
+          "p50": 20.0,
+          "p95": 22,
+          "max": 22
+        },
+        "numeric_fd_fresh": {
+          "n": 1,
+          "first": 15,
+          "last": 15,
+          "min": 15,
+          "p50": 15,
+          "p95": 15,
+          "max": 15
+        },
+        "git_children": {
+          "n": 10,
+          "first": 4,
+          "last": 4,
+          "min": 4,
+          "p50": 4.0,
+          "p95": 4,
+          "max": 4
+        },
+        "all_descendants": {
+          "n": 10,
+          "first": 4,
+          "last": 4,
+          "min": 4,
+          "p50": 4.0,
+          "p95": 5,
+          "max": 5
+        },
+        "collection_ms": {
+          "n": 10,
+          "first": 61.401333019603044,
+          "last": 54.39787500654347,
+          "min": 51.63191701285541,
+          "p50": 61.85895801172592,
+          "p95": 111.82691602152772,
+          "max": 111.82691602152772
+        },
+        "schedule_lag_ms": {
+          "n": 10,
+          "first": 6.206791993463412,
+          "last": 5.158499989192933,
+          "min": 0.6997089949436486,
+          "p50": 4.83433400222566,
+          "p95": 6.510667008114979,
+          "max": 6.510667008114979
+        },
+        "sample_gap_seconds": {
+          "n": 9,
+          "first": 4.997084625007119,
+          "last": 4.999628749996191,
+          "min": 4.995570500002941,
+          "p50": 5.000250500015682,
+          "p95": 5.002956500014989,
+          "max": 5.002956500014989
+        },
+        "errors": []
+      },
+      "start_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:35:51.361509+00:00",
+          "elapsed_seconds": 1085.0050609589962,
+          "rss_kib": 269344,
+          "cpu_time_seconds": 23.94,
+          "threads": 21,
+          "fd_count": 15,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1080.0032869999995,
+          "git_children": 4
+        },
+        "after": {
+          "utc": "2026-09-10T02:35:56.369010+00:00",
+          "elapsed_seconds": 1090.0062067919935,
+          "rss_kib": 269344,
+          "cpu_time_seconds": 24.07,
+          "threads": 21,
+          "fd_count": 15,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1080.0032869999995,
+          "git_children": 4
+        }
+      },
+      "end_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:36:41.360766+00:00",
+          "elapsed_seconds": 1135.0051584999892,
+          "rss_kib": 269184,
+          "cpu_time_seconds": 26.03,
+          "threads": 20,
+          "fd_count": 15,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1110.005129208992,
+          "git_children": 4
+        },
+        "after": {
+          "utc": "2026-09-10T02:36:46.419262+00:00",
+          "elapsed_seconds": 1140.004472917004,
+          "rss_kib": 275168,
+          "cpu_time_seconds": 26.57,
+          "threads": 20,
+          "fd_count": 15,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 1140.004472917004,
+          "git_children": 4
+        }
+      },
+      "marker_endpoint_cpu": {
+        "cpu_delta_seconds": 2.539999999999999,
+        "collection_end_span_seconds": 52.761276960372925,
+        "percent_one_cpu": 4.81413670466638,
+        "start": {
+          "pid": 14206,
+          "rss_kib": 269344,
+          "cpu_time_seconds": 23.95,
+          "cpu_percent_ps": 9.5
+        },
+        "end": {
+          "pid": 14206,
+          "rss_kib": 275168,
+          "cpu_time_seconds": 26.49,
+          "cpu_percent_ps": 17.0
+        }
+      },
+      "trace": {
+        "metrics": {
+          "working_preview_frame_ms": {
+            "statistics": {
+              "n": 1,
+              "first": 130.851,
+              "last": 130.851,
+              "min": 130.851,
+              "p50": 130.851,
+              "p95": 130.851,
+              "max": 130.851
+            },
+            "records": [
+              {
+                "line": 85,
+                "byte_start": 4086,
+                "byte_end": 4129,
+                "text": "gitturtle.working_preview_frame_ms=130.851",
+                "kind": "callback",
+                "metric": "working_preview_frame_ms",
+                "value": 130.851
+              }
+            ]
+          }
+        },
+        "lifecycle": {
+          "events": 12,
+          "track_events": 8,
+          "tracked_images": 8,
+          "tracked_frames": 8,
+          "retire_events": 4,
+          "retired_images": 8,
+          "retired_frames": 8,
+          "entering_retained_images": 14,
+          "inferred_first_before_images": 14,
+          "last_retained_images": 14,
+          "retained_images_statistics": {
+            "n": 12,
+            "first": 15,
+            "last": 14,
+            "min": 14,
+            "p50": 15.0,
+            "p95": 16,
+            "max": 16
+          },
+          "first_record": {
+            "line": 86,
+            "byte_start": 4129,
+            "byte_end": 4179,
+            "text": "gitturtle.image_track frames=1 retained_images=15",
+            "kind": "lifecycle",
+            "event": "image_track",
+            "frames": 1,
+            "retained_images": 15
+          },
+          "last_record": {
+            "line": 97,
+            "byte_start": 4709,
+            "byte_end": 4769,
+            "text": "gitturtle.image_retire images=2 frames=2 retained_images=14",
+            "kind": "lifecycle",
+            "event": "image_retire",
+            "images": 2,
+            "frames": 2,
+            "retained_images": 14
+          },
+          "window_closed_records": [],
+          "count_consistency_anomalies": []
+        },
+        "failure_records": []
+      }
+    },
+    {
+      "phase": "model-cycle",
+      "cycle": 3,
+      "start_marker_line": 12,
+      "end_marker_line": 13,
+      "start_time_unix": 1789007804.293612,
+      "end_time_unix": 1789007828.7857,
+      "duration_seconds": 24.492088079452515,
+      "end_source": "next_phase_marker",
+      "trace_start_byte": 4769,
+      "trace_end_byte": 4769,
+      "trace_attribution_available": true,
+      "trace_crossing_records": [],
+      "resources": {
+        "samples": 5,
+        "first": {
+          "utc": "2026-09-10T02:36:46.419262+00:00",
+          "elapsed_seconds": 1140.004472917004,
+          "rss_kib": 275168,
+          "cpu_time_seconds": 26.57,
+          "threads": 20,
+          "fd_count": 15,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 1140.004472917004,
+          "git_children": 4
+        },
+        "last": {
+          "utc": "2026-09-10T02:37:06.361707+00:00",
+          "elapsed_seconds": 1160.0051467500161,
+          "rss_kib": 275104,
+          "cpu_time_seconds": 26.86,
+          "threads": 19,
+          "fd_count": 15,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1140.004472917004,
+          "git_children": 4
+        },
+        "sample_span_seconds": 20.000673833012115,
+        "cpu_time_delta_seconds": 0.28999999999999915,
+        "cpu_average_percent_one_core": 1.4499511487524965,
+        "rss_mib": {
+          "n": 5,
+          "first": 268.71875,
+          "last": 268.65625,
+          "min": 268.65625,
+          "p50": 268.65625,
+          "p95": 268.71875,
+          "max": 268.71875
+        },
+        "cpu_percent_interval": {
+          "n": 5,
+          "first": 10.801481062326177,
+          "last": 1.7994801604113975,
+          "min": 1.20007075400708,
+          "p50": 1.4004322201544992,
+          "p95": 10.801481062326177,
+          "max": 10.801481062326177
+        },
+        "cpu_percent_ps": {
+          "n": 5,
+          "first": 1.3,
+          "last": 3.5,
+          "min": 1.2,
+          "p50": 1.3,
+          "p95": 3.5,
+          "max": 3.5
+        },
+        "threads": {
+          "n": 5,
+          "first": 20,
+          "last": 19,
+          "min": 19,
+          "p50": 19,
+          "p95": 20,
+          "max": 20
+        },
+        "numeric_fd_fresh": {
+          "n": 1,
+          "first": 15,
+          "last": 15,
+          "min": 15,
+          "p50": 15,
+          "p95": 15,
+          "max": 15
+        },
+        "git_children": {
+          "n": 5,
+          "first": 4,
+          "last": 4,
+          "min": 4,
+          "p50": 4,
+          "p95": 4,
+          "max": 4
+        },
+        "all_descendants": {
+          "n": 5,
+          "first": 4,
+          "last": 4,
+          "min": 4,
+          "p50": 4,
+          "p95": 4,
+          "max": 4
+        },
+        "collection_ms": {
+          "n": 5,
+          "first": 113.57449999195524,
+          "last": 55.4399169923272,
+          "min": 55.4399169923272,
+          "p50": 63.758915988728404,
+          "p95": 113.57449999195524,
+          "max": 113.57449999195524
+        },
+        "schedule_lag_ms": {
+          "n": 5,
+          "first": 4.472917004022747,
+          "last": 5.146750016137958,
+          "min": 2.929750015027821,
+          "p50": 3.997124993475154,
+          "p95": 5.146750016137958,
+          "max": 5.146750016137958
+        },
+        "sample_gap_seconds": {
+          "n": 4,
+          "first": 4.998456833011005,
+          "last": 5.001444416004233,
+          "min": 4.998456833011005,
+          "p50": 5.0003862919984385,
+          "p95": 5.001444416004233,
+          "max": 5.001444416004233
+        },
+        "errors": []
+      },
+      "start_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:36:41.360766+00:00",
+          "elapsed_seconds": 1135.0051584999892,
+          "rss_kib": 269184,
+          "cpu_time_seconds": 26.03,
+          "threads": 20,
+          "fd_count": 15,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1110.005129208992,
+          "git_children": 4
+        },
+        "after": {
+          "utc": "2026-09-10T02:36:46.419262+00:00",
+          "elapsed_seconds": 1140.004472917004,
+          "rss_kib": 275168,
+          "cpu_time_seconds": 26.57,
+          "threads": 20,
+          "fd_count": 15,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 1140.004472917004,
+          "git_children": 4
+        }
+      },
+      "end_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:37:06.361707+00:00",
+          "elapsed_seconds": 1160.0051467500161,
+          "rss_kib": 275104,
+          "cpu_time_seconds": 26.86,
+          "threads": 19,
+          "fd_count": 15,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1140.004472917004,
+          "git_children": 4
+        },
+        "after": {
+          "utc": "2026-09-10T02:37:11.371268+00:00",
+          "elapsed_seconds": 1165.0050714999961,
+          "rss_kib": 280272,
+          "cpu_time_seconds": 27.35,
+          "threads": 18,
+          "fd_count": 15,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1140.004472917004,
+          "git_children": 3
+        }
+      },
+      "marker_endpoint_cpu": {
+        "cpu_delta_seconds": 0.46000000000000085,
+        "collection_end_span_seconds": 24.49281096458435,
+        "percent_one_cpu": 1.8781021119427366,
+        "start": {
+          "pid": 14206,
+          "rss_kib": 275168,
+          "cpu_time_seconds": 26.49,
+          "cpu_percent_ps": 17.0
+        },
+        "end": {
+          "pid": 14206,
+          "rss_kib": 275056,
+          "cpu_time_seconds": 26.95,
+          "cpu_percent_ps": 5.2
+        }
+      },
+      "trace": {
+        "metrics": {},
+        "lifecycle": {
+          "events": 0,
+          "track_events": 0,
+          "tracked_images": 0,
+          "tracked_frames": 0,
+          "retire_events": 0,
+          "retired_images": 0,
+          "retired_frames": 0,
+          "entering_retained_images": 14,
+          "inferred_first_before_images": null,
+          "last_retained_images": 14,
+          "retained_images_statistics": null,
+          "first_record": null,
+          "last_record": null,
+          "window_closed_records": [],
+          "count_consistency_anomalies": []
+        },
+        "failure_records": []
+      }
+    },
+    {
+      "phase": "pdf-cycle",
+      "cycle": 2,
+      "start_marker_line": 13,
+      "end_marker_line": 14,
+      "start_time_unix": 1789007828.7857,
+      "end_time_unix": 1789007871.022912,
+      "duration_seconds": 42.23721194267273,
+      "end_source": "next_phase_marker",
+      "trace_start_byte": 4769,
+      "trace_end_byte": 6089,
+      "trace_attribution_available": true,
+      "trace_crossing_records": [],
+      "resources": {
+        "samples": 8,
+        "first": {
+          "utc": "2026-09-10T02:37:11.371268+00:00",
+          "elapsed_seconds": 1165.0050714999961,
+          "rss_kib": 280272,
+          "cpu_time_seconds": 27.35,
+          "threads": 18,
+          "fd_count": 15,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1140.004472917004,
+          "git_children": 3
+        },
+        "last": {
+          "utc": "2026-09-10T02:37:46.409344+00:00",
+          "elapsed_seconds": 1200.0038953339972,
+          "rss_kib": 280288,
+          "cpu_time_seconds": 29.22,
+          "threads": 19,
+          "fd_count": 13,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 1200.0038953339972,
+          "git_children": 3
+        },
+        "sample_span_seconds": 34.99882383400109,
+        "cpu_time_delta_seconds": 1.8699999999999974,
+        "cpu_average_percent_one_core": 5.343036694231156,
+        "rss_mib": {
+          "n": 8,
+          "first": 273.703125,
+          "last": 273.71875,
+          "min": 273.640625,
+          "p50": 273.671875,
+          "p95": 273.71875,
+          "max": 273.71875
+        },
+        "cpu_percent_interval": {
+          "n": 8,
+          "first": 9.800147492259034,
+          "last": 11.19676954386871,
+          "min": 1.4008994592718702,
+          "p50": 3.801091380406083,
+          "p95": 11.19676954386871,
+          "max": 11.19676954386871
+        },
+        "cpu_percent_ps": {
+          "n": 8,
+          "first": 6.4,
+          "last": 13.5,
+          "min": 0.3,
+          "p50": 2.6,
+          "p95": 13.5,
+          "max": 13.5
+        },
+        "threads": {
+          "n": 8,
+          "first": 18,
+          "last": 19,
+          "min": 18,
+          "p50": 19.0,
+          "p95": 20,
+          "max": 20
+        },
+        "numeric_fd_fresh": {
+          "n": 2,
+          "first": 13,
+          "last": 13,
+          "min": 13,
+          "p50": 13.0,
+          "p95": 13,
+          "max": 13
+        },
+        "git_children": {
+          "n": 8,
+          "first": 3,
+          "last": 3,
+          "min": 3,
+          "p50": 3.0,
+          "p95": 3,
+          "max": 3
+        },
+        "all_descendants": {
+          "n": 8,
+          "first": 3,
+          "last": 3,
+          "min": 3,
+          "p50": 3.0,
+          "p95": 3,
+          "max": 3
+        },
+        "collection_ms": {
+          "n": 8,
+          "first": 65.07691700244322,
+          "last": 104.48495799209923,
+          "min": 50.36829199525528,
+          "p50": 67.02143800794147,
+          "p95": 118.31699998583645,
+          "max": 118.31699998583645
+        },
+        "schedule_lag_ms": {
+          "n": 8,
+          "first": 5.07149999612011,
+          "last": 3.8953339972067624,
+          "min": 0.4983750113751739,
+          "p50": 3.8042920059524477,
+          "p95": 5.663042014930397,
+          "max": 5.663042014930397
+        },
+        "sample_gap_seconds": {
+          "n": 7,
+          "first": 4.998641750018578,
+          "last": 5.001442584005417,
+          "min": 4.9965918750094716,
+          "p50": 4.9999999169958755,
+          "p95": 5.005164667003555,
+          "max": 5.005164667003555
+        },
+        "errors": []
+      },
+      "start_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:37:06.361707+00:00",
+          "elapsed_seconds": 1160.0051467500161,
+          "rss_kib": 275104,
+          "cpu_time_seconds": 26.86,
+          "threads": 19,
+          "fd_count": 15,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1140.004472917004,
+          "git_children": 4
+        },
+        "after": {
+          "utc": "2026-09-10T02:37:11.371268+00:00",
+          "elapsed_seconds": 1165.0050714999961,
+          "rss_kib": 280272,
+          "cpu_time_seconds": 27.35,
+          "threads": 18,
+          "fd_count": 15,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1140.004472917004,
+          "git_children": 3
+        }
+      },
+      "end_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:37:46.409344+00:00",
+          "elapsed_seconds": 1200.0038953339972,
+          "rss_kib": 280288,
+          "cpu_time_seconds": 29.22,
+          "threads": 19,
+          "fd_count": 13,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 1200.0038953339972,
+          "git_children": 3
+        },
+        "after": {
+          "utc": "2026-09-10T02:37:51.359373+00:00",
+          "elapsed_seconds": 1205.0038867089897,
+          "rss_kib": 280160,
+          "cpu_time_seconds": 29.81,
+          "threads": 18,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1200.0038953339972,
+          "git_children": 3
+        }
+      },
+      "marker_endpoint_cpu": {
+        "cpu_delta_seconds": 2.8599999999999994,
+        "collection_end_span_seconds": 42.23645210266113,
+        "percent_one_cpu": 6.771402089002176,
+        "start": {
+          "pid": 14206,
+          "rss_kib": 275056,
+          "cpu_time_seconds": 26.95,
+          "cpu_percent_ps": 5.2
+        },
+        "end": {
+          "pid": 14206,
+          "rss_kib": 280160,
+          "cpu_time_seconds": 29.81,
+          "cpu_percent_ps": 8.8
+        }
+      },
+      "trace": {
+        "metrics": {},
+        "lifecycle": {
+          "events": 24,
+          "track_events": 12,
+          "tracked_images": 12,
+          "tracked_frames": 12,
+          "retire_events": 12,
+          "retired_images": 12,
+          "retired_frames": 12,
+          "entering_retained_images": 14,
+          "inferred_first_before_images": 14,
+          "last_retained_images": 14,
+          "retained_images_statistics": {
+            "n": 24,
+            "first": 13,
+            "last": 14,
+            "min": 13,
+            "p50": 13.5,
+            "p95": 14,
+            "max": 14
+          },
+          "first_record": {
+            "line": 98,
+            "byte_start": 4769,
+            "byte_end": 4829,
+            "text": "gitturtle.image_retire images=1 frames=1 retained_images=13",
+            "kind": "lifecycle",
+            "event": "image_retire",
+            "images": 1,
+            "frames": 1,
+            "retained_images": 13
+          },
+          "last_record": {
+            "line": 121,
+            "byte_start": 6039,
+            "byte_end": 6089,
+            "text": "gitturtle.image_track frames=1 retained_images=14",
+            "kind": "lifecycle",
+            "event": "image_track",
+            "frames": 1,
+            "retained_images": 14
+          },
+          "window_closed_records": [],
+          "count_consistency_anomalies": []
+        },
+        "failure_records": []
+      }
+    },
+    {
+      "phase": "pdf-settled",
+      "cycle": 2,
+      "start_marker_line": 14,
+      "end_marker_line": 15,
+      "start_time_unix": 1789007871.022912,
+      "end_time_unix": 1789007920.758915,
+      "duration_seconds": 49.736002922058105,
+      "end_source": "next_phase_marker",
+      "trace_start_byte": 6089,
+      "trace_end_byte": 7409,
+      "trace_attribution_available": true,
+      "trace_crossing_records": [],
+      "resources": {
+        "samples": 10,
+        "first": {
+          "utc": "2026-09-10T02:37:51.359373+00:00",
+          "elapsed_seconds": 1205.0038867089897,
+          "rss_kib": 280160,
+          "cpu_time_seconds": 29.81,
+          "threads": 18,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1200.0038953339972,
+          "git_children": 3
+        },
+        "last": {
+          "utc": "2026-09-10T02:38:36.361272+00:00",
+          "elapsed_seconds": 1250.0057666249922,
+          "rss_kib": 280192,
+          "cpu_time_seconds": 30.57,
+          "threads": 18,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1230.0040595839964,
+          "git_children": 3
+        },
+        "sample_span_seconds": 45.00187991600251,
+        "cpu_time_delta_seconds": 0.7600000000000016,
+        "cpu_average_percent_one_core": 1.6888183369640704,
+        "rss_mib": {
+          "n": 10,
+          "first": 273.59375,
+          "last": 273.625,
+          "min": 273.5625,
+          "p50": 273.59375,
+          "p95": 273.625,
+          "max": 273.625
+        },
+        "cpu_percent_interval": {
+          "n": 10,
+          "first": 11.800020355052734,
+          "last": 13.58522052723721,
+          "min": 0.0,
+          "p50": 0.0,
+          "p95": 13.58522052723721,
+          "max": 13.58522052723721
+        },
+        "cpu_percent_ps": {
+          "n": 10,
+          "first": 3.4,
+          "last": 9.6,
+          "min": 0.0,
+          "p50": 0.0,
+          "p95": 9.6,
+          "max": 9.6
+        },
+        "threads": {
+          "n": 10,
+          "first": 18,
+          "last": 18,
+          "min": 17,
+          "p50": 18.0,
+          "p95": 18,
+          "max": 18
+        },
+        "numeric_fd_fresh": {
+          "n": 1,
+          "first": 13,
+          "last": 13,
+          "min": 13,
+          "p50": 13,
+          "p95": 13,
+          "max": 13
+        },
+        "git_children": {
+          "n": 10,
+          "first": 3,
+          "last": 3,
+          "min": 3,
+          "p50": 3.0,
+          "p95": 3,
+          "max": 3
+        },
+        "all_descendants": {
+          "n": 10,
+          "first": 3,
+          "last": 3,
+          "min": 3,
+          "p50": 3.0,
+          "p95": 3,
+          "max": 3
+        },
+        "collection_ms": {
+          "n": 10,
+          "first": 54.51924999943003,
+          "last": 54.72595902392641,
+          "min": 53.574791993014514,
+          "p50": 61.12872848461848,
+          "p95": 117.63920800876804,
+          "max": 117.63920800876804
+        },
+        "schedule_lag_ms": {
+          "n": 10,
+          "first": 3.886708989739418,
+          "last": 5.766624992247671,
+          "min": 0.3270840097684413,
+          "p50": 5.046125501394272,
+          "p95": 8.215000008931383,
+          "max": 8.215000008931383
+        },
+        "sample_gap_seconds": {
+          "n": 9,
+          "first": 4.998516541003482,
+          "last": 5.005439540982479,
+          "min": 4.995611542020924,
+          "p50": 4.9993388329749,
+          "p95": 5.005439540982479,
+          "max": 5.005439540982479
+        },
+        "errors": []
+      },
+      "start_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:37:46.409344+00:00",
+          "elapsed_seconds": 1200.0038953339972,
+          "rss_kib": 280288,
+          "cpu_time_seconds": 29.22,
+          "threads": 19,
+          "fd_count": 13,
+          "fd_sample_fresh": true,
+          "fd_sample_elapsed_seconds": 1200.0038953339972,
+          "git_children": 3
+        },
+        "after": {
+          "utc": "2026-09-10T02:37:51.359373+00:00",
+          "elapsed_seconds": 1205.0038867089897,
+          "rss_kib": 280160,
+          "cpu_time_seconds": 29.81,
+          "threads": 18,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1200.0038953339972,
+          "git_children": 3
+        }
+      },
+      "end_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:38:36.361272+00:00",
+          "elapsed_seconds": 1250.0057666249922,
+          "rss_kib": 280192,
+          "cpu_time_seconds": 30.57,
+          "threads": 18,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1230.0040595839964,
+          "git_children": 3
+        },
+        "after": {
+          "utc": "2026-09-10T02:38:41.360987+00:00",
+          "elapsed_seconds": 1255.0057584999886,
+          "rss_kib": 280192,
+          "cpu_time_seconds": 31.09,
+          "threads": 18,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1230.0040595839964,
+          "git_children": 3
+        }
+      },
+      "marker_endpoint_cpu": {
+        "cpu_delta_seconds": 1.2800000000000011,
+        "collection_end_span_seconds": 49.73603582382202,
+        "percent_one_cpu": 2.5735866938291867,
+        "start": {
+          "pid": 14206,
+          "rss_kib": 280160,
+          "cpu_time_seconds": 29.81,
+          "cpu_percent_ps": 8.8
+        },
+        "end": {
+          "pid": 14206,
+          "rss_kib": 280192,
+          "cpu_time_seconds": 31.09,
+          "cpu_percent_ps": 7.4
+        }
+      },
+      "trace": {
+        "metrics": {},
+        "lifecycle": {
+          "events": 24,
+          "track_events": 12,
+          "tracked_images": 12,
+          "tracked_frames": 12,
+          "retire_events": 12,
+          "retired_images": 12,
+          "retired_frames": 12,
+          "entering_retained_images": 14,
+          "inferred_first_before_images": 14,
+          "last_retained_images": 14,
+          "retained_images_statistics": {
+            "n": 24,
+            "first": 13,
+            "last": 14,
+            "min": 13,
+            "p50": 13.5,
+            "p95": 14,
+            "max": 14
+          },
+          "first_record": {
+            "line": 122,
+            "byte_start": 6089,
+            "byte_end": 6149,
+            "text": "gitturtle.image_retire images=1 frames=1 retained_images=13",
+            "kind": "lifecycle",
+            "event": "image_retire",
+            "images": 1,
+            "frames": 1,
+            "retained_images": 13
+          },
+          "last_record": {
+            "line": 145,
+            "byte_start": 7359,
+            "byte_end": 7409,
+            "text": "gitturtle.image_track frames=1 retained_images=14",
+            "kind": "lifecycle",
+            "event": "image_track",
+            "frames": 1,
+            "retained_images": 14
+          },
+          "window_closed_records": [],
+          "count_consistency_anomalies": []
+        },
+        "failure_records": []
+      }
+    },
+    {
+      "phase": "pdf-settled",
+      "cycle": 3,
+      "start_marker_line": 15,
+      "end_marker_line": 16,
+      "start_time_unix": 1789007920.758915,
+      "end_time_unix": 1789007947.918343,
+      "duration_seconds": 27.159428119659424,
+      "end_source": "next_phase_marker",
+      "trace_start_byte": 7409,
+      "trace_end_byte": 7409,
+      "trace_attribution_available": true,
+      "trace_crossing_records": [],
+      "resources": {
+        "samples": 6,
+        "first": {
+          "utc": "2026-09-10T02:38:41.360987+00:00",
+          "elapsed_seconds": 1255.0057584999886,
+          "rss_kib": 280192,
+          "cpu_time_seconds": 31.09,
+          "threads": 18,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1230.0040595839964,
+          "git_children": 3
+        },
+        "last": {
+          "utc": "2026-09-10T02:39:06.365908+00:00",
+          "elapsed_seconds": 1280.0056866249943,
+          "rss_kib": 280192,
+          "cpu_time_seconds": 31.35,
+          "threads": 19,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1260.0050725420006,
+          "git_children": 3
+        },
+        "sample_span_seconds": 24.99992812500568,
+        "cpu_time_delta_seconds": 0.26000000000000156,
+        "cpu_average_percent_one_core": 1.0400029900083663,
+        "rss_mib": {
+          "n": 6,
+          "first": 273.625,
+          "last": 273.625,
+          "min": 273.59375,
+          "p50": 273.609375,
+          "p95": 273.625,
+          "max": 273.625
+        },
+        "cpu_percent_interval": {
+          "n": 6,
+          "first": 10.400016900035066,
+          "last": 0.9998763402948698,
+          "min": 0.0,
+          "p50": 1.0003403266484847,
+          "p95": 10.400016900035066,
+          "max": 10.400016900035066
+        },
+        "cpu_percent_ps": {
+          "n": 6,
+          "first": 1.0,
+          "last": 0.8,
+          "min": 0.0,
+          "p50": 0.8500000000000001,
+          "p95": 1.0,
+          "max": 1.0
+        },
+        "threads": {
+          "n": 6,
+          "first": 18,
+          "last": 19,
+          "min": 17,
+          "p50": 19.0,
+          "p95": 19,
+          "max": 19
+        },
+        "numeric_fd_fresh": {
+          "n": 1,
+          "first": 13,
+          "last": 13,
+          "min": 13,
+          "p50": 13,
+          "p95": 13,
+          "max": 13
+        },
+        "git_children": {
+          "n": 6,
+          "first": 3,
+          "last": 3,
+          "min": 3,
+          "p50": 3.0,
+          "p95": 3,
+          "max": 3
+        },
+        "all_descendants": {
+          "n": 6,
+          "first": 3,
+          "last": 3,
+          "min": 3,
+          "p50": 3.0,
+          "p95": 3,
+          "max": 3
+        },
+        "collection_ms": {
+          "n": 6,
+          "first": 54.450292023830116,
+          "last": 59.55979201826267,
+          "min": 54.450292023830116,
+          "p50": 57.86743749922607,
+          "p95": 104.94816699065268,
+          "max": 104.94816699065268
+        },
+        "schedule_lag_ms": {
+          "n": 6,
+          "first": 5.758499988587573,
+          "last": 5.686624994268641,
+          "min": 3.0430839979089797,
+          "p50": 5.379583497415297,
+          "p95": 7.0614170108456165,
+          "max": 7.0614170108456165
+        },
+        "sample_gap_seconds": {
+          "n": 5,
+          "first": 4.999314042011974,
+          "last": 5.000618374993792,
+          "min": 4.995981666987063,
+          "p50": 5.000618374993792,
+          "p95": 5.002025166002568,
+          "max": 5.002025166002568
+        },
+        "errors": []
+      },
+      "start_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:38:36.361272+00:00",
+          "elapsed_seconds": 1250.0057666249922,
+          "rss_kib": 280192,
+          "cpu_time_seconds": 30.57,
+          "threads": 18,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1230.0040595839964,
+          "git_children": 3
+        },
+        "after": {
+          "utc": "2026-09-10T02:38:41.360987+00:00",
+          "elapsed_seconds": 1255.0057584999886,
+          "rss_kib": 280192,
+          "cpu_time_seconds": 31.09,
+          "threads": 18,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1230.0040595839964,
+          "git_children": 3
+        }
+      },
+      "end_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:39:06.365908+00:00",
+          "elapsed_seconds": 1280.0056866249943,
+          "rss_kib": 280192,
+          "cpu_time_seconds": 31.35,
+          "threads": 19,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1260.0050725420006,
+          "git_children": 3
+        },
+        "after": {
+          "utc": "2026-09-10T02:39:11.370204+00:00",
+          "elapsed_seconds": 1285.0047530000156,
+          "rss_kib": 281072,
+          "cpu_time_seconds": 31.88,
+          "threads": 20,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1260.0050725420006,
+          "git_children": 4
+        }
+      },
+      "marker_endpoint_cpu": {
+        "cpu_delta_seconds": 0.6999999999999993,
+        "collection_end_span_seconds": 27.15984296798706,
+        "percent_one_cpu": 2.5773344891024585,
+        "start": {
+          "pid": 14206,
+          "rss_kib": 280192,
+          "cpu_time_seconds": 31.09,
+          "cpu_percent_ps": 7.4
+        },
+        "end": {
+          "pid": 14206,
+          "rss_kib": 280960,
+          "cpu_time_seconds": 31.79,
+          "cpu_percent_ps": 28.8
+        }
+      },
+      "trace": {
+        "metrics": {},
+        "lifecycle": {
+          "events": 0,
+          "track_events": 0,
+          "tracked_images": 0,
+          "tracked_frames": 0,
+          "retire_events": 0,
+          "retired_images": 0,
+          "retired_frames": 0,
+          "entering_retained_images": 14,
+          "inferred_first_before_images": null,
+          "last_retained_images": 14,
+          "retained_images_statistics": null,
+          "first_record": null,
+          "last_record": null,
+          "window_closed_records": [],
+          "count_consistency_anomalies": []
+        },
+        "failure_records": []
+      }
+    },
+    {
+      "phase": "preview-close",
+      "cycle": null,
+      "start_marker_line": 16,
+      "end_marker_line": 17,
+      "start_time_unix": 1789007947.918343,
+      "end_time_unix": 1789007969.933136,
+      "duration_seconds": 22.014792919158936,
+      "end_source": "next_phase_marker",
+      "trace_start_byte": 7409,
+      "trace_end_byte": 7508,
+      "trace_attribution_available": true,
+      "trace_crossing_records": [],
+      "resources": {
+        "samples": 4,
+        "first": {
+          "utc": "2026-09-10T02:39:11.370204+00:00",
+          "elapsed_seconds": 1285.0047530000156,
+          "rss_kib": 281072,
+          "cpu_time_seconds": 31.88,
+          "threads": 20,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1260.0050725420006,
+          "git_children": 4
+        },
+        "last": {
+          "utc": "2026-09-10T02:39:26.359711+00:00",
+          "elapsed_seconds": 1300.0003567500098,
+          "rss_kib": 281040,
+          "cpu_time_seconds": 32.57,
+          "threads": 18,
+          "fd_count": 15,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1290.0048540419957,
+          "git_children": 1
+        },
+        "sample_span_seconds": 14.995603749994189,
+        "cpu_time_delta_seconds": 0.6900000000000013,
+        "cpu_average_percent_one_core": 4.601348578581031,
+        "rss_mib": {
+          "n": 4,
+          "first": 274.484375,
+          "last": 274.453125,
+          "min": 274.4375,
+          "p50": 274.4609375,
+          "p95": 274.484375,
+          "max": 274.484375
+        },
+        "cpu_percent_interval": {
+          "n": 4,
+          "first": 10.601979654605673,
+          "last": 8.608042063305078,
+          "min": 2.599909544977547,
+          "p50": 5.603994761268589,
+          "p95": 10.601979654605673,
+          "max": 10.601979654605673
+        },
+        "cpu_percent_ps": {
+          "n": 4,
+          "first": 1.4,
+          "last": 11.3,
+          "min": 1.1,
+          "p50": 2.0999999999999996,
+          "p95": 11.3,
+          "max": 11.3
+        },
+        "threads": {
+          "n": 4,
+          "first": 20,
+          "last": 18,
+          "min": 18,
+          "p50": 20.0,
+          "p95": 21,
+          "max": 21
+        },
+        "numeric_fd_fresh": {
+          "n": 1,
+          "first": 15,
+          "last": 15,
+          "min": 15,
+          "p50": 15,
+          "p95": 15,
+          "max": 15
+        },
+        "git_children": {
+          "n": 4,
+          "first": 4,
+          "last": 1,
+          "min": 1,
+          "p50": 4.0,
+          "p95": 4,
+          "max": 4
+        },
+        "all_descendants": {
+          "n": 4,
+          "first": 4,
+          "last": 1,
+          "min": 1,
+          "p50": 4.0,
+          "p95": 4,
+          "max": 4
+        },
+        "collection_ms": {
+          "n": 4,
+          "first": 64.7869999811519,
+          "last": 58.765708992723376,
+          "min": 52.05429199850187,
+          "p50": 61.776354486937635,
+          "p95": 123.23612501495518,
+          "max": 123.23612501495518
+        },
+        "schedule_lag_ms": {
+          "n": 4,
+          "first": 4.75300001562573,
+          "last": 0.3567500098142773,
+          "min": 0.3567500098142773,
+          "p50": 4.803521005669609,
+          "p95": 5.028000014135614,
+          "max": 5.028000014135614
+        },
+        "sample_gap_seconds": {
+          "n": 3,
+          "first": 5.000101041980088,
+          "last": 4.995328749995679,
+          "min": 4.995328749995679,
+          "p50": 5.000101041980088,
+          "p95": 5.000173958018422,
+          "max": 5.000173958018422
+        },
+        "errors": []
+      },
+      "start_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:39:06.365908+00:00",
+          "elapsed_seconds": 1280.0056866249943,
+          "rss_kib": 280192,
+          "cpu_time_seconds": 31.35,
+          "threads": 19,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1260.0050725420006,
+          "git_children": 3
+        },
+        "after": {
+          "utc": "2026-09-10T02:39:11.370204+00:00",
+          "elapsed_seconds": 1285.0047530000156,
+          "rss_kib": 281072,
+          "cpu_time_seconds": 31.88,
+          "threads": 20,
+          "fd_count": 13,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1260.0050725420006,
+          "git_children": 4
+        }
+      },
+      "end_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:39:26.359711+00:00",
+          "elapsed_seconds": 1300.0003567500098,
+          "rss_kib": 281040,
+          "cpu_time_seconds": 32.57,
+          "threads": 18,
+          "fd_count": 15,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1290.0048540419957,
+          "git_children": 1
+        },
+        "after": {
+          "utc": "2026-09-10T02:39:31.366320+00:00",
+          "elapsed_seconds": 1305.0050167090085,
+          "rss_kib": 282016,
+          "cpu_time_seconds": 33.04,
+          "threads": 17,
+          "fd_count": 15,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1290.0048540419957,
+          "git_children": 1
+        }
+      },
+      "marker_endpoint_cpu": {
+        "cpu_delta_seconds": 1.240000000000002,
+        "collection_end_span_seconds": 22.014271020889282,
+        "percent_one_cpu": 5.632709794584474,
+        "start": {
+          "pid": 14206,
+          "rss_kib": 280960,
+          "cpu_time_seconds": 31.79,
+          "cpu_percent_ps": 28.8
+        },
+        "end": {
+          "pid": 14206,
+          "rss_kib": 282016,
+          "cpu_time_seconds": 33.03,
+          "cpu_percent_ps": 6.2
+        }
+      },
+      "trace": {
+        "metrics": {
+          "commit_files_frame_ms": {
+            "statistics": {
+              "n": 1,
+              "first": 30.763,
+              "last": 30.763,
+              "min": 30.763,
+              "p50": 30.763,
+              "p95": 30.763,
+              "max": 30.763
+            },
+            "records": [
+              {
+                "line": 147,
+                "byte_start": 7469,
+                "byte_end": 7508,
+                "text": "gitturtle.commit_files_frame_ms=30.763",
+                "kind": "callback",
+                "metric": "commit_files_frame_ms",
+                "value": 30.763
+              }
+            ]
+          }
+        },
+        "lifecycle": {
+          "events": 1,
+          "track_events": 0,
+          "tracked_images": 0,
+          "tracked_frames": 0,
+          "retire_events": 1,
+          "retired_images": 4,
+          "retired_frames": 4,
+          "entering_retained_images": 14,
+          "inferred_first_before_images": 14,
+          "last_retained_images": 10,
+          "retained_images_statistics": {
+            "n": 1,
+            "first": 10,
+            "last": 10,
+            "min": 10,
+            "p50": 10,
+            "p95": 10,
+            "max": 10
+          },
+          "first_record": {
+            "line": 146,
+            "byte_start": 7409,
+            "byte_end": 7469,
+            "text": "gitturtle.image_retire images=4 frames=4 retained_images=10",
+            "kind": "lifecycle",
+            "event": "image_retire",
+            "images": 4,
+            "frames": 4,
+            "retained_images": 10
+          },
+          "last_record": {
+            "line": 146,
+            "byte_start": 7409,
+            "byte_end": 7469,
+            "text": "gitturtle.image_retire images=4 frames=4 retained_images=10",
+            "kind": "lifecycle",
+            "event": "image_retire",
+            "images": 4,
+            "frames": 4,
+            "retained_images": 10
+          },
+          "window_closed_records": [],
+          "count_consistency_anomalies": []
+        },
+        "failure_records": []
+      }
+    },
+    {
+      "phase": "final-idle",
+      "cycle": null,
+      "start_marker_line": 17,
+      "end_marker_line": 18,
+      "start_time_unix": 1789007969.933136,
+      "end_time_unix": 1789008003.83636,
+      "duration_seconds": 33.90322399139404,
+      "end_source": "next_phase_marker",
+      "trace_start_byte": 7508,
+      "trace_end_byte": 7508,
+      "trace_attribution_available": true,
+      "trace_crossing_records": [],
+      "resources": {
+        "samples": 7,
+        "first": {
+          "utc": "2026-09-10T02:39:31.366320+00:00",
+          "elapsed_seconds": 1305.0050167090085,
+          "rss_kib": 282016,
+          "cpu_time_seconds": 33.04,
+          "threads": 17,
+          "fd_count": 15,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1290.0048540419957,
+          "git_children": 1
+        },
+        "last": {
+          "utc": "2026-09-10T02:40:01.358136+00:00",
+          "elapsed_seconds": 1335.0017039590166,
+          "rss_kib": 282000,
+          "cpu_time_seconds": 33.38,
+          "threads": 16,
+          "fd_count": 9,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1320.0049690419983,
+          "git_children": 1
+        },
+        "sample_span_seconds": 29.996687250008108,
+        "cpu_time_delta_seconds": 0.3400000000000034,
+        "cpu_average_percent_one_core": 1.1334584954874025,
+        "rss_mib": {
+          "n": 7,
+          "first": 275.40625,
+          "last": 275.390625,
+          "min": 275.375,
+          "p50": 275.375,
+          "p95": 275.40625,
+          "max": 275.40625
+        },
+        "cpu_percent_interval": {
+          "n": 7,
+          "first": 9.391247434401837,
+          "last": 1.6007825825807571,
+          "min": 0.799903918101536,
+          "p50": 1.0001658358956698,
+          "p95": 9.391247434401837,
+          "max": 9.391247434401837
+        },
+        "cpu_percent_ps": {
+          "n": 7,
+          "first": 0.8,
+          "last": 0.7,
+          "min": 0.7,
+          "p50": 0.8,
+          "p95": 1.5,
+          "max": 1.5
+        },
+        "threads": {
+          "n": 7,
+          "first": 17,
+          "last": 16,
+          "min": 16,
+          "p50": 16,
+          "p95": 17,
+          "max": 17
+        },
+        "numeric_fd_fresh": {
+          "n": 1,
+          "first": 9,
+          "last": 9,
+          "min": 9,
+          "p50": 9,
+          "p95": 9,
+          "max": 9
+        },
+        "git_children": {
+          "n": 7,
+          "first": 1,
+          "last": 1,
+          "min": 1,
+          "p50": 1,
+          "p95": 1,
+          "max": 1
+        },
+        "all_descendants": {
+          "n": 7,
+          "first": 1,
+          "last": 1,
+          "min": 1,
+          "p50": 1,
+          "p95": 1,
+          "max": 1
+        },
+        "collection_ms": {
+          "n": 7,
+          "first": 60.713374987244606,
+          "last": 55.97645798115991,
+          "min": 55.97645798115991,
+          "p50": 61.43562501529232,
+          "p95": 110.11354200309142,
+          "max": 110.11354200309142
+        },
+        "schedule_lag_ms": {
+          "n": 7,
+          "first": 5.0167090084869415,
+          "last": 1.7039590165950358,
+          "min": 1.7039590165950358,
+          "p50": 4.969041998265311,
+          "p95": 5.798083991976455,
+          "max": 5.798083991976455
+        },
+        "sample_gap_seconds": {
+          "n": 6,
+          "first": 5.000180790986633,
+          "last": 4.997555625013774,
+          "min": 4.997555625013774,
+          "p50": 4.999589646002278,
+          "p95": 5.000600583996857,
+          "max": 5.000600583996857
+        },
+        "errors": []
+      },
+      "start_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:39:26.359711+00:00",
+          "elapsed_seconds": 1300.0003567500098,
+          "rss_kib": 281040,
+          "cpu_time_seconds": 32.57,
+          "threads": 18,
+          "fd_count": 15,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1290.0048540419957,
+          "git_children": 1
+        },
+        "after": {
+          "utc": "2026-09-10T02:39:31.366320+00:00",
+          "elapsed_seconds": 1305.0050167090085,
+          "rss_kib": 282016,
+          "cpu_time_seconds": 33.04,
+          "threads": 17,
+          "fd_count": 15,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1290.0048540419957,
+          "git_children": 1
+        }
+      },
+      "end_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:40:01.358136+00:00",
+          "elapsed_seconds": 1335.0017039590166,
+          "rss_kib": 282000,
+          "cpu_time_seconds": 33.38,
+          "threads": 16,
+          "fd_count": 9,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1320.0049690419983,
+          "git_children": 1
+        },
+        "after": null
+      },
+      "marker_endpoint_cpu": {
+        "cpu_delta_seconds": 0.36999999999999744,
+        "collection_end_span_seconds": 33.903143882751465,
+        "percent_one_cpu": 1.0913442165705416,
+        "start": {
+          "pid": 14206,
+          "rss_kib": 282016,
+          "cpu_time_seconds": 33.03,
+          "cpu_percent_ps": 6.2
+        },
+        "end": {
+          "pid": 14206,
+          "rss_kib": 282000,
+          "cpu_time_seconds": 33.4,
+          "cpu_percent_ps": 0.9
+        }
+      },
+      "trace": {
+        "metrics": {},
+        "lifecycle": {
+          "events": 0,
+          "track_events": 0,
+          "tracked_images": 0,
+          "tracked_frames": 0,
+          "retire_events": 0,
+          "retired_images": 0,
+          "retired_frames": 0,
+          "entering_retained_images": 10,
+          "inferred_first_before_images": null,
+          "last_retained_images": 10,
+          "retained_images_statistics": null,
+          "first_record": null,
+          "last_record": null,
+          "window_closed_records": [],
+          "count_consistency_anomalies": []
+        },
+        "failure_records": []
+      }
+    },
+    {
+      "phase": "window-close",
+      "cycle": null,
+      "start_marker_line": 18,
+      "end_marker_line": null,
+      "start_time_unix": 1789008003.83636,
+      "end_time_unix": 1789008006.325624,
+      "duration_seconds": 2.4892640113830566,
+      "end_source": "observer_footer_or_last_sample",
+      "trace_start_byte": 7508,
+      "trace_end_byte": 7617,
+      "trace_attribution_available": true,
+      "trace_crossing_records": [],
+      "resources": {
+        "samples": 0
+      },
+      "start_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:40:01.358136+00:00",
+          "elapsed_seconds": 1335.0017039590166,
+          "rss_kib": 282000,
+          "cpu_time_seconds": 33.38,
+          "threads": 16,
+          "fd_count": 9,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1320.0049690419983,
+          "git_children": 1
+        },
+        "after": null
+      },
+      "end_resource_bracket": {
+        "before": {
+          "utc": "2026-09-10T02:40:01.358136+00:00",
+          "elapsed_seconds": 1335.0017039590166,
+          "rss_kib": 282000,
+          "cpu_time_seconds": 33.38,
+          "threads": 16,
+          "fd_count": 9,
+          "fd_sample_fresh": false,
+          "fd_sample_elapsed_seconds": 1320.0049690419983,
+          "git_children": 1
+        },
+        "after": null
+      },
+      "marker_endpoint_cpu": null,
+      "trace": {
+        "metrics": {},
+        "lifecycle": {
+          "events": 2,
+          "track_events": 0,
+          "tracked_images": 0,
+          "tracked_frames": 0,
+          "retire_events": 1,
+          "retired_images": 10,
+          "retired_frames": 10,
+          "entering_retained_images": 10,
+          "inferred_first_before_images": 10,
+          "last_retained_images": 0,
+          "retained_images_statistics": {
+            "n": 2,
+            "first": 0,
+            "last": 0,
+            "min": 0,
+            "p50": 0.0,
+            "p95": 0,
+            "max": 0
+          },
+          "first_record": {
+            "line": 148,
+            "byte_start": 7508,
+            "byte_end": 7569,
+            "text": "gitturtle.image_retire images=10 frames=10 retained_images=0",
+            "kind": "lifecycle",
+            "event": "image_retire",
+            "images": 10,
+            "frames": 10,
+            "retained_images": 0
+          },
+          "last_record": {
+            "line": 149,
+            "byte_start": 7569,
+            "byte_end": 7617,
+            "text": "gitturtle.image_window_closed retained_images=0",
+            "kind": "lifecycle",
+            "event": "image_window_closed",
+            "retained_images": 0
+          },
+          "window_closed_records": [
+            {
+              "line": 149,
+              "byte_start": 7569,
+              "byte_end": 7617,
+              "text": "gitturtle.image_window_closed retained_images=0",
+              "kind": "lifecycle",
+              "event": "image_window_closed",
+              "retained_images": 0
+            }
+          ],
+          "count_consistency_anomalies": []
+        },
+        "failure_records": []
+      }
+    }
+  ],
+  "trace": {
+    "metrics": {
+      "commit_files_frame_ms": {
+        "statistics": {
+          "n": 9,
+          "first": 40.052,
+          "last": 30.763,
+          "min": 16.776,
+          "p50": 30.763,
+          "p95": 51.545,
+          "max": 51.545
+        },
+        "records": [
+          {
+            "line": 27,
+            "byte_start": 1364,
+            "byte_end": 1403,
+            "text": "gitturtle.commit_files_frame_ms=40.052",
+            "kind": "callback",
+            "metric": "commit_files_frame_ms",
+            "value": 40.052
+          },
+          {
+            "line": 30,
+            "byte_start": 1487,
+            "byte_end": 1526,
+            "text": "gitturtle.commit_files_frame_ms=30.016",
+            "kind": "callback",
+            "metric": "commit_files_frame_ms",
+            "value": 30.016
+          },
+          {
+            "line": 64,
+            "byte_start": 3233,
+            "byte_end": 3272,
+            "text": "gitturtle.commit_files_frame_ms=36.459",
+            "kind": "callback",
+            "metric": "commit_files_frame_ms",
+            "value": 36.459
+          },
+          {
+            "line": 76,
+            "byte_start": 3691,
+            "byte_end": 3730,
+            "text": "gitturtle.commit_files_frame_ms=21.221",
+            "kind": "callback",
+            "metric": "commit_files_frame_ms",
+            "value": 21.221
+          },
+          {
+            "line": 77,
+            "byte_start": 3730,
+            "byte_end": 3769,
+            "text": "gitturtle.commit_files_frame_ms=33.021",
+            "kind": "callback",
+            "metric": "commit_files_frame_ms",
+            "value": 33.021
+          },
+          {
+            "line": 78,
+            "byte_start": 3769,
+            "byte_end": 3808,
+            "text": "gitturtle.commit_files_frame_ms=16.776",
+            "kind": "callback",
+            "metric": "commit_files_frame_ms",
+            "value": 16.776
+          },
+          {
+            "line": 79,
+            "byte_start": 3808,
+            "byte_end": 3847,
+            "text": "gitturtle.commit_files_frame_ms=25.161",
+            "kind": "callback",
+            "metric": "commit_files_frame_ms",
+            "value": 25.161
+          },
+          {
+            "line": 84,
+            "byte_start": 4047,
+            "byte_end": 4086,
+            "text": "gitturtle.commit_files_frame_ms=51.545",
+            "kind": "callback",
+            "metric": "commit_files_frame_ms",
+            "value": 51.545
+          },
+          {
+            "line": 147,
+            "byte_start": 7469,
+            "byte_end": 7508,
+            "text": "gitturtle.commit_files_frame_ms=30.763",
+            "kind": "callback",
+            "metric": "commit_files_frame_ms",
+            "value": 30.763
+          }
+        ]
+      },
+      "file_preview_frame_ms": {
+        "statistics": {
+          "n": 2,
+          "first": 5.266,
+          "last": 3.198,
+          "min": 3.198,
+          "p50": 4.232,
+          "p95": 5.266,
+          "max": 5.266
+        },
+        "records": [
+          {
+            "line": 31,
+            "byte_start": 1526,
+            "byte_end": 1564,
+            "text": "gitturtle.file_preview_frame_ms=5.266",
+            "kind": "callback",
+            "metric": "file_preview_frame_ms",
+            "value": 5.266
+          },
+          {
+            "line": 32,
+            "byte_start": 1564,
+            "byte_end": 1602,
+            "text": "gitturtle.file_preview_frame_ms=3.198",
+            "kind": "callback",
+            "metric": "file_preview_frame_ms",
+            "value": 3.198
+          }
+        ]
+      },
+      "history_page_frame_ms": {
+        "statistics": {
+          "n": 11,
+          "first": 6.51,
+          "last": 7.988,
+          "min": 3.111,
+          "p50": 7.862,
+          "p95": 10.243,
+          "max": 10.243
+        },
+        "records": [
+          {
+            "line": 65,
+            "byte_start": 3272,
+            "byte_end": 3310,
+            "text": "gitturtle.history_page_frame_ms=6.510",
+            "kind": "callback",
+            "metric": "history_page_frame_ms",
+            "value": 6.51
+          },
+          {
+            "line": 66,
+            "byte_start": 3310,
+            "byte_end": 3348,
+            "text": "gitturtle.history_page_frame_ms=8.233",
+            "kind": "callback",
+            "metric": "history_page_frame_ms",
+            "value": 8.233
+          },
+          {
+            "line": 67,
+            "byte_start": 3348,
+            "byte_end": 3386,
+            "text": "gitturtle.history_page_frame_ms=8.064",
+            "kind": "callback",
+            "metric": "history_page_frame_ms",
+            "value": 8.064
+          },
+          {
+            "line": 68,
+            "byte_start": 3386,
+            "byte_end": 3424,
+            "text": "gitturtle.history_page_frame_ms=3.128",
+            "kind": "callback",
+            "metric": "history_page_frame_ms",
+            "value": 3.128
+          },
+          {
+            "line": 69,
+            "byte_start": 3424,
+            "byte_end": 3462,
+            "text": "gitturtle.history_page_frame_ms=7.862",
+            "kind": "callback",
+            "metric": "history_page_frame_ms",
+            "value": 7.862
+          },
+          {
+            "line": 70,
+            "byte_start": 3462,
+            "byte_end": 3500,
+            "text": "gitturtle.history_page_frame_ms=3.111",
+            "kind": "callback",
+            "metric": "history_page_frame_ms",
+            "value": 3.111
+          },
+          {
+            "line": 71,
+            "byte_start": 3500,
+            "byte_end": 3538,
+            "text": "gitturtle.history_page_frame_ms=4.355",
+            "kind": "callback",
+            "metric": "history_page_frame_ms",
+            "value": 4.355
+          },
+          {
+            "line": 72,
+            "byte_start": 3538,
+            "byte_end": 3577,
+            "text": "gitturtle.history_page_frame_ms=10.243",
+            "kind": "callback",
+            "metric": "history_page_frame_ms",
+            "value": 10.243
+          },
+          {
+            "line": 73,
+            "byte_start": 3577,
+            "byte_end": 3615,
+            "text": "gitturtle.history_page_frame_ms=4.139",
+            "kind": "callback",
+            "metric": "history_page_frame_ms",
+            "value": 4.139
+          },
+          {
+            "line": 74,
+            "byte_start": 3615,
+            "byte_end": 3653,
+            "text": "gitturtle.history_page_frame_ms=7.961",
+            "kind": "callback",
+            "metric": "history_page_frame_ms",
+            "value": 7.961
+          },
+          {
+            "line": 75,
+            "byte_start": 3653,
+            "byte_end": 3691,
+            "text": "gitturtle.history_page_frame_ms=7.988",
+            "kind": "callback",
+            "metric": "history_page_frame_ms",
+            "value": 7.988
+          }
+        ]
+      },
+      "working_preview_frame_ms": {
+        "statistics": {
+          "n": 3,
+          "first": 49.603,
+          "last": 130.851,
+          "min": 33.595,
+          "p50": 49.603,
+          "p95": 130.851,
+          "max": 130.851
+        },
+        "records": [
+          {
+            "line": 28,
+            "byte_start": 1403,
+            "byte_end": 1445,
+            "text": "gitturtle.working_preview_frame_ms=49.603",
+            "kind": "callback",
+            "metric": "working_preview_frame_ms",
+            "value": 49.603
+          },
+          {
+            "line": 29,
+            "byte_start": 1445,
+            "byte_end": 1487,
+            "text": "gitturtle.working_preview_frame_ms=33.595",
+            "kind": "callback",
+            "metric": "working_preview_frame_ms",
+            "value": 33.595
+          },
+          {
+            "line": 85,
+            "byte_start": 4086,
+            "byte_end": 4129,
+            "text": "gitturtle.working_preview_frame_ms=130.851",
+            "kind": "callback",
+            "metric": "working_preview_frame_ms",
+            "value": 130.851
+          }
+        ]
+      }
+    },
+    "lifecycle": {
+      "events": 124,
+      "track_events": 75,
+      "tracked_images": 75,
+      "tracked_frames": 75,
+      "retire_events": 48,
+      "retired_images": 75,
+      "retired_frames": 75,
+      "entering_retained_images": null,
+      "inferred_first_before_images": 0,
+      "last_retained_images": 0,
+      "retained_images_statistics": {
+        "n": 124,
+        "first": 1,
+        "last": 0,
+        "min": 0,
+        "p50": 13.0,
+        "p95": 15,
+        "max": 16
+      },
+      "first_record": {
+        "line": 1,
+        "byte_start": 0,
+        "byte_end": 49,
+        "text": "gitturtle.image_track frames=1 retained_images=1",
+        "kind": "lifecycle",
+        "event": "image_track",
+        "frames": 1,
+        "retained_images": 1
+      },
+      "last_record": {
+        "line": 149,
+        "byte_start": 7569,
+        "byte_end": 7617,
+        "text": "gitturtle.image_window_closed retained_images=0",
+        "kind": "lifecycle",
+        "event": "image_window_closed",
+        "retained_images": 0
+      },
+      "window_closed_records": [
+        {
+          "line": 149,
+          "byte_start": 7569,
+          "byte_end": 7617,
+          "text": "gitturtle.image_window_closed retained_images=0",
+          "kind": "lifecycle",
+          "event": "image_window_closed",
+          "retained_images": 0
+        }
+      ],
+      "count_consistency_anomalies": []
+    },
+    "failure_records": []
+  },
+  "largest_rss_increases": [
+    {
+      "change_mib": 347.203125,
+      "first": {
+        "utc": "2026-09-10T02:35:01.357229+00:00",
+        "elapsed_seconds": 1035.003089542006,
+        "rss_kib": 343248,
+        "cpu_time_seconds": 21.46,
+        "threads": 21,
+        "fd_count": 13,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 1020.003877375013,
+        "git_children": 3
+      },
+      "last": {
+        "utc": "2026-09-10T02:35:06.374474+00:00",
+        "elapsed_seconds": 1040.0030102920136,
+        "rss_kib": 698784,
+        "cpu_time_seconds": 22.06,
+        "threads": 18,
+        "fd_count": 13,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 1020.003877375013,
+        "git_children": 3
+      }
+    },
+    {
+      "change_mib": 77.46875,
+      "first": {
+        "utc": "2026-09-10T02:34:56.379346+00:00",
+        "elapsed_seconds": 1030.006360333995,
+        "rss_kib": 263920,
+        "cpu_time_seconds": 21.23,
+        "threads": 20,
+        "fd_count": 13,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 1020.003877375013,
+        "git_children": 3
+      },
+      "last": {
+        "utc": "2026-09-10T02:35:01.357229+00:00",
+        "elapsed_seconds": 1035.003089542006,
+        "rss_kib": 343248,
+        "cpu_time_seconds": 21.46,
+        "threads": 21,
+        "fd_count": 13,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 1020.003877375013,
+        "git_children": 3
+      }
+    },
+    {
+      "change_mib": 22.28125,
+      "first": {
+        "utc": "2026-09-10T02:22:26.378613+00:00",
+        "elapsed_seconds": 280.0040358339902,
+        "rss_kib": 166896,
+        "cpu_time_seconds": 2.65,
+        "threads": 14,
+        "fd_count": 9,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 270.0006460000004,
+        "git_children": 1
+      },
+      "last": {
+        "utc": "2026-09-10T02:22:31.382347+00:00",
+        "elapsed_seconds": 285.00251741701504,
+        "rss_kib": 189712,
+        "cpu_time_seconds": 2.83,
+        "threads": 15,
+        "fd_count": 9,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 270.0006460000004,
+        "git_children": 1
+      }
+    },
+    {
+      "change_mib": 18.046875,
+      "first": {
+        "utc": "2026-09-10T02:22:36.382775+00:00",
+        "elapsed_seconds": 290.0051326249959,
+        "rss_kib": 189616,
+        "cpu_time_seconds": 2.86,
+        "threads": 13,
+        "fd_count": 9,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 270.0006460000004,
+        "git_children": 1
+      },
+      "last": {
+        "utc": "2026-09-10T02:22:41.363360+00:00",
+        "elapsed_seconds": 295.0033691250137,
+        "rss_kib": 208096,
+        "cpu_time_seconds": 3.09,
+        "threads": 16,
+        "fd_count": 9,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 270.0006460000004,
+        "git_children": 1
+      }
+    },
+    {
+      "change_mib": 16.703125,
+      "first": {
+        "utc": "2026-09-10T02:30:21.367578+00:00",
+        "elapsed_seconds": 755.0041424169904,
+        "rss_kib": 224672,
+        "cpu_time_seconds": 12.11,
+        "threads": 16,
+        "fd_count": 13,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 750.00440062501,
+        "git_children": 3
+      },
+      "last": {
+        "utc": "2026-09-10T02:30:26.379899+00:00",
+        "elapsed_seconds": 760.0015295839985,
+        "rss_kib": 241776,
+        "cpu_time_seconds": 12.25,
+        "threads": 18,
+        "fd_count": 13,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 750.00440062501,
+        "git_children": 3
+      }
+    },
+    {
+      "change_mib": 6.921875,
+      "first": {
+        "utc": "2026-09-10T02:30:36.384575+00:00",
+        "elapsed_seconds": 770.0048131670046,
+        "rss_kib": 241776,
+        "cpu_time_seconds": 12.35,
+        "threads": 18,
+        "fd_count": 13,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 750.00440062501,
+        "git_children": 3
+      },
+      "last": {
+        "utc": "2026-09-10T02:30:41.366071+00:00",
+        "elapsed_seconds": 775.0024023340084,
+        "rss_kib": 248864,
+        "cpu_time_seconds": 12.67,
+        "threads": 18,
+        "fd_count": 13,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 750.00440062501,
+        "git_children": 3
+      }
+    },
+    {
+      "change_mib": 5.84375,
+      "first": {
+        "utc": "2026-09-10T02:36:41.360766+00:00",
+        "elapsed_seconds": 1135.0051584999892,
+        "rss_kib": 269184,
+        "cpu_time_seconds": 26.03,
+        "threads": 20,
+        "fd_count": 15,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 1110.005129208992,
+        "git_children": 4
+      },
+      "last": {
+        "utc": "2026-09-10T02:36:46.419262+00:00",
+        "elapsed_seconds": 1140.004472917004,
+        "rss_kib": 275168,
+        "cpu_time_seconds": 26.57,
+        "threads": 20,
+        "fd_count": 15,
+        "fd_sample_fresh": true,
+        "fd_sample_elapsed_seconds": 1140.004472917004,
+        "git_children": 4
+      }
+    },
+    {
+      "change_mib": 5.78125,
+      "first": {
+        "utc": "2026-09-10T02:22:41.363360+00:00",
+        "elapsed_seconds": 295.0033691250137,
+        "rss_kib": 208096,
+        "cpu_time_seconds": 3.09,
+        "threads": 16,
+        "fd_count": 9,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 270.0006460000004,
+        "git_children": 1
+      },
+      "last": {
+        "utc": "2026-09-10T02:22:46.426325+00:00",
+        "elapsed_seconds": 300.00511245901,
+        "rss_kib": 214016,
+        "cpu_time_seconds": 3.57,
+        "threads": 16,
+        "fd_count": 9,
+        "fd_sample_fresh": true,
+        "fd_sample_elapsed_seconds": 300.00511245901,
+        "git_children": 1
+      }
+    },
+    {
+      "change_mib": 5.046875,
+      "first": {
+        "utc": "2026-09-10T02:37:06.361707+00:00",
+        "elapsed_seconds": 1160.0051467500161,
+        "rss_kib": 275104,
+        "cpu_time_seconds": 26.86,
+        "threads": 19,
+        "fd_count": 15,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 1140.004472917004,
+        "git_children": 4
+      },
+      "last": {
+        "utc": "2026-09-10T02:37:11.371268+00:00",
+        "elapsed_seconds": 1165.0050714999961,
+        "rss_kib": 280272,
+        "cpu_time_seconds": 27.35,
+        "threads": 18,
+        "fd_count": 15,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 1140.004472917004,
+        "git_children": 3
+      }
+    },
+    {
+      "change_mib": 4.0625,
+      "first": {
+        "utc": "2026-09-10T02:32:11.374155+00:00",
+        "elapsed_seconds": 865.0039785839908,
+        "rss_kib": 252272,
+        "cpu_time_seconds": 15.6,
+        "threads": 17,
+        "fd_count": 13,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 840.0023130839982,
+        "git_children": 3
+      },
+      "last": {
+        "utc": "2026-09-10T02:32:16.415317+00:00",
+        "elapsed_seconds": 870.002059749997,
+        "rss_kib": 256432,
+        "cpu_time_seconds": 15.74,
+        "threads": 17,
+        "fd_count": 13,
+        "fd_sample_fresh": true,
+        "fd_sample_elapsed_seconds": 870.002059749997,
+        "git_children": 3
+      }
+    },
+    {
+      "change_mib": 3.21875,
+      "first": {
+        "utc": "2026-09-10T02:22:46.426325+00:00",
+        "elapsed_seconds": 300.00511245901,
+        "rss_kib": 214016,
+        "cpu_time_seconds": 3.57,
+        "threads": 16,
+        "fd_count": 9,
+        "fd_sample_fresh": true,
+        "fd_sample_elapsed_seconds": 300.00511245901,
+        "git_children": 1
+      },
+      "last": {
+        "utc": "2026-09-10T02:22:51.368405+00:00",
+        "elapsed_seconds": 305.00513879201026,
+        "rss_kib": 217312,
+        "cpu_time_seconds": 4.07,
+        "threads": 15,
+        "fd_count": 9,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 300.00511245901,
+        "git_children": 1
+      }
+    },
+    {
+      "change_mib": 2.921875,
+      "first": {
+        "utc": "2026-09-10T02:35:21.362342+00:00",
+        "elapsed_seconds": 1055.0050604589924,
+        "rss_kib": 698784,
+        "cpu_time_seconds": 22.31,
+        "threads": 18,
+        "fd_count": 13,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 1050.003324874997,
+        "git_children": 3
+      },
+      "last": {
+        "utc": "2026-09-10T02:35:26.378750+00:00",
+        "elapsed_seconds": 1060.0031610419974,
+        "rss_kib": 701776,
+        "cpu_time_seconds": 22.5,
+        "threads": 19,
+        "fd_count": 13,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 1050.003324874997,
+        "git_children": 3
+      }
+    }
+  ],
+  "largest_rss_decreases": [
+    {
+      "change_mib": -311.40625,
+      "first": {
+        "utc": "2026-09-10T02:35:36.372797+00:00",
+        "elapsed_seconds": 1070.0079195419967,
+        "rss_kib": 587840,
+        "cpu_time_seconds": 22.94,
+        "threads": 16,
+        "fd_count": 13,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 1050.003324874997,
+        "git_children": 3
+      },
+      "last": {
+        "utc": "2026-09-10T02:35:41.368376+00:00",
+        "elapsed_seconds": 1075.003273875016,
+        "rss_kib": 268960,
+        "cpu_time_seconds": 23.07,
+        "threads": 16,
+        "fd_count": 13,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 1050.003324874997,
+        "git_children": 3
+      }
+    },
+    {
+      "change_mib": -111.25,
+      "first": {
+        "utc": "2026-09-10T02:35:26.378750+00:00",
+        "elapsed_seconds": 1060.0031610419974,
+        "rss_kib": 701776,
+        "cpu_time_seconds": 22.5,
+        "threads": 19,
+        "fd_count": 13,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 1050.003324874997,
+        "git_children": 3
+      },
+      "last": {
+        "utc": "2026-09-10T02:35:31.366745+00:00",
+        "elapsed_seconds": 1065.0043920419994,
+        "rss_kib": 587856,
+        "cpu_time_seconds": 22.81,
+        "threads": 17,
+        "fd_count": 13,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 1050.003324874997,
+        "git_children": 3
+      }
+    },
+    {
+      "change_mib": -0.1875,
+      "first": {
+        "utc": "2026-09-10T02:32:21.361177+00:00",
+        "elapsed_seconds": 875.001669624995,
+        "rss_kib": 257728,
+        "cpu_time_seconds": 16.0,
+        "threads": 19,
+        "fd_count": 13,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 870.002059749997,
+        "git_children": 3
+      },
+      "last": {
+        "utc": "2026-09-10T02:32:26.362957+00:00",
+        "elapsed_seconds": 880.0050881250063,
+        "rss_kib": 257536,
+        "cpu_time_seconds": 16.07,
+        "threads": 17,
+        "fd_count": 13,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 870.002059749997,
+        "git_children": 3
+      }
+    },
+    {
+      "change_mib": -0.15625,
+      "first": {
+        "utc": "2026-09-10T02:34:46.418511+00:00",
+        "elapsed_seconds": 1020.003877375013,
+        "rss_kib": 264080,
+        "cpu_time_seconds": 21.12,
+        "threads": 21,
+        "fd_count": 13,
+        "fd_sample_fresh": true,
+        "fd_sample_elapsed_seconds": 1020.003877375013,
+        "git_children": 3
+      },
+      "last": {
+        "utc": "2026-09-10T02:34:51.368294+00:00",
+        "elapsed_seconds": 1025.0020825419924,
+        "rss_kib": 263920,
+        "cpu_time_seconds": 21.18,
+        "threads": 20,
+        "fd_count": 13,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 1020.003877375013,
+        "git_children": 3
+      }
+    },
+    {
+      "change_mib": -0.140625,
+      "first": {
+        "utc": "2026-09-10T02:35:56.369010+00:00",
+        "elapsed_seconds": 1090.0062067919935,
+        "rss_kib": 269344,
+        "cpu_time_seconds": 24.07,
+        "threads": 21,
+        "fd_count": 15,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 1080.0032869999995,
+        "git_children": 4
+      },
+      "last": {
+        "utc": "2026-09-10T02:36:01.356290+00:00",
+        "elapsed_seconds": 1095.0032914170006,
+        "rss_kib": 269200,
+        "cpu_time_seconds": 24.24,
+        "threads": 22,
+        "fd_count": 15,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 1080.0032869999995,
+        "git_children": 4
+      }
+    },
+    {
+      "change_mib": -0.125,
+      "first": {
+        "utc": "2026-09-10T02:34:26.372456+00:00",
+        "elapsed_seconds": 1000.0048255840084,
+        "rss_kib": 263008,
+        "cpu_time_seconds": 19.93,
+        "threads": 20,
+        "fd_count": 17,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 990.005119584006,
+        "git_children": 4
+      },
+      "last": {
+        "utc": "2026-09-10T02:34:31.364874+00:00",
+        "elapsed_seconds": 1005.0037203340034,
+        "rss_kib": 262880,
+        "cpu_time_seconds": 20.03,
+        "threads": 18,
+        "fd_count": 17,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 990.005119584006,
+        "git_children": 4
+      }
+    },
+    {
+      "change_mib": -0.125,
+      "first": {
+        "utc": "2026-09-10T02:37:46.409344+00:00",
+        "elapsed_seconds": 1200.0038953339972,
+        "rss_kib": 280288,
+        "cpu_time_seconds": 29.22,
+        "threads": 19,
+        "fd_count": 13,
+        "fd_sample_fresh": true,
+        "fd_sample_elapsed_seconds": 1200.0038953339972,
+        "git_children": 3
+      },
+      "last": {
+        "utc": "2026-09-10T02:37:51.359373+00:00",
+        "elapsed_seconds": 1205.0038867089897,
+        "rss_kib": 280160,
+        "cpu_time_seconds": 29.81,
+        "threads": 18,
+        "fd_count": 13,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 1200.0038953339972,
+        "git_children": 3
+      }
+    },
+    {
+      "change_mib": -0.109375,
+      "first": {
+        "utc": "2026-09-10T02:27:21.383908+00:00",
+        "elapsed_seconds": 575.0042525840108,
+        "rss_kib": 220016,
+        "cpu_time_seconds": 9.13,
+        "threads": 14,
+        "fd_count": 9,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 570.0028811669908,
+        "git_children": 1
+      },
+      "last": {
+        "utc": "2026-09-10T02:27:26.374813+00:00",
+        "elapsed_seconds": 580.0051563750021,
+        "rss_kib": 219904,
+        "cpu_time_seconds": 9.13,
+        "threads": 13,
+        "fd_count": 9,
+        "fd_sample_fresh": false,
+        "fd_sample_elapsed_seconds": 570.0028811669908,
+        "git_children": 1
+      }
+    }
+  ],
+  "warnings": [],
+  "limitations": [
+    "Resource samples are snapshots; phase endpoints use actual marker timestamps and bracketing samples, never interpolation.",
+    "Trace byte boundaries establish ordering at capture, not per-line timestamps or completed GPU execution.",
+    "Boundary-crossing trace lines remain in overall counts and are separately reported rather than assigned to either phase.",
+    "All callback values and outliers are retained. Native frame callbacks are not physical input-to-display timings.",
+    "Worker-only durations are unavailable unless separately recorded; no callback/worker subtraction is inferred.",
+    "Image-retirement events follow App::drop_image calls; they do not measure GPU/driver resident bytes.",
+    "Observation length and markers do not alone prove uninterrupted active mixed review or successful stability."
+  ],
+  "build": {
+    "source": "188ec47199a0dc31f333fff6673d1d6afd7766f1",
+    "pid": 14206,
+    "executable_sha256": "f70097158c2b54b84c023ecee4c53e0916ea70791131de3d84602696a0bf5afe",
+    "machine": {
+      "hw.logicalcpu": "16",
+      "hw.memsize": "137438953472",
+      "hw.model": "Mac16,5",
+      "machdep.cpu.brand_string": "Apple M4 Max",
+      "machine": "arm64",
+      "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+      "processors": 16,
+      "sw_vers": "ProductName:\t\tmacOS\nProductVersion:\t\t26.6.2\nBuildVersion:\t\t25G83",
+      "timezone_names": [
+        "CST",
+        "CDT"
+      ]
+    },
+    "cache_and_fixture_note": "Warm OS filesystem cache and cold process; PDF startup saved historical12/20. Reuse prepared120k merge-heavy, model, markdown, PDF,operations fixtures. No compiler/container work at start; ordinary desktop load sampled.",
+    "observer_sha256": "a72a1c57dd7aac48b8eaebca20ecc3951c968732765c4f87dfe6e269dfc3511d"
+  },
+  "raw_source_hashes": {
+    "resources.jsonl": {
+      "bytes": 1149193,
+      "sha256": "0f8bb82aad00b4ec229f3c0470aab3ea44ad75eae148bd0ff1c39528ff71cb24"
+    },
+    "events.jsonl": {
+      "bytes": 11982,
+      "sha256": "b2027d43f2e93ba1ab27c371e57f1bc7a06002f675e90d358e750fbc70275f96"
+    },
+    "trace.log": {
+      "bytes": 7617,
+      "sha256": "a7ce9f1e435a948697ea0a05383f28744932dd2d9bc5a5c0340ce06275033335"
+    }
+  },
+  "background": {
+    "fresh_samples": 45,
+    "load_1m": {
+      "n": 45,
+      "first": 10.59375,
+      "last": 7.03564453125,
+      "min": 4.67529296875,
+      "p50": 7.46337890625,
+      "p95": 9.9208984375,
+      "max": 10.59375
+    },
+    "compiler_present_samples": 0
+  },
+  "footer": {
+    "timestamp_utc": "2026-09-10T02:40:06.325624+00:00",
+    "reason": "target_unavailable",
+    "sample_count": 268,
+    "sample_span_seconds": 1335.0011686670186,
+    "collection_error_count": 0,
+    "marker_count": 18,
+    "executable_unchanged": true
+  }
+}
