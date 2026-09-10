@@ -627,7 +627,11 @@ impl Panel {
     }
     fn persist_draft(&mut self, draft: Draft, window: &mut Window, cx: &mut Context<Self>) {
         let key = draft.key();
-        if let Some(old) = self.saved.iter_mut().find(|d| d.key() == key) {
+        if matches!(&draft, Draft::Reply(reply) if reply.body.is_empty()) {
+            // Empty replies are serialized deletions, not recoverable snapshots.
+            // Queue the deletion below while removing it from the visible cache.
+            self.saved.retain(|saved| saved.key() != key);
+        } else if let Some(old) = self.saved.iter_mut().find(|d| d.key() == key) {
             *old = draft.clone();
         } else {
             self.saved.push(draft.clone());

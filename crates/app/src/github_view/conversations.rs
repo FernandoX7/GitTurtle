@@ -837,6 +837,13 @@ mod tests {
                     cx,
                 );
                 assert!(panel.conversations.active.is_none());
+                assert!(
+                    !panel
+                        .saved
+                        .iter()
+                        .any(|draft| draft.key() == original.key()),
+                    "successful reply cleanup removes its recovery row and count immediately"
+                );
                 panel.restore_reply(window, cx);
                 assert!(
                     panel.conversations.active.is_none(),
