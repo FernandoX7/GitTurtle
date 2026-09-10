@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "source_commit": "8908b35c1b9bae0b9c3d3543e5984d0c580e4e7c",
+  "preview_commit": "4b19124681d193671589f1933069ff3747c156b3",
+  "checked_utc": "2026-09-10T23:17:14.178016+00:00",
+  "compiled_inputs_unchanged_from_source_commit": true,
+  "source_git_objects": {
+    "Cargo.toml": "885a0731bc26b974dfd0a43fbf32e48ee38d0d61",
+    "Cargo.lock": "42c3abf030d0b2f3b5267ec73ec3752f55421df9",
+    "crates/app/src": "bc8601af6e9c35dfd3c1a5a28b0c94e3a8d855e9",
+    "crates/app/Cargo.toml": "914b2c615c4a08213d9f317a1763c203dfaaf425",
+    "crates/preview/src": "f4a38372a7f209ac02d59f11f95f4fd30ebcb2af",
+    "crates/preview/Cargo.toml": "eb46907b35efd1b59d22e3a1cde208b5b00f71d6",
+    "crates/git-core/src": "50fda08cb8c4e0d2f9fb0b510f3a68f6e3e57688",
+    "crates/git-core/Cargo.toml": "aea9baf26ed1d850500225f764754bd45143153b",
+    "assets": "cd34d30de3f215754822c146ec0c4a3900948816",
+    "vendor": "c3a22101b93001b0c329ab763ee3395b1feed962"
+  },
+  "source_harnesses": {
+    "crates/preview/examples/bench_model_animation.rs": "0019cf2e5ec4a6f30c9fd6c526ecdad74ffd66d6dfe672764728c4d1e2c0889d",
+    "crates/preview/examples/probe_glb_workflow.rs": "093cf56a2d0e9919850f442b9cbef3688bcd7a0c82ae787196b9a4b8fc1e8cd2"
+  },
+  "release_executable": {
+    "relative_path": "target/release/gitturtle",
+    "sha256": "2992a78c7f881bf75b42e3f3fa449bb712782d0861bd1c944c3a89d1d25449fd",
+    "bytes": 53394960,
+    "uuid": "996D52A5-7CF1-3CC5-BA91-928AF6AD0ECC"
+  },
+  "packaged_executable": {
+    "relative_path": "dist/GitTurtle.app/Contents/MacOS/gitturtle",
+    "sha256": "6f79745d72393ddbe6ed38e1afef9d4f1d7ced0a21cfac060eeefda6f36d0efd",
+    "bytes": 53102656,
+    "uuid": "996D52A5-7CF1-3CC5-BA91-928AF6AD0ECC"
+  },
+  "hardware": {
+    "model": "Mac16,5",
+    "processor": "Apple M4 Max",
+    "logical_cpus": 16,
+    "memory_bytes": 137438953472,
+    "architecture": "arm64",
+    "os": "26.6.2",
+    "os_build": "25G83",
+    "compiler": "rustc 1.98.0 (88d9e12ae 2026-08-18)"
+  },
+  "gates": {
+    "workspace_passed": 701,
+    "workspace_ignored": 5,
+    "nested_mermaid_child_also_passed": 1,
+    "fmt": true,
+    "clippy_workspace_all_targets_deny_warnings": true,
+    "release_build": true,
+    "package_plist_and_adhoc_signature": true,
+    "targeted_final_probe_clippy": true
+  },
+  "logs": {
+    "fmt.log": {
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "published_file": "validation-fmt.txt",
+      "published_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "workspace-test.log": {
+      "original_sha256": "034d27985119d2a85b2a1f1127a3efb69d6ef504cc2e76b77c9f87ff424d6f8a",
+      "published_file": "validation-workspace-test.txt",
+      "published_sha256": "9212f7a5859af2e3a112fe85dcb6e661f92b989d34eaf89addcd071d674e6b9c"
+    },
+    "clippy.log": {
+      "original_sha256": "0aea27df1be7421edaa3dac160201cddb85ffe4fb6ffc9fe91343d330b31024b",
+      "published_file": "validation-clippy.txt",
+      "published_sha256": "79b4e217002977ff99b728418b2cb2b2dab98ff3d42eff04dc778c6fce09a806"
+    },
+    "release-build.log": {
+      "original_sha256": "b3c9b42c66889b9a031e9e9718087b458a87cb7d3fd3df96dbd3311d7cff6908",
+      "published_file": "validation-release-build.txt",
+      "published_sha256": "54d472e2399c21ffcd162cd6a33420161a7db5a53f8fe08f09a482f828381e7a"
+    },
+    "release-examples.log": {
+      "original_sha256": "26d5f4a84bd5f3c06e3e2f38dd6090f6fa082d6e7e920682c669d7da71da841a",
+      "published_file": "validation-release-examples.txt",
+      "published_sha256": "cf14e421ff5d10ed62804662f192a4f57d3593140eb2605c237a915cbd1a821a"
+    },
+    "package.log": {
+      "original_sha256": "a0e6873978d6de3c8691b144290a07899715e6763b8d1e6f1e78356b93ecbc9e",
+      "published_file": "validation-package.txt",
+      "published_sha256": "190b84a214779d9d51af30811db39cc3dac945bc39b3380492f826b164865424"
+    }
+  },
+  "platform_scope": "Local arm64 macOS only; no Linux work, hostedCI, notarization, distribution or GPUcompletion claim.",
+  "installed_app_replaced": false,
+  "native_observations_file": "native-observations.json",
+  "published_log_sanitization": "Checkout/home/icon-temporary paths replaced; final blank line removed from workspace test log. Original and published hashes are recorded separately."
+}

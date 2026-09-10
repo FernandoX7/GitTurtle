@@ -1,0 +1,1184 @@
+{
+  "schema_version": 1,
+  "started_utc": "2026-09-10T23:05:13.762382+00:00",
+  "runtime_source_commit": "8908b35c1b9bae0b9c3d3543e5984d0c580e4e7c",
+  "preview_implementation_commit": "4b19124681d193671589f1933069ff3747c156b3",
+  "head_at_measurement": "8908b35c1b9bae0b9c3d3543e5984d0c580e4e7c",
+  "executable": {
+    "name": "bench_model_animation",
+    "sha256": "457b93edb9125f31bde838f37baf4becfdce4648c66cee0638dab71128e0b2fa",
+    "bytes": 3185888,
+    "modified_utc": "2026-09-10T23:01:30.345149+00:00"
+  },
+  "harness": {
+    "path": "crates/preview/examples/bench_model_animation.rs",
+    "sha256": "0019cf2e5ec4a6f30c9fd6c526ecdad74ffd66d6dfe672764728c4d1e2c0889d",
+    "tracked_at_measurement": false
+  },
+  "hardware": {
+    "model": "Mac16,5",
+    "processor": "Apple M4 Max",
+    "logical_cpus": 16,
+    "memory_bytes": 137438953472,
+    "architecture": "arm64",
+    "os": "26.6.2",
+    "os_build": "25G83",
+    "compiler": "rustc 1.98.0 (88d9e12ae 2026-08-18)"
+  },
+  "compiled_source_files_sha256": {
+    "Cargo.lock": "5f62aaee83dea5272ff73a2acc48b4fc3651e475360594214a626244d61031f1",
+    "Cargo.toml": "f5e0e8ed0db14ee7801850c33c302d73c163dacf0c7a090ad995ad98230879dc",
+    "crates/preview/Cargo.toml": "a697f687595d8df4cce85009411b45d03b5be0e88612fdbae981c8a8a29c0a31",
+    "crates/preview/src/animation.rs": "b71278e8ded46f61e26098f0346ed3b8a4981f48dfe50924d1383be8be96e8de",
+    "crates/preview/src/lib.rs": "62cd08e4c1d67540bf22c84a91fc1ca2b0af19c96e65da7deecedf291b6a1d95",
+    "crates/preview/src/mermaid.rs": "d96856e53d58b63af50b0751c45ebc0a444bfe7266ca5974b6c4970a784fd486",
+    "crates/preview/src/metadata.rs": "3a386d187a2618198b72995bee774a297a73fd451eb88729ab433d7a6f77eec7",
+    "crates/preview/src/model3d.rs": "4d0fe6567172cca2c385c52906fef037e79774fd9908e2273a176779b2f094cb",
+    "crates/preview/src/model3d/appearance.rs": "2c4c741eded959ad7d019100c84564a30957cda5ddbd2663dc4fd3213ee7854d",
+    "crates/preview/src/model3d/camera.rs": "949b7de48d5625eae71015404f17a89220ac2912475eb64693f0d500c3830742",
+    "crates/preview/src/model3d/glb.rs": "e59dea30f64c88b7f8ba901fbce5bdbad20391ea7afc2629cfecb01494e65c60",
+    "crates/preview/src/model3d/glb/appearance.rs": "06812ba7342f00ae63274a54f0b20962812d2b4cfbd93452156e9370c142074d",
+    "crates/preview/src/model3d/glb/compression.rs": "9192accfc2cf140896aac584507e65b86ea344d00b7fa490ac91611e6f38ee60",
+    "crates/preview/src/model3d/glb/compression/tests.rs": "4c34a0e0b42c2133c5689d13b39b11ab102c586a0a97b0c6cfdca1c2ea483481",
+    "crates/preview/src/model3d/glb/deformation.rs": "e368c476de838c0d41ad5277b95d6ab1bc39f79eae5f40bdcae8242068ec9e7b",
+    "crates/preview/src/model3d/glb/deformation/animation.rs": "e1f763ee9d0b3b27a3ee78eed8e2da9e5c2beed18f2e8e269cb299f9d9367fc7",
+    "crates/preview/src/model3d/glb/deformation/tests.rs": "a06025fd59d9b6a698a0e8bdc755142f8545293b3b7b20dcbd0db78c95aaab8b",
+    "crates/preview/src/model3d/glb/tests.rs": "b29d63671fb65e1ffe1d2af702154525d87d9148bf46715da1e7df70a447f8ff",
+    "crates/preview/src/model3d/step.rs": "8446b645f2e6080488131b0598497ff02ec44161eaf18297060339fbe39faf9f",
+    "crates/preview/src/model3d/step/primitives.rs": "6c09f4633f4e07cb59c7316119e443a81d9f401e721b72fa6730a17f7912a57c",
+    "crates/preview/src/model3d/step/scene.rs": "c6741fcc7a96ab7992ee9f78f7a50d50bd9261ccbb5f776f49fae43d6ca6d607",
+    "crates/preview/src/model3d/tests.rs": "59bae77098e41857f2a9b987f84a8797b6f8ce653de072b034afd1b0a61b0ca3",
+    "crates/preview/src/native.rs": "61b775a5b42f7411fdb9ae928c611e9120929374642a1cc1559a52ed70a793f7",
+    "crates/preview/src/native/pdf_text.rs": "42aaec0404c55ef99f1ce9158b129b8ccb163dc4378ce455b0b287e94d9ee802",
+    "crates/preview/src/svg_limits.rs": "9cc9dc7ee90b463ddeeb7d156daaf49b6ad6f6ea0b0e5db3d7bb57f10a01a6a3"
+  },
+  "method": {
+    "preserved_first_attempts": 1,
+    "preserved_warmups": 3,
+    "measured_samples": 100,
+    "clip_index": 0,
+    "timestamp_policy": "Each phase resets its sample index; selected clip timestamps are duration*(index mod 61)/60, including endpoints. No-animation inputs use zero and evaluate_ms records only branch/timer overhead.",
+    "camera": "Fit authored default scene once per row, Isometric orthographic; same camera for static and animated frames. Camera fitting excluded.",
+    "cache": "Each process reads input once before all timing rows. Input bytes remain resident; each row decodes a fresh scene. No application cache. First attempt is not a cold-filesystem or cold-system benchmark. An untimed metadata/default-and-midpoint probe precedes each fixture process; no system cache purge is performed.",
+    "decode": "Fresh captured-byte decode, appearance/image/mipmap preparation, default skin/morph evaluation and retained source preparation.",
+    "static_720": "CPU render of authored default scene into fresh720 RGBA output.",
+    "first_usable_cpu": "Per-row decode_ms + static_720_ms; sum of two measured CPU phases, excludes intervening camera fitting and allocation destruction. Not native first-frame latency.",
+    "evaluation": "Evaluate clip0 on the retained source at that row timestamp; expensive geometry evaluation and bounds preparation included.",
+    "frames": "Fresh360 and720 CPU renders from evaluated pose, with unchanged default-fit camera.",
+    "derived_sums": "evaluate_plus_frame metrics are per-row evaluation+render sums, not a directly contiguous timer or UI delivery measurement.",
+    "excluded": "File I/O, camera fitting, output destruction, app scheduling, native widget/render-image conversion, GPU upload/completion and OS presentation.",
+    "percentiles": "Nearest rank over100 measured rows only; first/warmup rows and outliers remain in raw TSV.",
+    "rss": "Three separate processes per input, each /usr/bin/time -l bench_model_animation INPUT 1 0 0 (one first plus one measured row). Darwin maximum resident set size is recorded in bytes. Includes process/loader/allocator/input bytes and sequential decode/evaluation/render peaks. Static and evaluated scenes share appearance/evaluator storage, so reported scene_bytes and pose_bytes must not be added as distinct allocations.",
+    "rss_baseline": "Three separate usage-only invocations of the same release binary with no arguments and expected exit1. This establishes minimal process/argument/error handling overhead; it is not subtracted to infer isolated decoder allocation.",
+    "limitations": "Single host, ordinary desktop background load; native macOS workflow validation could overlap. No CPU isolation or thermal control. Release builds and reference/corpus CPU scans had finished before the series. Process RSS is not GPU memory, native application memory, or a proof of an overall memory cap. No speedup or other-platform claim.",
+    "reproduce_timing": "Build the recorded release preview example, then run bench_model_animation INPUT 100 3 0. Retain all104 rows; replace the first comment executable path with its hash when publishing.",
+    "reproduce_rss": "Run /usr/bin/time -l bench_model_animation INPUT 1 0 0 in three separate processes per fixture, then /usr/bin/time -l bench_model_animation without arguments three times for usage-only baseline."
+  },
+  "load_before": {
+    "utc": "2026-09-10T23:05:14.910790+00:00",
+    "load_averages": [
+      7.412109375,
+      12.5576171875,
+      11.99560546875
+    ],
+    "cpu_summary": "CPU usage: 19.73% user, 14.33% sys, 65.93% idle ",
+    "physical_memory_summary": "PhysMem: 115G used (9198M wired, 0B compressor), 12G unused.",
+    "running_processes_summary": "Processes: 1274 total, 4 running, 1270 sleeping, 9860 threads "
+  },
+  "fixtures": [
+    {
+      "label": "material-unlit",
+      "input_sha256": "1b4cc0d0481eb362630ab7ec8a8cd84d8b9213c25e9f2bf810419f81c6c1b521",
+      "input_bytes": 996,
+      "source": "crates/preview/tests/fixtures/models/glb/workflow/material-before.glb",
+      "started_utc": "2026-09-10T23:05:14.926002+00:00",
+      "finished_timing_utc": "2026-09-10T23:05:15.866902+00:00",
+      "animation_clip_count": 0,
+      "selected_clip_duration_seconds": null,
+      "triangles": 2,
+      "scene_retained_bytes": [
+        557
+      ],
+      "pose_retained_bytes": [
+        557
+      ],
+      "raw_tsv": "material-unlit.tsv",
+      "raw_sha256": "1b0be1172f9518b451c8eb9b4d29420fed1e252a3572284c9f397aa6127448a1",
+      "measured_samples": 100,
+      "metrics": {
+        "decode_ms": {
+          "p50": 0.048,
+          "p95": 0.062084,
+          "p99": 0.066,
+          "max": 0.068
+        },
+        "static_720_ms": {
+          "p50": 2.484709,
+          "p95": 2.754792,
+          "p99": 2.894583,
+          "max": 3.170375
+        },
+        "first_usable_cpu_ms": {
+          "p50": 2.536959,
+          "p95": 2.789708,
+          "p99": 2.939708,
+          "max": 3.201333
+        },
+        "evaluate_ms": {
+          "p50": 4.1e-05,
+          "p95": 0.000125,
+          "p99": 0.000125,
+          "max": 0.000208
+        },
+        "frame_360_ms": {
+          "p50": 0.644125,
+          "p95": 0.774792,
+          "p99": 0.93325,
+          "max": 0.981375
+        },
+        "frame_720_ms": {
+          "p50": 2.583375,
+          "p95": 2.788167,
+          "p99": 2.928166,
+          "max": 2.98475
+        },
+        "evaluate_plus_frame_360_ms": {
+          "p50": 0.644125,
+          "p95": 0.774792,
+          "p99": 0.933291,
+          "max": 0.981375
+        },
+        "evaluate_plus_frame_720_ms": {
+          "p50": 2.5835000000000004,
+          "p95": 2.788209,
+          "p99": 2.928166,
+          "max": 2.98475
+        }
+      },
+      "rss_process_runs": [
+        {
+          "repeat": 0,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "material-unlit-rss-0.txt",
+          "raw_sha256": "1b18137953da33eca2bcb026c494614cf861e886a6a886c7c0bbfa75f0957732",
+          "maximum_resident_set_size_bytes": 16056320,
+          "peak_memory_footprint_bytes": 8323552
+        },
+        {
+          "repeat": 1,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "material-unlit-rss-1.txt",
+          "raw_sha256": "d2f0f8ac6a9181125f7e6a3496747ec262011665cb60526f1c2f9f1ae1f838b0",
+          "maximum_resident_set_size_bytes": 16039936,
+          "peak_memory_footprint_bytes": 8307168
+        },
+        {
+          "repeat": 2,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "material-unlit-rss-2.txt",
+          "raw_sha256": "ce9ac89c58269cd203a7a1ce2d3745883b942bb8a48814e3d51446e9de14bfad",
+          "maximum_resident_set_size_bytes": 16056320,
+          "peak_memory_footprint_bytes": 8323552
+        }
+      ],
+      "omitted_or_unavailable_disclosure_line_count": 0,
+      "captured_input_sha256_verified_after": true
+    },
+    {
+      "label": "texture-png",
+      "input_sha256": "5067375be0d191e056690a9c1e5dd0b89527eb2347f4ba768eedd444636985f0",
+      "input_bytes": 1312,
+      "source": "crates/preview/tests/fixtures/models/glb/workflow/texture-before.glb",
+      "started_utc": "2026-09-10T23:05:15.931591+00:00",
+      "finished_timing_utc": "2026-09-10T23:05:16.516793+00:00",
+      "animation_clip_count": 0,
+      "selected_clip_duration_seconds": null,
+      "triangles": 2,
+      "scene_retained_bytes": [
+        733
+      ],
+      "pose_retained_bytes": [
+        733
+      ],
+      "raw_tsv": "texture-png.tsv",
+      "raw_sha256": "17a80207a363e5d18564ecb696d1a4858d27cd67bf688ab5798b0e72dfa60ce8",
+      "measured_samples": 100,
+      "metrics": {
+        "decode_ms": {
+          "p50": 0.055209,
+          "p95": 0.075416,
+          "p99": 0.080958,
+          "max": 0.081083
+        },
+        "static_720_ms": {
+          "p50": 2.301792,
+          "p95": 2.471625,
+          "p99": 2.72175,
+          "max": 9.579375
+        },
+        "first_usable_cpu_ms": {
+          "p50": 2.352916,
+          "p95": 2.538875,
+          "p99": 2.798667,
+          "max": 9.610791
+        },
+        "evaluate_ms": {
+          "p50": 0.0,
+          "p95": 8.3e-05,
+          "p99": 0.000125,
+          "max": 0.000167
+        },
+        "frame_360_ms": {
+          "p50": 0.6055,
+          "p95": 0.6585,
+          "p99": 0.94575,
+          "max": 2.450833
+        },
+        "frame_720_ms": {
+          "p50": 2.332875,
+          "p95": 2.508958,
+          "p99": 3.259458,
+          "max": 3.384666
+        },
+        "evaluate_plus_frame_360_ms": {
+          "p50": 0.6055,
+          "p95": 0.658542,
+          "p99": 0.945792,
+          "max": 2.450958
+        },
+        "evaluate_plus_frame_720_ms": {
+          "p50": 2.332875,
+          "p95": 2.508958,
+          "p99": 3.259583,
+          "max": 3.3847080000000003
+        }
+      },
+      "rss_process_runs": [
+        {
+          "repeat": 0,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "texture-png-rss-0.txt",
+          "raw_sha256": "ec1aa7769e2b44b037869b19b912583529542dc605935058012e72bcd1ec8f3e",
+          "maximum_resident_set_size_bytes": 18333696,
+          "peak_memory_footprint_bytes": 10519008
+        },
+        {
+          "repeat": 1,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "texture-png-rss-1.txt",
+          "raw_sha256": "4f5c9e430451edbd9ddac828b8f16c1b9ee060294daf40dc4d2ddbfc016e3cd4",
+          "maximum_resident_set_size_bytes": 18350080,
+          "peak_memory_footprint_bytes": 10535392
+        },
+        {
+          "repeat": 2,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "texture-png-rss-2.txt",
+          "raw_sha256": "3cac3edb3d2cd4525543fc7b731ea6416cee1340e42d509a579a7d0b0e8113f9",
+          "maximum_resident_set_size_bytes": 16220160,
+          "peak_memory_footprint_bytes": 8405472
+        }
+      ],
+      "omitted_or_unavailable_disclosure_line_count": 0,
+      "captured_input_sha256_verified_after": true
+    },
+    {
+      "label": "texture-jpeg",
+      "input_sha256": "fd1e6c6e424055d2b56c8f6f1f821ac7fd6aa0d19def3d6c0698855d0b39116b",
+      "input_bytes": 1820,
+      "source": "crates/preview/tests/fixtures/models/glb/workflow/texture-jpeg.glb",
+      "started_utc": "2026-09-10T23:05:16.575389+00:00",
+      "finished_timing_utc": "2026-09-10T23:05:17.205532+00:00",
+      "animation_clip_count": 0,
+      "selected_clip_duration_seconds": null,
+      "triangles": 2,
+      "scene_retained_bytes": [
+        733
+      ],
+      "pose_retained_bytes": [
+        733
+      ],
+      "raw_tsv": "texture-jpeg.tsv",
+      "raw_sha256": "1bdf873e799cb7f296f61a03aba8bdad03d6d41bcdbea432925519041b6ce258",
+      "measured_samples": 100,
+      "metrics": {
+        "decode_ms": {
+          "p50": 0.07125,
+          "p95": 0.088,
+          "p99": 0.1165,
+          "max": 0.13475
+        },
+        "static_720_ms": {
+          "p50": 2.548708,
+          "p95": 2.671625,
+          "p99": 2.7605,
+          "max": 2.783833
+        },
+        "first_usable_cpu_ms": {
+          "p50": 2.616624,
+          "p95": 2.741375,
+          "p99": 2.829541,
+          "max": 2.849
+        },
+        "evaluate_ms": {
+          "p50": 0.0,
+          "p95": 4.2e-05,
+          "p99": 8.4e-05,
+          "max": 0.000167
+        },
+        "frame_360_ms": {
+          "p50": 0.657125,
+          "p95": 0.706584,
+          "p99": 0.725417,
+          "max": 0.757167
+        },
+        "frame_720_ms": {
+          "p50": 2.5615,
+          "p95": 2.680583,
+          "p99": 2.708625,
+          "max": 2.739542
+        },
+        "evaluate_plus_frame_360_ms": {
+          "p50": 0.657208,
+          "p95": 0.706625,
+          "p99": 0.725459,
+          "max": 0.7573340000000001
+        },
+        "evaluate_plus_frame_720_ms": {
+          "p50": 2.5615,
+          "p95": 2.680625,
+          "p99": 2.708625,
+          "max": 2.7395840000000002
+        }
+      },
+      "rss_process_runs": [
+        {
+          "repeat": 0,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "texture-jpeg-rss-0.txt",
+          "raw_sha256": "ed41e15cb5fd388bffd3070fbf4667028fc857d97da9e9f898aeaedae6478eae",
+          "maximum_resident_set_size_bytes": 18497536,
+          "peak_memory_footprint_bytes": 10568160
+        },
+        {
+          "repeat": 1,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "texture-jpeg-rss-1.txt",
+          "raw_sha256": "9fddadc794a57e002674fcb1a4ef72d2a106a7c4cd066f177bdf5535fa5f6777",
+          "maximum_resident_set_size_bytes": 18513920,
+          "peak_memory_footprint_bytes": 10584544
+        },
+        {
+          "repeat": 2,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "texture-jpeg-rss-2.txt",
+          "raw_sha256": "53d46af33eb635399247349078a802af72d0e973da2815eec1194f745c5f0d4c",
+          "maximum_resident_set_size_bytes": 16318464,
+          "peak_memory_footprint_bytes": 8389088
+        }
+      ],
+      "omitted_or_unavailable_disclosure_line_count": 0,
+      "captured_input_sha256_verified_after": true
+    },
+    {
+      "label": "textured-avocado",
+      "input_sha256": "ccc9c3ce56423720b09399c2351537207cd5a65f859f9e6e2f30922762f3abd4",
+      "input_bytes": 8110040,
+      "source": "crates/preview/tests/fixtures/models/glb/Avocado.glb",
+      "started_utc": "2026-09-10T23:05:17.267754+00:00",
+      "finished_timing_utc": "2026-09-10T23:05:25.188419+00:00",
+      "animation_clip_count": 0,
+      "selected_clip_duration_seconds": null,
+      "triangles": 682,
+      "scene_retained_bytes": [
+        89588933
+      ],
+      "pose_retained_bytes": [
+        89588933
+      ],
+      "raw_tsv": "textured-avocado.tsv",
+      "raw_sha256": "438fbaa2bd43c48675e1bd3b4a635434700745c36dbfd939846295962e58d996",
+      "measured_samples": 100,
+      "metrics": {
+        "decode_ms": {
+          "p50": 60.8115,
+          "p95": 63.264417,
+          "p99": 64.214166,
+          "max": 65.087667
+        },
+        "static_720_ms": {
+          "p50": 6.088916,
+          "p95": 6.396584,
+          "p99": 6.975916,
+          "max": 7.163875
+        },
+        "first_usable_cpu_ms": {
+          "p50": 66.869293,
+          "p95": 69.651334,
+          "p99": 70.258918,
+          "max": 72.251542
+        },
+        "evaluate_ms": {
+          "p50": 0.0,
+          "p95": 4.2e-05,
+          "p99": 0.000166,
+          "max": 0.000167
+        },
+        "frame_360_ms": {
+          "p50": 1.620375,
+          "p95": 1.816458,
+          "p99": 1.880708,
+          "max": 2.147583
+        },
+        "frame_720_ms": {
+          "p50": 6.067917,
+          "p95": 6.571209,
+          "p99": 6.749625,
+          "max": 6.949542
+        },
+        "evaluate_plus_frame_360_ms": {
+          "p50": 1.620375,
+          "p95": 1.8164989999999999,
+          "p99": 1.880708,
+          "max": 2.147583
+        },
+        "evaluate_plus_frame_720_ms": {
+          "p50": 6.067917,
+          "p95": 6.57125,
+          "p99": 6.749625,
+          "max": 6.949584
+        }
+      },
+      "rss_process_runs": [
+        {
+          "repeat": 0,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "textured-avocado-rss-0.txt",
+          "raw_sha256": "2285f31451bbe92551374f8f7c2130ef06ab9a3699994d5def1780b6302e7839",
+          "maximum_resident_set_size_bytes": 147341312,
+          "peak_memory_footprint_bytes": 139543080
+        },
+        {
+          "repeat": 1,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "textured-avocado-rss-1.txt",
+          "raw_sha256": "dfccad27367c27c65f7fdbc7dd92fac69691888c7cf8d25a26c18651cc1203e8",
+          "maximum_resident_set_size_bytes": 145850368,
+          "peak_memory_footprint_bytes": 138052136
+        },
+        {
+          "repeat": 2,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "textured-avocado-rss-2.txt",
+          "raw_sha256": "0f772b074f8d8a5c573650680928c06c7e61a41132ac7f65b1775e9623177208",
+          "maximum_resident_set_size_bytes": 145719296,
+          "peak_memory_footprint_bytes": 137921064
+        }
+      ],
+      "omitted_or_unavailable_disclosure_line_count": 0,
+      "captured_input_sha256_verified_after": true
+    },
+    {
+      "label": "skin-animation",
+      "input_sha256": "f7d0636d5a44fcd40243d7bd0d6a48de8b0adf79a0979ee8cd625aff3c87b742",
+      "input_bytes": 2656,
+      "source": "crates/preview/tests/fixtures/models/glb/workflow/skin-animated.glb",
+      "started_utc": "2026-09-10T23:05:25.712869+00:00",
+      "finished_timing_utc": "2026-09-10T23:05:26.271456+00:00",
+      "animation_clip_count": 1,
+      "selected_clip_duration_seconds": 2.0,
+      "triangles": 2,
+      "scene_retained_bytes": [
+        4904
+      ],
+      "pose_retained_bytes": [
+        4904
+      ],
+      "raw_tsv": "skin-animation.tsv",
+      "raw_sha256": "4a2409de7a2715a1b13e25aead85011110cf853de6a28656fc12948424fafb9c",
+      "measured_samples": 100,
+      "metrics": {
+        "decode_ms": {
+          "p50": 0.055958,
+          "p95": 0.095417,
+          "p99": 0.131958,
+          "max": 0.162708
+        },
+        "static_720_ms": {
+          "p50": 2.454958,
+          "p95": 2.667875,
+          "p99": 2.75,
+          "max": 2.899666
+        },
+        "first_usable_cpu_ms": {
+          "p50": 2.520625,
+          "p95": 2.768458,
+          "p99": 2.8265,
+          "max": 3.031624
+        },
+        "evaluate_ms": {
+          "p50": 0.004083,
+          "p95": 0.008334,
+          "p99": 0.010583,
+          "max": 0.011958
+        },
+        "frame_360_ms": {
+          "p50": 0.535458,
+          "p95": 0.670375,
+          "p99": 0.699166,
+          "max": 0.705625
+        },
+        "frame_720_ms": {
+          "p50": 2.082209,
+          "p95": 2.660833,
+          "p99": 2.789166,
+          "max": 2.802916
+        },
+        "evaluate_plus_frame_360_ms": {
+          "p50": 0.5395409999999999,
+          "p95": 0.6779170000000001,
+          "p99": 0.703082,
+          "max": 0.714333
+        },
+        "evaluate_plus_frame_720_ms": {
+          "p50": 2.0880840000000003,
+          "p95": 2.671125,
+          "p99": 2.791458,
+          "max": 2.808749
+        }
+      },
+      "rss_process_runs": [
+        {
+          "repeat": 0,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "skin-animation-rss-0.txt",
+          "raw_sha256": "61327b8b8ce0a7000677678a21f532992a0d1fc76af5538c20b99a31bafeba37",
+          "maximum_resident_set_size_bytes": 16252928,
+          "peak_memory_footprint_bytes": 8520160
+        },
+        {
+          "repeat": 1,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "skin-animation-rss-1.txt",
+          "raw_sha256": "37a5b8b8ea12f36fb7a83401232bc2151c5a606ea68aa2ce5163361ecb8e3551",
+          "maximum_resident_set_size_bytes": 18317312,
+          "peak_memory_footprint_bytes": 10584544
+        },
+        {
+          "repeat": 2,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "skin-animation-rss-2.txt",
+          "raw_sha256": "22ad505e8e7a736745c435975571fafa204291c9a6ab181a003fcf86559df77f",
+          "maximum_resident_set_size_bytes": 18333696,
+          "peak_memory_footprint_bytes": 10600928
+        }
+      ],
+      "omitted_or_unavailable_disclosure_line_count": 0,
+      "captured_input_sha256_verified_after": true
+    },
+    {
+      "label": "morph-animation",
+      "input_sha256": "c21261dd894775721b16760e99e2f4e1e7c9910cbf5ce41fd69afac39beba40a",
+      "input_bytes": 2612,
+      "source": "crates/preview/tests/fixtures/models/glb/workflow/morph-animation.glb",
+      "started_utc": "2026-09-10T23:05:26.331960+00:00",
+      "finished_timing_utc": "2026-09-10T23:05:26.948609+00:00",
+      "animation_clip_count": 3,
+      "selected_clip_duration_seconds": 2.0,
+      "triangles": 2,
+      "scene_retained_bytes": [
+        3794
+      ],
+      "pose_retained_bytes": [
+        3794
+      ],
+      "raw_tsv": "morph-animation.tsv",
+      "raw_sha256": "4a8fb9fb52530d587fa0fe4d88e38f381f1b1896df48f3a8eb1fefdefb53ae1c",
+      "measured_samples": 100,
+      "metrics": {
+        "decode_ms": {
+          "p50": 0.068959,
+          "p95": 0.086,
+          "p99": 0.095,
+          "max": 0.097791
+        },
+        "static_720_ms": {
+          "p50": 2.445292,
+          "p95": 2.663042,
+          "p99": 2.923792,
+          "max": 3.019208
+        },
+        "first_usable_cpu_ms": {
+          "p50": 2.511042,
+          "p95": 2.723833,
+          "p99": 2.996626,
+          "max": 3.116999
+        },
+        "evaluate_ms": {
+          "p50": 0.002208,
+          "p95": 0.0065,
+          "p99": 0.013708,
+          "max": 0.016125
+        },
+        "frame_360_ms": {
+          "p50": 0.598333,
+          "p95": 0.841459,
+          "p99": 0.912292,
+          "max": 0.916916
+        },
+        "frame_720_ms": {
+          "p50": 2.374083,
+          "p95": 3.372083,
+          "p99": 3.555042,
+          "max": 3.658625
+        },
+        "evaluate_plus_frame_360_ms": {
+          "p50": 0.604874,
+          "p95": 0.844834,
+          "p99": 0.914417,
+          "max": 0.923832
+        },
+        "evaluate_plus_frame_720_ms": {
+          "p50": 2.377875,
+          "p95": 3.37425,
+          "p99": 3.5559589999999996,
+          "max": 3.66375
+        }
+      },
+      "rss_process_runs": [
+        {
+          "repeat": 0,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "morph-animation-rss-0.txt",
+          "raw_sha256": "2e079be805ddf647228f66a08c0747cd62eb9be703539462a9a7695c6069a72b",
+          "maximum_resident_set_size_bytes": 16187392,
+          "peak_memory_footprint_bytes": 8454624
+        },
+        {
+          "repeat": 1,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "morph-animation-rss-1.txt",
+          "raw_sha256": "f0dbfa830212e23db90c7e430800c852daf9dc53894110ac0c1a3e263c7a21ae",
+          "maximum_resident_set_size_bytes": 18268160,
+          "peak_memory_footprint_bytes": 10535392
+        },
+        {
+          "repeat": 2,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "morph-animation-rss-2.txt",
+          "raw_sha256": "89827231e55f38ac49d3ce491c60ac0a3e8632f70e76bdd03d3bdedcba62ded0",
+          "maximum_resident_set_size_bytes": 16154624,
+          "peak_memory_footprint_bytes": 8421856
+        }
+      ],
+      "omitted_or_unavailable_disclosure_line_count": 0,
+      "captured_input_sha256_verified_after": true
+    },
+    {
+      "label": "skin-morph-animation",
+      "input_sha256": "08034cb21dcd2dc1a49839c86767829ed40262e026229d7e918581120e8ac861",
+      "input_bytes": 3296,
+      "source": "crates/preview/tests/fixtures/models/glb/workflow/skin-morph-animation.glb",
+      "started_utc": "2026-09-10T23:05:27.006146+00:00",
+      "finished_timing_utc": "2026-09-10T23:05:27.573148+00:00",
+      "animation_clip_count": 1,
+      "selected_clip_duration_seconds": 2.0,
+      "triangles": 2,
+      "scene_retained_bytes": [
+        5163
+      ],
+      "pose_retained_bytes": [
+        5163
+      ],
+      "raw_tsv": "skin-morph-animation.tsv",
+      "raw_sha256": "9da410bc743238a4a5696e425793c6749399a196d7f3ab8b6e5c0f441047322d",
+      "measured_samples": 100,
+      "metrics": {
+        "decode_ms": {
+          "p50": 0.07625,
+          "p95": 0.09975,
+          "p99": 0.127333,
+          "max": 0.536959
+        },
+        "static_720_ms": {
+          "p50": 2.455917,
+          "p95": 2.635459,
+          "p99": 2.739916,
+          "max": 2.845625
+        },
+        "first_usable_cpu_ms": {
+          "p50": 2.530959,
+          "p95": 2.753292,
+          "p99": 2.938792,
+          "max": 3.094876
+        },
+        "evaluate_ms": {
+          "p50": 0.00475,
+          "p95": 0.00975,
+          "p99": 0.010333,
+          "max": 0.012041
+        },
+        "frame_360_ms": {
+          "p50": 0.548833,
+          "p95": 0.664042,
+          "p99": 0.785291,
+          "max": 0.9415
+        },
+        "frame_720_ms": {
+          "p50": 2.181625,
+          "p95": 2.603583,
+          "p99": 2.677916,
+          "max": 2.826375
+        },
+        "evaluate_plus_frame_360_ms": {
+          "p50": 0.552916,
+          "p95": 0.671834,
+          "p99": 0.792624,
+          "max": 0.951166
+        },
+        "evaluate_plus_frame_720_ms": {
+          "p50": 2.186458,
+          "p95": 2.606542,
+          "p99": 2.684791,
+          "max": 2.8367080000000002
+        }
+      },
+      "rss_process_runs": [
+        {
+          "repeat": 0,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "skin-morph-animation-rss-0.txt",
+          "raw_sha256": "867b80f9d549bbb630feec494fa8d85d2cdbc3022d0f8e3ffd93e209553588be",
+          "maximum_resident_set_size_bytes": 16236544,
+          "peak_memory_footprint_bytes": 8503776
+        },
+        {
+          "repeat": 1,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "skin-morph-animation-rss-1.txt",
+          "raw_sha256": "e92d3434ceca5b8b9b7741b53f3cdaabcf9bf9897f9aa536c4c984b50a38cddf",
+          "maximum_resident_set_size_bytes": 16236544,
+          "peak_memory_footprint_bytes": 8503776
+        },
+        {
+          "repeat": 2,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "skin-morph-animation-rss-2.txt",
+          "raw_sha256": "f2594bcc483d11ca7e9e0f4751be2561a0b1df92ca97f50f690ff5bd2220dc55",
+          "maximum_resident_set_size_bytes": 18350080,
+          "peak_memory_footprint_bytes": 10617312
+        }
+      ],
+      "omitted_or_unavailable_disclosure_line_count": 0,
+      "captured_input_sha256_verified_after": true
+    },
+    {
+      "label": "rigged-simple",
+      "input_sha256": "3a79dabb67bb0cd598a18d08b954d9d357c27c30672f82ef5d3f4e7fe6ca3401",
+      "input_bytes": 15104,
+      "source": "crates/preview/tests/fixtures/models/glb/RiggedSimple.glb",
+      "started_utc": "2026-09-10T23:05:27.630373+00:00",
+      "finished_timing_utc": "2026-09-10T23:05:28.127393+00:00",
+      "animation_clip_count": 1,
+      "selected_clip_duration_seconds": 2.0833330154418945,
+      "triangles": 188,
+      "scene_retained_bytes": [
+        61229
+      ],
+      "pose_retained_bytes": [
+        61229
+      ],
+      "raw_tsv": "rigged-simple.tsv",
+      "raw_sha256": "0f8b3e9451764a055fdcb1d7f3a5d34b7ba7f3e4b6096475425437cd3f7b104d",
+      "measured_samples": 100,
+      "metrics": {
+        "decode_ms": {
+          "p50": 0.077709,
+          "p95": 0.108708,
+          "p99": 0.114625,
+          "max": 0.174792
+        },
+        "static_720_ms": {
+          "p50": 1.518334,
+          "p95": 1.593584,
+          "p99": 2.766792,
+          "max": 3.98225
+        },
+        "first_usable_cpu_ms": {
+          "p50": 1.600584,
+          "p95": 1.676209,
+          "p99": 2.826042,
+          "max": 4.157042
+        },
+        "evaluate_ms": {
+          "p50": 0.006833,
+          "p95": 0.012667,
+          "p99": 0.022,
+          "max": 0.02525
+        },
+        "frame_360_ms": {
+          "p50": 0.6405,
+          "p95": 0.750209,
+          "p99": 1.2365,
+          "max": 2.037917
+        },
+        "frame_720_ms": {
+          "p50": 2.394042,
+          "p95": 2.676,
+          "p99": 2.728667,
+          "max": 5.753375
+        },
+        "evaluate_plus_frame_360_ms": {
+          "p50": 0.649083,
+          "p95": 0.755668,
+          "p99": 1.2585,
+          "max": 2.0631670000000004
+        },
+        "evaluate_plus_frame_720_ms": {
+          "p50": 2.3990839999999998,
+          "p95": 2.682291,
+          "p99": 2.733209,
+          "max": 5.766167
+        }
+      },
+      "rss_process_runs": [
+        {
+          "repeat": 0,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "rigged-simple-rss-0.txt",
+          "raw_sha256": "263cb7327591fe2e885ccae5d3958eed2daab2e84cfb3890fb5f8f58a598d7c4",
+          "maximum_resident_set_size_bytes": 18513920,
+          "peak_memory_footprint_bytes": 10781152
+        },
+        {
+          "repeat": 1,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "rigged-simple-rss-1.txt",
+          "raw_sha256": "b5b6f99133c1f031333ab4a468b7de7e5cca0012fa42dc912ec3a5b4c2136029",
+          "maximum_resident_set_size_bytes": 16465920,
+          "peak_memory_footprint_bytes": 8733152
+        },
+        {
+          "repeat": 2,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "rigged-simple-rss-2.txt",
+          "raw_sha256": "86492668057d5a1660a62b833e9aee4d6e786815ec8ecb10b87c83b0c437fb8d",
+          "maximum_resident_set_size_bytes": 16433152,
+          "peak_memory_footprint_bytes": 8700384
+        }
+      ],
+      "omitted_or_unavailable_disclosure_line_count": 0,
+      "captured_input_sha256_verified_after": true
+    },
+    {
+      "label": "dense-torus",
+      "input_sha256": "75aa3f33d8e0946b8ec0f0bd6832216be08051e11c94efe69b571760ea53d22e",
+      "input_bytes": 334452,
+      "source": "procedural public dense-torus.glb from September10 meshopt fixture generator",
+      "started_utc": "2026-09-10T23:05:28.180664+00:00",
+      "finished_timing_utc": "2026-09-10T23:05:29.988851+00:00",
+      "animation_clip_count": 0,
+      "selected_clip_duration_seconds": null,
+      "triangles": 65536,
+      "scene_retained_bytes": [
+        10551531
+      ],
+      "pose_retained_bytes": [
+        10551531
+      ],
+      "raw_tsv": "dense-torus.tsv",
+      "raw_sha256": "63111c7c469917daecd08db4c792eb56d22dbc89ddc714320ec601ac9ff74d4b",
+      "measured_samples": 100,
+      "metrics": {
+        "decode_ms": {
+          "p50": 2.601625,
+          "p95": 2.803958,
+          "p99": 2.943708,
+          "max": 3.606167
+        },
+        "static_720_ms": {
+          "p50": 5.596333,
+          "p95": 5.9685,
+          "p99": 6.225709,
+          "max": 6.227083
+        },
+        "first_usable_cpu_ms": {
+          "p50": 8.176333,
+          "p95": 8.708583,
+          "p99": 8.84225,
+          "max": 9.476959
+        },
+        "evaluate_ms": {
+          "p50": 0.0,
+          "p95": 4.2e-05,
+          "p99": 0.000125,
+          "max": 0.000417
+        },
+        "frame_360_ms": {
+          "p50": 3.1235,
+          "p95": 3.212208,
+          "p99": 3.3905,
+          "max": 3.501417
+        },
+        "frame_720_ms": {
+          "p50": 5.647875,
+          "p95": 5.981292,
+          "p99": 6.513,
+          "max": 11.114792
+        },
+        "evaluate_plus_frame_360_ms": {
+          "p50": 3.123542,
+          "p95": 3.212208,
+          "p99": 3.3905,
+          "max": 3.501459
+        },
+        "evaluate_plus_frame_720_ms": {
+          "p50": 5.647875,
+          "p95": 5.981333,
+          "p99": 6.513,
+          "max": 11.114834
+        }
+      },
+      "rss_process_runs": [
+        {
+          "repeat": 0,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "dense-torus-rss-0.txt",
+          "raw_sha256": "367ef8140514bca2ba4514627d1fbcacaf22bf334bd80e0e6c1d54c9853b7931",
+          "maximum_resident_set_size_bytes": 34062336,
+          "peak_memory_footprint_bytes": 26329568
+        },
+        {
+          "repeat": 1,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "dense-torus-rss-1.txt",
+          "raw_sha256": "3fc77b754c4e83e636e002ed02a66cf7eafd12f319e7cffd835affc4ad95da86",
+          "maximum_resident_set_size_bytes": 34062336,
+          "peak_memory_footprint_bytes": 26329568
+        },
+        {
+          "repeat": 2,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "dense-torus-rss-2.txt",
+          "raw_sha256": "38580a653cf6fe65d0de4d9bf5a267296c20086b45a7060dd04c02e07b4f7018",
+          "maximum_resident_set_size_bytes": 34045952,
+          "peak_memory_footprint_bytes": 26313184
+        }
+      ],
+      "omitted_or_unavailable_disclosure_line_count": 0,
+      "captured_input_sha256_verified_after": true
+    },
+    {
+      "label": "private-asset-0327",
+      "input_sha256": "cfaa7b2c5d25dbce37a5ccd078efb0b7a8743b3357bb9f3d3b5907765bce4c32",
+      "input_bytes": 1266816,
+      "source": "private ordinal0327 capture; source paths remain outside checkout",
+      "started_utc": "2026-09-10T23:05:30.128305+00:00",
+      "finished_timing_utc": "2026-09-10T23:05:31.942197+00:00",
+      "animation_clip_count": 10,
+      "selected_clip_duration_seconds": 2.5333333015441895,
+      "triangles": 17064,
+      "scene_retained_bytes": [
+        6655491
+      ],
+      "pose_retained_bytes": [
+        6655491
+      ],
+      "raw_tsv": "private-asset-0327.tsv",
+      "raw_sha256": "f778134f856186f6941a914aa1f9af6c5676c33f149d44941965530d3b91180f",
+      "measured_samples": 100,
+      "metrics": {
+        "decode_ms": {
+          "p50": 3.025917,
+          "p95": 3.248166,
+          "p99": 3.391708,
+          "max": 3.507084
+        },
+        "static_720_ms": {
+          "p50": 5.110208,
+          "p95": 5.512917,
+          "p99": 5.644833,
+          "max": 5.810959
+        },
+        "first_usable_cpu_ms": {
+          "p50": 8.201083,
+          "p95": 8.578334,
+          "p99": 8.782458,
+          "max": 8.823334
+        },
+        "evaluate_ms": {
+          "p50": 0.651875,
+          "p95": 0.732916,
+          "p99": 0.874167,
+          "max": 1.061959
+        },
+        "frame_360_ms": {
+          "p50": 2.196167,
+          "p95": 2.365708,
+          "p99": 2.582333,
+          "max": 2.603584
+        },
+        "frame_720_ms": {
+          "p50": 5.021375,
+          "p95": 5.486125,
+          "p99": 5.607333,
+          "max": 5.822583
+        },
+        "evaluate_plus_frame_360_ms": {
+          "p50": 2.8475,
+          "p95": 3.093916,
+          "p99": 3.282624,
+          "max": 3.3259179999999997
+        },
+        "evaluate_plus_frame_720_ms": {
+          "p50": 5.673709000000001,
+          "p95": 6.187,
+          "p99": 6.309584,
+          "max": 6.4485
+        }
+      },
+      "rss_process_runs": [
+        {
+          "repeat": 0,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "private-asset-0327-rss-0.txt",
+          "raw_sha256": "a0952d31df3cae3e645c0050610312cf22c9d22888b27047a80beb7c280e95c9",
+          "maximum_resident_set_size_bytes": 34013184,
+          "peak_memory_footprint_bytes": 26280440
+        },
+        {
+          "repeat": 1,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "private-asset-0327-rss-1.txt",
+          "raw_sha256": "ff84af0be04e7bebacf2d040868bb2ba8d39073d33ffd2188b77340e0fefe8b1",
+          "maximum_resident_set_size_bytes": 32899072,
+          "peak_memory_footprint_bytes": 25166328
+        },
+        {
+          "repeat": 2,
+          "command": "/usr/bin/time -l bench_model_animation INPUT 1 0 0",
+          "expected_timing_rows": 2,
+          "exit_code": 0,
+          "raw_file": "private-asset-0327-rss-2.txt",
+          "raw_sha256": "b255f78eb092e02e3b973d92dacd1c45622556f3e8af09c7e4f1861737052f57",
+          "maximum_resident_set_size_bytes": 32325632,
+          "peak_memory_footprint_bytes": 24592888
+        }
+      ],
+      "omitted_or_unavailable_disclosure_line_count": 2,
+      "captured_input_sha256_verified_after": true
+    }
+  ],
+  "rss_baseline": [
+    {
+      "repeat": 0,
+      "command": "/usr/bin/time -l bench_model_animation",
+      "expected_exit_code": 1,
+      "exit_code": 1,
+      "raw_file": "usage-only-baseline-rss-0.txt",
+      "raw_sha256": "9f47cdc1a09b9fc7d0fd6ebcac483588418f4e12c2b94a0df6b8639359540776",
+      "maximum_resident_set_size_bytes": 9093120,
+      "peak_memory_footprint_bytes": 1982896
+    },
+    {
+      "repeat": 1,
+      "command": "/usr/bin/time -l bench_model_animation",
+      "expected_exit_code": 1,
+      "exit_code": 1,
+      "raw_file": "usage-only-baseline-rss-1.txt",
+      "raw_sha256": "8591aded6bcb21a80941455c3f0d4206da3e96608e3bb64970bd412086b66c9b",
+      "maximum_resident_set_size_bytes": 9043968,
+      "peak_memory_footprint_bytes": 1933744
+    },
+    {
+      "repeat": 2,
+      "command": "/usr/bin/time -l bench_model_animation",
+      "expected_exit_code": 1,
+      "exit_code": 1,
+      "raw_file": "usage-only-baseline-rss-2.txt",
+      "raw_sha256": "c2ed7a45f5d952fdd3183ceb35b21a2549024d9daa3a9161d0c6141f141f8b7b",
+      "maximum_resident_set_size_bytes": 9043968,
+      "peak_memory_footprint_bytes": 1933744
+    }
+  ],
+  "finished_utc": "2026-09-10T23:05:32.103975+00:00",
+  "load_after": {
+    "utc": "2026-09-10T23:05:33.166450+00:00",
+    "load_averages": [
+      7.90625,
+      12.32861328125,
+      11.92529296875
+    ],
+    "cpu_summary": "CPU usage: 41.30% user, 19.70% sys, 38.98% idle ",
+    "physical_memory_summary": "PhysMem: 117G used (10G wired, 0B compressor), 10G unused.",
+    "running_processes_summary": "Processes: 1291 total, 8 running, 1283 sleeping, 10206 threads "
+  },
+  "exe_unchanged_after": true,
+  "source_unchanged_after": true,
+  "harness_unchanged_after": true,
+  "release_build_log_sha256": "26d5f4a84bd5f3c06e3e2f38dd6090f6fa082d6e7e920682c669d7da71da841a",
+  "metadata_probe": {
+    "harness_path": "crates/preview/examples/probe_glb_workflow.rs",
+    "harness_sha256": "093cf56a2d0e9919850f442b9cbef3688bcd7a0c82ae787196b9a4b8fc1e8cd2",
+    "executable_sha256": "cc22189b66b5be39db9ae01fc66beeaa11178532b9932b9cb8f35a91d7a897ff",
+    "mode": "--corpus; untimed, raw output retained privately; only clip counts/duration and disclosure-line counts copied into this manifest."
+  }
+}

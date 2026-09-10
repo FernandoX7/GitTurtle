@@ -14,7 +14,14 @@ keep baseline, integrated live, and final correction evidence separate.
 
 ## September 10 native GLB previews
 
-The later [meshopt validation record](meshopt-preview-validation.md) covers
+The [appearance and animation workflow](glb-workflow-validation.md) records
+material/texture revision comparisons, skins, morphs, native playback, quiet
+hidden previews and restored app state at source `8908b35`. Its
+[independent reference and current corpus](glb-workflow-reference.md) and
+[release CPU/native measurements](benchmarks/2026-09-10-glb-workflow.md) distinguish
+geometry support, approximate appearance, processing time and frame callbacks.
+
+The preceding [meshopt validation record](meshopt-preview-validation.md) covers
 embedded compression, independently verified current corpus coverage, native
 comparison refinements and restart behavior. Its [release measurements](benchmarks/2026-09-10-meshopt.md)
 separate actual decode/render coverage and CPU timings from native observations.

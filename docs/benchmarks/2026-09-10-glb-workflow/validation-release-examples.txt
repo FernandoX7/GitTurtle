@@ -1,0 +1,2 @@
+   Compiling gitturtle-preview v0.1.0 (<CHECKOUT>/crates/preview)
+    Finished `release` profile [optimized] target(s) in 9.05s

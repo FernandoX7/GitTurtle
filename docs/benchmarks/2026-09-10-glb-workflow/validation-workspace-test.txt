@@ -1,0 +1,867 @@
+   Compiling gitturtle-preview v0.1.0 (<CHECKOUT>/crates/preview)
+   Compiling gitturtle v0.1.0 (<CHECKOUT>/crates/app)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.59s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/main.rs (target/debug/deps/gitturtle-01bbe23f0d7bdf32)
+
+running 344 tests
+test command_palette::tests::availability_distinguishes_hub_busy_selection_and_recovery_states ... ok
+test automatic_refresh::tests::rows_inserted_above_keep_the_same_fractional_scroll_anchor ... ok
+test automatic_refresh::tests::quiet_reads_defer_writes_foreground_reads_and_hidden_pages ... ok
+test appearance::tests::palettes_keep_text_and_diff_content_readable_in_each_theme ... ok
+test command_palette::tests::selection_is_bounded_and_enter_or_cancel_can_only_claim_once ... ok
+test automatic_refresh::tests::late_results_require_repository_and_both_read_generations ... ok
+test command_palette::tests::refreshed_snapshot_disables_changed_repository_and_hidden_or_busy_workspace ... ok
+test blame::tests::stale_target_repository_and_line_history_selection_are_rejected ... ok
+test appearance::tests::appearance_choices_round_trip_and_unknown_choices_have_safe_defaults ... ok
+test columns::tests::narrow_layout_preserves_all_chosen_columns_and_wide_layout_fills_subject ... ok
+test columns::tests::preferences_keep_subject_available_bound_widths_and_reset ... ok
+test columns::tests::distant_graph_lanes_do_not_push_messages_out_of_the_viewport ... ok
+test columns::tests::partial_column_settings_use_per_column_defaults_and_round_trip ... ok
+test activity::tests::activity_distinguishes_cancellation_failure_and_lost_result ... ok
+test conflicts::tests::paste_bounds_apply_to_the_result_after_replacing_a_selection ... ok
+test activity::tests::arbitrary_hook_and_server_output_is_not_retained ... ok
+test conflicts::tests::absent_side_labels_keep_merge_and_rebase_branch_roles_explicit ... ok
+test conflicts::tests::stale_working_edits_and_new_conflicts_refuse_restoration_but_preserve_text ... ok
+test appearance::tests::saved_daylight_remains_braden_without_changing_its_storage_or_light_mapping ... ok
+test conflicts::tests::prepared_blocks_and_stash_labels_describe_the_exact_working_result ... ok
+test command_palette::tests::search_finds_synonyms_and_respects_all_terms_and_bounds ... ok
+test diff_view::tests::utf8_crlf_patch_keeps_exact_text_and_corresponding_line_numbers ... ok
+test diff_view::tests::header_looking_context_is_counted_as_source ... ok
+test diff_view::tests::huge_line_numbers_and_empty_hunks_never_overflow_or_invent_lines ... ok
+test diff_view::tests::roots_deletions_multiple_hunks_and_no_newline_markers_do_not_shift_rows ... ok
+test editor_find::tests::find_highlights_follow_navigation_through_large_match_sets ... ok
+test activity::tests::activity_is_bounded_and_does_not_retain_commit_messages ... ok
+test diff_view::tests::headers_and_malformed_hunks_are_blank_but_header_like_source_counts ... ok
+test editor_find::tests::find_query_limit_does_not_silently_change_unicode_search ... ok
+test diff_view::tests::wheel_burst_accumulates_until_paint_and_can_reverse_to_applied_position ... ok
+test commit_drafts::tests::rejected_job_retains_pending_worktrees_for_the_next_retry ... ok
+test commit_drafts::tests::coalesces_typing_and_keeps_distinct_worktrees_after_dropped_reply ... ok
+test editor_find::tests::match_mask_preserves_styles_across_gaps_boundaries_and_theme_refresh ... ok
+test commit_drafts::tests::save_failure_preserves_all_drafts_and_retry_saves_latest_text ... ok
+test file_history::tests::revision_selection_preserves_rename_and_absent_deletion_sides ... ok
+test file_history::tests::anchor_mismatch_and_empty_pages_do_not_invent_a_revision ... ok
+test file_history::tests::visually_identical_byte_paths_cannot_receive_each_others_pages ... ok
+test appearance::tests::theme_switch_updates_resolved_component_backgrounds_with_foregrounds ... ok
+test gif_playback::tests::explicit_clock_pauses_loops_and_never_applies_to_replaced_sources ... ok
+test file_history::tests::superseded_pages_cannot_replace_the_latest_navigation ... ok
+test file_history::tests::failed_page_keeps_the_previous_revision_and_retry_offset ... ok
+test gif_playback::tests::reduced_motion_pause_keeps_the_current_frame_until_explicit_resume ... ok
+test file_history::tests::revision_arrows_cross_pages_without_skipping_boundary_entries ... ok
+test conflicts::tests::source_and_resolution_line_limits_preserve_raw_versions_without_building_editors ... ok
+test diff_view::tests::changed_line_selection_supports_disjoint_edits_and_shift_ranges ... ok
+test gif_playback::tests::unequal_durations_share_time_and_shorter_side_holds_last_frame ... ok
+test editor_find::tests::closed_find_engine_keeps_unicode_ranges_case_and_navigation ... ok
+test github::conversations::tests::graphql_http_200_rate_limit_is_actionable_without_displaying_remote_diagnostics ... ok
+test github::conversations::tests::null_comment_context_is_readable_but_cannot_be_replied_to ... ok
+test github::conversations::tests::authoritative_threads_keep_resolution_original_identity_and_explicit_cursor ... ok
+test github::conversations::tests::comment_continuation_checks_opening_context_without_reassigning_target ... ok
+test github::conversations::tests::denied_permission_closed_pull_and_cancellation_dispatch_no_mutation ... ok
+test gif_playback::tests::prepares_all_bgra_frames_once_and_keeps_original_rgba_and_timing ... ok
+test github::conversations::tests::malformed_partial_or_cyclic_pages_never_establish_thread_state ... ok
+test github::conversations::tests::external_cross_side_ranges_keep_original_side_and_reject_inconsistent_node_membership ... ok
+test github::conversations::tests::stale_account_repository_pull_head_and_root_refuse_reply_before_write ... ok
+test github::conversations::tests::reply_and_resolve_reopen_send_one_exact_mutation_and_validate_provider_state ... ok
+test github::conversations::tests::uncertain_reply_or_resolution_outcomes_are_never_replayed ... ok
+test conflicts::tests::restored_conflict_draft_recomputes_blocks_and_stages_exact_visible_text ... ok
+test conflicts::tests::text_limits_accept_complete_boundary_values_and_reject_binary_or_oversized_edits ... ok
+test commit_drafts::tests::final_commit_draft_survives_window_removal_with_a_full_save_queue ... ok
+test github::drafts::tests::changed_head_keeps_older_review_recoverable ... ok
+test github::drafts::tests::collected_ranges_unfinished_text_and_discussion_mode_survive_restart ... ok
+test github::drafts::tests::exact_text_survives_reopen_and_bad_store_is_not_replaced ... ok
+test editor_find::tests::find_background_and_active_underline_survive_real_viewport_style_composition ... ok
+test github::drafts::tests::a_failed_coalesced_batch_preserves_every_previous_draft ... ok
+test github::native_fixture::tests::native_fixture_refuses_stale_context_other_destinations_and_cancelled_writes ... ok
+test github::native_fixture::tests::native_fixture_conversation_pages_replies_and_resolution_are_authoritative ... ok
+test github::drafts::tests::attempt_byte_and_json_escape_overflow_cannot_poison_the_existing_store ... ok
+test github::drafts::tests::legacy_single_reply_receipt_migrates_without_retiring_its_proof ... ok
+test github::review::tests::fixture_never_falls_through_to_network_and_moved_head_refuses_read ... ok
+test github::review::tests::head_movement_during_file_read_rejects_the_page_without_posting ... ok
+test github::review::tests::exact_patch_ranges_refuse_opposite_sides_hunk_boundaries_and_incomplete_content ... ok
+test github::drafts::tests::pending_attempt_survives_reopen_until_an_observed_outcome_is_recorded ... ok
+test github::review::tests::malformed_range_and_unfinished_composer_never_dispatch ... ok
+test github::review::tests::same_side_range_serializes_and_old_single_line_drafts_remain_readable ... ok
+test github::tests::cancellation_prevents_dispatch_and_rate_limit_does_not_retry ... ok
+test github::tests::create_sends_draft_choice_after_two_identity_rechecks ... ok
+test github::tests::create_rechecks_published_identities_and_refuses_moved_base ... ok
+test github::tests::expired_authorization_is_actionable_without_replay ... ok
+test github::tests::moved_head_preserves_review_without_posting ... ok
+test github::drafts::tests::new_attempts_cannot_evict_unretired_reply_receipts ... ok
+test github::drafts::tests::failed_reply_batch_preserves_existing_text_and_invalid_store ... ok
+test github::tests::rejects_credentials_and_foreign_hosts ... ok
+test github::tests::paging_is_explicit_and_bounded ... ok
+test github::tests::review_posts_captured_commit_once_and_uncertainty_never_replays ... ok
+test github::drafts::tests::reply_receipt_limit_refuses_growth_without_forgetting_completed_text ... ok
+test github::drafts::tests::confirmed_reply_completion_replaces_only_the_submitted_context ... ok
+test github::transport::tests::another_window_keychain_operation_is_refused_without_waiting_or_touching_credentials ... ok
+test github::transport::tests::installed_cli_api_isolation_blocks_configured_token_rerouting ... ignored, requires installed gh; dummy token, Unix socket and loopback proxy only
+test github::transport::tests::keychain_authorization_required_refuses_with_explicit_connection_guidance ... ok
+test github::drafts::tests::reply_identity_separators_cannot_overwrite_another_conversation ... ok
+test github::transport::tests::headers_and_rate_limit_are_parsed_without_diagnostics ... ok
+test github::transport::tests::saved_credential_requires_exact_read_back_and_noninteractive_access ... ok
+test github::drafts::tests::completion_proof_is_exact_and_survives_later_uncertain_and_resolution_attempts ... ok
+test github::transport::tests::token_debug_never_displays_secret ... ok
+test github_view::conversations::tests::conversation_paging_keeps_forward_navigation_and_reports_real_bounds ... ok
+test github_view::tests::correcting_destination_captures_existing_text_and_distinguishes_missing_selection ... ok
+test github_view::tests::destination_typing_persists_only_settled_draft_and_preserves_prior_destinations ... ok
+test github::drafts::tests::completing_a_reply_frees_capacity_for_a_coalesced_new_draft ... ok
+test github_view::tests::out_of_order_save_replies_cannot_replace_a_newer_failure_or_success ... ok
+test github::drafts::tests::reply_restart_preserves_exact_text_and_all_original_identities ... ok
+test github_view::tests::save_completion_keeps_invalid_destination_and_failed_storage_unsaved ... ok
+test graph::tests::appending_history_preserves_loaded_rows_and_open_parent_edges ... ok
+test github_view::tests::shutdown_awaits_actual_coalesced_save_when_no_barrier_slot_is_available ... ok
+test github::drafts::tests::discarding_a_captured_reply_preserves_a_newer_edit ... ok
+test graph::tests::duplicate_parent_entries_do_not_duplicate_rendered_edges ... ok
+test graph::tests::existing_first_parent_and_new_secondary_parent_preserve_flow ... ok
+test graph::tests::first_parent_color_is_stable_and_new_heads_have_no_incoming_edge ... ok
+test graph::tests::graph_lanes_remain_visible_on_all_theme_surfaces_without_changing_identity ... ok
+test github_view::tests::window_close_completion_survives_removed_window_until_app_shutdown ... ok
+test graph::tests::incremental_cancellation_preserves_cursor_and_wide_pages_latch_honest_fallback ... ok
+test graph::tests::lane_viewport_keeps_spacing_and_can_reach_offscreen_ancestry ... ok
+test graph::tests::octopus_merge_and_shared_ancestry_have_exact_parent_paths ... ok
+test graph::tests::incremental_pages_match_complete_topology_and_colors_without_retaining_rows ... ok
+test graph::tests::readable_graph_width_preserves_spacing_when_history_grows ... ok
+test history_paging::tests::search_and_other_missing_rows_remain_discontinuous ... ok
+test history_paging::tests::window_can_continue_at_arbitrary_depth_and_bounds_rows_and_bytes_independently ... ok
+test history_search::tests::budget_pages_remain_incomplete_and_keep_the_returned_pinned_scope ... ok
+test history_search::tests::no_progress_timeout_keeps_a_retry_cursor_without_claiming_completion ... ok
+test history_search::tests::replies_require_the_same_query_epoch_repository_and_read_generation ... ok
+test image_compare::tests::retained_image_state_never_revives_an_active_gesture ... ok
+test image_compare::tests::shared_image_geometry_fits_without_upscaling_and_clamps_pan ... ok
+test image_compare::tests::thumbnail_reduction_preserves_original_resize_and_absent_sides ... ok
+test image_lifetime::tests::back_render_rearms_once_after_a_delayed_old_frame_owner_is_cleared ... ok
+test image_lifetime::tests::repeated_paints_keep_one_cleanup_reference_and_one_callback_per_window ... ok
+test image_lifetime::tests::shared_cache_dialog_and_other_window_owners_protect_all_gif_frames ... ok
+test image_lifetime::tests::closing_one_window_does_not_strand_cleanup_or_retire_another_windows_image ... ok
+test image_lifetime::tests::sequential_worktree_opens_release_pixels_instead_of_accumulating_registry_owners ... ok
+test local_refresh::tests::bursts_wait_for_quiet_but_continuous_activity_has_a_maximum_delay ... ok
+test local_refresh::tests::delivery_merges_many_changes_without_an_unbounded_refresh_queue ... ok
+test github::transport::tests::body_pipe_reaches_eof_and_output_is_bounded ... ok
+test graph::tests::superseded_layout_stops_between_rows ... ok
+test history_paging::tests::deep_window_retains_ancestry_edges_with_selection_outside_visible_rows ... ok
+test markdown_view::tests::bounded_documents_keep_unavailable_assets_explicit ... ok
+test markdown_view::tests::gfm_structure_preserves_text_and_never_executes_html ... ok
+test local_refresh::tests::fingerprinting_suppresses_duplicate_events_and_index_lock_directory_noise ... ok
+test local_refresh::tests::resolved_linked_worktree_paths_and_git_lock_filter_preserve_scope ... ok
+test model_view::playback::tests::lifecycle_and_failure_pause_share_one_time_when_partner_frame_is_pending ... ok
+test model_view::playback::tests::clip_choices_scrubbing_and_hidden_pause_preserve_cameras_and_invalidate_results ... ok
+test model_view::playback::tests::shared_clock_holds_shorter_pose_and_loops_at_longer_duration ... ok
+test model_view::playback::tests::pause_freezes_sample_and_scrub_can_inspect_exact_final_pose ... ok
+test model_view::tests::camera_edits_and_pause_invalidate_render_generation ... ok
+test model_view::tests::bookmark_restores_camera_and_modes_without_pointer_or_pending_work ... ok
+test model_view::tests::glb_initial_camera_fits_revision_union_and_retains_changed_placement ... ok
+test model_view::tests::linked_camera_changes_share_scale_and_unlink_preserves_independent_inspection ... ok
+test model_view::tests::renderer_replaces_queued_work_and_releases_its_resources ... ok
+test model_view::tests::standard_view_matching_wraps_yaw_and_preserves_custom_orientations ... ok
+test model_view::tests::standard_view_labels_survive_serialized_camera_bookmark_restoration ... ok
+test native_accessibility::control_tests::button_content_preserves_explicit_type_and_icon_geometry ... ok
+test native_accessibility::dialog_tests::dialog_titles_follow_nested_layout_scopes_without_stale_names ... ok
+test native_accessibility::dialog_tests::focused_input_escape_reaches_dialog_and_respects_disabled_keyboard ... ok
+test native_accessibility::dialog_tests::rendered_component_titles_unwrap_the_erased_alert_and_dialog_title ... ok
+test native_accessibility::dialog_tests::focused_reader_closes_find_before_the_dialog ... ok
+test github::transport::tests::cancellation_stops_subprocess_and_does_not_replay ... ok
+test native_accessibility::display_changes::tests::display_change_bursts_coalesce_and_closed_views_accept_no_work ... ok
+test native_accessibility::tests::navigator_skips_sections_stops_at_bounds_and_recovers_removed_cursor ... ok
+test native_accessibility::tests::focus_traps_preserve_named_dialog_and_group_semantics ... ok
+test navigation::tests::current_ancestor_seed_does_not_override_later_manual_collapse ... ok
+test native_accessibility::tests::rendered_buttons_report_disabled_and_tab_selection ... ok
+test navigation::tests::folders_are_grouped_and_count_collapsed_descendants ... ok
+test navigation::tests::leaves_sort_by_display_name_and_empty_inputs_stay_empty ... ok
+test navigation::tests::depth_budget_preserves_long_branch_suffix_and_current_identity ... ok
+test navigation::tests::search_reveals_only_matching_paths_without_mutating_expansion ... ok
+test navigation::tests::local_and_remote_folder_keys_and_original_indices_are_independent ... ok
+test native_accessibility::input_tests::input_semantics_follow_the_editing_focus_owner ... ok
+test operations::tests::accepted_operations_keep_order_after_a_reply_is_dropped ... ok
+test operations::tests::a_panicking_operation_reports_uncertainty_and_executor_recovers ... ok
+test operations::tests::failed_open_and_same_resolved_worktree_retain_existing_outcomes ... ok
+test operations::tests::opening_preserves_new_completion_notice_and_errors_then_scopes_them ... ok
+test operations::tests::obsolete_status_reads_are_skipped_without_discarding_a_queued_write ... ok
+test local_refresh::tests::fingerprint_storage_remains_bounded_during_large_change_sets ... ok
+test operations::tests::successful_repository_switch_clears_previous_outcomes_without_resurrecting_them ... ok
+test page_navigation::tests::project_hub_return_requires_a_resolved_repository ... ok
+test page_navigation::tests::settings_returns_to_the_page_it_was_opened_from ... ok
+test partial_view::tests::crlf_and_missing_final_newline_do_not_shift_actions_or_modify_text ... ok
+test partial_view::tests::literal_hunk_actions_keep_exact_ids_across_separate_display_groups ... ok
+test path_filter::tests::matching_keeps_original_indices_and_covers_unicode_renamed_paths ... ok
+test partial_view::tests::mismatched_text_or_missing_changes_never_produce_actionable_rows ... ok
+test path_filter::tests::prepared_search_metadata_leaves_byte_safe_operation_targets_unchanged ... ok
+test path_filter::tests::superseded_work_does_not_publish_rows_from_previous_query_or_snapshot ... ok
+test pdf_view::tests::cache_promotes_revisited_pages_and_evicts_oldest ... ok
+test pdf_view::tests::page_changes_reject_late_results_and_link_at_different_counts ... ok
+test preferences::tests::commit_message_preserves_user_formatting_and_only_adds_the_separator ... ok
+test preferences::tests::invalid_branch_edits_and_unsupported_store_do_not_destroy_preferences ... ok
+test github::transport::tests::deadlines_include_descendants_holding_stdout_after_the_parent_exits ... ok
+test preferences::tests::loaded_settings_repair_bounds_and_invalid_branch_without_changing_file ... ok
+test preferences::tests::invalid_draft_store_or_path_cannot_destroy_saved_text ... ok
+test preferences::tests::loading_invalid_settings_does_not_rewrite_them ... ok
+test pdf_view::tests::text_and_pixels_share_the_pdf_cache_byte_budget ... ok
+test preferences::tests::non_utf8_paths_round_trip_without_loss ... ok
+test preferences::tests::drafts_survive_restart_settings_and_recents_with_separate_worktrees ... ok
+test github::drafts::tests::changed_reply_targets_remain_separately_recoverable ... ok
+test preferences::tests::store_reads_bound_the_descriptor_even_after_observed_file_growth ... ok
+test preferences::tests::text_sizes_migrate_independently_and_reject_unsupported_values ... ok
+test preferences::tests::store_reads_refuse_links_and_fifos_and_saves_preserve_them ... ok
+test preferences::tests::settings_save_keeps_new_recents_and_stale_recent_update_keeps_new_settings ... ok
+test preferences::tests::version_one_recents_migrate_without_writes_and_keep_default_settings ... ok
+test github::drafts::tests::earlier_completed_reply_stays_suppressed_after_later_success_and_failed_saves ... ok
+test profiles::store::tests::invalid_or_unknown_store_is_never_replaced_and_loading_does_not_write ... ok
+test projects::tests::chosen_destination_preserves_non_utf8_parent_bytes ... ok
+test projects::tests::clone_names_support_https_ssh_and_local_sources ... ok
+test preferences::tests::symlink_aliases_are_deduplicated ... ok
+test projects::tests::clone_source_accepts_git_transports_and_rejects_empty_or_hidden_input ... ok
+test profiles::store::tests::inherited_descriptor_does_not_keep_completed_profile_update_locked ... ok
+test profiles::store::tests::assignments_preserve_non_utf8_worktree_paths ... ok
+test projects::tests::destination_keeps_the_project_under_the_chosen_parent ... ok
+test projects::tests::initial_branch_rejects_invalid_refs_before_submission ... ok
+test projects::tests::recent_projects_keep_order_without_duplicate_paths ... ok
+test recovery::tests::amend_fields_preserve_description_whitespace_and_comment_lines ... ok
+test recovery::tests::legacy_single_newline_messages_split_without_losing_body_text ... ok
+test recovery::tests::stash_list_navigation_bounds_empty_and_changed_pages ... ok
+test recovery::tests::unchanged_amend_preserves_exact_legacy_message_and_edits_use_blank_separator ... ok
+test projects::tests::populated_project_inputs_keep_their_names_across_modes ... ok
+test recovery_drafts::tests::crash_child ... ok
+test projects::tests::keyboard_focus_reveals_project_fields_and_submit_at_small_window ... ok
+test recovery_drafts::tests::non_utf8_worktree_and_file_names_round_trip ... ok
+test recovery_drafts::tests::final_recovery_draft_survives_removed_window_and_full_save_queue ... ok
+test recovery_drafts::tests::returning_to_an_earlier_source_prefers_its_valid_draft_and_keeps_newer_stale_text ... ok
+test repository_access::tests::deadline_does_not_imply_permission_failure ... ok
+test repository_access::tests::nested_os_access_error_preserves_evidence ... ok
+test recovery_drafts::tests::forced_termination_after_saved_keeps_exact_recoverable_text ... ok
+test recovery_drafts::tests::restart_preserves_exact_bytes_and_refuses_stale_identity ... ok
+test repository_tabs::tests::captured_added_and_deleted_comparisons_keep_their_absent_side_on_restart ... ok
+test repository_tabs::tests::captured_comparison_roundtrip_preserves_each_blob_mode_parent_and_document_choice ... ok
+test recovery_drafts::tests::failed_store_is_preserved_and_other_worktrees_survive_updates ... ok
+test profiles::store::tests::restart_assignments_edit_delete_and_stale_saves_preserve_other_profiles ... ok
+test preferences::tests::remembers_ten_unique_paths_and_atomically_replaces_settings ... ok
+test repository_tabs::tests::library_pins_and_groups_survive_closing_tabs_without_becoming_open_readers ... ok
+test github::tests::templates_read_captured_blobs_and_ignore_stored_symlinks ... ok
+test repository_tabs::tests::loading_session_is_bounded_and_keeps_unavailable_repositories_for_recovery ... ok
+test repository_tabs::tests::normalization_bounds_open_tabs_library_and_group_memberships ... ok
+test repository_tabs::tests::normalization_preserves_active_identity_when_invalid_and_duplicate_entries_are_removed ... ok
+test repository_tabs::tests::reorder_and_roundtrip_keep_active_repository_and_independent_bookmarks ... ok
+test repository_tabs::tests::saving_a_session_preserves_corrupt_and_unsupported_restart_data ... ok
+test repository_tabs::tests::selected_identity_outside_window_is_retained_once_without_replacing_visible_commits ... ok
+test repository_tabs::tests::session_preserves_non_utf8_repository_and_comparison_paths ... ok
+test repository_tabs::tests::shared_inputs_start_empty_for_new_tabs_and_restore_independent_warm_queries ... ok
+test repository_branch_input_tests::branch_inputs_reset_on_canonical_switch_but_survive_aliases_and_failed_opens ... ok
+test path_filter::tests::working_preview_survives_retained_history_filter_and_late_reply ... ok
+test repository_tabs::tests::workspace_text_exposes_full_repository_and_group_description ... ok
+test revision_inspection::tests::enter_and_dialog_confirmation_activate_once_and_closed_results_are_ignored ... ok
+test rich_preview::tests::absent_and_empty_are_distinct_and_source_is_counted ... ok
+test rich_preview::tests::captured_jpeg2000_magic_preserves_container_and_codestream_suffixes ... ok
+test rich_preview::tests::external_copy_is_exact_private_and_does_not_use_stored_paths ... ok
+test rich_preview::tests::successful_model_decode_replaces_generic_uncertainty_and_keeps_real_details ... ok
+test settings::draft_tests::identity_edits_retain_scope_and_reset_or_untouched_fields_follow_effective_git ... ok
+test settings::draft_tests::unsaved_default_branch_survives_reentry_and_external_updates_until_saved ... ok
+test split_diff::tests::handles_absent_sides_crlf_unicode_and_missing_final_newline ... ok
+test split_diff::tests::linked_scroll_ignores_deferred_notifications_and_follows_bursts_and_reversal ... ok
+test split_diff::tests::pairs_replacements_and_pads_extra_lines_without_corrupting_copy ... ok
+test split_diff::tests::retains_unchanged_regions_between_hunks_and_after_last_hunk ... ok
+test markdown_view::tests::historical_assets_use_each_captured_tree_and_mutable_assets_invalidate_content ... ok
+test text::tests::context_that_looks_like_a_hunk_keeps_following_changes ... ok
+test text::tests::file_headers_are_neutral_but_similar_changed_content_is_colored ... ok
+test text::tests::empty_sides_multiple_hunks_and_no_newline_markers_keep_exact_ranges ... ok
+test text::tests::navigation_has_separate_hunks_but_no_newline_markers_do_not_split_replacements ... ok
+test text::tests::prepared_metadata_keeps_utf8_rows_ranges_and_worker_safe_ownership ... ok
+test text::tests::utf8_changes_group_without_modifying_patch_or_line_endings ... ok
+test text::tests::word_highlights_isolate_multiple_unicode_tokens_and_keep_find_ranges_disjoint ... ok
+test text::tests::word_work_is_bounded_for_long_lines_and_many_tokens ... ok
+test text_review::tests::blank_line_insertions_and_removals_can_be_hidden_without_false_numbers ... ok
+test text_review::tests::change_navigation_wraps_and_accumulates_before_layout ... ok
+test text_review::tests::crlf_unicode_and_missing_newlines_survive_context_expansion ... ok
+test text_review::tests::empty_sides_keep_valid_zero_count_headers ... ok
+test text_review::tests::expansion_exposes_bounded_surrounding_lines_and_merges_overlapping_hunks ... ok
+test markdown_view::tests::captured_document_source_find_keeps_modal_focus_and_repository_context ... ok
+test text_review::tests::whitespace_filter_preserves_original_snapshot_and_exact_sources ... ok
+test views::tests::list_resize_reveals_selection_without_replacing_restored_or_manual_scroll ... ok
+test views::tests::resized_history_rows_clear_the_horizontal_scrollbar ... ok
+test text_review::tests::cancelled_and_out_of_budget_review_never_returns_partial_content ... ok
+test github_view::tests::opening_github_from_an_active_repository_update_defers_local_reads ... ok
+test github_view::review::tests::warm_reopen_retries_interrupted_local_read_and_template_payload_evicts ... ok
+test github_view::review::tests::native_review_keys_warm_context_and_destination_flush ... ok
+test worker::image_tests::content_detection_preserves_mislabeled_source_and_image_bytes ... ok
+test worker::image_tests::gif_worker_retains_composed_frames_and_accounts_for_every_render_buffer ... ok
+test text_review::tests::review_removes_actionable_partial_ids_and_reset_retains_the_exact_snapshot ... ok
+test worker::image_tests::changed_files_preserve_detected_rename_paths_for_preview_identity ... ok
+test worker::image_tests::glb_lfs_miss_is_retryable_and_verified_local_bytes_enter_the_model_pipeline ... ok
+test worker::image_tests::glb_history_preserves_captured_revisions_absence_and_independent_errors ... ok
+test worker::image_tests::lfs_preview_retries_misses_and_caches_verified_content ... ok
+test worker::image_tests::lfs_text_preview_retries_missing_pointer_and_displays_verified_content ... ok
+test worker::image_tests::meshopt_glb_cancellation_is_propagated_instead_of_retaining_a_failed_side ... ok
+test worker::image_tests::meshopt_glb_cache_reserves_geometry_and_frames_before_any_raster_is_requested ... ok
+test worker::image_tests::glb_working_preview_uses_current_bytes_without_caching_or_index_writes ... ok
+test worker::image_tests::history_search_resolves_live_branch_and_worktree_scopes_and_prepares_graph ... ok
+test github_view::conversations::tests::reply_focus_navigation_recovery_and_exact_completion ... ok
+test worker::image_tests::mermaid_working_and_quick_open_keep_exact_staging_and_review_sources ... ok
+test worker::image_tests::meshopt_glb_lfs_miss_is_retryable_and_verified_local_bytes_enter_the_model_pipeline ... ok
+test worker::image_tests::mermaid_history_keeps_literal_renamed_sources_and_failed_diagrams ... ok
+test worker::image_tests::meshopt_glb_history_preserves_captured_revisions_absence_and_independent_errors ... ok
+test worker::image_tests::missing_image_object_keeps_the_readable_side_rendered ... ok
+test worker::image_tests::model_worker_retains_obj_geometry_without_losing_captured_source_identity ... ok
+test worker::image_tests::meshopt_glb_working_preview_uses_current_bytes_without_caching_or_index_writes ... ok
+test worker::image_tests::quick_open_and_working_changes_share_bounded_media_routing ... ok
+test worker::image_tests::meshopt_glb_working_lfs_keeps_pointer_targets_and_retries_without_index_or_worktree_writes ... ok
+test worker::image_tests::ordinary_history_worker_continues_and_restores_the_same_graph_snapshot ... ok
+test worker::image_tests::render_pixels_are_bgra_without_changing_source_alpha_or_rgba ... ok
+test worker::image_tests::meshopt_glb_lfs_comparison_keeps_verified_side_and_retries_missing_or_corrupt_side ... ok
+test worker::image_tests::quiet_status_changes_keep_identical_preview_and_read_only_metadata ... ok
+test worker::image_tests::retained_session_reopens_in_place_gitdir_redirection_with_preserved_mtime ... ok
+test worker::image_tests::quiet_deleted_scope_keeps_history_context_but_updates_navigation_metadata ... ok
+test worker::image_tests::quiet_refresh_replaces_same_length_edits_and_removes_vanished_selection ... ok
+test worker::image_tests::refreshing_branch_and_worktree_scopes_resolves_external_tip_movement ... ok
+test worker::image_tests::stored_symlink_named_as_image_is_literal_and_never_followed ... ok
+test worker::tests::cache_bounds_entries_and_rejects_oversized_replacements ... ok
+test worker::tests::cache_eviction_respects_access_recency_and_content_bytes ... ok
+test worker::tests::cache_keys_include_both_paths_modes_objects_repository_and_options ... ok
+test worker::image_tests::rich_history_keeps_exact_old_new_and_missing_sides_without_worktree_substitution ... ok
+test worker::tests::cache_keys_preserve_non_utf8_path_bytes ... ok
+test worker::tests::dropping_worker_releases_pending_without_joining_active_work ... ok
+test worker::tests::duplicate_cache_insert_replaces_weight_and_has_one_lru_entry ... ok
+test worker::tests::decoder_panic_is_reported_and_worker_recovers_with_empty_cache ... ok
+test worker::tests::explicit_cancel_invalidates_active_and_pending_without_replacement ... ok
+test worker::tests::graph_budget_bounds_continuation_edges_even_below_lane_limit ... ok
+test worker::tests::graph_preflight_stops_when_selection_is_superseded ... ok
+test worker::tests::image_detection_checks_both_names_and_excludes_gitlinks_and_symlinks ... ok
+test worker::tests::queue_replaces_pending_and_cancels_active_at_checkpoint ... ok
+test worker::tests::replacement_and_explicit_cancel_signal_an_active_core_history_token ... ok
+test worker::tests::text_cache_budget_includes_prepared_patch_metadata ... ok
+test working_selection::benchmarks::prepared_review_and_cached_paths_release_benchmark ... ignored, Opt-in release CPU benchmark: run scripts/bench-app-review.py for fixture, source identity, raw samples and report
+test worker::tests::graph_budget_preserves_full_linear_history_and_rejects_excessive_width ... ok
+test working_selection::tests::range_toggle_and_filtered_refresh_never_leave_hidden_targets ... ok
+test working_selection::tests::replacing_working_snapshot_cancels_pending_index_and_clears_cached_rows ... ok
+test working_selection::tests::staged_and_unstaged_versions_are_distinct_and_removed_rows_are_dropped ... ok
+test workspace::tests::displayed_remote_address_does_not_expose_embedded_credentials_or_query ... ok
+test workspace::tests::remote_defaults_follow_the_new_branch_and_its_upstream ... ok
+test workspace::tests::small_working_inspector_reserves_files_after_wrapping_controls ... ok
+test workspace::tests::staging_preserves_path_selection_and_moves_area_only_when_needed ... ok
+test worker::image_tests::quiet_git_refresh_follows_external_staging_and_new_head ... ok
+test worker::image_tests::search_continuation_keeps_pinned_scope_after_ref_moves_and_bounds_retained_metadata ... ok
+test working_selection::tests::prepared_working_filter_keeps_renames_areas_and_literal_targets ... ok
+test worker::image_tests::retained_session_survives_ui_clear_and_nested_opens_but_separates_worktrees ... ok
+test repository_tabs::tests::closing_the_last_repository_tab_keeps_application_actions_reachable ... ok
+test worker::image_tests::retained_session_reopens_replaced_repository_at_the_same_path ... ok
+test worker::image_tests::scoped_recovery_refresh_updates_tip_without_broadening_pinned_search ... ok
+test repository_tabs::tests::cold_legacy_quick_source_restores_history_without_inventing_a_file_change ... ok
+test repository_tabs::tests::startup_installs_root_before_restoring_six_tabs_and_respects_initial_path ... ok
+test repository_tabs::tests::new_tab_and_latest_bookmark_survive_actual_window_close_with_full_save_queue ... ok
+test repository_tabs::tests::warm_tabs_restore_measured_viewports_with_their_manual_scroll_positions ... ok
+test repository_tabs::tests::cold_tab_restores_rendered_history_offset_without_revealing_manual_selection ... ok
+test local_refresh::tests::native_access_and_index_lock_transients_do_not_request_refresh ... ok
+test local_refresh::tests::native_notifications_detect_worktree_private_and_common_git_changes ... ok
+test repository_tabs::tests::closing_warm_tabs_keeps_open_repository_keyboard_shortcut_reachable ... ok
+
+test result: ok. 342 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 9.74s
+
+     Running unittests src/lib.rs (target/debug/deps/gitturtle_core-750b219cbc78f8fc)
+
+running 28 tests
+test conflict_blocks::tests::decisions_preserve_unicode_crlf_other_blocks_and_missing_final_newline ... ok
+test conflict_blocks::tests::diff3_base_and_custom_width_are_preserved_and_literal_marker_like_text_is_not_a_block ... ok
+test history::tests::a_full_page_stops_a_producer_without_blocking_on_the_bounded_queue ... ok
+test work::authentication::tests::diagnostics_redact_urls_headers_and_credentials_but_keep_useful_paths ... ok
+test conflict_blocks::tests::malformed_nested_and_excessive_inputs_do_not_offer_partial_decisions ... ok
+test work::authentication::tests::cancelling_askpass_unblocks_helper_and_removes_private_socket ... ok
+test work::diagnostics::tests::pull_refusal_uses_terminal_git_diagnostic_after_fetch_progress ... ok
+test work::diagnostics::tests::unrelated_errors_and_output_names_do_not_claim_pull_divergence ... ok
+test work::rewrite_review::tests::repeated_patches_and_empty_commits_do_not_invent_correspondence ... ok
+test work::tests::literal_path_validation_preserves_weird_bytes_but_rejects_escaping_paths ... ok
+test tests::command_deadline_terminates_a_child_and_its_pipe_holding_descendant ... ok
+test work::authentication::tests::native_askpass_exchange_keeps_secret_ephemeral_and_rejects_stale_answers ... ok
+test tests::passive_deadline_includes_pipe_holders_after_parent_exit ... ok
+test history::tests::deadline_includes_pipe_holders_after_the_parent_exits ... ok
+test work::tests::status_and_write_input_preserve_non_utf8_paths_even_on_utf8_only_filesystems ... ok
+test tests::stalled_object_response_times_out_and_reaps_its_reader ... ok
+test history::tests::dropping_an_idle_history_page_closes_its_backpressured_producer ... ok
+test work::authentication::tests::explicit_cancel_terminates_pipe_holding_descendant_without_replaying_write ... ok
+test work::tests::mutation_deadline_includes_pipe_holding_hook_descendant_after_parent_exit ... ok
+test tests::object_timeout_joins_its_reader_with_detached_pipe_holders ... ok
+test work::worktrees::tests::cancelling_inspection_terminates_the_active_process_and_clears_scope ... ok
+test work::authentication::tests::cancellation_joins_io_threads_when_detached_helper_keeps_pipes_open ... ok
+test history::tests::traversal_cancellation_joins_detached_output_and_input_holders ... ok
+test work::authentication::tests::controlled_git_preserves_configured_askpass_and_helper_interaction ... ok
+test tests::passive_deadline_joins_readers_with_detached_pipe_holders ... ok
+test history::tests::ordinary_traversal_cancellation_reaps_an_active_process_and_pipe_holders ... ok
+test history::tests::cancellation_terminates_active_read_and_its_descendants ... ok
+test history::tests::history_deadline_joins_detached_output_and_input_holders ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.63s
+
+     Running tests/authentication.rs (target/debug/deps/authentication-574f382ffc4c4090)
+
+running 3 tests
+test clone_refuses_embedded_secrets_before_creating_destination ... ok
+test expired_loopback_credentials_are_rejected_by_helper_and_error_is_actionable ... ok
+test configured_helper_authenticates_loopback_fetch_and_pull_preserving_local_files ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.27s
+
+     Running tests/blame.rs (target/debug/deps/blame-8684d898fc8b8c1e)
+
+running 9 tests
+test new_and_unborn_files_have_uncommitted_attribution ... ok
+test literal_non_utf8_quoted_paths_survive_attribution ... ok
+test working_staged_rename_maps_original_path ... ok
+test shallow_attribution_exposes_the_local_history_boundary ... ok
+test working_snapshot_labels_staged_and_unstaged_lines_without_mutation_or_filters ... ok
+test committed_lines_keep_origin_rename_path_and_exact_source ... ok
+test symlinks_and_symlink_directories_are_never_followed ... ok
+test line_history_filters_other_lines_and_follows_rename ... ok
+test cancellation_limits_binary_and_absent_files_are_explicit ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.58s
+
+     Running tests/branches.rs (target/debug/deps/branches-b6872c1437bd7b8c)
+
+running 18 tests
+test duplicate_remote_is_preserved_and_option_like_urls_remain_literal ... ok
+test tracking_checkout_refusal_does_not_create_branch_or_overwrite_files ... ok
+test remote_add_and_edit_multiple_urls_are_atomic_and_preserve_other_settings ... ok
+test remote_removal_refuses_new_tracking_relationships_and_external_definitions ... ok
+test renaming_current_branch_preserves_tip_tracking_description_and_unrelated_work ... ok
+test tracking_branch_creation_is_local_explicit_and_preserves_dirty_work ... ok
+test safe_delete_uses_upstream_and_refuses_a_stale_merge_target ... ok
+test remote_edit_refuses_stale_settings_refs_invalid_specs_and_existing_lock ... ok
+test remote_removal_reports_affected_relationships_and_preserves_local_and_shared_refs ... ok
+test all_preparations_are_passive_and_cross_repository_plans_are_rejected ... ok
+test rename_refuses_collisions_stale_tips_and_branches_in_other_worktrees ... ok
+test safe_delete_protects_unmerged_current_and_worktree_branches ... ok
+test linked_worktree_remote_edit_updates_shared_config_and_preserves_private_settings ... ok
+test inherited_remote_options_and_upstream_relationships_are_not_partially_removed ... ok
+test explicit_upstream_set_change_and_unset_preserve_working_contents ... ok
+test upstream_refuses_stale_configuration_or_a_branch_occupied_elsewhere ... ok
+test rename_review_rejects_invalid_destinations_and_stale_context_before_writing ... ok
+test tracking_creation_refuses_stale_tips_names_configuration_and_head_aliases ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.90s
+
+     Running tests/conflict_blocks.rs (target/debug/deps/conflict_blocks-68f25c51d2653592)
+
+running 3 tests
+test changed_sources_refuse_a_prepared_save_without_touching_newer_work ... ok
+test recovery_identity_survives_reopen_and_unrelated_staging_but_rejects_changed_sources ... ok
+test per_block_drafts_save_without_staging_then_revalidate_before_final_resolution ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.66s
+
+     Running tests/history.rs (target/debug/deps/history-c558b8233982e60e)
+
+running 14 tests
+test cancelled_ordinary_traversal_cannot_continue_after_a_partial_page ... ok
+test bounds_invalid_revisions_and_cancelled_requests_fail_explicitly ... ok
+test search_reaches_old_history_and_matches_message_author_and_hash_literally ... ok
+test all_ref_snapshot_accepts_annotated_tags_and_noncommit_references ... ok
+test a_page_after_a_pure_rename_retains_history_under_the_previous_name ... ok
+test search_pages_pin_all_ref_tips_across_moves_and_support_a_single_ancestry ... ok
+test all_refs_includes_detached_head_and_handles_unborn_repositories ... ok
+test ordinary_traversal_pages_continue_once_across_ref_moves_and_page_boundaries ... ok
+test ordinary_traversal_keeps_merge_order_and_parents_across_one_row_pages ... ok
+test file_history_is_byte_safe_literal_and_passive_with_hostile_helpers ... ok
+test file_history_follows_renames_deletions_and_pages_with_exact_revision_paths ... ok
+test merge_file_history_uses_real_first_parent_and_keeps_all_parent_choices ... ok
+test ordinary_traversal_bounds_metadata_without_losing_the_deferred_record ... ok
+test a_scan_budget_returns_continuation_before_claiming_an_empty_search ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.20s
+
+     Running tests/inspection.rs (target/debug/deps/inspection-0842546755deb960)
+
+running 4 tests
+test quick_open_retains_filename_bytes_and_never_follows_symlinks ... ok
+test tracked_search_supports_unicode_deletion_pinning_and_cancel ... ok
+test ambiguous_missing_and_unrelated_revisions_are_explicit ... ok
+test endpoint_and_merge_base_directions_remain_passive_and_pinned ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.59s
+
+     Running tests/integration.rs (target/debug/deps/integration-cc6c8d4906b7593d)
+
+running 25 tests
+test fast_forward_merge_advances_only_the_named_current_branch ... ok
+test rebase_never_autostashes_dirty_work_even_when_git_config_requests_it ... ok
+test manual_resolution_never_follows_a_symlink_into_another_directory ... ok
+test missing_incoming_side_resolves_as_explicit_deletion ... ok
+test merge_abort_preserves_unrelated_work_and_stale_continue_is_refused ... ok
+test conflict_reads_do_not_mutate_the_index_or_execute_configured_helpers ... ok
+test manual_resolution_preserves_executable_mode_and_uses_the_configured_clean_filter ... ok
+test linked_worktree_operations_do_not_leak_to_the_main_worktree ... ok
+test continuation_snapshot_lists_staged_paths_and_rejects_new_staging ... ok
+test configured_commit_hooks_are_respected_when_continuing_a_merge ... ok
+test rebase_protects_ignored_paths_introduced_only_by_an_intermediate_replayed_commit ... ok
+test rebase_abort_restores_original_branch_and_dirty_abort_can_keep_files ... ok
+test unrelated_ignored_build_outputs_survive_a_successful_rebase ... ok
+test merge_plan_reports_divergence_and_manual_resolution_preserves_unrelated_work ... ok
+test stale_plan_rejects_a_moved_target_and_current_head_without_mutation ... ok
+test binary_conflicts_offer_both_complete_versions ... ok
+test upstream_integration_uses_the_configured_full_local_or_remote_ref ... ok
+test external_cherry_pick_and_revert_are_detected_and_can_continue_or_abort ... ok
+test signing_failure_preserves_the_resolved_index_and_pending_merge ... ok
+test stale_conflict_and_editor_changes_are_rejected_before_writing_or_staging ... ok
+test rebase_uses_meaningful_reversed_labels_and_continues_the_replayed_commit ... ok
+test merge_abort_refuses_independent_staged_work_but_accepts_resolution_paths ... ok
+test visible_integration_names_resolve_to_full_refs_and_refuse_ambiguity ... ok
+test external_reword_sequences_require_their_editor_without_skipping_message_edits ... ok
+test rebase_preserves_ignored_file_and_directory_collisions_before_any_mutation ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.78s
+
+     Running tests/interactive_rebase.rs (target/debug/deps/interactive_rebase-54ab41f8fb3c1109)
+
+running 9 tests
+test reorder_drop_and_fixup_preserve_unrelated_files_and_exact_pick_message ... ok
+test merge_ranges_and_ignored_intermediate_collisions_are_rejected ... ok
+test stale_continue_never_amends_new_staging_or_changed_message ... ok
+test message_recovery_identity_survives_restart_and_refuses_changed_index_or_git_message ... ok
+test cancellation_during_message_hook_preserves_paused_state_and_never_retries ... ok
+test conflicts_can_abort_or_resolve_and_continue_without_losing_original_branch ... ok
+test stale_branch_base_remote_warning_and_invalid_sequences_refuse_without_mutation ... ok
+test reword_and_squash_pause_for_each_native_message_and_resume_after_reopen ... ok
+test signing_and_message_hook_failures_remain_paused_and_can_be_retried_explicitly ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.33s
+
+     Running tests/lfs_download.rs (target/debug/deps/lfs_download-58bcd2ddc188eb0b)
+
+running 4 tests
+test raw_working_pointer_fetch_uses_private_temporary_git_objects ... ok
+test lfs_preparation_is_passive_and_download_is_exact_verified_and_preserves_work ... ok
+test cancelling_an_active_lfs_transfer_stops_it_without_touching_index_or_working_files ... ok
+test stale_sources_changed_working_pointers_and_bad_remote_objects_are_refused ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.09s
+
+     Running tests/local_directories.rs (target/debug/deps/local_directories-ace92b43abcf394e)
+
+running 1 test
+test administration_directories_resolve_private_and_shared_linked_worktree_state ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+     Running tests/partial_staging.rs (target/debug/deps/partial_staging-7c880471fff652b3)
+
+running 18 tests
+test commit_message_preserves_description_whitespace_and_comment_lines ... ok
+test passive_partial_reads_preserve_index_and_skip_configured_helpers ... ok
+test preexisting_nested_lock_symlink_is_never_removed_or_followed ... ok
+test changed_attributes_refuse_stale_partial_without_running_filters ... ok
+test linked_worktree_partial_staging_updates_only_its_private_index ... ok
+test unborn_file_stages_selected_lines_and_unstages_without_deleting_work ... ok
+test crlf_bytes_remain_exact_without_normalization_and_fallback_when_enabled ... ok
+test sha256_index_handles_partial_addition_and_removal ... ok
+test split_index_and_version_four_preserve_unrelated_entries ... ok
+test missing_final_newline_roundtrips_and_ambiguous_subset_is_refused ... ok
+test unstage_filtered_index_text_does_not_clean_again_or_change_working_bytes ... ok
+test hunk_stage_and_unstage_preserve_both_areas_and_unrelated_index_changes ... ok
+test binary_attributes_filters_renames_and_modes_offer_whole_file_fallback ... ok
+test deletion_can_be_staged_partially_then_fully_and_unstaged_partially ... ok
+test wrong_repository_invalid_selection_and_existing_lock_do_not_mutate ... ok
+test selected_replacement_and_individual_additions_and_deletions_roundtrip ... ok
+test stale_worktree_index_and_head_are_refused_without_overwriting ... ok
+test literal_newline_tab_and_option_paths_are_updated_without_pathspec_expansion ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.23s
+
+     Running tests/preview_assets.rs (target/debug/deps/preview_assets-afa5b7361d418128)
+
+running 7 tests
+test normalization_preserves_encoded_names_and_refuses_resources_outside_repo ... ok
+test stored_and_replaced_symlink_files_and_directories_are_never_followed ... ok
+test document_identity_and_full_commit_scope_are_revalidated ... ok
+test batch_keeps_per_image_errors_and_limits_aggregate_encoded_bytes ... ok
+test staged_and_working_images_are_separate_and_raw_filters_never_run ... ok
+test captured_commit_images_keep_revision_identity_after_refs_and_working_files_move ... ok
+test literal_git_pathspec_names_do_not_expand_or_match_other_files ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.40s
+
+     Running tests/profiles.rs (target/debug/deps/profiles-83ec28f7aac590e4)
+
+running 5 tests
+test stale_plan_existing_lock_and_invalid_fields_never_partially_change_identity ... ok
+test included_identity_is_preserved_on_disk_but_explicit_profile_wins_and_signing_stays_required ... ok
+test shared_and_existing_private_worktree_configuration_have_distinct_scope ... ok
+test profiles_change_real_commit_and_annotated_tag_identity_and_keep_other_configuration ... ok
+test two_ssh_signing_profiles_sign_commits_and_tags_and_missing_key_never_falls_back ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.24s
+
+     Running tests/recovery.rs (target/debug/deps/recovery-c691b4345fe43334)
+
+running 25 tests
+test linked_worktree_recovery_changes_only_its_own_head_and_index ... ok
+test amend_preserves_exact_message_and_includes_only_the_reviewed_index ... ok
+test named_stash_inspection_preserves_staged_unstaged_and_untracked_versions ... ok
+test revert_published_change_preserves_unrelated_unstaged_work ... ok
+test failed_stash_restore_keeps_untracked_collision_and_saved_entry ... ok
+test cherry_pick_selected_commit_preserves_unrelated_unstaged_work ... ok
+test replay_refuses_ignored_file_and_symlink_ancestors_before_any_mutation ... ok
+test duplicate_stash_reflog_entries_cannot_impersonate_a_previously_reviewed_drop ... ok
+test recovery_plans_reject_changed_index_head_and_another_repository ... ok
+test failed_stash_apply_reports_git_lock_failure_without_claiming_conflicts ... ok
+test linked_worktree_stash_uses_shared_storage_but_only_changes_the_selected_worktree ... ok
+test stash_inspection_remains_passive_with_newline_paths_and_configured_helpers ... ok
+test stash_without_untracked_leaves_other_files_and_empty_stash_requests_are_explicit ... ok
+test merge_recovery_requires_an_explicit_valid_mainline_parent ... ok
+test undo_local_commit_moves_only_head_preserving_exact_index_and_working_files ... ok
+test stash_apply_restores_reviewed_staging_without_removing_the_stash_or_other_work ... ok
+test undo_rechecks_remote_publication_after_the_plan_was_reviewed ... ok
+test stash_conflict_preserves_saved_entry_and_unrelated_work ... ok
+test stash_drop_rechecks_reflog_position_and_only_removes_the_reviewed_entry ... ok
+test stash_create_and_apply_refuse_stale_working_index_and_cross_repository_plans ... ok
+test undo_refuses_root_merge_and_commits_known_to_remote_history ... ok
+test amend_runs_configured_hooks_and_does_not_bypass_hook_or_signing_failure ... ok
+test cherry_pick_and_revert_abort_still_protect_independently_staged_work ... ok
+test cherry_pick_and_revert_conflicts_resolve_and_continue_through_existing_workflow ... ok
+test cherry_pick_and_revert_abort_restore_preoperation_files_and_preserve_untracked_work ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.99s
+
+     Running tests/repository.rs (target/debug/deps/repository-a1acea725860783a)
+
+running 15 tests
+test bare_repository_can_be_inspected ... ok
+test large_and_non_utf8_files_have_explicit_preview_states ... ok
+test empty_repository_and_nested_discovery ... ok
+test sha256_object_ids_are_supported ... ok
+test missing_wrong_type_and_invalid_ids_do_not_poison_batch_reader ... ok
+test local_lfs_honors_relative_custom_storage_and_rejects_symlinks ... ok
+test root_and_modified_text_and_image_content ... ok
+test partial_clone_reads_do_not_fetch_missing_promisor_blobs ... ok
+test paths_preserve_non_utf8_tabs_newlines_and_renames ... ok
+test local_lfs_objects_are_verified_bounded_and_shared_across_worktrees ... ok
+test history_paging_matches_full_order_and_diff_sources_are_reused ... ok
+test read_operations_leave_repository_unchanged_and_never_run_configured_helpers ... ok
+test branches_remote_aliases_and_worktree_states ... ok
+test merge_parent_selection_and_topological_history ... ok
+test modes_symlinks_and_submodule_commits_are_inspected_without_following ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.72s
+
+     Running tests/rewrite_review.rs (target/debug/deps/rewrite_review-0544ddd9ee39a4aa)
+
+running 11 tests
+test missing_original_objects_are_explicit_and_never_fetched_by_local_review ... ok
+test cancellation_before_network_write_preserves_remote_and_never_retries ... ok
+test changed_patch_is_a_labelled_possible_match_and_new_and_empty_commits_are_honest ... ok
+test local_tip_or_push_destination_movement_refuses_publication ... ok
+test correspondence_tracks_reorder_and_drop_and_exact_lease_publishes_only_named_branch ... ok
+test local_pre_push_hook_receives_reviewed_destination_and_can_refuse_publication ... ok
+test message_only_and_whitespace_changes_remain_changed_even_with_the_same_patch_fingerprint ... ok
+test remote_movement_refuses_the_reviewed_lease_without_a_force_fallback ... ok
+test protected_branch_rejection_preserves_the_remote ... ok
+test cancellation_after_remote_update_reports_uncertainty_without_replaying ... ok
+test remote_movement_requires_fetched_objects_then_a_separate_new_series_and_lease_review ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.49s
+
+     Running tests/signing.rs (target/debug/deps/signing-13f4e46630f8faae)
+
+running 3 tests
+test configured_openpgp_signs_real_commits_and_tags_in_an_isolated_keyring ... ignored, Requires GnuPG; run explicitly to verify configured OpenPGP signing with an isolated generated keyring
+test configured_ssh_agent_fetches_over_loopback_and_rejects_unknown_hosts ... ignored, Requires a runnable local sshd; binds only loopback and uses generated fixture keys with strict host verification
+test configured_ssh_agent_signs_real_commits_and_tags_without_unsigned_fallback ... ok
+
+test result: ok. 1 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 1.43s
+
+     Running tests/tags_ignore.rs (target/debug/deps/tags_ignore-57bccd3e870c1dcf)
+
+running 14 tests
+test ignore_rejects_line_breaks_without_touching_destination ... ok
+test oversized_annotation_keeps_inspection_identity_and_safe_delete_available ... ok
+test tag_creation_refuses_signing_configuration_changed_since_review ... ok
+test literal_ignore_preserves_crlf_and_unrelated_index_and_work ... ok
+test ignore_rejects_stale_content_newly_tracked_target_and_symlinks ... ok
+test ignore_refuses_replaced_file_identity_and_symbolic_exclude_parent ... ok
+test directory_local_exclude_preserves_tracked_paths_and_shared_rules ... ok
+test captured_tag_push_refuses_changed_remote_configuration ... ok
+test tags_capture_commits_preserve_work_and_delete_only_reviewed_oid ... ok
+test named_push_ignores_mirror_and_follow_tags_configuration ... ok
+test annotation_inspection_preserves_message_and_never_bypasses_signing ... ok
+test success_without_signature_removes_only_exact_unsigned_tag_and_preserves_work ... ok
+test signed_tag_postcondition_refuses_observed_symbolic_replacement ... ok
+test signed_tag_postcondition_preserves_concurrent_replacement_and_runs_reference_hook ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.03s
+
+     Running tests/workflow.rs (target/debug/deps/workflow-a4c69e050c5991f9)
+
+running 16 tests
+test init_and_clone_refuse_populated_destinations ... ok
+test configured_signing_failure_is_reported_instead_of_creating_unsigned_commit ... ok
+test working_preview_reads_link_targets_and_rejects_symlink_directory_escape ... ok
+test passive_status_disables_clean_filters_and_does_not_refresh_index ... ok
+test working_binary_and_deleted_sides_are_distinguished ... ok
+test rename_unstage_restores_index_without_reversing_working_rename ... ok
+test filenames_are_literal_and_byte_preserving_in_status_stage_and_unstage ... ok
+test local_http_authentication_failure_reports_helper_recovery_without_prompting ... ok
+test stage_commit_preserves_unstaged_content_and_roundtrips_history ... ok
+test branch_creation_checkout_and_refusal_preserve_local_work ... ok
+test configured_filters_and_hooks_are_preserved_only_for_explicit_writes ... ok
+test unborn_unstage_retains_files_and_identity_is_repository_local ... ok
+test conflicts_are_explicit_and_can_be_staged_after_manual_resolution ... ok
+test ssh_failures_keep_configured_program_and_provide_safe_recovery_guidance ... ok
+test linked_worktree_status_index_branch_and_identity_remain_private ... ok
+test clone_fetch_fast_forward_pull_and_non_force_push_use_local_remote ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.50s
+
+     Running tests/worktrees_reflog.rs (target/debug/deps/worktrees_reflog-6a58c706a8042e96)
+
+running 6 tests
+test failed_checkout_hook_reports_retained_branch_without_cleanup_or_retry ... ok
+test worktree_creation_preserves_source_index_work_and_private_config ... ok
+test reflog_recovery_preserves_current_head_index_work_and_refuses_stale_entries ... ok
+test existing_branch_creation_refuses_moving_ref_and_occupied_destination ... ok
+test reflog_bounds_missing_objects_private_heads_and_symlink_safety ... ok
+test worktree_removal_refuses_dirty_ignored_locked_main_missing_and_stale_identity ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.97s
+
+     Running unittests src/lib.rs (target/debug/deps/gitturtle_preview-225d1e3be3175c61)
+
+running 124 tests
+test metadata::tests::checks_iso_brands_and_declared_box_bounds ... ok
+test metadata::tests::wav_reports_channels_rate_and_duration ... ok
+test metadata::tests::font_metadata_reads_bounded_name_table ... ok
+test metadata::tests::zip_metadata_lists_entries_without_expanding_or_following_them ... ok
+test animation::tests::applies_transparent_overlay_and_background_disposal_before_next_frame ... ok
+test metadata::tests::decodes_utf16_without_silently_replacing_invalid_text ... ok
+test metadata::tests::detects_content_without_trusting_extension ... ok
+test mermaid::tests::refuses_resources_unknown_types_and_oversized_input_without_losing_source ... ok
+test model3d::appearance::tests::sampler_wrap_filter_and_linear_mips_match_expected_samples ... ok
+test animation::tests::caps_frames_and_duration_and_cancels_before_more_decode ... ok
+test animation::tests::retains_distinct_composited_frames_delays_and_first_frame_api ... ok
+test metadata::tests::all_short_or_corrupt_inputs_are_bounded ... ok
+test model3d::glb::compression::tests::meshopt_cancellation_surrounds_native_decode_and_filter_blocks ... ok
+test model3d::glb::compression::tests::meshopt_exponential_exponent_boundaries_preserve_finite_reference_values ... ok
+test model3d::appearance::tests::malformed_or_external_textures_preserve_geometry_with_disclosure ... ok
+test model3d::glb::compression::tests::meshopt_exponential_positions_and_oct_quantization_use_filtered_bytes ... ok
+test model3d::glb::appearance::tests::invalid_resource_ranges_and_uv_layouts_preserve_valid_geometry ... ok
+test model3d::glb::compression::tests::meshopt_exponential_refuses_out_of_range_exponents_even_with_zero_mantissa ... ok
+test model3d::appearance::tests::intersecting_transparent_triangles_sort_at_each_pixel ... ok
+test model3d::glb::compression::tests::meshopt_public_reference_arch_preserves_changed_bounds_and_union_camera ... ok
+test model3d::glb::compression::tests::meshopt_filters_match_explicit_khronos_values ... ok
+
+running 1 test
+test model3d::glb::compression::tests::meshopt_modes_preserve_exact_geometry_units_transforms_and_instances ... ok
+test model3d::glb::compression::tests::meshopt_rejects_truncation_newer_versions_and_out_of_width_indices ... ok
+test model3d::glb::compression::tests::meshopt_rejects_invalid_filtered_components_and_nonfinite_positions ... ok
+test model3d::appearance::tests::culling_double_sided_and_mirrored_winding_are_independent ... ok
+test model3d::glb::compression::tests::meshopt_fallbacks_are_descriptors_never_substitutes_for_bad_streams ... ok
+test model3d::glb::compression::tests::meshopt_sparse_indices_and_values_preserve_implicit_base ... ok
+test model3d::glb::compression::tests::meshopt_selected_output_and_geometry_have_independent_bounds ... ok
+test model3d::glb::compression::tests::meshopt_quantized_interleaved_and_shared_views_preserve_positions ... ok
+test model3d::glb::deformation::tests::animation_zero_scale_can_collapse_pose_without_invalidating_scene ... ok
+test model3d::glb::compression::tests::meshopt_validates_layouts_declarations_references_and_overflow ... ok
+test model3d::glb::appearance::tests::appearance_fallback_never_swallows_cancellation ... ok
+test model3d::appearance::tests::material_and_texture_only_public_revisions_change_pixels_without_changing_geometry ... ok
+test model3d::glb::deformation::tests::eight_joint_influences_and_morphs_follow_transform_order ... ok
+test model3d::appearance::tests::alpha_masks_ignore_rejected_depth_and_opaque_ignores_alpha ... ok
+test model3d::glb::deformation::tests::checked_in_rigged_and_morph_fixtures_are_supported ... ok
+test model3d::glb::deformation::tests::malformed_animation_accessor_layout_preserves_static_geometry ... ok
+test model3d::glb::deformation::tests::malformed_animation_preserves_default_and_valid_other_clip ... ok
+test model3d::glb::deformation::tests::shortest_path_quaternion_linear_avoids_long_rotation ... ok
+test model3d::glb::deformation::tests::static_morph_node_weights_override_mesh_and_apply_before_node_transform ... ok
+test model3d::glb::deformation::tests::malformed_morph_and_joint_limits_are_explicit ... ok
+test model3d::glb::tests::glb_authored_negative_and_zero_scale_are_preserved ... ok
+test model3d::glb::deformation::tests::step_linear_and_cubic_clamp_and_preserve_default_pose ... ok
+test model3d::glb::tests::glb_case_insensitive_detection_retained_units_orientation_and_rendering ... ok
+test model3d::glb::deformation::tests::static_public_skin_preserves_joint_hierarchy_inverse_bind_and_ignores_mesh_transform ... ok
+test model3d::glb::tests::glb_bin_padding_and_asset_versions_are_checked ... ok
+test model3d::glb::tests::glb_cumulative_accessor_decode_work_is_bounded_independently_of_output ... ok
+test model3d::glb::tests::glb_container_checks_every_truncation_header_length_and_chunk_rule ... ok
+test model3d::glb::tests::glb_checked_in_refusals_explain_unsupported_content ... ok
+test model3d::glb::tests::glb_indexed_integer_widths_and_nonindexed_geometry_agree ... ok
+test model3d::glb::tests::glb_ignored_matrix_accessor_accepts_missing_final_column_padding ... ok
+test model3d::glb::tests::glb_interleaved_positions_respect_accessor_offsets_and_stride ... ok
+test model3d::glb::tests::glb_multiple_primitives_instances_nested_trs_and_column_major_matrix ... ok
+test model3d::glb::deformation::tests::deformation_decode_and_frame_work_limits_are_independent_of_triangle_count ... ok
+test model3d::glb::tests::glb_refs_include_ignored_attributes_and_unused_meshes ... ok
+test model3d::glb::deformation::tests::animation_limits_values_counts_and_cancellation_are_explicit ... ok
+test model3d::glb::tests::glb_refuses_external_geometry_and_omits_appearance_resources ... ok
+test model3d::glb::tests::glb_quantized_position_component_types_normalization_and_alignment ... ok
+test model3d::glb::tests::glb_refuses_malformed_deformation_and_unsupported_modes_without_partial_meshes ... ok
+test model3d::glb::tests::glb_scene_policy_default_then_first_and_no_implicit_unplaced_meshes ... ok
+test model3d::glb::tests::glb_refuses_bad_layouts_counts_ranges_finite_coordinates_and_indices ... ok
+test model3d::glb::tests::glb_refuses_geometry_extensions_even_optional_undeclared_or_on_unselected_nodes ... ok
+test model3d::glb::tests::glb_sparse_quantized_values_are_tightly_packed ... ok
+test model3d::glb::tests::glb_cancellation_during_json_accessors_instances_and_rendering ... ok
+test model3d::glb::tests::glb_sparse_triangle_indices_apply_before_validation_and_expansion ... ok
+test model3d::glb::tests::glb_sparse_refuses_invalid_order_counts_views_and_ranges ... ok
+test model3d::glb::tests::glb_sparse_positions_override_base_or_zero_storage_for_each_index_width ... ok
+test model3d::glb::tests::glb_tree_and_transform_validation_refuses_cycles_multiple_parents_and_invalid_matrices ... ok
+test model3d::tests::fbx_node_placement_is_applied_and_invalid_obj_indices_are_refused ... ok
+test model3d::tests::known_model_units_normalize_and_frames_are_cancellable_and_bounded ... ok
+test model3d::tests::model_cancellation_and_xml_external_references_are_refused ... ok
+test model3d::appearance::tests::transparent_surfaces_composite_in_linear_depth_order_without_shared_edge_seams ... ok
+test model3d::tests::model_refuses_cycles_bad_indices_nonfinite_and_geometry_amplification ... ok
+test model3d::tests::step_concave_face_triangulates_without_filling_the_notch ... ok
+test model3d::tests::interactive_camera_preserves_revision_scale_and_translation ... ok
+test model3d::glb::tests::glb_json_duplicate_keys_depth_tokens_arrays_strings_and_arbitrary_extras ... ok
+test model3d::tests::step_curved_csg_sphere_has_curvature_and_measured_volume ... ok
+test model3d::glb::tests::glb_node_depth_count_and_instance_triangle_amplification_are_bounded ... ok
+test model3d::tests::step_mapped_instances_apply_inverse_origin_scale_and_nested_placement ... ok
+test model3d::tests::step_unit_conversion_is_attached_to_context_and_mixed_units_are_refused ... ok
+test model3d::glb::compression::tests::meshopt_compressed_input_and_expanded_instances_are_independently_bounded ... ok
+test model3d::tests::orbit_pan_zoom_fit_and_wireframe_change_requested_frame_only ... ok
+test model3d::appearance::tests::transparency_and_texture_work_are_bounded_and_cancellable ... ok
+test model3d::tests::ascii_and_binary_stl_produce_same_geometry ... ok
+test model3d::glb::compression::tests::meshopt_shared_view_decodes_once_and_distinct_views_hit_cumulative_budget ... ok
+test model3d::tests::step_mapped_cycles_geometry_expansion_and_invalid_analytic_parameters_fail ... ok
+test native::pdf_text::tests::text_caps_utf8_bytes_without_splitting_characters_or_surrogate_pairs ... ok
+test mermaid::tests::bounds_fan_out_before_expansion_and_independent_math_nesting ... ok
+test mermaid::tests::markdown_fences_preserve_source_order_and_reject_unclosed_blocks ... ok
+test tests::applies_jpeg_exif_orientation ... ok
+test tests::decodes_all_supported_rasters_by_magic ... ok
+test tests::gif_returns_only_first_frame ... ok
+test model3d::tests::step_cylinder_torus_and_block_use_analytic_dimensions_and_placements ... ok
+test tests::lfs_pointer_is_metadata_and_never_decoded_as_image ... ok
+test tests::preserves_alpha_without_resizing ... ok
+test tests::rejects_input_and_requested_size_limits ... ok
+test tests::rejects_raster_pixel_limit_before_decoding_pixels ... ok
+test tests::supported_extensions_are_case_insensitive ... ok
+test tests::svg_bounded_mutation_probe ... ignored, bounded mutation probe; run explicitly with --ignored --nocapture
+test tests::svg_bounds_marker_multiplication_before_rendering ... ok
+test model3d::tests::three_mf_build_instances_compose_transforms_and_ignore_unused_objects ... ok
+test tests::svg_cannot_open_external_or_embedded_image_resources ... ok
+test tests::svg_expansion_preserves_href_precedence_and_nested_reference_pixels ... ok
+test tests::svg_marker_preflight_refuses_css_bypasses_and_nested_cycles ... ok
+test tests::svg_preserves_inherited_marker_arrows_and_plain_styles ... ok
+test tests::svg_bounds_reference_payload_cycles_and_expanded_depth ... ok
+test tests::svg_rejects_dtd_filters_and_excessive_nesting ... ok
+test tests::svg_renders_straight_alpha_and_internal_references ... ok
+test tests::thumbnail_preserves_aspect_and_has_no_transparent_color_bleed ... ok
+test model3d::tests::faceted_step_renders_the_same_solid_as_obj_and_refuses_curved_or_placed_solids ... ok
+test tests::svg_rejects_compact_reference_expansion_before_rendering ... ok
+test mermaid::tests::renders_supported_diagrams_to_bounded_pixels ... ok
+test mermaid::tests::unicode_labels_do_not_create_a_renderer_disk_cache ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 123 filtered out; finished in 0.16s
+
+test mermaid::tests::unicode_labels_do_not_create_a_renderer_disk_cache ... ok
+test model3d::tests::supplied_obj_and_fbx_render_geometry_without_external_materials ... ok
+test model3d::glb::tests::glb_permissive_real_assets_and_changed_assembly_bounds ... ok
+test animation::tests::rejects_corrupt_oversized_headers_and_bounds_aggregate_output ... ok
+CoreGraphics PDF has logged an error. Set environment variable "CG_PDF_VERBOSE" to learn more.
+test native::tests::pdf_rejects_corruption_and_honors_cancellation ... ok
+test native::tests::pdf_renders_supplied_pages_with_bounds_and_orientation ... ok
+test native::tests::imageio_preserves_pixel_orientation_and_alpha ... ok
+test native::tests::pdf_caps_output_and_rejects_unreasonable_page_geometry ... ok
+test tests::jpeg2000_magic_precedes_names_and_preserves_native_orientation ... ok
+test native::tests::imageio_decodes_bounded_avif_and_heic_by_content ... ok
+test native::pdf_text::tests::refuses_invalid_pages_input_and_cancels_between_native_phases ... ok
+test native::pdf_text::tests::extracts_only_the_selected_page_and_reports_absent_text ... ok
+
+test result: ok. 123 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 2.24s
+
+   Doc-tests gitturtle_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests gitturtle_preview
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

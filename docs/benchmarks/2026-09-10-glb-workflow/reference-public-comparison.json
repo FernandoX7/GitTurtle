@@ -1,0 +1,8520 @@
+{
+  "absolute_mm_tolerance": 0.001,
+  "relative_tolerance": 1e-06,
+  "pixel_channel_tolerance": 1,
+  "comparisons": [
+    {
+      "name": "alpha-blend.glb",
+      "clip": null,
+      "time": null,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            139,
+            54,
+            41,
+            255
+          ],
+          "actual_rgba": [
+            139,
+            54,
+            41,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            139,
+            54,
+            41,
+            255
+          ],
+          "actual_rgba": [
+            139,
+            54,
+            41,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            139,
+            54,
+            41,
+            255
+          ],
+          "actual_rgba": [
+            139,
+            54,
+            41,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            139,
+            54,
+            41,
+            255
+          ],
+          "actual_rgba": [
+            139,
+            54,
+            41,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            139,
+            54,
+            41,
+            255
+          ],
+          "actual_rgba": [
+            139,
+            54,
+            41,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            139,
+            54,
+            41,
+            255
+          ],
+          "actual_rgba": [
+            139,
+            54,
+            41,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "alpha-mask.glb",
+      "clip": null,
+      "time": null,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "actual_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            0,
+            255,
+            0,
+            255
+          ],
+          "actual_rgba": [
+            0,
+            255,
+            0,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "actual_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "actual_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            0,
+            255,
+            0,
+            255
+          ],
+          "actual_rgba": [
+            0,
+            255,
+            0,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "double-sided.glb",
+      "clip": null,
+      "time": null,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            203,
+            39,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            203,
+            39,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            203,
+            39,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            203,
+            39,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            203,
+            39,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            203,
+            39,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            203,
+            39,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            203,
+            39,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            255,
+            203,
+            39,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            203,
+            39,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            255,
+            203,
+            39,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            203,
+            39,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "material-after.glb",
+      "clip": null,
+      "time": null,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            39,
+            218,
+            124,
+            255
+          ],
+          "actual_rgba": [
+            39,
+            218,
+            124,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            39,
+            218,
+            124,
+            255
+          ],
+          "actual_rgba": [
+            39,
+            218,
+            124,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            39,
+            218,
+            124,
+            255
+          ],
+          "actual_rgba": [
+            39,
+            218,
+            124,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            39,
+            218,
+            124,
+            255
+          ],
+          "actual_rgba": [
+            39,
+            218,
+            124,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            39,
+            218,
+            124,
+            255
+          ],
+          "actual_rgba": [
+            39,
+            218,
+            124,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            39,
+            218,
+            124,
+            255
+          ],
+          "actual_rgba": [
+            39,
+            218,
+            124,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "material-before.glb",
+      "clip": null,
+      "time": null,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            80,
+            39,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            80,
+            39,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            80,
+            39,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            80,
+            39,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            80,
+            39,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            80,
+            39,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            80,
+            39,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            80,
+            39,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            255,
+            80,
+            39,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            80,
+            39,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            255,
+            80,
+            39,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            80,
+            39,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": null,
+      "time": null,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 0,
+      "time": 0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 0,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 0,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 0,
+      "time": 1,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 0,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 0,
+      "time": 2,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 1,
+      "time": 0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 1,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 1,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 1,
+      "time": 1,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 1,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 1,
+      "time": 2,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 2,
+      "time": 0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 2,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 2,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 2,
+      "time": 0.75,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 2,
+      "time": 1,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            97,
+            196,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "sampler-clamp.glb",
+      "clip": null,
+      "time": null,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "sampler-mirror.glb",
+      "clip": null,
+      "time": null,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            0,
+            0,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            0,
+            0,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            0,
+            255,
+            0,
+            255
+          ],
+          "actual_rgba": [
+            0,
+            255,
+            0,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            0,
+            0,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            0,
+            0,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "sampler-repeat.glb",
+      "clip": null,
+      "time": null,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            0,
+            0,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            0,
+            0,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            255,
+            0,
+            0,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            0,
+            0,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "skin-animated.glb",
+      "clip": null,
+      "time": null,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "skin-animated.glb",
+      "clip": 0,
+      "time": 0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "skin-animated.glb",
+      "clip": 0,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "skin-animated.glb",
+      "clip": 0,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "actual_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "skin-animated.glb",
+      "clip": 0,
+      "time": 1,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 9.094947017729282e-13,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "actual_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "actual_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "skin-animated.glb",
+      "clip": 0,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "actual_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "skin-animated.glb",
+      "clip": 0,
+      "time": 2,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "actual_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "actual_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "skin-morph-animation.glb",
+      "clip": null,
+      "time": null,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "skin-morph-animation.glb",
+      "clip": 0,
+      "time": 0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "skin-morph-animation.glb",
+      "clip": 0,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 4.547473508864641e-13,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "skin-morph-animation.glb",
+      "clip": 0,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "actual_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "skin-morph-animation.glb",
+      "clip": 0,
+      "time": 1,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 1.8189894035458565e-12,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "actual_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "skin-morph-animation.glb",
+      "clip": 0,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "actual_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "actual_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "skin-morph-animation.glb",
+      "clip": 0,
+      "time": 2,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "actual_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "actual_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "actual_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "actual_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            179,
+            69,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "texture-after.glb",
+      "clip": null,
+      "time": null,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            0,
+            255,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            0,
+            255,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            0,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            0,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            255,
+            0,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            255,
+            0,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            0,
+            0,
+            0,
+            255
+          ],
+          "actual_rgba": [
+            0,
+            0,
+            0,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            0,
+            255,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            0,
+            255,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            255,
+            0,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            0,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "texture-before.glb",
+      "clip": null,
+      "time": null,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            255,
+            0,
+            0,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            0,
+            0,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            0,
+            255,
+            0,
+            255
+          ],
+          "actual_rgba": [
+            0,
+            255,
+            0,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            0,
+            0,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            0,
+            0,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            255,
+            0,
+            0,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            0,
+            0,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            0,
+            255,
+            0,
+            255
+          ],
+          "actual_rgba": [
+            0,
+            255,
+            0,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "texture-jpeg.glb",
+      "clip": null,
+      "time": null,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            254,
+            0,
+            0,
+            255
+          ],
+          "actual_rgba": [
+            254,
+            0,
+            0,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            0,
+            255,
+            1,
+            255
+          ],
+          "actual_rgba": [
+            0,
+            255,
+            1,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            0,
+            0,
+            254,
+            255
+          ],
+          "actual_rgba": [
+            0,
+            0,
+            254,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            254,
+            0,
+            0,
+            255
+          ],
+          "actual_rgba": [
+            254,
+            0,
+            0,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            0,
+            255,
+            1,
+            255
+          ],
+          "actual_rgba": [
+            0,
+            255,
+            1,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": null,
+      "time": null,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 0,
+      "time": 0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 0,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 0,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "actual_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "actual_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 0,
+      "time": 1,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 1.8189894035458565e-12,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 0,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "actual_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "actual_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 0,
+      "time": 2,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "actual_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "actual_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "actual_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "actual_rgba": [
+            28,
+            34,
+            42,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 1,
+      "time": 0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 1,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 1,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 1,
+      "time": 1,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 1,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 1,
+      "time": 2,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 2,
+      "time": 0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 2,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 2,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 2,
+      "time": 0.75,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 2,
+      "time": 1,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "actual_rgba": [
+            218,
+            124,
+            255,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "vertex-color.glb",
+      "clip": null,
+      "time": null,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0,
+      "pixels": [
+        {
+          "pixel": [
+            256,
+            256
+          ],
+          "expected_rgba": [
+            188,
+            255,
+            137,
+            255
+          ],
+          "actual_rgba": [
+            188,
+            255,
+            137,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            256
+          ],
+          "expected_rgba": [
+            188,
+            255,
+            137,
+            255
+          ],
+          "actual_rgba": [
+            188,
+            255,
+            137,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            256,
+            464
+          ],
+          "expected_rgba": [
+            188,
+            255,
+            137,
+            255
+          ],
+          "actual_rgba": [
+            188,
+            255,
+            137,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            464,
+            464
+          ],
+          "expected_rgba": [
+            188,
+            255,
+            137,
+            255
+          ],
+          "actual_rgba": [
+            188,
+            255,
+            137,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            320,
+            300
+          ],
+          "expected_rgba": [
+            188,
+            255,
+            137,
+            255
+          ],
+          "actual_rgba": [
+            188,
+            255,
+            137,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        },
+        {
+          "pixel": [
+            400,
+            350
+          ],
+          "expected_rgba": [
+            188,
+            255,
+            137,
+            255
+          ],
+          "actual_rgba": [
+            188,
+            255,
+            137,
+            255
+          ],
+          "maximum_channel_difference": 0,
+          "ok": true
+        }
+      ]
+    }
+  ],
+  "refusals": [
+    {
+      "name": "external-texture.glb",
+      "reference_ok": false,
+      "actual_ok": true,
+      "reference_error": "Error: External/data image refused before GLTFLoader",
+      "actual_error": null
+    },
+    {
+      "name": "malformed-texture.glb",
+      "reference_ok": false,
+      "actual_ok": true,
+      "reference_error": "Error: Malformed image: declared MIME differs from captured codec",
+      "actual_error": null
+    }
+  ],
+  "authored": [
+    {
+      "name": "skin-animated.glb",
+      "clip": 0,
+      "time": 0.0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "skin-morph-animation.glb",
+      "clip": 0,
+      "time": 0.0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 0,
+      "time": 0.0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 1,
+      "time": 0.0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 0,
+      "time": 0.0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 1,
+      "time": 0.0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "skin-animated.glb",
+      "clip": 0,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 4.547473508864641e-13,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "skin-morph-animation.glb",
+      "clip": 0,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 4.547473508864641e-13,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 0,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 2.2737367544323206e-13,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 1,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 0,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 1,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "skin-animated.glb",
+      "clip": 0,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "skin-morph-animation.glb",
+      "clip": 0,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 4.547473508864641e-13,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 0,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 4.547473508864641e-13,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 1,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 0,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 1,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "skin-animated.glb",
+      "clip": 0,
+      "time": 1.0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 4.547473508864641e-13,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "skin-morph-animation.glb",
+      "clip": 0,
+      "time": 1.0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 9.094947017729282e-13,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 0,
+      "time": 1.0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 9.094947017729282e-13,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 1,
+      "time": 1.0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 0,
+      "time": 1.0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 1,
+      "time": 1.0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "skin-animated.glb",
+      "clip": 0,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 9.094947017729282e-13,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "skin-morph-animation.glb",
+      "clip": 0,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 6.821210263296962e-13,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 0,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 2.2737367544323206e-13,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 1,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 0,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 1,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "skin-animated.glb",
+      "clip": 0,
+      "time": 2.0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "skin-morph-animation.glb",
+      "clip": 0,
+      "time": 2.0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 0,
+      "time": 2.0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 2.2737367544323206e-13,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 1,
+      "time": 2.0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 0,
+      "time": 2.0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "morph-animation.glb",
+      "clip": 1,
+      "time": 2.0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 2,
+      "time": 0.0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 2,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 2,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 2,
+      "time": 0.75,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "trs-animation.glb",
+      "clip": 2,
+      "time": 1.0,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    }
+  ],
+  "unexpected_refusals": 0,
+  "ok": true,
+  "matched_samples": 62,
+  "failed_samples": 0
+}

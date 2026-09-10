@@ -248,7 +248,7 @@ def main():
         env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
         env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
         def git(*argv):
-            return subprocess.check_output(["git", "-C", str(destination), *argv], env=env, text=True).strip()
+            return subprocess.check_output(["git", "-C", str(destination), *argv], env=env, text=True).rstrip("\n")
         git("init", "-b", "main")
         (destination / ".git/empty-hooks").mkdir()
         for key, value in [("user.name", "GLB Workflow Fixture"), ("user.email", "fixture@example.invalid"),

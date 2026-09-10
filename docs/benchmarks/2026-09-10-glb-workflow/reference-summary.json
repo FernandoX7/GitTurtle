@@ -1,0 +1,109 @@
+{
+  "source_revision": "8908b35",
+  "preview_implementation_revision": "4b19124",
+  "probe_sha256": "cc22189b66b5be39db9ae01fc66beeaa11178532b9932b9cb8f35a91d7a897ff",
+  "public": {
+    "fixtures": 18,
+    "matched_pose_samples": 62,
+    "authored_equation_samples": 41,
+    "maximum_geometry_difference_mm": 1.8189894035458565e-12,
+    "maximum_pixel_channel_difference": 0,
+    "appearance_resource_refusals": [
+      "external-texture.glb",
+      "malformed-texture.glb"
+    ],
+    "fallback_geometry_matches": 2,
+    "revision_pair_isolation": {
+      "material_pair": "Only baseColorFactor JSON changes; entire BIN identical",
+      "texture_pair": "Only PNG bytes, image view byteLength and buffer byteLength change; geometry/sampler/material identical"
+    },
+    "fixture_regeneration": "All 18 GLBs, authored equations and manifest reproduced byte-for-byte; disposable repository has exactly two commits and its intended unstaged material change."
+  },
+  "real_and_official": {
+    "matched_samples": 263,
+    "absolute_mm_tolerance": 0.01,
+    "relative_tolerance": 1e-06,
+    "maximum_geometry_difference_mm": 0.007285785315616522,
+    "appearance_policy": "Geometry-only in-memory JSON appearance removal for independent evaluation; captured geometry/animation/BIN remain unchanged. Production receives complete original captured bytes.",
+    "rotation_policy": "Three.Quaternion.normalize applied to rotation keys before Three interpolation; source bytes untouched",
+    "assets": [
+      {
+        "name": "asset-0201.glb",
+        "sha256": "a19505e1cb5327faf56ef293b199182efd8e9a2c4bcd92abb6063e15a92d675a",
+        "samples": 9,
+        "clips": 1,
+        "triangles": 440,
+        "maximum_key_norm_error": 1.9161344940177294e-05,
+        "maximum_geometry_difference_mm": 0.0004039568268581206
+      },
+      {
+        "name": "asset-0327.glb",
+        "sha256": "cfaa7b2c5d25dbce37a5ccd078efb0b7a8743b3357bb9f3d3b5907765bce4c32",
+        "samples": 88,
+        "clips": 10,
+        "triangles": 17064,
+        "maximum_key_norm_error": 2.1388854208659325e-05,
+        "maximum_geometry_difference_mm": 0.007285785315616522
+      },
+      {
+        "name": "asset-0841.glb",
+        "sha256": "3b0eb4332f632d38c896eb2a5f9dfaffdd36007d1beb41ae82911a488214e67b",
+        "samples": 92,
+        "clips": 11,
+        "triangles": 4467,
+        "maximum_key_norm_error": 9.22826524085707e-08,
+        "maximum_geometry_difference_mm": 3.2816949214975466e-05
+      },
+      {
+        "name": "asset-0261.glb",
+        "sha256": "bff8bb3c9419368d2c3d3f346f38a402b67c5aca9d98ed8bc18780484d0ca985",
+        "samples": 63,
+        "clips": 9,
+        "triangles": 4964,
+        "maximum_key_norm_error": 1.1170407998584153e-07,
+        "maximum_geometry_difference_mm": 3.209046894880885e-05
+      },
+      {
+        "name": "RiggedSimple.glb",
+        "sha256": "3a79dabb67bb0cd598a18d08b954d9d357c27c30672f82ef5d3f4e7fe6ca3401",
+        "samples": 11,
+        "clips": 1,
+        "triangles": 188,
+        "maximum_key_norm_error": 5.000902825180731e-08,
+        "maximum_geometry_difference_mm": 1.4304578201063123e-05
+      }
+    ]
+  },
+  "stock_reference_diagnostic": {
+    "maximum_difference_mm": 6.865481418924901,
+    "explanation": "Stock Three.js leaves quantized quaternion key length error unnormalized. Separate normalized-key run uses THREE.Quaternion.normalize; raw stock results preserved privately. Residual differences reflect Float32 track dequantization/interpolation versus Rust f64. This is an adjusted reference, not pixel-perfect agreement with unmodified Three.js.",
+    "raw_jsonl_sha256": "36a2d531fe20dacbe395067be0d6dfe39c7aa51350a873e6219c75848001cd13",
+    "comparison_sha256": "53f18b4d2a03ad8a7864aebe87a4341390ca7f09db3d12017a512857c89cbcae",
+    "samples": 263,
+    "matched_samples_at_strict_tolerance": 172
+  },
+  "reproduction_scripts": {
+    "scripts/reference-glb-workflow.mjs": "3a0840a3287a803f5aff84705132f1a225f1d496238a1da971c05fd3a6e37424",
+    "scripts/compare-glb-workflow.py": "7ca5d38a7bf88cbecd83971d262128de21d9d245b6c3d353e252c5bcfb117b0c",
+    "scripts/audit-glb-workflow-refusals.cjs": "15a840019feb859cce3bf9b45e768d6c9bb3980fb13ced8eb0ab1d1e3de8e0d6",
+    "scripts/capture-glb-workflow-corpus.py": "6d9040c1f2e00e9fc1be8aefc6d8f92f52931a9e0bbe8a1eba8a6e9f899bc770",
+    "scripts/scan-glb-workflow-corpus.py": "55704243de42241d34b0590c752d18eb94afe84ea6bc921d81c446084c3915d2",
+    "scripts/create-glb-workflow-fixtures.py": "7c0d12516dc4a7cd9e4d4d504d024e1605960747acd0fa98bfbe6145bc6d6246"
+  },
+  "validation": {
+    "example_clippy": "cargo clippy --locked -p gitturtle-preview --example probe_glb_workflow -- -D warnings passed",
+    "script_syntax": "Python AST parse and node --check passed",
+    "fixture_regeneration": "18 GLBs and authored equations byte-identical; disposable history and exact porcelain status passed",
+    "comparator_negative_case": "Unexpected production refusal returns nonzero and unexpected_refusals=1",
+    "local_links": "All reference-doc and fixture-README local links resolve",
+    "private_path_scan": "No private source paths or source filenames in published reference/corpus artifacts"
+  },
+  "post_measurement_tooling_changes": [
+    {
+      "path": "scripts/scan-glb-workflow-corpus.py",
+      "change": "Removed trailing whitespace from a Python dictionary entry after corpus execution; no behavior change.",
+      "measured_sha256": "55704243de42241d34b0590c752d18eb94afe84ea6bc921d81c446084c3915d2",
+      "checked_in_sha256": "f54c00d9dc7dfe78391f172a014c218b59be83f462893375e760cc908fb0aa37"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "checked_at": "2026-09-10T23:03:16.665894+00:00",
+  "files": 1379,
+  "unchanged": true,
+  "differences": [],
+  "historical_source_head": "797b4f572b02f3cd9ef399d5ba20abb49309896a",
+  "current_source_head": "797b4f572b02f3cd9ef399d5ba20abb49309896a",
+  "historical_source_paths_and_hashes_unchanged": true,
+  "ordinal_note": "New pathlib ordering differs from historical ordering for case/punctuation; compare source-relative paths and hashes."
+}

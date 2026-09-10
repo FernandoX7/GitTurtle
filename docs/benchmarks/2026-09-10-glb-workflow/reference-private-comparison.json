@@ -1,0 +1,2380 @@
+{
+  "absolute_mm_tolerance": 0.01,
+  "relative_tolerance": 1e-06,
+  "pixel_channel_tolerance": 1,
+  "comparisons": [
+    {
+      "name": "asset-0201.glb",
+      "clip": null,
+      "time": null,
+      "ok": true,
+      "coordinates": 3960,
+      "maximum_absolute_mm": 1.8189894035458565e-12,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0201.glb",
+      "clip": 0,
+      "time": 0,
+      "ok": true,
+      "coordinates": 3960,
+      "maximum_absolute_mm": 3.472310178054272e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0201.glb",
+      "clip": 0,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 3960,
+      "maximum_absolute_mm": 5.7822945819907545e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0201.glb",
+      "clip": 0,
+      "time": 0.2604166567325592,
+      "ok": true,
+      "coordinates": 3960,
+      "maximum_absolute_mm": 8.822959483723025e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0201.glb",
+      "clip": 0,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 3960,
+      "maximum_absolute_mm": 0.0004039568268581206,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0201.glb",
+      "clip": 0,
+      "time": 0.5208333134651184,
+      "ok": true,
+      "coordinates": 3960,
+      "maximum_absolute_mm": 0.00032751402522990247,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0201.glb",
+      "clip": 0,
+      "time": 0.7812499701976776,
+      "ok": true,
+      "coordinates": 3960,
+      "maximum_absolute_mm": 0.00022870339853398036,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0201.glb",
+      "clip": 0,
+      "time": 1,
+      "ok": true,
+      "coordinates": 3960,
+      "maximum_absolute_mm": 0.00011336085836433085,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0201.glb",
+      "clip": 0,
+      "time": 1.0416666269302368,
+      "ok": true,
+      "coordinates": 3960,
+      "maximum_absolute_mm": 3.4723102558587016e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": null,
+      "time": null,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 1.4551915228366852e-11,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 0,
+      "time": 0,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0027651459713524673,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 0,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0035433724988251925,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 0,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.002612870044686133,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 0,
+      "time": 0.6333333253860474,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0021239063498796895,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 0,
+      "time": 1,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0037780873381052515,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 0,
+      "time": 1.2666666507720947,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.001793868081222172,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 0,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0028186491508677136,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 0,
+      "time": 1.899999976158142,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.002770109465927817,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 0,
+      "time": 2,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.002749878078020629,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 0,
+      "time": 2.5333333015441895,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0029078368170303293,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 1,
+      "time": 0,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.004385422816994833,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 1,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0018506912201701198,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 1,
+      "time": 0.2750000059604645,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.002314951299922541,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 1,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0031914888240862638,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 1,
+      "time": 0.550000011920929,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0020956753578502685,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 1,
+      "time": 0.8250000178813934,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.00252209779137047,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 1,
+      "time": 1,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.00413339733495377,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 1,
+      "time": 1.100000023841858,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.004385422798804939,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 2,
+      "time": 0,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0022201625470188446,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 2,
+      "time": 0.17499999701976776,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0033183070991071872,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 2,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0027104363603029924,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 2,
+      "time": 0.3499999940395355,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.004971813199517783,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 2,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.002832148427842185,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 2,
+      "time": 0.5249999910593033,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.002293414141604444,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 2,
+      "time": 0.699999988079071,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0022201625542948022,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 3,
+      "time": 0,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0027654641489789356,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 3,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0035651140642585233,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 3,
+      "time": 0.375,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.001804747706046328,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 3,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.003968541011090565,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 3,
+      "time": 0.75,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0038037392660044134,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 3,
+      "time": 1,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.004762937756822794,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 3,
+      "time": 1.125,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0018665422539925203,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 3,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0027654641489789356,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 4,
+      "time": 0,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0024999903107527643,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 4,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0037466331414179876,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 4,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.003149959124129964,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 4,
+      "time": 0.6083333492279053,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0020166210597380996,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 4,
+      "time": 1,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0048300186899723485,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 4,
+      "time": 1.2166666984558105,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.004140452409046702,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 4,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.005019167670070601,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 4,
+      "time": 1.8250000476837158,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0031497721902269404,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 4,
+      "time": 2,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.007285785315616522,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 4,
+      "time": 2.433333396911621,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0025036079896381125,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 5,
+      "time": 0,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0029725566382694524,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 5,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.002803204959491268,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 5,
+      "time": 0.25833332538604736,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0029020050569670275,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 5,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.003468500144663267,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 5,
+      "time": 0.5166666507720947,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.003094691568549024,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 5,
+      "time": 0.7749999761581421,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0046915916973375715,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 5,
+      "time": 1,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0047700074792373925,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 5,
+      "time": 1.0333333015441895,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0029725566200795583,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 6,
+      "time": 0,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0027654641489789356,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 6,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.004708475898951292,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 6,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0029318415545276366,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 6,
+      "time": 0.5916666388511658,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.001386701831506798,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 6,
+      "time": 1,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0020971206977264956,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 6,
+      "time": 1.1833332777023315,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.002084704326989595,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 6,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0025340208176203305,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 6,
+      "time": 1.7749999165534973,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.004031986141853849,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 6,
+      "time": 2,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0032038345862019924,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 6,
+      "time": 2.366666555404663,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0028552411058626603,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 7,
+      "time": 0,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.002148051979020238,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 7,
+      "time": 0.24166665971279144,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.005155221282620914,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 7,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.005831190308526857,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 7,
+      "time": 0.4833333194255829,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0013977603812236339,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 7,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0036214010215189774,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 7,
+      "time": 0.7249999791383743,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.003510942406137474,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 7,
+      "time": 0.9666666388511658,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.002148051957192365,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 8,
+      "time": 0,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0026767547969939187,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 8,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0026107118828804232,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 8,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.004641843883291585,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 8,
+      "time": 0.9750000238418579,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.005090899532660842,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 8,
+      "time": 1,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.004701138990640175,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 8,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.003710163844516501,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 8,
+      "time": 1.9500000476837158,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0023477078902942594,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 8,
+      "time": 2,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.004276816951460205,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 8,
+      "time": 2.9250000715255737,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.004068270085554104,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 8,
+      "time": 3.9000000953674316,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0036675194205599837,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 9,
+      "time": 0,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0048132270749192685,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 9,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0033879168768180534,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 9,
+      "time": 0.40833333134651184,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0021682571023120545,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 9,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0034718188835540786,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 9,
+      "time": 0.8166666626930237,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0034749740370898508,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 9,
+      "time": 1,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.002885862391849514,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 9,
+      "time": 1.2249999940395355,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.0033974382422456983,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 9,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.003744613568414934,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0327.glb",
+      "clip": 9,
+      "time": 1.6333333253860474,
+      "ok": true,
+      "coordinates": 153576,
+      "maximum_absolute_mm": 0.004861251007241663,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": null,
+      "time": null,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9747763392151683e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 0,
+      "time": 0,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.974776305109117e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 0,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.934278825250658e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 0,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9044131792943517e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 0,
+      "time": 1,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.4811581170069985e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 0,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.3538769482911448e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 0,
+      "time": 2,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.2681148038827814e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 1,
+      "time": 0,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9428902053041384e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 1,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.943855304238241e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 1,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9510988724723575e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 1,
+      "time": 1,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9693661872443045e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 1,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9690532301174244e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 1,
+      "time": 1.600000023841858,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.967421278299298e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 1,
+      "time": 2,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9622517217831046e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 1,
+      "time": 3.200000047683716,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9444062988659425e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 1,
+      "time": 4.800000071525574,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9690839028262417e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 1,
+      "time": 6.400000095367432,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.942890228041506e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 2,
+      "time": 0,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9278205488481035e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 2,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.932188340309949e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 2,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9387485483312048e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 2,
+      "time": 1,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9809969078087306e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 2,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9560514121840242e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 2,
+      "time": 2,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9268744810906355e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 2,
+      "time": 3,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9028052153989847e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 2,
+      "time": 4,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9302330290192913e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 3,
+      "time": 0,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9661528628821543e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 3,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9847047244402347e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 3,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9776640644740837e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 3,
+      "time": 1,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.947539621800388e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 3,
+      "time": 1.0833333730697632,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.943162473911798e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 3,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9367699994509167e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 3,
+      "time": 2,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9582531624328112e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 3,
+      "time": 2.1666667461395264,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9699498441004835e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 3,
+      "time": 3.2500001192092896,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9964844543428626e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 3,
+      "time": 4.333333492279053,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9661528969882056e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 4,
+      "time": 0,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.974776305109117e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 4,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9440295861604682e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 4,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.8313595635154343e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 4,
+      "time": 0.9166666865348816,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 3.058820425394515e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 4,
+      "time": 1,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 3.095325155300088e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 4,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 3.269950752837758e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 4,
+      "time": 1.8333333730697632,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 3.2816949214975466e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 4,
+      "time": 2,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 3.275365077115566e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 4,
+      "time": 2.7500000596046448,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 3.124562761058769e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 4,
+      "time": 3.6666667461395264,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.974776350583852e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 5,
+      "time": 0,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.974776350583852e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 5,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9604184646814247e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 5,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 3.0227440220187418e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 5,
+      "time": 0.800000011920929,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9539887577811896e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 5,
+      "time": 1,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9422146894830803e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 5,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.921097609487333e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 5,
+      "time": 1.600000023841858,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9170290417823708e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 5,
+      "time": 2,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 3.0200326705198677e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 5,
+      "time": 2.400000035762787,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 3.0222822942960192e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 5,
+      "time": 3.200000047683716,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9758846494587488e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 6,
+      "time": 0,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9813612627549446e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 6,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9813612627549446e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 6,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9678530268029135e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 6,
+      "time": 1,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.8338227707536134e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 6,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.911933052018867e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 6,
+      "time": 2,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9813612627549446e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 6,
+      "time": 3,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9709556429224904e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 6,
+      "time": 4,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9813613082296797e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 7,
+      "time": 0,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.974776350583852e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 7,
+      "time": 0.1666666567325592,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.957895901545271e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 7,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.971995286316087e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 7,
+      "time": 0.3333333134651184,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9682669833164255e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 7,
+      "time": 0.4999999701976776,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9682669833164255e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 7,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9682669833164255e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 7,
+      "time": 0.6666666269302368,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9682670401598443e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 8,
+      "time": 0,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9753399644505407e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 8,
+      "time": 0.2499999850988388,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.8925792662448657e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 8,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.8925792321388144e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 8,
+      "time": 0.4999999701976776,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9874337997171097e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 8,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9874338110857934e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 8,
+      "time": 0.7499999552965164,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9555388096014212e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 8,
+      "time": 0.9999999403953552,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.974776350583852e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 9,
+      "time": 0,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.925848798440711e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 9,
+      "time": 0.18333332240581512,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.953225941837445e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 9,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.925665080510953e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 9,
+      "time": 0.36666664481163025,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9258488325467624e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 9,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9690598239540122e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 9,
+      "time": 0.5499999672174454,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9380261366895866e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 9,
+      "time": 0.7333332896232605,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.92584885528413e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 10,
+      "time": 0,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9550403610301146e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 10,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9163088925088232e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 10,
+      "time": 0.3333333432674408,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9017973702138988e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 10,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9157401286283857e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 10,
+      "time": 0.6666666865348816,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.955426998596522e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 10,
+      "time": 1,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.9371713253567577e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 10,
+      "time": 1.0000000298023224,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.937171359462809e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0841.glb",
+      "clip": 10,
+      "time": 1.3333333730697632,
+      "ok": true,
+      "coordinates": 40203,
+      "maximum_absolute_mm": 2.955040395136166e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": null,
+      "time": null,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.795342456034632e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 0,
+      "time": 0,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.795342456034632e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 0,
+      "time": 0.19583334028720856,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 3.114403011750255e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 0,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 3.209046894880885e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 0,
+      "time": 0.3916666805744171,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 2.4622500745863363e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 0,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.9348208525116206e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 0,
+      "time": 0.5875000208616257,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.7290385017076915e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 0,
+      "time": 0.7833333611488342,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.795342456034632e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 1,
+      "time": 0,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.795342456034632e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 1,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.7909921837144793e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 1,
+      "time": 0.3708333373069763,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.650036847422598e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 1,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.6551820067434164e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 1,
+      "time": 0.7416666746139526,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.668289581857607e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 1,
+      "time": 1,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.6899544164061808e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 1,
+      "time": 1.112500011920929,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.7323623978882097e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 1,
+      "time": 1.4833333492279053,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.7150449650671362e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 2,
+      "time": 0,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.795342461718974e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 2,
+      "time": 0.09583333134651184,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.677827941648502e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 2,
+      "time": 0.19166666269302368,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.6695952467671304e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 2,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.7040321040440176e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 2,
+      "time": 0.2874999940395355,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.724585081319674e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 2,
+      "time": 0.38333332538604736,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.795342456034632e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 3,
+      "time": 0,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.76884092866203e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 3,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.740570201036462e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 3,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.741143535127776e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 3,
+      "time": 0.75,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.7544010688652634e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 3,
+      "time": 1,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.765561080446787e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 3,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.7748743573520187e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 3,
+      "time": 2,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.786841880857537e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 3,
+      "time": 2.25,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.8127624173303047e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 3,
+      "time": 3,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.7688409059246624e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 4,
+      "time": 0,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.795342461718974e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 4,
+      "time": 0.1041666641831398,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 2.9379613238234015e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 4,
+      "time": 0.2083333283662796,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 3.095193369517801e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 4,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 2.9596926538033586e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 4,
+      "time": 0.3124999925494194,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 2.7108265157949063e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 4,
+      "time": 0.4166666567325592,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 2.5916056188179937e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 5,
+      "time": 0,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 2.5916056188179937e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 5,
+      "time": 0.09583333134651184,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.4464059688634734e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 5,
+      "time": 0.19166666269302368,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.4942064694878354e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 5,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.6006402915991202e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 5,
+      "time": 0.2874999940395355,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.695971263870888e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 5,
+      "time": 0.38333332538604736,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.795342456034632e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 6,
+      "time": 0,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.755140721115822e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 6,
+      "time": 0.14166666567325592,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.6777929943145864e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 6,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.677738475791557e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 6,
+      "time": 0.28333333134651184,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.7347258676636557e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 6,
+      "time": 0.42499999701976776,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.6421938369148847e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 6,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.660188053165257e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 6,
+      "time": 0.5666666626930237,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.7551407154314802e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 7,
+      "time": 0,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 2.00799981939781e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 7,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 2.006310660362942e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 7,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 2.0034432964166626e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 7,
+      "time": 1,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 2.0131379528720572e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 7,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 2.0179534544695343e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 7,
+      "time": 2,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 2.0079998307664937e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 8,
+      "time": 0,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.6809709848075727e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 8,
+      "time": 0.19583334028720856,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.6646045480683824e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 8,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.7200145975948544e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 8,
+      "time": 0.3916666805744171,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.6812692365419935e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 8,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.6410626756169222e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 8,
+      "time": 0.5875000208616257,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.6968347722468025e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "asset-0261.glb",
+      "clip": 8,
+      "time": 0.7833333611488342,
+      "ok": true,
+      "coordinates": 44676,
+      "maximum_absolute_mm": 1.680970962070205e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "RiggedSimple.glb",
+      "clip": null,
+      "time": null,
+      "ok": true,
+      "coordinates": 1692,
+      "maximum_absolute_mm": 1.4304577689472353e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "RiggedSimple.glb",
+      "clip": 0,
+      "time": 0,
+      "ok": true,
+      "coordinates": 1692,
+      "maximum_absolute_mm": 1.4304578144219704e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "RiggedSimple.glb",
+      "clip": 0,
+      "time": 0.25,
+      "ok": true,
+      "coordinates": 1692,
+      "maximum_absolute_mm": 1.4304578144219704e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "RiggedSimple.glb",
+      "clip": 0,
+      "time": 0.5,
+      "ok": true,
+      "coordinates": 1692,
+      "maximum_absolute_mm": 1.4304578144219704e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "RiggedSimple.glb",
+      "clip": 0,
+      "time": 0.5208332538604736,
+      "ok": true,
+      "coordinates": 1692,
+      "maximum_absolute_mm": 1.4304578087376285e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "RiggedSimple.glb",
+      "clip": 0,
+      "time": 1,
+      "ok": true,
+      "coordinates": 1692,
+      "maximum_absolute_mm": 1.4304577746315772e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "RiggedSimple.glb",
+      "clip": 0,
+      "time": 1.0416665077209473,
+      "ok": true,
+      "coordinates": 1692,
+      "maximum_absolute_mm": 1.4304577746315772e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "RiggedSimple.glb",
+      "clip": 0,
+      "time": 1.5,
+      "ok": true,
+      "coordinates": 1692,
+      "maximum_absolute_mm": 1.4304577746315772e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "RiggedSimple.glb",
+      "clip": 0,
+      "time": 1.562499761581421,
+      "ok": true,
+      "coordinates": 1692,
+      "maximum_absolute_mm": 1.4304577973689447e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "RiggedSimple.glb",
+      "clip": 0,
+      "time": 2,
+      "ok": true,
+      "coordinates": 1692,
+      "maximum_absolute_mm": 1.4304578201063123e-05,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "RiggedSimple.glb",
+      "clip": 0,
+      "time": 2.0833330154418945,
+      "ok": true,
+      "coordinates": 1692,
+      "maximum_absolute_mm": 1.4304578144219704e-05,
+      "mismatched_coordinates": 0
+    }
+  ],
+  "refusals": [],
+  "authored": [],
+  "unexpected_refusals": 0,
+  "ok": true,
+  "matched_samples": 263,
+  "failed_samples": 0
+}

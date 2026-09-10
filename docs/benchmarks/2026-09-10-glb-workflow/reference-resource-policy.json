@@ -1,0 +1,5 @@
+{
+  "blob_reads": 7,
+  "external_reads": 0,
+  "policy": "Only captured BIN blob URLs; strict global fetch gate; no asset filesystem resolver"
+}

@@ -1,0 +1,4197 @@
+{
+  "schema_version": 1,
+  "source_commit": "8908b35c1b9bae0b9c3d3543e5984d0c580e4e7c",
+  "package_uuid": "996D52A5-7CF1-3CC5-BA91-928AF6AD0ECC",
+  "full_trace_file": "native-trace.txt",
+  "full_trace_sha256": "79097a52f3d44cf9cea7082e48cc59c0f2f565faed8b271deacf8c4e2ac1a6d7",
+  "demanding_callback_series": {
+    "scope": "Play activation to immediately before tab switch; one17064triangleAfter side,360pixel,includes first/outliers",
+    "count": 807,
+    "stats_ms": {
+      "p50": 6.883,
+      "p95": 14.884,
+      "p99": 15.3
+    },
+    "min_ms": 3.286,
+    "max_ms": 17.073,
+    "rows": [
+      {
+        "ms": 6.347,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 4.42,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.954,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.082,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.874,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.996,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.78,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.91,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.788,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.959,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.881,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 11.279,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.883,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.784,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.109,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.005,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.848,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.885,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 13.408,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.646,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.846,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 9.449,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.545,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.889,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.151,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.878,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.979,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.033,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.873,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.724,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.099,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.922,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.864,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.098,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.856,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.853,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.499,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.571,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.855,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.082,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.038,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.989,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 11.338,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.942,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.776,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.912,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.868,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.9,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.837,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.93,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.807,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.944,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.145,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.26,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.907,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.805,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.074,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.759,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.695,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.91,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.913,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 14.888,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.679,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.837,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.881,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.962,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.798,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.798,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.869,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.802,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.802,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.796,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.779,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.458,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.858,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.141,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.949,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.752,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.708,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.934,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.306,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.819,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.143,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.869,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.121,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 12.284,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.011,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.995,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.132,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.843,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.697,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.875,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.77,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.924,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.115,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.821,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.966,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.868,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.954,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.792,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.936,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 9.533,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.772,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.877,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.934,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.003,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.831,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.824,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.702,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.904,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.816,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.996,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.815,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.719,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.737,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 11.341,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.984,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.837,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.815,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.721,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.598,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.748,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.633,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.749,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.103,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.742,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.906,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.12,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.862,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.537,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.97,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.797,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.567,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.31,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 3.765,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.762,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.867,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.718,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.629,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.904,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.981,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.973,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.023,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.066,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.651,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.874,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.812,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.035,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.994,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.828,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.801,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.971,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.999,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.718,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.901,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.019,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.837,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.989,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.89,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.721,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.778,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.054,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.015,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.965,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.156,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.67,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.63,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.882,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 14.957,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.048,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.557,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.771,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.753,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.977,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.949,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 17.073,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.571,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 5.747,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.559,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.508,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 14.884,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.477,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.005,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.92,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.626,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.223,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.237,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.922,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.17,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.937,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.866,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.152,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.231,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.004,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.036,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.925,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.854,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.781,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 3.504,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.753,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.772,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.777,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.755,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.777,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.857,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.537,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.997,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.823,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.111,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.155,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.079,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.782,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.051,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.907,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.999,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.698,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.742,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.78,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.687,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.87,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.839,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.887,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.893,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.449,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.565,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.764,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.858,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.007,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.847,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.674,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.921,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.004,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.903,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.996,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.089,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.053,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.909,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.026,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 10.863,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.835,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.725,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.667,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.702,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.623,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.9,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.975,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.987,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.909,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.064,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.949,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.702,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.405,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.786,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.804,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.689,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.914,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.639,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.531,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.805,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.933,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.791,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.762,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.827,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.072,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.403,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 14.986,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 14.995,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 3.629,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.894,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.603,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.74,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.939,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.972,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.913,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.037,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.613,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.775,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.802,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.746,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.829,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.508,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.931,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.981,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.121,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 10.799,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.74,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.74,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.776,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.922,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.779,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.755,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.179,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.056,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.9,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.138,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 10.746,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.052,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.263,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.925,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.824,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.262,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 10.39,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.775,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.919,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.716,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.767,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.946,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.251,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.518,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.662,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.968,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.06,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.045,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.289,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.608,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.931,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.967,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.059,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.05,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.564,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.883,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 11.226,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.974,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.769,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.789,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.921,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.476,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 10.823,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.653,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.721,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.759,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.824,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.082,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 10.81,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.798,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.773,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.775,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.849,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.753,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 10.343,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.889,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.939,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.964,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.163,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.118,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.863,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.208,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.736,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.774,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.152,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.96,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.276,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.865,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.686,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.751,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.997,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.944,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.875,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.052,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.856,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.457,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.844,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.789,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.924,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.86,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.727,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.821,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 14.901,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.307,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.879,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.89,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.774,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.876,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.934,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.882,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.862,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.184,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.979,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.02,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.868,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.848,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.938,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.873,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.313,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.958,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.883,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.738,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.677,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.704,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.882,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 10.249,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.746,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.84,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.73,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.745,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 10.693,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.763,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.112,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.119,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.866,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.872,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.834,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.782,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.786,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 11.416,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.085,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.963,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.931,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.71,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.821,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.89,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.819,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.017,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.146,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 11.368,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.896,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.954,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.844,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.007,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.112,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.821,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 11.478,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.083,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.621,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.788,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.097,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.3,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 4.028,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.078,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.914,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.832,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.913,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.093,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 9.921,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.979,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.877,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.014,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.956,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.656,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 10.129,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.832,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.816,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.823,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.967,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.526,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.956,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.09,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.044,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 10.505,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.729,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.762,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.59,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.687,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.785,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 14.963,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.13,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.261,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 14.097,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.274,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.891,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.792,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.587,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.21,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.99,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.758,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.069,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.095,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.997,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.076,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.318,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 12.151,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.001,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.803,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.893,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.72,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.953,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.737,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.736,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.943,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.923,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.027,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.893,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.947,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.014,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.747,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.716,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.011,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.865,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.841,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.023,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.859,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.809,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.037,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.949,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.137,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.19,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.848,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.056,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.815,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.721,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.661,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.846,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.649,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.841,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.807,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.713,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.824,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 11.312,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.498,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.884,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.101,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 5.628,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.683,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.89,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.834,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.103,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 10.651,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.801,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.777,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.864,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.702,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.738,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.975,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.079,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 10.063,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.089,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.787,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.625,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.828,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.59,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.802,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.857,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.15,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.244,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.147,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.155,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.882,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.823,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.862,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.751,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.487,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.843,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.05,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.091,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.906,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.976,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 3.408,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.832,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.982,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.727,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.869,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.912,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.186,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.144,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.767,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.62,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.72,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.581,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.082,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.255,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.093,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.076,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.913,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.845,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.977,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.838,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 10.951,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.869,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.023,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.916,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.983,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 14.978,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 11.479,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.748,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.804,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.61,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.67,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.877,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.714,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.998,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.786,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.577,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 11.067,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.996,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.046,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.084,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.82,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.261,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 11.789,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.809,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.701,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.709,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.947,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.858,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.749,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.843,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.383,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.653,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.847,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.252,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.069,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.809,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.981,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.989,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.072,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.052,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.752,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.836,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.782,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.728,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.835,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.938,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.049,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.915,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.425,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.836,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.514,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.901,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.716,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.787,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.209,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.051,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.62,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.827,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 10.766,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 11.518,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.08,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.246,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.961,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.166,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.707,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 10.901,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.084,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.914,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.663,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.901,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.815,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.955,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.085,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.816,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.592,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.961,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.601,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.925,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.96,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.775,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.885,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.954,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.782,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.918,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.873,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.773,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.003,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.097,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.802,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.758,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.002,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 14.996,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.434,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.747,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.725,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.803,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.024,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.842,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.644,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.125,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.589,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.74,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.85,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.256,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.291,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.742,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.68,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.726,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.903,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.765,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.762,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.971,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.69,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.625,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.09,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.801,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 14.898,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.055,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.502,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.843,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.784,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.118,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.766,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.696,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.993,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.735,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.997,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.932,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 10.086,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 11.598,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.224,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.864,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.003,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.044,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.828,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.927,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.762,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.96,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.921,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 10.833,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.857,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.812,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.909,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.747,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.815,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 11.214,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.697,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.893,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.999,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.782,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.809,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.883,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.784,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.735,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.991,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.704,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 11.137,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.073,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.883,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.928,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.007,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.046,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.979,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.937,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.894,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.94,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.051,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.759,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 3.286,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.127,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.031,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.874,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.969,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.851,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.847,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.922,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.049,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.895,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.674,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.091,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.843,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.862,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.803,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.81,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.916,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 15.186,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 10.753,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.87,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.799,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.929,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.94,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.108,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.958,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.927,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.704,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.737,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.84,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.734,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.858,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.615,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.852,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.765,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.958,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.009,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.545,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.934,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.97,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.822,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.874,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.062,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.849,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.631,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.143,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.935,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.801,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.077,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.787,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.783,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.841,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.722,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.812,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.047,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.843,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.061,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.922,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.849,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.802,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.053,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 11.313,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.852,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.783,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.97,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.002,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.67,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.009,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.855,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.873,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.888,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 7.319,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.731,
+        "edge": 360,
+        "triangles": 17064
+      },
+      {
+        "ms": 6.819,
+        "edge": 360,
+        "triangles": 17064
+      }
+    ],
+    "source_start_line_1based": 2891,
+    "source_end_line_1based": 5311,
+    "excluded": "Input delivery, source capture/decode, and completed GPU/OS presentation; callbacks omitted if superseded before delivery."
+  },
+  "rss": {
+    "ps_columns": "rss_KiB ps_reported_cpu_percent (context only)",
+    "samples": [
+      {
+        "utc": "2026-09-10T23:11:08.311990+00:00",
+        "ps": "206448  45.0"
+      },
+      {
+        "utc": "2026-09-10T23:11:08.818099+00:00",
+        "ps": "206448  45.4"
+      },
+      {
+        "utc": "2026-09-10T23:11:09.321965+00:00",
+        "ps": "207056  46.2"
+      },
+      {
+        "utc": "2026-09-10T23:11:09.826123+00:00",
+        "ps": "206448  46.9"
+      },
+      {
+        "utc": "2026-09-10T23:11:10.335245+00:00",
+        "ps": "206448  46.4"
+      },
+      {
+        "utc": "2026-09-10T23:11:10.844053+00:00",
+        "ps": "206448  46.7"
+      },
+      {
+        "utc": "2026-09-10T23:11:11.353065+00:00",
+        "ps": "207056  46.2"
+      },
+      {
+        "utc": "2026-09-10T23:11:11.865108+00:00",
+        "ps": "206448  45.0"
+      },
+      {
+        "utc": "2026-09-10T23:11:12.374426+00:00",
+        "ps": "206448  47.2"
+      },
+      {
+        "utc": "2026-09-10T23:11:12.879607+00:00",
+        "ps": "206448  45.8"
+      },
+      {
+        "utc": "2026-09-10T23:11:13.390019+00:00",
+        "ps": "206448  45.6"
+      },
+      {
+        "utc": "2026-09-10T23:11:13.896071+00:00",
+        "ps": "206448  45.3"
+      },
+      {
+        "utc": "2026-09-10T23:11:14.402564+00:00",
+        "ps": "206448  45.3"
+      },
+      {
+        "utc": "2026-09-10T23:11:14.910830+00:00",
+        "ps": "206448  46.5"
+      },
+      {
+        "utc": "2026-09-10T23:11:15.415696+00:00",
+        "ps": "206448  45.5"
+      },
+      {
+        "utc": "2026-09-10T23:11:15.924416+00:00",
+        "ps": "206448  47.7"
+      },
+      {
+        "utc": "2026-09-10T23:11:16.434629+00:00",
+        "ps": "206448  46.5"
+      },
+      {
+        "utc": "2026-09-10T23:11:16.939306+00:00",
+        "ps": "206448  45.9"
+      },
+      {
+        "utc": "2026-09-10T23:11:17.448400+00:00",
+        "ps": "206448  45.8"
+      },
+      {
+        "utc": "2026-09-10T23:11:17.956845+00:00",
+        "ps": "206448  46.3"
+      }
+    ]
+  },
+  "quiet_checks": [
+    {
+      "state": "Settings hides playing comparison",
+      "duration_seconds": 3,
+      "ps_columns": "pid rss_KiB cpu_percent elapsed",
+      "new_model_frame_callbacks": 0,
+      "trace_tail": []
+    },
+    {
+      "state": "playing preview hidden by tab switch",
+      "duration_seconds": 3,
+      "new_model_frame_callbacks": 0,
+      "trace_tail": [],
+      "ps_rss_KiB_cpu_percent": "206544   0.7"
+    },
+    {
+      "state": "all repository tabs closed, Projects visible",
+      "duration_seconds": 3,
+      "new_model_frame_callbacks": 0,
+      "last_image_retirement": "gitturtle.image_retire images=2 frames=2 retained_images=8",
+      "ps_rss_KiB_cpu_percent": "214144   0.4"
+    }
+  ],
+  "window_close": {
+    "process_exited": true,
+    "trace": "gitturtle.image_window_closed retained_images=0"
+  },
+  "native_appearance_cases": [
+    "Ember13pt1480x981",
+    "Braden13pt1480x981",
+    "Braden15pt1008x696",
+    "Braden15pt1000x680"
+  ],
+  "reduce_motion": {
+    "initial": false,
+    "enabled_play_disabled": true,
+    "manual_seek_usable": true,
+    "restored": false,
+    "did_not_autoresume": true
+  },
+  "session_restoration": {
+    "saved_after_original_apps_quit": true,
+    "before_relaunch_exact_file_hash_match": {
+      "activity.json": true,
+      "preferences.json": true,
+      "repository-session.json": true
+    },
+    "installed_app_relaunched": true,
+    "same_three_repository_tabs": true,
+    "same_active_repository_history_commit_and_file": true,
+    "preferences_restored": true,
+    "private_selection_names_omitted": true
+  },
+  "limitations": "One desktop session. Process RSS includes retained cache/history/application allocations and excludes separate GPU accounting. No long-duration memory-growth or frame-rate guarantee."
+}

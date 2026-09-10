@@ -1,0 +1,9 @@
+/* com.apple.actool.compilation-results */
+<ICON_TEMP>/AppIcon.icns
+<ICON_TEMP>/Assets.car
+<ICON_TEMP>/icon-info.plist
+
+<CHECKOUT>/dist/GitTurtle.app/Contents/Info.plist: OK
+<CHECKOUT>/dist/GitTurtle.app: replacing existing signature
+Built <CHECKOUT>/dist/GitTurtle.app
+Open with: open "<CHECKOUT>/dist/GitTurtle.app"

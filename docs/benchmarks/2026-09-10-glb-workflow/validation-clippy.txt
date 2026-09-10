@@ -1,0 +1,5 @@
+    Checking gitturtle-preview v0.1.0 (<CHECKOUT>/crates/preview)
+    Checking gitturtle v0.1.0 (<CHECKOUT>/crates/app)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.50s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`

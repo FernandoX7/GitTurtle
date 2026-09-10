@@ -1,0 +1,31 @@
+{
+  "absolute_mm_tolerance": 0.001,
+  "relative_tolerance": 1e-06,
+  "pixel_channel_tolerance": 1,
+  "comparisons": [
+    {
+      "name": "external-texture.glb",
+      "clip": null,
+      "time": null,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    },
+    {
+      "name": "malformed-texture.glb",
+      "clip": null,
+      "time": null,
+      "ok": true,
+      "coordinates": 18,
+      "maximum_absolute_mm": 0.0,
+      "mismatched_coordinates": 0
+    }
+  ],
+  "refusals": [],
+  "authored": [],
+  "unexpected_refusals": 0,
+  "ok": true,
+  "matched_samples": 2,
+  "failed_samples": 0
+}
