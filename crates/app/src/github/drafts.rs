@@ -41,7 +41,11 @@ impl Draft {
                     p.pull.number,
                     p.pull.head.sha,
                     p.pull.base.sha,
-                    p.event.label(),
+                    if p.discussion {
+                        "Discussion comment"
+                    } else {
+                        p.event.label()
+                    },
                     p.body
                 );
                 for comment in p.comments.iter().chain(p.composing.iter()) {
@@ -195,6 +199,7 @@ mod tests {
             event: ReviewEvent::Comment,
             comments: vec![],
             composing: None,
+            discussion: false,
         };
         let mut moved = old.clone();
         moved.pull.head.sha = "3".repeat(40);
@@ -203,6 +208,54 @@ mod tests {
         save_at(&path, Draft::Review(old)).unwrap();
         save_at(&path, Draft::Review(moved)).unwrap();
         assert_eq!(load_at(&path).unwrap().entries.len(), 2);
+    }
+    #[test]
+    fn collected_ranges_unfinished_text_and_discussion_mode_survive_restart() {
+        let mut review = ReviewDraft {
+            pull: super::super::review::fixture_pull(false)
+                .capture(Repository::parse("gitturtle-fixture/native-review").unwrap()),
+            body: "  Summary\n".into(),
+            event: ReviewEvent::Comment,
+            comments: vec![LineComment {
+                path: "docs/界面.md".into(),
+                line: 8,
+                side: DiffSide::Right,
+                start_line: Some(5),
+                start_side: Some(DiffSide::Right),
+                body: " Exact inline text\n\n".into(),
+            }],
+            composing: Some(LineComment {
+                path: "src/session.rs".into(),
+                line: 22,
+                side: DiffSide::Left,
+                start_line: None,
+                start_side: None,
+                body: "Unfinished before switching repositories\n".into(),
+            }),
+            discussion: false,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("reviews.json");
+        let draft = Draft::Review(review.clone());
+        save_at(&path, draft.clone()).unwrap();
+        let loaded = load_at(&path).unwrap().entries.remove(0);
+        assert_eq!(
+            serde_json::to_value(&loaded).unwrap(),
+            serde_json::to_value(&draft).unwrap()
+        );
+        let recovery = loaded.recovery_text();
+        assert!(recovery.contains("After 5–8"));
+        assert!(recovery.contains(" Exact inline text\n\n"));
+        assert!(recovery.contains("Unfinished before switching repositories\n"));
+        review.comments.clear();
+        review.composing = None;
+        review.discussion = true;
+        save_at(&path, Draft::Review(review)).unwrap();
+        let Draft::Review(loaded) = load_at(&path).unwrap().entries.remove(0) else {
+            panic!("review expected")
+        };
+        assert!(loaded.discussion);
+        assert_eq!(loaded.body, "  Summary\n");
     }
 }
 

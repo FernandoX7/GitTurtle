@@ -1796,7 +1796,7 @@ impl GitTurtle {
                                     .child(
                                         button(("repository-tab", index), label, "", selected)
                                             .debug_selector(move || {
-                                                format!("repository-tab-{index}").into()
+                                                format!("repository-tab-{index}")
                                             })
                                             .role(Role::Tab)
                                             .accessibility_label(format!(
@@ -1825,7 +1825,7 @@ impl GitTurtle {
                                     .child(
                                         button(("close-repository-tab", index), "", "close", false)
                                             .debug_selector(move || {
-                                                format!("repository-tab-close-{index}").into()
+                                                format!("repository-tab-close-{index}")
                                             })
                                             .accessibility_label(format!(
                                                 "Close repository tab {}; drafts remain saved",

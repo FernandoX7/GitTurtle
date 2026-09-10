@@ -186,6 +186,8 @@ pub(crate) struct ReviewDraft {
     pub comments: Vec<LineComment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub composing: Option<LineComment>,
+    #[serde(default)]
+    pub discussion: bool,
 }
 #[derive(Clone, Debug)]
 pub(crate) enum Action {
@@ -789,6 +791,7 @@ mod tests {
                 event: ReviewEvent::Approve,
                 comments: vec![],
                 composing: None,
+                discussion: false,
             }),
             &OperationControl::default(),
         );
@@ -823,6 +826,7 @@ mod tests {
                         body: "Explain this".into(),
                     }],
                     composing: None,
+                    discussion: false,
                 }),
                 &OperationControl::default(),
             )

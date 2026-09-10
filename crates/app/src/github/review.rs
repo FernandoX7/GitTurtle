@@ -325,13 +325,17 @@ impl<T: Transport> Client<T> {
             ),
             control,
         )?;
-        let mut items: Vec<PullFile> = response.json()?;
+        let items: Vec<PullFile> = response.json()?;
         ensure!(
             items.len() <= REVIEW_PAGE_SIZE,
             "Too many changed files in one page"
         );
-        for item in &mut items {
-            item.prepare()?;
+        for item in &items {
+            ensure!(
+                safe_path(&item.filename)
+                    && item.previous_filename.as_deref().is_none_or(safe_path),
+                "GitHub returned an invalid changed-file path"
+            );
         }
         self.revalidate(pull, control)?;
         Ok(Page {
@@ -462,7 +466,7 @@ fn fixture_response(request: Request, moved: bool, control: &OperationControl) -
 mod tests {
     use super::*;
     fn files() -> Vec<PullFile> {
-        Client(UiTransport::Fixture { moved: false })
+        let mut files = Client(UiTransport::Fixture { moved: false })
             .files(
                 &fixture_pull(false)
                     .capture(Repository::parse("gitturtle-fixture/native-review").unwrap()),
@@ -470,8 +474,17 @@ mod tests {
                 &OperationControl::default(),
             )
             .unwrap()
-            .items
+            .items;
+        assert!(
+            files.iter().all(|file| file.rows.is_empty()),
+            "metadata loading must not eagerly prepare file rows"
+        );
+        for file in &mut files {
+            file.prepare().unwrap();
+        }
+        files
     }
+
     #[test]
     fn exact_patch_ranges_refuse_opposite_sides_hunk_boundaries_and_incomplete_content() {
         let files = files();
@@ -542,6 +555,7 @@ mod tests {
             event: ReviewEvent::Comment,
             comments: vec![files()[0].selection(3, 5).unwrap()],
             composing: None,
+            discussion: false,
         };
         review.comments[0].body = "Inspect these together".into();
         let payload = serde_json::to_value(&review.comments).unwrap();
@@ -551,5 +565,76 @@ mod tests {
         Client(UiTransport::Fixture { moved: false })
             .execute(Action::Review(review), &OperationControl::default())
             .unwrap();
+    }
+    #[test]
+    fn head_movement_during_file_read_rejects_the_page_without_posting() {
+        struct Moving {
+            requests: Vec<Request>,
+        }
+        impl Transport for Moving {
+            fn request(
+                &mut self,
+                request: Request,
+                control: &OperationControl,
+            ) -> Result<Response> {
+                self.requests.push(request.clone());
+                fixture_response(request, self.requests.len() == 3, control)
+            }
+        }
+        let mut client = Client(Moving { requests: vec![] });
+        let pull = fixture_pull(false)
+            .capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        assert!(
+            client
+                .files(&pull, 1, &OperationControl::default())
+                .unwrap_err()
+                .to_string()
+                .contains("moved")
+        );
+        assert_eq!(client.0.requests.len(), 3);
+        assert!(
+            client
+                .0
+                .requests
+                .iter()
+                .all(|request| request.method == "GET")
+        );
+    }
+    #[test]
+    fn malformed_range_and_unfinished_composer_never_dispatch() {
+        struct Never;
+        impl Transport for Never {
+            fn request(&mut self, _: Request, _: &OperationControl) -> Result<Response> {
+                panic!("invalid review must not dispatch")
+            }
+        }
+        let mut comment = files()[0].selection(3, 5).unwrap();
+        comment.body = "Keep exact text".into();
+        let mut draft = ReviewDraft {
+            pull: fixture_pull(false)
+                .capture(Repository::parse("gitturtle-fixture/native-review").unwrap()),
+            body: "Summary".into(),
+            event: ReviewEvent::Comment,
+            comments: vec![comment.clone()],
+            composing: None,
+            discussion: false,
+        };
+        draft.comments[0].start_side = Some(DiffSide::Left);
+        assert!(
+            Client(Never)
+                .execute(Action::Review(draft.clone()), &OperationControl::default())
+                .unwrap_err()
+                .to_string()
+                .contains("position")
+        );
+        draft.comments[0] = comment.clone();
+        draft.composing = Some(comment);
+        assert!(
+            Client(Never)
+                .execute(Action::Review(draft), &OperationControl::default())
+                .unwrap_err()
+                .to_string()
+                .contains("unfinished")
+        );
     }
 }

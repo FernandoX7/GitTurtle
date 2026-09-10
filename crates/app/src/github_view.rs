@@ -27,6 +27,27 @@ fn label(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Stateful<Di
         .child(text)
         .text_size(crate::appearance::ui_text(12.))
 }
+#[derive(Default)]
+struct WarmPanels(Vec<WarmPanel>);
+impl gpui_kit::Global for WarmPanels {}
+struct WarmPanel {
+    owner: gpui_kit::EntityId,
+    worktree: std::path::PathBuf,
+    panel: Entity<Panel>,
+    bytes: usize,
+}
+impl WarmPanels {
+    fn retain(&mut self, entry: WarmPanel) {
+        self.0
+            .retain(|old| old.owner != entry.owner || old.worktree != entry.worktree);
+        self.0.push(entry);
+        while self.0.len() > 8
+            || self.0.iter().map(|entry| entry.bytes).sum::<usize>() > 32 * 1024 * 1024
+        {
+            self.0.remove(0);
+        }
+    }
+}
 impl GitTurtle {
     pub(super) fn open_github(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.operation_busy.is_some() || self.page != AppPage::Repository {
@@ -35,15 +56,48 @@ impl GitTurtle {
         let Some(repo) = self.repository.clone() else {
             return;
         };
+        review::init(cx);
         let owner = cx.entity().downgrade();
         let branch = self.remote_branch.read(cx).value().to_string();
-        let form = cx.new(|cx| Panel::new(owner, repo, branch, window, cx));
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        let owner_id = cx.entity_id();
+        let worktree = repo.path().to_owned();
+        let warm = cx.default_global::<WarmPanels>();
+        let cached = warm
+            .0
+            .iter()
+            .position(|entry| entry.owner == owner_id && entry.worktree == worktree)
+            .map(|index| warm.0.remove(index).panel);
+        let form = if let Some(form) = cached {
+            form.update(cx, |panel, cx| {
+                panel.closed = false;
+                panel.confirm = None;
+                cx.notify();
+            });
+            form
+        } else {
+            cx.new(|cx| Panel::new(owner, repo, branch, window, cx))
+        };
+        let focus_form = form.clone();
+        window.defer(cx, move |window, cx| {
+            focus_form.update(cx, |panel, cx| {
+                panel.load_local(window, cx);
+                if panel.review.section == Section::Files
+                    && panel.review.mode == 0
+                    && let Some(index) = panel.review.selected_file
+                    && panel.review.files[index].rows.is_empty()
+                    && panel.review.files[index].unavailable.is_none()
+                {
+                    panel.select_review_file(index, window, cx);
+                }
+                panel.focus_visible_section(window, cx);
+            });
+        });
+        window.open_alert_dialog(cx, move |dialog, window, _| {
             let close = form.clone();
             let cancel = form.clone();
             dialog
                 .title("GitHub pull requests")
-                .width(px(1100.))
+                .width((window.viewport_size().width - px(48.)).clamp(px(320.), px(1100.)))
                 .child(form.clone())
                 .footer(DialogFooter::new().child(
                     button("github-close", "Back to repository", "", false).on_click(
@@ -123,6 +177,7 @@ fn capture_draft(
             event,
             comments: vec![],
             composing: None,
+            discussion: false,
         }))
     }
 }
@@ -240,6 +295,11 @@ struct Panel {
     notice: Option<String>,
     error: Option<String>,
     pending: bool,
+    request_generation: u64,
+    local_loaded: bool,
+    local_loading: bool,
+    local_generation: u64,
+    local_task: Option<Task<()>>,
     writing: bool,
     closed: bool,
     confirm: Option<Confirmation>,
@@ -273,7 +333,7 @@ impl Panel {
             base:cx.new(|cx|InputState::new(window,cx).default_value("main")),title:cx.new(|cx|InputState::new(window,cx).placeholder("Pull request title")),
             body:cx.new(|cx|TextareaState::new(window,cx).rows(5).placeholder("Description or review text — saved locally")),
             rows:vec![],page:1,has_next:false,pull:None,status:None,description:None,create:false,draft:true,event:ReviewEvent::Comment,discussion:true,
-            account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),error:None,pending:false,writing:false,closed:false,
+            account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),error:None,pending:false,request_generation:0,local_loaded:false,local_loading:false,local_generation:0,local_task:None,writing:false,closed:false,
             confirm:None,control:None,task:None,saved:vec![],save_status:String::new(),draft_issue:None,saver:Default::default(),deferred_draft:Default::default(),draft_timer:None,save_response_generation:0,save_completion:None,subscriptions:vec![],templates:vec![],attempts:vec![],local_control:None,
         };
         if this.review.fixture {
@@ -373,6 +433,12 @@ impl Panel {
         this
     }
     fn load_local(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.closed || self.local_loaded || self.local_loading {
+            return;
+        }
+        self.local_loading = true;
+        self.local_generation = self.local_generation.wrapping_add(1);
+        let generation = self.local_generation;
         let repo = self.repo.clone();
         let response = self.owner.update(cx, |owner, _| {
             owner.operations.submit_read(move || {
@@ -380,16 +446,19 @@ impl Panel {
             })
         });
         let Ok(response) = response else {
+            self.local_loading = false;
             return;
         };
-        cx.spawn_in(window, async move |this, cx| {
+        self.local_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response.await;
             let _ = this.update_in(cx, |this, window, cx| {
-                if this.closed {
+                if this.closed || generation != this.local_generation {
                     return;
                 }
+                this.local_loading = false;
                 match result {
                     Ok(Ok((remotes, saved, attempts))) => {
+                        this.local_loaded = true;
                         if this.destination.read(cx).value().is_empty()
                             && let Some(destination) = remotes
                                 .iter()
@@ -405,7 +474,14 @@ impl Panel {
                             Err(error) => this.error = Some(format!("{error:#}")),
                         }
                         match saved {
-                            Ok(saved) => this.saved = saved,
+                            Ok(mut saved) => {
+                                for draft in std::mem::take(&mut this.saved) {
+                                    let key = draft.key();
+                                    saved.retain(|old| old.key() != key);
+                                    saved.push(draft);
+                                }
+                                this.saved = saved;
+                            }
                             Err(error) => this.error = Some(format!("{error:#}")),
                         }
                     }
@@ -416,8 +492,7 @@ impl Panel {
                 }
                 cx.notify();
             });
-        })
-        .detach();
+        }));
     }
     fn destination(&self, cx: &App) -> anyhow::Result<Repository> {
         Repository::parse(&self.destination.read(cx).value())
@@ -437,6 +512,7 @@ impl Panel {
             },
         )?;
         if let Draft::Review(review) = &mut draft {
+            review.discussion = self.discussion;
             review.comments = self.review.comments.clone();
             review.composing = self.review.composing.clone().map(|mut comment| {
                 comment.body = self.review.input.read(cx).value().to_string();
@@ -586,12 +662,14 @@ impl Panel {
             return;
         };
         self.control = Some(control);
+        self.request_generation = self.request_generation.wrapping_add(1);
+        let generation = self.request_generation;
         self.pending = true;
         self.writing = writing;
         self.error = None;
         self.task=Some(cx.spawn_in(window,async move|this,cx|{
             let result=response.await.unwrap_or_else(|_|Err(anyhow::anyhow!("GitHub operation was interrupted. Its outcome may be uncertain; check the destination before submitting again.")));
-            let _=this.update_in(cx,|this,window,cx|{this.pending=false;this.writing=false;this.control=None;if !this.closed {receive(result,this,window,cx);}cx.notify();});
+            let _=this.update_in(cx,|this,window,cx|{if generation!=this.request_generation{return;}this.pending=false;this.writing=false;this.control=None;if !this.closed {receive(result,this,window,cx);}cx.notify();});
         }));
         cx.notify();
     }
@@ -793,6 +871,23 @@ impl Panel {
         }
         self.save_draft(window, cx);
         self.closed = true;
+        self.request_generation = self.request_generation.wrapping_add(1);
+        self.pending = false;
+        self.writing = false;
+        self.task = None;
+        self.review.cancel_preparation();
+        self.local_generation = self.local_generation.wrapping_add(1);
+        self.local_loading = false;
+        self.local_task = None;
+        if let Some(owner) = self.owner.upgrade() {
+            let entry = WarmPanel {
+                owner: owner.entity_id(),
+                worktree: self.repo.path().to_owned(),
+                panel: cx.entity(),
+                bytes: self.retained_review_bytes(cx),
+            };
+            cx.default_global::<WarmPanels>().retain(entry);
+        }
         window.close_dialog(cx);
         if let Some(owner) = self.owner.upgrade() {
             let focus = owner.read(cx).app_focus.clone();
@@ -859,12 +954,14 @@ impl Panel {
     }
 }
 impl Render for Panel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         let pending = self.pending;
+        let scroll = self.review.body_scroll.clone();
+        let observed = self.review.revealed_focus.clone();
         let show_editor =
             self.create || (self.pull.is_some() && self.review.section == Section::Review);
-        div().id("github-panel").min_w_0().max_h(px(660.)).overflow_y_scroll().flex().flex_col().gap_2()
+        div().on_children_prepainted(move|_,window,cx|{*observed.borrow_mut()=review::FocusObservation{focus:window.focused(cx),viewport:scroll.bounds(),rem_size:window.rem_size()};}).id("github-panel").track_scroll(&self.review.body_scroll).min_w_0().max_h((window.viewport_size().height-window.rem_size()*(220. / f32::from(appearance::DEFAULT_INTERFACE_TEXT_SIZE))).clamp(px(120.),px(660.))).overflow_y_scroll().flex().flex_col().gap_2()
             .when(self.review.fixture,|element|element.child(div().flex().flex_wrap().items_center().gap_2().p_2().rounded(px(6.)).bg(rgb(p.subtle))
                 .child(label("github-fixture-mode","OFFLINE FIXTURE · native review · no network or credentials").text_color(rgb(p.muted)))
                 .child(button("github-fixture-move",if self.review.fixture_moved{"Fixture head moved"}else{"Move fixture head"},"",false).disabled(pending||self.review.fixture_moved).on_click(cx.listener(|this,_,_,cx|{this.review.fixture_moved=true;this.confirm=None;this.notice=Some("Fixture head moved remotely. This view and its draft retain the original commit. Submit to verify stale-head refusal, or Refresh PRs and reopen to inspect the new head.".into());cx.notify();})))))
@@ -872,7 +969,7 @@ impl Render for Panel {
                 .child(div().w(appearance::ui_size(280.)).min_w(px(190.)).child(Input::new(&self.destination).aria_label("GitHub destination owner and repository").disabled(pending)))
                 .child(button("github-refresh",if self.review.fixture{"Refresh fixture PRs"}else{"Refresh PRs"},"refresh-cw",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.refresh(1,window,cx))))
                 .child(button("github-create","New pull request","plus",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.create(window,cx))))
-                .child(div().flex_1()).child(button("github-account-options",self.account.as_ref().map(|account|format!("Account · {account}")).unwrap_or_else(||"Connect account".into()),"",self.review.connection_open).toggled(self.review.connection_open).disabled(pending).on_click(cx.listener(|this,_,_,cx|{this.review.connection_open=!this.review.connection_open;cx.notify();}))))
+                .child(div().flex_1()).child(button("github-account-options",self.account.as_ref().map(|account|format!("Account · {account}")).unwrap_or_else(||"Connect account".into()),"",self.review.connection_open).toggled(self.review.connection_open).disabled(pending).on_click(cx.listener(|this,_,_,cx|{this.review.connection_open= !this.review.connection_open;cx.notify();}))))
             .when(self.review.connection_open,|element|element.child(div().p_3().border_1().border_color(rgb(p.border)).rounded(px(6.)).flex().flex_col().gap_2()
                 .child(label("github-worktree",format!("Local worktree: {}",self.repo.path().display())).text_color(rgb(p.muted)))
                 .child(label("github-connection-help","Connect uses your current GitHub CLI account and saves GitTurtle authorization in secure storage. Refresh and PR selection are explicit network reads.").text_color(rgb(p.muted)))
@@ -885,7 +982,8 @@ impl Render for Panel {
             .when_some(self.draft_issue,|element,issue|element.child(label("github-draft-validation",issue.message()).role(Role::Alert).a11y_synthetic_children(native_accessibility::assertive).text_color(rgb(p.warning))))
             .when(pending,|element|element.child(div().flex().items_center().gap_2()
                 .child(label("github-busy",if self.writing{"Sending the captured review…"}else{"Loading your requested PR context…"}).role(Role::Status).a11y_synthetic_children(|builder|{native_accessibility::polite(builder);builder.parent_node().set_busy();}))
-                .child(button("github-cancel","Cancel","",false).on_click(cx.listener(|this,_,_,cx|{if let Some(control)=&this.control{control.cancel();}if let Some(control)=&this.local_control{control.cancel();}this.notice=Some(if this.writing{"Cancellation requested. Check GitHub before resubmitting; an accepted action is never replayed."}else{"Cancellation requested. Your review draft is retained."}.into());cx.notify();})))))
+                .child(button("github-cancel","Cancel","",false).on_click(cx.listener(|this,_,_,cx|{if let Some(control)=&this.control{control.cancel();}
+                    if let Some(control)=&this.local_control{control.cancel();}this.notice=Some(if this.writing{"Cancellation requested. Check GitHub before resubmitting; an accepted action is never replayed."}else{"Cancellation requested. Your review draft is retained."}.into());cx.notify();})))))
             .when(!self.create && (self.review.show_list||self.pull.is_none()),|element|element
                 .child(div().id("github-pr-list").max_h(px(200.)).overflow_y_scroll().flex().flex_col().gap_1()
                     .children(self.rows.iter().map(|pull|{let pull=pull.clone();let selected=self.pull.as_ref().is_some_and(|p|p.number==pull.number);let number=pull.number;let name=format!("#{} · {}",pull.number,pull.title);let context=format!("{} · {} → {} · {}",if pull.draft{"Draft"}else{"Open"},pull.head.branch,pull.base.branch,pull.user.login);
@@ -899,13 +997,13 @@ impl Render for Panel {
                     .child(button("github-next","Next PR page","",false).disabled(pending||!self.has_next).on_click(cx.listener(|this,_,window,cx|this.refresh(this.page+1,window,cx))))))
             .when_some(self.pull.as_ref(),|element,pull|element
                 .child(div().flex().flex_col().gap_2()
-                    .child(div().flex().items_center().gap_2().child(button("github-back-list",if self.review.show_list{"Hide PR list"}else{"Pull requests"},"arrow-left",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|{this.save_draft(window,cx);this.review.show_list=!this.review.show_list;cx.notify();})))
+                    .child(div().flex().items_center().gap_2().child(button("github-back-list",if self.review.show_list{"Hide PR list"}else{"Pull requests"},"arrow-left",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|{this.save_draft(window,cx);this.review.show_list= !this.review.show_list;cx.notify();})))
                         .child(label("github-pull-title",format!("#{} · {}",pull.number,pull.title)).font_weight(FontWeight::SEMIBOLD).text_size(appearance::ui_text(15.))))
                     .child(label("github-branch-context",format!("{} → {} · {}",pull.head.branch,pull.base.branch,if pull.draft{"Draft PR"}else{"Open PR"})).text_color(rgb(p.muted))))
                 .child(self.render_tabs(cx))
                 .when(self.review.section==Section::Overview,|element|element
                     .child(label("github-captured-identities",format!("Before · {}\nAfter  · {}",pull.base.sha,pull.head.sha)).text_color(rgb(p.muted)))
-                    .when_some(self.description.as_ref(),|element,description|element.child(crate::editor_find::Editor::new(description).readonly(true).h(px(120.)).aria_label("Pull request description, exact Markdown source")))
+                    .when_some(self.description.as_ref(),|element,description|element.child(div().h(px(120.)).flex_shrink_0().child(crate::editor_find::Editor::new(description).readonly(true).h_full().aria_label("Pull request description, exact Markdown source"))))
                     .when_some(self.status.as_ref(),|element,status|element.child(div().p_3().bg(rgb(p.subtle)).rounded(px(6.)).flex().flex_col().gap_1()
                         .child(label("github-review-status",format!("Reviews · {}",if status.reviews.is_empty(){"None reported".into()}else{status.reviews.join(" · ")})))
                         .child(label("github-check-status",format!("Checks · {}{}",if status.checks.is_empty(){"None reported".into()}else{status.checks.join(" · ")},if status.incomplete{" · Additional status entries are outside this preview"}else{""})))))
@@ -924,16 +1022,16 @@ impl Render for Panel {
                 .when(!self.create,|element|element.child(div().flex().flex_wrap().gap_1()
                     .children([ReviewEvent::Comment,ReviewEvent::Approve,ReviewEvent::RequestChanges].map(|event|button(event.label(),event.label(),"",!self.discussion&&self.event==event).toggled(!self.discussion&&self.event==event).disabled(pending).on_click(cx.listener(move|this,_,window,cx|{this.discussion=false;this.event=event;this.confirm=None;this.save_draft(window,cx);}))))
                     .child(button("github-discussion","Discussion only","",self.discussion).toggled(self.discussion).disabled(pending||!self.review.comments.is_empty()||self.review.composing.is_some()).on_click(cx.listener(|this,_,_,cx|{this.discussion=true;this.confirm=None;cx.notify();})))))
-                .child(Textarea::new(&self.body).aria_label(if self.create{"Pull request description"}else{"Review summary"}).disabled(pending))
+                .child(div().debug_selector(||"github-review-summary".into()).on_children_prepainted(self.reveal_on_focus(self.body.read(cx).focus_handle(cx))).child(Textarea::new(&self.body).aria_label(if self.create{"Pull request description"}else{"Review summary"}).disabled(pending)))
                 .child(div().flex().items_center().gap_2().child(label("github-draft-status",self.save_status.clone()).role(Role::Status).a11y_synthetic_children(native_accessibility::polite).text_color(rgb(p.muted)))
                     .child(div().flex_1()).child(button("github-review-submit","Review submission…","",true).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.review_submission(window,cx))))))
             .when_some(self.confirm.as_ref(),|element,confirmation|element.child(div().p_3().border_1().border_color(rgb(p.accent)).rounded(px(7.)).flex().flex_col().gap_2()
                 .child(label("github-confirm-destination",format!("{}\nAccount · {}",confirmation.action.destination(),confirmation.account)).font_weight(FontWeight::SEMIBOLD))
-                .child(label("github-confirm-text",match &confirmation.action{Action::Create(pull)=>format!("{}\n\n{}",pull.title,pull.body),Action::Comment{body,..}=>body.clone(),Action::Review(review)=>format!("{} review · {} inline comments\n\n{}{}",review.event.label(),review.comments.len(),review.body,review.comments.iter().map(|comment|format!("\n\n{}\n{}",github::review::position_label(comment),comment.body)).collect::<String>())}))
+                .child(div().id("github-confirm-text-scroll").max_h(px(180.)).overflow_y_scroll().child(label("github-confirm-text",match &confirmation.action{Action::Create(pull)=>format!("{}\n\n{}",pull.title,pull.body),Action::Comment{body,..}=>body.clone(),Action::Review(review)=>format!("{} review · {} inline comments\n\n{}{}",review.event.label(),review.comments.len(),review.body,review.comments.iter().map(|comment|format!("\n\n{}\n{}",github::review::position_label(comment),comment.body)).collect::<String>())})))
                 .child(label("github-confirm-guidance","Send performs one outbound action with these exact captured targets and comments. Inspect the destination before repeating an uncertain attempt.").text_color(rgb(p.muted)))
                 .child(div().flex().gap_2().child(button("github-confirm-send",if self.review.fixture{"Send to offline fixture"}else{"Send to GitHub"},"",true).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.submit(window,cx))))
                     .child(button("github-edit-submission","Keep editing","",false).disabled(pending).on_click(cx.listener(|this,_,_,cx|{this.confirm=None;cx.notify();}))))))
-            .child(div().flex().items_center().gap_2().child(button("github-recovery-toggle",format!("Recover drafts · {}",self.saved.len()),"",self.review.recovery_open).toggled(self.review.recovery_open).on_click(cx.listener(|this,_,_,cx|{this.review.recovery_open=!this.review.recovery_open;cx.notify();})))
+            .child(div().flex().items_center().gap_2().child(button("github-recovery-toggle",format!("Recover drafts · {}",self.saved.len()),"",self.review.recovery_open).toggled(self.review.recovery_open).on_click(cx.listener(|this,_,_,cx|{this.review.recovery_open= !this.review.recovery_open;cx.notify();})))
                 .child(label("github-passive-policy","Drafts stay on this Mac · outbound actions are explicit").text_color(rgb(p.muted))))
             .when(self.review.recovery_open,|element|element
                 .child(label("github-saved-heading","Captured drafts · Copy includes all inline text and original positions; older heads are never remapped").text_color(rgb(p.muted)))
