@@ -147,6 +147,8 @@ portal packages, log out and back in if the session has stale service state.
 | Picker does nothing / reports a portal failure | Check `systemctl --user status xdg-desktop-portal xdg-desktop-portal-gnome`; inspect `journalctl --user -b -u xdg-desktop-portal`. Check the matching backend, then reopen the app. |
 | Blank launcher icon / menu entry absent | Rerun the installer and `desktop-file-validate` on the installed entry; confirm the entry's absolute `Icon` path exists. Refresh the app menu or log out/in if its cache remains stale. |
 | Missing or cramped text | Check `fc-match sans-serif` and `fc-match 'DejaVu Sans Mono'`; install both DejaVu packages above. Settings has separate interface/code text sizes. |
+| Text smaller than in other apps | On Wayland, GitTurtle multiplies its text sizes by the desktop text scaling factor (GNOME Settings › Accessibility › Large Text, `org.gnome.desktop.interface text-scaling-factor`). On X11 the toolkit scales the whole window through `Xft.dpi` instead. The app's own interface/code sizes apply on top. |
+| Colored fringes or soft text, typically on an OLED or rotated panel | GitTurtle follows the desktop antialiasing preference. GNOME's default `font-rendering` "automatic" renders grayscale like GTK 4; "manual" follows `font-antialiasing` (Tweaks › Fonts), where `rgba` selects subpixel rendering. Other desktops are read through fontconfig: `fc-match --format '%{antialias}\|%{rgba}\n' sans-serif`. Grayscale is the safe choice; changes apply without a restart. |
 | Need an X11 comparison in a session that provides XWayland | Launch once with `env -u WAYLAND_DISPLAY "$HOME/.local/bin/gitturtle" /path/to/fixture`. This tests XWayland, not a full Xorg session. |
 
 No `DISPLAY`, `WAYLAND_DISPLAY`, GPU-selection or library variable belongs in
@@ -177,9 +179,16 @@ menu item. Linux keyboard shortcuts use Control instead of Command.
 - Automatic reading of OS reduced-motion, contrast and transparency
   accessibility preferences is macOS-only. Manual app preferences remain
   available; Linux screen-reader and IME coverage is not established.
+- Glyph antialiasing and the desktop text scaling factor follow the session:
+  the app reads `font-rendering`, `font-antialiasing` and `text-scaling-factor`
+  from the XDG settings portal (`org.gnome.desktop.interface`), falls back to
+  fontconfig's resolved `antialias`/`rgba` defaults when a portal backend does
+  not publish those keys, and otherwise renders grayscale. Hinting and stripe
+  order remain toolkit decisions; "none" antialiasing is rendered grayscale.
 - The current toolkit's X11 backend reads `Xft.dpi`/RandR scaling but does not
-  read XSettings DPI. Fractional scaling and live monitor changes still need
-  checks on the target desktop.
+  read XSettings DPI, so the text scaling factor is applied by the app on
+  Wayland only. Fractional scaling and live monitor changes still need checks
+  on the target desktop.
 - This bundle does not provide automatic updates, desktop file associations,
   distribution signing or support guarantees for other Ubuntu releases/CPUs.
 
@@ -200,6 +209,9 @@ GPU/driver, session type and scale setting with the result.
   selected commit/file and an uncommitted Title/Description draft survive.
 - [ ] Check 100%, 200% and an available fractional display scale; readable UI/code,
   icons and fonts, text entry, shortcuts and mixed-DPI monitor movement.
+- [ ] With the app open, toggle Settings › Accessibility › Large Text and switch
+  Tweaks › Fonts › Antialiasing between Subpixel and Grayscale (with rendering
+  set to Manual): text size and glyph edges follow without a restart.
 - [ ] Open and cancel the repository picker from Projects and Ctrl+O, including
   a path containing spaces. Confirm errors are useful if the portal is absent.
 - [ ] Select a commit (stays in History), activate text/PNG/Markdown files, Back,

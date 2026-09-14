@@ -5,22 +5,68 @@ use gpui_kit::{App, Global, Pixels, Window, px, rgb};
 use serde::{Deserialize, Serialize};
 use std::sync::{
     Arc,
-    atomic::{AtomicU8, Ordering},
+    atomic::{AtomicU8, AtomicU32, Ordering},
 };
 
 pub const DEFAULT_INTERFACE_TEXT_SIZE: u8 = 13;
 pub const DEFAULT_CODE_TEXT_SIZE: u8 = 12;
 pub const INTERFACE_TEXT_RANGE: std::ops::RangeInclusive<u8> = 11..=18;
 pub const CODE_TEXT_RANGE: std::ops::RangeInclusive<u8> = 10..=24;
+/// Bounds for the desktop's own text scaling factor (GNOME "Large Text").
+#[cfg(any(target_os = "linux", test))]
+pub const DESKTOP_TEXT_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.5..=3.0;
 
 // One application appearance applies to every native window. Pixel helpers are
 // also usable by canvas geometry and pure row-height consumers without a UI
 // context. No preference writes or repository work happen through these reads.
 static INTERFACE_TEXT_SIZE: AtomicU8 = AtomicU8::new(DEFAULT_INTERFACE_TEXT_SIZE);
 static CODE_TEXT_SIZE: AtomicU8 = AtomicU8::new(DEFAULT_CODE_TEXT_SIZE);
+// The desktop's text scaling factor multiplies both app sizes so the saved
+// interface/code preferences keep their meaning across desktops. Only the
+// Linux desktop bridge changes it; other platforms scale through the toolkit.
+static DESKTOP_TEXT_SCALE: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
+
+pub fn desktop_text_scale() -> f32 {
+    f32::from_bits(DESKTOP_TEXT_SCALE.load(Ordering::Relaxed))
+}
+/// Normalizes a reported factor: non-finite values mean "no scaling".
+#[cfg(any(target_os = "linux", test))]
+pub fn desktop_text_scale_value(scale: impl Into<f64>) -> f32 {
+    let scale = scale.into();
+    if scale.is_finite() {
+        (scale as f32).clamp(
+            *DESKTOP_TEXT_SCALE_RANGE.start(),
+            *DESKTOP_TEXT_SCALE_RANGE.end(),
+        )
+    } else {
+        1.0
+    }
+}
+/// Stores the desktop factor and re-applies the text sizes of every open
+/// window. Returns whether the factor changed.
+#[cfg(target_os = "linux")]
+pub fn set_desktop_text_scale(scale: f32, cx: &mut App) -> bool {
+    let scale = desktop_text_scale_value(scale);
+    if scale.to_bits() == DESKTOP_TEXT_SCALE.load(Ordering::Relaxed) {
+        return false;
+    }
+    DESKTOP_TEXT_SCALE.store(scale.to_bits(), Ordering::Relaxed);
+    for window in cx.windows() {
+        let _ = window.update(cx, |_, window, cx| {
+            apply_text_sizes(
+                INTERFACE_TEXT_SIZE.load(Ordering::Relaxed),
+                CODE_TEXT_SIZE.load(Ordering::Relaxed),
+                window,
+                cx,
+            )
+        });
+    }
+    true
+}
 
 pub fn ui_scale() -> f32 {
     f32::from(INTERFACE_TEXT_SIZE.load(Ordering::Relaxed)) / f32::from(DEFAULT_INTERFACE_TEXT_SIZE)
+        * desktop_text_scale()
 }
 pub fn ui_size(base: f32) -> Pixels {
     px(base * ui_scale())
@@ -29,7 +75,7 @@ pub fn ui_text(base: f32) -> Pixels {
     ui_size(base)
 }
 pub fn code_text() -> Pixels {
-    px(f32::from(CODE_TEXT_SIZE.load(Ordering::Relaxed)))
+    px(f32::from(CODE_TEXT_SIZE.load(Ordering::Relaxed)) * desktop_text_scale())
 }
 pub fn code_scale() -> f32 {
     f32::from(code_text()) / f32::from(DEFAULT_CODE_TEXT_SIZE)
@@ -591,6 +637,18 @@ mod tests {
         let a = luminance(a);
         let b = luminance(b);
         (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn desktop_text_scale_values_are_bounded_and_finite() {
+        assert_eq!(desktop_text_scale_value(1.0), 1.0);
+        assert_eq!(desktop_text_scale_value(1.25), 1.25);
+        assert_eq!(desktop_text_scale_value(0.1), 0.5);
+        assert_eq!(desktop_text_scale_value(12.0), 3.0);
+        assert_eq!(desktop_text_scale_value(f64::NAN), 1.0);
+        assert_eq!(desktop_text_scale_value(f64::INFINITY), 1.0);
+        // Nothing in the test suite changes the process-wide factor.
+        assert_eq!(desktop_text_scale(), 1.0);
     }
 
     #[test]
