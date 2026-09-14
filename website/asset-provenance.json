@@ -1,0 +1,54 @@
+{
+  "status": "All product screenshots are unaltered captures of native preview source 013e3348a29735617982bfd217551fdf91e4c694 in a disposable fixture; they are not captures of the later installed source 417b5e8d0c739ca3746d2cab379db58efa4d8ea9.",
+  "recorded_on": "2026-09-14",
+  "assets": [
+    {
+      "site_path": "public/assets/history.png",
+      "source": "native QA capture final-history.png",
+      "identity": "013e3348a29735617982bfd217551fdf91e4c694; native inputs committed; source tree marked modified by untracked docs/site; Ubuntu 24.04 virtual X11/Xvfb + Openbox; default Midnight; 1480x800",
+      "sha256": "fe485747a4a517e0e91125d4954c05f582cdb8230e4676b2eb128611dd627ec9",
+      "bytes": 154001,
+      "binary_sha256": "164a93b7100ad9be311645f680bb6c7d76ebb6dde8cfea520a6c7e41d098e47c",
+      "evidence": "docs/benchmarks/native-preview-20260914"
+    },
+    {
+      "site_path": "public/assets/changes.png",
+      "source": "native QA capture final-working.png",
+      "identity": "013e3348a29735617982bfd217551fdf91e4c694; native inputs committed; source tree marked modified by untracked docs/site; Ubuntu 24.04 virtual X11/Xvfb + Openbox; default Midnight; 1480x800",
+      "sha256": "65b867506af4343c47e12e13bee4437b4ad209efcf39fa34ad43340c7b64b56e",
+      "bytes": 121955,
+      "binary_sha256": "164a93b7100ad9be311645f680bb6c7d76ebb6dde8cfea520a6c7e41d098e47c",
+      "evidence": "docs/benchmarks/native-preview-20260914"
+    },
+    {
+      "site_path": "public/assets/compare.png",
+      "source": "native QA capture final-split.png",
+      "identity": "013e3348a29735617982bfd217551fdf91e4c694; native inputs committed; source tree marked modified by untracked docs/site; Ubuntu 24.04 virtual X11/Xvfb + Openbox; default Midnight; 1480x800",
+      "sha256": "d203ba0905a7e0e1f7d26e7ee6c4f85bf438e096ba0ddd35c37d2d72b20abd91",
+      "bytes": 155361,
+      "binary_sha256": "164a93b7100ad9be311645f680bb6c7d76ebb6dde8cfea520a6c7e41d098e47c",
+      "evidence": "docs/benchmarks/native-preview-20260914"
+    },
+    {
+      "site_path": "public/assets/app-icon.png",
+      "source": "assets/branding/app-icon.png",
+      "identity": "existing project artwork",
+      "sha256": "c932e5c84eca7c3ac0c35c51da3facc2ca4a22dee34a79a0286641f12e42fdad",
+      "bytes": 25906
+    },
+    {
+      "site_path": "public/assets/turtle.png",
+      "source": "assets/AppIcon.icon/Assets/turtle.png",
+      "identity": "existing canonical project artwork",
+      "sha256": "73262e257f69c3b474ad02356dc42d15e916183c539ebeb2ba5bb9c1e70bb9a1",
+      "bytes": 942906
+    },
+    {
+      "site_path": "public/fonts/manrope-latin.woff2",
+      "source": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+      "identity": "Manrope Latin variable 400-800; SIL OFL",
+      "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972",
+      "bytes": 24836
+    }
+  ]
+}
