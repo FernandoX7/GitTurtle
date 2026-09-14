@@ -56,22 +56,6 @@ impl WatchRoots {
         })
     }
 
-    fn watched_roots(&self) -> Vec<&Path> {
-        let mut roots = vec![
-            self.worktree.as_path(),
-            self.private_git.as_path(),
-            self.common_git.as_path(),
-        ];
-        roots.sort_by_key(|path| path.components().count());
-        let mut result: Vec<&Path> = Vec::new();
-        for root in roots {
-            if !result.iter().any(|parent| root.starts_with(parent)) {
-                result.push(root);
-            }
-        }
-        result
-    }
-
     fn classify(&self, path: &Path) -> ChangeKind {
         // Private directories are checked first because they may live inside
         // the common Git directory's worktrees/ administration tree.
@@ -143,6 +127,8 @@ pub struct LocalChange {
     /// guessing which paths changed.
     pub rescan: bool,
     pub error: Option<String>,
+    /// Coverage recovered; supersedes a prior warning in a coalesced burst.
+    pub recovered: bool,
 }
 
 impl LocalChange {
@@ -150,12 +136,17 @@ impl LocalChange {
         self.worktree |= next.worktree;
         self.git |= next.git;
         self.rescan |= next.rescan;
+        if next.recovered {
+            self.error = None;
+            self.recovered = true;
+        }
         if next.error.is_some() {
             self.error = next.error;
+            self.recovered = false;
         }
     }
     pub(crate) fn is_empty(&self) -> bool {
-        !self.worktree && !self.git && !self.rescan && self.error.is_none()
+        !self.worktree && !self.git && !self.rescan && self.error.is_none() && !self.recovered
     }
 }
 
@@ -293,14 +284,17 @@ pub fn watch(roots: WatchRoots) -> Result<(LocalWatcher, LocalChanges)> {
             }
         })
         .context("Create native local-change watcher")?;
-    let mut registrations = Registrations::default();
-    for path in roots.watched_roots() {
-        registrations
-            .add(&mut watcher, path)
-            .with_context(|| format!("Watch {}", path.display()))?;
-    }
+    let mut registrations = Registrations::new(&roots);
+    registrations.start(&mut watcher, &roots);
     let fingerprints = Fingerprints::new(&roots);
-    let (delivery, changes) = Delivery::channel();
+    let (mut delivery, changes) = Delivery::channel();
+    if let Some(error) = registrations.diagnostic() {
+        delivery.send(LocalChange {
+            rescan: true,
+            error: Some(error),
+            ..Default::default()
+        });
+    }
     let stop = Arc::new(AtomicBool::new(false));
     let actor_stop = Arc::clone(&stop);
     std::thread::Builder::new()
@@ -362,6 +356,8 @@ fn run_actor(
     mut delivery: Delivery,
 ) {
     let mut burst = Burst::default();
+    let mut policy_paths = std::collections::HashSet::new();
+    let mut overflow_reconciled = false;
     while !stop.load(Ordering::Acquire) {
         let message = match burst.deadline() {
             Some(deadline) => {
@@ -377,15 +373,45 @@ fn run_actor(
         let mut change = LocalChange::default();
         match message {
             Ok(Message::Event(event)) => {
+                for path in &event.paths {
+                    if policy_paths.len() < MAX_EVENTS
+                        && (registrations.policy_file(path)
+                            || (path.starts_with(&roots.worktree)
+                                && path.file_name().is_some_and(|name| name == ".gitignore"))
+                            || path == &roots.private_git.join("index")
+                            || path == &roots.common_git.join("info/exclude")
+                            || path == &roots.common_git.join("config")
+                            || path == &roots.private_git.join("config.worktree"))
+                    {
+                        policy_paths.insert(path.clone());
+                        change.worktree = true;
+                    }
+                    if [&roots.worktree, &roots.private_git, &roots.common_git].contains(&path)
+                        && matches!(
+                            event.kind,
+                            EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_))
+                        )
+                    {
+                        policy_paths.insert(path.clone());
+                        change.rescan = true;
+                    }
+                }
                 change.rescan |= event.need_rescan();
-                if let Err(error) = registrations.update(&mut watcher, &event) {
+                let previous = registrations.diagnostic();
+                registrations.update(&mut watcher, &event, &roots);
+                let next = registrations.diagnostic();
+                if next != previous {
+                    change.error = next;
+                    change.recovered = change.error.is_none();
                     change.rescan = true;
-                    change.error = Some(bounded_error(error));
                 }
                 if !passive_event(&event) {
                     for path in &event.paths {
                         let kind = roots.classify(path);
-                        if kind != ChangeKind::Ignore && fingerprints.changed(path, kind) {
+                        if kind != ChangeKind::Ignore
+                            && registrations.relevant(path, kind)
+                            && fingerprints.changed(path, kind)
+                        {
                             if kind == ChangeKind::Worktree {
                                 change.worktree = true;
                             } else {
@@ -395,10 +421,20 @@ fn run_actor(
                     }
                 }
             }
-            Ok(Message::Wake) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                overflow_reconciled = false;
+            }
+            Ok(Message::Wake) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
         change.rescan |= signals.overflow.swap(false, Ordering::AcqRel);
+        if change.rescan && !overflow_reconciled {
+            // One bounded coverage reconciliation per continuous overflow
+            // burst; quiet re-arms it. Normal edits never walk the whole tree.
+            policy_paths.insert(roots.worktree.join(".gitignore"));
+            policy_paths.insert(roots.private_git.join("index"));
+            overflow_reconciled = true;
+        }
         if let Some(error) = signals
             .error
             .lock()
@@ -408,10 +444,24 @@ fn run_actor(
             change.error = Some(error);
         }
         burst.push(change, Instant::now());
-        if let Some(change) = burst.take_due(Instant::now())
-            && !delivery.send(change)
-        {
-            break;
+        if let Some(mut change) = burst.take_due(Instant::now()) {
+            if !policy_paths.is_empty() {
+                let previous = registrations.diagnostic();
+                registrations.refresh_policy(
+                    &mut watcher,
+                    &roots,
+                    &policy_paths.drain().collect::<Vec<_>>(),
+                );
+                let next = registrations.diagnostic();
+                if previous != next {
+                    change.error = next;
+                    change.recovered = change.error.is_none();
+                    change.rescan = true;
+                }
+            }
+            if !delivery.send(change) {
+                break;
+            }
         }
     }
 }
@@ -543,89 +593,480 @@ impl Fingerprints {
     }
 }
 
-#[derive(Default)]
+const MAX_DIRECTORIES: usize = 16_384;
+const MAX_SCAN_ENTRIES: usize = 200_000;
+const MAX_SCAN_TIME: Duration = Duration::from_secs(2);
+const MAX_DEFERRED_ROOTS: usize = 256;
+
 struct Registrations {
-    #[cfg(target_os = "linux")]
     directories: std::collections::HashSet<PathBuf>,
+    deferred: HashMap<PathBuf, String>,
+    policy: Option<gitturtle_core::LocalWatchPolicy>,
+    policy_error: Option<String>,
+    worktree: PathBuf,
+    scan_started: Instant,
+    scan_entries: usize,
+    directory_limit: usize,
 }
 
 impl Registrations {
-    #[cfg(not(target_os = "linux"))]
-    fn add(&mut self, watcher: &mut RecommendedWatcher, path: &Path) -> Result<()> {
-        watcher.watch(path, RecursiveMode::Recursive)?;
-        Ok(())
+    fn new(roots: &WatchRoots) -> Self {
+        let policy = gitturtle_core::GitRepository::open(&roots.worktree)
+            .and_then(|repository| repository.local_watch_policy());
+        let (policy, policy_error) = match policy {
+            Ok(policy) => (Some(policy), None),
+            Err(error) => (
+                None,
+                Some(bounded_error(format!("Working-tree coverage: {error:#}"))),
+            ),
+        };
+        Self {
+            directories: Default::default(),
+            deferred: Default::default(),
+            policy,
+            policy_error,
+            worktree: roots.worktree.clone(),
+            scan_started: Instant::now(),
+            scan_entries: 0,
+            directory_limit: MAX_DIRECTORIES,
+        }
     }
 
-    #[cfg(target_os = "linux")]
-    fn add(&mut self, watcher: &mut RecommendedWatcher, path: &Path) -> Result<()> {
-        // notify7's recursive inotify setup follows directory symlinks. Use
-        // bounded nonrecursive registrations and event-driven subtree adds.
-        let mut pending = vec![path.to_owned()];
-        while let Some(path) = pending.pop() {
-            let metadata = fs::symlink_metadata(&path)?;
-            if !metadata.is_dir() || metadata.is_symlink() || self.directories.contains(&path) {
+    fn diagnostic(&self) -> Option<String> {
+        self.policy_error.clone().or_else(|| {
+            self.deferred.iter().min_by_key(|(path, _)| *path)
+                .map(|(path, error)| bounded_error(format!("{error}\nDirectory: {}\nRegistered directories: {}. Git metadata registrations are retained. Refresh retries local coverage.", path.display(), self.directories.len())))
+        })
+    }
+
+    fn defer(&mut self, path: &Path, error: impl std::fmt::Display) {
+        if self.deferred.keys().any(|root| path.starts_with(root)) {
+            return;
+        }
+        self.deferred.retain(|root, _| !root.starts_with(path));
+        if self.deferred.len() < MAX_DEFERRED_ROOTS {
+            self.deferred.insert(path.to_owned(), bounded_error(error));
+        } else {
+            self.policy_error.get_or_insert_with(|| "More than 256 directory subtrees could not be watched. Refresh to retry coverage.".into());
+        }
+    }
+
+    fn start(&mut self, watcher: &mut RecommendedWatcher, roots: &WatchRoots) {
+        self.begin_scan();
+        // Register every essential root before spending watches on descendants.
+        // A worktree budget/error must never discard HEAD/index/ref monitoring.
+        for path in [&roots.private_git, &roots.common_git, &roots.worktree] {
+            self.register(watcher, path);
+        }
+        if cfg!(target_os = "linux") {
+            for path in [&roots.private_git, &roots.common_git, &roots.worktree] {
+                if let Some(parent) = path.parent() {
+                    self.register(watcher, parent);
+                }
+            }
+            self.register_policy_parents(watcher);
+        }
+        if cfg!(target_os = "linux") {
+            for root in [&roots.private_git, &roots.common_git] {
+                for name in [
+                    "refs",
+                    "refs/heads",
+                    "refs/remotes",
+                    "refs/tags",
+                    "info",
+                    "rebase-merge",
+                    "rebase-apply",
+                    "sequencer",
+                ] {
+                    self.register(watcher, &root.join(name));
+                }
+            }
+        }
+        for root in [&roots.private_git, &roots.common_git] {
+            self.add(watcher, root, roots, true);
+        }
+        if self.policy.is_some() {
+            self.add(watcher, &roots.worktree, roots, false);
+        }
+    }
+
+    fn register(&mut self, watcher: &mut RecommendedWatcher, path: &Path) -> bool {
+        if self.directories.contains(path) {
+            return true;
+        }
+        if self.directories.len() >= self.directory_limit {
+            self.defer(path, "The local directory-watch budget is full");
+            return false;
+        }
+        if path.starts_with(&self.worktree)
+            && path
+                .ancestors()
+                .take_while(|parent| *parent != self.worktree)
+                .any(|parent| {
+                    fs::symlink_metadata(parent).is_ok_and(|metadata| metadata.is_symlink())
+                })
+        {
+            return false;
+        }
+        let metadata = match fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if transient_directory_error(&error) => return false,
+            Err(error) => {
+                self.defer(path, error);
+                return false;
+            }
+        };
+        if !metadata.is_dir() || metadata.is_symlink() {
+            return false;
+        }
+        let mode = if cfg!(target_os = "linux") {
+            RecursiveMode::NonRecursive
+        } else {
+            RecursiveMode::Recursive
+        };
+        match watcher.watch(path, mode) {
+            Ok(()) => {
+                self.directories.insert(path.to_owned());
+                true
+            }
+            Err(error) if matches!(&error.kind, notify::ErrorKind::Io(error) if transient_directory_error(error)) => {
+                false
+            }
+            Err(error) if matches!(error.kind, notify::ErrorKind::PathNotFound) => false,
+            Err(error) => {
+                self.defer(path, error);
+                false
+            }
+        }
+    }
+
+    fn relevant(&mut self, path: &Path, kind: ChangeKind) -> bool {
+        if kind != ChangeKind::Worktree {
+            return true;
+        }
+        let Some(policy) = self.policy.as_mut() else {
+            return true;
+        };
+        let directory = fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir());
+        // Deleted watched directories still need status and coverage cleanup.
+        if self.directories.contains(path) {
+            return true;
+        }
+        policy.includes(path, directory).unwrap_or(true)
+    }
+
+    fn eligible(&mut self, path: &Path, roots: &WatchRoots, metadata: bool) -> bool {
+        if metadata {
+            return matches!(roots.classify(path), ChangeKind::Git | ChangeKind::GitRoot);
+        }
+        if path == roots.worktree {
+            return true;
+        }
+        if path.starts_with(&roots.private_git)
+            || path.starts_with(&roots.common_git)
+            || path == roots.worktree.join(".git")
+        {
+            return false;
+        }
+        match self
+            .policy
+            .as_mut()
+            .map(|policy| policy.includes(path, true))
+        {
+            Some(Ok(included)) => included,
+            Some(Err(error)) => {
+                self.defer(path, error);
+                false
+            }
+            None => false,
+        }
+    }
+
+    fn add(
+        &mut self,
+        watcher: &mut RecommendedWatcher,
+        root: &Path,
+        roots: &WatchRoots,
+        metadata: bool,
+    ) {
+        self.deferred.remove(root);
+        if !cfg!(target_os = "linux") {
+            // Keep native recursive subscriptions on FSEvents and other
+            // platforms. The explicit traversal is for Linux inotify only.
+            if !self
+                .directories
+                .iter()
+                .any(|parent| root.starts_with(parent))
+                && self.eligible(root, roots, metadata)
+            {
+                self.register(watcher, root);
+            }
+            return;
+        }
+        // notify's Linux recursive setup follows directory symlinks. Register
+        // bounded explicit directories instead, using the same policy on every
+        // platform. Existing registrations may still contain new descendants.
+        let mut pending = VecDeque::from([root.to_owned()]);
+        while let Some(path) = pending.pop_front() {
+            if !self.eligible(&path, roots, metadata) {
                 continue;
             }
-            ensure!(
-                self.directories.len() < 16_384,
-                "Automatic refresh reached the local directory-watch limit. Use Refresh to check all current changes."
-            );
-            watcher.watch(&path, RecursiveMode::NonRecursive)?;
-            self.directories.insert(path.clone());
-            for entry in fs::read_dir(&path)? {
-                let entry = entry?;
-                if entry.file_type()?.is_dir() {
-                    ensure!(
-                        pending.len() + self.directories.len() < 16_384,
-                        "Automatic refresh reached the local directory-watch limit. Use Refresh to check all current changes."
-                    );
-                    pending.push(entry.path());
-                }
+            if self.scan_entries >= MAX_SCAN_ENTRIES || self.scan_started.elapsed() >= MAX_SCAN_TIME
+            {
+                self.defer(root, "Directory coverage reached its bounded scan budget");
+                break;
             }
-        }
-        Ok(())
-    }
-
-    fn update(&mut self, watcher: &mut RecommendedWatcher, event: &Event) -> Result<()> {
-        #[cfg(target_os = "linux")]
-        {
-            if matches!(
-                event.kind,
-                EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
-            ) {
-                for path in &event.paths {
-                    if !self.directories.contains(path) {
+            if !self.register(watcher, &path) {
+                continue;
+            }
+            let children = match fs::read_dir(&path) {
+                Ok(children) => children,
+                Err(error) if transient_directory_error(&error) => continue,
+                Err(error) => {
+                    self.defer(&path, error);
+                    continue;
+                }
+            };
+            for entry in children {
+                self.scan_entries += 1;
+                if self.scan_entries >= MAX_SCAN_ENTRIES
+                    || pending.len() >= MAX_DIRECTORIES
+                    || self.scan_started.elapsed() >= MAX_SCAN_TIME
+                {
+                    self.defer(root, "Directory coverage reached its bounded scan budget");
+                    return;
+                }
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) if transient_directory_error(&error) => continue,
+                    Err(error) => {
+                        self.defer(&path, error);
                         continue;
                     }
-                    let removed: Vec<_> = self
-                        .directories
-                        .iter()
-                        .filter(|directory| directory.starts_with(path))
-                        .cloned()
-                        .collect();
-                    for directory in removed {
-                        let _ = watcher.unwatch(&directory);
-                        self.directories.remove(&directory);
-                    }
-                }
-            }
-            if matches!(
-                event.kind,
-                EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_))
-            ) {
-                for path in &event.paths {
-                    if fs::symlink_metadata(path)
-                        .is_ok_and(|metadata| metadata.is_dir() && !metadata.is_symlink())
-                    {
-                        self.add(watcher, path)?;
-                    }
+                };
+                match entry.file_type() {
+                    Ok(kind) if kind.is_dir() => pending.push_back(entry.path()),
+                    Ok(_) => {}
+                    Err(error) if transient_directory_error(&error) => {}
+                    Err(error) => self.defer(&path, error),
                 }
             }
         }
-        #[cfg(not(target_os = "linux"))]
-        let _ = (watcher, event);
-        Ok(())
     }
+
+    fn remove(&mut self, watcher: &mut RecommendedWatcher, path: &Path) -> bool {
+        if let Some(policy) = &mut self.policy {
+            policy.forget_directory(path);
+        }
+        let removed: Vec<_> = self
+            .directories
+            .iter()
+            .filter(|directory| directory.starts_with(path))
+            .cloned()
+            .collect();
+        for directory in &removed {
+            let _ = watcher.unwatch(directory);
+            self.directories.remove(directory);
+        }
+        self.deferred
+            .retain(|directory, _| !directory.starts_with(path));
+        !removed.is_empty()
+    }
+
+    fn update(&mut self, watcher: &mut RecommendedWatcher, event: &Event, roots: &WatchRoots) {
+        self.begin_scan();
+        let mut freed = false;
+        if matches!(
+            event.kind,
+            EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
+        ) {
+            for path in &event.paths {
+                freed |= self.remove(watcher, path);
+            }
+        }
+        if matches!(
+            event.kind,
+            EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_))
+        ) {
+            for path in &event.paths {
+                if fs::symlink_metadata(path)
+                    .is_ok_and(|metadata| metadata.is_dir() && !metadata.is_symlink())
+                {
+                    if path == &roots.worktree {
+                        for git in [&roots.private_git, &roots.common_git] {
+                            if git.starts_with(path) {
+                                self.add(watcher, git, roots, true);
+                            }
+                        }
+                    }
+                    let metadata =
+                        matches!(roots.classify(path), ChangeKind::Git | ChangeKind::GitRoot);
+                    self.add(watcher, path, roots, metadata);
+                }
+            }
+        }
+        if freed && !self.deferred.is_empty() {
+            // Recovery is driven by freed registrations, never a timer/retry
+            // loop. One bounded pass handles the remembered omitted subtrees.
+            let deferred = std::mem::take(&mut self.deferred);
+            for path in deferred.keys() {
+                let metadata =
+                    matches!(roots.classify(path), ChangeKind::Git | ChangeKind::GitRoot);
+                self.add(watcher, path, roots, metadata);
+                if self.directories.len() >= self.directory_limit {
+                    break;
+                }
+            }
+            for (path, error) in deferred {
+                if !self.directories.contains(&path) && path.is_dir() {
+                    self.defer(&path, error);
+                }
+            }
+        }
+        for root in [&roots.worktree, &roots.private_git, &roots.common_git] {
+            if event.paths.contains(root) && !root.is_dir() {
+                self.defer(
+                    root,
+                    "A watched repository directory moved or became unavailable",
+                );
+            }
+        }
+    }
+
+    fn refresh_policy(
+        &mut self,
+        watcher: &mut RecommendedWatcher,
+        roots: &WatchRoots,
+        paths: &[PathBuf],
+    ) {
+        self.begin_scan();
+        let roots_changed = paths
+            .iter()
+            .any(|path| [&roots.worktree, &roots.private_git, &roots.common_git].contains(&path));
+        let index_changed = roots_changed
+            || paths
+                .iter()
+                .any(|path| path == &roots.private_git.join("index"));
+        let all_rules = roots_changed
+            || paths.iter().any(|path| {
+                self.policy_file(path)
+                    || path == &roots.common_git.join("info/exclude")
+                    || path == &roots.common_git.join("config")
+                    || path == &roots.private_git.join("config.worktree")
+            });
+        let mut changed_rules: Vec<_> = paths
+            .iter()
+            .filter(|path| {
+                path.starts_with(&roots.worktree)
+                    && path.file_name().is_some_and(|name| name == ".gitignore")
+            })
+            .filter_map(|path| path.parent().map(Path::to_owned))
+            .collect();
+        if all_rules || index_changed {
+            let previous_tracked: Vec<_> = self
+                .policy
+                .as_ref()
+                .into_iter()
+                .flat_map(|policy| policy.tracked_directories())
+                .filter(|path| self.directories.contains(path))
+                .collect();
+            match gitturtle_core::GitRepository::open(&self.worktree)
+                .and_then(|repository| repository.local_watch_policy())
+            {
+                Ok(policy) => {
+                    let tracked: Vec<_> = policy.tracked_directories().collect();
+                    self.policy = Some(policy);
+                    self.policy_error = None;
+                    // Release formerly tracked directories that are now
+                    // ignored before admitting the new tracked ancestors.
+                    // This inspects only known paths, not the working tree.
+                    for path in previous_tracked {
+                        if self
+                            .policy
+                            .as_mut()
+                            .is_some_and(|policy| matches!(policy.includes(&path, true), Ok(false)))
+                        {
+                            let _ = watcher.unwatch(&path);
+                            self.directories.remove(&path);
+                            self.deferred.retain(|root, _| !root.starts_with(&path));
+                            if let Some(policy) = &mut self.policy {
+                                policy.forget_directory(&path);
+                            }
+                        }
+                    }
+                    if cfg!(target_os = "linux") {
+                        self.register_policy_parents(watcher);
+                    }
+                    // Index changes add only newly tracked ancestors, without
+                    // rescanning every existing worktree directory.
+                    for path in tracked {
+                        if !self.directories.contains(&path) {
+                            self.add(watcher, &path, roots, false);
+                        }
+                    }
+                }
+                Err(error) => self.policy_error = Some(bounded_error(error)),
+            }
+        }
+        if all_rules {
+            changed_rules = vec![roots.worktree.clone()];
+        }
+        changed_rules.sort();
+        changed_rules.dedup();
+        for root in changed_rules {
+            if let Some(policy) = &mut self.policy {
+                policy.invalidate_ignores();
+            }
+            let candidates: Vec<_> = self
+                .directories
+                .iter()
+                .filter(|directory| directory.starts_with(&root))
+                .cloned()
+                .collect();
+            for path in candidates {
+                if roots.classify(&path) == ChangeKind::Worktree
+                    && !self.eligible(&path, roots, false)
+                {
+                    self.remove(watcher, &path);
+                }
+            }
+            self.deferred.retain(|path, _| !path.starts_with(&root));
+            self.add(watcher, &root, roots, false);
+        }
+    }
+
+    fn begin_scan(&mut self) {
+        self.scan_started = Instant::now();
+        self.scan_entries = 0;
+    }
+
+    fn policy_file(&self, path: &Path) -> bool {
+        self.policy
+            .as_ref()
+            .is_some_and(|policy| policy.ignore_files().iter().any(|file| file == path))
+    }
+
+    fn register_policy_parents(&mut self, watcher: &mut RecommendedWatcher) {
+        let parents: Vec<_> = self
+            .policy
+            .as_ref()
+            .into_iter()
+            .flat_map(|policy| policy.ignore_files())
+            .filter_map(|path| path.parent().map(Path::to_owned))
+            .collect();
+        for parent in parents {
+            if parent.is_dir() {
+                self.register(watcher, &parent);
+            }
+        }
+    }
+}
+
+fn transient_directory_error(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    )
 }
 
 #[cfg(test)]
@@ -660,22 +1101,42 @@ mod tests {
                 common_git: path.join("main/.git"),
                 private_git: path.join("main/.git/worktrees/linked"),
             };
-            fs::create_dir_all(&roots.worktree).unwrap();
-            fs::create_dir_all(roots.common_git.join("refs/heads")).unwrap();
-            fs::create_dir_all(&roots.private_git).unwrap();
-            fs::write(
-                roots.worktree.join(".git"),
-                format!("gitdir: {}\n", roots.private_git.display()),
-            )
-            .unwrap();
+            fs::create_dir_all(path.join("main")).unwrap();
+            let git = |args: &[&str]| {
+                let result = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(path.join("main"))
+                    .args([
+                        "-c",
+                        "user.name=Fixture",
+                        "-c",
+                        "user.email=fixture@example.invalid",
+                        "-c",
+                        "commit.gpgsign=false",
+                        "-c",
+                        "core.hooksPath=/dev/null",
+                    ])
+                    .args(args)
+                    .env("GIT_CONFIG_NOSYSTEM", "1")
+                    .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                    .output()
+                    .unwrap();
+                assert!(
+                    result.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&result.stderr)
+                );
+            };
+            git(&["init", "-b", "main"]);
+            git(&["commit", "--allow-empty", "-m", "Initial"]);
+            git(&[
+                "worktree",
+                "add",
+                "-b",
+                "topic",
+                roots.worktree.to_str().unwrap(),
+            ]);
             fs::write(roots.worktree.join("file.txt"), "before\n").unwrap();
-            fs::write(roots.private_git.join("HEAD"), "ref: refs/heads/topic\n").unwrap();
-            fs::write(roots.private_git.join("index"), "fixture-index").unwrap();
-            fs::write(
-                roots.common_git.join("refs/heads/topic"),
-                "1111111111111111111111111111111111111111\n",
-            )
-            .unwrap();
             Self { path, roots }
         }
 
@@ -789,10 +1250,6 @@ mod tests {
     fn resolved_linked_worktree_paths_and_git_lock_filter_preserve_scope() {
         let fixture = Fixture::new();
         let roots = &fixture.roots;
-        assert_eq!(
-            roots.watched_roots(),
-            [roots.worktree.as_path(), roots.common_git.as_path()]
-        );
         for path in [
             roots.private_git.join("HEAD"),
             roots.private_git.join("index"),
@@ -904,5 +1361,285 @@ mod tests {
         ));
         drop(watcher);
         bridge.join().unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    fn registrations(fixture: &Fixture) -> (RecommendedWatcher, Registrations) {
+        let watcher = notify::recommended_watcher(|_: notify::Result<Event>| {}).unwrap();
+        (watcher, Registrations::new(&fixture.roots))
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn ignored_build_tree_is_pruned_before_the_directory_limit() {
+        let fixture = Fixture::new();
+        let build = fixture.roots.worktree.join("large-output");
+        fs::create_dir(&build).unwrap();
+        fs::write(
+            fixture.roots.worktree.join(".gitignore"),
+            "/large-output/\n",
+        )
+        .unwrap();
+        for index in 0..MAX_DIRECTORIES + 2 {
+            fs::create_dir(build.join(index.to_string())).unwrap();
+        }
+        let (mut watcher, mut registrations) = registrations(&fixture);
+        registrations.start(&mut watcher, &fixture.roots);
+        assert!(
+            registrations.diagnostic().is_none(),
+            "{:?}",
+            registrations.diagnostic()
+        );
+        assert!(!registrations.directories.contains(&build));
+        assert!(registrations.directories.len() < 40);
+        assert!(
+            registrations
+                .directories
+                .contains(&fixture.roots.common_git.join("refs/heads"))
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn disappearing_and_replaced_directories_are_normal_registration_races() {
+        let fixture = Fixture::new();
+        let (mut watcher, mut registrations) = registrations(&fixture);
+        let vanished = fixture.roots.worktree.join("gone");
+        fs::create_dir_all(vanished.join("child")).unwrap();
+        fs::remove_dir_all(&vanished).unwrap();
+        assert!(!registrations.register(&mut watcher, &vanished));
+        fs::write(&vanished, "replaced with a file").unwrap();
+        assert!(!registrations.register(&mut watcher, &vanished.join("child")));
+        registrations.add(&mut watcher, &vanished, &fixture.roots, false);
+        assert!(registrations.diagnostic().is_none());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn directory_budget_preserves_metadata_and_recovers_when_subtrees_are_removed() {
+        use notify::event::RemoveKind;
+        let fixture = Fixture::new();
+        let bulk = fixture.roots.worktree.join("bulk");
+        for index in 0..40 {
+            fs::create_dir_all(bulk.join(index.to_string())).unwrap();
+        }
+        let (mut watcher, mut registrations) = registrations(&fixture);
+        registrations.directory_limit = 30;
+        registrations.start(&mut watcher, &fixture.roots);
+        assert!(registrations.diagnostic().is_some());
+        assert!(
+            registrations
+                .directories
+                .contains(&fixture.roots.private_git)
+        );
+        assert!(
+            registrations
+                .directories
+                .contains(&fixture.roots.common_git.join("refs/heads"))
+        );
+        fs::remove_dir_all(&bulk).unwrap();
+        registrations.update(
+            &mut watcher,
+            &Event::new(EventKind::Remove(RemoveKind::Folder)).add_path(bulk),
+            &fixture.roots,
+        );
+        assert!(
+            registrations.diagnostic().is_none(),
+            "{:?}",
+            registrations.diagnostic()
+        );
+        assert!(
+            registrations
+                .directories
+                .contains(&fixture.roots.common_git.join("refs/heads"))
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn edited_ignore_rules_reconcile_only_affected_coverage() {
+        let fixture = Fixture::new();
+        let folder = fixture.roots.worktree.join("generated");
+        fs::create_dir_all(folder.join("nested")).unwrap();
+        let ignore = fixture.roots.worktree.join(".gitignore");
+        fs::write(&ignore, "/generated/\n").unwrap();
+        let (mut watcher, mut registrations) = registrations(&fixture);
+        registrations.start(&mut watcher, &fixture.roots);
+        assert!(!registrations.directories.contains(&folder));
+        fs::write(&ignore, "").unwrap();
+        registrations.refresh_policy(&mut watcher, &fixture.roots, std::slice::from_ref(&ignore));
+        assert!(registrations.directories.contains(&folder.join("nested")));
+        fs::write(&ignore, "/generated/\n").unwrap();
+        registrations.refresh_policy(&mut watcher, &fixture.roots, &[ignore]);
+        assert!(!registrations.directories.contains(&folder));
+        assert!(registrations.diagnostic().is_none());
+    }
+
+    #[test]
+    fn recovery_supersedes_old_warning_in_a_coalesced_delivery() {
+        let mut change = LocalChange {
+            error: Some("limited".into()),
+            ..Default::default()
+        };
+        change.merge(LocalChange {
+            recovered: true,
+            ..Default::default()
+        });
+        assert!(change.recovered);
+        assert!(change.error.is_none());
+        change.merge(LocalChange {
+            error: Some("unavailable".into()),
+            ..Default::default()
+        });
+        assert!(!change.recovered);
+        assert_eq!(change.error.as_deref(), Some("unavailable"));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn index_changes_add_tracked_paths_inside_an_ignored_directory() {
+        let fixture = Fixture::new();
+        let directory = fixture.roots.worktree.join("ignored/nested");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(fixture.roots.worktree.join(".gitignore"), "/ignored/\n").unwrap();
+        fs::write(directory.join("tracked"), "tracked\n").unwrap();
+        let (mut watcher, mut registrations) = registrations(&fixture);
+        registrations.start(&mut watcher, &fixture.roots);
+        assert!(!registrations.directories.contains(&directory));
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&fixture.roots.worktree)
+            .args(["add", "--force", "--", "ignored/nested/tracked"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        registrations.refresh_policy(
+            &mut watcher,
+            &fixture.roots,
+            &[fixture.roots.private_git.join("index")],
+        );
+        assert!(registrations.directories.contains(&directory));
+        assert!(registrations.relevant(&directory.join("tracked"), ChangeKind::Worktree));
+        assert!(!registrations.relevant(&directory.join("noise"), ChangeKind::Worktree));
+        assert!(registrations.diagnostic().is_none());
+    }
+
+    #[test]
+    fn native_directory_churn_keeps_notifications_available_without_race_warnings() {
+        let fixture = Fixture::new();
+        let (watcher, changes, bridge) = fixture.observe();
+        for index in 0..150 {
+            let path = fixture
+                .roots
+                .worktree
+                .join(format!("temporary-{index}/child"));
+            fs::create_dir_all(&path).unwrap();
+            fs::write(path.join("scratch"), "temporary").unwrap();
+            fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
+        let first = changes.recv_timeout(Duration::from_secs(8)).unwrap();
+        assert!(first.error.is_none(), "{first:?}");
+        fs::write(fixture.roots.worktree.join("file.txt"), "after cleanup\n").unwrap();
+        let after = changes.recv_timeout(Duration::from_secs(8)).unwrap();
+        assert!(after.worktree && after.error.is_none(), "{after:?}");
+        drop(watcher);
+        bridge.join().unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn replacing_private_git_root_reloads_completed_index_and_keeps_metadata_watches() {
+        use notify::event::{CreateKind, RemoveKind};
+        let fixture = Fixture::new();
+        let directory = fixture.roots.worktree.join("ignored/nested");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(fixture.roots.worktree.join(".gitignore"), "/ignored/\n").unwrap();
+        fs::write(directory.join("tracked"), "tracked\n").unwrap();
+        let (mut watcher, mut registrations) = registrations(&fixture);
+        registrations.start(&mut watcher, &fixture.roots);
+        assert!(!registrations.relevant(&directory.join("tracked"), ChangeKind::Worktree));
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&fixture.roots.worktree)
+            .args(["add", "--force", "--", "ignored/nested/tracked"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let parked = fixture.path.join("parked-private");
+        fs::rename(&fixture.roots.private_git, &parked).unwrap();
+        registrations.update(
+            &mut watcher,
+            &Event::new(EventKind::Remove(RemoveKind::Folder))
+                .add_path(fixture.roots.private_git.clone()),
+            &fixture.roots,
+        );
+        fs::rename(parked, &fixture.roots.private_git).unwrap();
+        registrations.update(
+            &mut watcher,
+            &Event::new(EventKind::Create(CreateKind::Folder))
+                .add_path(fixture.roots.private_git.clone()),
+            &fixture.roots,
+        );
+        registrations.refresh_policy(
+            &mut watcher,
+            &fixture.roots,
+            std::slice::from_ref(&fixture.roots.private_git),
+        );
+        assert!(registrations.relevant(&directory.join("tracked"), ChangeKind::Worktree));
+        assert!(
+            registrations
+                .directories
+                .contains(&fixture.roots.private_git)
+        );
+        assert!(
+            registrations
+                .directories
+                .contains(&fixture.roots.common_git.join("refs/heads"))
+        );
+        assert!(
+            registrations.diagnostic().is_none(),
+            "{:?}",
+            registrations.diagnostic()
+        );
+    }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn index_changes_release_directories_that_become_ignored() {
+        let fixture = Fixture::new();
+        let directory = fixture.roots.worktree.join("ignored/nested");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(fixture.roots.worktree.join(".gitignore"), "/ignored/\n").unwrap();
+        fs::write(directory.join("tracked"), "tracked\n").unwrap();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&fixture.roots.worktree)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["add", "--force", "--", "ignored/nested/tracked"]);
+        let (mut watcher, mut registrations) = registrations(&fixture);
+        registrations.start(&mut watcher, &fixture.roots);
+        assert!(registrations.directories.contains(&directory));
+        git(&["rm", "--cached", "--", "ignored/nested/tracked"]);
+        registrations.refresh_policy(
+            &mut watcher,
+            &fixture.roots,
+            &[fixture.roots.private_git.join("index")],
+        );
+        assert!(!registrations.directories.contains(&directory));
+        assert!(
+            !registrations
+                .directories
+                .contains(&fixture.roots.worktree.join("ignored"))
+        );
+        assert!(directory.join("tracked").is_file());
+        assert!(registrations.diagnostic().is_none());
     }
 }

@@ -212,7 +212,7 @@ impl GitTurtle {
         cx.notify();
     }
 
-    fn restore_normal_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn restore_normal_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.history_search.progress = None;
         let Some(normal) = self.history_search.normal.take() else {
             return;
@@ -472,73 +472,15 @@ impl GitTurtle {
             .into_any_element()
     }
 
-    /// Quiet refresh updates navigation and the normal history beneath search;
-    /// the visible search session keeps its immutable tips and exact cursor.
+    /// A captured search and its normal-history return context stay pinned.
+    /// Current navigation metadata and the separate update cue may advance.
     pub(super) fn retain_search_snapshot(
         &mut self,
         snapshot: worker::Snapshot,
         cx: &mut Context<Self>,
     ) -> Option<worker::Snapshot> {
-        let Some(normal) = &mut self.history_search.normal else {
+        if self.history_search.normal.is_none() {
             return Some(snapshot);
-        };
-        if normal.paging.is_deep(normal.visible.len()) {
-            self.refs = snapshot.refs;
-            self.branches = snapshot.branches;
-            self.worktrees = snapshot.worktrees;
-            self.repository = Some(snapshot.repository);
-            self.rebuild_navigation(cx);
-            return None;
-        }
-        normal.paging = history_paging::State::from_snapshot(&snapshot);
-        let offset = normal.scroll.0.borrow().base_handle.offset();
-        let height = self.settings.density.history_row_height();
-        let top = ((-f32::from(offset.y)) / height).max(0.) as usize;
-        let anchor = normal
-            .visible
-            .get(top)
-            .and_then(|index| normal.commits.get(*index))
-            .map(|commit| commit.oid.clone());
-        let selected = normal
-            .selected_commit
-            .and_then(|index| normal.commits.get(index))
-            .cloned();
-        normal.commits = snapshot.commits;
-        normal.graph = snapshot.graph;
-        normal.graph_notice = snapshot.graph_notice;
-        normal.selected_commit = selected.as_ref().and_then(|old| {
-            normal
-                .commits
-                .iter()
-                .position(|commit| commit.oid == old.oid)
-        });
-        normal.retained_commit = None;
-        if normal.selected_commit.is_none()
-            && let Some(selected) = selected
-        {
-            normal.selected_commit = Some(normal.commits.len());
-            normal.retained_commit = normal.selected_commit;
-            normal.commits.push(selected);
-            normal.graph.push(graph::GraphRow::default());
-        }
-        normal.visible = (0..normal.commits.len())
-            .filter(|index| Some(*index) != normal.retained_commit)
-            .collect();
-        if let Some(anchor) = anchor
-            && let Some(next_top) = normal
-                .visible
-                .iter()
-                .position(|index| normal.commits[*index].oid == anchor)
-        {
-            normal.scroll.0.borrow().base_handle.set_offset(point(
-                offset.x,
-                px(automatic_refresh::reanchor_offset(
-                    f32::from(offset.y),
-                    top,
-                    next_top,
-                    height,
-                )),
-            ));
         }
         self.refs = snapshot.refs;
         self.branches = snapshot.branches;
