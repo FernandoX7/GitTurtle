@@ -189,3 +189,33 @@ once before hashing and execution. Syntax checks, 18 disposable revision probes,
 and a competing-PATH executable probe passed. No benchmark performance claim is
 made by these checks. Local and remote CodeQL threat sources remain enabled;
 these findings do not justify excluding tooling from future scans.
+
+The complete initial [CodeQL analysis](https://github.com/FernandoX7/GitTurtle/actions/runs/34883960956)
+finished successfully for Actions, Python, JavaScript/TypeScript and Rust.
+Its 291 findings were reviewed by source and sink. The intentional local-path,
+fixture, structured-command and unused-toolkit flows have individual disposition
+explanations in GitHub; a successful scanner job alone does not resolve alerts.
+Inspection also found missing recovery-path validation before metadata traversal
+(`3385807`) and predictable temporary paths in six upstream renderer tests
+(`aee1879`). Regression checks cover malformed Git trees without changing
+repository/outside-file state; renderer tests now use private temporary
+directories. These findings did not demonstrate arbitrary production command
+execution or writing. The scan continues to include tooling and local inputs.
+
+The macOS rerun at `712d99e` passed JP2 pixels but failed raw J2K decoding.
+An independent [native probe](benchmarks/jpeg2000-macos15-20260914.json) on macOS
+15.7.9 confirmed that both direct decoding and thumbnail creation reject the raw
+fixture. Commit `49e8c40` tests that documented codec-dependent boundary using an
+independent fixed-fixture capability probe: capable systems retain all pixel,
+dimension and orientation assertions; others must report the exact unsupported
+result. JP2 remains unconditional. This does not claim raw J2K rendering on
+macOS 15 or replace the separate historical macOS 26 evidence.
+
+After integration, local Ubuntu 24.04 userspace passed formatting, app checking,
+the complete workspace tests and strict workspace Clippy. The new recovery
+regression also passed after its lint-only adjustment. All 26 recovery tests,
+eight upstream renderer CLI tests and the two edited renderer configuration
+test bodies passed. The published vendor archive omits fixtures needed to
+compile its complete library test suite, so those two configuration test bodies
+were exercised in a disposable integration harness instead. Hosted reruns remain
+separate evidence; no binary release or native GUI check is implied.

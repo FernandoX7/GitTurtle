@@ -844,7 +844,9 @@ fn recovery_preflight_rejects_malformed_tree_paths_before_filesystem_inspection(
     let blob = f.git(&["rev-parse", "HEAD:file.txt"]);
     let raw_oid: Vec<u8> = blob
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
         .collect();
 
@@ -878,8 +880,7 @@ fn recovery_preflight_rejects_malformed_tree_paths_before_filesystem_inspection(
             let error = f
                 .repo()
                 .recovery_plan(kind, Some(&target), None)
-                .err()
-                .expect("malformed recovery path must be rejected");
+                .expect_err("malformed recovery path must be rejected");
             assert_eq!(
                 error.to_string(),
                 "Choose a repository-relative file path",
