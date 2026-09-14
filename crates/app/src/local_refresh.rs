@@ -762,7 +762,8 @@ impl Registrations {
         if path == roots.worktree {
             return true;
         }
-        if path.starts_with(&roots.private_git)
+        if !path.starts_with(&roots.worktree)
+            || path.starts_with(&roots.private_git)
             || path.starts_with(&roots.common_git)
             || path == roots.worktree.join(".git")
         {
@@ -881,7 +882,9 @@ impl Registrations {
             EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
         ) {
             for path in &event.paths {
-                freed |= self.remove(watcher, path);
+                if roots.classify(path) != ChangeKind::Ignore || self.directories.contains(path) {
+                    freed |= self.remove(watcher, path);
+                }
             }
         }
         if matches!(
@@ -889,6 +892,14 @@ impl Registrations {
             EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_))
         ) {
             for path in &event.paths {
+                // Parent and ignore-file sentinels also report unrelated
+                // siblings. Route by repository scope before filesystem or
+                // ignore-policy reads; only our own roots need recovery.
+                let metadata = match roots.classify(path) {
+                    ChangeKind::Git | ChangeKind::GitRoot => true,
+                    ChangeKind::Worktree => false,
+                    ChangeKind::Ignore => continue,
+                };
                 if fs::symlink_metadata(path)
                     .is_ok_and(|metadata| metadata.is_dir() && !metadata.is_symlink())
                 {
@@ -899,8 +910,6 @@ impl Registrations {
                             }
                         }
                     }
-                    let metadata =
-                        matches!(roots.classify(path), ChangeKind::Git | ChangeKind::GitRoot);
                     self.add(watcher, path, roots, metadata);
                 }
             }
@@ -1367,6 +1376,99 @@ mod tests {
     fn registrations(fixture: &Fixture) -> (RecommendedWatcher, Registrations) {
         let watcher = notify::recommended_watcher(|_: notify::Result<Event>| {}).unwrap();
         (watcher, Registrations::new(&fixture.roots))
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn sibling_directories_never_expand_or_degrade_parent_sentinel_coverage() {
+        use notify::event::{CreateKind, RemoveKind, RenameMode};
+        let fixture = Fixture::new();
+        let (mut watcher, mut registrations) = registrations(&fixture);
+        registrations.start(&mut watcher, &fixture.roots);
+        let original = registrations.directories.clone();
+        for sibling in [
+            fixture.path.join("linked-peer"),
+            fixture.path.join("main/build-peer"),
+        ] {
+            for index in 0..32 {
+                fs::create_dir_all(sibling.join(index.to_string())).unwrap();
+            }
+            registrations.update(
+                &mut watcher,
+                &Event::new(EventKind::Create(CreateKind::Folder)).add_path(sibling.clone()),
+                &fixture.roots,
+            );
+            let renamed = sibling.with_extension("renamed");
+            fs::rename(&sibling, &renamed).unwrap();
+            registrations.update(
+                &mut watcher,
+                &Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Both)))
+                    .add_path(sibling)
+                    .add_path(renamed.clone()),
+                &fixture.roots,
+            );
+            assert!(
+                registrations.diagnostic().is_none(),
+                "{:?}",
+                registrations.diagnostic()
+            );
+            assert_eq!(registrations.scan_entries, 0);
+            assert_eq!(registrations.directories, original);
+            fs::remove_dir_all(&renamed).unwrap();
+            registrations.update(
+                &mut watcher,
+                &Event::new(EventKind::Remove(RemoveKind::Folder)).add_path(renamed),
+                &fixture.roots,
+            );
+            assert!(registrations.diagnostic().is_none());
+            assert_eq!(registrations.scan_entries, 0);
+            assert_eq!(registrations.directories, original);
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn native_sibling_churn_does_not_request_refresh_or_degrade_coverage() {
+        let fixture = Fixture::new();
+        let (watcher, changes, bridge) = fixture.observe();
+        for sibling in [
+            fixture.path.join("linked-peer"),
+            fixture.path.join("main/build-peer"),
+        ] {
+            fs::create_dir_all(sibling.join("child")).unwrap();
+            fs::write(sibling.join("child/scratch"), "unrelated").unwrap();
+            // Keep the create visible to the actor before the later cleanup.
+            std::thread::sleep(Duration::from_millis(50));
+            let renamed = sibling.with_extension("renamed");
+            fs::rename(sibling, &renamed).unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+            fs::remove_dir_all(renamed).unwrap();
+        }
+        assert!(
+            matches!(
+                changes.recv_timeout(Duration::from_millis(1500)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "unrelated sibling churn must not request a refresh or coverage warning"
+        );
+        for (path, metadata) in [
+            (fixture.roots.worktree.join("file.txt"), false),
+            (fixture.roots.private_git.join("config.worktree"), true),
+        ] {
+            fs::write(path, "# a subsequent local change\n").unwrap();
+            let change = changes.recv_timeout(Duration::from_secs(6)).unwrap();
+            assert!(change.error.is_none() && !change.rescan, "{change:?}");
+            assert!(
+                if metadata {
+                    change.git
+                } else {
+                    change.worktree
+                },
+                "{change:?}"
+            );
+        }
+        drop(watcher);
+        bridge.join().unwrap();
     }
 
     #[test]
