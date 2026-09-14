@@ -72,6 +72,10 @@ install -m 755 "$executable" "$bundle/Contents/MacOS/gitturtle"
 rm -rf "$bundle/Contents/Resources/assets"
 install -m 644 "$icon_build/AppIcon.icns" "$bundle/Contents/Resources/AppIcon.icns"
 install -m 644 "$icon_build/Assets.car" "$bundle/Contents/Resources/Assets.car"
+python3 "$project_root/scripts/collect-third-party-licenses.py" \
+  --target "$(rustc -vV | sed -n 's/^host: //p')" "$icon_build/licenses"
+rm -rf "$bundle/Contents/Resources/licenses"
+cp -R "$icon_build/licenses" "$bundle/Contents/Resources/licenses"
 cat > "$bundle/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

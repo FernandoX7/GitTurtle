@@ -20,7 +20,7 @@ if [[ "$#" -gt 1 || "$(uname -s)" != Linux || "$(uname -m)" != x86_64 ]]; then
   echo "Usage: scripts/package-linux.sh [--no-build [--binary PATH]] [output-directory] (Linux x86-64)" >&2
   exit 1
 fi
-for command in python3 desktop-file-validate sha256sum tar; do
+for command in python3 cargo desktop-file-validate sha256sum tar; do
   if ! command -v "$command" >/dev/null; then
     echo "Missing $command. Install the packaging prerequisites in docs/linux.md." >&2
     exit 1
@@ -54,6 +54,8 @@ install -m755 "$executable" "$bundle/bin/gitturtle"
 install -m755 "$project_root/scripts/install-linux.py" "$bundle/install.py"
 install -m644 "$project_root/assets/app-icon.png" "$bundle/icons/app-icon.png"
 install -m644 "$project_root/docs/linux.md" "$bundle/README.md"
+python3 "$project_root/scripts/collect-third-party-licenses.py" \
+  --target x86_64-unknown-linux-gnu "$bundle/licenses"
 python3 - "$project_root" "$bundle" "$build" <<'PY'
 import hashlib
 import json

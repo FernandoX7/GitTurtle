@@ -12,6 +12,10 @@ concurrency:
   group: quality-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
 jobs:
   rust:
     name: Rust · ${{ matrix.os }}
@@ -25,8 +29,9 @@ jobs:
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: 1
       GIT_CONFIG_NOSYSTEM: 1
-      GIT_CONFIG_GLOBAL: ${{ runner.temp }}/gitturtle-ci-gitconfig
     steps:
+      - name: Isolate CI Git configuration
+        run: printf 'GIT_CONFIG_GLOBAL=%s/gitturtle-ci-gitconfig\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
@@ -70,6 +75,8 @@ jobs:
           )
           test -x "$install_home/.local/bin/gitturtle"
           cmp target/release/gitturtle "$install_home/.local/bin/gitturtle"
+          test -s "$install_home/.local/share/gitturtle/licenses/LICENSE"
+          test -s "$install_home/.local/share/gitturtle/licenses/dependencies.json"
           desktop-file-validate "$install_home/.local/share/applications/com.gitturtle.desktop.desktop"
           ldd "$install_home/.local/bin/gitturtle" > "$RUNNER_TEMP/gitturtle-ldd.txt"
           cat "$RUNNER_TEMP/gitturtle-ldd.txt"

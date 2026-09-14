@@ -64,6 +64,7 @@ def install():
     if not manifest.is_file():
         fail("Extract the complete bundle first; SHA256SUMS is missing.")
     required = {"bin/gitturtle", "install.py", "README.md", "build-info.json", "icons/app-icon.png"}
+    required.update({"licenses/LICENSE", "licenses/THIRD_PARTY_NOTICES.md", "licenses/dependencies.json"})
     required.update(f"icons/hicolor/{size}x{size}/apps/{APP_ID}.png" for size in ICON_SIZES)
     checked = set()
     for line in manifest.read_text().splitlines():
@@ -76,6 +77,9 @@ def install():
         checked.add(name)
     if required - checked:
         fail("Bundle checksum manifest is incomplete. Extract a fresh copy.")
+    license_files = {str(path.relative_to(bundle)) for path in (bundle / "licenses").rglob("*") if path.is_file()}
+    if license_files - checked:
+        fail("Bundle contains unchecked license files. Extract a fresh copy.")
     for command in ("git", "ldd", "desktop-file-validate", "update-desktop-database"):
         if not shutil.which(command):
             fail(f"Missing {command}; install the runtime packages listed in README.md.")
@@ -106,6 +110,10 @@ def install():
         entry_source = Path(temporary) / launcher.name
         entry_source.write_text(entry)
         subprocess.run(["desktop-file-validate", str(entry_source)], check=True)
+        # Keep notices with the installed executable after the extracted bundle
+        # is removed. Verify and install every supplied text, including fonts.
+        for name in sorted(license_files):
+            replace_file(bundle / name, data / "gitturtle" / name, 0o644)
         replace_file(binary, binary_destination, 0o755)
         replace_file(bundle / "icons/app-icon.png", icon, 0o644)
         for source in sorted((bundle / "icons/hicolor").glob("*/apps/*.png")):

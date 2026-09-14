@@ -9,7 +9,7 @@ A container build does not establish Ubuntu GNOME desktop compatibility.
 ## Install a teammate bundle
 
 Use a bundle built on Ubuntu 24.04 with the procedure below. It contains the
-release executable, installer, icon resources and checksums; neither Cargo nor
+release executable, installer, icon resources, license notices and checksums; neither Cargo nor
 this checkout is needed on the receiving machine. This is a user-local build
 bundle, not a signed distribution package, AppImage, Flatpak or `.deb`.
 
@@ -62,6 +62,10 @@ installer. Existing settings and drafts stay in place. The extracted bundle
 and source directory may be moved or removed after successful installation.
 Checksums detect corruption; they do not authenticate an untrusted sender.
 
+The bundle includes the project license and resolved dependency/font notices in
+`licenses/`. Installation retains them under `$XDG_DATA_HOME/gitturtle/licenses`
+(or `~/.local/share/gitturtle/licenses`) after you remove the extracted bundle.
+
 ## Build from source on Ubuntu 24.04
 
 Install the runtime packages above, then the build/packaging prerequisites:
@@ -99,6 +103,11 @@ to overwrite existing outputs. Both modes use the explicit x86-64 target path,
 regardless of your other Cargo target settings. `--no-build` requires an already
 built release from the intended source; to reuse a separately built artifact,
 pass its path explicitly, for example `--no-build --binary target/release/gitturtle`.
+Packaging also needs Cargo and the resolved locked sources to collect license
+texts, including with `--no-build`. Review any generated `REVIEW_REQUIRED.md`
+before redistribution: unresolved upstream notices block a public binary release.
+The collector's `--require-complete` mode enforces that release gate; local
+development packaging reports the gaps without claiming distribution clearance.
 `build-info.json` records the packaging revision,
 working-tree status, executable hash and whether the packager rebuilt it;
 it does not certify the source identity of an arbitrary reused binary.
@@ -202,5 +211,5 @@ GPU/driver, session type and scale setting with the result.
 To uninstall the user-local app, remove `~/.local/bin/gitturtle`, the installed
 `applications/com.gitturtle.desktop.desktop`, `icons/com.gitturtle.desktop.png`
 and the eight `icons/hicolor/SIZExSIZE/apps/com.gitturtle.desktop.png` files
-under the data directory used at installation. Leave other icons and the
+and `gitturtle/licenses/` under the data directory used at installation. Leave other icons and the
 configuration directory intact unless you explicitly want to discard state.

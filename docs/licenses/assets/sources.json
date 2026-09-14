@@ -1,0 +1,32 @@
+[
+  {
+    "name": "tokyo-night",
+    "file": "tokyo-night-LICENSE.txt",
+    "url": "https://raw.githubusercontent.com/tokyo-night/tokyo-night-vscode-theme/7c0f11eaef322f293621ca7befe462214b7ea468/LICENSE.txt",
+    "sha256": "e3f5d0d772cda0f4f67405696f15a0f335460a2b3944eff40f00675aadacb31b"
+  },
+  {
+    "name": "catppuccin",
+    "file": "catppuccin-LICENSE",
+    "url": "https://raw.githubusercontent.com/catppuccin/palette/07d02aa110ef9eb7e7427afca5c73ba9cf7f8ebd/LICENSE",
+    "sha256": "814096d2c34cc216c624738a49356f32b7237733b4f7edb0685f4e50ef5074ba"
+  },
+  {
+    "name": "lucide",
+    "file": "lucide-LICENSE",
+    "url": "https://raw.githubusercontent.com/lucide-icons/lucide/f032bed22e4f6bb98657081582cb0bd4df121e10/LICENSE",
+    "sha256": "b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57"
+  },
+  {
+    "name": "nord",
+    "file": "nord-license",
+    "url": "https://raw.githubusercontent.com/nordtheme/nord/1cef71605416a222e57225b544540ce0fcec18d4/license",
+    "sha256": "25ac8188d670bd2ad2ce2f4f55ab88573010ee9f7a4502543cb1eea1e2274f8a"
+  },
+  {
+    "name": "ufbx-native",
+    "file": "ufbx-native-LICENSE",
+    "url": "https://raw.githubusercontent.com/ufbx/ufbx/fcc5d6ba444cfd3eb80677dba5e37e493941abe5/LICENSE",
+    "sha256": "0dd48ebadf52273c736256325c8f078c03c8bb4facee22a4122de0ad3f615391"
+  }
+]
