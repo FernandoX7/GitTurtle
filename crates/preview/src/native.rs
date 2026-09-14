@@ -72,6 +72,8 @@ unsafe extern "C" {
     fn CGImageSourceCreateWithData(data: Ref, options: Ref) -> Ref;
     fn CGImageSourceCopyPropertiesAtIndex(source: Ref, index: usize, options: Ref) -> Ref;
     fn CGImageSourceCreateThumbnailAtIndex(source: Ref, index: usize, options: Ref) -> Ref;
+    #[cfg(test)]
+    fn CGImageSourceCreateImageAtIndex(source: Ref, index: usize, options: Ref) -> Ref;
     static kCGImageSourceShouldCache: Ref;
     static kCGImageSourceCreateThumbnailFromImageAlways: Ref;
     static kCGImageSourceCreateThumbnailWithTransform: Ref;
@@ -293,6 +295,34 @@ pub(super) fn decode_image(bytes: &[u8], format: &str, max_edge: u32) -> Result<
             rgba,
             format: format!("{format} · first image · macOS codec"),
         })
+    }
+}
+
+/// Independently probe direct ImageIO decoding of the fixed 64 × 64 raw J2K
+/// fixture. This test-only helper cannot receive arbitrary/full-sized images.
+#[cfg(test)]
+pub(super) fn raw_jpeg2000_fixture_is_supported() -> Result<bool> {
+    const FIXTURE: &[u8; 548] = include_bytes!("../tests/fixtures/half-red-blue.j2k");
+    let data = data(FIXTURE)?;
+    // SAFETY: only the compiled, known-small fixture reaches this direct decode.
+    // All CF/CG references remain live on this stack and release exactly once.
+    unsafe {
+        let options = dictionary(&[kCGImageSourceShouldCache], &[kCFBooleanFalse])?;
+        let source = Owned::new(
+            CGImageSourceCreateWithData(data.raw, options.raw),
+            CFRelease,
+            "Cannot create the independent raw JPEG 2000 capability source",
+        )?;
+        let raw_image = CGImageSourceCreateImageAtIndex(source.raw, 0, options.raw);
+        if raw_image.is_null() {
+            return Ok(false);
+        }
+        let image = Owned::new(raw_image, CGImageRelease, "Cannot retain capability image")?;
+        ensure!(
+            CGImageGetWidth(image.raw) == 64 && CGImageGetHeight(image.raw) == 64,
+            "The raw JPEG 2000 capability fixture must decode to 64 × 64 pixels"
+        );
+        Ok(true)
     }
 }
 

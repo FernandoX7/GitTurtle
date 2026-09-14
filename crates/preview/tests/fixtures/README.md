@@ -10,6 +10,20 @@ codestream. Both contain only generated test pixels and test supplied-byte
 JPEG 2000 detection, rendering, orientation, and bounded resize independently
 from their filename. No original artwork or private metadata is included.
 
+Historical macOS 26.6.2 validation rendered both JPEG 2000 fixtures. A separate
+[macOS 15.7.9 native probe](../../../../docs/benchmarks/jpeg2000-macos15-20260914.json)
+([hosted run](https://github.com/FernandoX7/GitTurtle/actions/runs/34886145319))
+rendered JP2 with correct dimensions and red/blue orientation through both direct
+ImageIO and thumbnail APIs; both APIs returned no image for raw J2K. Recognition
+as `public.jpeg-2000` alone does not establish raw-codestream rendering support.
+
+The JP2 test always requires native pixels on macOS. The raw J2K test independently
+probes direct ImageIO decoding of this fixed 64 × 64 fixture: a capable codec must
+pass every production pixel, dimension, orientation and resize assertion; an
+incapable codec must produce the exact unsupported result while byte detection
+still overrides the misleading filename. Source-creation or unexpected-dimension
+failures in that probe fail the test. There is no OS-version or environment skip.
+
 `disposal-transparency.gif` is a generated 4 × 2 indexed-color animation encoded
 with Pillow 12.1.1. Its three frames contain red, then green over transparent
 pixels, then blue over transparent pixels; delays are 70/90/110 ms and disposal

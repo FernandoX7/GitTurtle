@@ -1,0 +1,170 @@
+{
+  "fixtures": [
+    {
+      "bytes": 3773,
+      "directImage": {
+        "bounded32Samples": {
+          "bottomRGBA": [
+            0,
+            0,
+            255,
+            255
+          ],
+          "canvasHeight": 32,
+          "canvasWidth": 32,
+          "redTopBlueBottom": true,
+          "topRGBA": [
+            255,
+            0,
+            1,
+            255
+          ]
+        },
+        "decoded": true,
+        "imageCount": 1,
+        "imageStatusAfter": 0,
+        "imageStatusBefore": 0,
+        "nativeHeight": 64,
+        "nativeSamples": {
+          "bottomRGBA": [
+            0,
+            0,
+            255,
+            255
+          ],
+          "canvasHeight": 64,
+          "canvasWidth": 64,
+          "redTopBlueBottom": true,
+          "topRGBA": [
+            255,
+            0,
+            1,
+            255
+          ]
+        },
+        "nativeWidth": 64,
+        "propertyHeight": 64,
+        "propertyKeys": [
+          "ColorModel",
+          "DPIHeight",
+          "DPIWidth",
+          "Depth",
+          "PixelHeight",
+          "PixelWidth",
+          "ProfileName"
+        ],
+        "propertyOrientation": null,
+        "propertyWidth": 64,
+        "sourceCreated": true,
+        "sourceStatusAfter": 0,
+        "sourceStatusBefore": 0,
+        "sourceType": "public.jpeg-2000"
+      },
+      "fixture": "half-red-blue.jp2",
+      "productionThumbnail": {
+        "bounded32Samples": {
+          "bottomRGBA": [
+            0,
+            0,
+            255,
+            255
+          ],
+          "canvasHeight": 32,
+          "canvasWidth": 32,
+          "redTopBlueBottom": true,
+          "topRGBA": [
+            255,
+            0,
+            0,
+            255
+          ]
+        },
+        "decoded": true,
+        "imageCount": 1,
+        "imageStatusAfter": 0,
+        "imageStatusBefore": 0,
+        "nativeHeight": 32,
+        "nativeSamples": {
+          "bottomRGBA": [
+            0,
+            0,
+            255,
+            255
+          ],
+          "canvasHeight": 32,
+          "canvasWidth": 32,
+          "redTopBlueBottom": true,
+          "topRGBA": [
+            255,
+            0,
+            0,
+            255
+          ]
+        },
+        "nativeWidth": 32,
+        "propertyHeight": 64,
+        "propertyKeys": [
+          "ColorModel",
+          "DPIHeight",
+          "DPIWidth",
+          "Depth",
+          "PixelHeight",
+          "PixelWidth",
+          "ProfileName"
+        ],
+        "propertyOrientation": null,
+        "propertyWidth": 64,
+        "sourceCreated": true,
+        "sourceStatusAfter": 0,
+        "sourceStatusBefore": 0,
+        "sourceType": "public.jpeg-2000"
+      }
+    },
+    {
+      "bytes": 548,
+      "directImage": {
+        "decoded": false,
+        "imageCount": 1,
+        "imageStatusAfter": 0,
+        "imageStatusBefore": 0,
+        "propertyHeight": null,
+        "propertyKeys": [],
+        "propertyOrientation": null,
+        "propertyWidth": null,
+        "sourceCreated": true,
+        "sourceStatusAfter": 0,
+        "sourceStatusBefore": 0,
+        "sourceType": "public.jpeg-2000"
+      },
+      "fixture": "half-red-blue.j2k",
+      "productionThumbnail": {
+        "decoded": false,
+        "imageCount": 1,
+        "imageStatusAfter": 0,
+        "imageStatusBefore": 0,
+        "propertyHeight": null,
+        "propertyKeys": [],
+        "propertyOrientation": null,
+        "propertyWidth": null,
+        "sourceCreated": true,
+        "sourceStatusAfter": 0,
+        "sourceStatusBefore": 0,
+        "sourceType": "public.jpeg-2000"
+      }
+    }
+  ],
+  "os": "Version 15.7.9 (Build 24G830)",
+  "scope": "Known generated fixture bytes; independent native direct-image and production-thumbnail calls; no inferred JP2 wrapper or color metadata",
+  "evidence": {
+    "workflow_run": "https://github.com/FernandoX7/GitTurtle/actions/runs/34886145319",
+    "job_id": 104117176741,
+    "probe_commit": "48b1e02",
+    "source_commit": "17bee2d",
+    "probe_time_utc": "2026-09-14T19:19:29Z",
+    "fixture_sha256": {
+      "half-red-blue.jp2": "30c560ae5d91f1a7e78667e5613609ab4fe9adf97d5e2d3f0bb628655eeef3bf",
+      "half-red-blue.j2k": "bfe7df14ced90b4a8ca5b1f073ebb87938d4fd4bbc82f25e57b588e882ab21bc"
+    },
+    "limitations": "Known generated fixtures on this hosted macOS15.7.9 runner; not a GUI check or proof of support for every JPEG2000 variant."
+  }
+}

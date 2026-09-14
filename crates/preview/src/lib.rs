@@ -541,7 +541,25 @@ mod tests {
     }
 
     #[test]
-    fn jpeg2000_j2k_magic_precedes_names_and_preserves_native_orientation() {
+    fn jpeg2000_j2k_respects_native_capability_and_preserves_magic_and_pixels() {
+        #[cfg(target_os = "macos")]
+        if !native::raw_jpeg2000_fixture_is_supported()
+            .expect("Independent raw J2K capability probe failed")
+        {
+            let bytes = include_bytes!("../tests/fixtures/half-red-blue.j2k");
+            assert_eq!(
+                metadata::jpeg2000_format(bytes),
+                Some("JPEG 2000 / J2K codestream")
+            );
+            assert!(metadata::is_image(bytes));
+            assert_eq!(
+                decode_image(bytes, "misleading.txt", 32)
+                    .expect_err("The unavailable raw J2K codec must remain explicit")
+                    .to_string(),
+                "The installed macOS codec cannot decode this JPEG 2000 / J2K codestream image"
+            );
+            return;
+        }
         assert_jpeg2000_preview(
             "raw J2K codestream",
             include_bytes!("../tests/fixtures/half-red-blue.j2k"),
