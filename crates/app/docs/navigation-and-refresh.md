@@ -53,6 +53,8 @@ Superseded History filter replies cannot clear a Working Changes selection.
 
 Filesystem callbacks only enqueue bounded local events. Resolve actual private/common Git directories and register watchers outside the UI thread; do not poll repository trees or invoke Git in the callback. Coalesce bursts, ignore passive access/lock noise, and defer quiet reads behind active previews, search, file-history inspections, status work or writes. Preserve refresh epochs and selection/status generations so superseded results cannot apply.
 
+Linux registers one nonrecursive inotify watch per directory, without following symlinks. Worktree directories that Git ignores (`.gitignore`, `info/exclude` and global excludes, matched in process) are skipped; private/common Git directories are always watched unfiltered. A changed `.gitignore` or `info/exclude` re-walks its scope to add newly visible directories; newly ignored ones stay watched until the repository is reopened. More than 16,384 remaining directories is a watcher error.
+
 Quiet snapshots update local metadata without navigating away, clearing search, or replacing an unchanged immutable preview. Refresh changed mutable editors in place and retain manual conflict drafts by conflict identity. A vanished scope keeps the displayed history with an explanation. Watcher errors surface with manual Refresh available. Neither a filesystem event nor focus regain may trigger a write or network action.
 
 ## Repository tabs

@@ -293,7 +293,7 @@ pub fn watch(roots: WatchRoots) -> Result<(LocalWatcher, LocalChanges)> {
             }
         })
         .context("Create native local-change watcher")?;
-    let mut registrations = Registrations::default();
+    let mut registrations = Registrations::new(&roots);
     for path in roots.watched_roots() {
         registrations
             .add(&mut watcher, path)
@@ -543,13 +543,33 @@ impl Fingerprints {
     }
 }
 
-#[derive(Default)]
+/// Linux inotify needs one registration per directory. Larger trees report a
+/// watcher error and keep manual Refresh available.
+#[cfg(target_os = "linux")]
+const MAX_WATCHED_DIRECTORIES: usize = 16_384;
+#[cfg(target_os = "linux")]
+const WATCH_LIMIT_ERROR: &str =
+    "Too many directories to watch (limit 16,384, excluding directories Git ignores)";
+
 struct Registrations {
     #[cfg(target_os = "linux")]
     directories: std::collections::HashSet<PathBuf>,
+    #[cfg(target_os = "linux")]
+    roots: WatchRoots,
 }
 
 impl Registrations {
+    fn new(roots: &WatchRoots) -> Self {
+        #[cfg(not(target_os = "linux"))]
+        let _ = roots;
+        Self {
+            #[cfg(target_os = "linux")]
+            directories: std::collections::HashSet::new(),
+            #[cfg(target_os = "linux")]
+            roots: roots.clone(),
+        }
+    }
+
     #[cfg(not(target_os = "linux"))]
     fn add(&mut self, watcher: &mut RecommendedWatcher, path: &Path) -> Result<()> {
         watcher.watch(path, RecursiveMode::Recursive)?;
@@ -557,7 +577,68 @@ impl Registrations {
     }
 
     #[cfg(target_os = "linux")]
+    fn git_directory(&self, path: &Path) -> bool {
+        path.starts_with(&self.roots.private_git) || path.starts_with(&self.roots.common_git)
+    }
+
+    #[cfg(target_os = "linux")]
     fn add(&mut self, watcher: &mut RecommendedWatcher, path: &Path) -> Result<()> {
+        if !path.starts_with(&self.roots.worktree) || self.git_directory(path) {
+            return self.add_all(watcher, path);
+        }
+        // Status cannot change below a directory Git ignores, so dependency,
+        // build and nested-worktree trees need no registrations. The walker
+        // never filters its starting path: match a new directory from its parent.
+        let start = match path.parent() {
+            Some(parent) if path != self.roots.worktree => parent,
+            _ => path,
+        };
+        let scope = path.to_owned();
+        let git = [
+            self.roots.private_git.clone(),
+            self.roots.common_git.clone(),
+        ];
+        let mut walk = ignore::WalkBuilder::new(start);
+        walk.standard_filters(false)
+            .git_ignore(true)
+            .git_exclude(true)
+            .git_global(true)
+            .parents(true)
+            .require_git(true)
+            .follow_links(false)
+            .filter_entry(move |entry| {
+                entry.file_type().is_some_and(|kind| kind.is_dir())
+                    && entry.path().starts_with(&scope)
+                    && !git.iter().any(|root| entry.path().starts_with(root))
+            });
+        for entry in walk.build() {
+            let entry = match entry {
+                Ok(entry) => entry,
+                // Directory traversal failures still fail registration. An
+                // unreadable or invalid ignore file only skips fewer directories.
+                Err(error) if error.depth().is_some() => return Err(error.into()),
+                Err(_) => continue,
+            };
+            let directory = entry.path();
+            if directory.starts_with(path) && !self.directories.contains(directory) {
+                self.register(watcher, directory)?;
+            }
+        }
+        // Git administration is watched unfiltered: ignore patterns such as
+        // `.*` or `logs/` must not hide refs, the index or operation state.
+        for root in [
+            self.roots.private_git.clone(),
+            self.roots.common_git.clone(),
+        ] {
+            if root.starts_with(path) {
+                self.add_all(watcher, &root)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn add_all(&mut self, watcher: &mut RecommendedWatcher, path: &Path) -> Result<()> {
         // notify7's recursive inotify setup follows directory symlinks. Use
         // bounded nonrecursive registrations and event-driven subtree adds.
         let mut pending = vec![path.to_owned()];
@@ -566,23 +647,29 @@ impl Registrations {
             if !metadata.is_dir() || metadata.is_symlink() || self.directories.contains(&path) {
                 continue;
             }
-            ensure!(
-                self.directories.len() < 16_384,
-                "Automatic refresh reached the local directory-watch limit. Use Refresh to check all current changes."
-            );
-            watcher.watch(&path, RecursiveMode::NonRecursive)?;
-            self.directories.insert(path.clone());
+            self.register(watcher, &path)?;
             for entry in fs::read_dir(&path)? {
                 let entry = entry?;
                 if entry.file_type()?.is_dir() {
                     ensure!(
-                        pending.len() + self.directories.len() < 16_384,
-                        "Automatic refresh reached the local directory-watch limit. Use Refresh to check all current changes."
+                        pending.len() + self.directories.len() < MAX_WATCHED_DIRECTORIES,
+                        WATCH_LIMIT_ERROR
                     );
                     pending.push(entry.path());
                 }
             }
         }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn register(&mut self, watcher: &mut RecommendedWatcher, path: &Path) -> Result<()> {
+        ensure!(
+            self.directories.len() < MAX_WATCHED_DIRECTORIES,
+            WATCH_LIMIT_ERROR
+        );
+        watcher.watch(path, RecursiveMode::NonRecursive)?;
+        self.directories.insert(path.to_owned());
         Ok(())
     }
 
@@ -614,10 +701,28 @@ impl Registrations {
                 EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_))
             ) {
                 for path in &event.paths {
-                    if fs::symlink_metadata(path)
-                        .is_ok_and(|metadata| metadata.is_dir() && !metadata.is_symlink())
+                    if !self.directories.contains(path)
+                        && fs::symlink_metadata(path)
+                            .is_ok_and(|metadata| metadata.is_dir() && !metadata.is_symlink())
                     {
                         self.add(watcher, path)?;
+                    }
+                }
+            }
+            // Ignore-rule edits can expose previously skipped directories.
+            // Newly ignored directories stay watched until the watcher restarts.
+            if !passive_event(event) {
+                let exclude = self.roots.common_git.join("info/exclude");
+                for path in &event.paths {
+                    if path.file_name() == Some(std::ffi::OsStr::new(".gitignore"))
+                        && path.starts_with(&self.roots.worktree)
+                        && !self.git_directory(path)
+                        && let Some(parent) = path.parent()
+                    {
+                        self.add(watcher, parent)?;
+                    } else if *path == exclude {
+                        let worktree = self.roots.worktree.clone();
+                        self.add(watcher, &worktree)?;
                     }
                 }
             }
@@ -904,5 +1009,118 @@ mod tests {
         ));
         drop(watcher);
         bridge.join().unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    fn register_roots(roots: &WatchRoots) -> (RecommendedWatcher, Registrations) {
+        let mut watcher = notify::recommended_watcher(|_: notify::Result<Event>| {}).unwrap();
+        let mut registrations = Registrations::new(roots);
+        for path in roots.watched_roots() {
+            registrations.add(&mut watcher, path).unwrap();
+        }
+        (watcher, registrations)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_registrations_skip_git_ignored_directories_but_not_git_administration() {
+        let fixture = Fixture::new();
+        let main = fixture.path.join("main");
+        let roots = WatchRoots {
+            worktree: main.clone(),
+            private_git: main.join(".git"),
+            common_git: main.join(".git"),
+        };
+        for directory in [
+            "kept/source",
+            "node_modules/package/lib",
+            "build/output",
+            ".git/info",
+            ".git/logs/refs",
+        ] {
+            fs::create_dir_all(main.join(directory)).unwrap();
+        }
+        // These patterns also match Git administration names.
+        fs::write(main.join(".gitignore"), "node_modules/\n.*\nlogs/\n").unwrap();
+        fs::write(main.join(".git/info/exclude"), "build/\n").unwrap();
+        let (_watcher, registrations) = register_roots(&roots);
+        assert!(registrations.directories.contains(&main));
+        for directory in [
+            "kept",
+            "kept/source",
+            ".git",
+            ".git/refs/heads",
+            ".git/logs/refs",
+            ".git/worktrees/linked",
+        ] {
+            assert!(
+                registrations.directories.contains(&main.join(directory)),
+                "{directory}"
+            );
+        }
+        for directory in ["node_modules", "node_modules/package", "build"] {
+            assert!(
+                !registrations.directories.contains(&main.join(directory)),
+                "{directory}"
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_registrations_follow_new_directories_and_ignore_rule_changes() {
+        let fixture = Fixture::new();
+        let roots = &fixture.roots;
+        let worktree = &roots.worktree;
+        fs::write(worktree.join(".gitignore"), "generated/\n").unwrap();
+        fs::create_dir_all(worktree.join("generated/cache")).unwrap();
+        let (mut watcher, mut registrations) = register_roots(roots);
+        assert!(
+            !registrations
+                .directories
+                .contains(&worktree.join("generated"))
+        );
+        assert!(
+            registrations
+                .directories
+                .contains(&roots.common_git.join("refs/heads"))
+        );
+
+        let event = |kind: EventKind, path: PathBuf| Event::new(kind).add_path(path);
+        fs::create_dir_all(worktree.join("source/module")).unwrap();
+        fs::create_dir_all(worktree.join("nested/generated")).unwrap();
+        for directory in ["source", "nested"] {
+            let created = EventKind::Create(notify::event::CreateKind::Folder);
+            registrations
+                .update(&mut watcher, &event(created, worktree.join(directory)))
+                .unwrap();
+        }
+        for directory in ["source", "source/module", "nested"] {
+            assert!(
+                registrations
+                    .directories
+                    .contains(&worktree.join(directory)),
+                "{directory}"
+            );
+        }
+        assert!(
+            !registrations
+                .directories
+                .contains(&worktree.join("nested/generated"))
+        );
+
+        fs::write(worktree.join(".gitignore"), "").unwrap();
+        let edited = EventKind::Modify(ModifyKind::Data(DataChange::Content));
+        registrations
+            .update(&mut watcher, &event(edited, worktree.join(".gitignore")))
+            .unwrap();
+        for directory in ["generated", "generated/cache", "nested/generated"] {
+            assert!(
+                registrations
+                    .directories
+                    .contains(&worktree.join(directory)),
+                "{directory}"
+            );
+        }
     }
 }

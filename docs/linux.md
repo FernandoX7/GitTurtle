@@ -174,6 +174,9 @@ menu item. Linux keyboard shortcuts use Control instead of Command.
   [format matrix](file-previews.md) defines bounds and unsupported variants.
   Recognizing metadata is not the same as rendering a format.
 - System Preview uses macOS Quick Look and has no Linux launcher.
+- Automatic refresh watches each worktree directory that Git does not ignore,
+  up to 16,384. A larger tree shows that automatic refresh is unavailable; use
+  Refresh. Edits to a global excludes file apply after reopening the repository.
 - Automatic reading of OS reduced-motion, contrast and transparency
   accessibility preferences is macOS-only. Manual app preferences remain
   available; Linux screen-reader and IME coverage is not established.

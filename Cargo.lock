@@ -2263,6 +2263,7 @@ dependencies = [
  "gitturtle-core",
  "gitturtle-preview",
  "gpui-kit",
+ "ignore",
  "image",
  "libc",
  "markdown",
