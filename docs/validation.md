@@ -2,7 +2,37 @@
 
 Current milestone: [security, architecture and resource bounds](security-quality-milestone.md), with the canonical [design contract](../DESIGN.md). The prior [native polish](native-polish-milestone.md), [review and recovery native/build verification](review-native-verification.md) and [macOS milestone evidence](macos-native-verification.md) remain tied to their named builds.
 
-This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native workflow evidence is primarily macOS-specific; the September 14 entry adds a limited Linux startup check. Current platform execution and access limits belong in these dated records, the active milestone and [environment report](benchmarks/2026-09-09-milestone-environment.md). The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Distribution packages are outside the current milestone.
+This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native workflow evidence is primarily macOS-specific; the September 14 entries add Pop!_OS startup and clean Ubuntu/virtual-native checks. Current platform execution and access limits belong in these dated records, the active milestone and [environment report](benchmarks/2026-09-09-milestone-environment.md). The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Published distribution packages are outside the current milestone; the Linux runbook now includes a local teammate bundle.
+
+## September 14 Ubuntu teammate readiness
+
+App source `6824c7d` and packaging source `d482a3f` add a pinned Rust toolchain,
+a relocatable Linux user-local bundle/installer, complete build/runtime setup,
+and visible no-display/picker-failure diagnostics. The [teammate runbook](linux.md)
+includes existing feature limits and the remaining Ubuntu desktop checklist.
+
+A verified Ubuntu Base 24.04.5 x86-64 root built the locked release from fresh
+Cargo caches without host libraries or the local linker workaround. Formatting,
+`cargo check`, **694 workspace tests (five intentionally ignored)** and strict
+all-target Clippy passed. A separate pristine runtime root passed installation,
+relocation/reinstallation, executable/ELF, launcher metadata, eight icon sizes,
+and useful negative/headless checks with only the documented runtime packages.
+
+The installed executable SHA-256 is
+`3c39630d691de172ee8302ab0e8bf30976dbc9cd80c957919f357ff230c1af75`.
+Virtual X11/Openbox and nested Wayland/Weston screenshots and native input
+verified representative History/Compare/Back, text/PNG/SVG/Markdown/GLB previews,
+whole-file stage/unstage, draft/session restoration, quitting and integer 2×
+rendering. The physical Pop!_OS GNOME/Wayland probe established launch and
+native picker exposure only; its automation could not verify later actions.
+
+[Detailed evidence, failures, exact boundaries and screenshots](benchmarks/linux-ubuntu-20260914/README.md)
+separate the clean build, runtime-only, headless, virtual native and physical-host
+checks. Rootless package ownership needed a provisioning-only fakeroot repair;
+GUI portal PID namespaces needed adjustment. Successful directory selection,
+actual Ubuntu GNOME shell/driver integration, fractional/mixed-monitor scaling,
+macOS runtime and hosted CI remain unverified. The roots shared the host kernel;
+this is not evidence of a complete Ubuntu desktop installation.
 
 ## September 14 Linux icon and window-control correction
 

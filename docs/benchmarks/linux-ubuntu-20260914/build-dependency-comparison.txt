@@ -1,0 +1,2 @@
+Documented build-only apt simulation: 188 package installations.
+Additional installed -dev packages absent from simulation: []

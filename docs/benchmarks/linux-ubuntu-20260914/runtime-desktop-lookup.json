@@ -1,0 +1,94 @@
+{
+  "scope": "Headless Ubuntu 24.04 runtime-only Gio app-ID discovery and GTK3 hicolor theme lookup/native PNG decode; no shell menu visuals, display server, or graphical application launch",
+  "binary_sha256": "3c39630d691de172ee8302ab0e8bf30976dbc9cd80c957919f357ff230c1af75",
+  "environment": {
+    "HOME": "/teammate home",
+    "XDG_DATA_HOME": "/teammate data",
+    "PATH": "/usr/bin:/bin",
+    "LC_CTYPE": "C.UTF-8"
+  },
+  "desktop_discovery": {
+    "requested_id": "com.gitturtle.desktop.desktop",
+    "resolved_id": "com.gitturtle.desktop.desktop",
+    "name": "GitTurtle",
+    "filename": "/teammate data/applications/com.gitturtle.desktop.desktop",
+    "should_show": true
+  },
+  "icon_theme": "hicolor",
+  "search_paths": [
+    "/teammate data/icons",
+    "/teammate home/.icons",
+    "/usr/local/share/icons",
+    "/usr/share/icons",
+    "/usr/local/share/pixmaps",
+    "/usr/share/pixmaps"
+  ],
+  "lookup_flags": 0,
+  "icon_lookups": [
+    {
+      "requested_size": 16,
+      "resolved_file": "/teammate data/icons/hicolor/16x16/apps/com.gitturtle.desktop.png",
+      "decoded_dimensions": [
+        16,
+        16
+      ]
+    },
+    {
+      "requested_size": 24,
+      "resolved_file": "/teammate data/icons/hicolor/24x24/apps/com.gitturtle.desktop.png",
+      "decoded_dimensions": [
+        24,
+        24
+      ]
+    },
+    {
+      "requested_size": 32,
+      "resolved_file": "/teammate data/icons/hicolor/32x32/apps/com.gitturtle.desktop.png",
+      "decoded_dimensions": [
+        32,
+        32
+      ]
+    },
+    {
+      "requested_size": 48,
+      "resolved_file": "/teammate data/icons/hicolor/48x48/apps/com.gitturtle.desktop.png",
+      "decoded_dimensions": [
+        48,
+        48
+      ]
+    },
+    {
+      "requested_size": 64,
+      "resolved_file": "/teammate data/icons/hicolor/64x64/apps/com.gitturtle.desktop.png",
+      "decoded_dimensions": [
+        64,
+        64
+      ]
+    },
+    {
+      "requested_size": 128,
+      "resolved_file": "/teammate data/icons/hicolor/128x128/apps/com.gitturtle.desktop.png",
+      "decoded_dimensions": [
+        128,
+        128
+      ]
+    },
+    {
+      "requested_size": 256,
+      "resolved_file": "/teammate data/icons/hicolor/256x256/apps/com.gitturtle.desktop.png",
+      "decoded_dimensions": [
+        256,
+        256
+      ]
+    },
+    {
+      "requested_size": 512,
+      "resolved_file": "/teammate data/icons/hicolor/512x512/apps/com.gitturtle.desktop.png",
+      "decoded_dimensions": [
+        512,
+        512
+      ]
+    }
+  ],
+  "result": "passed"
+}

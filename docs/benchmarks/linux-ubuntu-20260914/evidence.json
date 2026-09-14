@@ -1,0 +1,194 @@
+{
+  "recorded_at": "2026-09-14T17:37:10.805766+00:00",
+  "source_head": "19187a013c6e784543f3ef014181777f8e068fb9",
+  "rootfs_url": "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.5-base-amd64.tar.gz",
+  "rootfs_sha256": "e77b6f10c2590cef872b33ee9f635a0e3fd1f57fb074c0e52b5c7f56147a0c86",
+  "signature_key": "843938DF228D22F7B3742BC0D94AA3F0EFE21092",
+  "isolation": "Rootless bwrap, fresh Ubuntu userspace; shared Pop!_OS kernel; no host /usr /lib /home binding, no host Rust/cache/link libraries.",
+  "provisioning_limit": "Single UID/GID mapping required Ubuntu fakeroot with FAKEROOTDONTTRYCHOWN=1 for apt package ownership only; normal build and run clear LD_PRELOAD.",
+  "rustc": "1.98.0 (88d9e12ae 2026-08-18)",
+  "cargo": "1.98.0 (797e8a9bc 2026-08-05)",
+  "gcc": "Ubuntu 13.3.0-6ubuntu2~24.04.1",
+  "input_digest": "2a38d583e3589b2f51be969d81e20a58649972c2b34228a296612b70fa8c91e3",
+  "release_sha256": "3c39630d691de172ee8302ab0e8bf30976dbc9cd80c957919f357ff230c1af75",
+  "release_seconds": 170,
+  "release_elf_direct_libraries": [
+    "libxcb.so.1",
+    "libxkbcommon.so.0",
+    "libxkbcommon-x11.so.0",
+    "libgcc_s.so.1",
+    "libm.so.6",
+    "libc.so.6",
+    "ld-linux-x86-64.so.2"
+  ],
+  "release_elf_rpath": null,
+  "clean_build_passed": true,
+  "checks": {
+    "fmt": "passed",
+    "check": "passed",
+    "tests": {
+      "passed": 694,
+      "failed": 0,
+      "ignored": 5
+    },
+    "clippy": "passed"
+  },
+  "completed_at": "2026-09-14T17:44:24.731836+00:00",
+  "workspace_input_mismatches_after_checks": [],
+  "rust_source_commit": "6824c7d",
+  "packaging_commit": "d482a3f",
+  "source_inputs_sha256": "665f4a0c5dc3728137d7df43ef3ecfc82604fe3e15df1aeba0c94d5cd1778b4f",
+  "compiled_input_count": 872,
+  "screenshots": {
+    "x11-history.png": "832681b61c3b28d4bf81119638bfa6a62f468fd9bd06c589293947d14249cb81",
+    "x11-text-compare.png": "5ea0311c80ed0cddbdf614c0ace92f0ee7efd956b017d6f3fcdaaf28fa65140b",
+    "x11-image-compare.png": "e9643ebd098764e6b53805e0c9fe831bc654dee5cb4ce84a608a2e3fe17d8b8f",
+    "x11-svg.png": "054054b5ddf3392e81f4c0a4d71e96b3ebcfaea03269362f1f5947e5d1636ea6",
+    "x11-markdown-rendered.png": "11cc379049f50e5a56d05f3801f1c23f8a7854b3c9c9c949efe94f4bc18d9ccf",
+    "x11-draft.png": "fa2da1861a4092e1559945472ade7872aac0193a1538b57aea34e79ffa6d246f",
+    "x11-picker.png": "452d0921bf02d2fe2f4fe1c8e5fbdeb01974067eb32f08f496db2f14c432d3c3",
+    "wayland-history.png": "049b2a982c31f75eeb5a9b0e3f3d786c320ae29c91e43bb817b956a9466d4646",
+    "wayland-draft.png": "1763a7b5cc23f2c17887bec69a7fa3c49e008fc7297ce78a31139a45c5dbb400",
+    "wayland-scale2-glb.png": "cf7c8979cb4435b2a4502c7fbdc9f08b7207e51958006da507f645da931bb661"
+  },
+  "runtime_check": {
+    "scope": "Ubuntu 24.04 runtime-only userspace; no desktop, compositor, GPU or native UI interaction",
+    "os_release": "PRETTY_NAME=\"Ubuntu 24.04.5 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"24.04\"\nVERSION=\"24.04.5 LTS (Noble Numbat)\"\nVERSION_CODENAME=noble\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=noble\nLOGO=ubuntu-logo\n",
+    "architecture": "x86_64",
+    "libc": [
+      "glibc",
+      "2.39"
+    ],
+    "binary_sha256": "3c39630d691de172ee8302ab0e8bf30976dbc9cd80c957919f357ff230c1af75",
+    "archive_sha256": "d13f47fa2ea7130225d330aed153f6fa475d96b1f08f78b0cefbfaa2de82a1b3",
+    "packager_sha256": "386141c26f4aa57030de3d9625cc53d658e37b79bbab7433eadc41fd1d6ace26",
+    "installer_sha256": "30ece1d9a767693854754884a7c3e6bac37be4d0a9b40e3dff68c32a8d444d5d",
+    "no_source_checkout": true,
+    "no_cargo_gcc_or_documented_native_build_dependencies": true,
+    "transitive_runtime_packages_ending_dev": [
+      "systemd-dev\t255.4-1ubuntu8.17"
+    ],
+    "no_development_library_symlink": true,
+    "no_inherited_environment": true,
+    "installation_cwd": "/",
+    "home": "/teammate home",
+    "xdg_data_home": "/teammate data",
+    "icon_sizes": [
+      16,
+      24,
+      32,
+      48,
+      64,
+      128,
+      256,
+      512
+    ],
+    "desktop_metadata_and_exec_parsing": "passed",
+    "archive_checksum_after_transfer": "passed",
+    "install_repeat_and_bundle_relocation": "passed",
+    "empty_and_truncated_manifest_before_writes": "passed",
+    "relative_home_rejected": "passed",
+    "no_display_exit_code": 1,
+    "commands": [
+      {
+        "command": [
+          "sha256sum",
+          "-c",
+          "runtime-final.tar.gz.sha256"
+        ],
+        "cwd": "/incoming",
+        "returncode": 0,
+        "stdout": "runtime-final.tar.gz: OK\n",
+        "stderr": ""
+      },
+      {
+        "command": [
+          "python3",
+          "/relocated bundle/install.py"
+        ],
+        "cwd": "/",
+        "returncode": 0,
+        "stdout": "Installed /teammate home/.local/bin/gitturtle\nLauncher: /teammate data/applications/com.gitturtle.desktop.desktop\nOpen GitTurtle from Applications, or run the installed executable with a repository path.\nThe extracted bundle and source checkout are no longer needed to run it.\n",
+        "stderr": "gtk-update-icon-cache: Cache file created successfully.\n"
+      },
+      {
+        "command": [
+          "desktop-file-validate",
+          "/teammate data/applications/com.gitturtle.desktop.desktop"
+        ],
+        "cwd": "/",
+        "returncode": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "command": [
+          "ldd",
+          "/teammate home/.local/bin/gitturtle"
+        ],
+        "cwd": "/",
+        "returncode": 0,
+        "stdout": "\tlinux-vdso.so.1 (0x00007f42db226000)\n\tlibxcb.so.1 => /lib/x86_64-linux-gnu/libxcb.so.1 (0x00007f42d73d7000)\n\tlibxkbcommon.so.0 => /lib/x86_64-linux-gnu/libxkbcommon.so.0 (0x00007f42d738e000)\n\tlibxkbcommon-x11.so.0 => /lib/x86_64-linux-gnu/libxkbcommon-x11.so.0 (0x00007f42db210000)\n\tlibgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007f42d7360000)\n\tlibm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (0x00007f42d7277000)\n\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007f42d7000000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007f42db228000)\n\tlibXau.so.6 => /lib/x86_64-linux-gnu/libXau.so.6 (0x00007f42db208000)\n\tlibXdmcp.so.6 => /lib/x86_64-linux-gnu/libXdmcp.so.6 (0x00007f42d726f000)\n\tlibxcb-xkb.so.1 => /lib/x86_64-linux-gnu/libxcb-xkb.so.1 (0x00007f42d7251000)\n\tlibbsd.so.0 => /lib/x86_64-linux-gnu/libbsd.so.0 (0x00007f42d723b000)\n\tlibmd.so.0 => /lib/x86_64-linux-gnu/libmd.so.0 (0x00007f42d722c000)\n",
+        "stderr": ""
+      },
+      {
+        "command": [
+          "/teammate home/.local/bin/gitturtle"
+        ],
+        "cwd": "/",
+        "returncode": 1,
+        "stdout": "",
+        "stderr": "GitTurtle needs a Wayland or X11 desktop session. Launch it from your desktop's application menu or a terminal inside that session. No display was selected: WAYLAND_DISPLAY or DISPLAY must identify the session, and ZED_HEADLESS must be unset.\n"
+      },
+      {
+        "command": [
+          "python3",
+          "/bundle moved again/install.py"
+        ],
+        "cwd": "/",
+        "returncode": 0,
+        "stdout": "Installed /teammate home/.local/bin/gitturtle\nLauncher: /teammate data/applications/com.gitturtle.desktop.desktop\nOpen GitTurtle from Applications, or run the installed executable with a repository path.\nThe extracted bundle and source checkout are no longer needed to run it.\n",
+        "stderr": "gtk-update-icon-cache: Cache file created successfully.\n"
+      },
+      {
+        "command": [
+          "python3",
+          "/bundle moved again/install.py"
+        ],
+        "cwd": "/",
+        "returncode": 1,
+        "stdout": "",
+        "stderr": "GitTurtle installation failed: Bundle checksum manifest is incomplete. Extract a fresh copy.\n"
+      },
+      {
+        "command": [
+          "python3",
+          "/bundle moved again/install.py"
+        ],
+        "cwd": "/",
+        "returncode": 1,
+        "stdout": "",
+        "stderr": "GitTurtle installation failed: Bundle checksum manifest is incomplete. Extract a fresh copy.\n"
+      },
+      {
+        "command": [
+          "python3",
+          "/bundle moved again/install.py"
+        ],
+        "cwd": "/",
+        "returncode": 1,
+        "stdout": "",
+        "stderr": "GitTurtle installation failed: HOME must be an absolute path.\n"
+      }
+    ],
+    "package_inventory_file": "runtime-packages.tsv"
+  },
+  "validation_log_sha256": {
+    "release.log": "4a3205dd9a89365c86070cc70cef5b558fcf5c0c56a7e890449663abec9ecdfd",
+    "fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "check.log": "ead8292c9ececa65bf49d39110241ca685ef56c123f613698181c876c5accdc1",
+    "tests.log": "f5255e42bd742e9b73997b43412fcbf0782d022bc84afe5bc8741385500b6f02",
+    "clippy.log": "d3e2813849c42f556e108ba60cdf3364de5d985525abd9106c90d5c275c2dfe7"
+  },
+  "headless_desktop_discovery": "runtime-desktop-lookup.json"
+}

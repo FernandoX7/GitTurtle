@@ -168,6 +168,9 @@ menu item. Linux keyboard shortcuts use Control instead of Command.
 - Automatic reading of OS reduced-motion, contrast and transparency
   accessibility preferences is macOS-only. Manual app preferences remain
   available; Linux screen-reader and IME coverage is not established.
+- The current toolkit's X11 backend reads `Xft.dpi`/RandR scaling but does not
+  read XSettings DPI. Fractional scaling and live monitor changes still need
+  checks on the target desktop.
 - This bundle does not provide automatic updates, desktop file associations,
   distribution signing or support guarantees for other Ubuntu releases/CPUs.
 
