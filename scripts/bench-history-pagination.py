@@ -71,6 +71,10 @@ def main():
     parser.add_argument('--count', type=int, default=100000)
     parser.add_argument('--reuse', action='store_true')
     args = parser.parse_args()
+    try:
+        args.executable = args.executable.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        parser.error(f'Cannot resolve --executable: {error}')
     args.fixtures.mkdir(parents=True, exist_ok=True); args.output.mkdir(parents=True, exist_ok=True)
     if args.output.resolve().is_relative_to(args.fixtures.resolve()): parser.error('Results must be outside fixtures')
     metadata = {'started_utc': datetime.now(timezone.utc).isoformat(), 'hardware': command('sysctl','-n','machdep.cpu.brand_string'), 'memory_bytes': command('sysctl','-n','hw.memsize'), 'os': platform.platform(), 'git': command('git','--version'), 'rust': command('rustc','--version'), 'source_base': command('git','rev-parse','HEAD'), 'source_sha256': {str(p): hashlib.sha256((ROOT/p).read_bytes()).hexdigest() for p in ['crates/git-core/src/history.rs','crates/git-core/src/lib.rs','crates/app/src/graph.rs','crates/git-core/examples/history_pagination_bench.rs']}, 'executable_sha256': hashlib.sha256(args.executable.read_bytes()).hexdigest(), 'cache': 'One full-prefix OS-cache warmup per fixture; new app-side repository handle per pass. No disk-cache flush. Alternating prefix/incremental order by sample.', 'other_load_start': command('uptime'), 'cases': []}

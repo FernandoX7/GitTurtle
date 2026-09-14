@@ -122,6 +122,14 @@ def main():
     args = parser.parse_args()
     if args.warmups < 0 or args.samples < 1:
         parser.error("warmups must be nonnegative and samples must be positive")
+    baseline_revision = None
+    if args.baseline_ref is not None:
+        try:
+            baseline_revision = command(
+                "git", "rev-parse", "--verify", "--end-of-options", f"{args.baseline_ref}^{{commit}}"
+            )
+        except subprocess.CalledProcessError:
+            parser.error("--baseline-ref must identify an existing commit or commit tag")
     result = {
         "measured_at_utc": datetime.now(timezone.utc).isoformat(),
         "hardware": command("sysctl", "-n", "machdep.cpu.brand_string")
@@ -129,8 +137,7 @@ def main():
         "os": platform.platform(),
         "rustc": command("rustc", "--version"),
         "working_tree_base_revision": command("git", "rev-parse", "HEAD"),
-        "baseline_revision": command("git", "rev-parse", "--verify", args.baseline_ref)
-            if args.baseline_ref else None,
+        "baseline_revision": baseline_revision,
         "benchmark": "Pure layout and row cloning extracted from graph.rs, compiled "
             "with rustc -O; inputs reused in memory, output destruction included. "
             "No Git, GPUI, preflight, OS presentation, or end-to-end navigation "
@@ -145,7 +152,7 @@ def main():
     }
     with tempfile.TemporaryDirectory(prefix="gitturtle-graph-bench-") as temporary:
         directory = Path(temporary)
-        if args.baseline_ref:
+        if baseline_revision is not None:
             baseline = command("git", "show", f"{result['baseline_revision']}:{GRAPH_PATH}")
             result["cases"].extend(benchmark("before", baseline, args.warmups, args.samples, directory))
         result["cases"].extend(benchmark("after", (ROOT / GRAPH_PATH).read_text(), args.warmups, args.samples, directory))

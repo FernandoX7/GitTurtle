@@ -51,7 +51,12 @@ def main():
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     repo = Path(__file__).resolve().parent.parent
-    baseline = run(["git", "rev-parse", args.baseline], cwd=repo).decode().strip()
+    try:
+        baseline = run([
+            "git", "rev-parse", "--verify", "--end-of-options", f"{args.baseline}^{{commit}}"
+        ], cwd=repo).decode().strip()
+    except subprocess.CalledProcessError:
+        parser.error("--baseline must identify an existing commit or commit tag")
     record = {
         "baseline": baseline,
         "platform": platform.platform(),
