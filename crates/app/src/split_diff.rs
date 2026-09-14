@@ -6,7 +6,7 @@ use crate::{
 };
 use gpui_kit::{
     App, AppContext, ClipboardItem, Context, Entity, Focusable, HighlightStyle, InteractiveElement,
-    IntoElement, ParentElement, Pixels, Render, Styled, Subscription, Window,
+    IntoElement, ParentElement, Pixels, Render, Styled, Subscription, Window, canvas,
     component::input::{Copy, EditorState, TextDecoration},
     div, point, px, rgb,
 };
@@ -275,8 +275,9 @@ pub struct SplitView {
     _subscriptions: Vec<Subscription>,
 }
 
-/// Editor scroll setters defer application until layout. A notification from
-/// the setter still contains the old offset and must never bounce it back.
+/// Track accepted viewport changes and acknowledgments independently from
+/// selection. Laid-out editors publish linked offsets immediately; cold editors
+/// may still acknowledge their initial request after layout.
 #[derive(Default)]
 struct LinkedScroll {
     applied: [Pixels; 2],
@@ -388,6 +389,17 @@ pub fn new(
                 let next = editor.read(cx).scroll_offset();
                 if let Some((other, y)) = this.scroll.observe(side, next.y) {
                     let target = point(this.editors[other].read(cx).scroll_offset().x, y);
+                    if diff_view::scroll_trace_enabled() {
+                        diff_view::trace_scroll(
+                            "split_link",
+                            format_args!(
+                                "source={:?} target={:?} applied={:?} requested={target:?}",
+                                this.editors[side].entity_id(),
+                                this.editors[other].entity_id(),
+                                this.editors[other].read(cx).scroll_offset(),
+                            ),
+                        );
+                    }
                     this.editors[other]
                         .update(cx, |editor, cx| editor.set_scroll_offset(target, cx));
                     cx.notify();
@@ -531,7 +543,8 @@ impl Render for SplitView {
         let p = palette(cx);
         let search_heights = self.search_heights;
         let reserved_height = search_heights[0].max(search_heights[1]);
-        div().size_full().flex().children((0..2).map(|side| {
+        let trace_editors = diff_view::scroll_trace_enabled().then(|| self.editors.clone());
+        div().size_full().relative().flex().children((0..2).map(|side| {
             let editor = self.editors[side].clone();
             let padding = reserved_height - search_heights[side];
             let presentation = Arc::clone(&self.presentation);
@@ -576,6 +589,31 @@ impl Render for SplitView {
                         .pt(padding)
                         .child(div().flex_1().min_h_0().child(self.views[side].clone())),
                 )
+        })).children(trace_editors.map(|editors| {
+            // Painted after both panes, so one record contains their actual
+            // same-frame geometry. The transparent observer has no hitbox and
+            // never requests another frame or changes either editor.
+            canvas(
+                |_, _, _| (),
+                move |_, _, window, cx| {
+                    let before = editors[0].read(cx);
+                    let after = editors[1].read(cx);
+                    diff_view::trace_scroll(
+                        "split_paint",
+                        format_args!(
+                            "window={:?} editors={:?} before_offset={:?} after_offset={:?} before_text={:?} after_text={:?} before_visible={:?} after_visible={:?}",
+                            window.window_handle().window_id(),
+                            [editors[0].entity_id(), editors[1].entity_id()],
+                            before.scroll_offset(),
+                            after.scroll_offset(),
+                            before.text_bounds(),
+                            after.text_bounds(),
+                            before.visible_row_range(),
+                            after.visible_row_range(),
+                        ),
+                    );
+                },
+            ).absolute().size_full()
         }))
     }
 }

@@ -47,6 +47,8 @@ mod repository_tabs;
 mod revision_inspection;
 mod rewrite_review;
 mod rich_preview;
+#[cfg(test)]
+mod scroll_tests;
 mod settings;
 mod shortcuts;
 mod split_diff;
