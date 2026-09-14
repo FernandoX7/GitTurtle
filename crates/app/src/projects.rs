@@ -303,32 +303,24 @@ impl ProjectHub {
             ),
         });
         cx.spawn_in(window, async move |this, cx| {
-            let response = response.await;
+            let response = crate::folder_picker::selected_path(response).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.picker_pending = false;
                 match response {
-                    Ok(Ok(Some(paths))) => {
-                        if let Some(path) = paths.into_iter().next() {
-                            if open {
-                                this.emit_operation(ProjectEvent::Open(path), cx);
-                            } else {
-                                let display = path.to_string_lossy().into_owned();
-                                this.parent.update(cx, |input, cx| {
-                                    input.set_value(display.clone(), window, cx)
-                                });
-                                this.picked_parent = Some((display, path));
-                                this.name.update(cx, |input, cx| input.focus(window, cx));
-                            }
+                    Ok(Some(path)) => {
+                        if open {
+                            this.emit_operation(ProjectEvent::Open(path), cx);
+                        } else {
+                            let display = path.to_string_lossy().into_owned();
+                            this.parent.update(cx, |input, cx| {
+                                input.set_value(display.clone(), window, cx)
+                            });
+                            this.picked_parent = Some((display, path));
+                            this.name.update(cx, |input, cx| input.focus(window, cx));
                         }
                     }
-                    Ok(Ok(None)) => {}
-                    Ok(Err(error)) => {
-                        this.error = Some(format!("Could not choose a folder: {error}"))
-                    }
-                    Err(_) => {
-                        this.error =
-                            Some("The folder picker closed unexpectedly. Please try again.".into())
-                    }
+                    Ok(None) => {}
+                    Err(error) => this.error = Some(error),
                 }
                 cx.notify();
             });

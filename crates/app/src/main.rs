@@ -11,6 +11,7 @@ mod conflicts;
 mod diff_view;
 mod editor_find;
 mod file_history;
+mod folder_picker;
 mod gif_playback;
 mod github;
 mod github_view;
@@ -1457,13 +1458,22 @@ impl GitTurtle {
             prompt: Some("Open Git repository".into()),
         });
         cx.spawn_in(window, async move |this, cx| {
-            if let Ok(Ok(Some(paths))) = response.await
-                && let Some(path) = paths.into_iter().next()
-            {
-                let _ = this.update_in(cx, |this, window, cx| {
+            let response = folder_picker::selected_path(response).await;
+            let _ = this.update_in(cx, |this, window, cx| match response {
+                Ok(Some(path)) => {
                     this.open_repository_tab(path, window, cx);
-                });
-            }
+                }
+                Ok(None) => {}
+                Err(error) => window.open_alert_dialog(cx, move |dialog, _, _| {
+                    dialog.title("Could not open repository picker").child(
+                        div()
+                            .id("repository-picker-error")
+                            .role(Role::Label)
+                            .aria_label(error.clone())
+                            .child(error.clone()),
+                    )
+                }),
+            });
         })
         .detach();
     }
@@ -1742,6 +1752,13 @@ fn main() {
     if let Some(code) = gitturtle_core::run_askpass_if_requested() {
         std::process::exit(code);
     }
+    #[cfg(target_os = "linux")]
+    if gpui_kit::guess_compositor() == "Headless" {
+        eprintln!(
+            "GitTurtle needs a Wayland or X11 desktop session. Launch it from your desktop's application menu or a terminal inside that session. No display was selected: WAYLAND_DISPLAY or DISPLAY must identify the session, and ZED_HEADLESS must be unset."
+        );
+        std::process::exit(1);
+    }
     let preferences = Preferences::load();
     let activity = activity::State::load();
     let recovery_drafts = recovery_drafts::State::load();
@@ -1901,7 +1918,7 @@ fn main() {
         let bounds = Bounds::centered(None, size(px(1480.), px(980.)), cx);
         cx.activate(true);
         cx.spawn(async move |cx| {
-            cx.open_window(
+            let opened = cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: Some(TitlebarOptions {
@@ -1926,8 +1943,16 @@ fn main() {
                     });
                     cx.new(|cx| Root::new(view, window, cx))
                 },
-            )
-            .expect("open GitTurtle window");
+            );
+            #[cfg(target_os = "linux")]
+            if let Err(error) = opened {
+                eprintln!(
+                    "Could not open the GitTurtle window: {error:#}\nCheck that this process can access your Wayland or X11 session and that a working Vulkan driver is installed. See docs/linux.md for startup troubleshooting."
+                );
+                std::process::exit(1);
+            }
+            #[cfg(not(target_os = "linux"))]
+            opened.expect("open GitTurtle window");
         })
         .detach();
     });
