@@ -1,0 +1,11 @@
+{
+  "native_binary_sha256": "164a93b7100ad9be311645f680bb6c7d76ebb6dde8cfea520a6c7e41d098e47c",
+  "fixture": "aurora",
+  "commands": {
+    "head": "e82a2b15016e6b4314ab9b8ae00a98350d54a611",
+    "remote": "e82a2b15016e6b4314ab9b8ae00a98350d54a611",
+    "tracking": "e82a2b15016e6b4314ab9b8ae00a98350d54a611",
+    "status": "",
+    "recent": "e82a2b15016e6b4314ab9b8ae00a98350d54a611 Share a local preview update\n6631c66e59e0da3483136dc6f2fca937b579b49b Polish the next idea\n159f91a0a83aa5817170614aa5d1242f63230627 Document the preview workflow"
+  }
+}

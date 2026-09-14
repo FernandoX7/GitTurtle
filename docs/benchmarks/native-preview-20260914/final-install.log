@@ -1,0 +1,6 @@
+Previous installation: /home/fernandoramirez/.local/share/gitturtle/install-backups/1789422696270865645-qkd8diea
+To restore it after quitting GitTurtle: python3 "/home/fernandoramirez/.local/share/gitturtle/install.py" --rollback
+Installed /home/fernandoramirez/.local/bin/gitturtle
+Launcher: /home/fernandoramirez/.local/share/applications/com.gitturtle.desktop.desktop
+Open GitTurtle from Applications, or run the installed executable with a repository path.
+The extracted bundle and source checkout are no longer needed to run it.

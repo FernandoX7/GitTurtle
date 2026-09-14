@@ -1,0 +1,7 @@
+   Compiling gpui-base v0.6.0 (/work/GitTurtle/vendor/gpui-base)
+   Compiling ignore v0.4.33
+   Compiling gitturtle v0.1.0 (/work/GitTurtle/crates/app)
+   Compiling gitturtle-core v0.1.0 (/work/GitTurtle/crates/git-core)
+   Compiling gpui-component v0.6.0 (/work/GitTurtle/vendor/gpui-component)
+   Compiling gpui-kit v0.6.0
+    Finished `release` profile [optimized] target(s) in 1m 13s

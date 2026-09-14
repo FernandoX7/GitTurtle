@@ -1,0 +1,44 @@
+{
+  "id": "711d01a6-5730-4f79-b36d-315f840ef4b9",
+  "ok": true,
+  "result": {
+    "snapshot": {
+      "id": "45b2fa05-4953-4047-940b-387b19813bfe",
+      "app": {
+        "name": "gitturtle-corrected",
+        "bundleId": "gitturtle-corrected",
+        "pid": 231242
+      },
+      "window": {
+        "title": "GitTurtle",
+        "id": null,
+        "index": 0,
+        "x": null,
+        "y": null,
+        "width": 0,
+        "height": 0,
+        "isMinimized": null,
+        "isOffscreen": null,
+        "screenIndex": null
+      },
+      "coordinateSpace": "window",
+      "treeText": "App=gitturtle-corrected (pid 231242)\nWindow: \"GitTurtle\", App: gitturtle-corrected.\n\n0 frame GitTurtle\n\t1 button Main Menu\n\t2 page tab list Repository tabs\n\t\t3 page tab Repository tab 1, /tmp/gitturtle-preview-20260914/large-diff, selected\n\t\t4 button Close repository tab /tmp/gitturtle-preview-20260914/large-diff; drafts remain saved\n\t5 button Open repository tab\n\t6 button Workspaces and tab actions\n\t7 panel Window controls\n\t\t8 button Minimize window\n\t\t9 button Maximize window\n\t\t10 button Close window\n\t11 button Back to History\n\t12 label\n\t13 toggle button History\n\t14 toggle button Changes\n\t15 button Pull requests\n\t16 button Projects\n\t17 button Git profile: Fernando Ramirez. Choose or manage profiles\n\t18 button Settings\n\t19 status bar 1 new commit\n\t20 button Show latest\n\t21 button Current branch: main. Switch or manage branches\n\t22 button Fetch: No configured remote selected · Check Targets\n\t23 button Pull: No configured remote selected · Check Targets\n\t24 button Push: No configured remote selected · Check Targets\n\t25 toggle button Targets\n\t26 button Open repository\n\t27 button Copy file path\n\t28 button File history\n\t29 button Blame\n\t30 toggle button Diff\n\t31 toggle button Split\n\t32 toggle button Before\n\t33 toggle button After\n\t34 button Previous change\n\t35 button Next change\n\t36 toggle button Hide whitespace\n\t37 button Context 3 +\n\t38 button Reset review\n\t39 entry Read-only Before source\n\t40 entry Read-only After source\n\t41 panel Selected commit details\n\t\t42 button Selected commit actions\n\t\t43 button Copy commit hash 374af93d4e5f2affb045b32f1ff88456af86637c\n\t\t44 label\n\t\t45 label\n\t\t46 button Compare against parent 1 · 9f15d2a9832523d1387f7f07b10bff01d135f91d\n\t47 entry Filter changed paths…\n\t48 list box Changed files\n\t\t49 list item cards.rs · Modified\n\t\t50 list item long-lines.txt · Modified\n\nThe focused UI element is list item long-lines.txt · Modified.",
+      "elementCount": 51,
+      "focusedElementId": null,
+      "truncation": {
+        "truncated": false,
+        "maxNodes": 1200,
+        "maxDepth": 64,
+        "maxDepthReached": false
+      }
+    },
+    "screenshot": null,
+    "screenshotStatus": {
+      "state": "skipped",
+      "reason": "no_screenshot_flag"
+    }
+  },
+  "_meta": {
+    "runtimeId": "8a9a7489-4f89-4845-9c5e-af6b878258e8"
+  }
+}

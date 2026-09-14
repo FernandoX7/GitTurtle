@@ -1,0 +1,22 @@
+   Compiling ignore v0.4.33
+   Compiling gitturtle v0.1.0 (/work/GitTurtle/crates/app)
+   Compiling globwalk v0.8.1
+   Compiling gitturtle-core v0.1.0 (/work/GitTurtle/crates/git-core)
+   Compiling rust-i18n-support v4.2.1
+   Compiling rust-i18n v4.2.1
+   Compiling rust-i18n-macro v4.2.1
+   Compiling gpui-component v0.6.0 (/work/GitTurtle/vendor/gpui-component)
+   Compiling gpui-kit v0.6.0
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 43.47s
+     Running unittests src/main.rs (target/debug/deps/gitturtle-69e5973680ff8f9b)
+
+running 6 tests
+test history_updates::tests::bursts_coalesce_and_uncertainty_remains_honest ... ok
+test history_updates::tests::follow_top_is_independent_of_selection_and_never_moves_other_contexts ... ok
+test history_updates::tests::exact_count_requires_proven_single_tip_extension ... ok
+test history_updates::tests::complete_small_scopes_count_new_commits_without_counting_existing_merge_ancestry ... ok
+test history_updates::tests::quiet_updates_follow_only_the_top_and_preserve_inspector_focus_and_older_rows ... ok
+test history_updates::tests::real_local_snapshots_distinguish_captured_paging_latest_and_created_commit ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 355 filtered out; finished in 0.05s
+

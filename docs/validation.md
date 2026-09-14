@@ -4,6 +4,27 @@ Current milestone: [security, architecture and resource bounds](security-quality
 
 This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native workflow evidence is primarily macOS-specific; the September 14 entries add Pop!_OS startup and clean Ubuntu/virtual-native checks. Current platform execution and access limits belong in these dated records, the active milestone and [environment report](benchmarks/2026-09-09-milestone-environment.md). The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Published distribution packages are outside the current milestone; the Linux runbook now includes a local teammate bundle.
 
+## September 14 refresh, history and split-diff preview
+
+Source `417b5e8` is installed as Linux x86-64 release 0.1.0 Preview, binary
+SHA-256 `45606c5a195d1696096b93ea0fa3a38b67b025990ea794f25f91d4211e5729c2`.
+The [native investigation and final acceptance](benchmarks/2026-09-14-native-preview.md)
+record physical GNOME/Wayland scale-2 code/gutter scrolling, long lines,
+Find/selection/copy, Show latest, build diagnostics and recoverable installation.
+Final code and gutter runs had zero mismatched pane offsets; the evidence does
+not establish a general frame-rate improvement. Supplemental native X11 checks
+cover disposable stage/commit/View commit/fetch/pull/push and a linked-worktree
+picker open. All genuine tabs and preferences survived the host upgrade.
+
+The [refresh investigation](benchmarks/2026-09-14-refresh-reliability.md)
+documents the reproduced directory limit, disappearing-directory handling,
+ignore/tracked policy, linked-worktree roots and the native sibling-event
+regression. Final workspace tests passed 729 tests with five explicit ignores;
+strict Clippy and release build passed. Public binary notice gaps, untested
+platforms and compositor/scale limits remain explicit. The separate static
+[website](../website/README.md) has current native captures and a Cloudflare
+deployment plan; no public deployment or DNS change is implied.
+
 ## September 14 public-launch preparation
 
 Application commit `7d18fef` adds a visible Linux Menu and grouped searchable

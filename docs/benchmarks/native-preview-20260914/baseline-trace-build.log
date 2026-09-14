@@ -1,0 +1,8 @@
+   Compiling gpui-component v0.6.0 (/work/GitTurtle/vendor/gpui-component)
+   Compiling gpui-base v0.6.0 (/work/GitTurtle/vendor/gpui-base)
+   Compiling mermaid-rs-renderer v0.3.1 (/work/GitTurtle/vendor/mermaid-rs-renderer)
+   Compiling gitturtle-core v0.1.0 (/work/GitTurtle/crates/git-core)
+   Compiling gitturtle-preview v0.1.0 (/work/GitTurtle/crates/preview)
+   Compiling gpui-kit v0.6.0
+   Compiling gitturtle v0.1.0 (/work/GitTurtle/crates/app)
+    Finished `release` profile [optimized] target(s) in 1m 27s

@@ -1,0 +1,4 @@
+License review required for 2 packages; see /home/fernandoramirez/Documents/GitTurtle/.local/public-launch/gitturtle-linux-x86_64-417b5e8/licenses/REVIEW_REQUIRED.md
+Collected 692 dependency records for x86_64-unknown-linux-gnu
+Built /home/fernandoramirez/Documents/GitTurtle/.local/public-launch/gitturtle-linux-x86_64-417b5e8.tar.gz
+Extract anywhere, then run: python3 "/home/fernandoramirez/Documents/GitTurtle/.local/public-launch/gitturtle-linux-x86_64-417b5e8/install.py"
