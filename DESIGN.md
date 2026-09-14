@@ -232,7 +232,7 @@ Use 54 px scaled rows, an adaptive one-to-seven-row result height, a compact emp
 
 ## Keyboard contract
 
-Use `Cmd` on macOS and `Ctrl` on Linux for the primary modifier. The [README](README.md#keyboard-controls) and native Keyboard Shortcuts help list implemented bindings. Keep this table, menus and action availability aligned with the current page; do not advertise unavailable actions in the application.
+Use `Cmd` on macOS and `Ctrl` on Linux for the primary modifier. The [user guide](docs/user-guide.md#keyboard-controls) and native Keyboard Shortcuts help list implemented bindings. Keep this table, menus and action availability aligned with the current page; do not advertise unavailable actions in the application.
 
 | Binding | Action |
 | --- | --- |
@@ -263,7 +263,7 @@ Use `Cmd` on macOS and `Ctrl` on Linux for the primary modifier. The [README](RE
 | Primary + R | Refresh local repository state |
 | Primary + C | Copy selected text; explicit copy buttons handle commit hash/path |
 | Primary + B | Toggle expanded repository navigation in History |
-| Primary + Shift + / | Open Keyboard Shortcuts |
+| Primary + ? | Open Keyboard Shortcuts (Shift+/ on a US keyboard) |
 
 The graph and file list must scroll the selected row into view during keyboard navigation. Search keystrokes should not trigger list navigation. Native text selection/copy behavior takes precedence in diff content. Escape in an editor find box closes that box before a subsequent Escape returns to History. Back to history preserves the history query; it is not a Clear search action. Primary + Q retains platform quit behavior.
 

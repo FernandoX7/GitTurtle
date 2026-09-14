@@ -445,7 +445,7 @@
     "fixture_location": ".local/milestone-backend-yp4u8jmz/work",
     "result": "Terminated incomplete run after an openat stall during ignore preparation; no timings from it contribute to the completed report.",
     "observed_stack": "macos_bench::measure<IgnorePlan> -> GitRepository::ignore_plan -> read_ignore_snapshot -> ignore_directory -> openat; object-reader worker idle",
-    "observed_descriptor": "The open traversal directory descriptor referenced /Users/fernando.",
+    "observed_descriptor": "The open traversal directory descriptor referenced /Users/REDACTED.",
     "diagnosis": "Consistent with macOS Documents-folder access mediation for the standalone harness. Not a proven Git/object-reader deadlock: identical core and harness code completed using the /private/tmp fixture.",
     "stack_sample_local": ".local/macos-backend-stall.txt",
     "effects": "Only the stalled harness was terminated; its cat-file child exited. Fresh fixture used for completed run."

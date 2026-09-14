@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Usage help and support
+    url: https://github.com/FernandoX7/GitTurtle/blob/main/SUPPORT.md
+    about: Find setup guidance, troubleshooting and the support-question route.
+  - name: Security reporting policy
+    url: https://github.com/FernandoX7/GitTurtle/blob/main/SECURITY.md
+    about: Read the reporting policy before sharing sensitive details.

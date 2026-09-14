@@ -1,0 +1,28 @@
+name: Feature request
+description: Suggest a focused improvement to GitTurtle.
+title: "Feature: "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Tell us about the work you want to make easier. Please search existing issues first, and keep one idea per request.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the workflow and what is difficult today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Suggested improvement
+      description: Describe the behavior you would find useful. A specific implementation is optional.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Alternatives and context
+      description: Mention workarounds, the relevant platform, or a sanitized example or sketch if helpful.

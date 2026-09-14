@@ -1,0 +1,62 @@
+name: Bug report
+description: Help us reproduce something that is not working.
+title: "Bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please search existing issues first.
+        For a suspected vulnerability, read the [security reporting policy](https://github.com/FernandoX7/GitTurtle/blob/main/SECURITY.md).
+        Remove secrets, private repository content, personal paths and identities from text and screenshots.
+  - type: input
+    id: build
+    attributes:
+      label: App version and build
+      description: Include the version and commit ID if known, local modifications, and how you built or installed it. For a Linux bundle, build-info.json contains the packaging revision and executable hash.
+      placeholder: "0.1.0, commit abc1234, local release build; or unknown"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and architecture
+      placeholder: "Ubuntu 24.04 x86-64, or macOS version and Apple Silicon / Intel"
+    validations:
+      required: true
+  - type: input
+    id: linux-session
+    attributes:
+      label: Linux desktop and session, if applicable
+      description: Include the desktop environment, Wayland or X11, and whether this is an actual desktop or a virtual/nested display. Add GPU/driver and display scaling for rendering problems.
+      placeholder: "GNOME, Wayland, actual desktop, 100% scale; or not applicable / unknown"
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: A small disposable repository or sanitized example helps. Include whether the problem occurs every time.
+      placeholder: |
+        1. Open a repository with …
+        2. Select …
+        3. …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include an error message or a sanitized screenshot if useful.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics or additional context
+      description: Optional relevant log excerpt, Git version, or comparison with a previous build. Do not attach your full environment, Git configuration, application data, tokens, private keys or authenticated URLs.
+      render: text

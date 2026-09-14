@@ -1,0 +1,4 @@
+License review required for 2 packages; see <checkout>/.local/public-launch/package-final/licenses/REVIEW_REQUIRED.md
+Collected 692 dependency records for x86_64-unknown-linux-gnu
+Built <checkout>/.local/public-launch/package-final.tar.gz
+Extract anywhere, then run: python3 "<checkout>/.local/public-launch/package-final/install.py"

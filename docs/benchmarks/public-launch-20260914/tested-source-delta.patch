@@ -1,0 +1,22 @@
+--- compiled/crates/app/src/shortcuts.rs
++++ checked/crates/app/src/shortcuts.rs
+@@ -833,7 +833,18 @@
+                 key: "?".into(),
+                 key_char: None,
+             };
+-            assert_eq!(binding.match_keystrokes(&[event]), Some(true));
++            // Some(false) means a complete match; Some(true) is a pending
++            // prefix of a longer multi-stroke binding, and None is no match.
++            assert_eq!(
++                binding.match_keystrokes(std::slice::from_ref(&event)),
++                Some(false)
++            );
++            let unnormalized = KeyBinding::new(
++                &resolve_key("primary-shift-/", macos),
++                ShortcutHelp,
++                help.context,
++            );
++            assert_eq!(unnormalized.match_keystrokes(&[event]), None);
+         }
+     }
+ 

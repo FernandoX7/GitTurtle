@@ -4,6 +4,28 @@ Current milestone: [security, architecture and resource bounds](security-quality
 
 This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native workflow evidence is primarily macOS-specific; the September 14 entries add Pop!_OS startup and clean Ubuntu/virtual-native checks. Current platform execution and access limits belong in these dated records, the active milestone and [environment report](benchmarks/2026-09-09-milestone-environment.md). The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Published distribution packages are outside the current milestone; the Linux runbook now includes a local teammate bundle.
 
+## September 14 public-launch preparation
+
+Application commit `7d18fef` adds a visible Linux Menu and grouped searchable
+shortcut help, with shared bindings and platform labels. Release build,
+formatting, locked app check, locked workspace tests and strict workspace Clippy
+passed in the existing Ubuntu userspace with reused caches. Virtual X11 and
+native Wayland under nested Weston verified menus, keyboard search, focus/draft
+retention, contextual disabling, narrow/enlarged layouts and 2× window controls.
+
+Package commit `326fa0f` adds collected third-party notices, source obligations
+and installed notice retention. Isolated Linux installation, relocation,
+reinstallation, full notice checksums and rejection of corrupted/unchecked notices
+passed. The two Linux and six macOS notice gaps remain public-binary release
+prerequisites. macOS packaging received syntax/inventory checks only.
+
+The [launch validation record](public-launch-validation.md) contains exact
+commands/results, executable/source hashes, genuine README screenshots and
+platform boundaries. This is not a new clean build, actual Ubuntu desktop pass,
+or current native macOS pass. The corrected workflow started hosted jobs; a
+completed hosted pass remains separately verifiable. The
+[publication checklist](public-launch.md) covers privacy and owner decisions.
+
 ## September 14 Ubuntu teammate readiness
 
 App source `6824c7d` and packaging source `d482a3f` add a pinned Rust toolchain,
@@ -200,7 +222,7 @@ spoken VoiceOver and sleep/wake remain unverified.
 
 ## Current validation guidance
 
-The dated records below apply to their named builds, including the behavior and limitations those builds had. They do not establish native or package coverage for subsequent source changes. The [current feature overview](../README.md#current-source-features), [architecture and bounds](architecture.md), [active milestone](security-quality-milestone.md), [previous macOS milestone](macos-milestone.md), and [earlier everyday-work implementation record](everyday-work-plan.md) distinguish implemented behavior from build-specific evidence. Earlier package passes do not establish coverage for the ten current feature areas. The [preview matrix](file-previews.md), [profiles](profiles.md), [command palette](command-palette.md) and [rewritten-series review](rewritten-series.md) specify the corresponding implemented behavior; the active ledger records their native acceptance.
+The dated records below apply to their named builds, including the behavior and limitations those builds had. They do not establish native or package coverage for subsequent source changes. The [current feature overview](user-guide.md#current-source-features), [architecture and bounds](architecture.md), [active milestone](security-quality-milestone.md), [previous macOS milestone](macos-milestone.md), and [earlier everyday-work implementation record](everyday-work-plan.md) distinguish implemented behavior from build-specific evidence. Earlier package passes do not establish coverage for the ten current feature areas. The [preview matrix](file-previews.md), [profiles](profiles.md), [command palette](command-palette.md) and [rewritten-series review](rewritten-series.md) specify the corresponding implemented behavior; the active ledger records their native acceptance.
 
 For changes to the current workflows, use disposable repositories and local remotes for mutations, and select the relevant checks below. Record the exercised source/build identity and independently inspect Git results; the presence of a control or a passing core fixture does not by itself verify its native interaction.
 
@@ -231,11 +253,11 @@ These rows describe required checks, not completed native passes. Record results
 
 | Required feature | Current validation scope |
 | --- | --- |
-| 1. Revision comparison | Use [the revision workflow](../README.md#browse-history-then-open-a-comparison) to compare diverged branches, tags and explicit commits in both directions and modes. Check resolved IDs, rename/mode/type changes, absent text/image sides, ambiguous names, moving refs, missing objects and unrelated/multiple-base ancestry. Cancel during a read; verify no checkout/fetch and Back/focus restoration, including a late preview after leaving Compare. |
+| 1. Revision comparison | Use [the revision workflow](user-guide.md#browse-history-then-open-a-comparison) to compare diverged branches, tags and explicit commits in both directions and modes. Check resolved IDs, rename/mode/type changes, absent text/image sides, ambiguous names, moving refs, missing objects and unrelated/multiple-base ancestry. Cancel during a read; verify no checkout/fetch and Back/focus restoration, including a late preview after leaving Compare. |
 | 2. Text review | Exercise [review variants](architecture.md#prepared-diff-presentation) in unified/split modes: intraline Unicode edits, CRLF, no final newline, long lines, whitespace suppression, context expansion through 192 lines, and Option-Up/Down. Verify literal source copy, Find, gutters and linked scrolling. Filtered/expanded variants must explain disabled partial staging; resetting must restore exact Git actions and preserve unrelated changes. |
 | 3. Text size and accessibility | Follow [typography and density](../DESIGN.md#typography-and-density): independent interface/code settings and resets, persistence, both densities and ten themes at minimum/wide sizes. Retain selection, focus, Find and viewports through scaling. Inspect names/roles/supported states and Increase Contrast, Reduce Transparency and system light/dark behavior where available. Exercise VoiceOver names, roles, selected/expanded/disabled states, current-row announcements, editing, modal containment, restored focus and status/error announcements using the [native accessibility contract](native-accessibility.md); record actual settings and build-specific results. |
 | 4. Quick Open and path filters | Exercise Command-P immediate typing, worktree versus pinned revision scope, keyboard selection/Return/Escape, Unicode/long/raw-byte paths, deleted/conflicted/unsupported files, no matches and visible truncation. Verify File History/Blame use the inspected target and Back restores an interrupted source preview. Check [bounded discovery](architecture.md#revision-inspection-review-and-recovery), rapid query replacement, repository switching, and changed/working file filters. |
-| 5. Multi-file staging | Exercise Command-toggle, Shift-click/arrow ranges, Command-A, selected counts, directory grouping and separate staged/unstaged identities. Compare Git index/worktree bytes before/after exact selected Stage/Unstage, including renames, binaries and mixed states. Filtering/grouping clears selection; refresh retains only visible survivors; switching repositories clears it. Check stale plans, partial failures, filtered all-files disabling and existing hunk/line staging. See [working operations](../README.md#open-a-project-and-work-with-git). |
+| 5. Multi-file staging | Exercise Command-toggle, Shift-click/arrow ranges, Command-A, selected counts, directory grouping and separate staged/unstaged identities. Compare Git index/worktree bytes before/after exact selected Stage/Unstage, including renames, binaries and mixed states. Filtering/grouping clears selection; refresh retains only visible survivors; switching repositories clears it. Check stale plans, partial failures, filtered all-files disabling and existing hunk/line staging. See [working operations](user-guide.md#open-a-project-and-work-with-git). |
 | 6. Worktree management | Follow [worktree semantics](parallel-work-recovery.md#worktrees): review and create existing/new branch destinations, inspect state and hand off to GitTurtle/Finder/editor. Refuse occupied branches, stale identities, dirty/untracked/ignored content, locked/missing/main/current worktrees and active conflicts. Verify shared versus private configuration/drafts, branch retention after removal, and honest partial-checkout failure feedback without recursive cleanup. |
 | 7. Activity and reflog recovery | Exercise the bounded [activity/reflog workflows](parallel-work-recovery.md): captured repository/target/time, running and final outcomes, cancellation/uncertainty, restart, and explicit next actions without replay. Confirm retained activity excludes secrets and arbitrary diagnostics. Inspect available and expired/missing reflog commits; create the exact recovery branch after revalidation while preserving HEAD, index and working bytes. |
 | 8. Conflict blocks | Follow [block resolution](conflict-blocks.md) across merge, rebase, cherry-pick and stash conflicts, including merge/diff3/zdiff3 markers. Test Previous/Next and shortcuts, Current/Incoming/Both, manual editing, unresolved counts, empty/CRLF sides, malformed markers and fallbacks. Save draft must leave the index conflicted; Save and stage must refuse remaining markers/stale sources and preserve unrelated entries. Retain drafts through file/view changes and unrelated refresh; exercise Continue/Abort/Keep files separately. |

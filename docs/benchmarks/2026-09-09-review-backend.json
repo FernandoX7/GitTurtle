@@ -126,7 +126,7 @@
     "command": "cargo build --locked --release -p gitturtle-core --example review_bench",
     "seconds": 6.249381000001449,
     "binary_sha256": "dab764fddb8b1bcaa615e211a1b1817c3d0bdf84484cf0e72db553fba5edf6c8",
-    "output": "   Compiling gitturtle-core v0.1.0 (/Users/fernando/Documents/GitTurtle/crates/git-core)\n    Finished `release` profile [optimized] target(s) in 6.21s\n"
+    "output": "   Compiling gitturtle-core v0.1.0 (/Users/REDACTED/Documents/GitTurtle/crates/git-core)\n    Finished `release` profile [optimized] target(s) in 6.21s\n"
   },
   "conditions_before": {
     "utc": "2026-09-09T04:41:49Z",
