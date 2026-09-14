@@ -5,7 +5,7 @@
   "dns_override": "104.21.32.143",
   "reason": "DNS propagation limited default-resolver verification",
   "tls_verification": true,
-  "smoke_script_sha256": "d6401c3a0a8fc8c796c5528c7e12e7843a5533549b992643aa509f9364849f4f",
+  "smoke_script_sha256": "2f5d99f14c105789e18216a8e27378233b5adc8a0f547ffbbd7360e4cac1306d",
   "files": {
     "index.html": "39d55470a1bd3dee06e70cdf5602d2d1b96e8d2da81044a47b022d7416bba748",
     "404.html": "e519091635f2e5b7b51ae8efb8e54ccc40fe5be8c0422f3c3d0b36af15e9a8d7",

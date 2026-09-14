@@ -171,8 +171,10 @@ class Client:
             command.extend(("--noproxy", self.host))
         if etag:
             command.extend(("--header", f"If-None-Match: {etag}"))
-        command.extend(("--url", url))
-        result = subprocess.run(command, capture_output=True, timeout=seconds + 1, check=False)
+        # End option parsing explicitly: the final argument is always URL data.
+        command.extend(("--", url))
+        result = subprocess.run(command, executable=self.curl, shell=False,
+                                capture_output=True, timeout=seconds + 1, check=False)
         require(result.returncode == 0, f"curl {url}: {result.stderr.decode(errors='replace').strip()}")
         require(body_file.stat().st_size <= MAX_BYTES, f"response exceeds {MAX_BYTES} bytes: {url}")
         return int(result.stdout), header_values(header_file.read_bytes()), body_file.read_bytes()

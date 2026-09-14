@@ -95,3 +95,9 @@ hash provenance. Public deployment files are checked separately from local
 authentication state and build/tool caches, which stay outside version control.
 This is a review of the changed artifacts, not an assertion about every earlier
 repository revision.
+
+The deployment checker selects the resolved curl executable explicitly with no
+shell and terminates option parsing before URL data. Its complete live HTTP/TLS
+check passed again after this refinement; the evidence records the current
+helper hash and unchanged deployed asset identity. Hosted security analysis is
+tracked on the pull request separately from the live checks.
