@@ -4,6 +4,53 @@ Current milestone: [security, architecture and resource bounds](security-quality
 
 This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native workflow evidence is primarily macOS-specific; the September 14 entry adds a limited Linux startup check. Current platform execution and access limits belong in these dated records, the active milestone and [environment report](benchmarks/2026-09-09-milestone-environment.md). The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Distribution packages are outside the current milestone.
 
+## September 14 Linux icon and window-control correction
+
+Source `f3bf253` corrects the user-reported missing launcher icon and absent
+Linux window controls. The initial icon installation used a
+`hicolor/1024x1024/apps` directory absent from this desktop's theme index;
+GTK failed to resolve the icon by name at every checked size. The installed
+desktop entry now references the unchanged PNG by absolute path. Its
+`Gio.DesktopAppInfo` icon resolved to that file, GTK successfully decoded it
+at 32, 48, 128, 256 and 512 pixels, and `desktop-file-validate` passed.
+
+The Linux tab strip now supplies standard window controls when GPUI reports
+client decorations, following the desktop's left/right button order and the
+compositor's supported actions. Server decorations and macOS traffic lights
+remain native. The existing close action and shutdown observers are reused;
+the keyboard help now lists the existing Ctrl+Q / Cmd+Q shortcut. The
+[Linux guide](linux.md#window-controls-and-quitting) records the platform
+conventions and corrected installation recipe.
+
+On the same Pop!_OS/GNOME Wayland machine, Rust 1.98.0 formatting, the locked
+release build, locked workspace tests and strict all-target workspace Clippy
+passed. The local linker setup is
+the same as the initial startup check below. The installed release SHA-256 is
+`9955debcfab6487f21e54f3c74c48e02cda91d51221324e34e72f650bc76d6fd`;
+all 647 recorded source/manifest/asset inputs remained unchanged through the
+build. Installation used an atomic executable replacement.
+
+The user confirmed Ctrl+Q closed the preceding build. The new installed
+build opened the disposable demo repository with isolated application
+preferences. Enabling the session's accessibility bridge before launch made
+its full native tree available: it exposed Minimize, Maximize and Close
+buttons, and semantic activation of Maximize changed the control's label to
+Restore. A following automated Restore activation did not establish a state
+change; tool delivery alone is not recorded as a successful interaction.
+The user then confirmed that the icon and controls worked after being asked
+to maximize, restore and close the window. Separately, semantic activation
+of the new Close button terminated the installed process and the session
+file was saved at shutdown.
+
+The temporary accessibility bridge setting was restored to its original
+disabled value, including GNOME's `toolkit-accessibility` preference; the
+screen reader remained disabled throughout. The disposable repository
+remained clean. The application launcher then reopened the installed build
+with the user's normal preferences/session, without the QA environment.
+macOS runtime checks were unavailable on this Linux machine; no new macOS
+native pass is claimed. Automated drag, minimize and alternate desktop
+button-layout gestures remain outside this check.
+
 ## September 14 Linux installation and Wayland startup
 
 Source `4ad8e27352c1f33cecd145eac866ee5ff9c33e26` built and launched on

@@ -153,7 +153,7 @@ This is local development packaging for native verification. The script produces
 | Command-H / Command-Option-H | Hide GitTurtle / Hide other applications |
 | Command-Q | Quit |
 
-The non-macOS key bindings use Control instead of Command; their native behavior has not been tested on Linux. Text previews support selection and copying without editing repository content.
+The non-macOS key bindings use Control instead of Command. Linux Ctrl+Q and the visible window controls have [initial native evidence](docs/validation.md#september-14-linux-icon-and-window-control-correction); broader Linux keyboard coverage remains unverified. Text previews support selection and copying without editing repository content.
 
 ## Repository operations
 
