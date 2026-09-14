@@ -12,6 +12,7 @@ gpui_kit::actions!(
         RevealRepository,
         OpenEditor,
         ShortcutHelp,
+        MainMenu,
         MinimizeWindow,
         CloseWindow,
         ZoomWindow,
@@ -20,6 +21,170 @@ gpui_kit::actions!(
         ShowAllApplications
     ]
 );
+
+#[cfg(target_os = "linux")]
+pub(super) struct PrimaryMenu {
+    owner: WeakEntity<GitTurtle>,
+    menu: Option<Entity<gpui_kit::component::menu::PopupMenu>>,
+    return_focus: Option<FocusHandle>,
+    _dismiss: Option<Subscription>,
+    _focus_out: Option<Subscription>,
+}
+
+#[cfg(target_os = "linux")]
+impl PrimaryMenu {
+    pub(super) fn new(owner: WeakEntity<GitTurtle>) -> Self {
+        Self {
+            owner,
+            menu: None,
+            return_focus: None,
+            _dismiss: None,
+            _focus_out: None,
+        }
+    }
+
+    pub(super) fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.menu.is_some() {
+            self.close(window, cx);
+            return;
+        }
+        if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
+            return;
+        }
+        use command_palette::{COMMANDS, CommandId};
+        use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+        let Some(owner) = self.owner.upgrade() else {
+            return;
+        };
+        let path = owner.read(cx).path.clone();
+        let focus = window
+            .focused(cx)
+            .unwrap_or_else(|| owner.read(cx).app_focus.clone());
+        self.return_focus = Some(focus.clone());
+        let rows = [
+            Some(CommandId::Open),
+            Some(CommandId::Projects),
+            None,
+            Some(CommandId::History),
+            Some(CommandId::Changes),
+            Some(CommandId::QuickOpen),
+            Some(CommandId::Compare),
+            None,
+            Some(CommandId::Palette),
+            Some(CommandId::Activity),
+            None,
+            Some(CommandId::Settings),
+            Some(CommandId::Help),
+            Some(CommandId::About),
+        ]
+        .map(|id| {
+            id.map(|id| {
+                let spec = *COMMANDS
+                    .iter()
+                    .find(|spec| spec.id == id)
+                    .expect("menu command is registered");
+                (spec, owner.read(cx).menu_command_reason(id))
+            })
+        });
+        let target = self.owner.clone();
+        let menu = PopupMenu::build(window, cx, move |mut menu, window, _| {
+            menu = menu
+                .action_context(focus.clone())
+                .min_w(appearance::ui_size(305.))
+                .max_w((window.viewport_size().width - px(24.)).min(appearance::ui_size(390.)))
+                .max_h((window.viewport_size().height - appearance::ui_size(70.)).max(px(120.)))
+                .scrollable(true);
+            for row in &rows {
+                let Some((spec, reason)) = row else {
+                    menu = menu.separator();
+                    continue;
+                };
+                let command = spec.id;
+                let target = target.clone();
+                let path = path.clone();
+                let return_focus = focus.clone();
+                let mut item = PopupMenuItem::new(spec.label).disabled(reason.is_some());
+                if let Some(action) = spec.shortcut.and_then(shortcuts::action) {
+                    item = item.action(action);
+                }
+                menu = menu.item(item.on_click(move |_, window, cx| {
+                    // Restore the originating editor before opening the workflow;
+                    // modal return focus must never capture this transient menu.
+                    return_focus.focus(window, cx);
+                    let _ = target.update(cx, |this, cx| {
+                        this.run_menu_command(command, &path, window, cx)
+                    });
+                }));
+            }
+            menu
+        });
+        self._dismiss = Some(
+            cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, _, cx| {
+                this.menu = None;
+                cx.notify();
+            }),
+        );
+        let menu_focus = menu.focus_handle(cx);
+        self._focus_out = Some(cx.on_focus_out(&menu_focus, window, |this, _, _, cx| {
+            // A newly focused control or dialog owns focus now; remove the
+            // transient menu without restoring over that destination.
+            this.menu = None;
+            cx.notify();
+        }));
+        menu_focus.focus(window, cx);
+        self.menu = Some(menu);
+        cx.notify();
+    }
+
+    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(menu) = self.menu.take()
+            && menu.focus_handle(cx).contains_focused(window, cx)
+            && let Some(focus) = &self.return_focus
+        {
+            focus.focus(window, cx);
+        }
+        cx.notify();
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Render for PrimaryMenu {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use gpui_kit::{base::Popup, component::IconName, prelude::FluentBuilder};
+        // Popup owns anchoring only. Keeping focus and opening in this entity
+        // avoids a popover shell taking focus before we capture the editor.
+        let mut popup = Popup::new(
+            "gitturtle-primary-menu",
+            button("main-menu", "Menu", "", self.menu.is_some())
+                .icon(Icon::new(IconName::Menu).size(appearance::ui_size(16.)))
+                .accessibility_label("Main Menu")
+                .tooltip(format!(
+                    "Main Menu · {}",
+                    shortcuts::label(shortcuts::ShortcutId::MainMenu)
+                ))
+                .on_click(cx.listener(|this, _, window, cx| this.toggle(window, cx))),
+        )
+        .when_some(self.menu.clone(), |popup, menu| {
+            popup.content(div().pt(appearance::ui_size(4.)).child(menu))
+        });
+        // App shortcuts still work from an open menu. Close it before the
+        // existing handler captures focus for its next workflow/dialog.
+        for spec in shortcuts::SHORTCUTS {
+            if spec.id == shortcuts::ShortcutId::MainMenu {
+                continue;
+            }
+            let Some(action) = shortcuts::action(spec.id) else {
+                continue;
+            };
+            let view = cx.entity();
+            popup = popup.on_boxed_action(action.as_ref(), move |_, window, cx| {
+                view.update(cx, |this, cx| this.close(window, cx));
+                cx.propagate();
+            });
+        }
+        popup
+    }
+}
 
 pub(super) fn menus(repository: bool, busy: bool, cx: &mut App) {
     let action = |label: &str, action: Box<dyn Action>, enabled: bool| MenuItem::Action {
@@ -181,24 +346,24 @@ impl GitTurtle {
         .detach();
     }
     pub(super) fn shortcut_help(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let modifier = primary_label();
-        let rows = [
-            ("Command palette", "⇧P"),
-            ("Quick Open File", "P"),
-            ("Open repository", "O"),
-            ("Projects", "⇧O"),
-            ("History", "1"),
-            ("Working Changes", "2"),
-            ("Refresh local state", "R"),
-            ("Settings", ","),
-            ("Back to retained context", "["),
-            ("Toggle navigation", "B"),
-            ("Find in focused list or editor", "F"),
-            ("Quit GitTurtle", "Q"),
-        ];
-        window.open_alert_dialog(cx, move |dialog, _, cx| dialog.title("Keyboard shortcuts").description("Move through controls with Tab and Shift-Tab. Activate buttons with Space or Return.")
-            .child(div().flex().flex_col().gap_2().children(rows.iter().enumerate().map(|(i, (label, key))| div().id(("shortcut-help", i)).role(Role::Label).aria_label(format!("{label}: {modifier}{key}")).flex().justify_between().gap_6().child(*label).child(div().font_family(mono()).child(format!("{modifier}{key}")))))
-                .child(div().id("shortcut-navigation-help").role(Role::Label).aria_label("Lists: arrow keys, Home and End, Return to open. Image controls: Tab to zoom, pan and comparison amount; Space to adjust. Escape closes the current view or returns to retained context.").pt_3().text_color(rgb(palette(cx).muted)).child("Lists: ↑ / ↓, Home / End, Return to open. Image controls: Tab to zoom, pan and comparison amount; Space to adjust. Escape closes the current transient view or returns to retained context.")))
-            .button_props(gpui_kit::component::dialog::DialogButtonProps::default().ok_text("Done")));
+        shortcuts::open_help(window, cx);
+    }
+    pub(super) fn about(&self, window: &mut Window, cx: &mut Context<Self>) {
+        window.open_alert_dialog(cx, |dialog, _, cx| {
+            dialog
+                .title("About GitTurtle")
+                .description("A native Git workspace for history inspection and everyday Git work.")
+                .child(
+                    div()
+                        .id("about-gitturtle-version")
+                        .role(Role::Label)
+                        .aria_label(concat!("GitTurtle version ", env!("CARGO_PKG_VERSION")))
+                        .text_color(rgb(palette(cx).muted))
+                        .child(concat!("Version ", env!("CARGO_PKG_VERSION"))),
+                )
+                .button_props(
+                    gpui_kit::component::dialog::DialogButtonProps::default().ok_text("Done"),
+                )
+        });
     }
 }

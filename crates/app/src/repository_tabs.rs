@@ -1819,6 +1819,11 @@ impl GitTurtle {
             .border_b_1()
             .border_color(rgb(colors.border))
             .children(left_controls)
+            .when(cfg!(target_os = "linux"), |strip| {
+                #[cfg(target_os = "linux")]
+                let strip = strip.child(self.primary_menu.clone());
+                strip
+            })
             .child(
                 div()
                     .id("repository-tabs")
@@ -1878,15 +1883,10 @@ impl GitTurtle {
                                             ))
                                             .max_w(appearance::ui_size(220.))
                                             .tooltip(format!(
-                                                "{}\nSwitch tab {} · {}⌥{}",
+                                                "{}\nSwitch tab {} · {}",
                                                 tab.path.display(),
                                                 index + 1,
-                                                if cfg!(target_os = "macos") {
-                                                    "⌘"
-                                                } else {
-                                                    "Ctrl+"
-                                                },
-                                                index + 1
+                                                shortcuts::tab_label(index)
                                             ))
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 this.switch_repository_tab(index, window, cx)
@@ -1916,7 +1916,10 @@ impl GitTurtle {
             .child(
                 button("new-repository-tab", "", "plus", false)
                     .accessibility_label("Open repository tab")
-                    .tooltip("Open a repository tab")
+                    .tooltip(format!(
+                        "Open a repository tab · {}",
+                        shortcuts::label(shortcuts::ShortcutId::NewTab)
+                    ))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.choose_repository(&OpenRepository, window, cx)
                     })),

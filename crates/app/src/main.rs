@@ -47,6 +47,7 @@ mod revision_inspection;
 mod rewrite_review;
 mod rich_preview;
 mod settings;
+mod shortcuts;
 mod split_diff;
 mod tags;
 mod text;
@@ -233,6 +234,8 @@ struct GitTurtle {
     interactive_rebase: interactive_rebase::State,
     ignore_actions: ignore::State,
     menu_state: Option<(bool, bool)>,
+    #[cfg(target_os = "linux")]
+    primary_menu: Entity<PrimaryMenu>,
     dialog_layer_subscription: Option<Subscription>,
     modal_was_open: bool,
     modal_return_focus: Option<FocusHandle>,
@@ -441,6 +444,11 @@ impl GitTurtle {
             interactive_rebase: interactive_rebase::State::default(),
             ignore_actions: ignore::State::default(),
             menu_state: None,
+            #[cfg(target_os = "linux")]
+            primary_menu: {
+                let owner = cx.entity().downgrade();
+                cx.new(|_| PrimaryMenu::new(owner))
+            },
             dialog_layer_subscription: None,
             modal_was_open: false,
             modal_return_focus: None,
@@ -1786,124 +1794,7 @@ fn main() {
             .settings
             .resolved_theme(cx.window_appearance())
             .apply(None, cx);
-        let primary = if cfg!(target_os = "macos") {
-            "cmd"
-        } else {
-            "ctrl"
-        };
-        cx.bind_keys([
-            KeyBinding::new(
-                &format!("{primary}-shift-a"),
-                ShowActivity,
-                Some("GitTurtle"),
-            ),
-            KeyBinding::new("shift-down", ExtendNextWorking, Some("GitTurtleList")),
-            KeyBinding::new("shift-up", ExtendPreviousWorking, Some("GitTurtleList")),
-            KeyBinding::new(
-                &format!("{primary}-a"),
-                SelectAllWorking,
-                Some("GitTurtleList"),
-            ),
-            KeyBinding::new(&format!("{primary}-p"), QuickOpenFile, Some("GitTurtle")),
-            KeyBinding::new(
-                &format!("{primary}-shift-p"),
-                ShowCommandPalette,
-                Some("GitTurtle"),
-            ),
-            KeyBinding::new(
-                &format!("{primary}-shift-c"),
-                CompareRevisions,
-                Some("GitTurtle"),
-            ),
-            KeyBinding::new(&format!("{primary}-q"), Quit, None),
-            KeyBinding::new(&format!("{primary}-1"), ShowHistory, Some("GitTurtle")),
-            KeyBinding::new(&format!("{primary}-m"), MinimizeWindow, Some("GitTurtle")),
-            KeyBinding::new(
-                &format!("{primary}-w"),
-                CloseRepositoryTab,
-                Some("GitTurtle"),
-            ),
-            KeyBinding::new(
-                &format!("{primary}-shift-w"),
-                CloseWindow,
-                Some("GitTurtle"),
-            ),
-            KeyBinding::new(&format!("{primary}-t"), OpenRepository, Some("GitTurtle")),
-            KeyBinding::new("ctrl-tab", NextRepositoryTab, Some("GitTurtle")),
-            KeyBinding::new("ctrl-shift-tab", PreviousRepositoryTab, Some("GitTurtle")),
-            KeyBinding::new(
-                &format!("{primary}-alt-1"),
-                SelectRepositoryTab1,
-                Some("GitTurtle"),
-            ),
-            KeyBinding::new(
-                &format!("{primary}-alt-2"),
-                SelectRepositoryTab2,
-                Some("GitTurtle"),
-            ),
-            KeyBinding::new(
-                &format!("{primary}-alt-3"),
-                SelectRepositoryTab3,
-                Some("GitTurtle"),
-            ),
-            KeyBinding::new(
-                &format!("{primary}-alt-4"),
-                SelectRepositoryTab4,
-                Some("GitTurtle"),
-            ),
-            KeyBinding::new(
-                &format!("{primary}-alt-5"),
-                SelectRepositoryTab5,
-                Some("GitTurtle"),
-            ),
-            KeyBinding::new(
-                &format!("{primary}-alt-6"),
-                SelectRepositoryTab6,
-                Some("GitTurtle"),
-            ),
-            KeyBinding::new(
-                &format!("{primary}-alt-7"),
-                SelectRepositoryTab7,
-                Some("GitTurtle"),
-            ),
-            KeyBinding::new(
-                &format!("{primary}-alt-8"),
-                SelectRepositoryTab8,
-                Some("GitTurtle"),
-            ),
-            KeyBinding::new(&format!("{primary}-h"), HideApplication, None),
-            KeyBinding::new(&format!("{primary}-alt-h"), HideOtherApplications, None),
-            KeyBinding::new(
-                &format!("{primary}-shift-/"),
-                ShortcutHelp,
-                Some("GitTurtle"),
-            ),
-            KeyBinding::new(&format!("{primary}-,"), ShowSettings, Some("GitTurtle")),
-            KeyBinding::new(
-                &format!("{primary}-shift-o"),
-                ShowProjects,
-                Some("GitTurtle"),
-            ),
-            KeyBinding::new(&format!("{primary}-2"), ShowChanges, Some("GitTurtle")),
-            KeyBinding::new(&format!("{primary}-o"), OpenRepository, Some("GitTurtle")),
-            KeyBinding::new(&format!("{primary}-r"), Refresh, Some("GitTurtle")),
-            KeyBinding::new(&format!("{primary}-f"), Search, Some("GitTurtleList")),
-            KeyBinding::new(&format!("{primary}-b"), ToggleSidebar, Some("GitTurtle")),
-            KeyBinding::new(&format!("{primary}-["), BackHistory, Some("GitTurtle")),
-            KeyBinding::new(
-                &format!("{primary}-c"),
-                gpui_kit::component::input::Copy,
-                Some("GitTurtleList"),
-            ),
-            KeyBinding::new("alt-down", NextTextChange, Some("GitTurtle")),
-            KeyBinding::new("alt-up", PreviousTextChange, Some("GitTurtle")),
-            KeyBinding::new("down", NextRow, Some("GitTurtleList")),
-            KeyBinding::new("up", PreviousRow, Some("GitTurtleList")),
-            KeyBinding::new("home", FirstRow, Some("GitTurtleList")),
-            KeyBinding::new("end", LastRow, Some("GitTurtleList")),
-            KeyBinding::new("enter", NextPane, Some("GitTurtleList")),
-            KeyBinding::new("escape", ClearSearch, Some("GitTurtle")),
-        ]);
+        shortcuts::bind_keys(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_action(|_: &HideApplication, cx| cx.hide());
         cx.on_action(|_: &HideOtherApplications, cx| cx.hide_other_apps());

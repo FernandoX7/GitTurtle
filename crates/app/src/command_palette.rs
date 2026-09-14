@@ -1,5 +1,6 @@
 //! A bounded registry of native workflows. Highlighting a command is inert;
 //! activation rechecks the current context before invoking its existing handler.
+use crate::shortcuts::ShortcutId;
 use crate::*;
 use gpui_kit::{
     component::{WindowExt, dialog::DialogFooter},
@@ -43,16 +44,18 @@ pub(super) enum CommandId {
     Editor,
     Reveal,
     Help,
+    Palette,
+    About,
 }
 #[derive(Clone, Copy)]
 pub(super) struct CommandSpec {
     pub id: CommandId,
     pub label: &'static str,
     keywords: &'static str,
-    shortcut: &'static str,
+    pub shortcut: Option<ShortcutId>,
 }
 macro_rules! command {
-    ($id:ident, $label:literal, $keywords:literal, $shortcut:literal) => {
+    ($id:ident, $label:literal, $keywords:literal, $shortcut:expr) => {
         CommandSpec {
             id: CommandId::$id,
             label: $label,
@@ -66,202 +69,224 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
         NextRepositoryTab,
         "Next repository tab",
         "tabs switch worktree",
-        "⌃Tab"
+        Some(ShortcutId::NextTab)
     ),
     command!(
         PreviousRepositoryTab,
         "Previous repository tab",
         "tabs switch worktree",
-        "⌃⇧Tab"
+        Some(ShortcutId::PreviousTab)
     ),
     command!(
         CloseRepositoryTab,
         "Close repository tab",
         "tabs close",
-        "W"
+        Some(ShortcutId::CloseTab)
     ),
     command!(
         MoveRepositoryTabLeft,
         "Move repository tab left",
         "tabs reorder earlier",
-        ""
+        None
     ),
     command!(
         MoveRepositoryTabRight,
         "Move repository tab right",
         "tabs reorder later",
-        ""
+        None
     ),
     command!(
         LocalWorkspaces,
         "Local workspaces and pinned repositories…",
         "tabs groups organize pin library",
-        ""
+        None
     ),
     command!(
         PinRepository,
         "Pin or unpin this repository",
         "tabs library favorite",
-        ""
+        None
     ),
     command!(
         GitHub,
         "GitHub pull requests…",
         "github collaboration PR review comment create draft account",
-        ""
+        None
     ),
     command!(
         EarlierGraphLanes,
         "Show earlier graph lanes",
         "graph horizontal left overflow",
-        ""
+        None
     ),
     command!(
         LaterGraphLanes,
         "Show later graph lanes",
         "graph horizontal right overflow",
-        ""
+        None
     ),
     command!(
         Projects,
         "Go to Projects",
         "hub home repositories recent",
-        "⇧O"
+        Some(ShortcutId::Projects)
     ),
     command!(
         Open,
         "Open a repository…",
         "folder project choose browse",
-        "O"
+        Some(ShortcutId::Open)
     ),
-    command!(History, "Go to History", "commits graph log", "1"),
+    command!(
+        History,
+        "Go to History",
+        "commits graph log",
+        Some(ShortcutId::History)
+    ),
     command!(
         Changes,
         "Go to Working Changes",
         "status stage unstage commit composer",
-        "2"
+        Some(ShortcutId::Changes)
     ),
     command!(
         QuickOpen,
         "Quick Open File…",
         "find path source tracked",
-        "P"
+        Some(ShortcutId::QuickOpen)
     ),
     command!(
         Compare,
         "Compare revisions…",
         "diff branch tag commit before after",
-        "⇧C"
+        Some(ShortcutId::Compare)
     ),
     command!(
         Branch,
         "Manage current branch…",
         "rename delete upstream tracking checkout switch",
-        ""
+        None
     ),
     command!(
         Worktrees,
         "Manage worktrees…",
         "linked create add remove open",
-        ""
+        None
     ),
     command!(
         Tags,
         "Browse and manage tags…",
         "annotate release create delete push",
-        ""
+        None
     ),
     command!(
         Reflog,
         "Browse reflog and recover a commit…",
         "lost undo history recovery",
-        ""
+        None
     ),
     command!(
         Rebase,
         "Review an interactive rebase…",
         "rewrite reorder squash fixup drop reword",
-        ""
+        None
     ),
     command!(
         RewriteReview,
         "Review rewritten branch series…",
         "rebase original changed commits publish force lease push",
-        ""
+        None
     ),
     command!(
         FileHistory,
         "Open selected file history",
         "path log rename previous revisions",
-        ""
+        None
     ),
     command!(
         Blame,
         "Show selected file attribution",
         "blame author annotate line history",
-        ""
+        None
     ),
     command!(
         Profiles,
         "Manage Git profiles…",
         "personal work author name email identity signing",
-        ""
+        None
     ),
     command!(
         Appearance,
         "Change appearance and themes…",
         "braden daylight light dark density interface code text size",
-        ""
+        None
     ),
     command!(
         Settings,
         "Open Settings",
         "preferences editor default branch configuration",
-        ","
+        Some(ShortcutId::Settings)
     ),
     command!(
         RecoveryDrafts,
         "Recover saved conflict and rebase drafts…",
         "unfinished text restart restore copy",
-        ""
+        None
     ),
     command!(
         Activity,
         "Show GitTurtle activity…",
         "operations errors cancelled outcomes",
-        "⇧A"
+        Some(ShortcutId::Activity)
     ),
     command!(
         Refresh,
         "Refresh local repository state",
         "reload status refs files",
-        "R"
+        Some(ShortcutId::Refresh)
     ),
     command!(
         Search,
         "Search commits",
         "find message author email hash",
-        "F"
+        Some(ShortcutId::Search)
     ),
     command!(
         Sidebar,
         "Toggle repository sidebar",
         "navigation branches references hide show",
-        "B"
+        Some(ShortcutId::Sidebar)
     ),
     command!(
         Editor,
         "Open repository in configured editor",
         "external ide code",
-        ""
+        None
     ),
     command!(
         Reveal,
         "Reveal repository in file manager",
         "finder folder external",
-        ""
+        None
     ),
-    command!(Help, "Show keyboard shortcuts", "help keys commands", "⇧/"),
+    command!(
+        Help,
+        "Show keyboard shortcuts",
+        "help keys commands",
+        Some(ShortcutId::Help)
+    ),
+    command!(
+        Palette,
+        "Command Palette…",
+        "search all commands actions",
+        Some(ShortcutId::Palette)
+    ),
+    command!(
+        About,
+        "About GitTurtle",
+        "version build native git client",
+        None
+    ),
 ];
 
 #[derive(Clone, Default)]
@@ -309,6 +334,8 @@ impl CommandId {
                 self,
                 Self::Activity
                     | Self::Help
+                    | Self::About
+                    | Self::Palette
                     | Self::NextRepositoryTab
                     | Self::PreviousRepositoryTab
                     | Self::CloseRepositoryTab
@@ -431,6 +458,29 @@ impl Selection {
     }
 }
 impl GitTurtle {
+    #[cfg(target_os = "linux")]
+    pub(super) fn menu_command_reason(&self, id: CommandId) -> Option<&'static str> {
+        id.reason(&self.palette_availability())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn run_menu_command(
+        &mut self,
+        id: CommandId,
+        path: &Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if &self.path != path
+            || id.reason(&self.palette_availability()).is_some()
+            || window.has_active_dialog(cx)
+            || window.has_active_sheet(cx)
+        {
+            return;
+        }
+        self.run_palette_command(id, window, cx);
+    }
+
     fn palette_context(&self) -> PaletteContext {
         PaletteContext {
             availability: self.palette_availability(),
@@ -627,6 +677,8 @@ impl GitTurtle {
                 }
             }
             CommandId::Help => self.shortcut_help(window, cx),
+            CommandId::Palette => self.open_command_palette(window, cx),
+            CommandId::About => self.about(window, cx),
         }
         window.refresh();
     }
@@ -782,11 +834,7 @@ impl Render for Palette {
                         let spec = COMMANDS[this.results[index]];
                         let disabled = spec.id.reason(&context);
                         let selected = this.selection.index == index;
-                        let shortcut = if spec.shortcut.is_empty() {
-                            String::new()
-                        } else {
-                            format!("{}{}", primary_label(), spec.shortcut)
-                        };
+                        let shortcut = spec.shortcut.map(shortcuts::label).unwrap_or_default();
                         div()
                             .id(("palette-command", index))
                             .role(Role::ListBoxOption)

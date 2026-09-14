@@ -2158,6 +2158,17 @@ impl Render for GitTurtle {
                     this.open_quick_file(window, cx);
                 }
             }))
+            .on_action(cx.listener(|this, _: &MainMenu, window, cx| {
+                #[cfg(target_os = "linux")]
+                {
+                    let menu = this.primary_menu.clone();
+                    window.defer(cx, move |window, cx| {
+                        menu.update(cx, |menu, cx| menu.toggle(window, cx))
+                    });
+                }
+                #[cfg(not(target_os = "linux"))]
+                let _ = (this, window, cx);
+            }))
             .on_action(cx.listener(|this, _: &ShowCommandPalette, window, cx| {
                 this.open_command_palette(window, cx)
             }))
