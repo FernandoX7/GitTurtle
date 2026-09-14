@@ -34,6 +34,11 @@ actual Ubuntu GNOME shell/driver integration, fractional/mixed-monitor scaling,
 macOS runtime and hosted CI remain unverified. The roots shared the host kernel;
 this is not evidence of a complete Ubuntu desktop installation.
 
+Final host-created archive extraction exposed unmapped builder ownership in
+the rootless runtime namespace. Neutral numeric archive ownership fixed it;
+ordinary extraction and the isolated install/headless checks passed again.
+The runbook also pins the manual Cargo target directory to match packaging.
+
 ## September 14 Linux icon and window-control correction
 
 Source `f3bf253` corrects the user-reported missing launcher icon and absent

@@ -8,12 +8,14 @@ are in the [Linux runbook](../../linux.md).
 
 ## Source and environment
 
-App source is `6824c7d`; installer/toolchain/runbook source is `d482a3f`.
+App source is `6824c7d`; installer/toolchain/runbook source starts at `d482a3f`,
+with the archive-ownership and explicit target-directory corrections below.
 The Ubuntu release executable SHA-256 is
 `3c39630d691de172ee8302ab0e8bf30976dbc9cd80c957919f357ff230c1af75`.
 The same bytes were installed for the runtime-only, virtual-display and
 physical-host probes. All 872 recorded source/manifest/asset inputs matched
-the workspace after the Rust checks; later edits are documentation/evidence.
+the workspace after the Rust checks; later edits affect packaging and
+documentation/evidence only, not the executable.
 [Machine-readable identities](evidence.json) include the input digest,
 [per-file inputs](build-inputs.json), check results and screenshot hashes.
 
@@ -57,6 +59,16 @@ absence is not covered by the passing count. This run did not execute hosted
 CI, a macOS build, live-provider authentication or network Git workflows.
 The authored CI now packages, extracts, installs and checks the no-display
 failure after its Ubuntu release build.
+
+A final archive created on the host initially failed ordinary `tar` extraction
+in the single-UID runtime namespace because it recorded the builder's UID/GID
+1000. The packager now stores neutral numeric owner/group 0. Ordinary extraction,
+checksum verification, installation from `/` with a cleared environment,
+executable identity/mode and the no-display diagnostic then passed in the same
+runtime root; [targeted record](archive-owner-check.json). Normal non-root
+teammates do not need extra extraction flags. The manual build command also
+pins `--target-dir target`, matching the packager and preventing custom Cargo
+target-directory settings from making later commands use an older executable.
 
 ## Virtual native interaction
 

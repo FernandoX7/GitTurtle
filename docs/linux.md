@@ -85,7 +85,7 @@ From the repository root:
 ```sh
 rustup show active-toolchain
 cargo fmt --all -- --check
-cargo build --release --locked -p gitturtle --target x86_64-unknown-linux-gnu
+cargo build --release --locked -p gitturtle --target x86_64-unknown-linux-gnu --target-dir target
 ./target/x86_64-unknown-linux-gnu/release/gitturtle /absolute/path/to/repository
 ./scripts/package-linux.sh --no-build
 ```

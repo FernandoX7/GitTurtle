@@ -1,0 +1,21 @@
+{
+  "scope": "Final archive metadata and extraction/install in separate Ubuntu runtime-only root; headless, no GUI claim",
+  "archive_sha256": "6d54c28877b59d6ec128bd8c238a52fa328d90c962ecddb673f64e65bbc38838",
+  "binary_sha256": "3c39630d691de172ee8302ab0e8bf30976dbc9cd80c957919f357ff230c1af75",
+  "archive_member_count": 34,
+  "all_archive_owners_numeric_zero": true,
+  "ordinary_tar_extraction_in_single_uid_namespace": "passed",
+  "checksum": "passed",
+  "installation_cwd": "/",
+  "environment": {
+    "HOME": "/archive check teammate",
+    "XDG_DATA_HOME": "/archive check teammate/data",
+    "PATH": "/usr/bin:/bin"
+  },
+  "executable_mode": "0755",
+  "installation_stdout": "Installed /archive check teammate/.local/bin/gitturtle\nLauncher: /archive check teammate/data/applications/com.gitturtle.desktop.desktop\nOpen GitTurtle from Applications, or run the installed executable with a repository path.\nThe extracted bundle and source checkout are no longer needed to run it.\n",
+  "installation_stderr": "gtk-update-icon-cache: Cache file created successfully.\n",
+  "no_display_exit_code": 1,
+  "no_display_stderr": "GitTurtle needs a Wayland or X11 desktop session. Launch it from your desktop's application menu or a terminal inside that session. No display was selected: WAYLAND_DISPLAY or DISPLAY must identify the session, and ZED_HEADLESS must be unset.\n",
+  "no_preference_write": true
+}

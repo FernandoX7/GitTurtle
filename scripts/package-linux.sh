@@ -91,7 +91,9 @@ files = sorted(path for path in bundle.rglob("*") if path.is_file())
     f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(bundle)}\n" for path in files
 ))
 PY
-tar -C "$(dirname "$bundle")" -czf "$bundle.tar.gz" "$(basename "$bundle")"
+# Neutral archive ownership avoids leaking the builder's account IDs and lets
+# single-UID user namespaces extract normally without unmapped-owner failures.
+tar --owner=0 --group=0 --numeric-owner -C "$(dirname "$bundle")" -czf "$bundle.tar.gz" "$(basename "$bundle")"
 (cd "$(dirname "$bundle")" && sha256sum "$(basename "$bundle").tar.gz" > "$(basename "$bundle").tar.gz.sha256")
 echo "Built $bundle.tar.gz"
 echo "Extract anywhere, then run: python3 \"$bundle/install.py\""
