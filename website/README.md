@@ -17,7 +17,7 @@ node --check website/public/site.js
 python3 website/check.py
 ```
 
-The coordinator verified the rendered site at 1440, 1024, 390 and 320 pixels with no horizontal overflow. Left/End/Tab navigation retained the expected keyboard focus; activating Prepare a commit selected the panel and its images loaded. The browser reported no console warnings or errors. Actual reduced-motion emulation, 200% zoom and JavaScript-disabled runtime checks were unavailable in the current browser capability; their fallback behavior was reviewed in source only. See [the website QA record](QA.md) for the executed scope and limits.
+The initial review verified the rendered site at 1440, 1024, 390 and 320 pixels with no horizontal overflow. Left/End/Tab navigation retained the expected keyboard focus; activating Prepare a commit selected the panel and its images loaded. The browser reported no console warnings or errors. Actual reduced-motion emulation, 200% zoom and JavaScript-disabled runtime checks were unavailable in the current browser capability; their fallback behavior was reviewed in source only. See [the website QA record](QA.md) for the executed scope and limits.
 
 ### Motion and JavaScript fallback
 
@@ -28,15 +28,17 @@ Source inspection confirms these behaviors; it does not substitute for browser e
 - Without JavaScript, the tour buttons remain hidden and all three screenshots, captions, and full-size links appear in document order. Navigation, source-install links and the rest of the page remain ordinary HTML. No panel starts with a `hidden` attribute.
 - With JavaScript, the walkthrough initially selects Review changes. The script adds tab/tablist/tabpanel semantics, makes only the selected tab sequentially focusable, and shows its panel. Left/Right wrap and select; Home/End select the first/last tab. Click and native button Enter/Space activation select a view. The selected panel and its image link remain keyboard-accessible. Selection has no network side effects.
 
-`check.py` parses the top-level HTML files, checks local `href`/`src` targets, same-page fragment IDs, duplicate IDs, explicit button types, image alt attributes, and hashes of the provenance assets. It does not render CSS, execute JavaScript, validate every accessibility interaction, check external link availability, or emulate reduced motion. A source audit also confirmed that all three current PNG screenshots are 1480 × 800, matching their HTML declarations. The recorded native hashes and captions are consistent with these captures.
+`check.py` checks HTML recursively, CSS `url()` assets, same-page and cross-page fragment IDs, duplicate IDs, explicit button types, image alt attributes, provenance hashes, Pages-header syntax, content fingerprints for immutable URLs, and the custom 404's root-relative references and `noindex`. It makes no network requests and does not render CSS, execute JavaScript, test deployed responses or replace accessibility checks. `smoke.py` checks the deployed HTTP/TLS behavior with bounded read-only requests.
 
 The local Python preview server does not interpret Cloudflare's `_headers` file or automatically use the custom `404.html` for missing paths. Both were verified on the published Pages deployment; see [the publication QA record](QA.md#publication-verification).
+
+The production response policies, managed certificate renewal, TLS settings, cache behavior and post-deployment checks are documented in [OPERATIONS.md](OPERATIONS.md).
 
 ## Content and release truth
 
 The GitHub Releases API returned an empty array on 2026-09-14. The public [Releases page](https://github.com/FernandoX7/GitTurtle/releases) also reported no releases. Therefore the site offers **source build guides**, not download buttons. Never change a CTA to Download until the target public release asset exists, its platform/architecture and signature status are verified, and installation guidance matches it. No hosted endpoint is queried automatically by the website.
 
-macOS and Linux are described as source previews. Linux's initial build target is Ubuntu 24.04 x86-64, not a promise of distribution-wide support. Local macOS bundles are ad-hoc signed and not notarized. Platform limits and the validation record remain one click away. Site claims come from the current repository README and user guide; no benchmark, endorsement, testimonial or release date has been invented.
+macOS and Linux are described as source previews. Linux's initial build target is Ubuntu 24.04 x86-64, not a promise of distribution-wide support. Local macOS bundles are ad-hoc signed and not notarized. Platform limits and the validation record remain one click away. Site claims come from the current repository README and user guide; no benchmark, endorsement, testimonial or release date has been invented. The performance positioning and 60 GB worktree origin story come from the owner’s experience; 60 GB is not advertised as a capacity limit or a measured cross-client benchmark.
 
 ### Screenshot provenance and replacement
 
@@ -89,7 +91,7 @@ npx --yes wrangler@4.131.2 pages deploy public --project-name gitturtle --branch
 
 Login is needed only when the CLI is not already authenticated. Select the existing owner's account if prompted. For a review deployment, use a distinct `--branch` value instead of `main`; this still publishes a public Pages URL. The deployment command uploads only `public/`, requires no build command, and does not install website packages in the native workspace. Credentials remain in Wrangler's user configuration, never in this repository.
 
-Verify the returned deployment URL, then the canonical domain: HTTPS, page and asset bytes, security headers, a missing path returning the custom 404, desktop/mobile layout, keyboard navigation, and console errors. Update the identity and QA record when deploying changed assets.
+Run `python3 smoke.py` from `website/` after deployment. Verify the returned deployment URL, then the canonical domain: HTTPS, page and asset bytes, security headers, a missing path returning the custom 404, desktop/mobile layout, keyboard navigation, and console errors. Update the identity and QA record when deploying changed assets.
 
 Direct Upload projects cannot later be converted to Git-integrated projects in place. If automatic deployment becomes desirable, create a separate Git-integrated Pages project, restrict build watch paths to `website/**`, validate it, and explicitly migrate the domain.
 

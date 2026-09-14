@@ -43,3 +43,18 @@ The [deployment record](README.md#cloudflare-pages-deployment) contains the sour
 Cloudflare subsequently reported the domain, verification and certificate validation **active**. Authoritative DNS, `1.1.1.1` and `8.8.8.8` returned the proxied addresses. Curl requests for `https://gitturtle.com` using one of those publicly resolved addresses (TLS verification enabled, correct domain SNI) returned HTTP 200 with the exact local HTML and expected security headers; the custom missing path returned HTTP 404 with the correct file bytes. Styles, script, all three product screenshots and the self-hosted font were also checked against local bytes.
 
 The home router still returned a cached empty response with roughly 23 minutes remaining, so the local browser's apex navigation failed with `ERR_NAME_NOT_RESOLVED`. No resolver settings or hosts-file entries were changed to conceal that limitation. Actual browser layout/interaction checks used the same production files at `gitturtle.pages.dev`; a local browser check of the apex remains pending cache expiry. The Pages and canonical HTTPS checks are distinct observations.
+
+## Production safeguards and marketing refinement
+
+The owner requested a production-readiness audit and more prominent performance
+and open-source positioning. The revised browser/social title is
+`GitTurtle | Fast, Open Source Git Client`; the hero and screenshot-label dots
+have been removed. The 60 GB statement is Fernando's reported origin story,
+not a benchmark or supported-capacity guarantee. The existing composition and
+real native screenshots remain intact.
+
+Local browser checks of the revised copy at reported widths 1309 and 354 CSS
+pixels found no horizontal overflow. The desktop hero and origin story and
+mobile hero were visually inspected. The source-preview install state remains
+visible. See [OPERATIONS.md](OPERATIONS.md) for the transport, certificate,
+cache and validation responsibilities.
