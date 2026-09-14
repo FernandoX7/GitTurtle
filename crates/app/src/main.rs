@@ -51,6 +51,8 @@ mod tags;
 mod text;
 mod text_review;
 mod views;
+#[cfg(target_os = "linux")]
+mod window_chrome;
 mod worker;
 mod working_selection;
 mod workspace;
@@ -574,6 +576,12 @@ impl GitTurtle {
         this.load_profiles(window, cx);
         this.install_draft_quit_observer(cx);
         this.install_tab_quit_observer(window, cx);
+        #[cfg(target_os = "linux")]
+        this.subscriptions
+            .push(cx.observe_button_layout_changed(window, |_, window, cx| {
+                window.refresh();
+                cx.notify();
+            }));
         this.draft_saver.install_quit_observer(cx);
         this.subscriptions.push(cx.subscribe_in(
             &file_filter,

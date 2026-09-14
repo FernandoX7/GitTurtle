@@ -1788,8 +1788,27 @@ impl GitTurtle {
                     ))
             })
     }
-    pub(super) fn render_repository_tabs(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_repository_tabs(
+        &self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = palette(cx);
+        let (left_controls, right_controls, drag_region) = {
+            #[cfg(target_os = "linux")]
+            {
+                let busy = self.operation_busy.is_some();
+                (
+                    window_chrome::controls(window_chrome::Side::Left, busy, _window, cx),
+                    window_chrome::controls(window_chrome::Side::Right, busy, _window, cx),
+                    window_chrome::drag_region(_window, cx),
+                )
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                (None::<AnyElement>, None::<AnyElement>, None::<AnyElement>)
+            }
+        };
         div()
             .flex()
             .items_center()
@@ -1799,6 +1818,7 @@ impl GitTurtle {
             .bg(rgb(colors.panel))
             .border_b_1()
             .border_color(rgb(colors.border))
+            .children(left_controls)
             .child(
                 div()
                     .id("repository-tabs")
@@ -1890,7 +1910,8 @@ impl GitTurtle {
                                             })),
                                     )
                             }),
-                    ),
+                    )
+                    .children(drag_region),
             )
             .child(
                 button("new-repository-tab", "", "plus", false)
@@ -1901,6 +1922,7 @@ impl GitTurtle {
                     })),
             )
             .child(self.repository_tabs_menu(cx))
+            .children(right_controls)
             .into_any_element()
     }
 }

@@ -2324,7 +2324,7 @@ impl Render for GitTurtle {
                     cx.notify();
                 }
             }))
-            .child(self.render_repository_tabs(cx))
+            .child(self.render_repository_tabs(window, cx))
             .when(self.page != AppPage::Projects, |root| {
                 root.child(self.render_header(cx))
             })

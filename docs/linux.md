@@ -44,7 +44,7 @@ GitTurtle executable, icon and application launcher; no root privileges are need
 ```sh
 install -Dm755 target/release/gitturtle "$HOME/.local/bin/gitturtle"
 install -Dm644 assets/app-icon.png \
-  "$HOME/.local/share/icons/hicolor/1024x1024/apps/com.gitturtle.desktop.png"
+  "$HOME/.local/share/icons/com.gitturtle.desktop.png"
 mkdir -p "$HOME/.local/share/applications"
 cat > "$HOME/.local/share/applications/com.gitturtle.desktop.desktop" <<EOF
 [Desktop Entry]
@@ -52,7 +52,7 @@ Type=Application
 Name=GitTurtle
 Comment=Browse Git history and manage local repositories
 Exec="$HOME/.local/bin/gitturtle" %f
-Icon=com.gitturtle.desktop
+Icon=$HOME/.local/share/icons/com.gitturtle.desktop.png
 Terminal=false
 Categories=Development;RevisionControl;
 StartupWMClass=com.gitturtle.desktop
@@ -61,8 +61,11 @@ desktop-file-validate "$HOME/.local/share/applications/com.gitturtle.desktop.des
 update-desktop-database "$HOME/.local/share/applications"
 ```
 
-The existing PNG is 1024 × 1024. The desktop filename matches the application's
-`com.gitturtle.desktop` ID. Open **GitTurtle** from the application launcher or run
+The existing PNG is 1024 × 1024. The launcher references it by absolute path:
+the standard hicolor theme does not include a `1024x1024/apps` directory, so
+installing it there with only a theme icon name can leave the launcher blank.
+The desktop filename matches the application's `com.gitturtle.desktop` ID.
+Open **GitTurtle** from the application launcher or run
 `"$HOME/.local/bin/gitturtle" /path/to/repository`. The launcher uses an absolute
 executable path, so it does not depend on `~/.local/bin` being in the desktop's
 `PATH`. Rebuild and repeat the installation commands after source changes.
@@ -70,6 +73,22 @@ executable path, so it does not depend on `~/.local/bin` being in the desktop's
 Preferences, repository sessions and local drafts live under
 `$XDG_CONFIG_HOME/gitturtle`, or `~/.config/gitturtle` when that variable is unset.
 Keyboard shortcuts use Control in place of macOS Command.
+
+## Window controls and quitting
+
+Close the window with its **×** control, or use **Ctrl+Q** to quit GitTurtle.
+Linux desktops that supply window decorations retain their own title bar.
+On desktops such as GNOME Wayland, the tab strip supplies the window controls
+in the position and order configured by the desktop, including minimize and
+maximize when enabled. Drag its blank space to move the window, double-click
+to maximize or restore, and right-click for the window menu when supported.
+Closing the final window uses the normal application shutdown and draft saver.
+
+This follows GNOME's [header bar](https://developer.gnome.org/hig/patterns/containers/header-bars.html)
+and [keyboard](https://developer.gnome.org/hig/reference/keyboard.html) conventions.
+On macOS, GitTurtle retains the system traffic-light controls and
+**GitTurtle → Quit GitTurtle / Cmd+Q** in the native application menu, following
+Apple's [window guidance](https://developer.apple.com/design/human-interface-guidelines/windows).
 
 ## Platform limits
 

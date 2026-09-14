@@ -194,6 +194,7 @@ impl GitTurtle {
             ("Back to retained context", "["),
             ("Toggle navigation", "B"),
             ("Find in focused list or editor", "F"),
+            ("Quit GitTurtle", "Q"),
         ];
         window.open_alert_dialog(cx, move |dialog, _, cx| dialog.title("Keyboard shortcuts").description("Move through controls with Tab and Shift-Tab. Activate buttons with Space or Return.")
             .child(div().flex().flex_col().gap_2().children(rows.iter().enumerate().map(|(i, (label, key))| div().id(("shortcut-help", i)).role(Role::Label).aria_label(format!("{label}: {modifier}{key}")).flex().justify_between().gap_6().child(*label).child(div().font_family(mono()).child(format!("{modifier}{key}")))))
