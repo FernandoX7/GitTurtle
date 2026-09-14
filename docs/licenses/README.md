@@ -33,3 +33,8 @@ name unresolved notices. Strict mode returns 2 when such gaps exist. Invalid
 inputs, changed supplemental hashes, unavailable metadata, or filesystem errors
 return 1. The [top-level notices](../../THIRD_PARTY_NOTICES.md) explain scope and
 distribution requirements.
+
+The [Linux notice review](linux-notice-review.md) records exact package/source
+identity for the remaining `mac` and Rust `ufbx` gaps, the upstream findings,
+and prepared follow-ups. It supplies evidence and next steps, not replacement
+license text or release clearance.

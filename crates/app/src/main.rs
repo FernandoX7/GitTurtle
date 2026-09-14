@@ -4,6 +4,7 @@ mod authentication;
 mod automatic_refresh;
 mod blame;
 mod branch_actions;
+mod build_info;
 mod columns;
 mod command_palette;
 mod commit_drafts;
@@ -1771,6 +1772,9 @@ fn primary_label() -> &'static str {
 fn main() {
     if let Some(code) = gitturtle_core::run_askpass_if_requested() {
         std::process::exit(code);
+    }
+    if build_info::handle_cli() {
+        return;
     }
     #[cfg(target_os = "linux")]
     if gpui_kit::guess_compositor() == "Headless" {

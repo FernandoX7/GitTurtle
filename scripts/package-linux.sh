@@ -59,6 +59,7 @@ python3 "$project_root/scripts/collect-third-party-licenses.py" \
 python3 - "$project_root" "$bundle" "$build" <<'PY'
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -79,12 +80,24 @@ with Image.open(bundle / "icons/app-icon.png") as image:
 def git(*args):
     result = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True)
     return result.stdout.strip() if result.returncode == 0 else "unavailable"
+probe_env = dict(os.environ, ZED_HEADLESS="1")
+for name in ("DISPLAY", "WAYLAND_DISPLAY"):
+    probe_env.pop(name, None)
+try:
+    probe = subprocess.run([str(bundle / "bin/gitturtle"), "--build-info"],
+                           env=probe_env, capture_output=True, text=True, timeout=5)
+    compiled_identity = json.loads(probe.stdout) if probe.returncode == 0 else None
+    if not isinstance(compiled_identity, dict) or compiled_identity.get("application") != "GitTurtle":
+        compiled_identity = None
+except (subprocess.TimeoutExpired, ValueError):
+    compiled_identity = None
 info = {
     "target": "x86_64-unknown-linux-gnu",
     "packaged_from_revision": git("rev-parse", "HEAD"),
     "packaging_tree_status": git("status", "--porcelain"),
     "release_built_by_packager": sys.argv[3] == "true",
     "binary_sha256": hashlib.sha256((bundle / "bin/gitturtle").read_bytes()).hexdigest(),
+    "compiled_identity": compiled_identity,
     "note": "With --no-build, verify the reused executable's source identity separately.",
 }
 (bundle / "build-info.json").write_text(json.dumps(info, indent=2) + "\n")
