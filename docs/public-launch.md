@@ -76,37 +76,43 @@ offers one-time and monthly contributions; see the
 
 The [draft preview notes](preview-release-notes.md) cover the implemented
 refresh recovery, new-commit affordances, split-pane synchronization, build
-diagnostics, recoverable Linux upgrades, and the static marketing site. They
-are prepared release copy, not a publication announcement. The current
+diagnostics, recoverable Linux upgrades, and the published static marketing
+site. They remain draft binary-release copy; no public binary is announced. The current
 [refresh validation](benchmarks/2026-09-14-refresh-reliability.md) and
 [native investigation](benchmarks/2026-09-14-native-preview.md) supplement the
 historical launch record below; their exact build and environment boundaries
-remain authoritative. Final installed executable identity and package hashes
-must be recorded with the release evidence rather than inferred from a source
-commit or an earlier diagnostic prototype.
+remain authoritative. The owner's machine was reinstalled with the validated
+`417b5e8` native build, preserving settings and a recoverable previous
+installation. Its executable hash remained unchanged. Use the native record's
+executable identity and package hashes rather than inferring them from a source
+commit or an earlier diagnostic prototype. The changes and evidence are now
+public on `main` through merge `483782d`; the resulting hosted CI run is pending,
+not a recorded pass.
 
 The [website](../website/README.md) lives separately in `website/public/` and
 requires no native build or package-manager installation. It presents real app
 screenshots and source-build guidance, with no binary Download button. Its
 README records screenshot provenance, completed browser checks, remaining
-checks, and the proposed Cloudflare Pages configuration.
+checks, and the Cloudflare Pages deployment.
 
-Website publication has its own final steps:
+Website publication was separately approved and completed:
 
-- [ ] Complete any remaining browser checks in the website guide and approve
-  the rendered revision and screenshot set.
-- [ ] Obtain access to the owner's existing Cloudflare account and inspect
-  the `gitturtle.com` zone and existing Pages/Worker configuration read-only.
-  Prepare the exact project, production-branch, apex-domain and rollback
-  changes from that existing state; preserve unrelated DNS records.
-- [ ] Obtain approval to publish the reviewed revision, including a public
-  Pages preview. Verify its HTTPS, headers, missing-page behavior and
-  interactions before applying the approved custom-domain change. Record
-  deployment identity and the previous destination for rollback.
+- [x] Publish the reviewed static assets to project `gitturtle` at
+  [gitturtle.pages.dev](https://gitturtle.pages.dev). Deployment
+  `b39cf661-dde0-4d54-bfc1-347c9f62893e` contains the exact `website/public/`
+  bytes from source `0db617969b94c565ec1f89d94a03055e705c1efb`.
+- [x] Create the approved `gitturtle.com` custom-domain binding and its apex
+  CNAME to `gitturtle.pages.dev`. This was the only DNS record added.
+- [x] Confirm Cloudflare reports `gitturtle.com` active with verification and
+  certificate validation active. Authoritative DNS, Cloudflare and Google DNS
+  return its addresses. HTTPS at those addresses validates the domain certificate
+  and serves the exact reviewed files. The local router retains an earlier empty
+  DNS response until its cache expires; local browser verification used the Pages
+  hostname. See the website QA record for this boundary.
 
-The full [deployment procedure](../website/README.md#proposed-cloudflare-pages-deployment)
-is maintained with the site. Resolving binary notice requirements does not
-itself deploy the website or authorize DNS changes.
+The full [deployment record and procedure](../website/README.md#cloudflare-pages-deployment)
+is maintained with the site, including remaining browser checks and rollback
+instructions. Website publication does not clear or authorize a binary release.
 
 ## Before a public binary release
 

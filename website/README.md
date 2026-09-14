@@ -30,7 +30,7 @@ Source inspection confirms these behaviors; it does not substitute for browser e
 
 `check.py` parses the top-level HTML files, checks local `href`/`src` targets, same-page fragment IDs, duplicate IDs, explicit button types, image alt attributes, and hashes of the provenance assets. It does not render CSS, execute JavaScript, validate every accessibility interaction, check external link availability, or emulate reduced motion. A source audit also confirmed that all three current PNG screenshots are 1480 × 800, matching their HTML declarations. The recorded native hashes and captions are consistent with these captures.
 
-The local Python preview server does not interpret Cloudflare's `_headers` file or automatically use the custom `404.html` for missing paths. Verify the security headers and actual missing-path behavior on the approved Pages preview before the domain cutover. No browser, native UI, deployment or DNS action was performed for this source/documentation audit.
+The local Python preview server does not interpret Cloudflare's `_headers` file or automatically use the custom `404.html` for missing paths. Both were verified on the published Pages deployment; see [the publication QA record](QA.md#publication-verification).
 
 ## Content and release truth
 
@@ -56,19 +56,47 @@ All initial bootstrap images have been replaced. For later image updates, retain
 
 The app icon and turtle use existing project artwork from `assets/branding/app-icon.png` and `assets/AppIcon.icon/Assets/turtle.png`. Manrope Latin is self-hosted from Google Fonts (variable 400–800); its original SIL Open Font License is retained in `public/fonts/OFL.txt`. Typeface source: [Google Fonts Manrope](https://github.com/google/fonts/tree/main/ofl/manrope). No image-generation tool was used to alter product evidence.
 
-## Proposed Cloudflare Pages deployment
+## Cloudflare Pages deployment
 
-No Cloudflare project, DNS record, paid service or public deployment has been created by this work. `gitturtle.com` did not return readable content through the research browser; that does not establish its DNS configuration or account state. Inspect the existing zone and Workers/Pages projects read-only before making changes.
+The owner approved publication on September 14, 2026. Cloudflare Pages hosts the static files through **Direct Upload**, with no Git integration, automatic builds, Functions, analytics, environment secrets, or native compilation. Only `website/public/` is uploaded. Deployment tooling lives outside the native build; local Wrangler cache files stay in `website/.wrangler/` and are ignored.
 
-After approving the rendered website and current screenshots:
+| Item | Published identity |
+| --- | --- |
+| Canonical domain | `https://gitturtle.com` |
+| Pages project | `gitturtle` |
+| Pages hostname | `https://gitturtle.pages.dev` |
+| First production deployment | `b39cf661-dde0-4d54-bfc1-347c9f62893e` |
+| Immutable deployment URL | `https://b39cf661.gitturtle.pages.dev` |
+| Deployed source | `0db617969b94c565ec1f89d94a03055e705c1efb`, exact `website/public/` bytes |
+| Production branch label | `main` |
+| Upload tool | Wrangler `4.131.2` |
 
-1. In the user's existing Cloudflare account, inspect the `gitturtle.com` zone and any existing Pages/Worker route for the apex. Record the current apex and `www` records and existing destination before proposing a change. Preserve MX, TXT, mail, verification and unrelated subdomains.
-2. Create a Pages project connected only to `FernandoX7/GitTurtle`, or use an existing appropriate project. Framework preset: **None**. Root directory: **website**. Build command: **exit 0**. Build output directory: **public**. No environment variables or secrets are needed. Configure build watch paths to include only `website/**`, separating site deployments from native application changes. Confirm the production branch with the owner; do not enable automatic production publication without approval.
-3. Deploy the approved revision to its Pages preview hostname first. Review desktop/mobile appearance, HTTPS, 404 handling, `_headers`, source links, keyboard operation, and reduced motion there. A preview URL is still a public publication action and requires the final publication approval.
-4. In the Pages project's **Custom domains**, add `gitturtle.com`. For a zone already in the same Cloudflare account, use the Pages flow so the custom-domain binding and the appropriate apex DNS record are established together. If an apex destination already exists, show the precise replacement before applying it. Do not change nameservers or remove unrelated records.
-5. Add `www.gitturtle.com` only if the owner wants it. If added, configure one explicit redirect to `https://gitturtle.com` preserving path and query. Do not add a blanket redirect until existing `www` usage is known. The canonical, sitemap, and social metadata already use the apex.
-6. Verify the final domain over HTTPS, its certificate, links and headers. Record the Pages project/deployment ID, deployed Git revision, approved DNS change and rollback destination. Cloudflare Pages can roll production back to an earlier deployment; preserve the pre-existing DNS destination if this is the first site cutover.
+The account inspection found an active Cloudflare zone, no DNS records, no Pages projects, no zone Worker routes, and no Worker custom domain for the apex. Publication created the Pages project and custom-domain binding, then added one proxied CNAME: `gitturtle.com` → `gitturtle.pages.dev`, automatic TTL. There was no previous site destination to preserve. No `www`, mail, verification, nameserver, or unrelated record was changed. No paid service was purchased. Cloudflare reports the domain, verification and certificate validation active. Both public DNS resolvers checked resolve the apex; domain TLS and file-byte checks passed against those resolved addresses. The local router temporarily cached the earlier empty DNS response, so browser checks used the working Pages hostname.
 
-The exact remaining access is authorization for the existing Cloudflare account/project and zone plus approval to publish the reviewed revision. The final DNS change must be reviewed against the real zone; no placeholder record is safe to apply blindly.
+The native and website source commits were pushed after merging the remote's workflow-only update, preserving both histories. The resulting source revision is `483782dcc1187533c59bc1f54656821a29fb5588`. GitHub accepted this push using the account's administrator bypass while hosted checks were pending; that acceptance is not evidence those checks passed. Subsequent documentation follows the pull-request workflow.
 
-Official references: [Static HTML deployment](https://developers.cloudflare.com/pages/framework-guides/deploy-anything/), [custom domains](https://developers.cloudflare.com/pages/configuration/custom-domains/), [build watch paths](https://developers.cloudflare.com/pages/configuration/build-watch-paths/), [rollbacks](https://developers.cloudflare.com/pages/configuration/rollbacks/).
+### Publish an update
+
+Review the local page and run the focused website checks before an explicit deployment. From a clean, committed checkout, with Node.js 22 or newer and a Cloudflare login authorized for Pages:
+
+```sh
+node --check website/public/site.js
+python3 website/check.py
+cd website
+npx --yes wrangler@4.131.2 login --scopes account:read user:read pages:write
+npx --yes wrangler@4.131.2 pages deploy public --project-name gitturtle --branch main --commit-hash "$(git rev-parse HEAD)" --commit-dirty=false
+```
+
+Login is needed only when the CLI is not already authenticated. Select the existing owner's account if prompted. For a review deployment, use a distinct `--branch` value instead of `main`; this still publishes a public Pages URL. The deployment command uploads only `public/`, requires no build command, and does not install website packages in the native workspace. Credentials remain in Wrangler's user configuration, never in this repository.
+
+Verify the returned deployment URL, then the canonical domain: HTTPS, page and asset bytes, security headers, a missing path returning the custom 404, desktop/mobile layout, keyboard navigation, and console errors. Update the identity and QA record when deploying changed assets.
+
+Direct Upload projects cannot later be converted to Git-integrated projects in place. If automatic deployment becomes desirable, create a separate Git-integrated Pages project, restrict build watch paths to `website/**`, validate it, and explicitly migrate the domain.
+
+### Rollback
+
+For a later bad deployment, open Cloudflare → Workers & Pages → `gitturtle` → Deployments and roll back to a known successful **production** deployment. The first known deployment is recorded above. Recheck the canonical domain after rollback; the DNS destination remains unchanged.
+
+To unpublish this first launch completely, remove only the `gitturtle.com` custom-domain binding and the launch CNAME, then delete the Pages project if its public `pages.dev` URLs must also disappear. This restores the originally empty DNS zone. Do not delete any records added for other purposes after launch. The initial CNAME record ID is `337290964d3a0375c5f55f9440ddf5d6`; the Pages domain ID is `751b2fa7-562c-45b8-8054-8e207354bc63`.
+
+Official references: [Direct Upload](https://developers.cloudflare.com/pages/get-started/direct-upload/), [custom domains](https://developers.cloudflare.com/pages/configuration/custom-domains/), [rollbacks](https://developers.cloudflare.com/pages/configuration/rollbacks/).
