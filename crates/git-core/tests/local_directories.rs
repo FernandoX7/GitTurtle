@@ -99,6 +99,8 @@ fn local_watch_policy_preserves_tracked_ignored_paths_and_nested_git_rules() {
     );
     let before_index = fs::read(path.join(".git/index")).unwrap();
     let repo = GitRepository::open(path).unwrap();
+    // Watch candidates use Git's resolved root; macOS temp paths can be aliases.
+    let path = repo.path();
     let mut policy = repo.local_watch_policy().unwrap();
     for (relative, directory, expected) in [
         ("build", true, true),
@@ -141,10 +143,9 @@ fn local_watch_policy_uses_linked_worktree_index_and_shared_excludes() {
     fs::write(linked.join("ignored/deep/tracked"), "local\n").unwrap();
     git(&linked, &["add", "ignored/deep/tracked"]);
     fs::write(main.join(".git/info/exclude"), "ignored/\n").unwrap();
-    let mut policy = GitRepository::open(&linked)
-        .unwrap()
-        .local_watch_policy()
-        .unwrap();
+    let repo = GitRepository::open(&linked).unwrap();
+    let linked = repo.path();
+    let mut policy = repo.local_watch_policy().unwrap();
     assert!(policy.includes(&linked.join("ignored/deep"), true).unwrap());
     assert!(
         policy
@@ -164,10 +165,9 @@ fn local_watch_policy_releases_temporary_directory_matchers_and_source_bytes() {
     let temp = tempfile::TempDir::new().unwrap();
     let path = temp.path();
     git(path, &["init", "-b", "main"]);
-    let mut policy = GitRepository::open(path)
-        .unwrap()
-        .local_watch_policy()
-        .unwrap();
+    let repo = GitRepository::open(path).unwrap();
+    let path = repo.path();
+    let mut policy = repo.local_watch_policy().unwrap();
     // Missing rule files are cached too. Teardown must release those entries
     // even when a short-lived directory disappeared before its event arrived.
     for index in 0..17_000 {
