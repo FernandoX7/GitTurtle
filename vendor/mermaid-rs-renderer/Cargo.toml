@@ -183,6 +183,9 @@ optional = true
 [dev-dependencies.criterion]
 version = "0.8"
 
+[dev-dependencies.tempfile]
+version = "3"
+
 [profile.release]
 lto = true
 codegen-units = 1

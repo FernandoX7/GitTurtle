@@ -117,11 +117,8 @@ fn cli_default_svg_uses_natural_dimensions() {
 #[cfg(feature = "png")]
 #[test]
 fn cli_default_png_has_no_letterbox() {
-    let dir = std::env::temp_dir().join(format!(
-        "mermaid-rs-renderer-cli-png-test-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).expect("failed to create temp dir");
+    let temp = tempfile::TempDir::new().expect("create private test directory");
+    let dir = temp.path();
     let input = dir.join("input.mmd");
     let svg_path = dir.join("output.svg");
     let png_path = dir.join("output.png");
@@ -191,21 +188,13 @@ fn cli_default_png_has_no_letterbox() {
         (png_aspect - letterbox_aspect).abs() > 0.05,
         "PNG should not be letterboxed to 1200x800 ({png_w}x{png_h})"
     );
-
-    let _ = std::fs::remove_file(input);
-    let _ = std::fs::remove_file(svg_path);
-    let _ = std::fs::remove_file(png_path);
-    let _ = std::fs::remove_dir(dir);
 }
 
 /// Issue #101: `-i -` reads a diagram from stdin and writes to a file.
 #[test]
 fn cli_stdin_input_renders_to_file() {
-    let dir = std::env::temp_dir().join(format!(
-        "mermaid-rs-renderer-cli-stdin-test-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).expect("failed to create temp dir");
+    let temp = tempfile::TempDir::new().expect("create private test directory");
+    let dir = temp.path();
     let output_path = dir.join("stdin-output.svg");
 
     let mut child = mmdr()
@@ -232,18 +221,12 @@ fn cli_stdin_input_renders_to_file() {
     assert!(svg.starts_with("<svg"), "output should be an SVG document");
     assert!(svg.contains("Start"), "SVG should contain node label");
     assert!(svg.contains("End"), "SVG should contain node label");
-
-    let _ = std::fs::remove_file(output_path);
-    let _ = std::fs::remove_dir(dir);
 }
 
 #[test]
 fn cli_width_height_affect_file_svg() {
-    let dir = std::env::temp_dir().join(format!(
-        "mermaid-rs-renderer-cli-test-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).expect("failed to create temp dir");
+    let temp = tempfile::TempDir::new().expect("create private test directory");
+    let dir = temp.path();
     let input = dir.join("input.mmd");
     let output_path = dir.join("output.svg");
     std::fs::write(&input, "flowchart TD\n  A-->B\n").expect("failed to write input");
@@ -269,10 +252,6 @@ fn cli_width_height_affect_file_svg() {
     );
     let svg = std::fs::read_to_string(&output_path).expect("failed to read SVG output");
     assert_svg_size(&svg, "654", "456");
-
-    let _ = std::fs::remove_file(input);
-    let _ = std::fs::remove_file(output_path);
-    let _ = std::fs::remove_dir(dir);
 }
 
 /// Issue #73: named theme presets selectable via --theme.
@@ -364,8 +343,8 @@ fn cli_theme_flag_rejects_unknown_names() {
 /// preset selected via --theme.
 #[test]
 fn cli_theme_flag_composes_with_theme_variables() {
-    let dir = std::env::temp_dir().join("mmdr-theme-flag-test");
-    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let temp = tempfile::TempDir::new().expect("create private test directory");
+    let dir = temp.path();
     let config_path = dir.join("config.json");
     std::fs::write(
         &config_path,

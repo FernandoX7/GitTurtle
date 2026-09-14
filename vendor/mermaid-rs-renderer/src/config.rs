@@ -2904,31 +2904,21 @@ mod tests {
 
     #[test]
     fn fast_text_metrics_applied_by_load_config() {
-        let mut path = std::env::temp_dir();
-        path.push(format!(
-            "mermaid_rs_fast_text_metrics_{}.json",
-            std::process::id()
-        ));
+        let temp = tempfile::TempDir::new().expect("create private test directory");
+        let path = temp.path().join("config.json");
         std::fs::write(&path, r##"{"fastTextMetrics": true}"##).expect("should write temp config");
 
         let config = load_config(Some(&path)).expect("should load config");
         assert!(config.layout.fast_text_metrics);
-
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn fast_text_metrics_default_is_false_when_absent() {
-        let mut path = std::env::temp_dir();
-        path.push(format!(
-            "mermaid_rs_fast_text_metrics_absent_{}.json",
-            std::process::id()
-        ));
+        let temp = tempfile::TempDir::new().expect("create private test directory");
+        let path = temp.path().join("config.json");
         std::fs::write(&path, "{}").expect("should write temp config");
 
         let config = load_config(Some(&path)).expect("should load config");
         assert!(!config.layout.fast_text_metrics);
-
-        let _ = std::fs::remove_file(&path);
     }
 }
