@@ -209,6 +209,11 @@ fn canvas(width: u32, height: u32, rgba: &mut [u8]) -> Result<Owned> {
 }
 
 pub(super) fn decode_image(bytes: &[u8], format: &str, max_edge: u32) -> Result<ImagePreview> {
+    // Some ImageIO versions recognize JPEG 2000 but omit pixel dimensions from
+    // their property dictionary. Read and bound its mandatory header before
+    // native decoding; the codec still owns color interpretation and pixels.
+    let header_dimensions = jpeg2000::dimensions(bytes)
+        .with_context(|| format!("Invalid {format} source dimensions"))?;
     let data = data(bytes)?;
     // SAFETY: framework option constants have static lifetime. The CFData and
     // non-owning option dictionary stay live while the source is inspected.
@@ -224,12 +229,18 @@ pub(super) fn decode_image(bytes: &[u8], format: &str, max_edge: u32) -> Result<
             CFRelease,
             "Cannot read ImageIO dimensions; corrupt or unsupported codec",
         )?;
-        let width = number(properties.raw, kCGImagePropertyPixelWidth)
-            .and_then(|v| u32::try_from(v).ok())
-            .context("Missing image width")?;
-        let height = number(properties.raw, kCGImagePropertyPixelHeight)
-            .and_then(|v| u32::try_from(v).ok())
-            .context("Missing image height")?;
+        let metadata_width =
+            number(properties.raw, kCGImagePropertyPixelWidth).and_then(|v| u32::try_from(v).ok());
+        let metadata_height =
+            number(properties.raw, kCGImagePropertyPixelHeight).and_then(|v| u32::try_from(v).ok());
+        let (width, height) = if let Some(dimensions) = header_dimensions {
+            dimensions.image_dimensions(metadata_width, metadata_height)?
+        } else {
+            (
+                metadata_width.with_context(|| format!("Missing {format} image width"))?,
+                metadata_height.with_context(|| format!("Missing {format} image height"))?,
+            )
+        };
         check_dimensions(width, height)?;
         let orientation = number(properties.raw, kCGImagePropertyOrientation).unwrap_or(1);
         let (original_width, original_height) = if (5..=8).contains(&orientation) {
@@ -260,7 +271,7 @@ pub(super) fn decode_image(bytes: &[u8], format: &str, max_edge: u32) -> Result<
         let image = Owned::new(
             CGImageSourceCreateThumbnailAtIndex(source.raw, 0, options.raw),
             CGImageRelease,
-            "The installed macOS codec cannot decode this image",
+            &format!("The installed macOS codec cannot decode this {format} image"),
         )?;
         let width = u32::try_from(CGImageGetWidth(image.raw))?;
         let height = u32::try_from(CGImageGetHeight(image.raw))?;

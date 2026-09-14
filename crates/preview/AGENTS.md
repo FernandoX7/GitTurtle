@@ -8,7 +8,7 @@ These instructions supplement the root agreements for `crates/preview`. The [sup
 | --- | --- |
 | Raster/SVG decode, alpha and orientation | [src/lib.rs](src/lib.rs); [src/svg_limits.rs](src/svg_limits.rs) for SVG preflight |
 | Composited GIF animation and budgets | [src/animation.rs](src/animation.rs) |
-| Supplied-byte ImageIO/PDF pages and selected-page text | [src/native.rs](src/native.rs), [src/native/pdf_text.rs](src/native/pdf_text.rs) |
+| Supplied-byte ImageIO/PDF pages and selected-page text | [src/native.rs](src/native.rs), [src/jpeg2000.rs](src/jpeg2000.rs) for bounded JP2/J2K dimensions, [src/native/pdf_text.rs](src/native/pdf_text.rs) |
 | Container metadata and transformed text | [src/metadata.rs](src/metadata.rs) |
 | Static Mermaid | [src/mermaid.rs](src/mermaid.rs) |
 | Mesh decoding and retained camera/raster views | [src/model3d.rs](src/model3d.rs), [src/model3d/camera.rs](src/model3d/camera.rs), [src/model3d/tests.rs](src/model3d/tests.rs) |

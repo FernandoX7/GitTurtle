@@ -15,6 +15,8 @@ use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
 use resvg::{tiny_skia, usvg};
 
 pub mod animation;
+#[cfg(any(target_os = "macos", test))]
+mod jpeg2000;
 pub mod mermaid;
 pub mod metadata;
 pub mod model3d;
@@ -531,33 +533,48 @@ mod tests {
     }
 
     #[test]
-    fn jpeg2000_magic_precedes_names_and_preserves_native_orientation() {
-        for bytes in [
-            include_bytes!("../tests/fixtures/half-red-blue.jp2").as_slice(),
-            include_bytes!("../tests/fixtures/half-red-blue.j2k").as_slice(),
-        ] {
-            assert!(metadata::jpeg2000_format(bytes).is_some());
-            assert!(metadata::is_image(bytes));
-            let result = decode_image(bytes, "misleading.txt", 32);
-            #[cfg(target_os = "macos")]
-            {
-                let image = result.unwrap();
-                assert_eq!((image.original_width, image.original_height), (64, 64));
-                assert_eq!((image.width, image.height), (32, 32));
-                assert!(image.format.contains("JPEG 2000"));
-                let top = &image.rgba[(8 * 32 + 16) * 4..][..4];
-                let bottom = &image.rgba[(24 * 32 + 16) * 4..][..4];
-                assert!(top[0] > 200 && top[2] < 40, "{top:?}");
-                assert!(bottom[2] > 200 && bottom[0] < 40, "{bottom:?}");
-            }
-            #[cfg(not(target_os = "macos"))]
-            assert!(
-                result
-                    .unwrap_err()
-                    .to_string()
-                    .contains("macOS ImageIO codec")
-            );
+    fn jpeg2000_jp2_magic_precedes_names_and_preserves_native_orientation() {
+        assert_jpeg2000_preview(
+            "JP2 container",
+            include_bytes!("../tests/fixtures/half-red-blue.jp2"),
+        );
+    }
+
+    #[test]
+    fn jpeg2000_j2k_magic_precedes_names_and_preserves_native_orientation() {
+        assert_jpeg2000_preview(
+            "raw J2K codestream",
+            include_bytes!("../tests/fixtures/half-red-blue.j2k"),
+        );
+    }
+
+    fn assert_jpeg2000_preview(kind: &str, bytes: &[u8]) {
+        assert!(metadata::jpeg2000_format(bytes).is_some());
+        assert!(metadata::is_image(bytes));
+        let result = decode_image(bytes, "misleading.txt", 32);
+        #[cfg(target_os = "macos")]
+        {
+            let image = result.unwrap_or_else(|error| panic!("{kind}: {error:#}"));
+            assert_eq!((image.original_width, image.original_height), (64, 64));
+            assert_eq!((image.width, image.height), (32, 32));
+            assert!(image.format.contains("JPEG 2000"));
+            let top = &image.rgba[(8 * 32 + 16) * 4..][..4];
+            let bottom = &image.rgba[(24 * 32 + 16) * 4..][..4];
+            assert!(top[0] > 200 && top[2] < 40, "{kind}: {top:?}");
+            assert!(bottom[2] > 200 && bottom[0] < 40, "{kind}: {bottom:?}");
         }
+        #[cfg(not(target_os = "macos"))]
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("macOS ImageIO codec"),
+            "{kind}"
+        );
+    }
+
+    #[test]
+    fn jpeg2000_rejects_missing_or_invalid_content() {
         assert!(is_image_path(Path::new("photo.JP2")));
         assert!(is_image_path(Path::new("photo.j2k")));
         assert!(decode_image(b"not an image", "photo.jp2", 32).is_err());
