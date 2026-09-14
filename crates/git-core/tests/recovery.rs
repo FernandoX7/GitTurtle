@@ -835,6 +835,65 @@ fn recovery_plans_reject_changed_index_head_and_another_repository() {
 }
 
 #[test]
+fn recovery_preflight_rejects_malformed_tree_paths_before_filesystem_inspection() {
+    let f = Fixture::new();
+    let base = f.base();
+    let index = f.index();
+    let outside = f._temp.path().join("outside");
+    fs::write(&outside, "outside stays unchanged\n").unwrap();
+    let blob = f.git(&["rev-parse", "HEAD:file.txt"]);
+    let raw_oid: Vec<u8> = blob
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect();
+
+    // Git can read malformed paths from raw objects even though checkout would
+    // refuse them. Recovery preparation must reject them before probing the
+    // parent directory, an absolute destination, or any invalid path prefix.
+    for path in [
+        PathBuf::from("../outside"),
+        PathBuf::from("../missing"),
+        outside.clone(),
+        PathBuf::from("./file.txt"),
+    ] {
+        let mut tree = b"100644 ".to_vec();
+        tree.extend_from_slice(path.as_os_str().as_encoded_bytes());
+        tree.push(0);
+        tree.extend_from_slice(&raw_oid);
+        let tree = f.git_input(
+            &["hash-object", "--literally", "-t", "tree", "-w", "--stdin"],
+            &tree,
+        );
+        let tree = std::str::from_utf8(&tree).unwrap().trim();
+        let target = f.git(&[
+            "commit-tree",
+            tree,
+            "-p",
+            &base,
+            "-m",
+            "Malformed path fixture",
+        ]);
+        for kind in [RecoveryKind::CherryPick, RecoveryKind::Revert] {
+            let error = f
+                .repo()
+                .recovery_plan(kind, Some(&target), None)
+                .err()
+                .expect("malformed recovery path must be rejected");
+            assert_eq!(
+                error.to_string(),
+                "Choose a repository-relative file path",
+                "{path:?}: {error:#}"
+            );
+        }
+    }
+    assert_eq!(f.head(), base);
+    assert_eq!(f.index(), index);
+    assert_eq!(f.read("file.txt"), b"base\n");
+    assert_eq!(fs::read(outside).unwrap(), b"outside stays unchanged\n");
+}
+
+#[test]
 fn revert_published_change_preserves_unrelated_unstaged_work() {
     let f = Fixture::new();
     f.base();

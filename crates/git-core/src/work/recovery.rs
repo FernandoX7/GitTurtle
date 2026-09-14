@@ -727,6 +727,7 @@ impl GitRepository {
             .map(path_from_bytes)
             .collect();
         for path in affected {
+            validate_path(path)?;
             let mut prefix = PathBuf::new();
             for component in path.components() {
                 prefix.push(component.as_os_str());
