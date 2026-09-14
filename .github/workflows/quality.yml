@@ -34,12 +34,18 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential clang cmake pkg-config openssh-client libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev libvulkan-dev
-      - name: Install workspace Rust toolchain
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang cmake pkg-config git openssh-client ca-certificates \
+            libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev \
+            libssl-dev libzstd-dev libvulkan-dev \
+            python3 python3-pil desktop-file-utils xdg-utils
+          pkg-config --exists xkbcommon-x11 x11-xcb
+      - name: Install pinned workspace Rust toolchain
         shell: bash
         run: |
-          rustup toolchain install 1.98.0 --profile minimal --component rustfmt --component clippy
-          rustup override set 1.98.0
+          rustup show active-toolchain
+          rustc --version
+          cargo --version
       - name: Format
         run: cargo fmt --all -- --check
       - name: Locked workspace tests
@@ -48,3 +54,31 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Locked release compilation
         run: cargo build --release --locked -p gitturtle
+      - name: Linux bundle and isolated user installation
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          package_dir="$RUNNER_TEMP/gitturtle-linux-package"
+          scripts/package-linux.sh --no-build --binary target/release/gitturtle "$package_dir"
+          unpacked="$(mktemp -d "$RUNNER_TEMP/gitturtle-unpacked.XXXXXX")"
+          tar -xzf "$package_dir.tar.gz" -C "$unpacked"
+          install_home="$(mktemp -d "$RUNNER_TEMP/gitturtle-install.XXXXXX")"
+          (
+            cd "$unpacked"
+            env -i HOME="$install_home" XDG_DATA_HOME="$install_home/.local/share" PATH=/usr/bin:/bin \
+              python3 gitturtle-linux-package/install.py
+          )
+          test -x "$install_home/.local/bin/gitturtle"
+          cmp target/release/gitturtle "$install_home/.local/bin/gitturtle"
+          desktop-file-validate "$install_home/.local/share/applications/com.gitturtle.desktop.desktop"
+          ldd "$install_home/.local/bin/gitturtle" > "$RUNNER_TEMP/gitturtle-ldd.txt"
+          cat "$RUNNER_TEMP/gitturtle-ldd.txt"
+          if grep -F 'not found' "$RUNNER_TEMP/gitturtle-ldd.txt"; then
+            exit 1
+          fi
+          launch_status=0
+          env -i HOME="$install_home" PATH=/usr/bin:/bin "$install_home/.local/bin/gitturtle" \
+            > "$RUNNER_TEMP/gitturtle-no-display.txt" 2>&1 || launch_status=$?
+          cat "$RUNNER_TEMP/gitturtle-no-display.txt"
+          test "$launch_status" -eq 1
+          grep -F 'GitTurtle needs a Wayland or X11 desktop session' "$RUNNER_TEMP/gitturtle-no-display.txt"
