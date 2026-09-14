@@ -42,7 +42,7 @@ The [deployment record](README.md#cloudflare-pages-deployment) contains the sour
 
 Cloudflare subsequently reported the domain, verification and certificate validation **active**. Authoritative DNS, `1.1.1.1` and `8.8.8.8` returned the proxied addresses. Curl requests for `https://gitturtle.com` using one of those publicly resolved addresses (TLS verification enabled, correct domain SNI) returned HTTP 200 with the exact local HTML and expected security headers; the custom missing path returned HTTP 404 with the correct file bytes. Styles, script, all three product screenshots and the self-hosted font were also checked against local bytes.
 
-The home router still returned a cached empty response with roughly 23 minutes remaining, so the local browser's apex navigation failed with `ERR_NAME_NOT_RESOLVED`. No resolver settings or hosts-file entries were changed to conceal that limitation. Actual browser layout/interaction checks used the same production files at `gitturtle.pages.dev`; a local browser check of the apex remains pending cache expiry. The Pages and canonical HTTPS checks are distinct observations.
+DNS propagation temporarily limited local browser navigation to the apex (`ERR_NAME_NOT_RESOLVED`). No resolver settings or hosts-file entries were changed to conceal that limitation. Actual browser layout/interaction checks used the same production files at `gitturtle.pages.dev`; a local browser check of the apex remains pending cache expiry. The Pages and canonical HTTPS checks are distinct observations.
 
 ## Production safeguards and marketing refinement
 
@@ -81,5 +81,17 @@ The initial cloud cache imposed four hours on browser caching. Its setting now
 respects origin headers, the updated stylesheet URL breaks that earlier cache,
 and only this site's cached URLs were purged. No unrelated DNS, cache, account
 membership or paid service was changed. The custom-domain local-browser check
-still depends on the home router's DNS cache expiring; the verified Pages
+still depends on DNS propagation completing; the verified Pages
 browser and explicit-address TLS checks are not presented as that check.
+
+## Public artifact hygiene
+
+A scoped review of the recent website changes and native validation artifacts
+found no recognized credentials, private keys or nonpublic repository content.
+Unnecessary account-resource identifiers were removed from deployment notes,
+incident wording was generalized, and personal paths in retained installation
+logs were replaced with placeholders while retaining explicit redaction and
+hash provenance. Public deployment files are checked separately from local
+authentication state and build/tool caches, which stay outside version control.
+This is a review of the changed artifacts, not an assertion about every earlier
+repository revision.

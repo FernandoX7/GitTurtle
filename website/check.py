@@ -6,10 +6,49 @@ from pathlib import Path
 from urllib.parse import urlsplit, unquote
 import hashlib
 import json
+import os
 import re
 import sys
 
 ROOT = Path(__file__).resolve().parent
+NONPUBLIC_SUFFIXES = {
+    ".pem", ".key", ".p12", ".pfx", ".jks", ".keystore",
+    ".map", ".log", ".bak", ".backup", ".swp", ".swo", ".tmp",
+    ".sql", ".sqlite", ".sqlite3", ".db", ".dump",
+}
+
+
+def check_public_files(public):
+    """Reject accidental private outputs before reading any deployment content."""
+    if public.is_symlink():
+        return ["public/: symlinks are not deployable"]
+    if not public.is_dir():
+        return ["public/: deployment directory is missing"]
+    errors = []
+
+    def unreadable(_error):
+        errors.append("public/: could not inspect a deployment directory")
+
+    for directory, folders, files in os.walk(public, topdown=True, followlinks=False,
+                                              onerror=unreadable):
+        for name in sorted(folders + files):
+            path = Path(directory) / name
+            label = repr(path.relative_to(public).as_posix())
+            problem = None
+            if path.is_symlink():
+                problem = "symlinks are not deployable"
+            elif name.startswith("."):
+                problem = "hidden files and directories are not deployable"
+            elif name in files and path.suffix.lower() in NONPUBLIC_SUFFIXES:
+                problem = "private or development output is not deployable"
+            elif name in files and not path.is_file():
+                problem = "only regular files are deployable"
+            if problem:
+                errors.append(f"public/{label}: {problem}")
+                if name in folders:
+                    folders.remove(name)
+        folders.sort()
+    return errors
 
 
 class References(HTMLParser):
@@ -96,8 +135,11 @@ def check_headers(public):
 
 
 def check_site(root=ROOT):
-    public = (root / "public").resolve()
-    errors = []
+    public = root / "public"
+    errors = check_public_files(public)
+    if errors:
+        return errors
+    public = public.resolve()
     documents = {}
     for source in sorted(public.rglob("*.html")):
         doc = References()

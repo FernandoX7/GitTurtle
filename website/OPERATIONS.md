@@ -75,8 +75,7 @@ management belongs to Cloudflare; the smoke check independently examines the
 certificate currently served. Account recovery and two-factor authentication
 remain account-owner settings and were not audited through browser credentials.
 
-During the initial launch, public resolvers had the new DNS record while the
-home router still cached its earlier empty response. A transparent
-`--resolve` override can check HTTPS against an address returned by authoritative
+During initial DNS propagation, some resolvers may retain an earlier empty
+response. A transparent `--resolve` override can check HTTPS against an address returned by authoritative
 DNS without disabling certificate verification; it does not establish that the
 local resolver has recovered. Never use `curl -k` to make a certificate check pass.

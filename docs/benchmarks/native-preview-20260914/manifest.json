@@ -1,5 +1,5 @@
 {
-  "selection": "Unmodified gitturtle.scroll lines only, from first input through input 240 + 500 ms inclusive. No document content, repository paths or desktop imagery included in these trace subsets. Test logs copied unchanged; /work/GitTurtle is the disposable build-root path.",
+  "selection": "Unmodified gitturtle.scroll lines only, from first input through input 240 + 500 ms inclusive. No document content, repository paths or desktop imagery included in these trace subsets. Test logs copied unchanged; installation/package logs have personal path prefixes redacted as noted in their entries; /work/GitTurtle is the disposable build-root path.",
   "source_files": {
     "trace-before.log": {
       "sha256": "e8c4c770630bc69f8f1d725272a86f4bdda874f257647b8a2031d5cdab92103a",
@@ -86,6 +86,18 @@
     "installed-build-info.json": {
       "sha256": "05b96918667de6eff5879e41e3ba5b8c72c26d7b01644dbc56e974b21ca0bd95",
       "retained_as": "installed-build-info.json"
+    },
+    "final-install.log": {
+      "sha256": "7a6e37b33680b2074b44d482577f3ff1e2f547016041292768cdedec57e61524",
+      "original_source_sha256": "1ff0cc60d942b7dfc95714e3eb1ab97f1fee43ba1d2f3bf98dd00abcd8236747",
+      "retained_as": "final-install.log",
+      "redaction": "Personal home and checkout prefixes replaced with $HOME and $REPO. sha256 identifies the retained redacted copy; original_source_sha256 identifies the original bytes before redaction."
+    },
+    "final-package.log": {
+      "sha256": "a29b0c871b045cf27e71d6117000f2069c1d217fcd5294fa03c2a91aab8802a0",
+      "original_source_sha256": "3a9f884b520155c15616678394fef2eb00eb861d5ea65a16b71780cabcc25aa5",
+      "retained_as": "final-package.log",
+      "redaction": "Personal home and checkout prefixes replaced with $HOME and $REPO. sha256 identifies the retained redacted copy; original_source_sha256 identifies the original bytes before redaction."
     }
   },
   "files": {
@@ -170,12 +182,16 @@
       "bytes": 3011
     },
     "final-install.log": {
-      "sha256": "1ff0cc60d942b7dfc95714e3eb1ab97f1fee43ba1d2f3bf98dd00abcd8236747",
-      "bytes": 534
+      "sha256": "7a6e37b33680b2074b44d482577f3ff1e2f547016041292768cdedec57e61524",
+      "bytes": 470,
+      "redaction": "Personal home and checkout prefixes replaced with $HOME and $REPO. sha256 identifies the retained redacted copy; original_source_sha256 identifies the original bytes before redaction.",
+      "original_source_sha256": "1ff0cc60d942b7dfc95714e3eb1ab97f1fee43ba1d2f3bf98dd00abcd8236747"
     },
     "final-package.log": {
-      "sha256": "3a9f884b520155c15616678394fef2eb00eb861d5ea65a16b71780cabcc25aa5",
-      "bytes": 478
+      "sha256": "a29b0c871b045cf27e71d6117000f2069c1d217fcd5294fa03c2a91aab8802a0",
+      "bytes": 370,
+      "redaction": "Personal home and checkout prefixes replaced with $HOME and $REPO. sha256 identifies the retained redacted copy; original_source_sha256 identifies the original bytes before redaction.",
+      "original_source_sha256": "3a9f884b520155c15616678394fef2eb00eb861d5ea65a16b71780cabcc25aa5"
     },
     "final-search-retained.txt": {
       "sha256": "d046ab57e086b39020bcfc9f7684bbce007cb28216b9706d122ddd3ebf3d1692",

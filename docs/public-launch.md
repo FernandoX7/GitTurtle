@@ -106,9 +106,9 @@ Website publication was separately approved and completed:
 - [x] Confirm Cloudflare reports `gitturtle.com` active with verification and
   certificate validation active. Authoritative DNS, Cloudflare and Google DNS
   return its addresses. HTTPS at those addresses validates the domain certificate
-  and serves the exact reviewed files. The local router retains an earlier empty
-  DNS response until its cache expires; local browser verification used the Pages
-  hostname. See the website QA record for this boundary.
+  and serves the exact reviewed files. DNS propagation temporarily limited local
+  browser verification, which used the Pages hostname. See the website QA record
+  for this boundary.
 
 The full [deployment record and procedure](../website/README.md#cloudflare-pages-deployment)
 is maintained with the site, including remaining browser checks and rollback
