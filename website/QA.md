@@ -58,3 +58,28 @@ pixels found no horizontal overflow. The desktop hero and origin story and
 mobile hero were visually inspected. The source-preview install state remains
 visible. See [OPERATIONS.md](OPERATIONS.md) for the transport, certificate,
 cache and validation responsibilities.
+
+The revised assets are live in deployment `10a8ce6a-295e-44e4-a979-374420029a8b`,
+from source `88b21e38f1282b0b228710bc0b240958f95cf21e`. The deployed browser
+confirmed the new title/copy, zero status-dot elements, loaded fonts and working
+walkthrough controls without console warnings or errors. The scoped [Website
+CI run](https://github.com/FernandoX7/GitTurtle/actions/runs/34905275416) passed
+on that revision. Native quality jobs are separate and were still pending.
+
+The [live smoke output](evidence/2026-09-14-production-smoke.txt) records ten
+successful HTTP checks and a verified TLS connection through the explicitly
+resolved public address. It covers permanent HTTP redirects preserving paths
+and queries, nested 404 status/content, HSTS/CSP/framing/MIME headers, asset
+availability, expected cache policies, matching font fingerprint, and empty
+304 responses for conditional stylesheet/font/image requests. The served
+Google Trust Services certificate expires December 13, 2026, at 22:30:14 UTC.
+Cloudflare remains responsible for renewal; a future renewal has not been
+observed. [The manifest](evidence/2026-09-14-production.json) identifies the
+exact deployed files and exercised smoke helper by SHA-256.
+
+The initial cloud cache imposed four hours on browser caching. Its setting now
+respects origin headers, the updated stylesheet URL breaks that earlier cache,
+and only this site's cached URLs were purged. No unrelated DNS, cache, account
+membership or paid service was changed. The custom-domain local-browser check
+still depends on the home router's DNS cache expiring; the verified Pages
+browser and explicit-address TLS checks are not presented as that check.

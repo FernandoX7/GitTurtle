@@ -10,7 +10,9 @@ or runtime package installation. Deployable files live only in `website/public/`
 - Cloudflare **Universal SSL is enabled**. The active managed certificate covers
   `gitturtle.com` and `*.gitturtle.com`. At this audit its issuer was Let's Encrypt
   and its expiry was December 13, 2026, at 18:26:35 UTC. That is a point-in-time
-  observation, not a fixed renewal date.
+  observation, not a fixed renewal date. The Pages domain also has an active
+  Google Trust Services certificate; the live TLS probe served that certificate,
+  expiring December 13, 2026, at 22:30:14 UTC. No custom certificate was uploaded.
 - Cloudflare handles certificate issuance, deployment and renewal. Keep the zone
   active, the site record proxied, and Universal SSL enabled. There is no local
   Certbot, renewal cron, private key or manual certificate upload to maintain.
@@ -41,7 +43,9 @@ A future renewal cannot be claimed tested at initial installation.
 - Cloudflare Browser Cache TTL respects existing headers (value `0`), replacing
   the initial four-hour override. HTML, CSS, JavaScript and stable image URLs
   require revalidation. Cloudflare's
-  ETags let unchanged files return 304 without downloading the body again.
+  asset ETags let unchanged files return 304 without downloading the body again.
+  The proxied HTML response can omit an ETag and return its small body on
+  revalidation; the smoke check does not incorrectly require an HTML validator.
 - The font has a SHA-256 prefix in its filename and a one-year immutable cache.
   When its bytes change, rename it using the new hash and update the stylesheet,
   preload and provenance file together. Never overwrite an immutable URL with

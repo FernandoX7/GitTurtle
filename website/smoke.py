@@ -114,7 +114,7 @@ def security_headers(headers, label):
         require(directives.get(name) == sources, f"{label}: unexpected CSP {name}")
 
 
-def cache_headers(headers, label, immutable=False, explicit_revalidation=False):
+def cache_headers(headers, label, immutable=False, explicit_revalidation=False, require_etag=True):
     cache = {item.strip().lower() for item in headers.get("cache-control", "").split(",")}
     expected = "max-age=31536000" if immutable else "max-age=0"
     require(expected in cache, f"{label}: expected Cache-Control {expected}")
@@ -125,7 +125,8 @@ def cache_headers(headers, label, immutable=False, explicit_revalidation=False):
     if explicit_revalidation:
         require("must-revalidate" in cache, f"{label}: stable image must revalidate")
     etag = headers.get("etag", "")
-    require(re.fullmatch(r'(?:W/)?"[^"\r\n]+"', etag), f"{label}: missing or invalid ETag")
+    if require_etag:
+        require(re.fullmatch(r'(?:W/)?"[^"\r\n]+"', etag), f"{label}: missing or invalid ETag")
     return etag
 
 
@@ -197,7 +198,9 @@ class Client:
         require(page.title.strip().startswith("GitTurtle | ") and len(page.title.strip()) > 12,
                 "unexpected homepage title")
         security_headers(headers, "homepage")
-        cache_headers(headers, "homepage")
+        # The proxied Pages HTML response may omit ETag. Stable static assets
+        # below must still supply validators and support conditional requests.
+        cache_headers(headers, "homepage", require_etag=False)
         passed("homepage 200, expected title, security headers and revalidating cache")
 
         secure_probe = urljoin(self.base, PROBE_PATH)

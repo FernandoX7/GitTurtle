@@ -1,0 +1,17 @@
+{
+  "deployment_id": "10a8ce6a-295e-44e4-a979-374420029a8b",
+  "source_revision": "88b21e38f1282b0b228710bc0b240958f95cf21e",
+  "base_url": "https://gitturtle.com",
+  "dns_override": "104.21.32.143",
+  "reason": "home router cached pre-publication empty DNS response",
+  "tls_verification": true,
+  "smoke_script_sha256": "d6401c3a0a8fc8c796c5528c7e12e7843a5533549b992643aa509f9364849f4f",
+  "files": {
+    "index.html": "39d55470a1bd3dee06e70cdf5602d2d1b96e8d2da81044a47b022d7416bba748",
+    "404.html": "e519091635f2e5b7b51ae8efb8e54ccc40fe5be8c0422f3c3d0b36af15e9a8d7",
+    "styles.css": "59f6e4877070313623437c4778724b234a15ded15a570b7d1d048959460cd943",
+    "site.js": "13334bb59acf3a0c743da306974e20753bd46e34dcf6aa053df7933b9d5c35e3",
+    "_headers": "096b5fe923ed8ccf8f937e551ed5d6748d0fddd11f6fc729e929ebb6da367968",
+    "fonts/manrope-latin.a30ddcd34970.woff2": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+  }
+}

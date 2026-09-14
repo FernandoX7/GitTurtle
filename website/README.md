@@ -67,11 +67,13 @@ The owner approved publication on September 14, 2026. Cloudflare Pages hosts the
 | Canonical domain | `https://gitturtle.com` |
 | Pages project | `gitturtle` |
 | Pages hostname | `https://gitturtle.pages.dev` |
-| First production deployment | `b39cf661-dde0-4d54-bfc1-347c9f62893e` |
+| Initial production deployment | `b39cf661-dde0-4d54-bfc1-347c9f62893e` |
 | Immutable deployment URL | `https://b39cf661.gitturtle.pages.dev` |
-| Deployed source | `0db617969b94c565ec1f89d94a03055e705c1efb`, exact `website/public/` bytes |
+| Initial deployed source | `0db617969b94c565ec1f89d94a03055e705c1efb`, exact `website/public/` bytes |
 | Production branch label | `main` |
 | Upload tool | Wrangler `4.131.2` |
+| Current production deployment | `10a8ce6a-295e-44e4-a979-374420029a8b` |
+| Current deployed source | `88b21e38f1282b0b228710bc0b240958f95cf21e` |
 
 The account inspection found an active Cloudflare zone, no DNS records, no Pages projects, no zone Worker routes, and no Worker custom domain for the apex. Publication created the Pages project and custom-domain binding, then added one proxied CNAME: `gitturtle.com` → `gitturtle.pages.dev`, automatic TTL. There was no previous site destination to preserve. No `www`, mail, verification, nameserver, or unrelated record was changed. No paid service was purchased. Cloudflare reports the domain, verification and certificate validation active. Both public DNS resolvers checked resolve the apex; domain TLS and file-byte checks passed against those resolved addresses. The local router temporarily cached the earlier empty DNS response, so browser checks used the working Pages hostname.
 
