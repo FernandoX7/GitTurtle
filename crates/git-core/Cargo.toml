@@ -2,7 +2,7 @@
 name = "gitturtle-core"
 version = "0.1.0"
 edition = "2024"
-license = "MIT"
+license.workspace = true
 description = "Git inspection and explicit everyday repository operations for GitTurtle"
 
 [dependencies]

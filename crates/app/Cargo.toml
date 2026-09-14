@@ -3,6 +3,7 @@ name = "gitturtle"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
 gpui-kit = { version = "=0.6.0", features = ["tree-sitter-diff", "tree-sitter-rust", "tree-sitter-typescript", "tree-sitter-tsx", "tree-sitter-javascript", "tree-sitter-css", "tree-sitter-markdown", "tree-sitter-yaml", "tree-sitter-toml", "tree-sitter-html", "tree-sitter-python", "tree-sitter-go", "tree-sitter-bash"] }
