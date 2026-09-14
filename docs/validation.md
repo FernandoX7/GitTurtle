@@ -2,7 +2,58 @@
 
 Current milestone: [security, architecture and resource bounds](security-quality-milestone.md), with the canonical [design contract](../DESIGN.md). The prior [native polish](native-polish-milestone.md), [review and recovery native/build verification](review-native-verification.md) and [macOS milestone evidence](macos-native-verification.md) remain tied to their named builds.
 
-This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native interaction evidence is macOS-specific. Current platform execution and access limits belong in the active milestone and [environment report](benchmarks/2026-09-09-milestone-environment.md). The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Distribution is outside the current milestone.
+This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native workflow evidence is primarily macOS-specific; the September 14 entry adds a limited Linux startup check. Current platform execution and access limits belong in these dated records, the active milestone and [environment report](benchmarks/2026-09-09-milestone-environment.md). The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Distribution packages are outside the current milestone.
+
+## September 14 Linux installation and Wayland startup
+
+Source `4ad8e27352c1f33cecd145eac866ee5ff9c33e26` built and launched on
+Pop!_OS 24.04 LTS, x86-64, kernel `7.1.5-76070105-generic`, with a GNOME
+Wayland session. Rust `1.98.0 (88d9e12ae 2026-08-18)` was installed alongside
+the existing default toolchain. Vulkan enumerated Intel Graphics (ARL), an
+NVIDIA GeForce RTX 5090 Laptop GPU and llvmpipe; the app's selected adapter
+was not established.
+
+`cargo +1.98.0 fmt --all -- --check` passed. The first
+`cargo +1.98.0 build --release --locked -p gitturtle` reached linking and
+failed on missing `-lxkbcommon-x11`. The distro runtime
+`libxkbcommon-x11.so.0` was already installed, but its unversioned development
+link was absent. A local `target/linux-native-lib/libxkbcommon-x11.so` link
+to that system library, supplied through `LIBRARY_PATH`, allowed the same
+release command to pass. No Rust source, lockfile, system package or global
+toolchain default was changed. Installing the documented development packages
+is the normal setup; see the [Linux guide](linux.md).
+
+The release binary and installed `~/.local/bin/gitturtle` share SHA-256
+`12b19bd7ea4ac98947f11b35d2fcc82187040d2c8a94be37605b06502fa961f6`.
+`ldd` resolved every dependency; the ELF records the system library's versioned
+SONAME and has no build-directory RPATH. The existing 1024-pixel app icon and
+`com.gitturtle.desktop.desktop` application entry were installed for the user.
+`desktop-file-validate` passed, the desktop database was updated, and
+`gio launch` successfully started the installed executable on the GitTurtle
+source repository. The running `/proc` executable matched the installed path.
+
+The initial Wayland run used `scripts/create-demo-repo.py`'s disposable fixture
+and isolated `XDG_CONFIG_HOME`. The saved session contained the expected
+commit, changed-file selection and History mode. The user confirmed that
+the demo history window looked correct and supplied a screenshot. Visual
+inspection confirmed readable text, app/control icons, all eight fixture
+commits, graph edges, branch navigation, selection, commit details and the
+two changed files, with no obvious clipping or rendering failure at the
+captured size. Fixture Git status remained clean.
+The fixture instance was then stopped and the application launcher opened
+the source repository with normal user preferences. Both launches produced
+empty stderr/stdout logs during these checks.
+
+This establishes a local release build, installation, repository startup and
+visually inspected window appearance. The desktop tool could not discover the
+GPUI window, advertised no screenshot capability, and GNOME denied direct
+window screenshot access. The visual evidence came from the user's supplied
+screenshot; no automated native gesture evidence was obtained. Compare/Back,
+keyboard shortcuts, picker behavior, previews,
+staging, network operations and accessibility remain unverified on this
+desktop. Workspace tests and Clippy were not rerun for this installation-only
+task; older Linux test results retain their own source/platform identities.
+The [Linux platform limits](linux.md#platform-limits) still apply.
 
 ## September 10 GitHub review conversations
 

@@ -2,7 +2,7 @@
 
 GitTurtle is a native Git client built with Rust and GPUI for everyday Git work, history, code changes, and image comparisons. It uses your installed Git executable, with no Electron runtime or AI features. Browsing stays local; repository writes and network operations start from explicit actions.
 
-Native builds have been exercised on macOS; the [validation notes](docs/validation.md) and [current milestone record](docs/native-polish-milestone.md) identify the checked builds and limits. [Local Linux/aarch64 workspace tests, strict Clippy and release builds](docs/benchmarks/native-polish-20260910/validation.json) were exercised for this milestone; native Linux interaction remains unverified. A [quality workflow](.github/workflows/quality.yml) is configured for macOS and Linux; configuration does not establish a hosted run. Current source checks and exact identities are recorded separately. See [the design specification](DESIGN.md) for the broader intended experience.
+Native builds have been exercised on macOS; the [validation notes](docs/validation.md) and [current milestone record](docs/native-polish-milestone.md) identify the checked builds and limits. [Local Linux/aarch64 workspace tests, strict Clippy and release builds](docs/benchmarks/native-polish-20260910/validation.json) were exercised for this milestone. A [Linux x86-64 installation and Wayland startup check](docs/validation.md#september-14-linux-installation-and-wayland-startup) now records a running Pop!_OS build and user-confirmed window appearance; broader Linux workflow interaction remains unverified. A [quality workflow](.github/workflows/quality.yml) is configured for macOS and Linux; configuration does not establish a hosted run. Current source checks and exact identities are recorded separately. See [the design specification](DESIGN.md) for the broader intended experience.
 
 ## Current source features
 
@@ -88,6 +88,8 @@ The application retains opaque theme surfaces after a real native Liquid Glass p
 ## Run from source
 
 Use Rust 1.98 or newer and an installed Git executable. On macOS, install Xcode and its Metal toolchain. Use the checked-in lockfile.
+
+For Linux prerequisites and a user-local executable, icon and application launcher, see [Build and install locally on Linux](docs/linux.md).
 
 ```sh
 cargo run --locked -p gitturtle -- /path/to/repository
@@ -179,7 +181,7 @@ The [Git service documentation](crates/git-core/README.md) describes passive-rea
 - Histories exceeding the graph's lane or edge budget show isolated commit nodes with an explanation. Selecting a branch can reduce the graph size while preserving access to commits and file previews.
 - Blame uses at most 2 MiB and 100,000 text lines; missing shallow history is marked, and unavailable objects never trigger a fetch. Working attribution includes the working file rather than an index-only snapshot.
 - The tag browser loads at most 10,000 tags; large annotations above 256 KiB retain identity/actions with an unavailable-content message. Ignore destinations are limited to 1 MiB and cannot express filenames containing line breaks.
-- Hosted CI, native Linux interaction, live-provider authentication, actual Keychain unlock and hardware-backed signing remain unverified here; local Linux build/test evidence is recorded by source identity in the validation notes. Distribution, installers, notarization and publishing are outside this milestone.
+- Hosted CI, broader native Linux workflows, live-provider authentication, actual Keychain unlock and hardware-backed signing remain unverified here; local Linux build/test and initial Wayland startup evidence is recorded by source identity in the validation notes. Distribution packages, notarization and publishing are outside this milestone.
 
 ## Development and measurement
 
