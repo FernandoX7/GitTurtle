@@ -1,10 +1,10 @@
 # Public launch checklist
 
-The repository remains private. Changing visibility, publishing releases, and
-announcing GitTurtle require the owner's explicit approval. This checklist
-separates source publication from a later public binary release.
+The owner made the repository public on September 14, 2026. No binary release
+has been published. This record separates source publication and repository
+settings from the remaining requirements for a public binary release.
 
-## Before source publication
+## Source publication and repository settings
 
 - [x] Apply the owner-approved [MIT license](../LICENSE) to GitTurtle-owned code
   and all three workspace manifests. Preserve [third-party terms](../THIRD_PARTY_NOTICES.md).
@@ -12,28 +12,65 @@ separates source publication from a later public binary release.
   and code of conduct. Issues are enabled. Existing `bug`, `enhancement`, and
   `question` labels distinguish defects, requests, and support; `documentation`,
   `accessibility`, `good first issue`, and `help wanted` cover focused follow-up.
-- [ ] Review the historical privacy findings below and decide whether the existing
-  history and evidence can be public. Current-text redaction does not remove
-  earlier revisions. A history rewrite needs separate explicit approval.
+- [x] Publish source through the owner's visibility change. The historical privacy
+  findings below remain part of the record; publication does not erase earlier
+  revisions or establish a new privacy audit. No history rewrite was requested
+  or performed.
 - [x] Record current [native validation](public-launch-validation.md) and genuine
   README screenshots. Actual desktop checks remain separate from clean builds,
   headless checks, virtual X11/Wayland sessions, and historical macOS results.
-- [ ] Review GitHub Actions approval settings for outside contributors and choose
-  whether `main` should require a passing Quality check. Branch protection was
-  absent when inspected; do not claim protected branches or a hosted green run.
-- [ ] Approve source publication explicitly, then enable and verify
-  [private vulnerability reporting](../SECURITY.md) at publication before accepting
-  public vulnerability reports. GitHub currently offers the feature on public
-  repositories; it cannot be represented as live while this repository is private.
+- [x] Configure repository description/topics, Dependabot alerts, full-commit
+  pinning for Actions, and protection for `main`. Contributions require a pull
+  request, resolved conversations, an up-to-date branch and both GitHub Actions
+  checks: `Rust · macos-15` and `Rust · ubuntu-24.04`. Force pushes and branch
+  deletion are disabled. No approving review is required while this is a solo
+  project; the owner's administrator override remains available.
+- [x] Enable [private vulnerability reporting](../SECURITY.md). The API reports it
+  enabled, and the public Security page displays **Report a vulnerability**.
+- [x] Require approval for **all external contributors**, enable secret scanning
+  and push protection, and retain read-only Actions tokens with workflow PR
+  approval disabled. These settings were verified after publication. See
+  GitHub's [Actions settings](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository)
+  and [security settings](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-security-and-analysis-settings-for-your-repository).
+- [x] Use squash merges with the PR title/body, expose Update Branch and optional
+  per-PR auto-merge, and delete merged contribution branches automatically.
+  Keep documentation in the repository and disable the unused Wiki. Issues and
+  support questions share the existing labels/forms; Discussions remain off.
+- [x] Enable Dependabot security-update PRs and CodeQL default setup on standard
+  GitHub runners. CodeQL selects the detected supported languages, including
+  Rust, Python, Actions and JavaScript/TypeScript, with local and remote sources
+  in its threat model. Enabled analysis is not a claim that every scan has passed.
+- [x] Require CodeQL results before merging to `main`, blocking high/critical
+  security findings and code-scanning errors. The dedicated merge-protection
+  ruleset preserves the owner's explicit bypass and complements the required
+  Rust checks. See [CodeQL merge protection](https://github.com/FernandoX7/GitTurtle/rules/23351839).
+- [x] Schedule weekly [Dependabot Actions updates](../.github/dependabot.yml),
+  grouping minor/patch updates and limiting open version-update PRs to two.
+  Cargo version upgrades remain reviewed maintenance because the matching GPUI
+  stack and local vendor patches must be checked together; security-update PRs
+  remain enabled. No dependency PR is automatically approved or merged.
+
+No additional email alias, funding enrollment or visibility action is needed.
+Use pull requests for future contributions and review their changes and checks
+before merging; enabling auto-merge does not automatically merge every PR.
+The owner retains administrator override for emergencies. The Quality workflow
+uses standard `ubuntu-24.04` and `macos-15` runners, whose execution is free for
+public repositories; earlier private runs used the account's allowance. See
+[GitHub Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
+
+The owner should select **Watch → Custom → Security alerts** on GitHub and check
+their personal notification/email preferences so confidential reports reach
+them. The connected token cannot inspect or change personal subscriptions;
+repository-level private reporting is already enabled.
 
 The owner's [GitHub Sponsors profile](https://github.com/sponsors/FernandoX7)
 is live and verified, with one-time and monthly contributions. The
 [funding configuration](../.github/FUNDING.yml) and README/support links use that
 destination. GitHub's API recognizes the funding link after the configuration
-reached the private default branch in `3c4fa51`. Visual verification of the
-repository Sponsor button was unavailable because no browser was connected;
-see the [funding activation record](funding.md). Sponsorship does not require
-making this repository public.
+reached the private default branch in `3c4fa51`. After publication, an anonymous
+public-page check also found **Sponsor this project**, and the destination
+offers one-time and monthly contributions; see the
+[funding activation record](funding.md).
 
 ## Before a public binary release
 
@@ -82,7 +119,8 @@ GitHub `noreply` identity. Other email-like text was synthetic fixture data or
 OCR error. Existing images were retained, including
 `macos-milestone/before-settings.jpg`, `after-settings.jpg`, and
 `after-ignore-review.jpg`, plus `consistency-milestone/before-settings.jpeg`.
-The owner should review those disclosures before approving publication.
+Those disclosures were flagged before publication and remain in the published
+history and evidence.
 
 This is a pattern scan, metadata inspection, OCR, and selected visual review;
 it is not proof that every secret or private detail is absent. Historical binary
@@ -96,10 +134,17 @@ permission, a full-commit-pinned checkout with persisted credentials disabled,
 hosted runners, and timeouts. It references no secrets and uses no
 `pull_request_target` or privileged follow-up workflow. The launch change adds
 strict default shell error handling and verifies installed license retention.
-Live settings inspection found Actions enabled, default token permissions set to
+Initial settings inspection found Actions enabled, default token permissions set to
 read, and PR approval by Actions disabled. All Actions were permitted and `main`
 had no branch protection. These observations are settings checks, not an audit
 of every external dependency.
+
+The subsequent owner-authorized settings update added a description and six
+relevant topics, enabled Dependabot alerts, required full SHA pins for Actions,
+and protected `main` as described above. Read-back verified those settings. The
+dependency graph was populated and Dependabot reported no alerts at the time;
+this does not replace the bounded source/privacy review or prove the absence of
+vulnerabilities. Issues and the existing form labels were already configured.
 
 Hosted Actions runs were inspected after the initial settings audit.
 [Run 34879397939](https://github.com/FernandoX7/GitTurtle/actions/runs/34879397939)
@@ -124,3 +169,23 @@ successfully created both macOS and Ubuntu jobs. Git isolation and checkout
 passed on both; macOS also passed toolchain setup and formatting and entered
 workspace tests. Ubuntu entered native dependency installation. The workflow
 validation failure is resolved; a completed hosted pass remains to be verified.
+
+The later macOS job in
+[run 34881541215](https://github.com/FernandoX7/GitTurtle/actions/runs/34881541215)
+reached the preview tests and exposed missing ImageIO dimension metadata for a
+JPEG 2000 fixture. Commit `712d99e` adds bounded JP2/codestream dimension checks
+before native decoding and preserves the pixel/orientation assertions. The full
+local workspace tests and strict Clippy passed in Ubuntu 24.04 userspace; these
+Linux checks do not exercise ImageIO. The hosted rerun is
+[run 34883934089](https://github.com/FernandoX7/GitTurtle/actions/runs/34883934089).
+
+The initial Python and JavaScript CodeQL results were reviewed using their full
+source-to-sink traces. Thirty-two path findings concerned intentionally selected
+local fixture/reference paths or per-user installation paths; each dismissal
+records its specific trust-boundary reasoning in GitHub. Commit `79c5a13` also
+hardens the three benchmark scripts: baseline arguments resolve to verified
+commit OIDs with Git option parsing stopped, and the measured executable resolves
+once before hashing and execution. Syntax checks, 18 disposable revision probes,
+and a competing-PATH executable probe passed. No benchmark performance claim is
+made by these checks. Local and remote CodeQL threat sources remain enabled;
+these findings do not justify excluding tooling from future scans.

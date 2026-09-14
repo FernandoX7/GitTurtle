@@ -22,7 +22,8 @@ github: [FernandoX7]
 ```
 
 The [README](../README.md#support-the-project) and [support guide](../SUPPORT.md#support-development)
-link to the same verified profile. The repository remains private.
+link to the same verified profile. The owner made the repository public later
+on September 14, 2026.
 
 **Repository funding configuration: verified through GitHub's API.** Commit
 `3c4fa51e950e7cf0744e4a3e722d4f3706e97fb6` placed the funding file on the private
@@ -30,12 +31,11 @@ repository's default branch. GitHub reported that revision as the default-branch
 head, `isPrivate: true`, and a repository funding link with platform `GITHUB`
 and URL `https://github.com/FernandoX7`.
 
-**Repository Sponsor button: visual verification unavailable.** No connected
-browser was available to inspect the private repository UI. The API confirms
-that GitHub recognizes the funding configuration, while the public Sponsors
-profile was independently verified above. It does not establish a visually
-checked repository button or click-through. When browser access is available,
-confirm that the repository's Sponsor button opens the intended profile. See
+**Public repository funding: verified.** After publication, the anonymous
+repository page displayed **Sponsor this project**. The configured GitHub
+funding link and public Sponsors profile were verified independently; no payment
+was submitted. The earlier private-repository inspection was limited to API
+verification because no connected browser was available. See
 [GitHub's Sponsor button instructions](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository)
 for the repository setting and default-branch configuration.
 

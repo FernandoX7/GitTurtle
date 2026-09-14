@@ -66,4 +66,12 @@ Docs-only changes need link, command and diff checks. Artwork changes need verif
 
 Describe the problem, resulting behavior and checks you ran. Keep the change reviewable and update the closest documentation when behavior changes. Include any remaining limitations instead of claiming checks you could not run. The PR template is intentionally short; remove sections that do not apply.
 
+Contributions use pull requests with the macOS and Ubuntu Quality checks passing
+and review conversations resolved. CodeQL scans must complete without unresolved
+high/critical security findings or code-scanning errors. Workflows from external contributors need
+maintainer approval before running. We squash-merge changes using the PR title
+and description, so write those for a reader of the permanent Git history.
+Merged branches in this repository are deleted automatically; your fork and
+local branches remain yours.
+
 Sanitize screenshots, logs and fixtures before posting: remove credentials, private remote URLs, personal paths, identities and proprietary repository content. For a suspected vulnerability, use [private security reporting](SECURITY.md) rather than an issue or public PR.
