@@ -239,11 +239,14 @@ jobs:
           PACKAGE_RUN_ID: ${{ github.run_id }}
           PACKAGE_ATTEMPT: ${{ github.run_attempt }}
         run: |
+          # The summary reads root JSON files as command measurements. Keep
+          # package reports nested; the diagnostics upload retains both kinds.
+          mkdir -p "$RUNNER_TEMP/ci-metrics/reports"
           python3 scripts/ci/metrics.py measure --name package --directory "$RUNNER_TEMP/ci-metrics" -- \
             python3 scripts/ci/packages.py prepare --target "$PACKAGE_TARGET" --revision "$PACKAGE_REVISION" \
               --event "$PACKAGE_EVENT" --run-id "$PACKAGE_RUN_ID" --attempt "$PACKAGE_ATTEMPT" \
               --directory "$RUNNER_TEMP/ci-package" --output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY" \
-              --report "$RUNNER_TEMP/ci-metrics/package-prepared.json"
+              --report "$RUNNER_TEMP/ci-metrics/reports/package-prepared.json"
       # Only the complete-notice publish directory is eligible. Development
       # archives and logs are never swept into the public binary artifact.
       - name: Upload verified early-development CI package
@@ -273,7 +276,7 @@ jobs:
           python3 scripts/ci/metrics.py measure --name artifact-download-checks --directory "$RUNNER_TEMP/ci-metrics" -- \
             python3 scripts/ci/packages.py verify --expected "$RUNNER_TEMP/ci-package/prepared.json" \
               --directory "$RUNNER_TEMP/ci-package-download" --artifact-id "$PACKAGE_ARTIFACT_ID" \
-              --report "$RUNNER_TEMP/ci-metrics/package-transfer.json" --summary "$GITHUB_STEP_SUMMARY"
+              --report "$RUNNER_TEMP/ci-metrics/reports/package-transfer.json" --summary "$GITHUB_STEP_SUMMARY"
       # All target/TRIPLE/release consumers must precede cache finish:
       # successful main jobs may clean outputs to keep the retained cache bounded.
       - name: Prepare bounded successful-main cache save

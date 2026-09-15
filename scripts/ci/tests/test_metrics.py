@@ -859,6 +859,33 @@ class CommandDiagnosticsTests(unittest.TestCase):
         self.assertIn("completed post-job evidence", result.stdout)
         self.assertNotIn("no Cargo cache configured", result.stdout)
 
+    def test_nested_package_reports_preserve_strict_command_summary(self):
+        with tempfile.TemporaryDirectory(dir=METRICS.parent / "tests") as directory:
+            root = Path(directory)
+            measurement = {"schema_version": 1, "name": "package", "exit_code": 0,
+                           "elapsed_seconds": 1.25}
+            (root / "package.json").write_text(json.dumps(measurement))
+            reports = root / "reports"
+            reports.mkdir()
+            for name, report in (
+                ("package-prepared", {"format": 1, "upload_eligible": False,
+                                      "local_archive_checks": "passed"}),
+                ("package-transfer", {"format": 1, "hosted_transfer": "passed"}),
+            ):
+                data = json.dumps(report).encode()
+                misplaced = root / f"{name}.json"
+                misplaced.write_bytes(data)
+                rejected = invoke("summary", "--directory", directory)
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn("invalid command measurement", rejected.stderr)
+                misplaced.rename(reports / misplaced.name)
+                self.assertEqual((reports / misplaced.name).read_bytes(), data)
+            result = invoke("summary", "--directory", directory)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("| package | 0 | 1.25 |", result.stdout)
+            self.assertNotIn("package-prepared", result.stdout)
+            self.assertNotIn("package-transfer", result.stdout)
+
     def test_summary_rejects_invalid_cache_measurements(self):
         with tempfile.TemporaryDirectory(dir=METRICS.parent / "tests") as directory:
             for invalid in ({"hit": "true"}, {"restore_seconds": -1}, {"size_bytes": 1.2}):
