@@ -503,15 +503,31 @@ fn worktree_removal_refuses_stale_branch_commit_and_replaced_repository() {
 
 #[test]
 fn worktree_removal_refuses_replaced_directories_at_the_same_paths() {
-    fn copy_directory(source: &Path, destination: &Path) {
-        fs::create_dir(destination).unwrap();
-        for entry in fs::read_dir(source).unwrap() {
+    fn copy_directory(source: &Path, destination: &Path, fixture: &Path) {
+        // This helper copies only regular fixture content. Bound both sides
+        // before touching them, including paths returned by directory entries.
+        let source = source.canonicalize().unwrap();
+        assert!(source.starts_with(fixture));
+        let destination = destination
+            .parent()
+            .unwrap()
+            .canonicalize()
+            .unwrap()
+            .join(destination.file_name().unwrap());
+        assert!(destination.starts_with(fixture));
+        fs::create_dir(&destination).unwrap();
+        for entry in fs::read_dir(&source).unwrap() {
             let entry = entry.unwrap();
+            let kind = entry.file_type().unwrap();
+            assert!(kind.is_dir() || kind.is_file());
+            let source_path = entry.path().canonicalize().unwrap();
+            assert!(source_path.starts_with(&source));
             let target = destination.join(entry.file_name());
-            if entry.file_type().unwrap().is_dir() {
-                copy_directory(&entry.path(), &target);
+            assert!(target.starts_with(&destination));
+            if kind.is_dir() {
+                copy_directory(&source_path, &target, fixture);
             } else {
-                fs::copy(entry.path(), target).unwrap();
+                fs::copy(source_path, target).unwrap();
             }
         }
     }
@@ -533,7 +549,7 @@ fn worktree_removal_refuses_replaced_directories_at_the_same_paths() {
         };
         let saved = f.destination("original-directory");
         fs::rename(replaced, &saved).unwrap();
-        copy_directory(&saved, replaced);
+        copy_directory(&saved, replaced, f.root.parent().unwrap());
         // Branch, commit, registration, clean status, and all path strings are
         // unchanged, but this is a different checkout/administration directory.
         assert_eq!(f.removal_plan(&destination).tree, reviewed.tree);

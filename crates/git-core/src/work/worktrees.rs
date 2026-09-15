@@ -126,8 +126,17 @@ impl GitRepository {
                     "The worktree administration directory is redirected outside this repository's worktrees directory. Inspect it with Git before removal."
                 );
                 worktree_directory_identity(&admin_root)?;
+                // Keep filesystem metadata separate from the returned plan:
+                // only the regular-file check contributes to its validation.
+                let git_file = match std::fs::symlink_metadata(tree.path.join(".git")) {
+                    Ok(metadata) => metadata,
+                    Err(error) => {
+                        return Err(error)
+                            .context("Unable to inspect the linked worktree .git file");
+                    }
+                };
                 ensure!(
-                    std::fs::symlink_metadata(tree.path.join(".git"))?.is_file(),
+                    git_file.is_file(),
                     "The linked worktree .git path must be a regular file, not a symbolic link or directory."
                 );
             }
@@ -476,17 +485,18 @@ mod tests {
                 .contains("still registered")
         );
 
-        plan.tree.path = temp.path().join("removed-worktree");
+        let removed_worktree = temp.path().join("removed-worktree");
+        plan.tree.path = removed_worktree.clone();
         let private = temp.path().join("private-metadata");
         plan.directories.as_mut().unwrap().0 = private.clone();
-        std::fs::create_dir(&plan.tree.path).unwrap();
+        std::fs::create_dir(&removed_worktree).unwrap();
         assert!(
             repo.verify_worktree_removal(&plan)
                 .unwrap_err()
                 .to_string()
                 .contains("worktree folder still exists")
         );
-        std::fs::remove_dir(&plan.tree.path).unwrap();
+        std::fs::remove_dir(&removed_worktree).unwrap();
         std::fs::create_dir(&private).unwrap();
         assert!(
             repo.verify_worktree_removal(&plan)
@@ -501,7 +511,7 @@ mod tests {
         {
             // A replaced path can be a dangling symlink: exists()/is_dir()
             // would wrongly report successful filesystem cleanup here.
-            std::os::unix::fs::symlink(temp.path().join("missing"), &plan.tree.path).unwrap();
+            std::os::unix::fs::symlink(temp.path().join("missing"), &removed_worktree).unwrap();
             assert!(repo.verify_worktree_removal(&plan).is_err());
         }
     }
