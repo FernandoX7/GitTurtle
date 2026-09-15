@@ -10,11 +10,12 @@ The inventory contains six `rust/command-line-injection`, 45
 reproduced defects in installer and test code. Runtime watcher metadata and build
 compiler selection were also reviewed.
 
-**Disposition at this checkpoint:** 47 fixture alerts await analysis of the
-changed code; 33 alerts have reviewed false-positive rationales with dismissals
-not yet applied. This document does not establish a resolved dashboard, successful
-new hosted checks, or merge readiness. Fresh analysis and final dispositions
-remain part of PR validation.
+**Disposition at this checkpoint:** the 33 reviewed false positives from the
+original inventory have individual dismissals with source-specific rationales.
+The 47 fixture alerts await default-branch analysis of the hardening changes.
+One newly introduced Python alert, 373, was independently reviewed and dismissed
+as described below. A completed analysis job alone does not establish a resolved
+alert inventory; final PR and merged-main results are recorded in the PR.
 
 ## Reproduced defects and changes
 
@@ -60,13 +61,14 @@ blanket exemption for installer code or environment variables.
 - `cargo test --locked -p gitturtle local_refresh::tests -- --test-threads=4`
   passed **20 tests** in a local Ubuntu environment, including both new fixture
   isolation regressions and existing filesystem notification fixtures.
-- `python3 scripts/test-install-linux.py` completed **9 passing tests and 2
-  skipped tests**. The skipped tests require an explicit real bundle.
+- `python3 scripts/test-install-linux.py --bundle <local-bundle>` passed all
+  **11 tests**, including installation, relocation and rollback with the actual
+  Linux release bundle built from clean source `ff20835`.
 - `git diff --check` passed for the changed security files.
 
-These results establish targeted local validation. Full workspace checks,
-real-bundle installation, native UI behavior, macOS execution and fresh hosted
-security analysis are separate validation items.
+These results establish targeted local validation. Full workspace checks, native
+UI behavior, platform coverage and build identity are recorded separately in
+[validation notes](validation.md).
 
 ## Initial alert inventory
 
@@ -75,40 +77,40 @@ line numbers may differ in the PR. Distinct IDs on the same line can identify
 separate source or destination arguments.
 
 - **Pending**: recheck after analysis of the fixture hardening.
-- **FP review**: source-to-sink review supports a false-positive dismissal;
-  dismissal has not been applied at this checkpoint.
+- **Dismissed FP**: source-to-sink review and an independent review support the
+  individual false-positive dismissal applied to this alert.
 
 | Alert | Original path:line | Boundary / operation | Disposition |
 | --- | --- | --- | --- |
-| 292 | `docs/benchmarks/native-preview-20260914/analyze-scroll.py:14` | L: selected log read | FP review |
-| 293 | `scripts/install-linux.py:51` | I: replacement source read | FP review |
-| 294 | `scripts/install-linux.py:56` | I: generated replacement source | FP review |
-| 295 | `scripts/install-linux.py:56` | I: owned replacement destination | FP review |
-| 296 | `scripts/install-linux.py:58` | I: temporary-file cleanup | FP review |
-| 297 | `scripts/install-linux.py:62` | I: validated source hash read | FP review |
-| 298 | `scripts/install-linux.py:124` | I: destination type check | FP review |
-| 299 | `scripts/install-linux.py:122` | I: destination symlink check | FP review |
-| 300 | `scripts/install-linux.py:124` | I: destination existence check | FP review |
-| 301 | `scripts/install-linux.py:134` | I: license-tree existence check | FP review |
-| 302 | `scripts/install-linux.py:135` | I: installed-license enumeration | FP review |
-| 303 | `scripts/install-linux.py:142` | I: backup-root creation | FP review |
-| 304 | `scripts/install-linux.py:143` | I: generated backup directory | FP review |
-| 305 | `scripts/install-linux.py:149` | I: backup-source existence check | FP review |
-| 306 | `scripts/install-linux.py:151` | I: backup-source permissions | FP review |
-| 307 | `scripts/install-linux.py:158` | I: failed-backup cleanup | FP review |
-| 308 | `scripts/install-linux.py:164` | I: manifest symlink check | FP review |
-| 309 | `scripts/install-linux.py:164` | I: manifest size check | FP review |
-| 310 | `scripts/install-linux.py:166` | I: bounded manifest read | FP review |
-| 311 | `scripts/install-linux.py:178` | I: stored-source symlink check | FP review |
-| 312 | `scripts/install-linux.py:178` | I: stored-source containment | FP review |
-| 313 | `scripts/install-linux.py:178` | I: backup containment anchor | FP review |
-| 314 | `scripts/install-linux.py:210` | I: recovery-marker type check | FP review |
-| 315 | `scripts/install-linux.py:212` | I: recovery-marker symlink check | FP review |
-| 316 | `scripts/install-linux.py:212` | I: recovery-marker size check | FP review |
-| 317 | `scripts/install-linux.py:214` | I: bounded recovery-marker read | FP review |
-| 318 | `scripts/install-linux.py:248` | I: application-data creation | FP review |
-| 319 | `scripts/install-linux.py:249` | I: fixed installation lock | FP review |
-| 320 | `scripts/install-linux.py:334` | I: unused-backup cleanup | FP review |
+| 292 | `docs/benchmarks/native-preview-20260914/analyze-scroll.py:14` | L: selected log read | Dismissed FP |
+| 293 | `scripts/install-linux.py:51` | I: replacement source read | Dismissed FP |
+| 294 | `scripts/install-linux.py:56` | I: generated replacement source | Dismissed FP |
+| 295 | `scripts/install-linux.py:56` | I: owned replacement destination | Dismissed FP |
+| 296 | `scripts/install-linux.py:58` | I: temporary-file cleanup | Dismissed FP |
+| 297 | `scripts/install-linux.py:62` | I: validated source hash read | Dismissed FP |
+| 298 | `scripts/install-linux.py:124` | I: destination type check | Dismissed FP |
+| 299 | `scripts/install-linux.py:122` | I: destination symlink check | Dismissed FP |
+| 300 | `scripts/install-linux.py:124` | I: destination existence check | Dismissed FP |
+| 301 | `scripts/install-linux.py:134` | I: license-tree existence check | Dismissed FP |
+| 302 | `scripts/install-linux.py:135` | I: installed-license enumeration | Dismissed FP |
+| 303 | `scripts/install-linux.py:142` | I: backup-root creation | Dismissed FP |
+| 304 | `scripts/install-linux.py:143` | I: generated backup directory | Dismissed FP |
+| 305 | `scripts/install-linux.py:149` | I: backup-source existence check | Dismissed FP |
+| 306 | `scripts/install-linux.py:151` | I: backup-source permissions | Dismissed FP |
+| 307 | `scripts/install-linux.py:158` | I: failed-backup cleanup | Dismissed FP |
+| 308 | `scripts/install-linux.py:164` | I: manifest symlink check | Dismissed FP |
+| 309 | `scripts/install-linux.py:164` | I: manifest size check | Dismissed FP |
+| 310 | `scripts/install-linux.py:166` | I: bounded manifest read | Dismissed FP |
+| 311 | `scripts/install-linux.py:178` | I: stored-source symlink check | Dismissed FP |
+| 312 | `scripts/install-linux.py:178` | I: stored-source containment | Dismissed FP |
+| 313 | `scripts/install-linux.py:178` | I: backup containment anchor | Dismissed FP |
+| 314 | `scripts/install-linux.py:210` | I: recovery-marker type check | Dismissed FP |
+| 315 | `scripts/install-linux.py:212` | I: recovery-marker symlink check | Dismissed FP |
+| 316 | `scripts/install-linux.py:212` | I: recovery-marker size check | Dismissed FP |
+| 317 | `scripts/install-linux.py:214` | I: bounded recovery-marker read | Dismissed FP |
+| 318 | `scripts/install-linux.py:248` | I: application-data creation | Dismissed FP |
+| 319 | `scripts/install-linux.py:249` | I: fixed installation lock | Dismissed FP |
+| 320 | `scripts/install-linux.py:334` | I: unused-backup cleanup | Dismissed FP |
 | 322 | `crates/app/src/local_refresh.rs:1458` | F: fixture file write | Pending |
 | 323 | `crates/app/src/local_refresh.rs:1148` | F: fixture file write | Pending |
 | 324 | `crates/app/src/local_refresh.rs:1439` | F: fixture file write | Pending |
@@ -125,8 +127,8 @@ separate source or destination arguments.
 | 335 | `crates/app/src/local_refresh.rs:1567` | F: fixture file write | Pending |
 | 336 | `crates/app/src/local_refresh.rs:1571` | F: fixture file write | Pending |
 | 337 | `crates/app/src/local_refresh.rs:1574` | F: fixture file write | Pending |
-| 338 | `crates/app/src/local_refresh.rs:711` | W: registration metadata | FP review |
-| 339 | `crates/app/src/local_refresh.rs:750` | W: event relevance metadata | FP review |
+| 338 | `crates/app/src/local_refresh.rs:711` | W: registration metadata | Dismissed FP |
+| 339 | `crates/app/src/local_refresh.rs:750` | W: event relevance metadata | Dismissed FP |
 | 340 | `crates/app/src/local_refresh.rs:1443` | F: fixture rename | Pending |
 | 341 | `crates/app/src/local_refresh.rs:1678` | F: fixture rename | Pending |
 | 342 | `crates/app/src/local_refresh.rs:1402` | F: fixture rename | Pending |
@@ -153,10 +155,21 @@ separate source or destination arguments.
 | 363 | `crates/app/src/local_refresh.rs:1511` | F: fixture cleanup | Pending |
 | 364 | `crates/app/src/local_refresh.rs:1542` | F: fixture cleanup | Pending |
 | 365 | `crates/app/src/local_refresh.rs:1744` | F: fixture file check | Pending |
-| 366 | `crates/app/src/local_refresh.rs:936` | W: root availability metadata | FP review |
-| 367 | `crates/app/build.rs:66` | C: selected compiler executable | FP review |
+| 366 | `crates/app/src/local_refresh.rs:936` | W: root availability metadata | Dismissed FP |
+| 367 | `crates/app/build.rs:66` | C: selected compiler executable | Dismissed FP |
 | 368 | `crates/app/src/local_refresh.rs:1117` | F: Git -C directory argument | Pending |
 | 369 | `crates/app/src/local_refresh.rs:1613` | F: Git -C directory argument | Pending |
 | 370 | `crates/app/src/local_refresh.rs:1665` | F: Git -C directory argument | Pending |
 | 371 | `crates/app/src/local_refresh.rs:1718` | F: Git -C directory argument | Pending |
 | 372 | `crates/app/src/local_refresh.rs:1128` | F: absolute worktree argument | Pending |
+
+## Finding introduced during review
+
+Alert **373**, `py/path-injection` at `scripts/install-linux.py:128`, was introduced
+by the new defensive symlink-component loop. All four traces in Python analysis
+`1776490276` for source `ff20835` begin with the caller-selected absolute
+`XDG_DATA_HOME`, pass the owned-destination allowlist and traversal checks, and
+end at `destination.is_symlink()`. This metadata guard rejects redirection and
+does not grant content or write authority. Two independent reviewers checked
+the complete traces; the alert was individually dismissed as a false positive.
+The guard and regression remain enabled.
