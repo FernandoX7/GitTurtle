@@ -247,13 +247,16 @@ impl GitTurtle {
         {
             return;
         }
-        let Some(NavRow::Branch(index, _)) =
-            self.nav_cursor.and_then(|index| self.nav_rows.get(index))
-        else {
-            return;
-        };
-        let branch = &self.branches[*index];
-        self.open_contextual_branch(branch.name.clone(), branch.remote, window, cx);
+        match self.nav_cursor.and_then(|index| self.nav_rows.get(index)) {
+            Some(NavRow::Branch(index, _)) => {
+                let branch = &self.branches[*index];
+                self.open_contextual_branch(branch.name.clone(), branch.remote, window, cx);
+            }
+            Some(NavRow::Worktree(index)) => {
+                self.open_worktree_actions(self.worktrees[*index].clone(), false, window, cx);
+            }
+            _ => {}
+        }
     }
 }
 

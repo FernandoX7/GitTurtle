@@ -577,6 +577,10 @@ impl GitTurtle {
         };
         let branch_owner = cx.entity().downgrade();
         let branch_repository = self.path.clone();
+        let contextual_worktree = match &row {
+            NavRow::Worktree(index) => Some(self.worktrees[*index].clone()),
+            _ => None,
+        };
         let element = div()
             .id(("nav", index))
             .role(Role::TreeItem)
@@ -641,6 +645,40 @@ impl GitTurtle {
                                 });
                             }),
                     )
+                })
+                .into_any_element()
+        } else if let Some(tree) = contextual_worktree {
+            element
+                .context_menu(move |menu, _, cx| {
+                    let disabled = branch_owner.upgrade().is_none_or(|owner| {
+                        let owner = owner.read(cx);
+                        owner.operation_busy.is_some()
+                            || owner.path != branch_repository
+                            || owner.page != AppPage::Repository
+                    });
+                    let mut menu = menu.label(tree.path.display().to_string());
+                    for (label, remove) in
+                        [("Worktree actions…", false), ("Remove worktree…", true)]
+                    {
+                        let owner = branch_owner.clone();
+                        let repository = branch_repository.clone();
+                        let tree = tree.clone();
+                        menu = menu.item(PopupMenuItem::new(label).disabled(disabled).on_click(
+                            move |_, window, cx| {
+                                let _ = owner.update(cx, |this, cx| {
+                                    if this.path == repository && this.page == AppPage::Repository {
+                                        this.open_worktree_actions(
+                                            tree.clone(),
+                                            remove,
+                                            window,
+                                            cx,
+                                        );
+                                    }
+                                });
+                            },
+                        ));
+                    }
+                    menu
                 })
                 .into_any_element()
         } else {

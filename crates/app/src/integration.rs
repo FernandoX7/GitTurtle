@@ -64,6 +64,7 @@ impl GitTurtle {
                 .child(
                     div()
                         .id("operation-consequences")
+                        .debug_selector(|| "operation-consequences".to_string())
                         .role(Role::Label)
                         .aria_label(explanation.clone())
                         .max_h(px(360.))
