@@ -1083,59 +1083,33 @@ mod tests {
     use super::*;
     use futures::{FutureExt, StreamExt};
     use notify::event::{AccessKind, AccessMode, DataChange};
-    use std::sync::atomic::AtomicU64;
-
-    static DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    use std::process::{Command, Output};
 
     struct Fixture {
+        _directory: tempfile::TempDir,
         path: PathBuf,
         roots: WatchRoots,
     }
 
     impl Fixture {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "gitturtle-watch-{}-{}-{}",
-                std::process::id(),
-                SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos(),
-                DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-            ));
-            fs::create_dir(&path).unwrap();
-            let path = path.canonicalize().unwrap();
+            let mut builder = tempfile::Builder::new();
+            builder.prefix("gitturtle-watch-");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                // Create the boundary privately, even with a permissive umask.
+                builder.permissions(fs::Permissions::from_mode(0o700));
+            }
+            let directory = builder.tempdir().unwrap();
+            let path = directory.path().canonicalize().unwrap();
             let roots = WatchRoots {
                 worktree: path.join("linked"),
                 common_git: path.join("main/.git"),
                 private_git: path.join("main/.git/worktrees/linked"),
             };
             fs::create_dir_all(path.join("main")).unwrap();
-            let git = |args: &[&str]| {
-                let result = std::process::Command::new("git")
-                    .arg("-C")
-                    .arg(path.join("main"))
-                    .args([
-                        "-c",
-                        "user.name=Fixture",
-                        "-c",
-                        "user.email=fixture@example.invalid",
-                        "-c",
-                        "commit.gpgsign=false",
-                        "-c",
-                        "core.hooksPath=/dev/null",
-                    ])
-                    .args(args)
-                    .env("GIT_CONFIG_NOSYSTEM", "1")
-                    .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                    .output()
-                    .unwrap();
-                assert!(
-                    result.status.success(),
-                    "{}",
-                    String::from_utf8_lossy(&result.stderr)
-                );
-            };
+            let git = |args: &[&str]| fixture_git(&path.join("main"), args);
             git(&["init", "-b", "main"]);
             git(&["commit", "--allow-empty", "-m", "Initial"]);
             git(&[
@@ -1146,7 +1120,11 @@ mod tests {
                 roots.worktree.to_str().unwrap(),
             ]);
             fs::write(roots.worktree.join("file.txt"), "before\n").unwrap();
-            Self { path, roots }
+            Self {
+                _directory: directory,
+                path,
+                roots,
+            }
         }
 
         fn observe(
@@ -1171,10 +1149,93 @@ mod tests {
         }
     }
 
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
+    fn isolate_fixture_git(command: &mut Command) {
+        // -C does not override inherited GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE.
+        // Remove Git targeting, templates, and configuration before any fixture
+        // command can write; leave the runner's ordinary process setup intact.
+        let git_environment: Vec<_> = std::env::vars_os()
+            .map(|(name, _)| name)
+            .chain(command.get_envs().map(|(name, _)| name.to_owned()))
+            .filter(|name| name.to_string_lossy().starts_with("GIT_"))
+            .collect();
+        for name in git_environment {
+            command.env_remove(name);
         }
+        command
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_TERMINAL_PROMPT", "0");
+    }
+
+    fn fixture_git_command(path: &Path, args: &[&str]) -> Command {
+        let mut command = Command::new("git");
+        command
+            .arg("-C")
+            .arg(path)
+            .args([
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "init.templateDir=",
+            ])
+            .args(args);
+        isolate_fixture_git(&mut command);
+        command
+    }
+
+    fn fixture_git(path: &Path, args: &[&str]) -> Output {
+        let output = fixture_git_command(path, args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    }
+
+    #[test]
+    fn fixture_git_cannot_redirect_writes_into_another_repository() {
+        let fixture = Fixture::new();
+        let unrelated = Fixture::new();
+        let unrelated_index = unrelated.roots.private_git.join("index");
+        let before = fs::read(&unrelated_index).unwrap();
+        let mut command = fixture_git_command(&fixture.roots.worktree, &["add", "--", "file.txt"]);
+        command
+            .env("GIT_DIR", &unrelated.roots.private_git)
+            .env("GIT_WORK_TREE", &unrelated.roots.worktree)
+            .env("GIT_INDEX_FILE", &unrelated_index)
+            .env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", "core.worktree")
+            .env("GIT_CONFIG_VALUE_0", &unrelated.roots.worktree);
+        isolate_fixture_git(&mut command);
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{:?}", output.stderr);
+        assert_eq!(fs::read(&unrelated_index).unwrap(), before);
+        assert_eq!(
+            fixture_git(&fixture.roots.worktree, &["show", ":file.txt"]).stdout,
+            b"before\n"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn fixture_directory_is_private_and_resolves_temporary_directory_aliases() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = Fixture::new();
+        assert_eq!(
+            fs::metadata(&fixture.path).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(fixture.path.canonicalize().unwrap(), fixture.path);
+        assert!(fixture.roots.worktree.starts_with(&fixture.path));
+        assert!(fixture.roots.private_git.starts_with(&fixture.path));
+        assert!(fixture.roots.common_git.starts_with(&fixture.path));
     }
 
     #[test]
@@ -1608,13 +1669,10 @@ mod tests {
         let (mut watcher, mut registrations) = registrations(&fixture);
         registrations.start(&mut watcher, &fixture.roots);
         assert!(!registrations.directories.contains(&directory));
-        let output = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&fixture.roots.worktree)
-            .args(["add", "--force", "--", "ignored/nested/tracked"])
-            .output()
-            .unwrap();
-        assert!(output.status.success());
+        fixture_git(
+            &fixture.roots.worktree,
+            &["add", "--force", "--", "ignored/nested/tracked"],
+        );
         registrations.refresh_policy(
             &mut watcher,
             &fixture.roots,
@@ -1660,13 +1718,10 @@ mod tests {
         let (mut watcher, mut registrations) = registrations(&fixture);
         registrations.start(&mut watcher, &fixture.roots);
         assert!(!registrations.relevant(&directory.join("tracked"), ChangeKind::Worktree));
-        let output = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&fixture.roots.worktree)
-            .args(["add", "--force", "--", "ignored/nested/tracked"])
-            .output()
-            .unwrap();
-        assert!(output.status.success());
+        fixture_git(
+            &fixture.roots.worktree,
+            &["add", "--force", "--", "ignored/nested/tracked"],
+        );
         let parked = fixture.path.join("parked-private");
         fs::rename(&fixture.roots.private_git, &parked).unwrap();
         registrations.update(
@@ -1712,19 +1767,7 @@ mod tests {
         fs::create_dir_all(&directory).unwrap();
         fs::write(fixture.roots.worktree.join(".gitignore"), "/ignored/\n").unwrap();
         fs::write(directory.join("tracked"), "tracked\n").unwrap();
-        let git = |args: &[&str]| {
-            let output = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&fixture.roots.worktree)
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        };
+        let git = |args: &[&str]| fixture_git(&fixture.roots.worktree, args);
         git(&["add", "--force", "--", "ignored/nested/tracked"]);
         let (mut watcher, mut registrations) = registrations(&fixture);
         registrations.start(&mut watcher, &fixture.roots);
