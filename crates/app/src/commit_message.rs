@@ -162,12 +162,13 @@ pub(super) fn summary(text: &str) -> String {
     }
 }
 
-fn render_piece(piece: &Piece, index: usize, cx: &App) -> AnyElement {
+fn render_piece(piece: &Piece, index: usize, cx: &App) -> impl IntoElement {
     let colors = palette(cx);
     div()
         .id(("commit-message-piece", index))
         .role(Role::Label)
-        .aria_label(piece.text.clone())
+        // AccessKit adapters expose static label text through its value.
+        .aria_value(piece.text.clone())
         .w_full()
         .min_w_0()
         .px_3()
@@ -180,7 +181,6 @@ fn render_piece(piece: &Piece, index: usize, cx: &App) -> AnyElement {
         .when(piece.title, |row| row.font_weight(FontWeight::MEDIUM))
         .min_h(appearance::ui_size(if piece.title { 20.25 } else { 18. }))
         .child(piece.text.clone())
-        .into_any_element()
 }
 
 impl GitTurtle {
@@ -207,7 +207,7 @@ impl GitTurtle {
         let oid = commit.oid.clone();
         let list = gpui_kit::list(scroll.clone(), move |index, _, cx| {
             if let Some(piece) = pieces.get(index) {
-                return render_piece(piece, index, cx);
+                return render_piece(piece, index, cx).into_any_element();
             }
             owner
                 .update(cx, |this, cx| {
@@ -448,6 +448,30 @@ pub(crate) mod tests {
                 window.draw(cx).clear(cx);
             });
         }
+    }
+
+    #[gpui::test]
+    fn rendered_message_labels_expose_text_to_native_accessibility(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            for (index, text) in ["Title 東京 🐢", "First paragraph.\n\n  Keep indentation."]
+                .into_iter()
+                .enumerate()
+            {
+                let piece = Piece {
+                    text: text.to_owned().into(),
+                    title: index == 0,
+                    body_start: index == 1,
+                };
+                let element = render_piece(&piece, index, cx).into_element();
+                let mut node = gpui::accesskit::Node::new(element.a11y_role().unwrap());
+                element.write_a11y_info(&mut node);
+                assert_eq!(node.role(), Role::Label);
+                // AccessKit's native adapters read a Label's text from value.
+                // A label-only property renders visibly but has no spoken name.
+                assert_eq!(node.value(), Some(text));
+            }
+        });
     }
 
     #[gpui::test]
