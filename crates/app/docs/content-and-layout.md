@@ -12,6 +12,11 @@ The repository title shares remaining header width within its scaled 100–200 p
 
 Interface and code text sizes are independent saved preferences. Use `appearance::ui_text` for UI labels and `ui_size` for fixed text-row heights; native rem-based controls follow the interface font. Source editors and custom gutters use `code_text` and `code_scale`. Density row heights include interface scaling. Size changes retain editor identities, selection and Find, and scale scroll offsets to preserve the logical viewport. Keep code and UI scaling separate when adding an editor, canvas gutter, or dialog. Revision, Quick Open, rebase, worktree, reflog and activity dialogs bound their scrolling body to the available window height, leaving their footer reachable at larger interface sizes. When measured Working geometry changes during painting, defer its redraw until painting finishes; unchanged bounds must not schedule another frame.
 
+Desktop text-factor changes use the same viewport update in every window and
+retained repository tab, without saving new application text-size preferences.
+Editor font changes defer scroll clamping until the new text geometry exists;
+ordinary wheel and linked-scroll requests still clamp to the current geometry.
+
 Pair file-status SVGs with a short label and semantic color; color alone must not distinguish New, Modified, Deleted, Renamed, Type or Conflict. Working rows use the status for their staged/unstaged area, with conflicts taking precedence and untracked files shown as New. Keep small controls/status icons tintable SVGs; packaged app artwork is a separate asset.
 
 ## Working composer

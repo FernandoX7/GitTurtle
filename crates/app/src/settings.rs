@@ -6,6 +6,12 @@ use gpui_kit::component::{checkbox::Checkbox, switch::Switch};
 use gpui_kit::prelude::FluentBuilder;
 use std::path::Path;
 
+pub(super) fn rescale_list_scroll(scroll: &UniformListScrollHandle, ratio: f32) {
+    let handle = &scroll.0.borrow().base_handle;
+    let offset = handle.offset();
+    handle.set_offset(point(offset.x, offset.y * ratio));
+}
+
 /// Baselines distinguish a saved value moving externally from an unfinished edit.
 pub(super) struct DraftState {
     branch: String,
@@ -53,6 +59,21 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        #[cfg(any(target_os = "linux", test))]
+        {
+            let mut applied_scale = appearance::desktop_text_scale();
+            self.subscriptions
+                .push(
+                    cx.observe_global::<appearance::DesktopTextScale>(move |this, cx| {
+                        let scale = cx.global::<appearance::DesktopTextScale>().0;
+                        if scale != applied_scale {
+                            let ratio = scale / applied_scale;
+                            applied_scale = scale;
+                            this.rescale_text_viewports(ratio, ratio, cx);
+                        }
+                    }),
+                );
+        }
         // Status replies can change the effective identity while Settings is
         // visible. Reconcile after parent notifications, outside rendering.
         self.subscriptions
@@ -223,36 +244,11 @@ impl GitTurtle {
         {
             return;
         }
-        if old_code != self.settings.code_text_size {
-            let ratio = f32::from(self.settings.code_text_size) / f32::from(old_code);
-            for editor in [&self.patch_editor, &self.before_editor, &self.after_editor]
-                .into_iter()
-                .flatten()
-            {
-                text::rescale_editor(editor, ratio, cx);
-            }
-            if let Some(view) = &self.split_view {
-                view.update(cx, |view, cx| view.rescale_code(ratio, cx));
-            }
-            self.file_history.rescale_code(ratio, cx);
-            self.revision_inspection.rescale_code(ratio, cx);
-            if let Some(view) = &self.conflict_view {
-                view.update(cx, |view, cx| view.rescale_code(ratio, cx));
-            }
-        }
-        if old_interface != self.settings.interface_text_size {
-            let ratio = f32::from(self.settings.interface_text_size) / f32::from(old_interface);
-            for scroll in [
-                &self.history_scroll,
-                &self.file_scroll,
-                &self.working_scroll,
-                &self.nav_scroll,
-            ] {
-                let handle = &scroll.0.borrow().base_handle;
-                let offset = handle.offset();
-                handle.set_offset(point(offset.x, offset.y * ratio));
-            }
-        }
+        self.rescale_text_viewports(
+            f32::from(self.settings.interface_text_size) / f32::from(old_interface),
+            f32::from(self.settings.code_text_size) / f32::from(old_code),
+            cx,
+        );
         appearance::apply_text_sizes(
             self.settings.interface_text_size,
             self.settings.code_text_size,
@@ -260,6 +256,49 @@ impl GitTurtle {
             cx,
         );
         self.save_preferences(window, cx);
+    }
+
+    /// Resize retained geometry without replacing editors, saving preferences,
+    /// or issuing repository work. Desktop changes apply this in every window.
+    pub(super) fn rescale_text_viewports(
+        &mut self,
+        interface_ratio: f32,
+        code_ratio: f32,
+        cx: &mut Context<Self>,
+    ) {
+        if code_ratio != 1.0 {
+            for editor in [&self.patch_editor, &self.before_editor, &self.after_editor]
+                .into_iter()
+                .flatten()
+            {
+                text::rescale_editor(editor, code_ratio, cx);
+            }
+            if let Some(view) = &self.split_view {
+                view.update(cx, |view, cx| view.rescale_code(code_ratio, cx));
+            }
+            self.file_history.rescale_code(code_ratio, cx);
+            self.revision_inspection.rescale_code(code_ratio, cx);
+            if let Some(view) = &self.conflict_view {
+                view.update(cx, |view, cx| view.rescale_code(code_ratio, cx));
+            }
+        }
+        if interface_ratio != 1.0 {
+            for scroll in [
+                &self.history_scroll,
+                &self.file_scroll,
+                &self.working_scroll,
+                &self.nav_scroll,
+            ] {
+                rescale_list_scroll(scroll, interface_ratio);
+            }
+            // Treat the next layout as a new baseline: revealing the selected
+            // row here would discard an intentionally scrolled viewport.
+            self.history_list_layout = None;
+            self.file_list_layout = None;
+        }
+        self.repository_tabs
+            .rescale_text_viewports(interface_ratio, code_ratio, cx);
+        cx.notify();
     }
 
     fn render_text_size_setting(&self, code: bool, cx: &mut Context<Self>) -> AnyElement {

@@ -7,6 +7,7 @@ use gpui_kit::component::input::Editor;
 
 struct ScrollProbe {
     editor: Entity<EditorState>,
+    font_size: Pixels,
 }
 
 impl Render for ScrollProbe {
@@ -14,7 +15,7 @@ impl Render for ScrollProbe {
         div().w(px(480.)).h(px(260.)).child(
             Editor::new(&self.editor)
                 .readonly(true)
-                .text_size(px(12.))
+                .text_size(self.font_size)
                 .w_full()
                 .h_full(),
         )
@@ -27,6 +28,7 @@ fn fixture(
 ) -> (Entity<ScrollProbe>, &mut VisualTestContext) {
     cx.update(gpui_kit::init);
     let (view, cx) = cx.add_window_view(move |window, cx| ScrollProbe {
+        font_size: px(12.),
         editor: cx.new(|cx| {
             // Long lines exercise independent horizontal and vertical bounds.
             // The document remains small enough for deterministic unit tests.
@@ -61,6 +63,44 @@ fn assert_rendered_viewport(editor: &EditorState) {
     );
     assert!(rows.end > rows.start, "the viewport contains source rows");
     assert!(rows.end <= 401, "no rows beyond the supplied document");
+}
+
+#[gpui::test]
+fn font_growth_preserves_near_bottom_viewport_and_selection(cx: &mut TestAppContext) {
+    let (view, cx) = fixture(cx, None);
+    let editor = cx.read(|cx| view.read(cx).editor.clone());
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| {
+            editor.set_selected_range(5..12, cx);
+            editor.focus(window, cx);
+        });
+        window.draw(cx).clear(cx);
+        editor.update(cx, |editor, cx| {
+            editor.set_scroll_offset(point(px(-200.), px(-6800.)), cx);
+        });
+        window.draw(cx).clear(cx);
+        let offset = editor.read(cx).scroll_offset();
+        let top = editor.read(cx).visible_row_range().unwrap().start;
+        assert!(
+            top > 350,
+            "exercise font growth beyond the old document bounds"
+        );
+
+        for (font, ratio, expected) in [(24., 2., offset * 2.), (12., 0.5, offset)] {
+            view.update(cx, |view, cx| {
+                view.font_size = px(font);
+                text::rescale_editor(&editor, ratio, cx);
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+            let state = editor.read(cx);
+            assert_eq!(state.scroll_offset(), expected);
+            assert_eq!(state.visible_row_range().unwrap().start, top);
+            assert_eq!(state.selected_range(), 5..12);
+            assert!(state.focus_handle(cx).is_focused(window));
+            assert_rendered_viewport(state);
+        }
+    });
 }
 
 #[gpui::test]

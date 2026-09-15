@@ -16,4 +16,12 @@ The shared input engine now accepts a compact accessibility presentation from th
 
 The input viewport setter now updates the accepted, clamped scroll handle immediately when layout geometry exists, and carries that accepted offset into the next layout. Direct wheel input clears a superseded deferred request. This prevents linked split editors from reporting a stale intermediate paint offset as a new gesture and bouncing one another backwards during bursts. Cold editors retain the first-layout request. The consuming `scroll_tests` suite renders the actual Editor and covers burst setters, wheel precedence, bounds, visible rows, and retained selection/focus. Native before/after tracing also compares both panes in the same painted frame; `GITTURTLE_TRACE_SCROLL=1` enables observations without requesting extra frames.
 
+The explicit `rescale_scroll_offset` operation preserves the logical viewport
+when a font-size change will replace the layout geometry. It defers clamping
+until the new bounds exist, avoiding the old document-end limit during font
+growth, and updates the observable offset for linked panes. Ordinary scroll
+setters and wheel precedence keep their behavior. The consuming
+`font_growth_preserves_near_bottom_viewport_and_selection` regression exercises
+real Editor layout across an enlarged font, then checks the reverse change.
+
 All other upstream source, manifests and tests are unmodified. The registry-only `.cargo-ok`, `.cargo-checksum.json` and upstream package lockfile are omitted; the application uses the workspace lockfile. Remove this patch when the matching upstream toolkit publishes equivalent semantics and the application regressions pass against it. Native VoiceOver and macOS AX focus behavior remain separate runtime validation gates.

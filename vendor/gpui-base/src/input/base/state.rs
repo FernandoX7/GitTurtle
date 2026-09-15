@@ -2138,6 +2138,21 @@ impl<M: InputModeKind> InputBaseState<M> {
         cx.notify();
     }
 
+    /// Preserve the logical viewport when the next layout changes text size.
+    /// Unlike an ordinary scroll, this must not clamp to the old text bounds:
+    /// growing a font near the document end would lose the requested offset.
+    /// The next layout applies its new bounds, and newer wheel input still
+    /// supersedes this deferred request.
+    pub fn rescale_scroll_offset(&mut self, ratio: f32, cx: &mut Context<Self>) {
+        let offset = self
+            .deferred_scroll_offset
+            .unwrap_or(self.scroll_handle.offset());
+        let offset = point(offset.x * ratio, offset.y * ratio);
+        self.deferred_scroll_offset = Some(offset);
+        self.scroll_handle.set_offset(offset);
+        cx.notify();
+    }
+
     /// Laid-out line height; `None` before first layout.
     pub fn line_height(&self) -> Option<gpui::Pixels> {
         self.last_layout.as_ref().map(|l| l.line_height)

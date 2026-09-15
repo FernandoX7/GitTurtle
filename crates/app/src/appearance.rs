@@ -26,14 +26,21 @@ static CODE_TEXT_SIZE: AtomicU8 = AtomicU8::new(DEFAULT_CODE_TEXT_SIZE);
 // Linux desktop bridge changes it; other platforms scale through the toolkit.
 static DESKTOP_TEXT_SCALE: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
 
+/// Per-app notification for retained workspace viewports. Observers keep their
+/// last applied factor so coalesced desktop updates are applied exactly once.
+#[cfg(any(target_os = "linux", test))]
+pub(super) struct DesktopTextScale(pub f32);
+#[cfg(any(target_os = "linux", test))]
+impl Global for DesktopTextScale {}
+
 pub fn desktop_text_scale() -> f32 {
     f32::from_bits(DESKTOP_TEXT_SCALE.load(Ordering::Relaxed))
 }
-/// Normalizes a reported factor: non-finite values mean "no scaling".
+/// Normalizes a reported factor: non-positive/non-finite values mean "no scaling".
 #[cfg(any(target_os = "linux", test))]
 pub fn desktop_text_scale_value(scale: impl Into<f64>) -> f32 {
     let scale = scale.into();
-    if scale.is_finite() {
+    if scale.is_finite() && scale > 0.0 {
         (scale as f32).clamp(
             *DESKTOP_TEXT_SCALE_RANGE.start(),
             *DESKTOP_TEXT_SCALE_RANGE.end(),
@@ -51,6 +58,7 @@ pub fn set_desktop_text_scale(scale: f32, cx: &mut App) -> bool {
         return false;
     }
     DESKTOP_TEXT_SCALE.store(scale.to_bits(), Ordering::Relaxed);
+    cx.set_global(DesktopTextScale(scale));
     for window in cx.windows() {
         let _ = window.update(cx, |_, window, cx| {
             apply_text_sizes(
@@ -645,6 +653,8 @@ mod tests {
         assert_eq!(desktop_text_scale_value(1.25), 1.25);
         assert_eq!(desktop_text_scale_value(0.1), 0.5);
         assert_eq!(desktop_text_scale_value(12.0), 3.0);
+        assert_eq!(desktop_text_scale_value(0.0), 1.0);
+        assert_eq!(desktop_text_scale_value(-1.0), 1.0);
         assert_eq!(desktop_text_scale_value(f64::NAN), 1.0);
         assert_eq!(desktop_text_scale_value(f64::INFINITY), 1.0);
         // Nothing in the test suite changes the process-wide factor.
