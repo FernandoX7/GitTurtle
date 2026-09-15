@@ -219,6 +219,13 @@ menu item. Linux keyboard shortcuts use Control instead of Command.
   [format matrix](file-previews.md) defines bounds and unsupported variants.
   Recognizing metadata is not the same as rendering a format.
 - System Preview uses macOS Quick Look and has no Linux launcher.
+- Automatic refresh skips ignored working-tree directories while preserving
+  coverage for tracked files inside them and essential Git metadata. Linux
+  coverage is bounded to 16,384 directory registrations and a scan budget;
+  reaching a limit keeps existing watches and shows a quiet status with
+  Refresh and copyable Details. Ignore-rule edits reconsider affected coverage,
+  including shared and global excludes. Refresh or returning focus retries
+  degraded coverage. See the [local refresh contract](../crates/app/docs/navigation-and-refresh.md#local-refresh).
 - Automatic reading of OS reduced-motion, contrast and transparency
   accessibility preferences is macOS-only. Manual app preferences remain
   available; Linux screen-reader and IME coverage is not established.

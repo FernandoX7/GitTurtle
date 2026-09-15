@@ -1564,6 +1564,159 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")]
+    fn ignore_patterns_never_hide_essential_git_administration() {
+        let fixture = Fixture::new();
+        let main = fixture.path.join("main");
+        let ordinary = WatchRoots {
+            worktree: main.clone(),
+            private_git: main.join(".git"),
+            common_git: main.join(".git"),
+        };
+        for roots in [ordinary, fixture.roots.clone()] {
+            fs::write(
+                roots.worktree.join(".gitignore"),
+                ".*\nrefs/\ninfo/\nrebase-merge/\nsequencer/\n",
+            )
+            .unwrap();
+            for directory in ["refs/heads", "info", "rebase-merge", "sequencer"] {
+                fs::create_dir_all(roots.worktree.join(directory)).unwrap();
+                fs::create_dir_all(roots.private_git.join(directory)).unwrap();
+            }
+            fs::create_dir_all(roots.worktree.join(".hidden/nested")).unwrap();
+            let mut watcher = notify::recommended_watcher(|_: notify::Result<Event>| {}).unwrap();
+            let mut registrations = Registrations::new(&roots);
+            registrations.start(&mut watcher, &roots);
+            assert!(
+                registrations.diagnostic().is_none(),
+                "{:?}",
+                registrations.diagnostic()
+            );
+            // HEAD and index use their administration root's registration.
+            for path in [
+                roots.worktree.clone(),
+                roots.private_git.clone(),
+                roots.common_git.clone(),
+                roots.common_git.join("refs/heads"),
+                roots.private_git.join("refs/heads"),
+                roots.private_git.join("info"),
+                roots.private_git.join("rebase-merge"),
+                roots.private_git.join("sequencer"),
+            ] {
+                assert!(
+                    registrations.directories.contains(&path),
+                    "{}",
+                    path.display()
+                );
+            }
+            for directory in [".hidden", "refs", "info", "rebase-merge", "sequencer"] {
+                assert!(
+                    !registrations
+                        .directories
+                        .contains(&roots.worktree.join(directory)),
+                    "{directory} in {}",
+                    roots.worktree.display()
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn new_subtrees_inherit_ignore_rules_and_recover_after_rule_edits() {
+        use notify::event::{CreateKind, RenameMode};
+        let fixture = Fixture::new();
+        let roots = &fixture.roots;
+        let ignore = roots.worktree.join(".gitignore");
+        let exclude = roots.common_git.join("info/exclude");
+        fs::write(&ignore, "generated/\n").unwrap();
+        fs::create_dir_all(exclude.parent().unwrap()).unwrap();
+        fs::write(&exclude, "excluded/\n").unwrap();
+        let (mut watcher, mut registrations) = registrations(&fixture);
+        registrations.start(&mut watcher, roots);
+        let created = roots.worktree.join("new");
+        for directory in ["source/deep", "generated/cache", "excluded/cache"] {
+            fs::create_dir_all(created.join(directory)).unwrap();
+        }
+        registrations.update(
+            &mut watcher,
+            &Event::new(EventKind::Create(CreateKind::Folder)).add_path(created.clone()),
+            roots,
+        );
+        assert!(
+            registrations
+                .directories
+                .contains(&created.join("source/deep"))
+        );
+        assert!(
+            !registrations
+                .directories
+                .contains(&created.join("generated"))
+        );
+        assert!(
+            !registrations
+                .directories
+                .contains(&created.join("excluded"))
+        );
+
+        let renamed = roots.worktree.join("renamed");
+        fs::rename(&created, &renamed).unwrap();
+        registrations.update(
+            &mut watcher,
+            &Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Both)))
+                .add_path(created.clone())
+                .add_path(renamed.clone()),
+            roots,
+        );
+        assert!(
+            !registrations
+                .directories
+                .iter()
+                .any(|path| path.starts_with(&created))
+        );
+        assert!(
+            registrations
+                .directories
+                .contains(&renamed.join("source/deep"))
+        );
+        assert!(
+            !registrations
+                .directories
+                .contains(&renamed.join("generated"))
+        );
+        assert!(
+            !registrations
+                .directories
+                .contains(&renamed.join("excluded"))
+        );
+
+        fs::write(&ignore, "").unwrap();
+        registrations.refresh_policy(&mut watcher, roots, &[ignore]);
+        assert!(
+            registrations
+                .directories
+                .contains(&renamed.join("generated/cache"))
+        );
+        assert!(
+            !registrations
+                .directories
+                .contains(&renamed.join("excluded"))
+        );
+        fs::write(&exclude, "").unwrap();
+        registrations.refresh_policy(&mut watcher, roots, &[exclude]);
+        assert!(
+            registrations
+                .directories
+                .contains(&renamed.join("excluded/cache"))
+        );
+        assert!(
+            registrations.diagnostic().is_none(),
+            "{:?}",
+            registrations.diagnostic()
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
     fn disappearing_and_replaced_directories_are_normal_registration_races() {
         let fixture = Fixture::new();
         let (mut watcher, mut registrations) = registrations(&fixture);
