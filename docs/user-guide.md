@@ -193,7 +193,7 @@ The [Git service documentation](../crates/git-core/README.md) describes passive-
 
 ## Development and measurement
 
-[The quality workflow](../.github/workflows/quality.yml) configures the following gates on macOS 15 and Ubuntu 24.04 with Rust 1.98.0. It has no distribution or upload jobs. Local passes and workflow configuration do not establish a hosted CI pass or Linux coverage.
+[The quality workflow](../.github/workflows/quality.yml) configures the following checks with Rust 1.98.0: workspace tests and strict Clippy on macOS 15 and Ubuntu 24.04, and release compilation and package checks on macOS 26 and Ubuntu 24.04. It retains diagnostics and withholds [binary artifacts](ci-artifacts.md) until complete-notice checks pass. See the [dated hosted results](benchmarks/2026-09-15-ci.md); configured jobs and local passes do not establish hosted or native acceptance.
 
 ```sh
 cargo fmt --all -- --check

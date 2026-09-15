@@ -122,33 +122,25 @@ def preflight(args):
         output.write("context=" + github.canonical(context).decode().strip() + "\n")
         output.write("linux=" + str(LINUX in values).lower() + "\n")
         output.write("macos=" + str(MAC in values).lower() + "\n")
-        matrix = {"include": [{"target": target, "os": "macos-15" if target == MAC else "ubuntu-24.04"} for target in values]}
+        matrix = {"include": [{"target": target, "os": "macos-26" if target == MAC else "ubuntu-24.04"} for target in values]}
         output.write("matrix=" + github.canonical(matrix).decode().strip() + "\n")
     print("Release context approval SHA-256: " + context["approval_sha256"])
     print("Source preflight passed; package, signing and publication evidence remain separate.")
 
 
 def select_xcode(_args=None, _context=None, *, applications=Path("/Applications"), environ=None):
-    """Match the Quality lane's installed Xcode selection before cache identity.
+    """Select the observed Xcode build for Quality and release jobs.
     The selected toolchain applies through DEVELOPER_DIR; no shared host setting
-    or developer directory is changed.
+    or developer directory is changed. Missing or changed tools never fall back.
     """
     env = os.environ if environ is None else environ
-    paths = sorted(applications.glob("Xcode*.app/Contents/Developer"))
-    if len(paths) > 32:
-        raise Error("Unexpected number of installed Xcode candidates")
-    candidates = []
-    for path in paths:
-        if any(char in str(path) for char in "\r\n") or not path.is_dir():
-            raise Error("Invalid installed Xcode path")
-        status, text = packages.run(["/usr/bin/xcodebuild", "-version"],
-            env={**env, "DEVELOPER_DIR": str(path)}, allowed=tuple(range(256)), timeout=20)
-        match = re.search(r"^Xcode ([0-9]+(?:\.[0-9]+)*)$", text, re.MULTILINE)
-        if status == 0 and match and int(match[1].split(".")[0]) >= 26:
-            candidates.append((tuple(map(int, match[1].split("."))), path))
-    if not candidates:
-        raise Error("Packaging requires an installed full Xcode 26+ with Metal tools")
-    selected = max(candidates)[1]
+    selected = applications / "Xcode_26.3.app/Contents/Developer"
+    if any(char in str(selected) for char in "\r\n") or not selected.is_dir():
+        raise Error("CI requires installed Xcode 26.3 (17C529); no fallback")
+    status, text = packages.run(["/usr/bin/xcodebuild", "-version"],
+        env={**env, "DEVELOPER_DIR": str(selected)}, allowed=tuple(range(256)), timeout=20)
+    if status != 0 or text.strip() != "Xcode 26.3\nBuild version 17C529":
+        raise Error("CI requires verified Xcode 26.3 (17C529); no fallback")
     with Path(env["GITHUB_ENV"]).open("a") as output:
         output.write("DEVELOPER_DIR=" + str(selected) + "\n")
     print("Selected " + selected.parent.parent.name)
@@ -445,6 +437,10 @@ def main():
     try:
         if args.command == "preflight":
             preflight(args)
+        elif args.command == "select-xcode":
+            # Tool selection has no release authority or credentials. Quality
+            # uses this same bounded selector before constructing cache identity.
+            select_xcode()
         else:
             context = context_from_env()
             if args.command == "activate-signing":

@@ -1,11 +1,20 @@
 # CI package downloads
 
 Quality builds one optimized executable per declared native target:
-`aarch64-apple-darwin` on macOS 15 and `x86_64-unknown-linux-gnu` on Ubuntu 24.04.
+`aarch64-apple-darwin` on standard ARM64 macOS 26 and `x86_64-unknown-linux-gnu` on Ubuntu 24.04.
 The same job passes `target/<target>/release/gitturtle`, its SHA-256, source commit
 and version to the platform packager with `--no-build`. No second release build
-or implicit target-path lookup is used. macOS selects an installed full Xcode 26+
-and the packager checks Metal and icon tooling; absence is a failed prerequisite.
+or implicit target-path lookup is used. CI selects and verifies installed Xcode
+26.3 build 17C529 before computing cache identity; it never falls back to another
+toolchain. The packager still accepts full Xcode 26+ for local use and checks Metal
+and icon tooling. Missing prerequisites fail.
+
+macOS 15 retains workspace tests, doctests, strict Clippy and tooling checks.
+Only optimized compilation/packaging moved after the bounded
+[icon compiler experiment](benchmarks/2026-09-15-ci.md#icon-compiler-environment).
+That experiment did not build an app package or verify older-OS compatibility.
+Full hosted package validation on the new runner remains pending; the existing
+deployment target, artwork and package acceptance requirements are unchanged.
 
 Package creation, local archive checks, upload, download and installed-package
 checks precede release cache cleanup. Cache accounting covers the entire target

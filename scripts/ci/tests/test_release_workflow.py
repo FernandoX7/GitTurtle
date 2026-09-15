@@ -4,6 +4,7 @@ Apple service calls, actual executable launches or native evidence are produced.
 from __future__ import annotations
 
 import copy
+import contextlib
 import hashlib
 import importlib.util
 import io
@@ -31,7 +32,7 @@ SHA = "a" * 40
 TAG = "b" * 40
 LOCK = "c" * 64
 REQUIRED = ["Quality gate", "Rust formatting", "Rust tests and Clippy · macos-15",
-            "Rust tests and Clippy · ubuntu-24.04", "Rust release · macos-15", "Rust release · ubuntu-24.04"]
+            "Rust tests and Clippy · ubuntu-24.04", "Rust release · macos-26", "Rust release · ubuntu-24.04"]
 
 
 def context(platforms=(LINUX,), signed=False):
@@ -393,32 +394,100 @@ class Packages(Fixture):
 
 
 class XcodeSelection(unittest.TestCase):
-    def test_selects_latest_installed_supported_version_before_cache_identity(self):
+    def test_selects_verified_build_even_when_newer_or_default_tools_exist(self):
         with tempfile.TemporaryDirectory() as directory:
             applications = Path(directory)
-            versions = {"Xcode_16.4.app": "16.4", "Xcode_26.2.app": "26.2", "Xcode_26.3.app": "26.3"}
-            for name in versions:
+            for name in ("Xcode.app", "Xcode_26.2.app", "Xcode_26.3.app", "Xcode_26.6.app"):
                 (applications / name / "Contents/Developer").mkdir(parents=True)
             output = applications / "job-environment"
-            def version(command, *, env, **kwargs):
-                name = Path(env["DEVELOPER_DIR"]).parent.parent.name
-                return 0, "Xcode " + versions[name] + "\nBuild version fixture\n"
-            with patch.object(release.packages, "run", side_effect=version):
+            with patch.object(release.packages, "run", return_value=(0, "Xcode 26.3\nBuild version 17C529\n")) as probe:
                 release.select_xcode(applications=applications, environ={"GITHUB_ENV": str(output)})
-            self.assertEqual(output.read_text(), "DEVELOPER_DIR=" + str(applications / "Xcode_26.3.app/Contents/Developer") + "\n")
+            selected = str(applications / "Xcode_26.3.app/Contents/Developer")
+            self.assertEqual(output.read_text(), "DEVELOPER_DIR=" + selected + "\n")
+            probe.assert_called_once_with(["/usr/bin/xcodebuild", "-version"],
+                env={"GITHUB_ENV": str(output), "DEVELOPER_DIR": selected}, allowed=tuple(range(256)), timeout=20)
 
-    def test_old_default_or_failed_version_probe_cannot_satisfy_package_requirement(self):
+    def test_missing_pinned_installation_does_not_probe_other_versions(self):
         with tempfile.TemporaryDirectory() as directory:
             applications = Path(directory)
-            (applications / "Xcode.app/Contents/Developer").mkdir(parents=True)
-            for result in ((0, "Xcode 16.4\n"), (1, "Xcode 26.3\n"), (0, "unexpected")):
-                with self.subTest(result=result), patch.object(release.packages, "run", return_value=result), self.assertRaises(github.Error):
-                    release.select_xcode(applications=applications, environ={"GITHUB_ENV": str(applications / "output")})
+            for name in ("Xcode.app", "Xcode_26.2.app", "Xcode_26.6.app"):
+                (applications / name / "Contents/Developer").mkdir(parents=True)
+            with patch.object(release.packages, "run") as probe, self.assertRaisesRegex(github.Error, "no fallback"):
+                release.select_xcode(applications=applications, environ={"GITHUB_ENV": str(applications / "output")})
+            probe.assert_not_called()
             self.assertFalse((applications / "output").exists())
+
+    def test_failed_mismatched_or_ambiguous_identity_never_exports_the_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            applications = Path(directory)
+            (applications / "Xcode_26.3.app/Contents/Developer").mkdir(parents=True)
+            output = applications / "output"
+            output.write_text("EXISTING=value\n")
+            for result in ((1, "Xcode 26.3\nBuild version 17C529\n"),
+                           (0, "Xcode 26.6\nBuild version 17F113\n"),
+                           (0, "Xcode 26.3\nBuild version changed\n"),
+                           (0, "Xcode 26.3\n"), (0, "unexpected"),
+                           (0, "Xcode 26.3\nBuild version 17C529\nXcode 26.6\n")):
+                with self.subTest(result=result), patch.object(release.packages, "run", return_value=result), self.assertRaisesRegex(github.Error, "no fallback"):
+                    release.select_xcode(applications=applications, environ={"GITHUB_ENV": str(applications / "output")})
+                self.assertEqual(output.read_text(), "EXISTING=value\n")
+
+    def test_quality_cli_selects_tools_without_a_release_context(self):
+        with tempfile.TemporaryDirectory() as directory:
+            applications = Path(directory)
+            (applications / "Xcode_26.3.app/Contents/Developer").mkdir(parents=True)
+            output = applications / "output"
+            select = release.select_xcode
+            with patch.dict(os.environ, {"GITHUB_ENV": str(output)}, clear=True), \
+                    patch.object(sys, "argv", ["workflow.py", "select-xcode"]), \
+                    patch.object(release, "select_xcode", side_effect=lambda: select(applications=applications)), \
+                    patch.object(release, "context_from_env") as context_probe, \
+                    patch.object(release.packages, "run", return_value=(0, "Xcode 26.3\nBuild version 17C529\n")):
+                self.assertEqual(release.main(), 0)
+            context_probe.assert_not_called()
+            self.assertEqual(output.read_text(), "DEVELOPER_DIR=" + str(applications / "Xcode_26.3.app/Contents/Developer") + "\n")
+
+    def test_other_cli_operations_still_refuse_absent_or_bad_release_context(self):
+        operations = [("prepare", ["--target", MAC, "--directory", "unused"]),
+                      ("signing-input", ["--directory", "unused"]),
+                      ("finish-signing", ["--directory", "unused", "--signing", "unused", "--output", "unused"]),
+                      ("assemble", ["--directory", "unused", "--output", "unused"]),
+                      ("activate-signing", []),
+                      ("publish", ["--directory", "unused", "--report", "unused"])]
+        for name, args in operations:
+            for context in (None, "{}"):
+                env = {} if context is None else {"RELEASE_CONTEXT": context}
+                with self.subTest(command=name, context=context), patch.dict(os.environ, env, clear=True), \
+                        patch.object(sys, "argv", ["workflow.py", name, *args]), \
+                        patch.object(release, "api") as api, \
+                        patch.object(release, "local_identity") as source, \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(release.main(), 2)
+                api.assert_not_called()
+                source.assert_not_called()
 
 
 
 class Trust(unittest.TestCase):
+    def test_preflight_emits_macos26_build_matrix_and_keeps_linux_independent(self):
+        for selection, targets in (("linux,macos", (LINUX, MAC)), ("linux", (LINUX,))):
+            with self.subTest(selection=selection), tempfile.TemporaryDirectory() as directory:
+                ctx = context(platforms=targets)
+                output = Path(directory) / "job-output"
+                env = {**environment(ctx), "GITHUB_OUTPUT": str(output),
+                       "RELEASE_PLATFORMS": selection, "RELEASE_MACOS_SIGNING": "ad-hoc",
+                       "RELEASE_QUALITY_RUN": "45", "RELEASE_PUBLISH": "false",
+                       "RELEASE_TAG": "v0.1.0", "RELEASE_VERSION": "0.1.0",
+                       "RELEASE_COMMIT": SHA, "RELEASE_TAG_OBJECT": TAG}
+                selected = release.identity.ReleaseIdentity(**ctx["identity"])
+                with patch.dict(os.environ, env, clear=True), patch.object(release, "api", return_value=FakeGitHub()), \
+                        patch.object(release.identity, "verify_release_identity", return_value=selected):
+                    release.preflight(None)
+                outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
+                self.assertEqual(json.loads(outputs["matrix"]), {"include": [
+                    {"target": target, "os": "macos-26" if target == MAC else "ubuntu-24.04"} for target in targets]})
+                self.assertEqual(outputs["macos"], str(MAC in targets).lower())
+
     def test_only_exact_main_dispatch_and_workflow_revision_are_accepted(self):
         ctx = context()
         good = environment(ctx)
@@ -465,6 +534,22 @@ class Trust(unittest.TestCase):
                 api = FakeGitHub()
                 mutate(api)
                 github.quality_evidence(api, SHA, 45)
+
+    def test_macos26_package_job_cannot_be_replaced_by_old_or_unsuccessful_checks(self):
+        for variant in ("old-runner", "missing", "duplicate", "skipped", "failure", "cancelled"):
+            with self.subTest(variant=variant):
+                api = FakeGitHub()
+                job = next(item for item in api.jobs if item["name"] == "Rust release · macos-26")
+                if variant == "old-runner":
+                    job["name"] = "Rust release · macos-15"
+                elif variant == "missing":
+                    api.jobs.remove(job)
+                elif variant == "duplicate":
+                    api.jobs.append(copy.deepcopy(job))
+                else:
+                    job["conclusion"] = variant
+                with self.assertRaisesRegex(github.Error, "Rust release · macos-26"):
+                    github.quality_evidence(api, SHA, 45)
 
     def test_changed_quality_attempt_requires_new_context(self):
         api = FakeGitHub()

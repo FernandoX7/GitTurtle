@@ -185,7 +185,7 @@ jobs:
       max-parallel: 2
       matrix:
         include:
-          - os: macos-15
+          - os: macos-26
             target: aarch64-apple-darwin
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
@@ -199,25 +199,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Select installed Xcode 26 or later
+      - name: Select verified Xcode 26.3 before cache identity
         if: runner.os == 'macOS'
-        run: |
-          python3 - <<'PY_XCODE'
-          import glob, os, pathlib, re, subprocess
-          candidates = []
-          for path in glob.glob('/Applications/Xcode*.app/Contents/Developer'):
-              result = subprocess.run(['xcodebuild', '-version'], env={**os.environ, 'DEVELOPER_DIR': path},
-                                      capture_output=True, text=True, timeout=20)
-              match = re.search(r'^Xcode ([0-9]+(?:\.[0-9]+)*)$', result.stdout, re.MULTILINE)
-              if result.returncode == 0 and match and int(match[1].split('.')[0]) >= 26:
-                  candidates.append((tuple(map(int, match[1].split('.'))), path))
-          if not candidates:
-              raise SystemExit('Packaging requires an installed full Xcode 26+ with Metal tools')
-          selected = max(candidates)[1]
-          with open(os.environ['GITHUB_ENV'], 'a') as output:
-              output.write('DEVELOPER_DIR=' + selected + '\n')
-          print('Selected', pathlib.Path(selected).parent.parent.name)
-          PY_XCODE
+        run: python3 scripts/release/workflow.py select-xcode
       - name: Prepare Rust and restore bounded dependencies
         uses: ./.github/actions/setup-rust
         with:

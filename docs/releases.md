@@ -34,11 +34,16 @@ trusted-ref policy. It never creates or moves a tag.
    requires a newly reviewed context.
 2. **Read-only build jobs** compile the selected explicit targets from clean
    source. They use the pinned compiler and existing dependency cache, with cache
-   finish after package consumers. macOS jobs select the highest installed full
-   Xcode 26+ before computing cache identity and check its Metal/package tools;
-   signing selects the same supported toolchain family on its own runner. Missing
-   supported tools fail explicitly. The existing packagers require clean release
-   identity and complete target-specific notices. Each extracted archive receives
+   finish after package consumers. macOS package compilation uses the standard
+   ARM64 macOS 26 runner and verifies installed Xcode 26.3 build 17C529 before cache
+   identity. Quality uses the same selector and its release validator requires
+   `Rust release · macos-26` alongside the retained macOS 15 tests/Clippy job.
+   Missing or changed tools fail without fallback. The deferred signing job stays
+   on macOS 15 with the same Xcode selector; actual signing remains a C4 requirement.
+   This [packaging-environment workaround](benchmarks/2026-09-15-ci.md#icon-compiler-environment)
+   does not establish package/native compatibility or signing success. The local
+   packager's full Xcode 26+ requirement is unchanged. The existing packagers require
+   clean release identity and complete target-specific notices. Each extracted archive receives
    the platform package checks before upload. License gaps fail before upload;
    development packages cannot become release inputs.
 3. **Optional signing** consumes only the macOS package created by this workflow

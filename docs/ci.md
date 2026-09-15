@@ -130,7 +130,7 @@ After classification, the selected jobs have no build dependencies on each other
   Cargo's default [test selection](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
   includes unit/integration tests and doctests. There is no package, test-name,
   target or feature filter that removes the existing platform-conditional tests.
-- `Rust release · macos-15` and `· ubuntu-24.04` each restore the **release** cache
+- `Rust release · macos-26` and `· ubuntu-24.04` each restore the **release** cache
   and build `gitturtle` with `--release --locked --timings` and an explicit platform
   target. Each job packages that executable without rebuilding it. Linux checks
   archive extraction, isolated installation, installed bytes, notices, desktop
@@ -141,6 +141,16 @@ After classification, the selected jobs have no build dependencies on each other
   checks continue; other collection or verification errors fail the job. See the
   [artifact runbook](ci-artifacts.md) for exact gates and evidence requirements.
   These checks do not establish an interactive native desktop or notarized build.
+- Only macOS optimized compilation and packaging use the standard ARM64 macOS 26
+  runner. Tests, doctests, strict Clippy and development tooling remain on macOS 15.
+  The shared `scripts/release/workflow.py select-xcode` command requires installed
+  Xcode 26.3 build 17C529 before cache identity; missing or changed tools fail without
+  falling back. This bounded workaround follows the retained
+  [Apple-tool observations](benchmarks/2026-09-15-ci.md#icon-compiler-environment).
+  It removes macOS 15 optimized-package execution from CI; continued macOS 15 tests
+  do not establish compatibility of a package built on macOS 26. The new OS build
+  changes the existing native cache identity, so earlier cache timings cannot be
+  reused as warm evidence. Full hosted package validation remains required.
 - Development-tooling checks still cover both OSes; Website remains reusable.
   The mandatory policy job runs all CI helper fixtures and pinned Actions-aware
   lint on every workflow even for documentation-only changes.
