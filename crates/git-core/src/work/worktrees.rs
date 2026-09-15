@@ -42,6 +42,17 @@ pub struct WorktreeDetails {
     pub removal_blocked: Option<String>,
     root: PathBuf,
     directories: Option<(PathBuf, PathBuf)>,
+    directory_identities: Option<[WorktreeDirectoryIdentity; 4]>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WorktreeDirectoryIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(not(unix))]
+    created: std::time::SystemTime,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,6 +84,10 @@ impl GitRepository {
             tree == expected,
             "The worktree branch, commit, or lock changed. Refresh the list and review it again."
         );
+        ensure!(
+            trees.iter().filter(|item| item.path == tree.path).count() == 1,
+            "This worktree has ambiguous Git registration paths. Inspect its administration directories before removal."
+        );
         let main = trees.first().is_some_and(|first| first.path == tree.path);
         let current = tree.path == self.path;
         let missing = !tree.path.is_dir();
@@ -86,6 +101,7 @@ impl GitRepository {
             removal_blocked: None,
             root: self.path.clone(),
             directories: None,
+            directory_identities: None,
         };
         if missing {
             details.removal_blocked = Some("The folder is missing or unavailable. Restore or reconnect it before managing it; GitTurtle does not delete directories or prune metadata to repair missing worktrees.".into());
@@ -100,6 +116,27 @@ impl GitRepository {
                 directories.1 == self.git_directories()?.1,
                 "The worktree folder belongs to a different repository."
             );
+            if !main {
+                // Git's cleanup follows a symlink at the administration root
+                // and can empty a directory outside the registered worktrees.
+                // Canonicalization alone loses that redirection information.
+                let admin_root = directories.1.join("worktrees");
+                ensure!(
+                    directories.0.parent() == Some(admin_root.as_path()),
+                    "The worktree administration directory is redirected outside this repository's worktrees directory. Inspect it with Git before removal."
+                );
+                worktree_directory_identity(&admin_root)?;
+                ensure!(
+                    std::fs::symlink_metadata(tree.path.join(".git"))?.is_file(),
+                    "The linked worktree .git path must be a regular file, not a symbolic link or directory."
+                );
+            }
+            details.directory_identities = Some([
+                worktree_directory_identity(&self.path)?,
+                worktree_directory_identity(&tree.path)?,
+                worktree_directory_identity(&directories.0)?,
+                worktree_directory_identity(&directories.1)?,
+            ]);
             let status = repo.status()?;
             details.changed_files = status.entries.len();
             // Both status and ordinary `git worktree remove` can overlook
@@ -366,6 +403,31 @@ impl GitRepository {
             }
         }
         Ok(())
+    }
+}
+
+fn worktree_directory_identity(path: &Path) -> Result<WorktreeDirectoryIdentity> {
+    let metadata =
+        std::fs::symlink_metadata(path).context("Unable to inspect worktree directory identity")?;
+    ensure!(
+        metadata.is_dir(),
+        "Worktree and administration directories must be directories, not symbolic links."
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok(WorktreeDirectoryIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(WorktreeDirectoryIdentity {
+            created: metadata
+                .created()
+                .context("Unable to establish worktree directory identity")?,
+        })
     }
 }
 

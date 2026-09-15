@@ -502,6 +502,187 @@ fn worktree_removal_refuses_stale_branch_commit_and_replaced_repository() {
 }
 
 #[test]
+fn worktree_removal_refuses_replaced_directories_at_the_same_paths() {
+    fn copy_directory(source: &Path, destination: &Path) {
+        fs::create_dir(destination).unwrap();
+        for entry in fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            let target = destination.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_directory(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    for replace_private in [false, true] {
+        let f = Fixture::new();
+        let repo = f.repo();
+        let destination = f.create("same-path");
+        let private = GitRepository::open(&destination)
+            .unwrap()
+            .git_directories()
+            .unwrap()
+            .0;
+        let reviewed = f.removal_plan(&destination);
+        let replaced = if replace_private {
+            &private
+        } else {
+            &destination
+        };
+        let saved = f.destination("original-directory");
+        fs::rename(replaced, &saved).unwrap();
+        copy_directory(&saved, replaced);
+        // Branch, commit, registration, clean status, and all path strings are
+        // unchanged, but this is a different checkout/administration directory.
+        assert_eq!(f.removal_plan(&destination).tree, reviewed.tree);
+        let error = repo.execute(&remove(reviewed)).unwrap_err();
+        assert!(error.to_string().contains("changed after review"));
+        assert_eq!(fs::read(destination.join("tracked")).unwrap(), b"base\n");
+        assert!(private.is_dir());
+        assert!(saved.is_dir());
+        assert_eq!(repo.worktrees().unwrap().len(), 2);
+
+        repo.execute(&remove(f.removal_plan(&destination))).unwrap();
+        assert!(!destination.exists());
+        assert!(!private.exists());
+        assert!(saved.is_dir());
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn worktree_removal_refuses_redirected_administration_and_git_files() {
+    use std::os::unix::fs::symlink;
+
+    for redirect in ["private", "worktrees", "gitfile", "alias"] {
+        let f = Fixture::new();
+        let repo = f.repo();
+        let destination = f.create("redirected");
+        let reviewed = f.removal_plan(&destination);
+        let private = GitRepository::open(&destination)
+            .unwrap()
+            .git_directories()
+            .unwrap()
+            .0;
+        let external = f.destination("external-administration");
+        let original_index = fs::read(private.join("index")).unwrap();
+        let retained_index = match redirect {
+            "private" => {
+                fs::rename(&private, &external).unwrap();
+                fs::write(
+                    external.join("commondir"),
+                    f.root.join(".git").as_os_str().as_encoded_bytes(),
+                )
+                .unwrap();
+                symlink(&external, &private).unwrap();
+                external.join("index")
+            }
+            "worktrees" => {
+                let parent = private.parent().unwrap();
+                fs::rename(parent, &external).unwrap();
+                let moved = external.join(private.file_name().unwrap());
+                fs::write(
+                    moved.join("commondir"),
+                    f.root.join(".git").as_os_str().as_encoded_bytes(),
+                )
+                .unwrap();
+                symlink(&external, parent).unwrap();
+                moved.join("index")
+            }
+            "gitfile" => {
+                fs::rename(destination.join(".git"), &external).unwrap();
+                symlink(&external, destination.join(".git")).unwrap();
+                private.join("index")
+            }
+            "alias" => {
+                symlink(&private, private.parent().unwrap().join("alias")).unwrap();
+                private.join("index")
+            }
+            _ => unreachable!(),
+        };
+        // A plain non-force Git removal can follow an administration-root
+        // symlink and empty its target. Refuse before dispatching that write.
+        let tree = repo
+            .worktrees()
+            .unwrap()
+            .into_iter()
+            .find(|tree| tree.path == destination)
+            .unwrap();
+        assert!(repo.worktree_details(&tree).is_err(), "{redirect}");
+        assert!(repo.execute(&remove(reviewed)).is_err(), "{redirect}");
+        assert_eq!(
+            fs::read(&retained_index).unwrap(),
+            original_index,
+            "{redirect}"
+        );
+        assert_eq!(fs::read(destination.join("tracked")).unwrap(), b"base\n");
+        assert_eq!(
+            git_at(&destination, &["rev-parse", "HEAD"]),
+            f.git(&["rev-parse", "HEAD"])
+        );
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn worktree_removal_preserves_byte_paths_and_stored_symlink_targets() {
+    #[cfg(target_os = "linux")]
+    use std::os::unix::ffi::OsStringExt;
+    use std::{ffi::OsString, os::unix::fs::symlink};
+
+    let unicode = (
+        OsString::from("linked-é\nname"),
+        OsString::from(".é\nvaluable.keep"),
+    );
+    // APFS rejects invalid UTF-8 names. Keep Unicode/newline coverage on
+    // every Unix platform and exercise arbitrary filename bytes on Linux.
+    #[cfg(target_os = "linux")]
+    let names = [
+        unicode,
+        (
+            OsString::from_vec(b"linked-\xff\nname".to_vec()),
+            OsString::from_vec(b".\xff\nvaluable.keep".to_vec()),
+        ),
+    ];
+    #[cfg(not(target_os = "linux"))]
+    let names = [unicode];
+
+    for (directory_name, ignored_name) in names {
+        let f = Fixture::new();
+        let repo = f.repo();
+        let external = f.destination("external-content");
+        fs::write(&external, b"valuable outside content\n").unwrap();
+        symlink(&external, f.root.join("stored-link")).unwrap();
+        fs::write(f.root.join(".gitignore"), b"*.keep\n").unwrap();
+        f.git(&["add", "stored-link", ".gitignore"]);
+        f.git(&["commit", "-m", "Stored link and ignore rule"]);
+        let destination = f.root.parent().unwrap().join(directory_name);
+        let plan = repo
+            .create_worktree_plan(&destination, "byte-path", true, "HEAD")
+            .unwrap();
+        repo.execute(&WriteCommand::Worktree(Arc::new(WorktreeCommand::Create(
+            plan,
+        ))))
+        .unwrap();
+        let reviewed = f.removal_plan(&destination);
+        let ignored = destination.join(ignored_name);
+        fs::write(&ignored, b"ignored local content\n").unwrap();
+        let blocked = f.removal_plan(&destination);
+        assert_eq!(blocked.ignored_files, 1);
+        assert!(repo.execute(&remove(reviewed)).is_err());
+        assert!(repo.execute(&remove(blocked)).is_err());
+        assert_eq!(fs::read(&ignored).unwrap(), b"ignored local content\n");
+        fs::remove_file(ignored).unwrap();
+        repo.execute(&remove(f.removal_plan(&destination))).unwrap();
+        assert!(!destination.exists());
+        assert_eq!(fs::read(&external).unwrap(), b"valuable outside content\n");
+        assert_eq!(repo.worktrees().unwrap().len(), 1);
+    }
+}
+
+#[test]
 fn worktree_removal_refuses_current_linked_tree_and_preserves_initialized_submodules() {
     let f = Fixture::new();
     let submodule = Fixture::new();
