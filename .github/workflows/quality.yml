@@ -184,7 +184,11 @@ jobs:
       fail-fast: false
       max-parallel: 2
       matrix:
-        os: [macos-15, ubuntu-24.04]
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
     env:
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: 1
@@ -195,47 +199,82 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Select installed Xcode 26 or later
+        if: runner.os == 'macOS'
+        run: |
+          python3 - <<'PY_XCODE'
+          import glob, os, pathlib, re, subprocess
+          candidates = []
+          for path in glob.glob('/Applications/Xcode*.app/Contents/Developer'):
+              result = subprocess.run(['xcodebuild', '-version'], env={**os.environ, 'DEVELOPER_DIR': path},
+                                      capture_output=True, text=True, timeout=20)
+              match = re.search(r'^Xcode ([0-9]+(?:\.[0-9]+)*)$', result.stdout, re.MULTILINE)
+              if result.returncode == 0 and match and int(match[1].split('.')[0]) >= 26:
+                  candidates.append((tuple(map(int, match[1].split('.'))), path))
+          if not candidates:
+              raise SystemExit('Packaging requires an installed full Xcode 26+ with Metal tools')
+          selected = max(candidates)[1]
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write('DEVELOPER_DIR=' + selected + '\n')
+          print('Selected', pathlib.Path(selected).parent.parent.name)
+          PY_XCODE
       - name: Prepare Rust and restore bounded dependencies
         uses: ./.github/actions/setup-rust
         with:
           profile: release
+      - name: Install declared package target
+        env:
+          PACKAGE_TARGET: ${{ matrix.target }}
+        run: rustup target add "$PACKAGE_TARGET"
       - name: Locked release compilation
-        run: python3 scripts/ci/metrics.py measure --name release --directory "$RUNNER_TEMP/ci-metrics" -- cargo build --release --locked -p gitturtle --timings
-      - name: Linux bundle and isolated user installation
-        if: runner.os == 'Linux'
-        shell: bash
+        env:
+          PACKAGE_TARGET: ${{ matrix.target }}
+        run: python3 scripts/ci/metrics.py measure --name release --directory "$RUNNER_TEMP/ci-metrics" -- cargo build --release --locked -p gitturtle --target "$PACKAGE_TARGET" --timings
+      - name: Package the exact optimized executable and enforce complete notices
+        id: package
+        env:
+          PACKAGE_TARGET: ${{ matrix.target }}
+          PACKAGE_REVISION: ${{ github.sha }}
+          PACKAGE_EVENT: ${{ github.event_name }}
+          PACKAGE_RUN_ID: ${{ github.run_id }}
+          PACKAGE_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          python3 scripts/ci/metrics.py measure --name linux-package --directory "$RUNNER_TEMP/ci-metrics" -- \
-            bash --noprofile --norc -euo pipefail <<'PACKAGE'
-          package_dir="$RUNNER_TEMP/gitturtle-linux-package"
-          scripts/package-linux.sh --no-build --binary target/release/gitturtle "$package_dir"
-          python3 scripts/test-install-linux.py --bundle "$package_dir"
-          unpacked="$(mktemp -d "$RUNNER_TEMP/gitturtle-unpacked.XXXXXX")"
-          tar -xzf "$package_dir.tar.gz" -C "$unpacked"
-          install_home="$(mktemp -d "$RUNNER_TEMP/gitturtle-install.XXXXXX")"
-          (
-            cd "$unpacked"
-            env -i HOME="$install_home" XDG_DATA_HOME="$install_home/.local/share" PATH=/usr/bin:/bin \
-              python3 gitturtle-linux-package/install.py
-          )
-          test -x "$install_home/.local/bin/gitturtle"
-          cmp target/release/gitturtle "$install_home/.local/bin/gitturtle"
-          test -s "$install_home/.local/share/gitturtle/licenses/LICENSE"
-          test -s "$install_home/.local/share/gitturtle/licenses/dependencies.json"
-          desktop-file-validate "$install_home/.local/share/applications/com.gitturtle.desktop.desktop"
-          ldd "$install_home/.local/bin/gitturtle" > "$RUNNER_TEMP/gitturtle-ldd.txt"
-          cat "$RUNNER_TEMP/gitturtle-ldd.txt"
-          if grep -F 'not found' "$RUNNER_TEMP/gitturtle-ldd.txt"; then
-            exit 1
-          fi
-          launch_status=0
-          env -i HOME="$install_home" PATH=/usr/bin:/bin "$install_home/.local/bin/gitturtle" \
-            > "$RUNNER_TEMP/gitturtle-no-display.txt" 2>&1 || launch_status=$?
-          cat "$RUNNER_TEMP/gitturtle-no-display.txt"
-          test "$launch_status" -eq 1
-          grep -F 'GitTurtle needs a Wayland or X11 desktop session' "$RUNNER_TEMP/gitturtle-no-display.txt"
-          PACKAGE
-      # All consumers of target/release/gitturtle must precede cache finish:
+          python3 scripts/ci/metrics.py measure --name package --directory "$RUNNER_TEMP/ci-metrics" -- \
+            python3 scripts/ci/packages.py prepare --target "$PACKAGE_TARGET" --revision "$PACKAGE_REVISION" \
+              --event "$PACKAGE_EVENT" --run-id "$PACKAGE_RUN_ID" --attempt "$PACKAGE_ATTEMPT" \
+              --directory "$RUNNER_TEMP/ci-package" --output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY" \
+              --report "$RUNNER_TEMP/ci-metrics/package-prepared.json"
+      # Only the complete-notice publish directory is eligible. Development
+      # archives and logs are never swept into the public binary artifact.
+      - name: Upload verified early-development CI package
+        id: uploaded
+        if: steps.package.outputs.eligible == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.package.outputs.artifact-name }}
+          path: ${{ runner.temp }}/ci-package/publish/*
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: error
+          include-hidden-files: false
+      - name: Download this exact uploaded artifact from Actions
+        if: steps.package.outputs.eligible == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.uploaded.outputs.artifact-id }}
+          path: ${{ runner.temp }}/ci-package-download
+          merge-multiple: true
+          digest-mismatch: error
+      - name: Verify downloaded bytes and installation
+        if: steps.package.outputs.eligible == 'true'
+        env:
+          PACKAGE_ARTIFACT_ID: ${{ steps.uploaded.outputs.artifact-id }}
+        run: |
+          python3 scripts/ci/metrics.py measure --name artifact-download-checks --directory "$RUNNER_TEMP/ci-metrics" -- \
+            python3 scripts/ci/packages.py verify --expected "$RUNNER_TEMP/ci-package/prepared.json" \
+              --directory "$RUNNER_TEMP/ci-package-download" --artifact-id "$PACKAGE_ARTIFACT_ID" \
+              --report "$RUNNER_TEMP/ci-metrics/package-transfer.json" --summary "$GITHUB_STEP_SUMMARY"
+      # All target/TRIPLE/release consumers must precede cache finish:
       # successful main jobs may clean outputs to keep the retained cache bounded.
       - name: Prepare bounded successful-main cache save
         uses: ./.github/actions/setup-rust

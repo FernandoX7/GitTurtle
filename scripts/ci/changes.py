@@ -53,6 +53,8 @@ def classify_paths(paths: list[bytes]) -> dict:
         if (not path or any(part in ("", ".", "..") for part in parts)
                 or "\\" in path or any(ord(c) < 32 or ord(c) == 127 for c in path)):
             return full_plan("unrecognized-path")
+        if path == "scripts/ci/packages.py":
+            return full_plan("package-delivery")
         if path.startswith(".github/"):
             return full_plan("workflow-or-repository-policy")
         if (path.startswith(("scripts/ci/", "scripts/agent_loop/", ".agents/", ".codex/",
@@ -127,10 +129,14 @@ def classify_checkout(repository: Path, event_name: str, event: dict, checkout_s
             valid_oid(merge_base)
             comparisons = [(merge_base, head), (base, expected)]
         elif event_name == "push":
-            base, head = valid_oid(event["before"]), valid_oid(event["after"])
-            if head != expected or event.get("deleted") is not False:
+            valid_oid(event["before"])
+            head = valid_oid(event["after"])
+            if (head != expected or event.get("deleted") is not False
+                    or event.get("ref") != "refs/heads/main"):
                 raise PolicyError("push-identity-mismatch")
-            comparisons = [(base, head)]
+            # Main establishes both package coverage and a trusted cache seed.
+            # Cheap changed-path routing belongs to contribution PRs only.
+            return full_plan("main-full-validation")
         else:
             raise PolicyError("unsupported-event")
         paths = set()

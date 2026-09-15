@@ -2,6 +2,7 @@
   {"name":"documentation", "paths":["README.md", "docs/user-guide.md", "docs/screenshots/history.png"], "required":[]},
   {"name":"website", "paths":["website/public/index.html", "website/check.py"], "required":["website"]},
   {"name":"controller", "paths":["scripts/agent_loop/runner.py", "docs/development/tasks.json"], "required":["tooling"]},
+  {"name":"CI package delivery", "paths":["scripts/ci/packages.py"], "required":["product", "tooling", "website"]},
   {"name":"ci tools", "paths":["scripts/ci/metrics.py", "scripts/ci/tests/test_metrics.py"], "required":["tooling"]},
   {"name":"agent guide", "paths":["crates/app/AGENTS.md", ".agents/skills/gitturtle-feature-work/SKILL.md"], "required":["tooling"]},
   {"name":"mixed inexpensive", "paths":["docs/ci.md", "website/public/site.js", "scripts/ci/changes.py"], "required":["tooling", "website"]},

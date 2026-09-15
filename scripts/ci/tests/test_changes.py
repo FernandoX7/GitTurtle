@@ -185,27 +185,46 @@ class GitComparisonTests(unittest.TestCase):
     def classify_push(self, before):
         head = self.git("rev-parse", "HEAD")
         return changes.classify_checkout(self.repo, "push",
-                                         {"before": before, "after": head, "deleted": False}, head)
+                                         {"before": before, "after": head, "deleted": False, "ref": "refs/heads/main"}, head)
+
+    def classify_pull_request(self, base):
+        head = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-b", "pull-request-base", base)
+        self.git("-c", "commit.gpgsign=false", "merge", "--no-ff", "-m", "PR merge fixture", head)
+        merge = self.git("rev-parse", "HEAD")
+        return changes.classify_checkout(self.repo, "pull_request",
+                                         {"pull_request": {"base": {"sha": base}, "head": {"sha": head}}}, merge)
+
+    def test_main_push_always_runs_full_coverage_for_every_changed_input(self):
+        for path in ("docs/guide.md", "website/public/index.html", "scripts/ci/metrics.py", "crates/sample.rs"):
+            with self.subTest(path=path):
+                before = self.git("rev-parse", "HEAD")
+                self.write(path, "changed fixture content\n")
+                self.commit("change " + path)
+                plan = self.classify_push(before)
+                self.assertTrue(all(plan[lane] for lane in changes.LANES))
+                self.assertEqual(plan["reason"], "main-full-validation")
+                changes.validate_plan(plan)
 
     def test_docs_move_preserves_cheap_routing(self):
         self.git("mv", "docs/guide.md", "docs/renamed.md")
         self.commit("rename docs")
-        self.assertFalse(self.classify_push(self.base)["product"])
+        self.assertFalse(self.classify_pull_request(self.base)["product"])
 
     def test_product_renamed_into_docs_still_requires_product(self):
         self.git("mv", "crates/sample.rs", "docs/sample.md")
         self.commit("move former product")
-        self.assertTrue(self.classify_push(self.base)["product"])
+        self.assertTrue(self.classify_pull_request(self.base)["product"])
 
     def test_deleted_product_is_not_lost(self):
         self.git("rm", "crates/sample.rs")
         self.commit("delete product")
-        self.assertTrue(self.classify_push(self.base)["product"])
+        self.assertTrue(self.classify_pull_request(self.base)["product"])
 
     def test_deleted_docs_remain_cheap(self):
         self.git("rm", "docs/guide.md")
         self.commit("delete docs")
-        self.assertFalse(self.classify_push(self.base)["product"])
+        self.assertFalse(self.classify_pull_request(self.base)["product"])
 
     def test_missing_before_and_checkout_mismatch_run_everything(self):
         self.assertTrue(self.classify_push("0" * 40)["product"])
@@ -235,21 +254,21 @@ class GitComparisonTests(unittest.TestCase):
     def test_literal_shell_filename_cannot_execute_during_diff(self):
         self.write("docs/$(touch ATTACKED).md", "literal name\n")
         self.commit("literal filename")
-        self.assertFalse(self.classify_push(self.base)["product"])
+        self.assertFalse(self.classify_pull_request(self.base)["product"])
         self.assertFalse((self.repo / "ATTACKED").exists())
 
     def test_classifier_cli_writes_fixed_outputs_without_paths(self):
         self.write("docs/guide.md", "after\n")
         head = self.commit("docs")
         event_file, output_file = self.repo / "event.json", self.repo / "output.txt"
-        event_file.write_text(json.dumps({"before": self.base, "after": head, "deleted": False}))
+        event_file.write_text(json.dumps({"before": self.base, "after": head, "deleted": False, "ref": "refs/heads/main"}))
         result = subprocess.run([sys.executable, str(SCRIPT), "classify", "--repository", str(self.repo),
                                  "--output", str(output_file)], capture_output=True, text=True,
                                 env={**os.environ, "GITHUB_EVENT_NAME": "push", "GITHUB_SHA": head,
                                      "GITHUB_EVENT_PATH": str(event_file)})
         self.assertEqual(result.returncode, 0, result.stderr)
         output = dict(line.split("=", 1) for line in output_file.read_text().splitlines())
-        self.assertEqual(output["product"], "false")
+        self.assertEqual(output["product"], "true")
         self.assertEqual(len(output), 4)
         self.assertNotIn("guide.md", result.stdout)
         changes.validate_plan(json.loads(output["plan"]))
