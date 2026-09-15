@@ -40,6 +40,8 @@ def guidance_files(root: Path) -> list[Path]:
         if "AGENTS.md" in files:
             paths.add(Path(directory) / "AGENTS.md")
     paths.update((root / "docs/development").glob("*.md"))
+    paths.update((root / "docs").glob("architecture.md"))
+    paths.update((root / "crates").glob("*/docs/*.md"))
     paths.update((root / ".agents/skills").glob("**/*.md"))
     paths.update((root / ".codex/agents").glob("*.toml"))
     return sorted(paths)

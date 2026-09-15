@@ -54,6 +54,13 @@ The word model and reasoning_effort in prose is harmless.
         self.write("crates/core/AGENTS.md", "[Rules](../../AGENTS.md#absent)\n")
         self.assertIn("missing Markdown anchor", self.messages())
 
+    def test_scoped_contracts_and_product_architecture_links_are_checked(self):
+        self.write("crates/app/docs/lifetime.md", "[Owner](../src/missing.rs)\n")
+        self.write("docs/architecture.md", "[Contract](missing.md)\n")
+        message = self.messages()
+        self.assertIn("lifetime.md:1: missing local link target", message)
+        self.assertIn("architecture.md:1: missing local link target", message)
+
     def test_generated_run_checkouts_do_not_become_source_guidance(self):
         self.write(".local/agent-loop/fixture/accepted/AGENTS.md", "[Old](absent.md)\n")
         self.write("target/fixture/AGENTS.md", "[Generated](missing.md)\n")
