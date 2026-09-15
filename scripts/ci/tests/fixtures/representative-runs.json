@@ -5,6 +5,9 @@
       "repository": "example/gitturtle",
       "run": {
         "id": 101,
+        "workflow_id": 500,
+        "name": "Quality",
+        "path": ".github/workflows/quality.yml",
         "run_attempt": 1,
         "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "event": "push",
@@ -109,6 +112,9 @@
       "repository": "example/gitturtle",
       "run": {
         "id": 102,
+        "workflow_id": 500,
+        "name": "Quality",
+        "path": ".github/workflows/quality.yml",
         "run_attempt": 1,
         "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "event": "pull_request",

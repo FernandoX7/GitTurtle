@@ -70,6 +70,9 @@ minimal example produce unavailable durations, not example timing evidence.
       "repository": "owner/repository",
       "run": {
         "id": 123,
+        "workflow_id": 456,
+        "name": "Quality",
+        "path": ".github/workflows/quality.yml",
         "run_attempt": 1,
         "head_sha": "0123456789012345678901234567890123456789",
         "event": "pull_request",
@@ -87,7 +90,10 @@ Set `jobs_complete` only when all jobs for that attempt were exported. Keep the
 attempt number: a rerun is a new observation, and jobs from different attempts
 must not be combined. Keep original timestamps and statuses rather than filling
 missing fields. Optional `jobs[].steps[].log` text supplies Cargo completion and
-test-harness messages, up to 1 MiB per step. Optional `jobs[].steps[].cache` supplies
+test-harness messages, up to 1 MiB per step. The parser normalizes ANSI CSI
+sequences, including the literal `^[[...m` caret form observed in saved terminal
+exports. Keep the raw export for replay; the report does not rewrite it.
+Optional `jobs[].steps[].cache` supplies
 measured `restore_seconds`, `save_seconds`, `hit` (boolean) and `size_bytes` fields;
 omit unavailable values or use `null`. Cache values are explicit evidence, not
 inferred from a cache-like step name. REST responses alone contain neither logs
@@ -100,7 +106,8 @@ repository details that do not belong in a public report.
 
 ## Read the timing model
 
-Every report keeps repository, run ID, attempt, commit and event together. Job and
+Every report keeps repository, workflow ID/name/path, run ID, attempt, commit and
+event together. Missing workflow fields remain unavailable. Job and
 step conclusions remain visible for successful, failed, cancelled and unfinished
 runs. Missing evidence is represented as unavailable (`null` in JSON), with the
 partial observations retained where possible. Invalid timestamps, reversed
@@ -144,9 +151,12 @@ simultaneous push and PR workflows and label the result “time to feedback.” 
 their wall-clock span separately from the duplicated runner cost.
 
 The same repository/run/attempt supplied twice with matching measurements is one
-observation; conflicting snapshots are rejected. Distinct push
-and PR runs for the same commit are real separate executions: retain both,
-identify the shared head, and measure their resource cost. Keep reruns separate
+observation; conflicting snapshots are rejected. Distinct push and PR runs for
+the same commit and workflow ID are potential duplicate work: retain both and
+measure their resource cost. Other workflows, including CodeQL, and other events
+are separate validation. Without a workflow ID, the report retains each run's
+measurements but makes no duplicate-work claim; matching names or paths alone
+do not establish workflow identity. Keep reruns separate
 from first attempts when comparing success latency and failure/retry cost.
 
 Runner seconds are a duration measure, not a monetary bill. Do not infer pricing,
@@ -238,8 +248,8 @@ comparison variable, not an invisible improvement.
 4. Collect PR and main-push observations separately. Include manual runs as a
    separate event when testing the workflow. Keep first attempts, reruns,
    cancellation and failure categories visible rather than discarding expensive
-   unsuccessful work. Identify push/PR duplication by head SHA while retaining its
-   actual runner cost.
+   unsuccessful work. Identify push/PR duplication by workflow ID and head SHA
+   while retaining its actual runner cost.
 5. Save the raw observations, then report sample count, median and observed maximum
    for queue, end-to-end time, observed critical path, runner time, compilation,
    test execution and cache overhead. State how many observations were unavailable

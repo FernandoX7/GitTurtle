@@ -1,4 +1,4 @@
-"""Outcome tests using synthetic Actions exports; no credentials or network required."""
+"""Outcome tests using synthetic exports and retained log formats; no network required."""
 
 import contextlib
 import copy
@@ -62,6 +62,9 @@ class ReportTests(unittest.TestCase):
     def test_run_and_runner_identity_are_preserved(self):
         completed = self.runs[101]
         self.assertEqual(completed["repository"], "example/gitturtle")
+        self.assertEqual(completed["workflow_id"], 500)
+        self.assertEqual(completed["workflow_name"], "Quality")
+        self.assertEqual(completed["workflow_path"], ".github/workflows/quality.yml")
         self.assertEqual(completed["attempt"], 1)
         self.assertEqual(completed["commit"], "a" * 40)
         self.assertEqual(completed["event"], "push")
@@ -153,6 +156,33 @@ class ReportTests(unittest.TestCase):
         self.assertIsNone(test["test_harness_seconds"])
         self.assertIsNone(clippy["duration_seconds"])
 
+    def test_retained_cargo_export_lines_establish_compilation_time(self):
+        # These exact lines were retained from the September 15 Quality PR run
+        # 34992350894. Replaying their formatting is not a fresh hosted CI sample.
+        observations = (
+            ("2026-09-15T16:14:24.4330433Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 10m 49s", 649),
+            ("2026-09-15T16:16:41.1931680Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 13m 18s", 798),
+        )
+        for log, expected in observations:
+            for representation in (log, log.replace("^[", "\x1b")):
+                with self.subTest(expected=expected, caret="^[" in representation):
+                    data = fixture()
+                    data["runs"][0]["jobs"][0]["steps"][1]["log"] = representation
+                    step = self.report_for(data)["runs"][0]["jobs"][0]["steps"][1]
+                    self.assertEqual(step["cargo_compilation_seconds"], expected)
+                    self.assertIsNone(step["test_harness_seconds"])
+
+    def test_mixed_terminal_controls_do_not_disrupt_completed_marker_totals(self):
+        log = (
+            "\x1b[1mFinished^[[0m `test` profile target(s) in 1m 02s\n"
+            "^[[92mFinished\x1b[0m `dev` profile target(s) in 3.25s\n"
+            "test result: ok. 1 passed; finished in ^[[1m0.50s^[[0m\n"
+            "Compiling interrupted-command v0.1.0\n"
+        )
+        self.assertEqual(metrics.cargo_timings(log), {
+            "cargo_compilation_seconds": 65.25, "test_harness_seconds": 0.5,
+        })
+
     def test_cancelled_step_without_end_is_unavailable(self):
         cancelled = self.runs[104]
         self.assertEqual(cancelled["conclusion"], "cancelled")
@@ -241,10 +271,64 @@ class ReportTests(unittest.TestCase):
         duplicate = self.report["duplicate_push_pr"]
         self.assertEqual(len(duplicate), 1)
         self.assertEqual(duplicate[0]["repository"], "example/gitturtle")
+        self.assertEqual(duplicate[0]["workflow_id"], 500)
         self.assertEqual(duplicate[0]["commit"], "a" * 40)
         self.assertEqual(set(duplicate[0]["run_ids"]), {101, 102})
         self.assertEqual(self.runs[101]["total_runner_seconds"], 340)
         self.assertEqual(self.runs[102]["total_runner_seconds"], 30)
+
+    def test_same_commit_in_other_workflows_or_events_is_not_duplicate_work(self):
+        data = fixture()
+        # Match the observed Quality push/PR plus dynamically triggered CodeQL
+        # shape, and ensure other events of the Quality workflow stay distinct.
+        for run_id, workflow_id, event, name, path in (
+            (201, 501, "dynamic", "PR #7", "dynamic/github-code-scanning/codeql"),
+            (202, 501, "push", "CodeQL", ".github/workflows/codeql.yml"),
+            (203, 500, "workflow_dispatch", "Quality", ".github/workflows/quality.yml"),
+        ):
+            entry = copy.deepcopy(data["runs"][0])
+            entry["run"].update(id=run_id, workflow_id=workflow_id, event=event, name=name, path=path)
+            for job in entry["jobs"]:
+                job["run_id"] = run_id
+            data["runs"].append(entry)
+        report = self.report_for(data)
+        self.assertEqual(report["duplicate_push_pr"], [{
+            "repository": "example/gitturtle", "workflow_id": 500,
+            "commit": "a" * 40, "run_ids": [101, 102],
+        }])
+        for run in report["runs"][-3:]:
+            self.assertEqual(run["total_runner_seconds"], 340)
+        self.assertEqual(report["runs"][-3]["workflow_path"], "dynamic/github-code-scanning/codeql")
+
+    def test_shared_names_or_paths_do_not_override_distinct_workflow_ids(self):
+        data = fixture()
+        data["runs"][1]["run"]["workflow_id"] = 501
+        self.assertEqual(self.report_for(data)["duplicate_push_pr"], [])
+
+    def test_workflow_label_changes_do_not_hide_matching_identity(self):
+        data = fixture()
+        data["runs"][1]["run"].update(name="Renamed Quality", path=".github/workflows/renamed.yml")
+        report = self.report_for(data)
+        self.assertEqual(report["duplicate_push_pr"][0]["run_ids"], [101, 102])
+        self.assertEqual(report["runs"][1]["workflow_name"], "Renamed Quality")
+
+    def test_missing_workflow_id_does_not_claim_duplicate_work(self):
+        for missing in ((0,), (1,), (0, 1)):
+            for explicit_null in (False, True):
+                with self.subTest(missing=missing, explicit_null=explicit_null):
+                    data = fixture()
+                    for index in missing:
+                        run = data["runs"][index]["run"]
+                        if explicit_null:
+                            run["workflow_id"] = None
+                        else:
+                            del run["workflow_id"]
+                    report = self.report_for(data)
+                    self.assertEqual(report["duplicate_push_pr"], [])
+                    for index in missing:
+                        self.assertIsNone(report["runs"][index]["workflow_id"])
+                    self.assertEqual(report["runs"][0]["total_runner_seconds"], 340)
+                    self.assertEqual(report["runs"][1]["total_runner_seconds"], 30)
 
     def test_identical_observation_does_not_double_count_a_run(self):
         data = fixture()
@@ -261,6 +345,7 @@ class ReportTests(unittest.TestCase):
         self.assertIn("101", result.stdout)
         self.assertIn("340", result.stdout)
         self.assertIn("230", result.stdout)
+        self.assertIn("Workflow: Quality; ID: 500; path: .github/workflows/quality.yml", result.stdout)
 
 
 class RejectionTests(unittest.TestCase):
@@ -279,6 +364,20 @@ class RejectionTests(unittest.TestCase):
         data = fixture()
         conflicting = copy.deepcopy(data["runs"][0])
         conflicting["run"]["conclusion"] = "failure"
+        data["runs"].append(conflicting)
+        self.assert_rejected(data, "duplicate")
+
+    def test_invalid_workflow_identity_is_rejected(self):
+        for workflow_id in (False, 0, -1, "500", 500.5, {}):
+            with self.subTest(workflow_id=workflow_id):
+                data = fixture()
+                data["runs"][0]["run"]["workflow_id"] = workflow_id
+                self.assert_rejected(data, "workflow id")
+
+    def test_conflicting_workflow_identity_in_duplicate_snapshot_is_rejected(self):
+        data = fixture()
+        conflicting = copy.deepcopy(data["runs"][0])
+        conflicting["run"]["workflow_id"] = 501
         data["runs"].append(conflicting)
         self.assert_rejected(data, "duplicate")
 
@@ -597,6 +696,33 @@ class CommandDiagnosticsTests(unittest.TestCase):
                         clean = metrics.sanitize(f"{header}{separator}{value}\nNEXT_DIAGNOSTIC")
                         self.assertEqual(clean, f"{header}=[redacted]\nNEXT_DIAGNOSTIC")
 
+    def test_caret_control_normalization_keeps_diagnostics_redacted(self):
+        text = (
+            "^[[1mFinished^[[0m `test` profile target(s) in 10m 49s\n"
+            "Authori^[[92mzation: Bearer SECRET_MARKER\n"
+            "ghp_fixture^[[0mCredentialMarker1234\n"
+            "opaque-token-^[[1mfixture-value\n"
+            "https:^[[0m//private.example/project\n"
+            "/home/^[[0mprivate-person/work/project\n"
+            "^[[0m::error::untrusted workflow command\n"
+        )
+        with tempfile.TemporaryDirectory(dir=METRICS.parent / "tests") as directory:
+            result = invoke(
+                "measure", "--name", "exported", "--directory", directory, "--",
+                sys.executable, "-c", "import sys; sys.stdout.write(" + repr(text) + ")",
+                env=dict(os.environ, GH_TOKEN="opaque-token-fixture-value"),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads((Path(directory) / "exported.json").read_text())
+            self.assertEqual(data["cargo_compilation_seconds"], 649)
+            log = (Path(directory) / "exported.log").read_text()
+            for private in ("SECRET_MARKER", "CredentialMarker", "opaque-token", "private.example", "private-person", "^[["):
+                self.assertNotIn(private, result.stdout + result.stderr + log)
+            for redaction in ("[redacted]", "[credential]", "[url]", "[path]"):
+                self.assertIn(redaction, log)
+            self.assertIn("[ci] ::error::", result.stdout)
+            self.assertFalse(any(line.startswith("::") for line in result.stdout.splitlines()))
+
     def test_explicit_bash_heredoc_inherits_stdin_and_preserves_exit(self):
         with tempfile.TemporaryDirectory(dir=METRICS.parent / "tests") as directory:
             result = invoke(
@@ -771,6 +897,8 @@ class CommandDiagnosticsTests(unittest.TestCase):
 
     def test_markdown_escapes_untrusted_job_and_step_names(self):
         data = fixture()
+        data["runs"][0]["run"]["name"] = "<script>workflow</script>| injected"
+        data["runs"][0]["run"]["path"] = "^[[1m/home/private-workflow/file.yml^[[0m"
         data["runs"][0]["jobs"][0]["name"] = "<script>alert(1)</script>| injected"
         data["runs"][0]["jobs"][0]["steps"][0]["name"] = "`injected` | column"
         report = metrics.markdown(metrics.make_report(data))
@@ -778,6 +906,8 @@ class CommandDiagnosticsTests(unittest.TestCase):
         self.assertIn("&lt;script&gt;", report)
         self.assertIn("&#124;", report)
         self.assertIn("&#96;injected&#96;", report)
+        self.assertNotIn("private-workflow", report)
+        self.assertNotIn("^[[", report)
 
 
 if __name__ == "__main__":

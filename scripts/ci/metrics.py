@@ -27,7 +27,9 @@ MAX_LOG = 1024 * 1024
 MAX_LINE = 16384
 REPOSITORY = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}\Z")
 NAME = re.compile(r"[a-z][a-z0-9-]{0,47}\Z")
-ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+# Saved terminal exports can render ESC as the literal two-character caret form ^[.
+# Normalize the same CSI sequences before both parsing and credential redaction.
+ANSI = re.compile(r"(?:\x1b|\^\[)\[[0-?]*[ -/]*[@-~]")
 CONTEXT_ENV = (("Repository", "GITHUB_REPOSITORY"), ("Run", "GITHUB_RUN_ID"),
                ("Attempt", "GITHUB_RUN_ATTEMPT"), ("Commit", "GITHUB_SHA"),
                ("Event", "GITHUB_EVENT_NAME"), ("OS", "RUNNER_OS"),
@@ -221,6 +223,9 @@ def report_run(entry):
         raise MetricsError("repository must be OWNER/REPO")
     run = object_value(entry.get("run"), "run")
     run_id = positive_id(run.get("id"), "run id")
+    workflow_id = run.get("workflow_id")
+    if workflow_id is not None:
+        workflow_id = positive_id(workflow_id, "workflow id")
     attempt = positive_id(run.get("run_attempt", 1), "run attempt")
     sha = run.get("head_sha")
     if sha is not None and (not isinstance(sha, str) or not re.fullmatch(r"[0-9a-fA-F]{40,64}", sha)):
@@ -276,6 +281,8 @@ def report_run(entry):
     last = max(end for _, end in intervals) if intervals else None
     known = round(sum(seconds(start, end) for start, end in intervals), 6) if intervals else None
     return {"repository": repository, "run_id": run_id, "attempt": attempt,
+            "workflow_id": workflow_id, "workflow_name": label(run.get("name")),
+            "workflow_path": label(run.get("path")),
             "commit": sha, "event": label(run.get("event")), "status": label(run.get("status")),
             "conclusion": label(run.get("conclusion")),
             "queue_delay_seconds": seconds(created, first) if attempt == 1 and starts_complete else None,
@@ -303,12 +310,14 @@ def make_report(data):
             runs.append(result)
     groups = defaultdict(list)
     for run in runs:
-        if run["commit"]:
-            groups[(run["repository"].lower(), run["commit"].lower())].append(run)
+        # Names and sanitized paths are descriptive labels, not stable identities.
+        # Keep incomplete exports usable without inferring duplicated work from SHA alone.
+        if run["commit"] and run["workflow_id"] is not None and run["event"] in ("push", "pull_request"):
+            groups[(run["repository"].lower(), run["workflow_id"], run["commit"].lower())].append(run)
     push_pr = []
-    for (repository, commit), group in groups.items():
+    for (repository, workflow_id, commit), group in groups.items():
         if {"push", "pull_request"} <= {r["event"] for r in group}:
-            push_pr.append({"repository": repository, "commit": commit,
+            push_pr.append({"repository": repository, "workflow_id": workflow_id, "commit": commit,
                             "run_ids": sorted({r["run_id"] for r in group})})
     return {"schema_version": 1, "runs": runs, "duplicate_observations": duplicates,
             "duplicate_push_pr": push_pr}
@@ -390,6 +399,7 @@ def markdown(report):
     lines = ["# CI timing report", "", "Seconds; unavailable values are not zero. Elapsed ends at the last job; critical path is the observed first-start to last-end span, not a dependency-DAG calculation.", ""]
     for run in report["runs"]:
         lines += ["", f"## {display(run['repository'])} run {run['run_id']} attempt {run['attempt']}", "",
+                  f"Workflow: {display(run['workflow_name'])}; ID: {display(run['workflow_id'])}; path: {display(run['workflow_path'])}.", "",
                   f"Commit: {display(run['commit'])}; event: {display(run['event'])}; status: {display(run['status'])}/{display(run['conclusion'])}.", "",
                   "| Measurement | Seconds |", "| --- | ---: |"]
         for field in ("queue_delay_seconds", "elapsed_seconds", "critical_path_seconds", "runner_busy_seconds", "total_runner_seconds", "known_runner_seconds"):
@@ -406,7 +416,7 @@ def markdown(report):
                 lines += ["", "Step timing unavailable."]
     lines += ["", f"Duplicate observations removed: {report['duplicate_observations']}."]
     for group in report["duplicate_push_pr"]:
-        lines += [f"Potential duplicate push/PR work: {display(group['repository'])} {group['commit']}: runs {', '.join(map(str, group['run_ids']))}. Each actual run retains its runner cost."]
+        lines += [f"Potential duplicate push/PR work: {display(group['repository'])} workflow {group['workflow_id']} {group['commit']}: runs {', '.join(map(str, group['run_ids']))}. Each actual run retains its runner cost."]
     lines += ["", "Cargo compilation and test harness totals require matching log markers; test harness totals exclude startup and doctest compilation. No cross-run duration sum represents elapsed time.", ""]
     return "\n".join(lines)
 
