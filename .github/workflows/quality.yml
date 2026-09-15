@@ -1,5 +1,5 @@
 # Disposable diagnostic branch only. Never merge this replacement workflow.
-name: Manual macOS catalog stream diagnostic
+name: Manual macOS toolchain diagnostic
 
 on:
   workflow_dispatch:
@@ -13,7 +13,12 @@ defaults:
 
 jobs:
   catalog-diagnostic:
-    name: Catalog streams · Xcode 26.3 · production wrapper
+    name: Xcode 26.2 · production wrapper · sample ${{ matrix.sample }}
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        sample: [1, 2, 3]
     runs-on: macos-15
     timeout-minutes: 8
     steps:
@@ -21,14 +26,16 @@ jobs:
         with:
           persist-credentials: false
       - name: Compile exact icon and inspect catalog once with the repaired helper
+        env:
+          CI_DIAGNOSTIC_SAMPLE: ${{ matrix.sample }}
         run: |
           umask 077
-          python3 scripts/ci/icon_diagnostic.py --xcode 26.3 --method wrapper --directory "$RUNNER_TEMP/gitturtle-catalog-diagnostic"
+          python3 scripts/ci/icon_diagnostic.py --xcode 26.2 --method wrapper --sample "$CI_DIAGNOSTIC_SAMPLE" --directory "$RUNNER_TEMP/gitturtle-catalog-diagnostic"
       - name: Preserve only diagnostic text and JSON
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: catalog-diagnostic-26.3-${{ github.run_id }}-${{ github.run_attempt }}
+          name: catalog-diagnostic-26.2-${{ matrix.sample }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/gitturtle-catalog-diagnostic/evidence/*.json
             ${{ runner.temp }}/gitturtle-catalog-diagnostic/evidence/*.log
