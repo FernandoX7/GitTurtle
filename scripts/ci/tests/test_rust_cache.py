@@ -181,6 +181,136 @@ class CacheFixture(unittest.TestCase):
         self.assertFalse(result["save"])
         self.assertEqual(credential.read_bytes(), b"not in cache")
 
+    def test_projection_prunes_only_disposable_sources_after_all_cargo_commands(self):
+        library = self.file(self.paths[0] / "debug/deps/libkeep-abcd.rlib", b"compiled")
+        generated = self.file(self.paths[0] / "debug/build/keep-sys-abcd/out/native.a", b"native")
+        fingerprint = self.file(self.paths[0] / "debug/.fingerprint/keep-sys-abcd/lib-keep", b"fingerprint")
+        pure = self.file(self.paths[1] / "src/registry/pure-1.0.0/src/lib.rs", b"R" * 200_000)
+        outdated = self.file(self.paths[1] / "src/registry/old-sys-0.1.0/native.c", b"old")
+        native = self.file(self.paths[1] / "src/registry/keep-sys-1.0.0/native.c", b"timestamp-sensitive")
+        checkout = self.file(self.paths[2] / "checkouts/dep/ref/src/lib.rs", b"git source")
+        database = self.file(self.paths[2] / "db/dep/objects/pack/pack.data", b"git database")
+        timestamp = native.stat().st_mtime_ns
+        packages = [{"name": "keep-sys", "version": "1.0.0", "id": "keep", "source": "registry"},
+                    {"name": "app", "id": "app", "source": None}]
+        calls = []
+
+        def execute(command, **_):
+            calls.append(command)
+            self.assertTrue(pure.exists(), "Cargo commands must run before source pruning")
+            return json.dumps({"packages": packages}).encode() if command[1] == "metadata" else b""
+
+        with patch.object(cache, "SINGLE_PROFILE_LIMIT", 180_000):
+            result = cache.bound_payload(self.root, self.paths, "debug", execute=execute)
+        self.assertTrue(result["save"])
+        self.assertFalse(result["dropped_target"])
+        self.assertEqual(result["removed_dependency_packages"], 0)
+        self.assertEqual(result["removed_source_directories"], 2)
+        self.assertEqual(len(calls), 2)
+        self.assertFalse(pure.exists())
+        self.assertFalse(outdated.exists())
+        self.assertEqual(native.stat().st_mtime_ns, timestamp)
+        for path in (library, generated, fingerprint, checkout, database):
+            self.assertTrue(path.exists())
+        initial, _, final = result["snapshots"]
+        self.assertGreater(initial["bytes"], result["limit_bytes"])
+        self.assertEqual(initial["projected_bytes"], final["bytes"])
+        self.assertEqual(final["projected_bytes"], final["bytes"])
+        self.assertEqual(final["compiled"]["libraries"]["files"], 1)
+        self.assertEqual(final["compiled"]["native_generated"]["files"], 1)
+        self.assertEqual(final["compiled"]["fingerprints"]["files"], 1)
+        self.assertEqual(final["bytes"], final["logical_bytes"] + final["entry_overhead_bytes"])
+        self.assertEqual(final["subtrees"]["registry_src_removable"]["entries"], 0)
+        self.assertNotIn(str(self.base), json.dumps(result))
+
+    def test_excluded_sources_still_enforce_type_and_entry_limits(self):
+        source = self.file(self.paths[1] / "src/registry/pure-1.0.0/lib.rs", b"source")
+        execute = lambda *a, **k: b'{"packages": []}'
+        with patch.object(cache, "MAX_FILES", 2), self.assertRaises(ValueError):
+            cache.bound_payload(self.root, self.paths, "debug", execute=execute)
+        self.assertTrue(source.exists())
+        source.unlink()
+        source.symlink_to(self.file(self.base / "outside", b"preserved"))
+        with self.assertRaises(ValueError):
+            cache.bound_payload(self.root, self.paths, "debug", execute=execute)
+        source.unlink()
+        os.mkfifo(source)
+        with self.assertRaises(ValueError):
+            cache.bound_payload(self.root, self.paths, "debug", execute=execute)
+        self.assertEqual((self.base / "outside").read_bytes(), b"preserved")
+
+    def test_accounting_refuses_expired_time_nondirectory_and_symlink_roots(self):
+        source = self.file(self.paths[1] / "src/registry/pure-1.0.0/lib.rs")
+        with patch.object(cache, "BUDGET_SECONDS", 0), self.assertRaises(TimeoutError):
+            cache.bound_payload(self.root, self.paths, "debug", execute=lambda *a, **k: b'{"packages": []}')
+        self.assertTrue(source.exists())
+        self.file(self.paths[0])
+        with self.assertRaises(ValueError):
+            cache.entries(self.paths)
+        self.paths[0].unlink()
+        self.paths[0].symlink_to(self.paths[1], target_is_directory=True)
+        with self.assertRaises(ValueError):
+            cache.entries(self.paths)
+
+    def test_cleanup_never_exceeds_eight_dependency_groups(self):
+        packages = [{"name": f"p{i}", "id": f"p{i}", "source": "registry"} for i in range(12)]
+        for package in packages:
+            self.file(self.paths[0] / f"debug/deps/{package['name']}-hash.rlib")
+        calls = []
+
+        def execute(command, **_):
+            calls.append(command)
+            return json.dumps({"packages": packages}).encode() if command[1] == "metadata" else b""
+
+        with patch.object(cache, "SINGLE_PROFILE_LIMIT", 1):
+            result = cache.bound_payload(self.root, self.paths, "debug", execute=execute)
+        self.assertEqual(result["removed_dependency_packages"], 8)
+        self.assertEqual(len([command for command in calls if command[1] == "clean"]), 8)
+        self.assertTrue(result["dropped_target"])
+
+    def test_eviction_diagnostics_keep_safe_names_without_source_ids(self):
+        package_id = "git+https://example.invalid/private?token=private#revision"
+        packages = [{"name": "fixture", "version": "1.2.3", "id": package_id, "source": "git"}]
+        artifact = self.file(self.paths[0] / "debug/deps/fixture-hash.rlib", b"artifact")
+
+        def execute(command, **_):
+            if command[1] == "metadata":
+                return json.dumps({"packages": packages}).encode()
+            artifact.unlink()
+            return b""
+
+        with patch.object(cache, "SINGLE_PROFILE_LIMIT", 8192):
+            result = cache.bound_payload(self.root, self.paths, "debug", execute=execute)
+        self.assertEqual(result["evicted_packages"], [{"metadata_index": 0, "name": "fixture", "version": "1.2.3"}])
+        self.assertNotIn("private", json.dumps(result))
+        # Unexpected metadata names are still identifiable without emitting
+        # delimiters, a URL, a path or an unbounded string into public logs.
+        packages[0]["version"] = "private/path" + "x" * 200
+        artifact.write_bytes(b"again")
+        with patch.object(cache, "SINGLE_PROFILE_LIMIT", 8192):
+            result = cache.bound_payload(self.root, self.paths, "debug", execute=execute)
+        self.assertEqual(result["evicted_packages"], [{"metadata_index": 0, "name": "fixture"}])
+        self.assertNotIn("private", json.dumps(result))
+
+    def test_failed_budget_preserves_completed_snapshots_and_fixed_reason(self):
+        self.file(self.paths[0] / "debug/deps/fixture-hash.rlib")
+        snapshot = {"stage": "before_local_cleanup", "bytes": 123}
+
+        def unavailable(*_, snapshots, **__):
+            snapshots.append(snapshot)
+            raise ValueError("private/path or command output must not be logged")
+
+        with patch.dict(os.environ, {"CACHE_PROFILE": "debug", "CI_RUST_CACHE_PROFILE": "debug"}), \
+                patch("sys.argv", ["cache.py", "bound"]), patch.object(cache, "bound_payload", side_effect=unavailable), \
+                patch.object(cache, "record") as record, patch("builtins.print"):
+            cache.main()
+        result = record.call_args.kwargs["details"]
+        self.assertFalse(result["save"])
+        self.assertEqual(result["snapshots"], [snapshot])
+        self.assertEqual(result["reason"], "cache budget preparation unavailable")
+        self.assertNotIn("private", json.dumps(result))
+        self.assertEqual(Path(self.env["GITHUB_OUTPUT"]).read_text(), "save=false\n")
+
     @unittest.skipUnless(os.environ.get("GITTURTLE_CACHE_CARGO_QA") == "1" and shutil.which("cargo"),
                          "Set GITTURTLE_CACHE_CARGO_QA=1 for the real Cargo recovery fixture")
     def test_real_cargo_cleanup_rebuilds_local_crate_and_native_generated_output(self):
