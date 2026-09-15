@@ -83,6 +83,7 @@ jobs:
         run: |
           package_dir="$RUNNER_TEMP/gitturtle-linux-package"
           scripts/package-linux.sh --no-build --binary target/release/gitturtle "$package_dir"
+          python3 scripts/test-install-linux.py --bundle "$package_dir"
           unpacked="$(mktemp -d "$RUNNER_TEMP/gitturtle-unpacked.XXXXXX")"
           tar -xzf "$package_dir.tar.gz" -C "$unpacked"
           install_home="$(mktemp -d "$RUNNER_TEMP/gitturtle-install.XXXXXX")"
