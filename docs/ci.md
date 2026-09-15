@@ -12,6 +12,9 @@ behavior and improvement remain part of
 [coordinator checkpoint C1](development/commit-inspector-and-ci.md#c1--hosted-quality-and-merge-protection).
 A checked-in workflow or passing fixture is not evidence of an executed hosted run.
 
+The [September 15 hosted observations](benchmarks/2026-09-15-ci.md) record measured
+passes, failures, routing behavior and the remaining cache/performance evidence.
+
 ## Events and required results
 
 Quality owns normal validation: one `pull_request` run per opened, reopened or
