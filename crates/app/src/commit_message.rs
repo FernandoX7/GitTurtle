@@ -421,6 +421,13 @@ pub(crate) mod tests {
                     window,
                     cx,
                 );
+                // This fixture runs synchronous GPUI layout tests, but startup
+                // profile loading uses the real preferences worker. Finish its
+                // FIFO before GPUI first polls the foreground reply; otherwise
+                // a worker-thread wake races the deterministic test scheduler.
+                futures::executor::block_on(app.preferences_writer.submit(|| Ok(())))
+                    .expect("startup preferences worker replied")
+                    .expect("startup preferences queue drained");
                 app.page = AppPage::Repository;
                 app.commits = commits;
                 app.selected_commit = Some(0);

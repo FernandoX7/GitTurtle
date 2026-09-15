@@ -23,7 +23,9 @@ class PackageFixtures(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="gitturtle-macos-source-")
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        # macOS temporary parents commonly use /var -> /private/var. Match the
+        # packager's canonical output parent so race hooks compare real paths.
+        self.root = Path(self.temporary.name).resolve()
         self.project = self.root / "project"
         self.project.mkdir()
         self.git_env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
@@ -529,6 +531,29 @@ class PackageFixtures(unittest.TestCase):
                 self.invoke()
         self.assertEqual(package.tree_digest(self.bundle), old)
         self.assertFalse(self.bundle.with_name(".GitTurtle.app.package-lock").exists())
+
+
+class AliasedTemporaryDirectoryTests(unittest.TestCase):
+    def test_backup_race_hooks_fire_with_symlinked_temporary_parent(self):
+        # Reproduce macOS's /var alias on every host. The actual race fixtures
+        # must inject and preserve the concurrent bytes, not merely succeed.
+        with tempfile.TemporaryDirectory(prefix="gitturtle-temp-alias-") as temporary:
+            parent = Path(temporary).resolve()
+            real = parent / "real"
+            real.mkdir()
+            alias = parent / "alias"
+            alias.symlink_to(real, target_is_directory=True)
+            new_temporary = tempfile.TemporaryDirectory
+            def aliased_temporary(*args, **kwargs):
+                return new_temporary(*args, **{**kwargs, "dir": alias})
+            for name in (
+                "test_app_change_during_backup_capture_restored_with_diagnostics",
+                "test_sidecar_change_during_backup_capture_restores_app_and_sidecar",
+            ):
+                with self.subTest(fixture=name), mock.patch.object(tempfile, "TemporaryDirectory", side_effect=aliased_temporary):
+                    result = unittest.TestResult()
+                    PackageFixtures(name).run(result)
+                    self.assertTrue(result.wasSuccessful(), result.failures + result.errors)
 
 
 if __name__ == "__main__":
