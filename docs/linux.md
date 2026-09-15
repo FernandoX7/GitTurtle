@@ -222,16 +222,26 @@ menu item. Linux keyboard shortcuts use Control instead of Command.
 - Automatic reading of OS reduced-motion, contrast and transparency
   accessibility preferences is macOS-only. Manual app preferences remain
   available; Linux screen-reader and IME coverage is not established.
-- Glyph antialiasing and the desktop text scaling factor follow the session:
-  the app reads `font-rendering`, `font-antialiasing` and `text-scaling-factor`
-  from the XDG settings portal (`org.gnome.desktop.interface`), falls back to
-  fontconfig's resolved `antialias`/`rgba` defaults when a portal backend does
-  not publish those keys, and otherwise renders grayscale. Hinting and stripe
-  order remain toolkit decisions; "none" antialiasing is rendered grayscale.
-- The current toolkit's X11 backend reads `Xft.dpi`/RandR scaling but does not
-  read XSettings DPI, so the text scaling factor is applied by the app on
-  Wayland only. Fractional scaling and live monitor changes still need checks
-  on the target desktop.
+- Glyph antialiasing reads `font-rendering` and `font-antialiasing` from the
+  XDG settings portal (`org.gnome.desktop.interface`). GNOME Automatic mode
+  uses grayscale, matching [GTK 4](https://docs.gtk.org/gtk4/property.Settings.gtk-xft-rgba.html);
+  Manual mode follows the antialiasing key. Missing or invalid desktop values
+  fall back to fontconfig's resolved `antialias`/`rgba` defaults, then grayscale.
+  Hinting and horizontal stripe order remain toolkit decisions; vertical
+  fontconfig stripes and "none" antialiasing are rendered grayscale.
+- Portal changes apply while the app runs. Returning focus to a window rereads
+  the snapshot and fontconfig fallback, and retries an unavailable portal.
+  Fontconfig-only changes therefore apply on focus return, without idle polling.
+  Unresolved antialiasing uses grayscale. Portal setup/read work has
+  a 250 ms deadline; `fc-match` has a 100 ms execution deadline and 128-byte
+  output limit. Launch waits at most 400 ms for the initial applied snapshot;
+  outstanding portal futures are cancelled and failed child queries are reaped.
+- The portal's `text-scaling-factor` multiplies both saved app text sizes on
+  Wayland, within 0.5–3.0; nonpositive or nonfinite values use 1.0. This does
+  not implement KDE-specific font DPI preferences. The toolkit's X11 backend
+  already reads `Xft.dpi`/RandR scaling (but not XSettings DPI), so GitTurtle
+  does not apply the factor a second time on X11. Fractional scaling and live
+  monitor changes still need checks on the target desktop.
 - This bundle does not provide automatic updates, desktop file associations,
   distribution signing or support guarantees for other Ubuntu releases/CPUs.
 

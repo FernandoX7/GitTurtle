@@ -682,6 +682,7 @@ impl GitTurtle {
             .push(cx.observe_window_activation(window, |this, window, cx| {
                 if window.is_window_active() {
                     native_accessibility::sync_preferences(cx);
+                    desktop_text::refresh(cx);
                     this.apply_motion_preferences(cx);
                 }
                 if window.is_window_active() && this.repository.is_some() {

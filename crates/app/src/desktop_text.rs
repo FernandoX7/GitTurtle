@@ -6,16 +6,15 @@
 //! or rotated screens, and diverges from GTK 4, which renders every glyph
 //! grayscale. This module reads the desktop preference through the XDG
 //! settings portal, falls back to fontconfig's resolved defaults when a portal
-//! backend does not publish GNOME's keys, and follows changes while the app
-//! runs. On Wayland it also applies the desktop text scaling factor ("Large
+//! backend does not publish GNOME's keys, and follows portal changes while the app
+//! runs. Returning to a window refreshes the snapshot and fontconfig fallback. On Wayland it also applies the desktop text scaling factor ("Large
 //! Text"), where the toolkit has no DPI source; the X11 backend already scales
 //! the whole window through `Xft.dpi`. Nothing here writes a setting.
 
 use gpui_kit::AsyncApp;
 
-/// Resolves once the first desktop snapshot has been applied, so the first
-/// frame already uses the session's antialiasing and text scale. It gives up
-/// after a short wait so a stalled portal cannot delay startup.
+/// Waits for the first applied desktop snapshot. After the startup deadline,
+/// launch uses the safe defaults already installed by `start`.
 #[cfg(target_os = "linux")]
 pub(super) struct Initial(futures::channel::oneshot::Receiver<()>);
 #[cfg(not(target_os = "linux"))]
@@ -25,27 +24,81 @@ pub(super) struct Initial;
 const STARTUP_WAIT: std::time::Duration = std::time::Duration::from_millis(400);
 
 #[cfg(target_os = "linux")]
+struct Observer {
+    worker: Option<gpui_kit::Task<()>>,
+    cancel: futures::future::AbortHandle,
+    updates: Option<gpui_kit::Task<()>>,
+    refresh: futures::channel::mpsc::Sender<()>,
+}
+#[cfg(target_os = "linux")]
+impl gpui_kit::Global for Observer {}
+
+#[cfg(target_os = "linux")]
 pub(super) fn start(cx: &mut gpui_kit::App) -> Initial {
     use futures::StreamExt as _;
 
-    let (sender, mut snapshots) = futures::channel::mpsc::unbounded();
+    // The deadline also needs a useful first frame if the worker cannot run.
+    apply(Observed::default().resolve(false), cx);
+    let (sender, mut snapshots, latest) = portal::snapshots();
+    let (refresh, requests) = futures::channel::mpsc::channel(0);
     let (ready, initial) = futures::channel::oneshot::channel();
     let scales_text = gpui_kit::guess_compositor() == "Wayland";
-    cx.background_executor()
-        .spawn(portal::observe(scales_text, sender))
-        .detach();
-    cx.spawn(async move |cx| {
+    let executor = cx.background_executor().clone();
+    let (cancel, cancellation) = futures::future::AbortHandle::new_pair();
+    let worker = executor.clone().spawn(async move {
+        let _ = futures::future::Abortable::new(
+            portal::observe(scales_text, sender, requests, executor),
+            cancellation,
+        )
+        .await;
+    });
+    let updates = cx.spawn(async move |cx| {
         let mut ready = Some(ready);
-        while let Some(snapshot) = snapshots.next().await {
-            cx.update(|cx| apply(snapshot, cx));
-            if let Some(ready) = ready.take() {
-                let _ = ready.send(());
+        while snapshots.next().await.is_some() {
+            let snapshot = latest.lock().unwrap().take();
+            if let Some(snapshot) = snapshot {
+                cx.update(|cx| apply(snapshot, cx));
+                if let Some(ready) = ready.take() {
+                    let _ = ready.send(());
+                }
+            }
+        }
+    });
+    cx.set_global(Observer {
+        worker: Some(worker),
+        cancel,
+        updates: Some(updates),
+        refresh,
+    });
+    cx.on_app_quit(|cx| {
+        let observer = cx.global_mut::<Observer>();
+        observer.cancel.abort();
+        observer.updates.take();
+        let worker = observer.worker.take();
+        async move {
+            // Join cancellation before process exit, including reap of a
+            // running child (bounded to 100 ms, below GPUI's shutdown budget).
+            // Pending D-Bus reads and signal subscriptions are dropped.
+            if let Some(worker) = worker {
+                worker.await;
             }
         }
     })
     .detach();
     Initial(initial)
 }
+
+/// One coalesced read on focus return also handles fontconfig-only desktops
+/// and a portal that was unavailable at launch, without an idle polling loop.
+#[cfg(target_os = "linux")]
+pub(super) fn refresh(cx: &mut gpui_kit::App) {
+    if cx.has_global::<Observer>() {
+        let _ = cx.global_mut::<Observer>().refresh.try_send(());
+    }
+}
+#[cfg(not(target_os = "linux"))]
+pub(super) fn refresh(_cx: &mut gpui_kit::App) {}
+
 #[cfg(not(target_os = "linux"))]
 pub(super) fn start(_cx: &mut gpui_kit::App) -> Initial {
     Initial
@@ -157,6 +210,9 @@ pub(super) fn rendering_from_fontconfig(defaults: &str) -> Option<gpui_kit::Text
         _ => return None,
     };
     let rgba: u8 = fields.next()?.trim().parse().ok()?;
+    if fields.next().is_some() {
+        return None;
+    }
     Some(match (antialias, rgba) {
         (true, 1 | 2) => Subpixel,
         (true, 0 | 3 | 4 | 5) | (false, 0..=5) => Grayscale,
@@ -167,102 +223,492 @@ pub(super) fn rendering_from_fontconfig(defaults: &str) -> Option<gpui_kit::Text
 #[cfg(target_os = "linux")]
 mod portal {
     use super::{DesktopText, Observed};
-    use ashpd::desktop::settings::Settings;
-    use futures::channel::mpsc::UnboundedSender;
-    use futures::{Stream, StreamExt as _};
-    use std::pin::Pin;
-    use std::process::{Command, Stdio};
+    use ashpd::{desktop::settings::Settings, zbus, zvariant::OwnedValue};
+    use futures::channel::mpsc::{self, Receiver, Sender};
+    use futures::{FutureExt as _, StreamExt as _};
+    use gpui_kit::BackgroundExecutor;
+    use std::io::Read as _;
+    use std::os::fd::AsRawFd as _;
+    use std::process::{Child, Command, Stdio};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     const INTERFACE: &str = "org.gnome.desktop.interface";
     const FONT_RENDERING: &str = "font-rendering";
     const FONT_ANTIALIASING: &str = "font-antialiasing";
     const TEXT_SCALING_FACTOR: &str = "text-scaling-factor";
+    const PORTAL_WAIT: Duration = Duration::from_millis(250);
+    const FONTCONFIG_WAIT: Duration = Duration::from_millis(100);
+    const FONTCONFIG_BYTES: usize = 128;
+    const SIGNAL_BATCH: usize = 32;
+    const CHANGE_COALESCE_WAIT: Duration = Duration::from_millis(16);
 
-    enum Change {
-        FontRendering(String),
-        Antialiasing(String),
-        TextScale(f64),
+    pub(super) type Latest = Arc<Mutex<Option<DesktopText>>>;
+    pub(super) struct Snapshots {
+        latest: Latest,
+        wake: Sender<()>,
     }
 
-    /// Sends one snapshot after the initial reads, then one per change until
-    /// the receiver is dropped. Runs on the background executor; portal calls
-    /// and the fontconfig query never touch the UI thread.
-    pub(super) async fn observe(scales_text: bool, sender: UnboundedSender<DesktopText>) {
-        let mut observed = Observed::default();
-        let settings = Settings::new().await.ok();
-        if let Some(settings) = &settings {
-            observed.font_rendering = settings.read(INTERFACE, FONT_RENDERING).await.ok();
-            observed.antialiasing = settings.read(INTERFACE, FONT_ANTIALIASING).await.ok();
-            observed.text_scale = settings.read(INTERFACE, TEXT_SCALING_FACTOR).await.ok();
-        }
-        if observed.antialiasing.is_none() {
-            observed.fontconfig = fontconfig_defaults();
-        }
-        if sender
-            .unbounded_send(observed.resolve(scales_text))
-            .is_err()
-        {
-            return;
-        }
-        let Some(settings) = settings else {
-            return;
-        };
+    pub(super) fn snapshots() -> (Snapshots, Receiver<()>, Latest) {
+        // A futures sender has one reserved slot even with zero buffer slots.
+        // Store the value separately so bursts replace, rather than queue, it.
+        let (wake, receiver) = mpsc::channel(0);
+        let latest = Arc::new(Mutex::new(None));
+        (
+            Snapshots {
+                latest: latest.clone(),
+                wake,
+            },
+            receiver,
+            latest,
+        )
+    }
 
-        let mut streams: Vec<Pin<Box<dyn Stream<Item = Change> + Send>>> = Vec::new();
-        if let Ok(changes) = settings
-            .receive_setting_changed_with_args::<String>(INTERFACE, FONT_RENDERING)
-            .await
-        {
-            streams.push(Box::pin(changes.filter_map(|value| {
-                futures::future::ready(value.ok().map(Change::FontRendering))
-            })));
-        }
-        if let Ok(changes) = settings
-            .receive_setting_changed_with_args::<String>(INTERFACE, FONT_ANTIALIASING)
-            .await
-        {
-            streams.push(Box::pin(changes.filter_map(|value| {
-                futures::future::ready(value.ok().map(Change::Antialiasing))
-            })));
-        }
-        if let Ok(changes) = settings
-            .receive_setting_changed_with_args::<f64>(INTERFACE, TEXT_SCALING_FACTOR)
-            .await
-        {
-            streams.push(Box::pin(changes.filter_map(|value| {
-                futures::future::ready(value.ok().map(Change::TextScale))
-            })));
-        }
-        let mut changes = futures::stream::select_all(streams);
-        while let Some(change) = changes.next().await {
-            match change {
-                Change::FontRendering(value) => observed.font_rendering = Some(value),
-                Change::Antialiasing(value) => observed.antialiasing = Some(value),
-                Change::TextScale(value) => observed.text_scale = Some(value),
+    impl Snapshots {
+        fn send(&mut self, snapshot: DesktopText) -> bool {
+            *self.latest.lock().unwrap() = Some(snapshot);
+            match self.wake.try_send(()) {
+                Ok(()) => true,
+                Err(error) => error.is_full(),
             }
-            if sender
-                .unbounded_send(observed.resolve(scales_text))
-                .is_err()
+        }
+    }
+
+    async fn bounded<T>(
+        executor: &BackgroundExecutor,
+        future: impl Future<Output = T>,
+    ) -> Option<T> {
+        match futures::future::select(Box::pin(future), executor.timer(PORTAL_WAIT)).await {
+            futures::future::Either::Left((value, _)) => Some(value),
+            // The losing future is dropped here, not detached behind a UI timeout.
+            futures::future::Either::Right(_) => None,
+        }
+    }
+
+    struct Session {
+        // Retain the private connection only for this subscription's lifetime.
+        _settings: Settings,
+        changes: zbus::proxy::SignalStream<'static>,
+        observed: Observed,
+    }
+
+    async fn connect() -> Option<Session> {
+        let connection = zbus::connection::Builder::session()
+            .ok()?
+            .max_queued(SIGNAL_BATCH)
+            .build()
+            .await
+            .ok()?;
+        let settings = Settings::with_connection(connection).await.ok()?;
+        // Subscribe first, on one ordered stream. Separate per-key streams can
+        // reorder coupled font-rendering/antialiasing changes.
+        let mut changes = settings
+            .receive_signal_with_args("SettingChanged", &[(0, INTERFACE)])
+            .await
+            .ok()?;
+        let observed = snapshot(&mut changes, async {
+            let (font_rendering, antialiasing, text_scale) = futures::join!(
+                settings.read(INTERFACE, FONT_RENDERING),
+                settings.read(INTERFACE, FONT_ANTIALIASING),
+                settings.read(INTERFACE, TEXT_SCALING_FACTOR),
+            );
+            Observed {
+                font_rendering: font_rendering.ok(),
+                antialiasing: antialiasing.ok(),
+                text_scale: text_scale.ok(),
+                fontconfig: None,
+            }
+        })
+        .await;
+        Some(Session {
+            _settings: settings,
+            changes,
+            observed,
+        })
+    }
+
+    async fn snapshot(
+        changes: &mut (impl futures::Stream<Item = zbus::Message> + Unpin),
+        reads: impl Future<Output = Observed>,
+    ) -> Observed {
+        let reads = reads.fuse();
+        futures::pin_mut!(reads);
+        let mut updates = Observed::default();
+        let mut seen = 0;
+        let mut count = 0;
+        let mut initial = loop {
+            futures::select_biased! {
+                initial = reads => break initial,
+                message = changes.next().fuse() => match message {
+                    Some(message) => {
+                        seen |= change(&mut updates, message);
+                        count += 1;
+                        if count == SIGNAL_BATCH {
+                            // Let the enclosing deadline/cancellation run even
+                            // when the backend produces a never-idle stream.
+                            yield_once().await;
+                            count = 0;
+                        }
+                    },
+                    None => break reads.await,
+                },
+            }
+        };
+        // Consume signals while the reads are in flight, so a full bounded
+        // signal queue cannot block delivery of the read replies. A signal
+        // received during the snapshot wins over that key's earlier read.
+        if seen & 1 != 0 {
+            initial.font_rendering = updates.font_rendering;
+        }
+        if seen & 2 != 0 {
+            initial.antialiasing = updates.antialiasing;
+        }
+        if seen & 4 != 0 {
+            initial.text_scale = updates.text_scale;
+        }
+        initial
+    }
+
+    fn change(observed: &mut Observed, message: zbus::Message) -> u8 {
+        let body = message.body();
+        let Ok((namespace, key, value)) = body.deserialize::<(&str, &str, OwnedValue)>() else {
+            return 0;
+        };
+        if namespace != INTERFACE {
+            return 0;
+        }
+        // Invalid values clear the old preference so resolution can fall back.
+        match key {
+            FONT_RENDERING => {
+                observed.font_rendering = <&str>::try_from(&value).ok().map(str::to_owned);
+                1
+            }
+            FONT_ANTIALIASING => {
+                observed.antialiasing = <&str>::try_from(&value).ok().map(str::to_owned);
+                2
+            }
+            TEXT_SCALING_FACTOR => {
+                observed.text_scale = f64::try_from(&value).ok();
+                4
+            }
+            _ => 0,
+        }
+    }
+
+    async fn yield_once() {
+        let mut yielded = false;
+        futures::future::poll_fn(move |cx| {
+            if yielded {
+                std::task::Poll::Ready(())
+            } else {
+                yielded = true;
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        })
+        .await;
+    }
+
+    fn drain(session: &mut Session) -> bool {
+        let mut changed = false;
+        // Fixed work per turn, even if a backend continuously emits signals.
+        for _ in 0..SIGNAL_BATCH {
+            match session.changes.next().now_or_never() {
+                Some(Some(message)) => {
+                    changed |= change(&mut session.observed, message) != 0;
+                }
+                _ => break,
+            }
+        }
+        changed
+    }
+
+    /// All external reads run in one app-owned background task. Both setup
+    /// and child execution have deadlines; the UI retains one latest value.
+    pub(super) async fn observe(
+        scales_text: bool,
+        mut sender: Snapshots,
+        mut refresh: Receiver<()>,
+        executor: BackgroundExecutor,
+    ) {
+        loop {
+            let mut session = bounded(&executor, connect()).await.flatten();
+            if let Some(session) = &mut session {
+                drain(session);
+            }
+            let mut observed = session
+                .as_ref()
+                .map(|session| session.observed.clone())
+                .unwrap_or_default();
+            if super::rendering_from_gnome(
+                observed.font_rendering.as_deref(),
+                observed.antialiasing.as_deref(),
+            )
+            .is_none()
             {
+                observed.fontconfig = fontconfig_defaults();
+            }
+            if !sender.send(observed.resolve(scales_text)) {
                 return;
             }
+            let Some(mut session) = session else {
+                if refresh.next().await.is_none() {
+                    return;
+                }
+                continue;
+            };
+            session.observed = observed;
+            loop {
+                // Focus requests and changes are bounded independently. Refresh
+                // replaces the connection, including a lost/restarted portal.
+                let message = futures::select_biased! {
+                    request = refresh.next().fuse() => {
+                        if request.is_none() { return; }
+                        break;
+                    },
+                    message = session.changes.next().fuse() => message,
+                };
+                let Some(message) = message else {
+                    if refresh.next().await.is_none() {
+                        return;
+                    }
+                    break;
+                };
+                let changed = change(&mut session.observed, message) != 0;
+                if drain(&mut session) || changed {
+                    if super::rendering_from_gnome(
+                        session.observed.font_rendering.as_deref(),
+                        session.observed.antialiasing.as_deref(),
+                    )
+                    .is_none()
+                    {
+                        session.observed.fontconfig = fontconfig_defaults();
+                    }
+                    if !sender.send(session.observed.resolve(scales_text)) {
+                        return;
+                    }
+                }
+                executor.timer(CHANGE_COALESCE_WAIT).await;
+            }
         }
     }
 
-    /// fontconfig is how KDE and other desktops publish their antialiasing
-    /// choice. The `fontconfig` package already belongs to the runtime
-    /// requirements; a missing tool simply leaves the fallback empty.
+    struct ChildGuard(Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            // Reap even on an output-limit/read error or deadline. No detached
+            // subprocess or reader thread survives a failed query.
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// fontconfig-only desktops are reread when a window regains focus.
     fn fontconfig_defaults() -> Option<String> {
-        let output = Command::new("fc-match")
-            .args(["--format", "%{antialias}|%{rgba}", "sans-serif"])
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .ok()?;
-        output
-            .status
-            .success()
-            .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+        command_output(
+            Command::new("fc-match").args(["--format", "%{antialias}|%{rgba}", "sans-serif"]),
+            FONTCONFIG_WAIT,
+        )
+    }
+
+    fn command_output(command: &mut Command, timeout: Duration) -> Option<String> {
+        let mut child = ChildGuard(
+            command
+                .stdin(Stdio::null())
+                .stderr(Stdio::null())
+                .stdout(Stdio::piped())
+                .spawn()
+                .ok()?,
+        );
+        let mut stdout = child.0.stdout.take()?;
+        let fd = stdout.as_raw_fd();
+        // SAFETY: stdout owns this valid pipe descriptor throughout both calls.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return None;
+        }
+        let deadline = Instant::now() + timeout;
+        let mut output = Vec::with_capacity(FONTCONFIG_BYTES);
+        let mut buffer = [0; FONTCONFIG_BYTES + 1];
+        loop {
+            match stdout.read(&mut buffer) {
+                Ok(count) => {
+                    if output.len() + count > FONTCONFIG_BYTES {
+                        return None;
+                    }
+                    output.extend_from_slice(&buffer[..count]);
+                    if count == 0 {
+                        if let Some(status) = child.0.try_wait().ok()? {
+                            return status
+                                .success()
+                                .then(|| String::from_utf8(output).ok())
+                                .flatten();
+                        }
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => return None,
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn signal(key: &str, value: OwnedValue) -> zbus::Message {
+            zbus::Message::signal(
+                "/org/freedesktop/portal/desktop",
+                "org.freedesktop.portal.Settings",
+                "SettingChanged",
+            )
+            .unwrap()
+            .build(&(INTERFACE, key, value))
+            .unwrap()
+        }
+
+        #[test]
+        fn snapshot_drains_bursts_during_reads_and_keeps_latest_signals() {
+            use futures::SinkExt as _;
+            let (mut sender, mut changes) = mpsc::channel(0);
+            let (reply, reads) = futures::channel::oneshot::channel();
+            let emit = async move {
+                for index in 0..100 {
+                    sender
+                        .send(signal(TEXT_SCALING_FACTOR, OwnedValue::from(index as f64)))
+                        .await
+                        .unwrap();
+                }
+                // Wrong type must clear the previous antialiasing value.
+                sender
+                    .send(signal(FONT_ANTIALIASING, OwnedValue::from(123u32)))
+                    .await
+                    .unwrap();
+                reply
+                    .send(Observed {
+                        font_rendering: Some("manual".into()),
+                        antialiasing: Some("rgba".into()),
+                        text_scale: Some(1.25),
+                        fontconfig: None,
+                    })
+                    .unwrap();
+            };
+            let (observed, ()) = futures::executor::block_on(async {
+                futures::join!(snapshot(&mut changes, async { reads.await.unwrap() }), emit)
+            });
+            assert_eq!(observed.font_rendering.as_deref(), Some("manual"));
+            assert_eq!(observed.antialiasing, None);
+            assert_eq!(observed.text_scale, Some(99.0));
+        }
+
+        #[gpui_kit::test]
+        async fn portal_deadline_drops_pending_work(cx: &mut gpui_kit::TestAppContext) {
+            use std::sync::atomic::{AtomicBool, Ordering};
+            struct Pending(Arc<AtomicBool>);
+            impl Drop for Pending {
+                fn drop(&mut self) {
+                    self.0.store(true, Ordering::SeqCst);
+                }
+            }
+            let dropped = Arc::new(AtomicBool::new(false));
+            let pending = Pending(dropped.clone());
+            let executor = cx.executor();
+            let task = executor.clone().spawn(async move {
+                bounded(&executor, async move {
+                    let _pending = pending;
+                    futures::future::pending::<()>().await;
+                })
+                .await
+            });
+            cx.run_until_parked();
+            cx.executor().advance_clock(PORTAL_WAIT);
+            assert_eq!(task.await, None);
+            assert!(dropped.load(Ordering::SeqCst));
+        }
+
+        #[test]
+        fn continuously_ready_signals_yield_to_cancellation() {
+            let message = signal(TEXT_SCALING_FACTOR, OwnedValue::from(1.25));
+            let mut changes = futures::stream::repeat(message);
+            // A perpetually ready source must still return Pending instead of
+            // monopolizing one poll and defeating the enclosing deadline.
+            assert!(
+                snapshot(&mut changes, futures::future::pending())
+                    .now_or_never()
+                    .is_none()
+            );
+        }
+
+        #[test]
+        fn snapshots_replace_bursts_and_detect_receiver_shutdown() {
+            let (mut sender, mut receiver, latest) = snapshots();
+            for index in 0..10_000 {
+                assert!(sender.send(DesktopText {
+                    rendering: gpui_kit::TextRenderingMode::Grayscale,
+                    text_scale: index as f32
+                }));
+            }
+            assert_eq!(latest.lock().unwrap().take().unwrap().text_scale, 9999.0);
+            assert!(matches!(receiver.next().now_or_never(), Some(Some(()))));
+            assert!(receiver.next().now_or_never().is_none());
+            drop(receiver);
+            assert!(!sender.send(Observed::default().resolve(true)));
+        }
+
+        #[test]
+        fn fontconfig_child_output_and_lifetime_are_bounded() {
+            assert_eq!(
+                command_output(
+                    Command::new("sh").args(["-c", "printf 'True|1'"]),
+                    Duration::from_secs(1)
+                ),
+                Some("True|1".into())
+            );
+            assert_eq!(
+                command_output(
+                    Command::new("sh").args(["-c", "printf 'True|1'; exit 1"]),
+                    Duration::from_secs(1)
+                ),
+                None
+            );
+            assert_eq!(
+                command_output(
+                    Command::new("sh").args(["-c", "while :; do printf '0123456789'; done"]),
+                    Duration::from_secs(1)
+                ),
+                None
+            );
+            // The direct child replaces its shell, so this also detects a leaked
+            // sleeper without creating an unrelated descendant process.
+            let pid_file = tempfile::NamedTempFile::new().unwrap();
+            let started = Instant::now();
+            assert_eq!(
+                command_output(
+                    Command::new("sh")
+                        .args(["-c", "echo $$ > \"$1\"; exec sleep 30", "fixture"])
+                        .arg(pid_file.path()),
+                    Duration::from_millis(40)
+                ),
+                None
+            );
+            assert!(started.elapsed() < Duration::from_secs(2));
+            let pid: libc::pid_t = std::fs::read_to_string(pid_file.path())
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            // SAFETY: signal zero checks existence and does not send a signal.
+            assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ESRCH)
+            );
+        }
     }
 }
 
@@ -329,6 +775,7 @@ mod tests {
         assert_eq!(rendering_from_fontconfig("Maybe|1"), None);
         assert_eq!(rendering_from_fontconfig("True|rgb"), None);
         assert_eq!(rendering_from_fontconfig("True|9"), None);
+        assert_eq!(rendering_from_fontconfig("True|1|5"), None);
     }
 
     #[test]
