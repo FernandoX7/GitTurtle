@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import stat
@@ -92,17 +93,28 @@ def roots():
     return root, temp, paths
 
 
-def entries(paths):
+def entries(paths, *, deadline=None):
     """Conservative payload accounting: logical bytes + 4 KiB per entry.
 
     Counts aliases separately, and never follows directory/file symlinks. This is
     an upper bound before upstream dependency cleanup, not a compressed archive.
+    Validate excluded source trees too; projection never bypasses these guards.
     """
     result = []
     for path in paths:
+        if path.is_symlink():
+            raise ValueError("symlinked cache root refused")
         if not path.exists():
             continue
-        for directory, dirs, files in os.walk(path, followlinks=False):
+        if not path.is_dir():
+            raise ValueError("nondirectory cache root refused")
+
+        def refused(error):
+            raise error
+
+        for directory, dirs, files in os.walk(path, followlinks=False, onerror=refused):
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("cache accounting exceeded its time limit")
             for name in dirs + files:
                 child = Path(directory) / name
                 info = child.lstat()
@@ -142,33 +154,122 @@ def largest_packages(packages, target_entries):
     return sorted(sizes, key=lambda package_id: (-sizes[package_id], package_id))
 
 
-def bound_payload(root, paths, profile, *, execute=run):
+def removable_sources(packages, paths, measured):
+    """Match only pinned rust-cache cleanRegistry's direct source directories.
+
+    Current *-sys sources retain timestamps needed by native build scripts. Git
+    databases and checkouts are never projected away. Keep extracted sources in
+    place until the last Cargo command, which can otherwise recreate them.
+    """
+    keep = {f"{p['name']}-{p['version']}" for p in packages if p["name"].endswith("-sys")}
+    source = paths[1] / "src"
+    return {path for path, _ in measured
+            if path.is_relative_to(source) and len(path.relative_to(source).parts) == 2
+            and path.name not in keep and path.is_dir()}
+
+
+def payload_snapshot(paths, measured, removable, stage):
+    buckets = {name: {"logical_bytes": 0, "entry_overhead_bytes": 0, "entries": 0}
+               for name in ("target", "registry_src_retained", "registry_src_removable",
+                            "registry_cache", "registry_index", "registry_other",
+                            "git_db", "git_checkouts", "git_other")}
+    compiled = {name: {"files": 0, "logical_bytes": 0}
+                for name in ("libraries", "native_generated", "fingerprints")}
+    for path, size in measured:
+        kind = None
+        if path.is_relative_to(paths[0]):
+            name = "target"
+            parts = path.relative_to(paths[0]).parts
+            if "deps" in parts and path.suffix in {".rlib", ".rmeta", ".a", ".so", ".dylib", ".dll"}:
+                kind = "libraries"
+            elif "build" in parts and "out" in parts:
+                kind = "native_generated"
+            elif ".fingerprint" in parts:
+                kind = "fingerprints"
+        elif path.is_relative_to(paths[1]):
+            parts = path.relative_to(paths[1]).parts
+            if parts[0] == "src":
+                source_root = paths[1].joinpath(*parts[:3])
+                name = "registry_src_removable" if source_root in removable else "registry_src_retained"
+            else:
+                name = "registry_" + parts[0] if parts[0] in {"cache", "index"} else "registry_other"
+        else:
+            parts = path.relative_to(paths[2]).parts
+            name = "git_" + parts[0] if parts[0] in {"db", "checkouts"} else "git_other"
+        bucket = buckets[name]
+        bucket["logical_bytes"] += size - 4096
+        bucket["entry_overhead_bytes"] += 4096
+        bucket["entries"] += 1
+        if kind and path.is_file():
+            compiled[kind]["files"] += 1
+            compiled[kind]["logical_bytes"] += size - 4096
+    logical = sum(value["logical_bytes"] for value in buckets.values())
+    overhead = sum(value["entry_overhead_bytes"] for value in buckets.values())
+    excluded = buckets["registry_src_removable"]
+    return {"stage": stage, "logical_bytes": logical, "entry_overhead_bytes": overhead,
+            "entries": len(measured), "bytes": logical + overhead,
+            "projected_bytes": logical + overhead - excluded["logical_bytes"] - excluded["entry_overhead_bytes"],
+            "subtrees": buckets, "compiled": compiled}
+
+
+def bound_payload(root, paths, profile, *, execute=run, snapshots=None):
     started = time.monotonic()
+    deadline = started + BUDGET_SECONDS
     limit = SERIAL_LIMIT if profile == "debug-release" else SINGLE_PROFILE_LIMIT
     metadata = json.loads(execute(["cargo", "metadata", "--locked", "--all-features", "--format-version", "1"], cwd=root, timeout=30))
     packages = metadata["packages"]
+    snapshots = [] if snapshots is None else snapshots
+    evictions = []
+
+    def measure(stage):
+        measured = entries(paths, deadline=deadline)
+        removable = removable_sources(packages, paths, measured)
+        snapshot = payload_snapshot(paths, measured, removable, stage)
+        snapshots.append(snapshot)
+        return measured, removable, snapshot
+
+    measure("before_local_cleanup")
     local = [package["id"] for package in packages if package.get("source") is None]
     if local:
         execute(["cargo", "clean", "--locked", *[part for package_id in local for part in ("--package", package_id)]], cwd=root, timeout=30)
-    measured = entries(paths)
-    before = sum(size for _, size in measured)
+    measured, removable, snapshot = measure("after_local_cleanup")
+    before = snapshot["bytes"]
     removed = 0
     ordered = largest_packages([p for p in packages if p.get("source") is not None],
                                [(p, size) for p, size in measured if p.is_relative_to(paths[0])])
     for package_id in ordered[:MAX_CLEAN_PACKAGES]:
-        if sum(size for _, size in measured) <= limit or time.monotonic() - started >= BUDGET_SECONDS:
+        if snapshot["projected_bytes"] <= limit or time.monotonic() >= deadline:
             break
         execute(["cargo", "clean", "--locked", "--package", package_id], cwd=root, timeout=30)
         removed += 1
-        measured = entries(paths)
-    dropped_target = sum(size for _, size in measured) > limit
+        index, package = next((index, package) for index, package in enumerate(packages) if package["id"] == package_id)
+        eviction = {"metadata_index": index}
+        # Never expose package IDs: Git IDs can include a source URL or path.
+        for field in ("name", "version"):
+            value = package.get(field)
+            if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,127}", value):
+                eviction[field] = value
+        evictions.append(eviction)
+        measured, removable, snapshot = measure(f"after_dependency_cleanup_{removed}")
+    # Upstream repeats metadata discovery and this precise source pruning in its
+    # post action. This physical rescan verifies the predicted payload before we
+    # register that save. Upstream catches cleanup errors, so its actual archive
+    # size still needs hosted evidence; this is a pre-registration bound. Never
+    # prune before a Cargo command or split an OUT_DIR group.
+    projected = snapshot["projected_bytes"]
+    clear(sorted(removable))
+    measured, _, snapshot = measure("after_source_pruning")
+    if snapshot["bytes"] != projected:
+        raise ValueError("cache source projection did not match physical pruning")
+    dropped_target = snapshot["bytes"] > limit
     if dropped_target:
         clear(paths[:1])
-        measured = entries(paths)
-    retained = sum(size for _, size in measured)
+        measured, _, snapshot = measure("after_target_fallback")
+    retained = snapshot["bytes"]
     return {"limit_bytes": limit, "before_bytes": before, "retained_bytes": retained,
-            "removed_dependency_packages": removed, "dropped_target": dropped_target,
-            "save": retained <= limit}
+            "removed_dependency_packages": removed, "removed_source_directories": len(removable),
+            "dropped_target": dropped_target, "save": retained <= limit,
+            "evicted_packages": evictions, "snapshots": snapshots}
 
 
 def record(name, elapsed, *, cache=None, details=None):
@@ -233,12 +334,13 @@ def main():
         root, _, paths = roots()
         if os.environ["CACHE_PROFILE"] != os.environ["CI_RUST_CACHE_PROFILE"]:
             raise ValueError("finish must match its setup profile")
+        snapshots = []
         try:
-            result = bound_payload(root, paths, os.environ["CACHE_PROFILE"])
+            result = bound_payload(root, paths, os.environ["CACHE_PROFILE"], snapshots=snapshots)
         except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
             # Cache failure cannot turn already-passed validation into a failure;
             # retain a fixed diagnostic without leaking Cargo output or paths.
-            result = {"save": False, "reason": "cache budget preparation unavailable"}
+            result = {"save": False, "reason": "cache budget preparation unavailable", "snapshots": snapshots}
         output_file("GITHUB_OUTPUT", {"save": str(result["save"]).lower()})
         record("rust-cache-budget", time.monotonic() - start, details=result)
         print(json.dumps(result, sort_keys=True))

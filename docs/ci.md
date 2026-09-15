@@ -710,26 +710,52 @@ lockfile mutation during cache metadata discovery is an error, never a cached
 success. The action cannot skip a test command; compilation and test failures
 retain their normal failing result, without blind retries.
 
-Before a save, [.github/actions/setup-rust/cache.py](../.github/actions/setup-rust/cache.py)
+Before registering a save,
+[.github/actions/setup-rust/cache.py](../.github/actions/setup-rust/cache.py)
 resolves locked all-feature metadata (matching the upstream save graph), then
 accounts logical file bytes plus a conservative 4 KiB per directory/file entry,
-counting hardlinked aliases separately. It permits at most 250,000 entries and
-**1.5 GiB for each separate profile** (the helper retains a 3 GiB limit for its
-older combined-profile mode). These are pre-cleanup payload ceilings, not
-compressed archive measurements. Four current platform/profile families therefore
-retain at most 6 GiB per compatible generation before compression, the same
-aggregate ceiling as the two earlier combined-profile families.
+counting hardlinked aliases separately. Every entry is checked, including source
+trees excluded from the projected payload; symlinks, special files, traversal
+errors, more than 250,000 entries or an expired accounting deadline refuse saving.
+The verified payload limit is **1.5 GiB per separate profile** (the older combined
+mode retains its 3 GiB limit). These are local pre-registration measurements,
+not compressed archive sizes or unconditional archive ceilings.
+
+The helper projects only the extracted registry package directories that pinned
+[rust-cache registry cleanup](https://github.com/Swatinem/rust-cache/blob/6323deb102c322ba6fcbdcafc7e3dddab59af2b6/src/cleanup.ts)
+removes. It preserves current `*-sys` source directories because native build
+scripts can depend on their timestamps, and counts all Git databases and checkouts.
+The [Cargo cache layout](https://doc.rust-lang.org/cargo/guide/cargo-home.html)
+contains both downloadable archives and extracted sources. The helper previously
+counted those removable copies against the compiled-output allowance. The first
+trusted-main seed discarded every target and refused all four saves, but its
+diagnostics did not measure the removable-source volume. New hosted snapshots
+must quantify the effect of this accounting correction. That
+[observed failure](benchmarks/2026-09-15-ci.md#four-cache-budget-refusals)
+is retained separately from repair validation.
 
 After removing local package outputs through `cargo clean --locked --package`,
 the helper may clean up to eight largest dependency package groups, stopping new
 cleanup work after 90 seconds (each Cargo command has a 30-second timeout). Cargo
 owns removal of fingerprints, libraries and generated native outputs together.
-If the payload still exceeds its ceiling, the entire target is discarded and a
-bounded downloads-only cache may be saved. If downloads alone exceed the limit,
-or accounting/cleanup fails, no save is registered. It never deletes arbitrary
-build-script `OUT_DIR` members while keeping their fingerprint. This bounds
-retained data without changing the validation just completed; budget fallback may
-reduce warm reuse and must be measured.
+Extracted sources stay present through every Cargo command, then only the
+projected source directories are removed. A new scan must equal the projection
+before save registration. If the actual payload still exceeds its ceiling, the
+entire target is discarded and a bounded downloads-only payload may be prepared.
+If downloads alone exceed the limit, or accounting/cleanup fails, no save is
+registered. It never deletes individual build-script `OUT_DIR` members while
+keeping their fingerprint. Budget fallback may reduce warm reuse and must be
+measured.
+
+Pinned upstream post-save metadata discovery recreates the removed pure-Rust
+sources, then its registry cleanup removes them again. The pinned Cargo fixture
+covers that sequence and a real local archive round trip. Upstream catches
+cleanup errors, so the verified pre-registration bound is **not a guarantee that
+every saved archive stays under 1.5 GiB**: a failed upstream cleanup may retain
+recreated sources. Actual post-save sizes and useful compiled payloads on each
+hosted platform/profile must be verified before treating them as eligible warm
+seeds. No claim of an unconditional 6 GiB aggregate archive ceiling follows from
+the four local limits.
 
 Upstream performs additional dependency/age cleanup in its post action. GitHub
 also applies repository-wide
@@ -750,8 +776,15 @@ families/budgets in a reviewed change using those measurements.
 state and a monotonic restore interval. Its documented boundary includes action
 initialization, runner dispatch and recovery/cleanup; it is **not** isolated network
 transfer time. `rust-cache-budget.json` records cleanup wall time, the payload
-ceiling, retained pre-cleanup accounting, removed-package count, whole-target
-fallback and save eligibility. Both live in the existing three-day diagnostics
+ceiling, retained pre-registration accounting, removed-package count, whole-target
+fallback and save eligibility. Snapshots before/after local cleanup, each dependency
+cleanup, source pruning and target fallback separate logical bytes and entry
+overhead for target, registry sources (retained/removable), archives/index, and Git
+databases/checkouts. They count library files, generated build-script output files
+and fingerprint files, with their logical bytes. Evictions include bounded safe
+package names/versions and metadata ordinals, never full package IDs or source URLs.
+Completed snapshots survive a later budget failure with a fixed failure reason.
+Both records live in the existing three-day diagnostics
 artifact. The summary displays explicit cache values, preserving unknown fields
 as unavailable and `false`/zero as observations.
 
@@ -760,17 +793,23 @@ Upstream exposes no compressed-byte or save-duration action outputs. Those remai
 upstream cache-size log and cache inventory provide later evidence. When preparing
 a report export, attach a measured cache value only to its observed step; identify
 whether save time includes cleanup/compression/upload and whether bytes describe
-the compressed archive. Do not substitute the helper's pre-cleanup ceiling for a
+the compressed archive. Do not substitute the helper's pre-registration limit for a
 compressed size. Include the final post action in end-to-end job and merge timing.
 
 Local tests exercise source/vendor/native/profile invalidation, isolated path
 refusal, partial restore removal, bounded whole-package cleanup and truthful cache
-summaries. A disposable real Cargo fixture regenerates and tests its build-script
-output after cleanup. Run that optional fixture explicitly with
-`GITTURTLE_CACHE_CARGO_QA=1 python3 -B -m unittest discover -s scripts/ci/tests -p test_rust_cache.py`;
-ordinary development-tooling jobs do not install a Rust toolchain just for that
-fixture. These checks establish source behavior, not a hosted cache hit or speed
-improvement. C1 still requires a reviewed main revision to seed trusted
+summaries. The opt-in
+[consumer fixture](../scripts/ci/tests/test_rust_cache_consumer.py) uses the workspace's
+pinned Cargo with a disposable loopback sparse registry (pure-Rust and native
+`*-sys` packages), a commit-pinned local Git dependency and generated build output.
+It checks source recreation/pruning and local archive restoration, then proves
+retained dependencies are `Fresh`, the local consumer recompiles, preserved native
+source/output timestamps stay valid, and a fully evicted native package rebuilds
+and links successfully. Run the optional Cargo fixtures explicitly with
+`GITTURTLE_CACHE_CARGO_QA=1 python3 -B -m unittest discover -s scripts/ci/tests -p 'test_rust_cache*.py'`;
+ordinary development-tooling jobs do not install a Rust toolchain just for these
+fixtures. These checks establish source behavior, not a hosted cache hit, pinned
+action archive execution or speed improvement. C1 still requires a reviewed main revision to seed trusted
 entries, cold/warm PR/main samples on each platform, fork read-only behavior,
 lock/toolchain/vendor/native invalidation, stale/corrupt cache refusal, post-save
 cost, actual retained subset/eviction and all required tests executing on warm runs.
