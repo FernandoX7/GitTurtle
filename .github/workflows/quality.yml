@@ -1,3 +1,5 @@
+# NEVER MERGE: isolated C1 unexpected-required-skip probe.
+# The classifier and gate remain unchanged; this case must fail.
 name: Quality
 
 on:
@@ -54,7 +56,7 @@ jobs:
         run: python3 scripts/ci/changes.py classify --output "$GITHUB_OUTPUT"
   agent-tooling:
     needs: changes
-    if: needs.changes.outputs.tooling == 'true'
+    if: needs.changes.outputs.tooling == 'true' && github.event_name == 'schedule' # C1 diagnostic: skip on PR
     name: Development tooling · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
@@ -96,7 +98,7 @@ jobs:
           include-hidden-files: false
   rust-format:
     needs: changes
-    if: needs.changes.outputs.product == 'true'
+    if: needs.changes.outputs.product == 'true' && github.event_name == 'schedule' # C1 diagnostic: skip on PR
     name: Rust formatting
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -127,7 +129,7 @@ jobs:
 
   rust-debug:
     needs: changes
-    if: needs.changes.outputs.product == 'true'
+    if: needs.changes.outputs.product == 'true' && github.event_name == 'schedule' # C1 diagnostic: skip on PR
     name: Rust tests and Clippy · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -176,7 +178,7 @@ jobs:
 
   rust-release:
     needs: changes
-    if: needs.changes.outputs.product == 'true'
+    if: needs.changes.outputs.product == 'true' && github.event_name == 'schedule' # C1 diagnostic: skip on PR
     name: Rust release · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -284,7 +286,7 @@ jobs:
   website:
     name: Website
     needs: changes
-    if: needs.changes.outputs.website == 'true'
+    if: needs.changes.outputs.website == 'true' && github.event_name == 'schedule' # C1 diagnostic: skip on PR
     permissions:
       contents: read
     uses: ./.github/workflows/website.yml
