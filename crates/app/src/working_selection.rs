@@ -99,6 +99,18 @@ pub(super) struct ScrollAnchor {
     area: ChangeArea,
     offset: Point<Pixels>,
     top: usize,
+    row_height: f32,
+}
+impl ScrollAnchor {
+    fn reanchored_offset(&self, next_top: usize, height: f32) -> Point<Pixels> {
+        let offset = f32::from(self.offset.y) * height / self.row_height;
+        point(
+            self.offset.x,
+            px(automatic_refresh::reanchor_offset(
+                offset, self.top, next_top, height,
+            )),
+        )
+    }
 }
 
 fn rows(
@@ -254,9 +266,9 @@ impl GitTurtle {
                 .scroll_to_item(position, ScrollStrategy::Nearest);
         }
     }
-    pub(super) fn working_scroll_anchor(&self) -> Option<ScrollAnchor> {
+    pub(super) fn working_scroll_anchor(&self, window: &Window) -> Option<ScrollAnchor> {
         let offset = self.working_scroll.0.borrow().base_handle.offset();
-        let height = self.settings.density.file_row_height();
+        let height = f32::from(window.pixel_snap(px(self.settings.density.file_row_height())));
         let top = ((-f32::from(offset.y)) / height).max(0.) as usize;
         let (path, area) = match self.working_rows.get(top)? {
             workspace::WorkingRow::Heading(area, _) | workspace::WorkingRow::Directory(_, area) => {
@@ -272,19 +284,21 @@ impl GitTurtle {
             area,
             offset,
             top,
+            row_height: height,
         })
     }
 
-    pub(super) fn filter_working_paths(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn filter_working_paths(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.working_selection.clear();
         self.working_scroll.scroll_to_item(0, ScrollStrategy::Top);
-        self.schedule_working_filter(None, false, cx);
+        self.schedule_working_filter(None, false, window, cx);
     }
 
     pub(super) fn schedule_working_filter(
         &mut self,
         anchor: Option<ScrollAnchor>,
         center_selected: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         use std::sync::atomic::Ordering;
@@ -338,9 +352,9 @@ impl GitTurtle {
             Ok((index, rows, staged, conflicted, matches.len()))
         });
         self.working_paths.pending = true;
-        self.working_paths.task = Some(cx.spawn(async move |this, cx| {
+        self.working_paths.task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response.await;
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 if this.working_paths.cancellation.load(Ordering::Relaxed) != ticket { return; }
                 this.working_paths.pending = false;
                 this.working_paths.task = None;
@@ -364,8 +378,8 @@ impl GitTurtle {
                                 workspace::WorkingRow::Heading(area, _) | workspace::WorkingRow::Directory(_, area) => anchor.path.is_none() && *area == anchor.area,
                                 workspace::WorkingRow::File(index, area) => *area == anchor.area && this.work_status.as_ref().and_then(|status| status.entries.get(*index)).is_some_and(|entry| Some(&entry.path) == anchor.path.as_ref()),
                             }) {
-                                let height = this.settings.density.file_row_height();
-                                this.working_scroll.0.borrow().base_handle.set_offset(point(anchor.offset.x, px(automatic_refresh::reanchor_offset(f32::from(anchor.offset.y), anchor.top, next_top, height))));
+                                let height = f32::from(window.pixel_snap(px(this.settings.density.file_row_height())));
+                                this.working_scroll.0.borrow().base_handle.set_offset(anchor.reanchored_offset(next_top, height));
                             }
                         } else if center_selected && let Some(position) = selected {
                             this.working_scroll.scroll_to_item(position, ScrollStrategy::Center);
@@ -554,13 +568,35 @@ impl GitTurtle {
 
 #[cfg(test)]
 mod tests {
-    use super::{Key, Selection};
+    use super::{Key, ScrollAnchor, Selection};
     use gitturtle_core::ChangeArea;
+    use gpui_kit::{point, px};
     fn keys() -> Vec<Key> {
         ["a", "b", "c", "d"]
             .map(|p| Key::new(p.into(), ChangeArea::Unstaged))
             .to_vec()
     }
+    #[test]
+    fn quiet_refresh_anchor_uses_snapped_rows_across_a_pending_scale_change() {
+        let anchor = ScrollAnchor {
+            path: None,
+            area: ChangeArea::Unstaged,
+            offset: point(px(-20.), px(-25512.75)),
+            top: 500,
+            row_height: 51.,
+        };
+        // 44 * 1.15 lays out at 51 px, not 50.6. A pending filter may return
+        // after scale changes again; retain row500 plus its quarter-row offset.
+        assert_eq!(
+            anchor.reanchored_offset(502, 51.),
+            point(px(-20.), px(-25614.75))
+        );
+        assert_eq!(
+            anchor.reanchored_offset(502, 55.),
+            point(px(-20.), px(-27623.75))
+        );
+    }
+
     #[test]
     fn prepared_working_filter_keeps_renames_areas_and_literal_targets() {
         use crate::{path_filter, workspace::WorkingRow};

@@ -4,9 +4,68 @@ Current milestone: [security, architecture and resource bounds](security-quality
 
 This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native workflow evidence is primarily macOS-specific; the September 14 entries add Pop!_OS startup and clean Ubuntu/virtual-native checks. Current platform execution and access limits belong in these dated records, the active milestone and [environment report](benchmarks/2026-09-09-milestone-environment.md). The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Published distribution packages are outside the current milestone; the Linux runbook now includes a local teammate bundle.
 
+## September 14 PR #4 desktop text and security validation
+
+Clean application source `0700984951001289a6c7490f81e72b749cd4120e` was built,
+packaged and installed as Linux x86-64 release 0.1.0, using Rust 1.98.0 and the
+existing Ubuntu 24.04 build environment. The executable SHA-256 is
+`ba54f643d8262c409715933c165bda0c91e052d70cd0a0d8f42eb3dc1e4b3a2c`.
+Subsequent validation-record edits do not change that executable's source identity.
+
+Formatting, `cargo check --locked -p gitturtle`,
+`cargo test --locked --workspace` (**756 passed, zero failed, five explicit
+ignores**), strict workspace Clippy with all targets, and release compilation
+passed. Focused checks exercised observer cancellation and bounds, the repeated
+asynchronous history fixture, actual rendered editor/list metrics, two-window
+notifications, retained tabs, nested lists and passive-refresh anchors. The
+[security review](pr4-security-review.md) accounts for every initial CodeQL alert,
+the four reproduced tooling/fixture defects and the new defensive-check finding.
+Fresh hosted checks and merged-main alert state are tracked separately in
+[PR #4](https://github.com/FernandoX7/GitTurtle/pull/4).
+
+Native interaction used the same release executable, disposable two-commit
+repositories with a 600-line source file, multiple changed ranges, an inserted
+alignment row and long lines. A native Wayland window ran under nested Weston
+with software graphics and the host's real GNOME settings portal. Its desktop
+lacks the newer `font-rendering` key, exercising that fallback. Screenshots and
+scroll traces verified:
+
+- Live 100%, 125% and 150% text sizes retained the selected source and logical
+  viewport. Both split editors kept row 546 with offsets 9828, 12558 and 14742
+  pixels for measured line heights 18, 23 and 27 pixels. Unified view retained
+  patch row 150 through the fractional change.
+- Find query, match, source selection and keyboard focus survived live changes;
+  a retained repository tab reopened at the same logical row after a hidden
+  size change. Literal source copying excluded gutters, and typing into the
+  read-only source left the fixture unchanged.
+- Code/gutter wheel input, reversal, horizontal scrolling and Back to the
+  selected history context worked. Matching pane offsets and visible row ranges
+  were checked in the rendered frames.
+- Changing grayscale to `rgba` repainted the glyphs. `none` retained grayscale,
+  matching the documented toolkit limitation. Original desktop preferences were
+  restored after testing.
+
+A separate native X11 window under Xvfb kept 18-pixel source lines at a portal
+text factor of 150%, confirming no extra portal multiplier on that backend.
+This is virtual X11 and nested Wayland evidence, not a physical-display,
+Ubuntu-desktop, KDE, mixed-DPI or native macOS acceptance run. It establishes
+neither a frame-rate improvement nor physical-panel sharpness. The cold split
+regression verifies a retained initial-row request resolves after a measured
+editor notification; it does not establish positioning on the first paint alone.
+
+All **11 Linux installer tests** passed with the final real bundle, including
+relocation and rollback. The installed executable matched the validated hash;
+all three genuine configuration files remained byte-identical across installation,
+and all four repository tabs retained their order and selection on restart.
+The previous executable and all 1,228 recovery entries passed checksum/ownership
+validation. Recovery uses the installed script's `--rollback` option described in
+[the Linux runbook](linux.md). Existing public-binary notice gaps remain documented;
+this was a local installation. Private captures and machine/repository details
+are not part of the public evidence.
+
 ## September 14 refresh, history and split-diff preview
 
-Source `417b5e8` is installed as Linux x86-64 release 0.1.0 Preview, binary
+Source `417b5e8` was installed for this earlier Linux x86-64 release 0.1.0 Preview session, binary
 SHA-256 `45606c5a195d1696096b93ea0fa3a38b67b025990ea794f25f91d4211e5729c2`.
 The [native investigation and final acceptance](benchmarks/2026-09-14-native-preview.md)
 record physical GNOME/Wayland scale-2 code/gutter scrolling, long lines,

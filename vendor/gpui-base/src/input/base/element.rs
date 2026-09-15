@@ -1661,8 +1661,12 @@ impl<M: InputModeKind> Element for TextElement<M> {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let state = self.state.read(cx);
         let line_height = window.line_height();
+        if self.state.read(cx).deferred_scroll_row.is_some() {
+            self.state
+                .update(cx, |state, _| state.resolve_scroll_line_height(line_height));
+        }
+        let state = self.state.read(cx);
 
         let mut style = Style::default();
         style.size.width = relative(1.).into();
@@ -2380,6 +2384,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
             state.scroll_size = prepaint.scroll_size;
             state.update_scroll_offset(Some(prepaint.cursor_scroll_offset), cx);
             state.deferred_scroll_offset = None;
+            state.deferred_scroll_row = None;
 
             cx.notify();
         });

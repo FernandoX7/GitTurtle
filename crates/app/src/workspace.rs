@@ -388,7 +388,7 @@ impl GitTurtle {
             .as_ref()
             .is_none_or(|previous| previous.entries != status.entries);
         let working_anchor = if entries_changed && quiet {
-            self.working_scroll_anchor()
+            self.working_scroll_anchor(window)
         } else {
             None
         };
@@ -438,7 +438,7 @@ impl GitTurtle {
         };
         self.work_status = Some(Arc::new(status));
         if entries_changed {
-            self.schedule_working_filter(working_anchor, !quiet, cx);
+            self.schedule_working_filter(working_anchor, !quiet, window, cx);
         }
         self.remotes = remotes;
         if !quiet && self.mode == WorkspaceMode::Working {
@@ -882,7 +882,8 @@ impl GitTurtle {
         // offset that now points at a different set of rows.
         if previous_list.is_some_and(|size| {
             size.contents.height
-                != px(self.settings.density.file_row_height() * self.working_rows.len() as f32)
+                != window.pixel_snap(px(self.settings.density.file_row_height()))
+                    * self.working_rows.len() as f32
         }) && let Some(selected) = selected_row
         {
             self.working_scroll
