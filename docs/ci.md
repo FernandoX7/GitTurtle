@@ -19,8 +19,8 @@ synchronized PR, pushes to `main`, and explicit `workflow_dispatch`. Branch push
 do not also start Quality. A branch without a PR can use manual dispatch. PR runs
 test GitHub's generated **merge commit**, including its interaction with the base;
 they do not claim a separate branch-head build. Main/manual runs test the selected
-checkout. Manual dispatch requests all lanes and does not replace PR-associated
-required checks. See GitHub's [event semantics](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request).
+checkout. Main pushes and manual dispatch request all lanes; manual dispatch does
+not replace PR-associated required checks. See GitHub's [event semantics](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request).
 
 The concurrency group is specific to the PR number. A newer update cancels the
 older run for that PR; unrelated PRs remain independent. Main pushes and manual
@@ -37,6 +37,8 @@ fixtures and every checked-in Actions workflow with the pinned linter. The
 website outputs plus a versioned JSON plan. Downstream jobs consume those flags;
 the final gate verifies the same recorded plan and actual job results.
 
+For pull requests:
+
 - Documentation and documentation images under `docs/`, plus the listed top-level
   contributor/design documents, use the mandatory inexpensive checks.
 - `website/` changes also call Website's existing Python input check and JavaScript
@@ -48,13 +50,13 @@ the final gate verifies the same recorded plan and actual job results.
 - Rust, manifests, the lockfile/toolchain, native assets, vendored inputs, build or
   package scripts, workflow/repository-policy changes and unrecognized paths run
   **all** lanes. Rust keeps formatting, locked workspace tests with doctests,
-  strict all-target Clippy, release compilation and Linux package/install checks.
+  strict all-target Clippy, release compilation and both platform package checks.
 
 Routing uses complete local Git diffs after `checkout` fetches history, avoiding
 GitHub path-filter/API changed-file limits. PR classification checks the observed
 merge parents against event base/head identities, compares the merge-base to the
-PR head and also the base to the exercised merge tree. Pushes compare the event's
-before/after identities. A deleted or moved product file still requests product
+PR head and also the base to the exercised merge tree. Main pushes validate the
+event's before/after identities and request full coverage, including packages. A deleted or moved product file still requests product
 coverage: `--no-renames` reports both sides of moves, including deletions.
 Missing objects, stale/malformed event data, empty comparisons, unknown events,
 ambiguous paths or comparisons above 10,000 paths/4 MiB select full validation.
@@ -126,12 +128,16 @@ After classification, the selected jobs have no build dependencies on each other
   includes unit/integration tests and doctests. There is no package, test-name,
   target or feature filter that removes the existing platform-conditional tests.
 - `Rust release · macos-15` and `· ubuntu-24.04` each restore the **release** cache
-  and build `gitturtle` with `--release --locked --timings`. The Linux job then runs
-  the existing bundle and isolated installation checks on its own executable,
-  including archive extraction, installed-byte comparison, notices, desktop entry,
-  dynamic libraries and the expected no-display launch failure. The package is
-  development evidence, not complete-license distribution or native desktop QA.
-  Verified macOS bundling remains a separate initiative task.
+  and build `gitturtle` with `--release --locked --timings` and an explicit platform
+  target. Each job packages that executable without rebuilding it. Linux checks
+  archive extraction, isolated installation, installed bytes, notices, desktop
+  entry, dynamic libraries and the expected no-display launch failure; macOS
+  checks bundle identity and ad-hoc signatures. Complete license notices enable
+  a same-run artifact upload/download and independent payload verification. Known
+  C0 notice gaps explicitly withhold public binaries while development package
+  checks continue; other collection or verification errors fail the job. See the
+  [artifact runbook](ci-artifacts.md) for exact gates and evidence requirements.
+  These checks do not establish an interactive native desktop or notarized build.
 - Development-tooling checks still cover both OSes; Website remains reusable.
   The mandatory policy job runs all CI helper fixtures and pinned Actions-aware
   lint on every workflow even for documentation-only changes.
