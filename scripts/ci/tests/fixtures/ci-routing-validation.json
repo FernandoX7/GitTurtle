@@ -1,0 +1,5 @@
+{
+  "purpose": "Temporary development-tooling-only probe for hosted Quality routing and stable-gate validation.",
+  "checkpoint": "C1",
+  "validation_pr": "draft"
+}
