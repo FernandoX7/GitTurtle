@@ -303,6 +303,10 @@ def main() -> int:
                                 revision=args.expected_revision, version=args.expected_version,
                                 expected_sha256=args.expected_sha256, input_sha256=args.input_sha256,
                                 distribution=args.distribution, signing=args.signing, built=args.built)
+        if (not args.built and args.expected_sha256 is None
+                and (value["packaging_tree_status"] != "clean"
+                     or value["compiled_identity"]["source_tree"] != "clean")):
+            raise PackageError("Reusing modified source requires an explicit --expected-sha256 for the reviewed executable")
         with args.output.open("x") as stream:
             json.dump(value, stream, indent=2)
             stream.write("\n")

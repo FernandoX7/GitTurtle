@@ -3,12 +3,15 @@
 
 import hashlib
 import fcntl
+import importlib.util
 import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
+import stat
 import sys
 import tempfile
 import time
@@ -20,6 +23,23 @@ ICON_SIZES = (16, 24, 32, 48, 64, 128, 256, 512)
 
 def fail(message):
     raise RuntimeError(message)
+
+
+def owned_directory(data, relative):
+    """The selected data root may be a symlink; managed descendants may not."""
+    path = data
+    for part in Path(relative).parts:
+        path = path / part
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            fail(f"Refusing an invalid installation directory: {path}.")
+    return path
+
+
+def package_tools(bundle):
+    spec = importlib.util.spec_from_file_location("gitturtle_package_identity", bundle / "package_identity.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def data_path():
@@ -144,7 +164,7 @@ def installed_targets(home, data):
 
 
 def save_backup(targets, home, data):
-    root = data / "gitturtle/install-backups"
+    root = owned_directory(data, "gitturtle/install-backups")
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     directory = Path(tempfile.mkdtemp(prefix=f"{time.time_ns()}-", dir=root))
     entries = []
@@ -166,6 +186,8 @@ def save_backup(targets, home, data):
 
 
 def backup_entries(directory, home, data):
+    if directory.is_symlink() or not directory.is_dir():
+        fail("Invalid installation backup directory.")
     manifest = directory / "manifest.json"
     if manifest.is_symlink() or manifest.stat().st_size > 8 * 1024 * 1024:
         fail("Invalid installation backup manifest.")
@@ -220,7 +242,7 @@ def rollback(home, data):
     name = json.loads(marker.read_text())["backup"]
     if not isinstance(name, str) or Path(name).name != name or name in {"", ".", ".."}:
         fail("Invalid previous-installation backup name.")
-    backup = data / "gitturtle/install-backups" / name
+    backup = owned_directory(data, "gitturtle/install-backups") / name
     entries = backup_entries(backup, home, data)
     refuse_running(home / ".local/bin/gitturtle")
     targets = installed_targets(home, data)
@@ -250,9 +272,13 @@ def install():
     home, data = Path.home(), data_path()
     if not home.is_absolute():
         fail("HOME must be an absolute path.")
-    support = data / "gitturtle"
+    support = owned_directory(data, "gitturtle")
     support.mkdir(parents=True, exist_ok=True)
-    with (support / "install.lock").open("a") as lock:
+    lock_path = support / "install.lock"
+    if lock_path.is_symlink() or (lock_path.exists() and not lock_path.is_file()):
+        fail("Invalid installation lock file.")
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -266,18 +292,29 @@ def install():
 def install_bundle(home, data):
     bundle = Path(__file__).resolve().parent
     manifest = bundle / "SHA256SUMS"
-    if not manifest.is_file():
+    if not manifest.is_file() or manifest.is_symlink():
         fail("Extract the complete bundle first; SHA256SUMS is missing.")
-    required = {"bin/gitturtle", "install.py", "README.md", "build-info.json", "icons/app-icon.png"}
+    if manifest.stat().st_size > 2 * 1024 * 1024:
+        fail("Bundle checksum manifest exceeds its size limit.")
+    required = {"bin/gitturtle", "install.py", "package_identity.py", "README.md", "build-info.json", "icons/app-icon.png"}
     required.update({"licenses/LICENSE", "licenses/THIRD_PARTY_NOTICES.md", "licenses/dependencies.json"})
     required.update(f"icons/hicolor/{size}x{size}/apps/{APP_ID}.png" for size in ICON_SIZES)
     checked = set()
     for line in manifest.read_text().splitlines():
         digest, name = line.split("  ", 1)
+        if (not re.fullmatch(r"[0-9a-f]{64}", digest) or not name
+                or any(part in ("", ".", "..") for part in name.split("/"))
+                or Path(name).is_absolute() or "\\" in name or len(checked) >= 10000):
+            fail("Invalid bundle checksum entry.")
         if name in checked:
             fail(f"Duplicate bundle checksum entry: {name}.")
-        source = (bundle / name).resolve()
-        if not source.is_relative_to(bundle) or digest_file(source) != digest:
+        source = bundle
+        for part in Path(name).parts:
+            source = source / part
+            if source.is_symlink():
+                fail(f"Bundle contains a symlink: {name}.")
+        if (not stat.S_ISREG(source.stat().st_mode) or source.stat().st_size > 1024**3
+                or digest_file(source) != digest):
             fail(f"Bundle checksum mismatch: {name}. Extract a fresh copy.")
         checked.add(name)
     if required - checked:
@@ -285,6 +322,9 @@ def install_bundle(home, data):
     license_files = {str(path.relative_to(bundle)) for path in (bundle / "licenses").rglob("*") if path.is_file()}
     if license_files - checked:
         fail("Bundle contains unchecked license files. Extract a fresh copy.")
+    tools = package_tools(bundle)
+    info = tools.read_json(bundle / "build-info.json")
+    tools.validate_manifest(info, bundle / "bin/gitturtle", bundle / "licenses")
     for command in ("git", "ldd", "desktop-file-validate", "update-desktop-database"):
         if not shutil.which(command):
             fail(f"Missing {command}; install the runtime packages listed in README.md.")
@@ -295,6 +335,8 @@ def install_bundle(home, data):
     if dependencies.returncode or "not found" in dependencies.stdout:
         fail("Runtime library check failed; install the README.md runtime packages.\n"
              + dependencies.stdout + dependencies.stderr)
+    if tools.probe(binary) != info["compiled_identity"]:
+        fail("Executable build identity differs from its package manifest.")
 
     binary_destination = home / ".local/bin/gitturtle"
     refuse_running(binary_destination)
