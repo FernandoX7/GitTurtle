@@ -12,7 +12,8 @@ compiler selection were also reviewed.
 
 **Disposition at this checkpoint:** the 33 reviewed false positives from the
 original inventory have individual dismissals with source-specific rationales.
-The 47 fixture alerts await default-branch analysis of the hardening changes.
+The 47 fixture alerts are absent from the updated PR analysis and await
+default-branch analysis of the hardening changes.
 One newly introduced Python alert, 373, was independently reviewed and dismissed
 as described below. A completed analysis job alone does not establish a resolved
 alert inventory; final PR and merged-main results are recorded in the PR.
@@ -46,7 +47,7 @@ path or command authority.
 
 | Group | Count | Reviewed boundary and validation |
 | --- | ---: | --- |
-| **F — fixture paths and commands** | 47 | The original source is `temp_dir()`, followed by an exclusively created generated leaf, canonicalization, and fixed or numeric descendants. Forty-two sinks access fixture paths. Five command sinks use literal `git` and structured arguments: canonical absolute paths are values for `-C` or `worktree add`, so they cannot introduce an option or choose an executable. The permission and inherited-environment defects above required fixes despite this limited reported input. These alerts await fresh analysis. |
+| **F — fixture paths and commands** | 47 | The original source is `temp_dir()`, followed by an exclusively created generated leaf, canonicalization, and fixed or numeric descendants. Forty-two sinks access fixture paths. Five command sinks use literal `git` and structured arguments: canonical absolute paths are values for `-C` or `worktree add`, so they cannot introduce an option or choose an executable. The permission and inherited-environment defects above required fixes despite this limited reported input. These alerts are absent from the updated PR analysis; default-branch resolution remains separate. |
 | **W — watcher metadata** | 3 | `watch()` requires absolute roots, canonicalizes them and verifies directories. Registration inspects metadata and rejects symlink directories; event handling classifies repository scope before relevance checks. Alerts 338 and 366 also propagate the result of `normalize()`'s `fs::metadata` validation as a source, although that result never becomes path bytes. Alert 339's reported flows originate in fixture callers. The three sinks read metadata for registration, relevance or availability; they perform no content read, repository write or subprocess execution. |
 | **C — Cargo compiler** | 1 | `build.rs` executes the Cargo-selected `RUSTC` with the fixed argument `--version`. Compiler selection is trusted build configuration already executed by Cargo to compile the crate. There is no application repository input or shell parsing. This is intentional executable selection, as documented by [Cargo](https://doc.rust-lang.org/cargo/reference/environment-variables.html). |
 | **I — installer root** | 28 | The standalone installer obtains `XDG_DATA_HOME` from its invoking user and requires an absolute root. Operations use fixed application suffixes, generated temporary names or validated recovery entries. Recovery restricts owned destinations, rejects traversal and symlinks, bounds manifest/marker reads, and checks stored-file containment and hashes before restoration. Selecting a local installation root is an intended capability; the separately reproduced component and payload defects were corrected. |
@@ -76,7 +77,8 @@ Locations below refer to analyzed main commit `c188020`, before these fixes;
 line numbers may differ in the PR. Distinct IDs on the same line can identify
 separate source or destination arguments.
 
-- **Pending**: recheck after analysis of the fixture hardening.
+- **PR clear**: absent from the updated PR analysis after fixture hardening;
+  default-branch fixed status requires the merged-main analysis.
 - **Dismissed FP**: source-to-sink review and an independent review support the
   individual false-positive dismissal applied to this alert.
 
@@ -111,57 +113,57 @@ separate source or destination arguments.
 | 318 | `scripts/install-linux.py:248` | I: application-data creation | Dismissed FP |
 | 319 | `scripts/install-linux.py:249` | I: fixed installation lock | Dismissed FP |
 | 320 | `scripts/install-linux.py:334` | I: unused-backup cleanup | Dismissed FP |
-| 322 | `crates/app/src/local_refresh.rs:1458` | F: fixture file write | Pending |
-| 323 | `crates/app/src/local_refresh.rs:1148` | F: fixture file write | Pending |
-| 324 | `crates/app/src/local_refresh.rs:1439` | F: fixture file write | Pending |
-| 325 | `crates/app/src/local_refresh.rs:1481` | F: fixture file write | Pending |
-| 326 | `crates/app/src/local_refresh.rs:1606` | F: fixture file write | Pending |
-| 327 | `crates/app/src/local_refresh.rs:1607` | F: fixture file write | Pending |
-| 328 | `crates/app/src/local_refresh.rs:1639` | F: fixture file write | Pending |
-| 329 | `crates/app/src/local_refresh.rs:1644` | F: fixture file write | Pending |
-| 330 | `crates/app/src/local_refresh.rs:1658` | F: fixture file write | Pending |
-| 331 | `crates/app/src/local_refresh.rs:1659` | F: fixture file write | Pending |
-| 332 | `crates/app/src/local_refresh.rs:1713` | F: fixture file write | Pending |
-| 333 | `crates/app/src/local_refresh.rs:1714` | F: fixture file write | Pending |
-| 334 | `crates/app/src/local_refresh.rs:1513` | F: fixture file write | Pending |
-| 335 | `crates/app/src/local_refresh.rs:1567` | F: fixture file write | Pending |
-| 336 | `crates/app/src/local_refresh.rs:1571` | F: fixture file write | Pending |
-| 337 | `crates/app/src/local_refresh.rs:1574` | F: fixture file write | Pending |
+| 322 | `crates/app/src/local_refresh.rs:1458` | F: fixture file write | PR clear |
+| 323 | `crates/app/src/local_refresh.rs:1148` | F: fixture file write | PR clear |
+| 324 | `crates/app/src/local_refresh.rs:1439` | F: fixture file write | PR clear |
+| 325 | `crates/app/src/local_refresh.rs:1481` | F: fixture file write | PR clear |
+| 326 | `crates/app/src/local_refresh.rs:1606` | F: fixture file write | PR clear |
+| 327 | `crates/app/src/local_refresh.rs:1607` | F: fixture file write | PR clear |
+| 328 | `crates/app/src/local_refresh.rs:1639` | F: fixture file write | PR clear |
+| 329 | `crates/app/src/local_refresh.rs:1644` | F: fixture file write | PR clear |
+| 330 | `crates/app/src/local_refresh.rs:1658` | F: fixture file write | PR clear |
+| 331 | `crates/app/src/local_refresh.rs:1659` | F: fixture file write | PR clear |
+| 332 | `crates/app/src/local_refresh.rs:1713` | F: fixture file write | PR clear |
+| 333 | `crates/app/src/local_refresh.rs:1714` | F: fixture file write | PR clear |
+| 334 | `crates/app/src/local_refresh.rs:1513` | F: fixture file write | PR clear |
+| 335 | `crates/app/src/local_refresh.rs:1567` | F: fixture file write | PR clear |
+| 336 | `crates/app/src/local_refresh.rs:1571` | F: fixture file write | PR clear |
+| 337 | `crates/app/src/local_refresh.rs:1574` | F: fixture file write | PR clear |
 | 338 | `crates/app/src/local_refresh.rs:711` | W: registration metadata | Dismissed FP |
 | 339 | `crates/app/src/local_refresh.rs:750` | W: event relevance metadata | Dismissed FP |
-| 340 | `crates/app/src/local_refresh.rs:1443` | F: fixture rename | Pending |
-| 341 | `crates/app/src/local_refresh.rs:1678` | F: fixture rename | Pending |
-| 342 | `crates/app/src/local_refresh.rs:1402` | F: fixture rename | Pending |
-| 343 | `crates/app/src/local_refresh.rs:1671` | F: fixture rename | Pending |
-| 344 | `crates/app/src/local_refresh.rs:1402` | F: fixture rename | Pending |
-| 345 | `crates/app/src/local_refresh.rs:1443` | F: fixture rename | Pending |
-| 346 | `crates/app/src/local_refresh.rs:1671` | F: fixture rename | Pending |
-| 347 | `crates/app/src/local_refresh.rs:1678` | F: fixture rename | Pending |
-| 348 | `crates/app/src/local_refresh.rs:1486` | F: fixture directory creation | Pending |
-| 349 | `crates/app/src/local_refresh.rs:1479` | F: fixture directory creation | Pending |
-| 350 | `crates/app/src/local_refresh.rs:1113` | F: fixture directory creation | Pending |
-| 351 | `crates/app/src/local_refresh.rs:1394` | F: fixture directory creation | Pending |
-| 352 | `crates/app/src/local_refresh.rs:1438` | F: fixture directory creation | Pending |
-| 353 | `crates/app/src/local_refresh.rs:1510` | F: fixture directory creation | Pending |
-| 354 | `crates/app/src/local_refresh.rs:1526` | F: fixture directory creation | Pending |
-| 355 | `crates/app/src/local_refresh.rs:1565` | F: fixture directory creation | Pending |
-| 356 | `crates/app/src/local_refresh.rs:1605` | F: fixture directory creation | Pending |
-| 357 | `crates/app/src/local_refresh.rs:1638` | F: fixture directory creation | Pending |
-| 358 | `crates/app/src/local_refresh.rs:1657` | F: fixture directory creation | Pending |
-| 359 | `crates/app/src/local_refresh.rs:1712` | F: fixture directory creation | Pending |
-| 360 | `crates/app/src/local_refresh.rs:1445` | F: fixture rename | Pending |
-| 361 | `crates/app/src/local_refresh.rs:1640` | F: fixture cleanup | Pending |
-| 362 | `crates/app/src/local_refresh.rs:1417` | F: fixture rename | Pending |
-| 363 | `crates/app/src/local_refresh.rs:1511` | F: fixture cleanup | Pending |
-| 364 | `crates/app/src/local_refresh.rs:1542` | F: fixture cleanup | Pending |
-| 365 | `crates/app/src/local_refresh.rs:1744` | F: fixture file check | Pending |
+| 340 | `crates/app/src/local_refresh.rs:1443` | F: fixture rename | PR clear |
+| 341 | `crates/app/src/local_refresh.rs:1678` | F: fixture rename | PR clear |
+| 342 | `crates/app/src/local_refresh.rs:1402` | F: fixture rename | PR clear |
+| 343 | `crates/app/src/local_refresh.rs:1671` | F: fixture rename | PR clear |
+| 344 | `crates/app/src/local_refresh.rs:1402` | F: fixture rename | PR clear |
+| 345 | `crates/app/src/local_refresh.rs:1443` | F: fixture rename | PR clear |
+| 346 | `crates/app/src/local_refresh.rs:1671` | F: fixture rename | PR clear |
+| 347 | `crates/app/src/local_refresh.rs:1678` | F: fixture rename | PR clear |
+| 348 | `crates/app/src/local_refresh.rs:1486` | F: fixture directory creation | PR clear |
+| 349 | `crates/app/src/local_refresh.rs:1479` | F: fixture directory creation | PR clear |
+| 350 | `crates/app/src/local_refresh.rs:1113` | F: fixture directory creation | PR clear |
+| 351 | `crates/app/src/local_refresh.rs:1394` | F: fixture directory creation | PR clear |
+| 352 | `crates/app/src/local_refresh.rs:1438` | F: fixture directory creation | PR clear |
+| 353 | `crates/app/src/local_refresh.rs:1510` | F: fixture directory creation | PR clear |
+| 354 | `crates/app/src/local_refresh.rs:1526` | F: fixture directory creation | PR clear |
+| 355 | `crates/app/src/local_refresh.rs:1565` | F: fixture directory creation | PR clear |
+| 356 | `crates/app/src/local_refresh.rs:1605` | F: fixture directory creation | PR clear |
+| 357 | `crates/app/src/local_refresh.rs:1638` | F: fixture directory creation | PR clear |
+| 358 | `crates/app/src/local_refresh.rs:1657` | F: fixture directory creation | PR clear |
+| 359 | `crates/app/src/local_refresh.rs:1712` | F: fixture directory creation | PR clear |
+| 360 | `crates/app/src/local_refresh.rs:1445` | F: fixture rename | PR clear |
+| 361 | `crates/app/src/local_refresh.rs:1640` | F: fixture cleanup | PR clear |
+| 362 | `crates/app/src/local_refresh.rs:1417` | F: fixture rename | PR clear |
+| 363 | `crates/app/src/local_refresh.rs:1511` | F: fixture cleanup | PR clear |
+| 364 | `crates/app/src/local_refresh.rs:1542` | F: fixture cleanup | PR clear |
+| 365 | `crates/app/src/local_refresh.rs:1744` | F: fixture file check | PR clear |
 | 366 | `crates/app/src/local_refresh.rs:936` | W: root availability metadata | Dismissed FP |
 | 367 | `crates/app/build.rs:66` | C: selected compiler executable | Dismissed FP |
-| 368 | `crates/app/src/local_refresh.rs:1117` | F: Git -C directory argument | Pending |
-| 369 | `crates/app/src/local_refresh.rs:1613` | F: Git -C directory argument | Pending |
-| 370 | `crates/app/src/local_refresh.rs:1665` | F: Git -C directory argument | Pending |
-| 371 | `crates/app/src/local_refresh.rs:1718` | F: Git -C directory argument | Pending |
-| 372 | `crates/app/src/local_refresh.rs:1128` | F: absolute worktree argument | Pending |
+| 368 | `crates/app/src/local_refresh.rs:1117` | F: Git -C directory argument | PR clear |
+| 369 | `crates/app/src/local_refresh.rs:1613` | F: Git -C directory argument | PR clear |
+| 370 | `crates/app/src/local_refresh.rs:1665` | F: Git -C directory argument | PR clear |
+| 371 | `crates/app/src/local_refresh.rs:1718` | F: Git -C directory argument | PR clear |
+| 372 | `crates/app/src/local_refresh.rs:1128` | F: absolute worktree argument | PR clear |
 
 ## Finding introduced during review
 
@@ -173,3 +175,14 @@ end at `destination.is_symlink()`. This metadata guard rejects redirection and
 does not grant content or write authority. Two independent reviewers checked
 the complete traces; the alert was individually dismissed as a false positive.
 The guard and regression remain enabled.
+
+## Updated PR analysis checkpoint
+
+For reviewed head `ff20835`, Rust analysis `1776552273` reported zero results;
+Python analysis `1776490276` reported only the individually dismissed alert 373.
+Actions and JavaScript/TypeScript analysis also reported zero results. All four
+analysis jobs and the aggregate CodeQL check passed. The PR-scoped inventory
+contained zero open alerts; the original 47 fixture findings still belonged to
+old main `c188020`. Absence from a PR export is not an explicit default-branch
+fixed disposition. Later viewport corrections require their own fresh head checks,
+and merge completion requires verification of the default-branch inventory.
