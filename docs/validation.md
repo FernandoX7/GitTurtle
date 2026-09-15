@@ -4,6 +4,15 @@ Current milestone: [security, architecture and resource bounds](security-quality
 
 This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native workflow evidence is primarily macOS-specific; the September 14 entries add Pop!_OS startup and clean Ubuntu/virtual-native checks. Current platform execution and access limits belong in these dated records, the active milestone and [environment report](benchmarks/2026-09-09-milestone-environment.md). The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Published distribution packages are outside the current milestone; the Linux runbook now includes a local teammate bundle.
 
+## September 15 PR #5 macOS merge review
+
+Source `0d4d8ce` passed 771 workspace tests, strict Clippy, formatting, app check
+and release compilation. The [worktree-removal review](worktree-removal-validation.md#september-15-macos-merge-review-and-security-fixes)
+records CodeQL flow fixes, confined fixture copies, verified local macOS package
+identity, native cancellation/refusal/removal checks, and independent branch,
+index and sibling-content preservation. Hosted results are recorded on PR #5;
+this entry does not claim a new Linux native or notarized-distribution pass.
+
 ## September 15 PR #5 maintainer review
 
 Clean release source `3b0a958` passed 775 workspace tests (five existing ignores),

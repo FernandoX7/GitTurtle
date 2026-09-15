@@ -145,3 +145,65 @@ behavior, performance, or exhaustive layout coverage. Hosted CI is recorded on
 [PR #5](https://github.com/FernandoX7/GitTurtle/pull/5) separately. Preflight
 identity checks do not make Git removal atomic against concurrent external
 filesystem writers. No force removal or automatic metadata repair is attempted.
+
+## September 15 macOS merge review and security fixes
+
+Application source `0d4d8ce184bc0941ff4e3b8f0c9437773126cd6a` passed 771
+workspace tests with zero failures and five existing ignores, formatting,
+`cargo check --locked -p gitturtle`, strict workspace/all-target Clippy, and a
+locked release build. The arm64 release reports a clean source tree and Rust
+1.98.0. Its executable and the temporary ad-hoc-signed macOS bundle share UUID
+`745B2A93-A96C-3098-8497-44CAB9861D52`; package plist and signature checks passed.
+The [machine-readable record](evidence/worktree-removal/macos-merge-review.json)
+includes executable identity and independent Git/filesystem assertions.
+
+### Code scanning review
+
+The initial [CodeQL check](https://github.com/FernandoX7/GitTurtle/runs/104259344285)
+reported eight new high-severity path-injection alerts. Two production paths
+and two cleanup-fixture paths were reached through incorrect propagation of
+filesystem `Result` values into unrelated returned model fields. Explicit
+success/error matching now separates `.git` metadata and destination-directory
+enumeration from returned plans and paths, while preserving errors and checks.
+Cleanup fixtures also use dedicated local paths for filesystem mutations.
+
+The other four alerts concerned a recursive test-copy helper. It now checks
+canonical source/destination containment within the disposable fixture and
+refuses symbolic links and special files. These restrictions apply to the test
+helper; linked worktrees may still live outside the source checkout.
+
+The SARIF also contained a command-line alert outside the changed lines. Its
+flow incorrectly crossed distinct Commit and Worktree command variants into a
+commit-OID fixture; worktree outcomes cannot produce that OID. The destination
+history API additionally validates a complete hexadecimal object ID before
+building arguments. No exploitable command-injection path was identified.
+No alerts were dismissed and no scan rules or merge protections were changed.
+The existing upstream validation PR scans the same head as the fork contribution;
+final hosted results are recorded in PR #5 before merge.
+
+### Native macOS checks
+
+The verified release ran on macOS 27.0 with Git 2.54.0 against six disposable
+worktrees, with isolated application state. Native screenshots and accessibility
+state confirmed:
+
+- Right-click offers Worktree actions and Remove worktree for the captured row;
+  Shift+F10 opens the manager on the keyboard-focused worktree.
+- Confirmation displays the full folder, branch and commit. Cancel preserves
+  the checkout and private Git directory.
+- Fresh review detects an ignored file added before opening removal. Main,
+  dirty, locked and assume-unchanged targets show their refusal and disable removal.
+- An untracked file added after confirmation causes a stale-review refusal;
+  its content and registration remain intact.
+- After moving that fixture file outside the target and reviewing again,
+  removal deletes the checkout, registration and private administration directory.
+  The navigator updates from six worktrees to five and displays branch-retention
+  feedback. All branch refs, main HEAD/index, protected sibling content, the lock,
+  and the moved late-change file are preserved by independent assertions.
+- Escape retains the repository and selected History commit. The QA process
+  was closed and the original application state restored byte-for-byte before
+  reopening the user's existing app.
+
+This records local arm64 macOS interaction and ad-hoc packaging, not notarized
+distribution, Intel execution, a fresh Linux native pass, or latency measurements.
+Earlier Linux evidence above remains tied to its named builds.
