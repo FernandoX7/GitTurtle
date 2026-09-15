@@ -19,5 +19,19 @@
     "source_capture": "inspector-eeb-parent-two",
     "pid": 852918,
     "window_geometry": "WINDOW=6291457\nX=2\nY=44\nWIDTH=1080\nHEIGHT=800\nSCREEN=0\n"
+  },
+  "minimum-enlarged": {
+    "file": "minimum-enlarged.png",
+    "sha256": "09c9a35bc1fa1fd6e9eb295fc4dedc83c08e30df95ef9abf4405b8aa2ef0bf4a",
+    "source_capture": "installed-eeb-keyboard-home-confirmed",
+    "pid": 1044178,
+    "window_geometry": "WINDOW=6291457\nX=2\nY=44\nWIDTH=1000\nHEIGHT=680\nSCREEN=0\n"
+  },
+  "keyboard-copy": {
+    "file": "keyboard-copy.png",
+    "sha256": "e81863c91d518ecddedd9fcceba7963f42676614d06f1adbac6678b3151cca8a",
+    "source_capture": "installed-eeb-keyboard-copy-focused",
+    "pid": 1010105,
+    "window_geometry": "WINDOW=6291457\nX=2\nY=44\nWIDTH=1000\nHEIGHT=680\nSCREEN=0\n"
   }
 }

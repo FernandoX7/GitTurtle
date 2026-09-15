@@ -28,7 +28,8 @@ app settings were not used for mutation fixtures.
   trailers remained readable. The viewport kept the copy controls and changed
   files available while scrolling long messages.
 - Midnight/Comfortable at 13 points and Braden/Compact at 18 points were exercised,
-  including a 1080×800 window and an approximately 280-point inspector. Long
+  including the actual 1000×680 minimum window, a 1080×800 window and an
+  approximately 280-point inspector. Long
   subjects wrapped; End reached their final body and parent controls without
   collapsing the changed-file area.
 - Full-message copies matched the loaded core model for empty text, a 293-byte
@@ -37,7 +38,8 @@ app settings were not used for mutation fixtures.
   message and a 1,500,056-byte subject/body. Full hash copies matched the selected
   merge and nested File History revision. Pointer activation of Copy also passed.
   The core model removes trailing body newlines; this is not a raw-object copy.
-- Actual keyboard End scrolling, Compare/Back, nested File History across a rename,
+- Actual keyboard Home/Page Down/End scrolling, focus traversal and Return
+  activation of both copy controls passed. Compare/Back, nested File History across a rename,
   warm repository-tab return and Projects/Settings return preserved the relevant
   inspection. Rapid selection ended with the final chosen commit and matching
   copied hash. Choosing the merge's second parent changed the file list from
@@ -61,6 +63,10 @@ checks are identified separately in the private capture inventory.
 ![Wrapped subject at 18 points in a narrow inspector](2026-09-15-commit-inspector/narrow-enlarged.png)
 
 ![Second-parent selection with the changed file still visible](2026-09-15-commit-inspector/merge-parents.png)
+
+![Minimum window with 18-point text](2026-09-15-commit-inspector/minimum-enlarged.png)
+
+![Visible keyboard focus on Copy message](2026-09-15-commit-inspector/keyboard-copy.png)
 
 ## Actual Linux package and installation
 
