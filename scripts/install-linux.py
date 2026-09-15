@@ -118,9 +118,15 @@ def owned_target(base, name, home, data):
     )
     if not allowed:
         fail("Backup contains a path outside GitTurtle's installed files.")
-    destination = (home if base == "home" else data) / relative
-    if destination.is_symlink():
-        fail(f"Refusing to replace a symlink: {destination}.")
+    # HOME and XDG_DATA_HOME select the installation roots and may themselves
+    # be symlinks. A backup entry must not redirect any component below those
+    # roots: checking only the final file lets a replaced license directory
+    # send rollback writes into unrelated files.
+    destination = home if base == "home" else data
+    for part in relative.parts:
+        destination = destination / part
+        if destination.is_symlink():
+            fail(f"Refusing to replace a path through a symlink: {destination}.")
     if destination.exists() and not destination.is_file():
         fail(f"Expected an installed file: {destination}.")
     return destination
@@ -310,8 +316,12 @@ def install_bundle(home, data):
         payload.extend([(binary, binary_destination, 0o755),
                         (bundle / "build-info.json", data / "gitturtle/build-info.json", 0o644),
                         (bundle / "icons/app-icon.png", icon, 0o644), (entry_source, launcher, 0o644)])
-        payload.extend((source, data / "icons/hicolor" / source.relative_to(bundle / "icons/hicolor"), 0o644)
-                       for source in sorted((bundle / "icons/hicolor").glob("*/apps/*.png")))
+        # Install only the owned icons required by the checksum manifest. A
+        # wildcard here also copied unchecked files over unrelated app icons
+        # without including those destinations in the recovery manifest.
+        payload.extend((bundle / name, data / name, 0o644)
+                       for size in ICON_SIZES
+                       for name in [f"icons/hicolor/{size}x{size}/apps/{APP_ID}.png"])
         targets = installed_targets(home, data)
         targets.update(("data", "gitturtle/" + name) for name in license_files)
         had_installation = binary_destination.exists()
