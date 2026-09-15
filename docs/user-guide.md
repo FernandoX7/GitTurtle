@@ -65,6 +65,8 @@ A missing LFS preview offers **Download Before LFSâ€¦** or **Download After LFSâ
 
 History fills the center of the window. Repository navigation sits on the left; the right inspector holds the selected commit's details, parent choice, and changed-file list. Local and remote branch names form folders from their slash-separated prefixes, with remote names such as `origin` at the top of the remote tree. Filtering reveals matching branches without changing saved folder expansion.
 
+The inspector shows the complete wrapped commit title and available body immediately, followed by author/date and parent details. **Copy message** copies the complete loaded title and body; **Hash** copies the full commit ID. Long messages have their own scrollbar while changed files stay available. Focus the message to use arrow keys, Page Up/Down or Home/End. Compare/Back and retained tabs preserve the message position; choosing another commit starts at the top. File History uses the same message view and keeps revision controls and before/after paths.
+
 Selecting a commit updates its details and file list while staying in History. Initially highlighting the preferred or first file does not prepare its preview. Click a changed file, or press Enter to open the highlighted file from History or the file list, to enter Compare: the file fills the center height, navigation collapses to a compact rail, and the same inspector and file list remain on the right. Select another file there to continue comparing.
 
 **Back to history** returns to the retained graph, selected commit, scope, search, loaded history, and scroll position. Returning does not reopen the repository or reload its history. File content is loaded on explicit activation; revisiting content can reuse the bounded preview cache.
@@ -92,6 +94,8 @@ The application retains opaque theme surfaces after a real native Liquid Glass p
 Use Rust 1.98 or newer and an installed Git executable. On macOS, install Xcode and its Metal toolchain. Use the checked-in lockfile.
 
 For Linux prerequisites and a user-local executable, icon and application launcher, see [Build and install locally on Linux](linux.md).
+
+For local Apple Silicon `.app` bundles and optional archives, use [the macOS package procedure](benchmarks/ci-packages/macos-package-source.md). It records exact executable identity and local ad-hoc signing status; notarized distribution remains a separate release step.
 
 ```sh
 cargo run --locked -p gitturtle -- /path/to/repository
@@ -189,7 +193,7 @@ The [Git service documentation](../crates/git-core/README.md) describes passive-
 
 ## Development and measurement
 
-[The quality workflow](../.github/workflows/quality.yml) configures the following gates on macOS 15 and Ubuntu 24.04 with Rust 1.98.0. It has no distribution or upload jobs. Local passes and workflow configuration do not establish a hosted CI pass or Linux coverage.
+[The quality workflow](../.github/workflows/quality.yml) configures the following checks with Rust 1.98.0: workspace tests and strict Clippy on macOS 15 and Ubuntu 24.04, and release compilation and package checks on macOS 26 and Ubuntu 24.04. It retains diagnostics and withholds [binary artifacts](ci-artifacts.md) until complete-notice checks pass. See the [dated hosted results](benchmarks/2026-09-15-ci.md); configured jobs and local passes do not establish hosted or native acceptance.
 
 ```sh
 cargo fmt --all -- --check

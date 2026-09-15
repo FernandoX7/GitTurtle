@@ -4,6 +4,29 @@ Use the [current validation guidance](#current-validation-guidance) for the affe
 
 This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native workflow evidence is primarily macOS-specific; the September 14 entries add Pop!_OS startup and clean Ubuntu/virtual-native checks. Platform execution and access limits belong to the applicable dated record and [platform runbook](linux.md); the earlier [environment report](benchmarks/2026-09-09-milestone-environment.md) describes its own session. The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Public binary release prerequisites belong in the [launch checklist](public-launch.md); the Linux runbook includes a local teammate bundle.
 
+## Commit-inspector validation requirements
+
+The persistent inspector requires candidate-bound native evidence in addition to
+its consuming Rust layout/state tests. Exercise short/empty/Unicode/trailer
+messages, long titles, many paragraphs, near-limit unbroken text and merge
+parents. Check both densities and light/dark themes at minimum window size,
+280-point inspector width and enlarged interface text. Confirm full-message/hash
+copy, keyboard scrolling, selected changed-file visibility, rapid commit
+selection, Compare/Back, nested File History, tab return and Projects/Settings.
+Native records must identify the exact binary and platform; source tests do not
+establish Linux/macOS runtime quality. The initiative's user-deferred macOS
+verification remains open until that evidence is supplied.
+
+## September 15 commit-inspector and Linux package checks
+
+Clean release `eebf47a` exercised the persistent message inspector and an actual
+Linux archive/install/relaunch in virtual Ubuntu 24.04 X11. The
+[dated evidence](benchmarks/2026-09-15-commit-inspector.md) records layout, Unicode,
+large-message copying, native accessibility, merge parents, retained navigation,
+package digests and installer recovery. C0 license clearance, hosted artifact
+transfer and user-owned macOS/Apple verification remain open. Later source and
+fixture commits do not turn this into evidence for another executable.
+
 ## September 15 PR #5 macOS merge review
 
 Source `0d4d8ce` passed 771 workspace tests, strict Clippy, formatting, app check
@@ -358,7 +381,7 @@ For changes to the current workflows, use disposable repositories and local remo
 | Image comparison | Exercise side-by-side, Overlay opacity and draggable Wipe with linked pan/zoom, keyboard adjustment, checkerboards, different source sizes/downsample ratios and missing sides. Verify scale labels, gesture cancellation, retained navigation and unchanged decoder bounds. |
 | macOS conventions and accessibility | Check menu availability, standard shortcuts, Help, Hide/Minimize/Close, captured Finder/editor handoff and launcher failures. Exercise follow-system appearance and manual themes without losing editor context. Inspect ordinary keyboard focus, names and supported selected/expanded/disabled states, and record available transparency/contrast/motion settings separately from unsupported hardware or OS versions. Exercise VoiceOver names, roles, selected/expanded/disabled states, current-row announcements, editing, modal containment, restored focus and status/error announcements using the [native accessibility contract](native-accessibility.md); record actual settings and build-specific results. |
 | Linux desktop integration and text | Follow the [desktop checklist](linux.md#ubuntu-desktop-acceptance-checklist) for the affected session: visible Menu and shortcut help, Control-based shortcuts, client/server window decorations, move/maximize/restore/close, picker success/cancel/portal failure and explicit editor launch. Check live Wayland portal text-size/antialiasing changes, missing-portal/fontconfig fallback, focus-return recovery and X11 DPI without applying a second text multiplier. Retain logical source rows, split/gutter alignment, selection, Find and hidden-tab context through scaling. Record physical/nested/virtual backend, compositor, GPU and scale; semantic-tree exposure is not screen-reader or IME acceptance. |
-| Packages, upgrades and build diagnostics | Use the [macOS](../.agents/skills/gitturtle-native-qa/references/macos-package.md) or [Linux](../.agents/skills/gitturtle-native-qa/references/linux-package.md) package procedure for the affected target. Match source/compiled identity, executable and artifact hashes, metadata, embedded/bundled assets, notices and the running path. Check About/Copy bug diagnostics and exact information flags without opening app state. On Linux, use installer fixtures and the actual bundle for relocation, active-process refusal, corruption and rollback preservation; on macOS, distinguish local ad-hoc signing from notarization and other-machine acceptance. Package/library/headless checks do not replace real desktop interaction or clear the [public release requirements](public-launch.md#before-a-public-binary-release). |
+| Packages, upgrades and build diagnostics | Use the [macOS](../.agents/skills/gitturtle-native-qa/references/macos-package.md) or [Linux](../.agents/skills/gitturtle-native-qa/references/linux-package.md) package procedure for the affected target. Match source/compiled identity, executable and artifact hashes, metadata, embedded/bundled assets, notices and the running path. Check About/Copy bug diagnostics and exact information flags without opening app state. On Linux, use package/installer fixtures and the actual extracted archive for identity/notice refusal, checksum verification, relocation, active-process refusal, corruption and rollback preservation. Match the archive and installed executable hashes; keep strict distribution refusal distinct from a development-bundle pass. Synthetic payload/tool tests do not establish archive or native acceptance; on macOS, distinguish local ad-hoc signing from notarization and other-machine acceptance. Package/library/headless checks do not replace real desktop interaction or clear the [public release requirements](public-launch.md#before-a-public-binary-release). |
 
 Native checks should cover relevant narrow/wide layouts, long names, large lists, themes, densities, independent interface/code text sizes, keyboard focus, hover/selection/disabled states, and empty/loading/error states for the affected controls. Changes shared across the palette or scaling system need representative light/dark and boundary-size coverage; use all supported themes when the change affects every palette. Distinguish pointer, keyboard and screen-reader results. Final combined Rust/dependency gates and package checks follow [the project validation agreement](../AGENTS.md#validation); a docs-only update requires link and diff review, without rebuilding the app.
 
@@ -387,7 +410,7 @@ The [September 8 everyday backend report](benchmarks/2026-09-08-everyday-workflo
 
 Current semantics and focused fixture commands are documented in [authentication](authentication.md), [tags and ignore](macos-git-actions.md), and [attribution, images and macOS conventions](macos-features.md). The [Liquid Glass investigation](liquid-glass-investigation.md) records the actual native prototype and compositing limitation; the integrated appearance remains opaque. The [previous macOS backend report](benchmarks/2026-09-08-macos-milestone-backend.md) identifies its source inputs and measurement scope independently of native frame evidence.
 
-The authored [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests, formatting, strict all-target Clippy and release compilation on macOS 15 and Ubuntu 24.04. It also configures Python guidance/controller tests, and Linux bundle/install/license, ELF and no-display checks. These use disposable mutation fixtures and publish no artifacts. Record actual hosted results separately; this configuration establishes neither a hosted pass nor physical-desktop, screen-reader, macOS-package or distribution acceptance.
+The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
 ## Review and recovery installed release — September 9, 2026
 
@@ -596,7 +619,7 @@ cargo build --release --locked -p gitturtle
 
 Coverage includes repository roots and merge parents, branches and linked worktrees, unusual path bytes, binary/text/mode/type changes, SHA-256 repositories, missing partial-clone objects, local LFS integrity and symlink rejection, Git process deadlines, and repository-file snapshots with hostile configured helpers. Preview tests cover decoding limits, alpha handling, SVG resource rejection, and LFS pointer recognition. App tests exercise queue replacement, stale-work cancellation, cache identity and accounting, BGRA conversion, local LFS arrival, refreshed branch/worktree tips, and graph budgets. New coverage includes branch folder expansion/filtering, retained repository sessions, and old/new line numbering for unified patches, including header-like source text, accumulated gutter-wheel movement, worker-prepared patch metadata, and its cache allocation budget.
 
-A local macOS `.app` can be built with [the packaging script](../scripts/package-macos.sh). It is signed ad-hoc for local use, not notarized. The script's `--debug` option packages a debug build, while the default uses release; `--no-build` reuses the selected profile's existing executable.
+A local Apple Silicon `.app` can be built with [the packaging script](../scripts/package-macos.sh). It is signed ad-hoc for local use, not notarized. The [current package procedure and evidence boundary](benchmarks/ci-packages/macos-package-source.md) describe explicit arm64 target output, verified `--no-build` inputs, detached build identity, optional ZIPs and existing-output recovery. The new source fixtures do not update the historical Mac package passes; exact-candidate macOS execution remains open.
 
 ## Historical column layout update
 

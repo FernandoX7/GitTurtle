@@ -1,0 +1,99 @@
+name: Prepare pinned Rust and bounded compilation cache
+description: Preserve native setup and restore dependency outputs; finish after all target consumers to bound successful main cache writes.
+inputs:
+  phase:
+    description: setup before checks; finish after tests, lint, release and package consumers
+    default: setup
+  profile:
+    description: Compatible Cargo output family (debug, release or debug-release)
+    default: debug-release
+outputs:
+  cache-hit:
+    description: True only for an exact restored entry; false also includes fallback or unavailable cache
+    value: ${{ steps.restore.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    - name: Validate setup phase and profile
+      shell: bash
+      env:
+        CACHE_PHASE: ${{ inputs.phase }}
+        CACHE_PROFILE: ${{ inputs.profile }}
+      run: |
+        set -euo pipefail
+        case "$CACHE_PHASE" in setup|finish) ;; *) exit 2 ;; esac
+        case "$CACHE_PROFILE" in debug|release|debug-release) ;; *) exit 2 ;; esac
+    - name: Install Linux native build dependencies
+      if: inputs.phase == 'setup' && runner.os == 'Linux'
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          build-essential clang cmake pkg-config git openssh-client ca-certificates \
+          libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev \
+          libssl-dev libzstd-dev libvulkan-dev \
+          python3 python3-pil desktop-file-utils xdg-utils
+        pkg-config --exists xkbcommon-x11 x11-xcb
+    - name: Install pinned workspace Rust toolchain
+      if: inputs.phase == 'setup'
+      shell: bash
+      run: |
+        set -euo pipefail
+        rustup show active-toolchain
+        rustc --version
+        cargo --version
+    - name: Prepare cache identity and isolated Cargo storage
+      if: inputs.phase == 'setup'
+      shell: bash
+      env:
+        CACHE_PROFILE: ${{ inputs.profile }}
+      run: python3 .github/actions/setup-rust/cache.py prepare
+    - name: Start cache restore observation
+      if: inputs.phase == 'setup'
+      shell: bash
+      run: python3 .github/actions/setup-rust/cache.py start
+    - name: Restore Rust dependencies
+      if: inputs.phase == 'setup'
+      id: restore
+      continue-on-error: true
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      with:
+        prefix-key: gitturtle-rust-v1
+        shared-key: ${{ env.CI_RUST_CACHE_KEY }}
+        workspaces: . -> target
+        cache-bin: false
+        cache-workspace-crates: false
+        cache-all-crates: false
+        cache-on-failure: false
+        save-if: false
+        env-vars: SDKROOT MACOSX_DEPLOYMENT_TARGET PKG_CONFIG LIBRARY_PATH LDFLAGS AR
+    - name: Record restore and recover an unusable entry
+      if: inputs.phase == 'setup'
+      shell: bash
+      env:
+        CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
+        CACHE_OUTCOME: ${{ steps.restore.outcome }}
+      run: python3 .github/actions/setup-rust/cache.py restored
+    - name: Bound dependency cache after successful validation
+      if: inputs.phase == 'finish' && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'FernandoX7/GitTurtle'
+      id: bounded
+      shell: bash
+      env:
+        CACHE_PROFILE: ${{ inputs.profile }}
+      run: python3 .github/actions/setup-rust/cache.py bound
+    - name: Register successful main cache save
+      if: inputs.phase == 'finish' && steps.bounded.outputs.save == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'FernandoX7/GitTurtle'
+      continue-on-error: true
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      with:
+        prefix-key: gitturtle-rust-v1
+        shared-key: ${{ env.CI_RUST_CACHE_KEY }}
+        workspaces: . -> target
+        cache-bin: false
+        cache-workspace-crates: false
+        cache-all-crates: false
+        cache-on-failure: false
+        lookup-only: true
+        save-if: true
+        env-vars: SDKROOT MACOSX_DEPLOYMENT_TARGET PKG_CONFIG LIBRARY_PATH LDFLAGS AR

@@ -19,12 +19,48 @@ pub const DESKTOP_TEXT_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.5..=3.0;
 // One application appearance applies to every native window. Pixel helpers are
 // also usable by canvas geometry and pure row-height consumers without a UI
 // context. No preference writes or repository work happen through these reads.
+#[cfg(not(test))]
 static INTERFACE_TEXT_SIZE: AtomicU8 = AtomicU8::new(DEFAULT_INTERFACE_TEXT_SIZE);
+#[cfg(not(test))]
 static CODE_TEXT_SIZE: AtomicU8 = AtomicU8::new(DEFAULT_CODE_TEXT_SIZE);
 // The desktop's text scaling factor multiplies both app sizes so the saved
 // interface/code preferences keep their meaning across desktops. Only the
 // Linux desktop bridge changes it; other platforms scale through the toolkit.
+#[cfg(not(test))]
 static DESKTOP_TEXT_SCALE: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
+
+// Each GPUI test owns its application on one test thread. Keep its simulated
+// appearance there too: changing the font size must not move another test's
+// controls between measuring their bounds and dispatching a click. Production
+// continues to share the atomic values across the application's native windows.
+#[cfg(test)]
+thread_local! {
+    static INTERFACE_TEXT_SIZE: AtomicU8 = const { AtomicU8::new(DEFAULT_INTERFACE_TEXT_SIZE) };
+    static CODE_TEXT_SIZE: AtomicU8 = const { AtomicU8::new(DEFAULT_CODE_TEXT_SIZE) };
+    static DESKTOP_TEXT_SCALE: AtomicU32 = const { AtomicU32::new(1.0f32.to_bits()) };
+}
+
+fn with_text_sizes<R>(read: impl FnOnce(&AtomicU8, &AtomicU8, &AtomicU32) -> R) -> R {
+    #[cfg(not(test))]
+    {
+        read(&INTERFACE_TEXT_SIZE, &CODE_TEXT_SIZE, &DESKTOP_TEXT_SCALE)
+    }
+    #[cfg(test)]
+    {
+        INTERFACE_TEXT_SIZE.with(|interface| {
+            CODE_TEXT_SIZE
+                .with(|code| DESKTOP_TEXT_SCALE.with(|desktop| read(interface, code, desktop)))
+        })
+    }
+}
+
+fn interface_text_size() -> u8 {
+    with_text_sizes(|interface, _, _| interface.load(Ordering::Relaxed))
+}
+
+fn code_text_size() -> u8 {
+    with_text_sizes(|_, code, _| code.load(Ordering::Relaxed))
+}
 
 /// Per-app notification for retained workspace viewports. Observers keep their
 /// last applied factor so coalesced desktop updates are applied exactly once.
@@ -34,7 +70,7 @@ pub(super) struct DesktopTextScale(pub f32);
 impl Global for DesktopTextScale {}
 
 pub fn desktop_text_scale() -> f32 {
-    f32::from_bits(DESKTOP_TEXT_SCALE.load(Ordering::Relaxed))
+    with_text_sizes(|_, _, desktop| f32::from_bits(desktop.load(Ordering::Relaxed)))
 }
 /// Normalizes a reported factor: non-positive/non-finite values mean "no scaling".
 #[cfg(any(target_os = "linux", test))]
@@ -54,27 +90,21 @@ pub fn desktop_text_scale_value(scale: impl Into<f64>) -> f32 {
 #[cfg(target_os = "linux")]
 pub fn set_desktop_text_scale(scale: f32, cx: &mut App) -> bool {
     let scale = desktop_text_scale_value(scale);
-    if scale.to_bits() == DESKTOP_TEXT_SCALE.load(Ordering::Relaxed) {
+    if scale.to_bits() == desktop_text_scale().to_bits() {
         return false;
     }
-    DESKTOP_TEXT_SCALE.store(scale.to_bits(), Ordering::Relaxed);
+    with_text_sizes(|_, _, desktop| desktop.store(scale.to_bits(), Ordering::Relaxed));
     cx.set_global(DesktopTextScale(scale));
     for window in cx.windows() {
         let _ = window.update(cx, |_, window, cx| {
-            apply_text_sizes(
-                INTERFACE_TEXT_SIZE.load(Ordering::Relaxed),
-                CODE_TEXT_SIZE.load(Ordering::Relaxed),
-                window,
-                cx,
-            )
+            apply_text_sizes(interface_text_size(), code_text_size(), window, cx)
         });
     }
     true
 }
 
 pub fn ui_scale() -> f32 {
-    f32::from(INTERFACE_TEXT_SIZE.load(Ordering::Relaxed)) / f32::from(DEFAULT_INTERFACE_TEXT_SIZE)
-        * desktop_text_scale()
+    f32::from(interface_text_size()) / f32::from(DEFAULT_INTERFACE_TEXT_SIZE) * desktop_text_scale()
 }
 pub fn ui_size(base: f32) -> Pixels {
     px(base * ui_scale())
@@ -83,21 +113,23 @@ pub fn ui_text(base: f32) -> Pixels {
     ui_size(base)
 }
 pub fn code_text() -> Pixels {
-    px(f32::from(CODE_TEXT_SIZE.load(Ordering::Relaxed)) * desktop_text_scale())
+    px(f32::from(code_text_size()) * desktop_text_scale())
 }
 pub fn code_scale() -> f32 {
     f32::from(code_text()) / f32::from(DEFAULT_CODE_TEXT_SIZE)
 }
 
 pub fn apply_text_sizes(interface: u8, code: u8, window: &mut Window, cx: &mut App) {
-    INTERFACE_TEXT_SIZE.store(
-        interface.clamp(*INTERFACE_TEXT_RANGE.start(), *INTERFACE_TEXT_RANGE.end()),
-        Ordering::Relaxed,
-    );
-    CODE_TEXT_SIZE.store(
-        code.clamp(*CODE_TEXT_RANGE.start(), *CODE_TEXT_RANGE.end()),
-        Ordering::Relaxed,
-    );
+    with_text_sizes(|interface_size, code_size, _| {
+        interface_size.store(
+            interface.clamp(*INTERFACE_TEXT_RANGE.start(), *INTERFACE_TEXT_RANGE.end()),
+            Ordering::Relaxed,
+        );
+        code_size.store(
+            code.clamp(*CODE_TEXT_RANGE.start(), *CODE_TEXT_RANGE.end()),
+            Ordering::Relaxed,
+        );
+    });
     let theme = Theme::global_mut(cx);
     theme.font_size = ui_text(13.);
     theme.mono_font_size = code_text();
@@ -654,6 +686,28 @@ mod tests {
     }
 
     #[test]
+    fn parallel_test_applications_keep_their_own_text_geometry() {
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            for (interface, code, desktop) in [(13, 12, 1.0f32), (18, 24, 1.5f32)] {
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    with_text_sizes(|interface_size, code_size, desktop_scale| {
+                        interface_size.store(interface, Ordering::Relaxed);
+                        code_size.store(code, Ordering::Relaxed);
+                        desktop_scale.store(desktop.to_bits(), Ordering::Relaxed);
+                    });
+                    // Both applications have set their sizes before either
+                    // consumes geometry, exposing shared global storage reliably.
+                    barrier.wait();
+                    assert_eq!(ui_text(13.), px(f32::from(interface) * desktop));
+                    assert_eq!(code_text(), px(f32::from(code) * desktop));
+                });
+            }
+        });
+    }
+
+    #[test]
     fn desktop_text_scale_values_are_bounded_and_finite() {
         assert_eq!(desktop_text_scale_value(1.0), 1.0);
         assert_eq!(desktop_text_scale_value(1.25), 1.25);
@@ -663,7 +717,7 @@ mod tests {
         assert_eq!(desktop_text_scale_value(-1.0), 1.0);
         assert_eq!(desktop_text_scale_value(f64::NAN), 1.0);
         assert_eq!(desktop_text_scale_value(f64::INFINITY), 1.0);
-        // Nothing in the test suite changes the process-wide factor.
+        // This test application begins with the default desktop factor.
         assert_eq!(desktop_text_scale(), 1.0);
     }
 

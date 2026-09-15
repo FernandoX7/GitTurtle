@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "runs": [
+    {
+      "repository": "example/gitturtle",
+      "run": {
+        "id": 101,
+        "run_attempt": 1,
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "event": "push",
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-09-15T10:00:00Z",
+        "run_started_at": "2026-09-15T10:00:10Z",
+        "updated_at": "2026-09-15T10:04:20Z"
+      },
+      "jobs_complete": true,
+      "jobs": [
+        {
+          "id": 1000,
+          "run_id": 101,
+          "run_attempt": 1,
+          "name": "Conditional job never executed",
+          "status": "completed",
+          "conclusion": "skipped",
+          "started_at": "2026-09-15T10:00:00Z",
+          "completed_at": "2026-09-15T10:00:00Z",
+          "labels": [],
+          "steps": []
+        },
+        {
+          "id": 1001,
+          "run_id": 101,
+          "run_attempt": 1,
+          "name": "quality (ubuntu-24.04)",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-15T10:00:20Z",
+          "completed_at": "2026-09-15T10:02:20Z",
+          "labels": [
+            "ubuntu-24.04"
+          ]
+        },
+        {
+          "id": 1002,
+          "run_id": 101,
+          "run_attempt": 1,
+          "name": "quality (macos-14)",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-15T10:00:30Z",
+          "completed_at": "2026-09-15T10:04:10Z",
+          "labels": [
+            "macos-14",
+            "ARM64"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -8,6 +8,7 @@ mod build_info;
 mod columns;
 mod command_palette;
 mod commit_drafts;
+mod commit_message;
 mod conflicts;
 mod desktop_text;
 mod diff_view;
@@ -377,7 +378,7 @@ struct GitTurtle {
     restore_commit: Option<String>,
     preferred_file: Option<PathBuf>,
     interaction_started: Option<Instant>,
-    details: bool,
+    inspector_message: commit_message::State,
 }
 
 impl GitTurtle {
@@ -587,7 +588,7 @@ impl GitTurtle {
             restore_commit: None,
             preferred_file: None,
             interaction_started: None,
-            details: false,
+            inspector_message: commit_message::State::default(),
         };
         this.load_profiles(window, cx);
         this.install_draft_quit_observer(cx);
@@ -805,6 +806,7 @@ impl GitTurtle {
             None
         };
         if self.path.as_ref() != Some(&path) {
+            self.inspector_message = commit_message::State::default();
             self.file_filter
                 .update(cx, |input, cx| input.set_value("", window, cx));
             self.automatic.reset();
@@ -1362,6 +1364,7 @@ impl GitTurtle {
             .selected_file
             .map(|i| self.files[i].path().to_owned())
             .or_else(|| self.preferred_file.take());
+        self.inspector_message.select(&self.commits[index].oid);
         self.selected_commit = Some(index);
         self.reveal_graph_lane(index);
         self.parent = 0;
