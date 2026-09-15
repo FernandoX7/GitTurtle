@@ -186,6 +186,7 @@ impl GitTurtle {
     pub(super) fn apply_quiet_snapshot(
         &mut self,
         snapshot: worker::Snapshot,
+        window: &Window,
         cx: &mut Context<Self>,
     ) {
         self.history_updates
@@ -209,13 +210,14 @@ impl GitTurtle {
             self.rebuild_navigation(cx);
             return;
         }
-        self.install_current_history(snapshot, following, cx);
+        self.install_current_history(snapshot, following, window, cx);
     }
 
     fn install_current_history(
         &mut self,
         snapshot: worker::Snapshot,
         following: bool,
+        window: &Window,
         cx: &mut Context<Self>,
     ) {
         self.history_paging = history_paging::State::from_snapshot(&snapshot);
@@ -224,7 +226,7 @@ impl GitTurtle {
             .and_then(|index| self.commits.get(index))
             .cloned();
         let offset = self.history_scroll.0.borrow().base_handle.offset();
-        let height = self.settings.density.history_row_height();
+        let height = f32::from(window.pixel_snap(px(self.settings.density.history_row_height())));
         let top = ((-f32::from(offset.y)) / height).max(0.) as usize;
         let anchor = self
             .visible
@@ -361,7 +363,7 @@ impl GitTurtle {
                                 this.history_updates
                                     .clear_scope_error(&mut this.operation_error);
                                 this.history_updates.captured(&snapshot);
-                                this.install_current_history(snapshot, true, cx);
+                                this.install_current_history(snapshot, true, window, cx);
                                 this.status =
                                     "Latest local history · selected inspector retained".into();
                             }
@@ -568,14 +570,18 @@ mod tests {
                 );
                 let original = snapshot(vec![commit("a", &[])]);
                 app.history_updates.captured(&original);
-                app.install_current_history(original, true, cx);
+                app.install_current_history(original, true, window, cx);
                 app.mode = WorkspaceMode::History;
                 app.selected_commit = Some(0);
                 let content = Arc::new(Content::Notice("retained inspector".into()));
                 app.content = Some(content.clone());
                 window.focus(&app.file_focus, cx);
                 let focus = window.focused(cx);
-                app.apply_quiet_snapshot(snapshot(vec![commit("b", &["a"]), commit("a", &[])]), cx);
+                app.apply_quiet_snapshot(
+                    snapshot(vec![commit("b", &["a"]), commit("a", &[])]),
+                    window,
+                    cx,
+                );
                 assert_eq!(app.commits[app.selected_commit.unwrap()].oid, "a");
                 assert_eq!(app.commits[app.visible[0]].oid, "b");
                 assert_eq!(app.history_scroll.0.borrow().base_handle.offset().y, px(0.));
@@ -592,6 +598,7 @@ mod tests {
                         commit("b", &["a"]),
                         commit("a", &[]),
                     ]),
+                    window,
                     cx,
                 );
                 assert_eq!(
@@ -616,6 +623,7 @@ mod tests {
                         commit("b", &["a"]),
                         commit("a", &[]),
                     ]),
+                    window,
                     cx,
                 );
                 assert_eq!(

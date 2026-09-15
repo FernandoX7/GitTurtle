@@ -381,39 +381,46 @@ pub struct State {
 impl State {
     pub(super) fn rescale_text_viewports(
         &mut self,
-        interface_ratio: f32,
+        lists: Option<settings::ListScales>,
         code_ratio: f32,
         cx: &mut App,
     ) {
         for tab in &mut self.tabs {
-            tab.saved.history_y *= interface_ratio;
-            tab.saved.file_y *= interface_ratio;
+            if let Some(scales) = lists {
+                tab.saved.history_y *= scales.history;
+                tab.saved.file_y *= scales.files;
+            }
             if let Some(warm) = &mut tab.warm {
                 if code_ratio != 1.0 {
                     warm.context.rescale_code(code_ratio, cx);
                     warm.file_history.rescale_code(code_ratio, cx);
                     warm.inspections.rescale_code(code_ratio, cx);
                 }
-                if interface_ratio != 1.0 {
-                    for scroll in [
-                        &warm.history_scroll,
-                        &warm.file_scroll,
-                        &warm.nav_scroll,
-                        &warm.working_scroll,
+                if let Some(scales) = lists {
+                    for (scroll, ratio) in [
+                        (&warm.history_scroll, scales.history),
+                        (&warm.file_scroll, scales.files),
+                        (&warm.nav_scroll, scales.navigation),
+                        (&warm.working_scroll, scales.files),
                     ] {
-                        settings::rescale_list_scroll(scroll, interface_ratio);
+                        settings::rescale_list_scroll(scroll, ratio);
                     }
+                    warm.blame.rescale_lists(scales);
+                    warm.file_history.rescale_lists(scales);
+                    warm.inspections.rescale_lists(scales);
                     warm.history_list_layout = None;
                     warm.file_list_layout = None;
                 }
             }
         }
-        for saved in [&mut self.restoring, &mut self.document_restore]
-            .into_iter()
-            .flatten()
-        {
-            saved.history_y *= interface_ratio;
-            saved.file_y *= interface_ratio;
+        if let Some(scales) = lists {
+            for saved in [&mut self.restoring, &mut self.document_restore]
+                .into_iter()
+                .flatten()
+            {
+                saved.history_y *= scales.history;
+                saved.file_y *= scales.files;
+            }
         }
     }
 
@@ -2106,6 +2113,50 @@ mod tests {
                 app.automatic.reset();
                 app._display_preferences_task = None;
             })
+        });
+    }
+
+    #[gpui::test]
+    fn fractional_list_scaling_preserves_cold_and_restoring_bookmarks(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|window, cx| {
+            let bookmark = Bookmark {
+                history_y: -3400.,
+                file_y: -4400.,
+                ..Default::default()
+            };
+            let mut state = State {
+                tabs: vec![Tab {
+                    path: PathBuf::from("fixture"),
+                    saved: bookmark.clone(),
+                    warm: None,
+                    error: None,
+                }],
+                restoring: Some(bookmark.clone()),
+                document_restore: Some(bookmark),
+                ..Default::default()
+            };
+            let mut previous = 1.;
+            for scale in [1.25, 1.15, 1.] {
+                let scales = settings::ListScales::new(
+                    previous,
+                    scale,
+                    appearance::Density::Comfortable,
+                    window,
+                );
+                state.rescale_text_viewports(scales, 1., cx);
+                for saved in [
+                    &state.tabs[0].saved,
+                    state.restoring.as_ref().unwrap(),
+                    state.document_restore.as_ref().unwrap(),
+                ] {
+                    let history = -100. * f32::from(window.pixel_snap(px(34. * scale)));
+                    let files = -100. * f32::from(window.pixel_snap(px(44. * scale)));
+                    assert!((saved.history_y - history).abs() < 0.01);
+                    assert!((saved.file_y - files).abs() < 0.01);
+                }
+                previous = scale;
+            }
         });
     }
 

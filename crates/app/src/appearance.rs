@@ -606,7 +606,10 @@ impl Density {
     }
 
     pub fn history_row_height(self) -> f32 {
-        ui_scale()
+        self.history_row_height_at_scale(ui_scale())
+    }
+    pub(super) fn history_row_height_at_scale(self, scale: f32) -> f32 {
+        scale
             * match self {
                 Self::Comfortable => 34.,
                 Self::Compact => 28.,
@@ -614,7 +617,10 @@ impl Density {
     }
 
     pub fn file_row_height(self) -> f32 {
-        ui_scale()
+        self.file_row_height_at_scale(ui_scale())
+    }
+    pub(super) fn file_row_height_at_scale(self, scale: f32) -> f32 {
+        scale
             * match self {
                 Self::Comfortable => 44.,
                 Self::Compact => 34.,

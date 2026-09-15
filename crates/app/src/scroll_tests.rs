@@ -26,13 +26,21 @@ fn fixture(
     cx: &mut TestAppContext,
     initial: Option<Point<Pixels>>,
 ) -> (Entity<ScrollProbe>, &mut VisualTestContext) {
+    fixture_rows(cx, initial, 400)
+}
+
+fn fixture_rows(
+    cx: &mut TestAppContext,
+    initial: Option<Point<Pixels>>,
+    rows: usize,
+) -> (Entity<ScrollProbe>, &mut VisualTestContext) {
     cx.update(gpui_kit::init);
     let (view, cx) = cx.add_window_view(move |window, cx| ScrollProbe {
         font_size: px(12.),
         editor: cx.new(|cx| {
             // Long lines exercise independent horizontal and vertical bounds.
             // The document remains small enough for deterministic unit tests.
-            let source = (0..400)
+            let source = (0..rows)
                 .map(|row| format!("row {row:03}: {}\n", "abcdefghij".repeat(20)))
                 .collect::<String>();
             let mut editor = EditorState::new(window, cx)
@@ -50,6 +58,71 @@ fn fixture(
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     (view, cx)
+}
+
+#[gpui::test]
+fn fractional_font_changes_preserve_measured_rows_and_pending_hidden_viewports(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = fixture_rows(cx, None, 800);
+    let editor = cx.read(|cx| view.read(cx).editor.clone());
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| {
+            editor.set_selected_range(5..12, cx);
+            editor.focus(window, cx);
+        });
+        window.draw(cx).clear(cx);
+        editor.update(cx, |editor, cx| {
+            editor.set_scroll_offset(point(px(-200.), px(-9828.)), cx)
+        });
+        window.draw(cx).clear(cx);
+        assert_eq!(editor.read(cx).line_height(), Some(px(18.)));
+        assert_eq!(editor.read(cx).visible_row_range().unwrap().start, 546);
+
+        // Both a live 12→15→12 change and multiple hidden-window changes
+        // before a paint must resolve from row 546, not a guessed pixel ratio.
+        for changes in [
+            vec![(15., 1.25)],
+            vec![(12., 0.8)],
+            vec![(13., 13. / 12.), (15., 15. / 13.)],
+            vec![(16., 16. / 15.), (12., 0.75)],
+        ] {
+            for (font, ratio) in changes {
+                view.update(cx, |view, cx| {
+                    view.font_size = px(font);
+                    text::rescale_editor(&editor, ratio, cx);
+                    cx.notify();
+                });
+            }
+            window.draw(cx).clear(cx);
+            let state = editor.read(cx);
+            let height = state.line_height().unwrap();
+            assert!(height == px(18.) || height == px(23.));
+            assert_eq!(state.scroll_offset().y, -height * 546.);
+            assert_eq!(state.visible_row_range().unwrap().start, 546);
+            assert_eq!(state.selected_range(), 5..12);
+            assert!(state.focus_handle(cx).is_focused(window));
+        }
+
+        // A newer direct gesture supersedes both the pixel and logical-row
+        // requests; the next paint must not restore the captured row.
+        view.update(cx, |view, cx| {
+            view.font_size = px(15.);
+            text::rescale_editor(&editor, 1.25, cx);
+        });
+        window.dispatch_event(
+            gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                position: editor.read(cx).input_bounds().center(),
+                delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-23.))),
+                modifiers: Modifiers::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+            }),
+            cx,
+        );
+        let requested = editor.read(cx).scroll_offset();
+        window.draw(cx).clear(cx);
+        assert_eq!(editor.read(cx).scroll_offset(), requested);
+    });
 }
 
 fn assert_rendered_viewport(editor: &EditorState) {

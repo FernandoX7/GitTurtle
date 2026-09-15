@@ -2,7 +2,7 @@
 
 This directory contains the crates.io `gpui-base` 0.6.0 source, licensed Apache-2.0. The upstream copyright and license are preserved in `LICENSE-APACHE`; `.cargo_vcs_info.json` records the published source revision. The registry archive checksum is `2caaf00ebe0482774dd370a82a936edf4bf19a18a0d1a39353d20ecf61f70330`.
 
-The modified upstream sources are `src/button.rs`, `src/focus_trap.rs`, `src/dialog.rs`, `src/lib.rs`, and `src/input/base/state.rs`; `src/dialog_label.rs` is an added private helper. The existing Button element is wrapped by a private element that delegates identity, layout, painting, role, and synthetic children. When `disabled` is true, the wrapper also sets the AccessKit disabled property in `write_a11y_info`. When the resolved role is Tab, it also reports the existing selected state without adding pressed metadata; ordinary button presentation selection remains separate. Existing disabled pointer blocking, absence of click actions and keyboard focus behavior are unchanged. Delegation preserves caller-provided synthetic children instead of replacing that hook.
+The modified upstream sources are `src/button.rs`, `src/focus_trap.rs`, `src/dialog.rs`, `src/lib.rs`, `src/input/base/state.rs`, and `src/input/base/element.rs`; `src/dialog_label.rs` is an added private helper. The existing Button element is wrapped by a private element that delegates identity, layout, painting, role, and synthetic children. When `disabled` is true, the wrapper also sets the AccessKit disabled property in `write_a11y_info`. When the resolved role is Tab, it also reports the existing selected state without adding pressed metadata; ordinary button presentation selection remains separate. Existing disabled pointer blocking, absence of click actions and keyboard focus behavior are unchanged. Delegation preserves caller-provided synthetic children instead of replacing that hook.
 
 The existing rendered-node test now expects disabled metadata. GitTurtle also includes the equivalent rendered-node regression in its application test suite, where the matching GPUI Kit test-support feature is enabled. Run `cargo test --locked -p gitturtle native_accessibility` from the repository root. This verifies generated node role, label, disabled state, click availability and selected/unselected Tab metadata. Native VoiceOver behavior is a separate application validation gate.
 
@@ -19,9 +19,15 @@ The input viewport setter now updates the accepted, clamped scroll handle immedi
 The explicit `rescale_scroll_offset` operation preserves the logical viewport
 when a font-size change will replace the layout geometry. It defers clamping
 until the new bounds exist, avoiding the old document-end limit during font
-growth, and updates the observable offset for linked panes. Ordinary scroll
-setters and wheel precedence keep their behavior. The consuming
+growth, and updates the observable offset for linked panes. Vertical position
+is retained as a fractional row against the previous measured line height and
+resolved using the next layout’s actual rounded height; horizontal movement
+uses the font-size ratio. Hidden editors retain that row across several size
+changes before painting. Ordinary scroll setters and wheel precedence keep
+their behavior and supersede a pending font-size request. The consuming
 `font_growth_preserves_near_bottom_viewport_and_selection` regression exercises
 real Editor layout across an enlarged font, then checks the reverse change.
+`fractional_font_changes_preserve_measured_rows_and_pending_hidden_viewports`
+checks high-row 18→23→18 line-height changes, hidden updates and wheel precedence.
 
 All other upstream source, manifests and tests are unmodified. The registry-only `.cargo-ok`, `.cargo-checksum.json` and upstream package lockfile are omitted; the application uses the workspace lockfile. Remove this patch when the matching upstream toolkit publishes equivalent semantics and the application regressions pass against it. Native VoiceOver and macOS AX focus behavior remain separate runtime validation gates.

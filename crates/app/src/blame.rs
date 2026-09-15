@@ -28,6 +28,12 @@ pub(super) struct State {
 }
 
 impl State {
+    pub(super) fn rescale_lists(&self, scales: settings::ListScales) {
+        settings::rescale_list_scroll(&self.scroll, scales.history);
+        if let Some(previous) = &self.previous {
+            previous.rescale_lists(scales);
+        }
+    }
     pub(super) fn pause_for_tab(&mut self) {
         self.task = None;
         if self.pending.take().is_some() {
@@ -626,6 +632,46 @@ mod tests {
     use super::{Pending, State};
     use gitturtle_core::BlameTarget;
     use std::path::Path;
+    #[test]
+    fn scaling_preserves_active_and_nested_attribution_rows() {
+        use crate::settings::ListScales;
+        use gpui_kit::{point, px};
+        let state = State {
+            selected: Some(50),
+            previous: Some(Box::new(State {
+                selected: Some(75),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        state
+            .scroll
+            .0
+            .borrow()
+            .base_handle
+            .set_offset(point(px(0.), px(-3400.)));
+        let previous = state.previous.as_ref().unwrap();
+        previous
+            .scroll
+            .0
+            .borrow()
+            .base_handle
+            .set_offset(point(px(0.), px(-6800.)));
+        state.rescale_lists(ListScales {
+            history: 42. / 34.,
+            files: 1.,
+            navigation: 1.,
+            lineage: 1.,
+        });
+        assert_eq!(state.scroll.0.borrow().base_handle.offset().y, px(-4200.));
+        assert_eq!(
+            previous.scroll.0.borrow().base_handle.offset().y,
+            px(-8400.)
+        );
+        assert_eq!(state.selected, Some(50));
+        assert_eq!(previous.selected, Some(75));
+    }
+
     #[test]
     fn stale_target_repository_and_line_history_selection_are_rejected() {
         let target = BlameTarget::Working {

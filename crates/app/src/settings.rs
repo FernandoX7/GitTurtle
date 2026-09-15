@@ -6,10 +6,48 @@ use gpui_kit::component::{checkbox::Checkbox, switch::Switch};
 use gpui_kit::prelude::FluentBuilder;
 use std::path::Path;
 
+/// Fixed list rows are snapped by GPUI before layout. Preserve row positions
+/// with the same old/new metrics, including each window's device scale.
+#[derive(Clone, Copy)]
+pub(super) struct ListScales {
+    pub history: f32,
+    pub files: f32,
+    pub navigation: f32,
+    pub lineage: f32,
+}
+impl ListScales {
+    pub(super) fn new(
+        old: f32,
+        new: f32,
+        density: appearance::Density,
+        window: &Window,
+    ) -> Option<Self> {
+        if old == new {
+            return None;
+        }
+        let ratio = |base| {
+            f32::from(window.pixel_snap(px(base * new)))
+                / f32::from(window.pixel_snap(px(base * old)))
+        };
+        Some(Self {
+            history: ratio(density.history_row_height_at_scale(1.)),
+            files: ratio(density.file_row_height_at_scale(1.)),
+            navigation: ratio(30.),
+            lineage: ratio(68.),
+        })
+    }
+}
+
 pub(super) fn rescale_list_scroll(scroll: &UniformListScrollHandle, ratio: f32) {
-    let handle = &scroll.0.borrow().base_handle;
-    let offset = handle.offset();
-    handle.set_offset(point(offset.x, offset.y * ratio));
+    let mut state = scroll.0.borrow_mut();
+    let offset = state.base_handle.offset();
+    state
+        .base_handle
+        .set_offset(point(offset.x, offset.y * ratio));
+    // Geometry now belongs to the old font. In particular, Working Changes
+    // must not mistake this intentional viewport change for a density resize
+    // and reveal an offscreen selected row over the user's manual position.
+    state.last_item_size = None;
 }
 
 /// Baselines distinguish a saved value moving externally from an unfinished edit.
@@ -63,16 +101,25 @@ impl GitTurtle {
         {
             let mut applied_scale = appearance::desktop_text_scale();
             self.subscriptions
-                .push(
-                    cx.observe_global::<appearance::DesktopTextScale>(move |this, cx| {
+                .push(cx.observe_global_in::<appearance::DesktopTextScale>(
+                    window,
+                    move |this, window, cx| {
                         let scale = cx.global::<appearance::DesktopTextScale>().0;
                         if scale != applied_scale {
                             let ratio = scale / applied_scale;
+                            let interface = f32::from(this.settings.interface_text_size)
+                                / f32::from(appearance::DEFAULT_INTERFACE_TEXT_SIZE);
+                            let lists = ListScales::new(
+                                interface * applied_scale,
+                                interface * scale,
+                                this.settings.density,
+                                window,
+                            );
                             applied_scale = scale;
-                            this.rescale_text_viewports(ratio, ratio, cx);
+                            this.rescale_text_viewports(lists, ratio, cx);
                         }
-                    }),
-                );
+                    },
+                ));
         }
         // Status replies can change the effective identity while Settings is
         // visible. Reconcile after parent notifications, outside rendering.
@@ -244,8 +291,15 @@ impl GitTurtle {
         {
             return;
         }
+        let scale =
+            appearance::desktop_text_scale() / f32::from(appearance::DEFAULT_INTERFACE_TEXT_SIZE);
         self.rescale_text_viewports(
-            f32::from(self.settings.interface_text_size) / f32::from(old_interface),
+            ListScales::new(
+                f32::from(old_interface) * scale,
+                f32::from(self.settings.interface_text_size) * scale,
+                self.settings.density,
+                window,
+            ),
             f32::from(self.settings.code_text_size) / f32::from(old_code),
             cx,
         );
@@ -262,7 +316,7 @@ impl GitTurtle {
     /// or issuing repository work. Desktop changes apply this in every window.
     pub(super) fn rescale_text_viewports(
         &mut self,
-        interface_ratio: f32,
+        lists: Option<ListScales>,
         code_ratio: f32,
         cx: &mut Context<Self>,
     ) {
@@ -282,22 +336,25 @@ impl GitTurtle {
                 view.update(cx, |view, cx| view.rescale_code(code_ratio, cx));
             }
         }
-        if interface_ratio != 1.0 {
-            for scroll in [
-                &self.history_scroll,
-                &self.file_scroll,
-                &self.working_scroll,
-                &self.nav_scroll,
+        if let Some(scales) = lists {
+            for (scroll, ratio) in [
+                (&self.history_scroll, scales.history),
+                (&self.file_scroll, scales.files),
+                (&self.working_scroll, scales.files),
+                (&self.nav_scroll, scales.navigation),
             ] {
-                rescale_list_scroll(scroll, interface_ratio);
+                rescale_list_scroll(scroll, ratio);
             }
+            self.blame.rescale_lists(scales);
+            self.file_history.rescale_lists(scales);
+            self.revision_inspection.rescale_lists(scales);
             // Treat the next layout as a new baseline: revealing the selected
             // row here would discard an intentionally scrolled viewport.
             self.history_list_layout = None;
             self.file_list_layout = None;
         }
         self.repository_tabs
-            .rescale_text_viewports(interface_ratio, code_ratio, cx);
+            .rescale_text_viewports(lists, code_ratio, cx);
         cx.notify();
     }
 
@@ -1307,5 +1364,101 @@ mod draft_tests {
             state.identity_update(work, &identity("NewEffective"), &identity("SavedEdit")),
             Some(identity("NewEffective"))
         );
+    }
+}
+
+#[cfg(test)]
+mod list_scale_tests {
+    use super::*;
+    use core::prelude::v1::test;
+
+    struct Probe {
+        scroll: UniformListScrollHandle,
+        row_height: Pixels,
+    }
+    impl Render for Probe {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div().w(px(400.)).h(px(260.)).child(
+                uniform_list(
+                    "scaled-list",
+                    800,
+                    cx.processor(|this, range: std::ops::Range<usize>, _, _| {
+                        range
+                            .map(|_| div().h(this.row_height).w_full().into_any_element())
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .size_full()
+                .track_scroll(&self.scroll),
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn fractional_list_scaling_preserves_measured_row_and_partial_offset(cx: &mut TestAppContext) {
+        let (probe, cx) = cx.add_window_view(|_, _| Probe {
+            scroll: UniformListScrollHandle::new(),
+            row_height: px(34.),
+        });
+        cx.update(|window, cx| {
+            for (base, metric) in [(34., 0), (44., 1), (30., 2), (68., 3)] {
+                probe.update(cx, |probe, cx| {
+                    probe.row_height = px(base);
+                    probe
+                        .scroll
+                        .0
+                        .borrow()
+                        .base_handle
+                        .set_offset(point(px(0.), px(0.)));
+                    cx.notify();
+                });
+                window.draw(cx).clear(cx);
+                let scroll = probe.read(cx).scroll.clone();
+                let initial_height =
+                    scroll.0.borrow().last_item_size.unwrap().contents.height / 800.;
+                scroll
+                    .0
+                    .borrow()
+                    .base_handle
+                    .set_offset(point(px(0.), -initial_height * 500.25));
+                window.draw(cx).clear(cx);
+                let mut previous = 1.;
+                for scale in [1.25, 1.15, 1.] {
+                    let scales =
+                        ListScales::new(previous, scale, appearance::Density::Comfortable, window)
+                            .unwrap();
+                    let ratio = [
+                        scales.history,
+                        scales.files,
+                        scales.navigation,
+                        scales.lineage,
+                    ][metric];
+                    probe.update(cx, |probe, cx| {
+                        probe.row_height = px(base * scale);
+                        rescale_list_scroll(&probe.scroll, ratio);
+                        assert!(probe.scroll.0.borrow().last_item_size.is_none());
+                        // A quiet snapshot may arrive after invalidation and
+                        // before paint. Its snapped fallback must identify the
+                        // same anchor rather than using the fractional style.
+                        let height = f32::from(window.pixel_snap(probe.row_height));
+                        let top =
+                            -f32::from(probe.scroll.0.borrow().base_handle.offset().y) / height;
+                        assert!((top - 500.25).abs() < 0.001);
+                        cx.notify();
+                    });
+                    window.draw(cx).clear(cx);
+                    let state = scroll.0.borrow();
+                    let height = state.last_item_size.unwrap().contents.height / 800.;
+                    assert_eq!(window.pixel_snap(px(base * scale)), height);
+                    let top = -f32::from(state.base_handle.offset().y) / f32::from(height);
+                    assert!(
+                        (top - 500.25).abs() < 0.001,
+                        "base={base} scale={scale} top={top}"
+                    );
+                    assert_eq!(state.base_handle.offset().x, px(0.));
+                    previous = scale;
+                }
+            }
+        });
     }
 }
