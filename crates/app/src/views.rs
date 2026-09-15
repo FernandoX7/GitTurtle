@@ -422,7 +422,7 @@ impl GitTurtle {
                 div()
                     .id("repository-navigation")
                     .role(Role::Tree)
-                    .aria_label("Branches and worktrees. Arrow keys browse; Left and Right collapse or expand; Enter activates; Shift F10 opens branch actions")
+                    .aria_label("Branches and worktrees. Arrow keys browse; Left and Right collapse or expand; Enter activates; Shift F10 opens branch or worktree actions")
                     .key_context("GitTurtleNavigation")
                     .tab_stop(true)
                     .track_focus(&self.nav_focus)
