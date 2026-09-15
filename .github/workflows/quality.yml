@@ -32,9 +32,43 @@ jobs:
       - name: Verify Python runtime
         run: python3 -c 'import sys; print(sys.version); assert sys.version_info >= (3, 11), "Python 3.11 or newer is required"'
       - name: Validate development guidance
-        run: python3 scripts/check-agent-guidance.py
+        run: python3 scripts/ci/metrics.py measure --name guidance --directory "$RUNNER_TEMP/ci-metrics" -- python3 scripts/check-agent-guidance.py
       - name: Test development tooling
-        run: python3 -m unittest discover -s scripts/agent_loop -t scripts -p 'test_*.py'
+        run: python3 scripts/ci/metrics.py measure --name agent-tooling --directory "$RUNNER_TEMP/ci-metrics" -- python3 -m unittest discover -s scripts/agent_loop -t scripts -p 'test_*.py'
+      - name: Test CI measurements
+        run: python3 scripts/ci/metrics.py measure --name ci-tests --directory "$RUNNER_TEMP/ci-metrics" -- python3 -m unittest discover -s scripts/ci/tests -p 'test_*.py'
+      - name: Check CI collector syntax and help
+        run: |
+          python3 -m py_compile scripts/ci/metrics.py
+          python3 scripts/ci/metrics.py --help
+          python3 scripts/ci/metrics.py report --help
+          python3 scripts/ci/metrics.py measure --help
+          python3 scripts/ci/metrics.py summary --help
+      - name: Validate Actions workflow with actionlint 1.7.12
+        if: runner.os == 'Linux'
+        run: |
+          actionlint_dir="$RUNNER_TEMP/actionlint-1.7.12"
+          mkdir -p "$actionlint_dir"
+          curl --fail --location --silent --show-error --retry 2 --connect-timeout 15 --max-time 60 \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            --output "$actionlint_dir/actionlint.tar.gz"
+          printf '%s  %s\n' '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8' \
+            "$actionlint_dir/actionlint.tar.gz" | sha256sum --check --status
+          tar -xzf "$actionlint_dir/actionlint.tar.gz" -C "$actionlint_dir" actionlint
+          "$actionlint_dir/actionlint" -version
+          "$actionlint_dir/actionlint" -shellcheck='' -pyflakes='' .github/workflows/quality.yml
+      - name: Summarize CI measurements
+        if: always()
+        run: python3 scripts/ci/metrics.py summary --directory "$RUNNER_TEMP/ci-metrics" >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve CI measurements and sanitized diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-diagnostics-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-metrics/
+          retention-days: 3
+          if-no-files-found: warn
+          include-hidden-files: false
   rust:
     name: Rust · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -70,17 +104,19 @@ jobs:
           rustc --version
           cargo --version
       - name: Format
-        run: cargo fmt --all -- --check
+        run: python3 scripts/ci/metrics.py measure --name format --directory "$RUNNER_TEMP/ci-metrics" -- cargo fmt --all -- --check
       - name: Locked workspace tests
-        run: cargo test --locked --workspace
+        run: python3 scripts/ci/metrics.py measure --name tests --directory "$RUNNER_TEMP/ci-metrics" -- cargo test --locked --workspace --timings
       - name: Locked Clippy
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+        run: python3 scripts/ci/metrics.py measure --name clippy --directory "$RUNNER_TEMP/ci-metrics" -- cargo clippy --locked --workspace --all-targets --timings -- -D warnings
       - name: Locked release compilation
-        run: cargo build --release --locked -p gitturtle
+        run: python3 scripts/ci/metrics.py measure --name release --directory "$RUNNER_TEMP/ci-metrics" -- cargo build --release --locked -p gitturtle --timings
       - name: Linux bundle and isolated user installation
         if: runner.os == 'Linux'
         shell: bash
         run: |
+          python3 scripts/ci/metrics.py measure --name linux-package --directory "$RUNNER_TEMP/ci-metrics" -- \
+            bash --noprofile --norc -euo pipefail <<'PACKAGE'
           package_dir="$RUNNER_TEMP/gitturtle-linux-package"
           scripts/package-linux.sh --no-build --binary target/release/gitturtle "$package_dir"
           python3 scripts/test-install-linux.py --bundle "$package_dir"
@@ -108,3 +144,16 @@ jobs:
           cat "$RUNNER_TEMP/gitturtle-no-display.txt"
           test "$launch_status" -eq 1
           grep -F 'GitTurtle needs a Wayland or X11 desktop session' "$RUNNER_TEMP/gitturtle-no-display.txt"
+          PACKAGE
+      - name: Summarize CI measurements
+        if: always()
+        run: python3 scripts/ci/metrics.py summary --directory "$RUNNER_TEMP/ci-metrics" >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve CI measurements and sanitized diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-diagnostics-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-metrics/
+          retention-days: 3
+          if-no-files-found: warn
+          include-hidden-files: false
