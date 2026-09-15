@@ -98,6 +98,7 @@ fn app_window(
     cx.update(|cx| {
         gpui_kit::init(cx);
         image_lifetime::init(cx);
+        native_accessibility::bind_keys(cx);
     });
     let captured = Rc::new(RefCell::new(None));
     let observed = captured.clone();
@@ -222,6 +223,7 @@ async fn targeted_worktree_actions_restore_manage_and_cancel_exact_removal(
         assert_eq!(manager.details.as_ref().unwrap().tree, fixture.second);
     });
     click(cx, "remove-managed-worktree");
+    settle(&reopened, cx).await;
     draw(cx);
     assert!(cx.debug_bounds("operation-consequences").is_some());
     app.read_with(cx, |app, _| assert!(app.operation_busy.is_none()));
@@ -229,6 +231,207 @@ async fn targeted_worktree_actions_restore_manage_and_cancel_exact_removal(
     assert_no_confirmation(&app, cx);
     assert!(fixture.second.path.join("tracked.txt").is_file());
     assert_eq!(fixture.repo.worktrees().unwrap().len(), 3);
+}
+
+#[gpui::test]
+async fn manager_removal_rechecks_changes_since_selection(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    let (app, cx) = app_window(cx, fixture.repo.clone());
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_worktree_actions(fixture.first.clone(), false, window, cx)
+        });
+    });
+    let manager = manager(&app, cx);
+    settle(&manager, cx).await;
+    assert!(manager.read_with(cx, |manager, _| {
+        manager.details.as_ref().unwrap().removal_blocked.is_none()
+    }));
+    std::fs::write(fixture.first.path.join("new.ignored"), "keep this data").unwrap();
+    click(cx, "remove-managed-worktree");
+    settle(&manager, cx).await;
+    assert_no_confirmation(&app, cx);
+    manager.read_with(cx, |manager, _| {
+        let details = manager.details.as_ref().unwrap();
+        assert_eq!(details.tree, fixture.first);
+        assert_eq!(details.ignored_files, 1);
+        assert!(details.removal_blocked.is_some());
+    });
+    assert_eq!(
+        std::fs::read(fixture.first.path.join("new.ignored")).unwrap(),
+        b"keep this data"
+    );
+    assert_eq!(fixture.repo.worktrees().unwrap().len(), 3);
+}
+
+#[gpui::test]
+async fn switching_manager_workflow_cancels_pending_removal_review(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    let (app, cx) = app_window(cx, fixture.repo.clone());
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_worktree_manager(window, cx)));
+    let manager = manager(&app, cx);
+    settle(&manager, cx).await;
+    let (release, gate) = std::sync::mpsc::channel();
+    let (started, ready) = futures::channel::oneshot::channel();
+    let held = manager.read_with(cx, |manager, _| {
+        manager.reader.submit_read(move || {
+            let _ = started.send(());
+            gate.recv_timeout(std::time::Duration::from_secs(10))?;
+            Ok(())
+        })
+    });
+    ready.await.unwrap();
+    cx.update(|window, cx| {
+        manager.update(cx, |manager, cx| {
+            manager.inspect(fixture.first.clone(), true, window, cx)
+        });
+    });
+    assert!(manager.read_with(cx, |manager, _| manager.pending));
+    click(cx, "worktree-create-tab");
+    release.send(()).unwrap();
+    held.await.unwrap().unwrap();
+    settle(&manager, cx).await;
+    assert_no_confirmation(&app, cx);
+    manager.read_with(cx, |manager, _| {
+        assert!(manager.creating);
+        assert!(manager.details.is_none());
+    });
+    assert_eq!(fixture.repo.worktrees().unwrap().len(), 3);
+}
+
+#[gpui::test]
+async fn switching_to_create_preserves_ordinary_metadata_loading(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    let (app, cx) = app_window(cx, fixture.repo.clone());
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_worktree_manager(window, cx)));
+    let manager = manager(&app, cx);
+    settle(&manager, cx).await;
+    let (release, gate) = std::sync::mpsc::channel();
+    let (started, ready) = futures::channel::oneshot::channel();
+    let held = manager.read_with(cx, |manager, _| {
+        manager.reader.submit_read(move || {
+            let _ = started.send(());
+            gate.recv_timeout(std::time::Duration::from_secs(10))?;
+            Ok(())
+        })
+    });
+    ready.await.unwrap();
+    cx.update(|window, cx| {
+        manager.update(cx, |manager, cx| {
+            manager.trees.clear();
+            manager.branches.clear();
+            manager.refresh(window, cx);
+        });
+    });
+    click(cx, "worktree-create-tab");
+    assert!(manager.read_with(cx, |manager, _| manager.pending));
+    release.send(()).unwrap();
+    held.await.unwrap().unwrap();
+    settle(&manager, cx).await;
+    assert_no_confirmation(&app, cx);
+    manager.read_with(cx, |manager, _| {
+        assert!(manager.creating);
+        assert_eq!(manager.trees.len(), 3);
+        assert!(manager.branches.iter().any(|branch| branch.name == "main"));
+    });
+}
+
+#[gpui::test]
+async fn keyboard_actions_review_focused_worktree_without_opening_it(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    let (app, cx) = app_window(cx, fixture.repo.clone());
+    let trees = fixture.repo.worktrees().unwrap();
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.worktrees = trees;
+            app.nav_mode = NavMode::Worktrees;
+            app.rebuild_navigation(cx);
+            app.nav_cursor = app.nav_rows.iter().position(|row| {
+                matches!(row, NavRow::Worktree(index) if app.worktrees[*index] == fixture.second)
+            });
+            assert!(app.nav_cursor.is_some());
+            window.focus(&app.nav_focus, cx);
+        });
+    });
+    draw(cx);
+    cx.simulate_keystrokes("shift-f10");
+    let manager = manager(&app, cx);
+    settle(&manager, cx).await;
+    manager.read_with(cx, |manager, _| {
+        assert_eq!(manager.selected.as_ref(), Some(&fixture.second.path));
+        assert_eq!(manager.details.as_ref().unwrap().tree, fixture.second);
+    });
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.path.as_deref(), Some(fixture.repo.path()));
+        assert_eq!(app.repository.as_ref().unwrap().path(), fixture.repo.path());
+        assert!(app.operation_busy.is_none());
+    });
+    finish_dialog(cx, false);
+    assert_eq!(fixture.repo.worktrees().unwrap().len(), 3);
+}
+
+#[gpui::test]
+async fn accepted_removal_keeps_captured_target_after_manager_closes(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    let (app, cx) = app_window(cx, fixture.repo.clone());
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_worktree_actions(fixture.second.clone(), true, window, cx)
+        });
+    });
+    let manager = manager(&app, cx);
+    settle(&manager, cx).await;
+    let (release, gate) = std::sync::mpsc::channel();
+    let (started, ready) = futures::channel::oneshot::channel();
+    let held = app.read_with(cx, |app, _| {
+        app.operations.submit(move || {
+            let _ = started.send(());
+            gate.recv_timeout(std::time::Duration::from_secs(10))?;
+            Ok(())
+        })
+    });
+    ready.await.unwrap();
+    finish_dialog(cx, false);
+    app.update(cx, |app, _| app.worktree_management = State::default());
+    drop(manager);
+    app.read_with(cx, |app, _| {
+        assert!(app.operation_busy.is_some());
+        assert_eq!(
+            app.operation_repository.as_deref(),
+            Some(fixture.repo.path())
+        );
+    });
+    assert!(fixture.second.path.is_dir());
+    release.send(()).unwrap();
+    held.await.unwrap().unwrap();
+    let task = app.update(cx, |app, _| app.operation_task.take()).unwrap();
+    task.await;
+    cx.executor().run_until_parked();
+    app.read_with(cx, |app, _| {
+        assert!(app.operation_busy.is_none());
+        assert!(app.operation_error.is_none(), "{:?}", app.operation_error);
+        assert_eq!(app.path.as_deref(), Some(fixture.repo.path()));
+        assert!(
+            app.operation_notice
+                .as_ref()
+                .unwrap()
+                .contains("Removed worktree")
+        );
+    });
+    assert!(!fixture.second.path.exists());
+    assert!(fixture.first.path.join("tracked.txt").is_file());
+    assert!(fixture.repo.path().join("tracked.txt").is_file());
+    let trees = fixture.repo.worktrees().unwrap();
+    assert_eq!(trees.len(), 2);
+    assert!(trees.iter().all(|tree| tree.path != fixture.second.path));
+    assert!(
+        fixture
+            .repo
+            .branches()
+            .unwrap()
+            .iter()
+            .any(|branch| branch.name == "second")
+    );
 }
 
 #[gpui::test]
