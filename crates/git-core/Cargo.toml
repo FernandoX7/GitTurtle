@@ -9,6 +9,7 @@ description = "Git inspection and explicit everyday repository operations for Gi
 anyhow = "1.0"
 similar = "2.7"
 sha2 = "0.10"
+ignore = "=0.4.33"
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1", features = ["event", "fs", "process"] }

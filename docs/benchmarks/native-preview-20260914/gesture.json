@@ -1,0 +1,19 @@
+{
+  "events": 240,
+  "down_events": 160,
+  "up_events": 80,
+  "portal_axis": {
+    "x": 0,
+    "y_down": 7.25,
+    "y_up": -7.25
+  },
+  "sleep_after_each_event_ms": 16,
+  "method": "One synchronous AF_UNIX request/reply per XDG RemoteDesktop NotifyPointerAxis event; time.sleep(.016) after reply. Sender stamps time.monotonic_ns before sending. These are nominal inputs, not a 16 ms delivered interval or a display-presentation trace.",
+  "app_observed_delta_y_logical_px": {
+    "first_160": -21.796875,
+    "last_80": 21.796875
+  },
+  "area": "code",
+  "label": "Read-only Before source",
+  "tail_window_ms": 500
+}

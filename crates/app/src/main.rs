@@ -4,6 +4,7 @@ mod authentication;
 mod automatic_refresh;
 mod blame;
 mod branch_actions;
+mod build_info;
 mod columns;
 mod command_palette;
 mod commit_drafts;
@@ -19,6 +20,7 @@ mod github_view;
 mod graph;
 mod history_paging;
 mod history_search;
+mod history_updates;
 mod ignore;
 mod image_compare;
 mod image_lifetime;
@@ -47,6 +49,8 @@ mod repository_tabs;
 mod revision_inspection;
 mod rewrite_review;
 mod rich_preview;
+#[cfg(test)]
+mod scroll_tests;
 mod settings;
 mod shortcuts;
 mod split_diff;
@@ -243,6 +247,7 @@ struct GitTurtle {
     modal_focus_generation: u64,
     settings_editor: Entity<InputState>,
     history_search: history_search::State,
+    history_updates: history_updates::State,
     file_history: file_history::State,
     automatic: automatic_refresh::State,
     branch_actions: branch_actions::State,
@@ -456,6 +461,7 @@ impl GitTurtle {
             modal_focus_generation: 0,
             settings_editor,
             history_search: history_search::State::default(),
+            history_updates: history_updates::State::default(),
             file_history: file_history::State::default(),
             automatic: automatic_refresh::State::default(),
             branch_actions: branch_actions::State::default(),
@@ -827,6 +833,10 @@ impl GitTurtle {
             self.nav_scroll.scroll_to_item(0, ScrollStrategy::Top);
         }
         self.back_to_history(window, cx);
+        self.history_updates.reset_history();
+        if self.path.as_ref() != Some(&path) {
+            self.history_updates.committed = None;
+        }
         self.automatic.retained_commit = None;
         self.path = Some(path.clone());
         self.refs.clear();
@@ -906,6 +916,9 @@ impl GitTurtle {
                 if self.tab_snapshot_accepted(&snapshot.repository, window, cx) {
                     return;
                 }
+                self.history_updates
+                    .clear_scope_error(&mut self.operation_error);
+                self.history_updates.captured(&snapshot);
                 self.history_paging = history_paging::State::from_snapshot(&snapshot);
                 self.status = format!(
                     "Local snapshot · {:.0} ms · {} branches · {} worktrees",
@@ -1760,6 +1773,9 @@ fn primary_label() -> &'static str {
 fn main() {
     if let Some(code) = gitturtle_core::run_askpass_if_requested() {
         std::process::exit(code);
+    }
+    if build_info::handle_cli() {
+        return;
     }
     #[cfg(target_os = "linux")]
     if gpui_kit::guess_compositor() == "Headless" {

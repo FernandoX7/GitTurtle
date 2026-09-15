@@ -404,19 +404,40 @@ pub(super) fn settings_path() -> Result<PathBuf> {
         .ok_or_else(|| anyhow::anyhow!("The user settings directory is unavailable"))
 }
 
-// Full-app tests run real background and quit-time preference writes. Resolve
-// their defaults here, on every thread, without changing process environment or
-// allowing an integration fixture to replace a developer's saved session.
+// Full-app tests run real background and quit-time preference writes. Each test
+// thread owns an isolated directory, inherited by its serial executors, so
+// concurrent fixtures cannot overwrite each other's read/merge/write stores.
+#[cfg(test)]
+thread_local! {
+    static TEST_SETTINGS_DIRECTORY: std::cell::RefCell<Option<std::sync::Arc<tempfile::TempDir>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn test_settings_directory() -> std::sync::Arc<tempfile::TempDir> {
+    TEST_SETTINGS_DIRECTORY.with(|directory| {
+        directory
+            .borrow_mut()
+            .get_or_insert_with(|| {
+                std::sync::Arc::new(
+                    tempfile::Builder::new()
+                        .prefix("gitturtle-app-tests-")
+                        .tempdir()
+                        .expect("create isolated test preferences"),
+                )
+            })
+            .clone()
+    })
+}
+
+#[cfg(test)]
+pub(super) fn inherit_test_settings_directory(directory: std::sync::Arc<tempfile::TempDir>) {
+    TEST_SETTINGS_DIRECTORY.with(|current| *current.borrow_mut() = Some(directory));
+}
+
 #[cfg(test)]
 pub(super) fn settings_path() -> Result<PathBuf> {
-    static DIRECTORY: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
-    let directory = DIRECTORY.get_or_init(|| {
-        tempfile::Builder::new()
-            .prefix("gitturtle-app-tests-")
-            .tempdir()
-            .expect("create isolated test preferences")
-    });
-    Ok(directory.path().join("preferences.json"))
+    Ok(test_settings_directory().path().join("preferences.json"))
 }
 
 struct PendingFile(PathBuf);

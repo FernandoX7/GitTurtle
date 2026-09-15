@@ -4,6 +4,27 @@ Current milestone: [security, architecture and resource bounds](security-quality
 
 This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native workflow evidence is primarily macOS-specific; the September 14 entries add Pop!_OS startup and clean Ubuntu/virtual-native checks. Current platform execution and access limits belong in these dated records, the active milestone and [environment report](benchmarks/2026-09-09-milestone-environment.md). The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Published distribution packages are outside the current milestone; the Linux runbook now includes a local teammate bundle.
 
+## September 14 refresh, history and split-diff preview
+
+Source `417b5e8` is installed as Linux x86-64 release 0.1.0 Preview, binary
+SHA-256 `45606c5a195d1696096b93ea0fa3a38b67b025990ea794f25f91d4211e5729c2`.
+The [native investigation and final acceptance](benchmarks/2026-09-14-native-preview.md)
+record physical GNOME/Wayland scale-2 code/gutter scrolling, long lines,
+Find/selection/copy, Show latest, build diagnostics and recoverable installation.
+Final code and gutter runs had zero mismatched pane offsets; the evidence does
+not establish a general frame-rate improvement. Supplemental native X11 checks
+cover disposable stage/commit/View commit/fetch/pull/push and a linked-worktree
+picker open. All genuine tabs and preferences survived the host upgrade.
+
+The [refresh investigation](benchmarks/2026-09-14-refresh-reliability.md)
+documents the reproduced directory limit, disappearing-directory handling,
+ignore/tracked policy, linked-worktree roots and the native sibling-event
+regression. Final workspace tests passed 729 tests with five explicit ignores;
+strict Clippy and release build passed. Public binary notice gaps, untested
+platforms and compositor/scale limits remain explicit. The separate static
+[website](../website/README.md) has current native captures and a Cloudflare
+deployment plan; no public deployment or DNS change is implied.
+
 ## September 14 public-launch preparation
 
 Application commit `7d18fef` adds a visible Linux Menu and grouped searchable
@@ -229,7 +250,7 @@ For changes to the current workflows, use disposable repositories and local remo
 | Current workflow | Relevant validation |
 | --- | --- |
 | Repository tabs and local workspaces | Open a new repository after a search, verify independent inputs, canonical alias deduplication and linked-worktree identity, eight-tab bound, pin/group/reorder/close, captured in-flight writes, draft recovery and lazy restart bookmarks. Exercise moved/missing paths and explicit picker recovery. |
-| Incremental ordinary history | Page across the5,000-row/64MiB window with an older selection retained; verify stable OIDs, connected graph frontier and native Older/Previous/Newest behavior. Inspect slim and lane-overflow graphs, rapid selection, cancellation and search discontinuity. Use the [120k fixture measurements](benchmarks/2026-09-10-history-pagination.md) for backend comparisons and separate native callbacks. |
+| Incremental ordinary history | Page across the5,000-row/64MiB window with an older selection retained; verify stable OIDs, connected graph frontier and native Older/Previous/Latest behavior, top following without selection changes, and the Show latest cue while browsing older rows or Compare. Inspect slim and lane-overflow graphs, rapid selection, cancellation and search discontinuity. Use the [120k fixture measurements](benchmarks/2026-09-10-history-pagination.md) for backend comparisons and separate native callbacks. |
 | Interactive model comparison | Exercise pointer and keyboard orbit/pan/zoom/fit, standard views, linked and independent cameras, edges, orientation, units, missing sides and captured originals. Compare GLB material-only and texture-only revisions, static skins/morphs, clip selection, Play/Pause, scrubbing, different durations and Reduce Motion. Check fixed cameras and current-pose Fit, malformed appearance fallback, paused/hidden quiescence, rapid activation/Back, tabs and closure. Compare changed transforms/scale, absent and unsupported sides in History and Working Changes; retain separate path filters through navigation and refresh. Compare curved analytic and mapped STEP fixtures within the [finite support matrix](file-previews.md), then repeat opens/tab changes/window closure while observing resource retirement. |
 | PDF and rendered Markdown | Navigate PDF beyond page8 with entry/previous/next, unequal counts, linked positions, zoom, extracted text and literal copy; retain state across Back/tabs/restart and evict bounded cached pages. Check native Markdown prose/tables/code/Mermaid, revision-correct local images, explicit local/external links, linked scrolling, keyboard reading and exact source staging. |
 | GitHub collaboration | Open/close the offline native panel through the palette; check keyboard activation, visible composers, confirmations, refreshed PR and recovery lists at narrow/wide sizes, both densities, larger text and light/dark themes. Reply, resolve/reopen, page authoritative conversations and retain exact drafts through navigation, tabs and restart. Check stale account/head/thread identities, missing context, permissions, rate limits, partial failures, persistence failures, cancellation and uncertainty. Real connection, PRs/comments/reviews and hosted CI require specifically authorized disposable context; record independently verified live results and credential access separately. |
@@ -573,7 +594,7 @@ Process RSS snapshots were about 142.3 MiB after the outbound traversal and 143.
 
 ## Current limits and follow-up
 
-- Ordinary history streams an immutable captured traversal in500-commit pages and retains a5,000-row/64MiB window, plus one selected inspection. Older continues forward; Previous replays and discards bounded earlier pages; Newest returns to the captured beginning. Refresh resolves current refs again. Repository-wide search is separate: it pins local tips or selected ancestry, supports cancellation and explicit continuation, and retains up to 10,000 matches or 64 MiB of metadata. Scan, byte, and time stops do not establish exhaustion.
+- Ordinary history streams an immutable captured traversal in500-commit pages and retains a5,000-row/64MiB window, plus one selected inspection. Older continues forward; Previous replays and discards bounded earlier pages; Latest captures current local tips and returns to row zero while retaining the selected inspector. Refresh resolves current refs again. Repository-wide search is separate: it pins local tips or selected ancestry, supports cancellation and explicit continuation, and retains up to 10,000 matches or 64 MiB of metadata. Scan, byte, and time stops do not establish exhaustion.
 - Local filesystem and regained-focus events request coalesced read-only refreshes; manual Refresh remains available. Active writes and foreground reads take priority, and failed watchers report a recovery action. No refresh fetches objects. Fetch, fast-forward Pull, and non-force Push require explicit actions; the dated native network checks used local remotes, not a hosting provider's credential flow.
 - Supported text changes allow hunk and changed-line staging/unstaging. Binary, oversized, filtered/normalized, renamed, and mode/type-changing files use whole-file actions; ambiguous missing-final-newline selections require a complete replacement or hunk. Commit Title/Description drafts are persisted per worktree, subject to the bounded preference file.
 - Unified and aligned split diffs coexist with Before/After source tabs. Text previews and manual conflict editors are bounded to 2 MiB and 100,000 lines per side. Parent controls expose the first 128 parents of unusually large merge commits with an explicit count notice. Rename detection uses a 1,000-candidate limit.

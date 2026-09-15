@@ -21,11 +21,40 @@ use gpui_kit::{
     },
     div, fill, point, px, relative, rgb, size,
 };
-use std::{cell::Cell, collections::BTreeSet, ops::Range, rc::Rc, sync::Arc};
+use std::{
+    cell::Cell,
+    collections::BTreeSet,
+    ops::Range,
+    rc::Rc,
+    sync::{Arc, OnceLock},
+    time::Instant,
+};
 
 const FONT_SIZE: f32 = 12.;
 const CELL_PADDING: f32 = 9.;
 const ACTION_WIDTH: f32 = 28.;
+
+/// Opt-in observations of existing input and paint work. This deliberately does
+/// not request a frame: idle samples must not create the work being measured.
+pub(crate) fn scroll_trace_enabled() -> bool {
+    scroll_trace_start().is_some()
+}
+
+fn scroll_trace_start() -> Option<&'static Instant> {
+    static START: OnceLock<Option<Instant>> = OnceLock::new();
+    START
+        .get_or_init(|| std::env::var_os("GITTURTLE_TRACE_SCROLL").map(|_| Instant::now()))
+        .as_ref()
+}
+
+pub(crate) fn trace_scroll(kind: &str, details: std::fmt::Arguments<'_>) {
+    if let Some(start) = scroll_trace_start() {
+        eprintln!(
+            "gitturtle.scroll kind={kind} time_us={} {details}",
+            start.elapsed().as_micros()
+        );
+    }
+}
 
 pub enum DiffViewEvent {
     ApplyPartial {
@@ -205,6 +234,7 @@ impl Render for DiffView {
         let painted_scroll = Rc::clone(&self.pending_scroll);
         let gutter_origin = Rc::clone(&self.gutter_origin);
         let rows = Arc::clone(&self.rows);
+        let trace_label = self.label.clone();
         let row_count = rows.len();
         let column_width = self.column_width * crate::appearance::code_scale();
         let single_column = self.single_column;
@@ -283,6 +313,9 @@ impl Render for DiffView {
                                     point(bounds.origin.x + px(action_width), bounds.origin.y),
                                     size(bounds.size.width - px(action_width), bounds.size.height),
                                 );
+                                if scroll_trace_enabled() {
+                                    trace_editor_paint(&editor, &trace_label, bounds, window, cx);
+                                }
                                 paint_gutter(
                                     &editor,
                                     &rows,
@@ -307,6 +340,59 @@ impl Render for DiffView {
                 el.child(self.render_partial_selection(cx))
             })
     }
+}
+
+fn trace_editor_paint(
+    editor: &Entity<EditorState>,
+    label: &SharedString,
+    gutter_bounds: Bounds<Pixels>,
+    window: &mut Window,
+    cx: &App,
+) {
+    let state = editor.read(cx);
+    let input_bounds = state.input_bounds();
+    trace_scroll(
+        "editor_paint",
+        format_args!(
+            "window={:?} editor={:?} label={label:?} scale={} offset={:?} text={:?} input={input_bounds:?} line_height={:?} visible={:?}",
+            window.window_handle().window_id(),
+            editor.entity_id(),
+            window.scale_factor(),
+            state.scroll_offset(),
+            state.text_bounds(),
+            state.line_height(),
+            state.visible_row_range(),
+        ),
+    );
+    let editor = editor.clone();
+    let label = label.clone();
+    // Capture sees events before the editor's ordinary bubble listener can
+    // consume them. The observer never changes focus, offsets or propagation.
+    window.on_mouse_event(move |event: &gpui_kit::ScrollWheelEvent, phase, _, cx| {
+        if phase != gpui_kit::DispatchPhase::Capture
+            || (!input_bounds.contains(&event.position) && !gutter_bounds.contains(&event.position))
+        {
+            return;
+        }
+        let state = editor.read(cx);
+        let Some(height) = state.line_height() else {
+            return;
+        };
+        trace_scroll(
+            "input",
+            format_args!(
+                "editor={:?} label={label:?} area={} delta={:?} before={:?}",
+                editor.entity_id(),
+                if gutter_bounds.contains(&event.position) {
+                    "gutter"
+                } else {
+                    "code"
+                },
+                event.delta.pixel_delta(height),
+                state.scroll_offset(),
+            ),
+        );
+    });
 }
 
 impl DiffView {

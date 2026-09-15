@@ -9,6 +9,7 @@ mod blame;
 mod conflict_blocks;
 mod history;
 mod inspection;
+mod local_watch;
 mod preview_assets;
 mod process_io;
 mod work;
@@ -16,6 +17,7 @@ pub use blame::*;
 pub use conflict_blocks::*;
 pub use history::*;
 pub use inspection::*;
+pub use local_watch::*;
 pub use preview_assets::*;
 pub use work::*;
 

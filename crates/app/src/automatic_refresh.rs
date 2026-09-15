@@ -10,6 +10,7 @@ pub struct State {
     roots: Option<WatchRoots>,
     watch_task: Option<Task<()>>,
     watch_failed: bool,
+    watch_warning: Option<String>,
     events_task: Option<Task<()>>,
     task: Option<Task<()>>,
     pending: LocalChange,
@@ -19,6 +20,9 @@ pub struct State {
 }
 
 impl State {
+    pub(super) fn watch_warning(&self) -> Option<&str> {
+        self.watch_warning.as_deref()
+    }
     pub fn reset(&mut self) {
         let epoch = self.epoch.wrapping_add(1);
         *self = Self {
@@ -50,6 +54,16 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.check_local_watcher(force, true, window, cx);
+    }
+
+    fn check_local_watcher(
+        &mut self,
+        force: bool,
+        retry_failed: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(repo) = self.repository.clone() else {
             return;
         };
@@ -57,7 +71,7 @@ impl GitTurtle {
             return;
         }
         let path = repo.path().to_owned();
-        let previous = if self.automatic.watch_failed {
+        let previous = if self.automatic.watch_failed && retry_failed {
             None
         } else {
             self.automatic.roots.clone()
@@ -84,8 +98,9 @@ impl GitTurtle {
                 match result {
                     Ok((roots, subscription)) => {
                         this.automatic.roots = Some(roots);
-                        this.automatic.watch_failed = false;
                         if let Some((watcher, changes)) = subscription {
+                            this.automatic.watch_failed = false;
+                            this.automatic.watch_warning = None;
                             this.automatic.watcher = Some(watcher);
                             this.listen_for_local_changes(path, changes, window, cx);
                             // Close the small interval between the preceding
@@ -95,7 +110,7 @@ impl GitTurtle {
                     },
                     Err(error) => {
                         this.automatic.watch_failed = true;
-                        this.operation_error.get_or_insert_with(|| format!("Automatic refresh is unavailable: {error:#}. Use Refresh to read current local changes."));
+                        this.automatic.watch_warning = Some(format!("Automatic refresh could not start.\n\n{error:#}\n\nRefresh reads current local state and retries the watcher."));
                     }
                 }
                 cx.notify();
@@ -132,16 +147,51 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(error) = &change.error {
+        if change.recovered {
+            self.automatic.watch_failed = false;
+            self.automatic.watch_warning = None;
+        } else if let Some(error) = &change.error {
             self.automatic.watch_failed = true;
-            self.operation_error.get_or_insert_with(|| {
-                format!(
-                    "Automatic refresh: {error}. Refresh manually if local changes are missing."
-                )
-            });
+            self.automatic.watch_warning = Some(error.clone());
         }
         self.automatic.pending.merge(change);
         self.try_automatic_refresh(window, cx);
+    }
+
+    pub(super) fn retry_automatic_refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ensure_local_watcher(true, window, cx);
+        self.queue_automatic_refresh(
+            LocalChange {
+                rescan: true,
+                ..Default::default()
+            },
+            window,
+            cx,
+        );
+        cx.notify();
+    }
+
+    pub(super) fn show_automatic_refresh_details(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use gpui_kit::component::{WindowExt, dialog::DialogButtonProps};
+        let Some(details) = self.automatic.watch_warning.clone() else {
+            return;
+        };
+        let editor = text::editor(&details, "text", None, window, cx);
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let details = details.clone();
+            dialog.title("Automatic refresh")
+                .width(px(620.))
+                .child(div().child("Some local changes may need Refresh. Existing watches continue where available. Refresh reads local changes and retries coverage."))
+                .child(crate::editor_find::Editor::new(&editor).readonly(true).h(px(240.)).aria_label("Automatic refresh details"))
+                .child(button("copy-refresh-details", "Copy details", "", false).on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(details.clone()));
+                }))
+                .button_props(DialogButtonProps::default().ok_text("Close"))
+        });
     }
 
     pub(super) fn cancel_automatic_read(&mut self) {
@@ -224,7 +274,7 @@ impl GitTurtle {
                         // later event, manual Refresh, or regained focus may
                         // reconnect; do not spin on a persistent watch error.
                         if history && changed.error.is_none() {
-                            this.ensure_local_watcher(true, window, cx);
+                            this.check_local_watcher(true, false, window, cx);
                         }
                     }
                     Ok(Ok(_)) => {}
@@ -255,12 +305,14 @@ impl GitTurtle {
                     self.apply_quiet_snapshot(snapshot, cx)
                 }
                 Ok(worker::QuietHistory::Retained { metadata, error }) => {
+                    self.history_updates.scope_unavailable();
                     self.refs = metadata.refs;
                     self.branches = metadata.branches;
                     self.worktrees = metadata.worktrees;
                     self.repository = Some(metadata.repository);
                     self.rebuild_navigation(cx);
-                    self.operation_error.get_or_insert_with(|| format!("History scope changed: {error}. The displayed history is retained; choose a current branch to browse its history."));
+                    self.history_updates
+                        .report_scope_error(&error, &mut self.operation_error);
                 }
                 Err(error) => {
                     self.operation_error
@@ -378,74 +430,6 @@ impl GitTurtle {
         }
         if self.page == AppPage::Repository {
             self.ensure_editor(window, cx);
-        }
-    }
-
-    fn apply_quiet_snapshot(&mut self, snapshot: worker::Snapshot, cx: &mut Context<Self>) {
-        let Some(snapshot) = self.retain_search_snapshot(snapshot, cx) else {
-            return;
-        };
-        if self.history_paging.is_deep(self.visible.len()) {
-            // Deep browsing remains pinned even when local refs move. Refresh
-            // navigation metadata without silently replacing its loaded window.
-            self.refs = snapshot.refs;
-            self.branches = snapshot.branches;
-            self.worktrees = snapshot.worktrees;
-            self.repository = Some(snapshot.repository);
-            self.rebuild_navigation(cx);
-            return;
-        }
-        self.history_paging = history_paging::State::from_snapshot(&snapshot);
-        let selected = self
-            .selected_commit
-            .and_then(|index| self.commits.get(index))
-            .cloned();
-        let offset = self.history_scroll.0.borrow().base_handle.offset();
-        let height = self.settings.density.history_row_height();
-        let top = ((-f32::from(offset.y)) / height).max(0.) as usize;
-        let anchor = self
-            .visible
-            .get(top)
-            .and_then(|index| self.commits.get(*index))
-            .map(|commit| commit.oid.clone());
-        self.refs = snapshot.refs;
-        self.branches = snapshot.branches;
-        self.worktrees = snapshot.worktrees;
-        self.commits = snapshot.commits;
-        self.graph = snapshot.graph;
-        self.graph_notice = snapshot.graph_notice;
-        self.graph_lanes = self.graph.iter().map(|row| row.width).max().unwrap_or(1);
-        self.repository = Some(snapshot.repository);
-        self.automatic.retained_commit = None;
-        self.selected_commit = selected.as_ref().and_then(|selected| {
-            self.commits
-                .iter()
-                .position(|commit| commit.oid == selected.oid)
-        });
-        if self.selected_commit.is_none()
-            && let Some(selected) = selected
-        {
-            // Keep immutable inspector/Compare context when a ref was rewritten
-            // or a page moved. The retained commit is outside the refreshed list.
-            let index = self.commits.len();
-            self.commits.push(selected);
-            self.graph.push(graph::GraphRow::default());
-            self.selected_commit = Some(index);
-            self.automatic.retained_commit = Some(index);
-            self.status = "Selected comparison retained outside the current history scope".into();
-        }
-        self.filter_history_retaining_scroll(cx);
-        self.rebuild_navigation(cx);
-        if let Some(anchor) = anchor
-            && let Some(next_top) = self
-                .visible
-                .iter()
-                .position(|index| self.commits[*index].oid == anchor)
-        {
-            self.history_scroll.0.borrow().base_handle.set_offset(point(
-                offset.x,
-                px(reanchor_offset(f32::from(offset.y), top, next_top, height)),
-            ));
         }
     }
 }

@@ -778,6 +778,7 @@ impl GitTurtle {
                 let succeeded=result.is_ok();
                 match result {
                     Ok(outcome) => {
+                        if let Some(oid) = &outcome.commit_oid { this.tab_commit_receipt(&path, oid.clone()); }
                         let notice = if let (Some(oid), Some(message)) = (outcome.commit_oid.as_ref(), submitted_message.as_deref()) {
                             format!("Committed {} · {}", short_oid(oid), message.lines().next().unwrap_or_default())
                         } else if let Some(notice) = &success_notice {

@@ -65,9 +65,15 @@ pub struct SerialExecutor {
 impl SerialExecutor {
     pub fn new(name: &str) -> Self {
         let (sender, receiver) = mpsc::sync_channel::<Operation>(8);
+        #[cfg(test)]
+        let test_settings = crate::preferences::test_settings_directory();
         let _ = std::thread::Builder::new()
             .name(name.into())
             .spawn(move || {
+                // The worker retains this test's storage until accepted jobs
+                // drain, even if the owner test thread has already exited.
+                #[cfg(test)]
+                crate::preferences::inherit_test_settings_directory(test_settings);
                 for operation in receiver {
                     operation(true);
                 }
@@ -134,6 +140,107 @@ impl SerialExecutor {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn test_settings_are_inherited_by_workers_and_isolated_between_owners() {
+        use crate::github::{NewPull, Repository, drafts};
+
+        let (saved, ready) = mpsc::channel();
+        let paths = std::thread::scope(|scope| {
+            let mut releases = Vec::new();
+            let owners: Vec<_> = ["first owner's draft", "second owner's draft"]
+                .into_iter()
+                .map(|body| {
+                    let saved = saved.clone();
+                    let (release, gate) = mpsc::channel();
+                    releases.push(release);
+                    scope.spawn(move || {
+                        let settings = crate::preferences::settings_path().unwrap();
+                        let writer = SerialExecutor::new("test-settings-writer");
+                        let reader = SerialExecutor::new("test-settings-reader");
+                        let expected = settings.clone();
+                        let result = futures::executor::block_on(writer.submit(move || {
+                            assert_eq!(crate::preferences::settings_path()?, expected);
+                            drafts::save(drafts::Draft::Pull(NewPull {
+                                repository: Repository::parse("fixture/shared-key")?,
+                                title: "Same draft identity".into(),
+                                body: body.into(),
+                                head: "feature".into(),
+                                base: "main".into(),
+                                draft: true,
+                                expected_head: None,
+                                expected_base: None,
+                            }))
+                        }));
+                        // Both stores have finished replacing their contents.
+                        // A shared default directory loses one owner's text.
+                        saved.send(()).unwrap();
+                        gate.recv_timeout(std::time::Duration::from_secs(5))
+                            .unwrap();
+                        result.unwrap().unwrap();
+                        let loaded = futures::executor::block_on(reader.submit(drafts::load))
+                            .unwrap()
+                            .unwrap();
+                        assert_eq!(loaded.len(), 1);
+                        assert_eq!(loaded[0].text(), body);
+                        settings
+                    })
+                })
+                .collect();
+            for _ in &owners {
+                ready
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+            }
+            for release in releases {
+                release.send(()).unwrap();
+            }
+            owners
+                .into_iter()
+                .map(|owner| owner.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_ne!(paths[0], paths[1]);
+    }
+
+    #[test]
+    fn test_settings_outlive_owner_until_accepted_jobs_drain() {
+        let (settings, directory, release, held, queued) = std::thread::spawn(|| {
+            let settings = crate::preferences::settings_path().unwrap();
+            let directory = Arc::downgrade(&crate::preferences::test_settings_directory());
+            let executor = SerialExecutor::new("test-settings-owner-exit");
+            let (release, gate) = mpsc::channel();
+            let (started, running) = mpsc::channel();
+            let held = executor.submit(move || {
+                started.send(())?;
+                gate.recv_timeout(std::time::Duration::from_secs(5))?;
+                Ok(())
+            });
+            running
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            let expected = settings.clone();
+            let queued = executor.submit(move || {
+                let settings = crate::preferences::settings_path()?;
+                assert_eq!(settings, expected);
+                crate::preferences::atomic_write(&settings, b"queued after owner exit")?;
+                Ok(std::fs::read(settings)?)
+            });
+            (settings, directory, release, held, queued)
+        })
+        .join()
+        .unwrap();
+        // Both the owner's thread-local context and its executor are dropped;
+        // the blocked worker must still retain storage for the accepted write.
+        assert!(directory.upgrade().is_some());
+        assert!(settings.parent().unwrap().is_dir());
+        release.send(()).unwrap();
+        futures::executor::block_on(held).unwrap().unwrap();
+        assert_eq!(
+            futures::executor::block_on(queued).unwrap().unwrap(),
+            b"queued after owner exit"
+        );
+    }
 
     #[test]
     fn successful_repository_switch_clears_previous_outcomes_without_resurrecting_them() {

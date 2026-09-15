@@ -1524,7 +1524,7 @@ fn normal_config_at(path: &Path, key: &str) -> Result<Option<String>> {
     )))
 }
 
-fn normal_command(path: &Path) -> Command {
+pub(super) fn normal_command(path: &Path) -> Command {
     let mut command = Command::new("git");
     command
         .args([

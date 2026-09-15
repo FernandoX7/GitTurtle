@@ -1,0 +1,10 @@
+{
+  "application": "GitTurtle",
+  "version": "0.1.0",
+  "source_revision": "417b5e8d0c739ca3746d2cab379db58efa4d8ea9",
+  "source_tree": "modified",
+  "target": "x86_64-unknown-linux-gnu",
+  "profile": "release",
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+  "build_unix_seconds": "1789422236"
+}

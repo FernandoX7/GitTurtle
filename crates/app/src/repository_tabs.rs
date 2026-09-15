@@ -527,6 +527,7 @@ struct WarmTab {
     blame: blame::State,
     search: history_search::State,
     paging: history_paging::State,
+    history_updates: history_updates::State,
     inputs: TabInputs,
     branches: Vec<Branch>,
     worktrees: Vec<Worktree>,
@@ -579,6 +580,7 @@ impl GitTurtle {
             + self.revision_inspection.retained_bytes()
             + self.blame.retained_bytes()
             + self.history_search.retained_bytes()
+            + self.history_updates.retained_bytes()
             + self
                 .branches
                 .iter()
@@ -792,6 +794,7 @@ impl GitTurtle {
             blame: std::mem::take(&mut self.blame),
             search: std::mem::take(&mut self.history_search),
             paging: std::mem::take(&mut self.history_paging),
+            history_updates: std::mem::take(&mut self.history_updates),
             inputs: TabInputs::capture(self.tab_inputs(), cx),
             branches: std::mem::take(&mut self.branches),
             worktrees: std::mem::take(&mut self.worktrees),
@@ -852,6 +855,7 @@ impl GitTurtle {
         self.blame = warm.blame;
         self.history_search = warm.search;
         self.history_paging = warm.paging;
+        self.history_updates = warm.history_updates;
         self.branches = warm.branches;
         self.worktrees = warm.worktrees;
         self.nav_rows = warm.nav_rows;
@@ -1559,6 +1563,16 @@ impl GitTurtle {
         );
         self.save_repository_session(window, cx);
     }
+    pub(super) fn tab_commit_receipt(&mut self, path: &Path, oid: String) {
+        if self.path.as_deref() == Some(path) {
+            self.history_updates.committed = Some(oid);
+        } else if let Some(index) = self.repository_tabs.find(path)
+            && let Some(warm) = self.repository_tabs.tabs[index].warm.as_mut()
+        {
+            warm.history_updates.committed = Some(oid);
+        }
+    }
+
     pub(super) fn tab_operation_feedback(
         &mut self,
         path: &Path,

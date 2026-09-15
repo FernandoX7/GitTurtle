@@ -1848,6 +1848,9 @@ impl<M: InputModeKind> InputBaseState<M> {
             .unwrap_or(window.line_height());
         let delta = event.delta.pixel_delta(line_height);
 
+        // A direct gesture supersedes an earlier programmatic request. Leaving
+        // that request pending would restore its older offset in the next paint.
+        self.deferred_scroll_offset = None;
         let old_offset = self.scroll_handle.offset();
         self.update_scroll_offset(Some(old_offset + delta), cx);
 
@@ -2121,9 +2124,17 @@ impl<M: InputModeKind> InputBaseState<M> {
 
     /// Set scroll offset of the editor viewport.
     ///
-    /// The offset will be clamped to the valid range, and applied after the next layout.
+    /// Update the current viewport immediately when geometry is available, then
+    /// clamp again at layout. Observers of linked editors must see the requested
+    /// viewport before another gesture can arrive, rather than a stale paint ack.
     pub fn set_scroll_offset(&mut self, offset: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
         self.deferred_scroll_offset = Some(offset);
+        if self.last_layout.is_some() {
+            self.update_scroll_offset(Some(offset), cx);
+            // Use the accepted range for visible-row layout too, not a raw
+            // request that would only be corrected after text was painted.
+            self.deferred_scroll_offset = Some(self.scroll_handle.offset());
+        }
         cx.notify();
     }
 

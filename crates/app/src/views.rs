@@ -829,10 +829,10 @@ impl GitTurtle {
                         ),
                     )
                     .child(
-                        button("history-newest", "Newest", "", false)
-                            .disabled(self.history_search_active() || self.loading.is_some() || self.history_paging.offset == 0)
-                            .tooltip("Return to the newest rows in this captured snapshot; Refresh reads current tips")
-                            .on_click(cx.listener(|this, _, window, cx| this.request_history_page(0, window, cx))),
+                        button("history-newest", "Latest", "", false)
+                            .disabled(self.repository.is_none() || self.loading.is_some() || self.operation_busy.is_some())
+                            .tooltip("Read current local history and show its newest rows; keeps the selected inspector")
+                            .on_click(cx.listener(|this, _, window, cx| this.show_latest_history(window, cx))),
                     )
                     .child(
                         button("history-previous", "Previous", "", false)
@@ -2429,6 +2429,12 @@ impl Render for GitTurtle {
                                     .text_size(crate::appearance::ui_text(11.))
                                     .child(notice.clone()),
                             )
+                            .when(self.history_updates.committed.as_ref().is_some_and(|oid| notice.starts_with(&format!("Committed {}", short_oid(oid)))), |row| row.child(
+                                button("view-created-commit", "View commit", "", false)
+                                    .disabled(self.loading.is_some() || self.operation_busy.is_some())
+                                    .tooltip("Inspect the commit you created; the next commit draft stays saved")
+                                    .on_click(cx.listener(|this, _, window, cx| this.view_created_commit(window, cx)))
+                            ))
                             .child(
                                 button("dismiss-operation-notice", "Dismiss", "", false).on_click(
                                     cx.listener(|this, _, _, cx| {
@@ -2440,6 +2446,7 @@ impl Render for GitTurtle {
                     }))
                 },
             )
+            .when(self.page == AppPage::Repository, |el| el.children(self.render_history_update_notice(cx)))
             .child(div().flex_1().min_h_0().child(body))
             .child(
                 div()
@@ -2474,6 +2481,16 @@ impl Render for GitTurtle {
                                 .to_string(),
                         }),
                     )
+                    .when(self.page == AppPage::Repository && self.automatic.watch_warning().is_some(), |footer| {
+                        footer.child(div().flex().items_center().gap_2()
+                            .child(div().id("local-refresh-status").role(Role::Status)
+                                .aria_label("Some local changes need Refresh")
+                                .child("Some changes need Refresh"))
+                            .child(button("retry-local-refresh", "Refresh", "", false).h(crate::appearance::ui_size(20.)).text_size(crate::appearance::ui_text(10.)).disabled(self.operation_busy.is_some())
+                                .on_click(cx.listener(|this, _, window, cx| this.retry_automatic_refresh(window, cx))))
+                            .child(button("local-refresh-details", "Details…", "", false).h(crate::appearance::ui_size(20.)).text_size(crate::appearance::ui_text(10.))
+                                .on_click(cx.listener(|this, _, window, cx| this.show_automatic_refresh_details(window, cx)))))
+                    })
                     .child(match self.page {
                         AppPage::Settings => "Tab Move between controls · Esc Back".to_owned(),
                         AppPage::Projects => {

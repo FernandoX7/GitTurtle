@@ -1,0 +1,21 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s
+     Running unittests src/main.rs (target/debug/deps/gitturtle-69e5973680ff8f9b)
+
+running 14 tests
+test local_refresh::tests::bursts_wait_for_quiet_but_continuous_activity_has_a_maximum_delay ... ok
+test local_refresh::tests::delivery_merges_many_changes_without_an_unbounded_refresh_queue ... ok
+test local_refresh::tests::directory_budget_preserves_metadata_and_recovers_when_subtrees_are_removed ... ok
+test local_refresh::tests::disappearing_and_replaced_directories_are_normal_registration_races ... ok
+test local_refresh::tests::edited_ignore_rules_reconcile_only_affected_coverage ... ok
+test local_refresh::tests::fingerprint_storage_remains_bounded_during_large_change_sets ... ok
+test local_refresh::tests::fingerprinting_suppresses_duplicate_events_and_index_lock_directory_noise ... ok
+test local_refresh::tests::ignored_build_tree_is_pruned_before_the_directory_limit ... ok
+test local_refresh::tests::index_changes_add_tracked_paths_inside_an_ignored_directory ... ok
+test local_refresh::tests::native_access_and_index_lock_transients_do_not_request_refresh ... ok
+test local_refresh::tests::native_directory_churn_keeps_notifications_available_without_race_warnings ... ok
+test local_refresh::tests::native_notifications_detect_worktree_private_and_common_git_changes ... ok
+test local_refresh::tests::recovery_supersedes_old_warning_in_a_coalesced_delivery ... ok
+test local_refresh::tests::resolved_linked_worktree_paths_and_git_lock_filter_preserve_scope ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 347 filtered out; finished in 3.43s
+

@@ -1,0 +1,369 @@
+{
+  "selection": "Unmodified gitturtle.scroll lines only, from first input through input 240 + 500 ms inclusive. No document content, repository paths or desktop imagery included in these trace subsets. Test logs copied unchanged; installation/package logs have personal path prefixes redacted as noted in their entries; /work/GitTurtle is the disposable build-root path.",
+  "source_files": {
+    "trace-before.log": {
+      "sha256": "e8c4c770630bc69f8f1d725272a86f4bdda874f257647b8a2031d5cdab92103a",
+      "bytes": 499559,
+      "input_observations_at_snapshot": 315,
+      "retained_as": "split-before.log"
+    },
+    "trace-before-input.json": {
+      "sha256": "08cf93cd83b7d560fb50f08555ae09d0c0ac39e0415c90b08fbceca7c7dc14d3",
+      "retained_as": "sender-before.json"
+    },
+    "trace-after.log": {
+      "sha256": "42a7ba27e33211742f53b1ce3c132453904bc9b8bbe2a7377357c0ef89aace22",
+      "bytes": 795979,
+      "input_observations_at_snapshot": 720,
+      "retained_as": "split-after.log"
+    },
+    "after-split-input.json": {
+      "sha256": "c8d178956686b63d3c8f843e7341cb80e2fa54fc66930804355e6f6484e44580",
+      "retained_as": "sender-after.json"
+    },
+    "workspace-tests.log": {
+      "sha256": "35656d694fc434c04507e9b7c0ad9ab50e977506183e981875d4da41f1425392",
+      "retained_as": "workspace-tests.log"
+    },
+    "workspace-clippy.log": {
+      "sha256": "5893abe36b555b30fd7e5f7a351511957eb8a6c2378f6413a5aff25411b8311b",
+      "retained_as": "workspace-clippy.log"
+    },
+    "scroll-tests.log": {
+      "sha256": "b645641a8bff3acf24237bffbe209c3ea2f5e6c48c7011955b868a3c3c9f9548",
+      "retained_as": "scroll-tests.log"
+    },
+    "history-tests.log": {
+      "sha256": "89e498cdd3fc828a6008a238fba94bf2abb00ed3f7cf87d932dc67a3006229e9",
+      "retained_as": "history-tests.log"
+    },
+    "watcher-tests.log": {
+      "sha256": "d7a2e5e166ca3f00e8fe1805c1cf27b96f13fa133ea4e93f6e5ad870ebaff09d",
+      "retained_as": "watcher-tests.log"
+    },
+    "baseline-trace-build.log": {
+      "sha256": "8601e1e44075fca33bc1da592ffb91afd74d56e9072e82e18e5bcfcb6dea9ab8",
+      "retained_as": "baseline-trace-build.log"
+    },
+    "after-release-build.log": {
+      "sha256": "0628ae1df7366f1fe90f12d0aa4e929fec5d4fd09856211d145242a6aba06bf5",
+      "retained_as": "after-release-build.log"
+    },
+    "final-workspace-tests.log": {
+      "sha256": "31776796adfb2aedf8357c50e1ed95da286c36e7eb6ee78a1c2239441f1579fa",
+      "retained_as": "final-workspace-tests.log"
+    },
+    "final-workspace-clippy.log": {
+      "sha256": "229ad9e3615b82854e7ea891908460f33e1f5cffeac1dce6f0d94e304fdeffaa",
+      "retained_as": "final-workspace-clippy.log"
+    },
+    "corrected-wayland.log": {
+      "sha256": "b490eb6b07779c3f70fa2aae5684fe9c8892ba6f0e3979215e556ba818eedc14",
+      "bytes": 1194412,
+      "input_observations_at_snapshot": 961,
+      "retained_as": [
+        "corrected-cards-code.log",
+        "corrected-cards-gutter.log"
+      ],
+      "selection": "Inputs 1\u2013240 (code) and 241\u2013480 (gutter), each first input through last input + 500 ms inclusive; later Find and long-line activity excluded."
+    },
+    "corrected-cards-code-input.json": {
+      "sha256": "c21a51e532ccb0357a61b7c9b8eabedbd36b89c4f2a7764e5e2f88901aafc387",
+      "retained_as": "corrected-cards-code-input.json"
+    },
+    "corrected-cards-code-capture-times.json": {
+      "sha256": "1042a6be2eedcb503354c8fb2e66f17dc8c4ecd621d2e359a86b0664442ba28a",
+      "retained_as": "corrected-cards-code-capture-times.json"
+    },
+    "corrected-cards-gutter-input.json": {
+      "sha256": "b06df761a9c5b40cf52c55315eb35c5f005e6880a7a60bbbd4d09f872fc6bfb5",
+      "retained_as": "corrected-cards-gutter-input.json"
+    },
+    "corrected-cards-gutter-capture-times.json": {
+      "sha256": "56fdd3737c3312623a5df0f8468c1558b211229701d6a570b70d0041cc16b597",
+      "retained_as": "corrected-cards-gutter-capture-times.json"
+    },
+    "installed-build-info.json": {
+      "sha256": "05b96918667de6eff5879e41e3ba5b8c72c26d7b01644dbc56e974b21ca0bd95",
+      "retained_as": "installed-build-info.json"
+    },
+    "final-install.log": {
+      "sha256": "7a6e37b33680b2074b44d482577f3ff1e2f547016041292768cdedec57e61524",
+      "original_source_sha256": "1ff0cc60d942b7dfc95714e3eb1ab97f1fee43ba1d2f3bf98dd00abcd8236747",
+      "retained_as": "final-install.log",
+      "redaction": "Personal home and checkout prefixes replaced with $HOME and $REPO. sha256 identifies the retained redacted copy; original_source_sha256 identifies the original bytes before redaction."
+    },
+    "final-package.log": {
+      "sha256": "a29b0c871b045cf27e71d6117000f2069c1d217fcd5294fa03c2a91aab8802a0",
+      "original_source_sha256": "3a9f884b520155c15616678394fef2eb00eb861d5ea65a16b71780cabcc25aa5",
+      "retained_as": "final-package.log",
+      "redaction": "Personal home and checkout prefixes replaced with $HOME and $REPO. sha256 identifies the retained redacted copy; original_source_sha256 identifies the original bytes before redaction."
+    }
+  },
+  "files": {
+    "after-release-build.log": {
+      "sha256": "0628ae1df7366f1fe90f12d0aa4e929fec5d4fd09856211d145242a6aba06bf5",
+      "bytes": 388
+    },
+    "analyze-scroll.py": {
+      "sha256": "f1bab8b59f775fcd0995db714e0d1836fd1a06a95699baf9154481d6e0f55813",
+      "bytes": 2350
+    },
+    "baseline-instrumentation.patch": {
+      "sha256": "695ee4a6307f97aec36d36039f11235394d4893ee02495271f105056de14b84a",
+      "bytes": 7848
+    },
+    "baseline-trace-build.log": {
+      "sha256": "8601e1e44075fca33bc1da592ffb91afd74d56e9072e82e18e5bcfcb6dea9ab8",
+      "bytes": 516
+    },
+    "copied-source-after-type.txt": {
+      "sha256": "63ee6a0044a4d23e530c1e28da23f09d795ffeed1df3a8643d62f63ce1249830",
+      "bytes": 84
+    },
+    "copied-source.txt": {
+      "sha256": "63ee6a0044a4d23e530c1e28da23f09d795ffeed1df3a8643d62f63ce1249830",
+      "bytes": 84
+    },
+    "corrected-cards-code-capture-times.json": {
+      "sha256": "1042a6be2eedcb503354c8fb2e66f17dc8c4ecd621d2e359a86b0664442ba28a",
+      "bytes": 12532
+    },
+    "corrected-cards-code-crop.png": {
+      "sha256": "f9ecbf803cffcdb6576a22ee381db0a867c5493b1a2c593e3b4534ec00343fe7",
+      "bytes": 690321
+    },
+    "corrected-cards-code-input.json": {
+      "sha256": "c21a51e532ccb0357a61b7c9b8eabedbd36b89c4f2a7764e5e2f88901aafc387",
+      "bytes": 3600
+    },
+    "corrected-cards-code.log": {
+      "sha256": "08e7e71f6ded0f651cfa7aca836971d9bfea877439b0ff0a1bddd2a78e5347ce",
+      "bytes": 260355
+    },
+    "corrected-cards-gutter-capture-times.json": {
+      "sha256": "56fdd3737c3312623a5df0f8468c1558b211229701d6a570b70d0041cc16b597",
+      "bytes": 13470
+    },
+    "corrected-cards-gutter-input.json": {
+      "sha256": "b06df761a9c5b40cf52c55315eb35c5f005e6880a7a60bbbd4d09f872fc6bfb5",
+      "bytes": 3600
+    },
+    "corrected-cards-gutter.log": {
+      "sha256": "9e78fe9229a548484e93f24dc448fa829f52a2c5ee1fcd77c106f3e2759716cc",
+      "bytes": 263533
+    },
+    "corrected-cards-measurements.json": {
+      "sha256": "8d445b5168b8222382bbf1a77edf33b136eee67e2e1363498ef059eb3598c74b",
+      "bytes": 69579
+    },
+    "corrected-long-horizontal-verified.png": {
+      "sha256": "bdc57e64341875fa4b94353bdda127af3daf45f6f85f2fa26905da4faff92113",
+      "bytes": 728586
+    },
+    "corrected-release-build.log": {
+      "sha256": "18319ac843f28f488033e9122baa28904a02d5877b2d024301d629690e15a7a0",
+      "bytes": 122
+    },
+    "corrected-selection-rest.png": {
+      "sha256": "4d0ece2b2e825c27d4edcd137edb7a13d2f3c874719ba14f55b0070a29df8a5e",
+      "bytes": 1141201
+    },
+    "corrected-show-latest.json": {
+      "sha256": "be5adc61dc0378934a58183efec9b230fc6810f890caacf5651732a61a9a74bb",
+      "bytes": 4798
+    },
+    "corrected-source-manifest.json": {
+      "sha256": "50c622c5a1cc40cab1f65d608c229f30d629ed202b638a96c939817b8024c4ad",
+      "bytes": 174296
+    },
+    "final-compare-update.json": {
+      "sha256": "ea2b1f626234a8f691ace7d5707933bc03cf91a71590e5f0a60f32fc82b269a4",
+      "bytes": 3011
+    },
+    "final-install.log": {
+      "sha256": "7a6e37b33680b2074b44d482577f3ff1e2f547016041292768cdedec57e61524",
+      "bytes": 470,
+      "redaction": "Personal home and checkout prefixes replaced with $HOME and $REPO. sha256 identifies the retained redacted copy; original_source_sha256 identifies the original bytes before redaction.",
+      "original_source_sha256": "1ff0cc60d942b7dfc95714e3eb1ab97f1fee43ba1d2f3bf98dd00abcd8236747"
+    },
+    "final-package.log": {
+      "sha256": "a29b0c871b045cf27e71d6117000f2069c1d217fcd5294fa03c2a91aab8802a0",
+      "bytes": 370,
+      "redaction": "Personal home and checkout prefixes replaced with $HOME and $REPO. sha256 identifies the retained redacted copy; original_source_sha256 identifies the original bytes before redaction.",
+      "original_source_sha256": "3a9f884b520155c15616678394fef2eb00eb861d5ea65a16b71780cabcc25aa5"
+    },
+    "final-search-retained.txt": {
+      "sha256": "d046ab57e086b39020bcfc9f7684bbce007cb28216b9706d122ddd3ebf3d1692",
+      "bytes": 2096
+    },
+    "final-workspace-clippy.log": {
+      "sha256": "229ad9e3615b82854e7ea891908460f33e1f5cffeac1dce6f0d94e304fdeffaa",
+      "bytes": 131
+    },
+    "final-workspace-tests.log": {
+      "sha256": "31776796adfb2aedf8357c50e1ed95da286c36e7eb6ee78a1c2239441f1579fa",
+      "bytes": 72680
+    },
+    "gesture.json": {
+      "sha256": "8ae553b21ad1f3f24515c85a4b5c24815b199e8cb9d85caa0aba2befdea71c75",
+      "bytes": 617
+    },
+    "history-observations.json": {
+      "sha256": "537a0e9648684b39984bec97d133cbbb266d94cabc3f77573197bccfb7b85e64",
+      "bytes": 9465
+    },
+    "history-tests.log": {
+      "sha256": "89e498cdd3fc828a6008a238fba94bf2abb00ed3f7cf87d932dc67a3006229e9",
+      "bytes": 1280
+    },
+    "installed-about-modal.png": {
+      "sha256": "4cf0cc4663d70a40d27ae2d00ee930745ed7e2a05dbd9d9286e1976986d314e5",
+      "bytes": 63518
+    },
+    "installed-build-info.json": {
+      "sha256": "05b96918667de6eff5879e41e3ba5b8c72c26d7b01644dbc56e974b21ca0bd95",
+      "bytes": 301
+    },
+    "installed-diagnostics.txt": {
+      "sha256": "48fa5d70297c61d7646f7becce271096c2633116cd0d031246b1c0a48a66fcb2",
+      "bytes": 482
+    },
+    "measurements.json": {
+      "sha256": "8f670cee2692c45be8c0e3d7c754b56a41fb63ff7d26f3afe6f78f8e850fb798",
+      "bytes": 83921
+    },
+    "native-git-results.json": {
+      "sha256": "72d9451f69196df16973aa8b3a5f0b29c67b9c3e61f88b585cfa326e28f03664",
+      "bytes": 554
+    },
+    "scroll-tests.log": {
+      "sha256": "b645641a8bff3acf24237bffbe209c3ea2f5e6c48c7011955b868a3c3c9f9548",
+      "bytes": 895
+    },
+    "sender-after.json": {
+      "sha256": "c8d178956686b63d3c8f843e7341cb80e2fa54fc66930804355e6f6484e44580",
+      "bytes": 3600
+    },
+    "sender-before.json": {
+      "sha256": "08cf93cd83b7d560fb50f08555ae09d0c0ac39e0415c90b08fbceca7c7dc14d3",
+      "bytes": 3600
+    },
+    "split-after.log": {
+      "sha256": "b021d04f1ff85713f17374f14cf14a592733d3ccfc4c544d391975b5463af9c4",
+      "bytes": 286096
+    },
+    "split-before.log": {
+      "sha256": "cb0803488ef1ec06a20bb3cba7fc8b74d4cedd6c894c3f724ec36c075c265543",
+      "bytes": 361885
+    },
+    "virtual-worktree-open-final.txt": {
+      "sha256": "6cc5743ba2677e85d0e4317fd2c12a13d3f07561029bd78129a597da87e0786c",
+      "bytes": 3419
+    },
+    "watcher-tests.log": {
+      "sha256": "d7a2e5e166ca3f00e8fe1805c1cf27b96f13fa133ea4e93f6e5ad870ebaff09d",
+      "bytes": 1653
+    },
+    "workspace-clippy.log": {
+      "sha256": "5893abe36b555b30fd7e5f7a351511957eb8a6c2378f6413a5aff25411b8311b",
+      "bytes": 398
+    },
+    "workspace-tests.log": {
+      "sha256": "35656d694fc434c04507e9b7c0ad9ab50e977506183e981875d4da41f1425392",
+      "bytes": 72546
+    }
+  },
+  "binary_sha256": {
+    "gitturtle-before": "276d3fa2e8fe259fc30c395ddea60b39da53f388714adb36d34360a35cc3e996",
+    "gitturtle-trace-before": "e82f9f920a71a89162a775e4b204116a046199c0160146c0c7ffed47ea9f7443",
+    "gitturtle-after": "1025ce3f401f8d081daec369f1aa8035db5b2412b8ad50a0e5a71d9b880b38dc",
+    "gitturtle-installed-417b5e8": "45606c5a195d1696096b93ea0fa3a38b67b025990ea794f25f91d4211e5729c2"
+  },
+  "baseline_source_file_sha256": {
+    "crates/app/src/diff_view.rs": "fc4632692b5cea511d466f58b2fd451446a816243503f60b06d764118848af4f",
+    "crates/app/src/split_diff.rs": "9854f6f825d8d21b6ee3efbd7b94198c63937e84ef0aa98603f22e116c82b7da"
+  },
+  "final_validation": {
+    "source_revision": "417b5e8d0c739ca3746d2cab379db58efa4d8ea9",
+    "commands": [
+      "cargo test --locked --workspace",
+      "cargo clippy --locked --workspace --all-targets -- -D warnings"
+    ],
+    "top_level_test_totals": {
+      "passed": 729,
+      "failed": 0,
+      "ignored": 5
+    },
+    "preview_child_test_invocation_excluded_from_total": true,
+    "clippy": "passed"
+  },
+  "installed_scroll_capture": {
+    "source_revision": "417b5e8d0c739ca3746d2cab379db58efa4d8ea9",
+    "source_tree": "modified",
+    "binary_sha256": "45606c5a195d1696096b93ea0fa3a38b67b025990ea794f25f91d4211e5729c2",
+    "identity_evidence": "Coordinator verified installed executable hash and physically exercised application; embedded identity retained in installed-build-info.json.",
+    "measurements": "corrected-cards-measurements.json",
+    "fixture": "cards.rs at 374af93d4e5f2affb045b32f1ff88456af86637c compared with parent 9f15d2a9832523d1387f7f07b10bff01d135f91d",
+    "gesture": "240 axis events per area: 160 down, 80 up; portal y 7.25/-7.25 and 16 ms sleep per synchronous request.",
+    "limits": "App input/paint timing, one gesture per area, tracing and desktop-capture overhead; no compositor-FPS claim. Later independent Find horizontal offsets excluded."
+  },
+  "final_native_files": {
+    "installed-build-info.json": {
+      "sha256": "05b96918667de6eff5879e41e3ba5b8c72c26d7b01644dbc56e974b21ca0bd95",
+      "bytes": 301
+    },
+    "installed-diagnostics.txt": {
+      "sha256": "48fa5d70297c61d7646f7becce271096c2633116cd0d031246b1c0a48a66fcb2",
+      "bytes": 482
+    },
+    "native-git-results.json": {
+      "sha256": "72d9451f69196df16973aa8b3a5f0b29c67b9c3e61f88b585cfa326e28f03664",
+      "bytes": 554
+    },
+    "corrected-show-latest.json": {
+      "sha256": "be5adc61dc0378934a58183efec9b230fc6810f890caacf5651732a61a9a74bb",
+      "bytes": 4798
+    },
+    "final-compare-update.json": {
+      "sha256": "ea2b1f626234a8f691ace7d5707933bc03cf91a71590e5f0a60f32fc82b269a4",
+      "bytes": 3011
+    },
+    "final-search-retained.txt": {
+      "sha256": "d046ab57e086b39020bcfc9f7684bbce007cb28216b9706d122ddd3ebf3d1692",
+      "bytes": 2096
+    },
+    "final-install.log": {
+      "sha256": "1ff0cc60d942b7dfc95714e3eb1ab97f1fee43ba1d2f3bf98dd00abcd8236747",
+      "bytes": 534
+    },
+    "final-package.log": {
+      "sha256": "3a9f884b520155c15616678394fef2eb00eb861d5ea65a16b71780cabcc25aa5",
+      "bytes": 478
+    },
+    "corrected-cards-code-crop.png": {
+      "sha256": "f9ecbf803cffcdb6576a22ee381db0a867c5493b1a2c593e3b4534ec00343fe7",
+      "bytes": 690321
+    },
+    "corrected-long-horizontal-verified.png": {
+      "sha256": "bdc57e64341875fa4b94353bdda127af3daf45f6f85f2fa26905da4faff92113",
+      "bytes": 728586
+    },
+    "corrected-selection-rest.png": {
+      "sha256": "4d0ece2b2e825c27d4edcd137edb7a13d2f3c874719ba14f55b0070a29df8a5e",
+      "bytes": 1141201
+    },
+    "installed-about-modal.png": {
+      "sha256": "4cf0cc4663d70a40d27ae2d00ee930745ed7e2a05dbd9d9286e1976986d314e5",
+      "bytes": 63518
+    },
+    "copied-source.txt": {
+      "sha256": "63ee6a0044a4d23e530c1e28da23f09d795ffeed1df3a8643d62f63ce1249830",
+      "bytes": 84
+    },
+    "copied-source-after-type.txt": {
+      "sha256": "63ee6a0044a4d23e530c1e28da23f09d795ffeed1df3a8643d62f63ce1249830",
+      "bytes": 84
+    }
+  }
+}

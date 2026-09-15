@@ -43,6 +43,9 @@ declare licenses; a declaration alone does not establish that every required
 notice has been collected. The [native ufbx notice](docs/licenses/assets/ufbx-native-LICENSE)
 is retained separately. The target-specific `REVIEW_REQUIRED.md` lists only the
 affected packages actually selected for that package.
+The [Linux notice review](docs/licenses/linux-notice-review.md) ties `mac` 0.1.1
+and `ufbx` 0.11.3 to their exact upstream source and records the remaining
+attribution questions and prepared maintainer follow-ups.
 
 Local development packages include this report and remain unpublished. Before
 a public binary release, resolve those notices and run the collector with
