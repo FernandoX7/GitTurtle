@@ -754,3 +754,10 @@ entries, cold/warm PR/main samples on each platform, fork read-only behavior,
 lock/toolchain/vendor/native invalidation, stale/corrupt cache refusal, post-save
 cost, actual retained subset/eviction and all required tests executing on warm runs.
 Manual branch repeats alone cannot establish a trusted-main warm cache.
+
+## CodeQL extraction and coverage
+
+The [CodeQL runbook](ci-codeql.md) records the existing advanced setup, preserved
+security categories, supported Rust extractor-cache experiment, baseline warning
+files and C2 hosted comparison/rollback procedure. Quality timing alone does not
+establish the full merge critical path.
