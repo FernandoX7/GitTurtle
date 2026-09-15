@@ -66,6 +66,10 @@ Docs-only changes need link, command and diff checks. Artwork changes need verif
 
 Development-controller changes use `python3 scripts/check-agent-guidance.py` and `python3 -m unittest discover -s scripts/agent_loop -t scripts -p 'test_*.py'`. Follow the [development workflow](docs/development/README.md) for task contracts, isolated runs and evidence; product checks apply when those changes also affect the client.
 
+CI changes also use `python3 -m unittest discover -s scripts/ci/tests -p 'test_*.py'`
+and pinned actionlint 1.7.12 on both Quality and Website workflows. The
+[CI guide](docs/ci.md#local-verification) records the download checksum and commands.
+
 ## Commit cohesive changes
 
 Always use atomic [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/): each commit contains one cohesive change and its necessary code, tests and documentation. Use the form `type(optional-scope): description`, with `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore` or `revert`. Mark an incompatible change with `!` after the type/scope or a `BREAKING CHANGE:` footer. For example, `fix(history): retain selection after refresh` should include the correction and its relevant regression coverage and documentation.
@@ -77,18 +81,50 @@ Stage explicit intended paths and inspect the staged diff before each commit. Pr
 Describe the problem, resulting behavior and checks you ran. Keep the change reviewable and update the closest documentation when behavior changes. Include any remaining limitations instead of claiming checks you could not run. The PR template is intentionally short; remove sections that do not apply.
 
 Contributions use pull requests with the macOS and Ubuntu Quality checks passing
-and review conversations resolved. CodeQL scans must complete without unresolved
-high/critical security findings or code-scanning errors. The checked-in
-[CodeQL workflow](.github/workflows/codeql.yml) scans Actions, JavaScript/TypeScript,
-Python and Rust for every pull request to `main`, including forks. Workflows from
-external contributors need maintainer approval before running; contributors do
-not need to enable scanning on their fork or create an upstream copy of the PR.
-If scans are missing, maintainers should follow the
-[CodeQL setup and recovery procedure](docs/public-launch.md#codeql-setup-and-recovery).
+and review conversations resolved. Security-sensitive changes also require an
+independent [security review](docs/development/security-review.md) of the exact
+candidate before integration. CodeQL has been retired by the maintainer; see the
+[retirement record](docs/ci-codeql.md). External-contributor workflow approval,
+secret scanning, push protection and dependency-update review remain in place.
 We squash-merge changes using the PR title
 and description, so always use a Conventional Commit PR title and write the
 description for a reader of the permanent Git history.
 Merged branches in this repository are deleted automatically; your fork and
 local branches remain yours.
 
+Quality runs through PR events, main pushes and manual dispatch; a branch push
+does not duplicate its PR run. PR checks exercise GitHub's test merge commit.
+The [CI routing and gate policy](docs/ci.md#events-and-required-results) selects
+inexpensive checks for docs/site/tooling-only changes and full platform coverage
+for product or uncertain inputs. The current required Rust check names mirror
+the complete Quality gate during the documented protection migration.
+Formatting reports independently; each platform runs
+workspace tests (including doctests) and strict all-target Clippy in a shared debug
+job, alongside a separate optimized build/package job. A cache hit never skips
+validation. The [job graph and measurement boundary](docs/ci.md#parallel-validation-and-coverage)
+describe the retained coverage and pending hosted timing evidence. Do not change
+repository rules or bypass a failed requirement merely to obtain a green PR.
+
 Sanitize screenshots, logs and fixtures before posting: remove credentials, private remote URLs, personal paths, identities and proprietary repository content. For a suspected vulnerability, use [private security reporting](SECURITY.md) rather than an issue or public PR.
+
+### Focused security review
+
+Use the dedicated [security reviewer](.codex/agents/security-reviewer.toml) for
+changes to executable code, credentials, repository writes, external commands,
+dependencies, or CI/package/release trust boundaries. The
+[review procedure](docs/development/security-review.md) applies to interactive
+coordination and the development controller. Preserve the session's selected
+model and effort. Reuse an unchanged review only while its candidate, base and
+relevant callers remain unchanged.
+
+Trace the actual input, caller, guard and consequence. Reproduce concrete concerns
+in disposable fixtures. Operator-selected local paths and attacker-controlled
+paths have different trust boundaries; the reviewer must establish which applies.
+Group repeated causes into one candidate-bound report with code references,
+evidence and any unresolved uncertainty. The coordinator resolves findings before
+integration; review agents do not post per-finding PR comments or dismiss alerts.
+A missing or uncertain review is not a pass.
+
+AI review can miss defects. Retain focused regression tests, strict linting,
+platform validation, secret protection and dependency maintenance. For confirmed
+vulnerabilities, follow private reporting instead of publishing exploit details.

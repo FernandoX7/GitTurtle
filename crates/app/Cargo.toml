@@ -21,6 +21,8 @@ notify = "=7.0.0"
 tempfile = "3"
 libc = "0.2"
 markdown = "=1.0.0"
+# Match the locked toolkit dependency for grapheme-safe message presentation.
+unicode-segmentation = "=1.13.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "=3.7.0"

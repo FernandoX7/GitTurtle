@@ -36,17 +36,12 @@ settings from the remaining requirements for a public binary release.
   per-PR auto-merge, and delete merged contribution branches automatically.
   Keep documentation in the repository and disable the unused Wiki. Issues and
   support questions share the existing labels/forms; Discussions remain off.
-- [x] Enable Dependabot security-update PRs and initial CodeQL default setup on
-  standard GitHub runners. Default setup excluded fork PRs; the checked-in
-  [advanced workflow](../.github/workflows/codeql.yml) provides their scans with
-  the same four languages, default queries, and local/remote threat sources.
-  Follow the [setup and recovery procedure](#codeql-setup-and-recovery) when
-  activating or restoring it. A checked-in workflow alone does not establish
-  active repository settings or successful scans.
-- [x] Require CodeQL results before merging to `main`, blocking high/critical
-  security findings and code-scanning errors. The dedicated merge-protection
-  ruleset preserves the owner's explicit bypass and complements the required
-  Rust checks. See [CodeQL merge protection](https://github.com/FernandoX7/GitTurtle/rules/23351839).
+- [x] Enable Dependabot security-update PRs on standard GitHub runners.
+- [x] Retire CodeQL scanning and its dedicated merge rule at the maintainer's
+  request on September 15, 2026. Default setup is off, the advanced workflow is
+  disabled, and the [old ruleset](https://github.com/FernandoX7/GitTurtle/rules/23351839)
+  is inactive. Historical results remain available. See the
+  [retirement record](ci-codeql.md) and [security review process](development/security-review.md).
 - [x] Schedule weekly [Dependabot Actions updates](../.github/dependabot.yml),
   grouping minor/patch updates and limiting open version-update PRs to two.
   Cargo version upgrades remain reviewed maintenance because the matching GPUI
@@ -75,60 +70,17 @@ public-page check also found **Sponsor this project**, and the destination
 offers one-time and monthly contributions; see the
 [funding activation record](funding.md).
 
-## CodeQL setup and recovery
+## Security review and CodeQL retirement
 
-The [advanced workflow](../.github/workflows/codeql.yml) scans pull requests to
-`main`, pushes to `main`, and a weekly schedule, with a manual dispatch available.
-It covers Actions, JavaScript/TypeScript, Python and Rust without path filters.
-It preserves the default query suite and adds `threat-models: local` to the
-default remote sources where supported. Rust uses GitHub's supported
-[`build-mode: none`](https://docs.github.com/en/code-security/reference/code-scanning/codeql/build-options-for-compiled-languages#building-rust);
-its extractor can still execute build scripts and macros. The Quality workflow
-continues to own full native compilation, tests and packaging.
+Current contributions follow the [security review process](development/security-review.md).
+The maintainer explicitly replaced CodeQL with an independent development-agent
+review on September 15, 2026. This is a change in coverage, not evidence that AI
+review detects every vulnerability. Quality, dependency review, secret scanning,
+push protection and private reporting remain part of the process.
 
-Keep scans on `pull_request` with the ordinary merge checkout, ephemeral hosted
-runners, no repository secrets and no persisted checkout credentials. GitHub
-[permits code-scanning uploads for PR events](https://docs.github.com/en/code-security/reference/code-scanning/troubleshoot-analysis-errors/resource-not-accessible)
-with restricted fork tokens. The job requests only `contents: read` and
-`security-events: write`; fork runs retain GitHub's token restrictions. Do not
-use `pull_request_target`, a privileged follow-up, or a fork-owner filter.
-External-contributor workflow approval remains required.
-
-### Activate advanced setup
-
-1. Prepare and review the workflow change before changing repository settings.
-   Complete or cancel superseded default-setup scans first. Preserve the required
-   Rust checks and the CodeQL ruleset's high/critical security and error
-   thresholds throughout the transition; missing results must still block merge.
-2. Immediately before publishing the prepared workflow PR, use Settings →
-   Advanced Security → CodeQL analysis → Switch to advanced, or set the
-   default-setup API state to `not-configured`. This disables **default setup**;
-   it does not remove the CodeQL merge rule. GitHub
-   [blocks advanced uploads while default setup is enabled](https://docs.github.com/en/code-security/reference/code-scanning/sarif-files/troubleshoot-sarif-uploads/default-setup-enabled).
-3. Run the reviewed workflow PR and wait for all four uploads and processing to
-   finish. If default setup disabled the workflow, re-enable it and rerun its
-   jobs. Confirm the analyzed commit/ref and PR findings, then merge through
-   normal protection checks. Verify the new `main` push analysis as its baseline.
-4. Verify an approved fork PR runs this workflow and uploads all four languages
-   directly. Record the exact source, run links and findings; successful jobs
-   alone do not prove the absence of blocking alerts. Existing repository alert
-   totals and newly introduced PR findings are different measurements.
-
-The language categories remain `/language:actions`,
-`/language:javascript-typescript`, `/language:python`, and `/language:rust`.
-The analysis key changes from `dynamic/github-code-scanning/codeql:analyze` to
-the checked-in workflow, so GitHub may retain a stale default-setup configuration
-or show a missing-configuration warning during migration. Wait for the new PR
-and `main` results, compare language/file coverage and existing alert dispositions,
-then inspect the [tool status page](https://docs.github.com/code-security/code-scanning/managing-your-code-scanning-configuration/about-the-tool-status-page).
-Remove only a confirmed stale configuration after reviewing its alert impact.
-Do not delete analyses or dismiss findings just to clear a merge warning.
-
-If a future fork PR has no scan, check workflow approval, the configured mode,
-the workflow's enabled state, and its `pull_request` trigger before retrying.
-Re-enabling default setup overrides advanced scanning and reintroduces the fork
-gap. Keep protection enabled while repairing the setup; an upstream mirror PR
-is not the regular contribution process.
+The [retirement record](ci-codeql.md) documents the exact GitHub changes and the
+rollback procedure. Historical launch observations below describe the checks in
+use at the time; they do not imply that CodeQL is currently enabled.
 
 ## Current source-preview preparation
 
@@ -295,8 +247,8 @@ hardens the three benchmark scripts: baseline arguments resolve to verified
 commit OIDs with Git option parsing stopped, and the measured executable resolves
 once before hashing and execution. Syntax checks, 18 disposable revision probes,
 and a competing-PATH executable probe passed. No benchmark performance claim is
-made by these checks. Local and remote CodeQL threat sources remain enabled;
-these findings do not justify excluding tooling from future scans.
+made by these checks. Local and remote CodeQL threat sources were enabled at
+the time; the later retirement decision is recorded above.
 
 The complete initial [CodeQL analysis](https://github.com/FernandoX7/GitTurtle/actions/runs/34883960956)
 finished successfully for Actions, Python, JavaScript/TypeScript and Rust.
@@ -308,7 +260,7 @@ Inspection also found missing recovery-path validation before metadata traversal
 (`aee1879`). Regression checks cover malformed Git trees without changing
 repository/outside-file state; renderer tests now use private temporary
 directories. These findings did not demonstrate arbitrary production command
-execution or writing. The scan continues to include tooling and local inputs.
+execution or writing. That historical scan included tooling and local inputs.
 
 The macOS rerun at `712d99e` passed JP2 pixels but failed raw J2K decoding.
 An independent [native probe](benchmarks/jpeg2000-macos15-20260914.json) on macOS

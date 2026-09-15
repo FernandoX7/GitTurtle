@@ -19,6 +19,31 @@ ordinary wheel and linked-scroll requests still clamp to the current geometry.
 
 Pair file-status SVGs with a short label and semantic color; color alone must not distinguish New, Modified, Deleted, Renamed, Type or Conflict. Working rows use the status for their staged/unstaged area, with conflicts taking precedence and untracked files shown as New. Keep small controls/status icons tintable SVGs; packaged app artwork is a separate asset.
 
+## Commit-message inspector
+
+`commit_message::State` retains a selected immutable OID, shared display pieces,
+variable-height `ListState`, and keyboard focus. History/Compare allocate at most
+45% of the inspector to this message region; its copy toolbar remains outside
+the scroll viewport. File History shares the presentation inside the remaining
+height between its bounded header and footer, leaving revision rows usable.
+Reading order is title, available body, then author/date/parent/path metadata.
+Empty bodies add neither filler nor a blank clipboard suffix.
+
+Preparing a newly displayed OID partitions the already-loaded model once; paints
+clone only shared pieces. Each text-shaping input is at most 1 KiB and 16 source
+newlines. Pieces prefer source lines, whitespace and grapheme boundaries; an
+individual grapheme exceeding 1 KiB continues at a UTF-8 boundary to keep shaping
+bounded. No source scalars are dropped. Copy reads the complete loaded title/body
+only on explicit activation and is independent of presentation segmentation.
+Navigation row labels are bounded summaries; they do not shape or announce a
+megabyte title. The inspector never creates an editor or starts a Git read.
+
+The variable list owns measured row geometry and remeasures proportionally when
+interface scale changes. Text and list reservations count toward retained-tab
+admission, including nested return contexts. Keyboard arrows, Page Up/Down and
+Home/End scroll the focused message; labelled native buttons provide message and
+hash copy. Native platform quality remains a separate validation requirement.
+
 ## Working composer
 
 Size the composer from the list/composer body's laid-out available height after the header, Targets, feedback, and wrapping path/selection controls. Reserve several file rows, share a very short body between files and composer, keep the commit footer outside the scrolling fields, and let additional guidance/errors scroll without clipping the action. Header geometry must not depend on the measured body height. When bounds or density change, bring the selected working row into view using its current identity, not the previous geometry's pixel offset. Layout observers notify only on changed bounds.

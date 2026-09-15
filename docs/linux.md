@@ -35,7 +35,9 @@ NVIDIA driver. Other desktops need their matching portal backend instead of
 assuming GNOME's backend works there. Git LFS is optional (`git-lfs`) for the
 explicit LFS download feature; ordinary local inspection does not download.
 
-Transfer the `.tar.gz` and `.tar.gz.sha256` together from a trusted teammate.
+Transfer the `.tar.gz`, `.tar.gz.sha256` and `.tar.gz.manifest.json` together
+from a trusted teammate. The external manifest identifies the archived package,
+its source/version/target and both the archive and package-manifest hashes.
 With the default archive name, run from their receiving directory:
 
 ```sh
@@ -44,12 +46,15 @@ tar -xzf gitturtle-linux-x86_64.tar.gz
 python3 gitturtle-linux-x86_64/install.py
 ```
 
-Run the installer **without sudo**. It checks bundle hashes, linked libraries
-and desktop-entry syntax before installation, then atomically replaces the
+Run the installer **without sudo**. It checks the required payload hashes,
+package/compiled identity, license inventory, linked libraries and desktop-entry
+syntax before installation, then atomically replaces the
 executable at `~/.local/bin/gitturtle`. Icons and the application entry go under
 `$XDG_DATA_HOME`, or `~/.local/share` when unset. The installer supports spaces
 in these paths; desktop `Exec` restrictions require the executable path to
-exclude newlines, tabs, `=` and `%`. `XDG_DATA_HOME` must be absolute.
+exclude newlines, tabs, `=` and `%`. `XDG_DATA_HOME` must be absolute. A user-selected home/data root may itself be
+a symlink, but managed descendants, payload paths, backups and the installation
+lock must not redirect through symlinks.
 
 Open **GitTurtle** in the application menu. Its desktop file is
 `applications/com.gitturtle.desktop.desktop`, matching the application ID.
@@ -119,28 +124,88 @@ cargo build --release --locked -p gitturtle --target x86_64-unknown-linux-gnu --
 ```
 
 Alternatively, `./scripts/package-linux.sh` checks native development packages
-and builds the locked release itself. Both forms produce
-`dist/gitturtle-linux-x86_64/`, its `.tar.gz` and archive checksum.
+and builds the locked release itself. Both forms produce four outputs:
+`dist/gitturtle-linux-x86_64/`, its `.tar.gz`, `.tar.gz.sha256` and
+`.tar.gz.manifest.json`. The tarball uses neutral numeric owner/group IDs.
 Choose another output directory on subsequent runs, for example
 `./scripts/package-linux.sh --no-build dist/ubuntu-test-2`; the packager refuses
-to overwrite existing outputs. Both modes use the explicit x86-64 target path,
-regardless of your other Cargo target settings. `--no-build` requires an already
-built release from the intended source; to reuse a separately built artifact,
-pass its path explicitly, for example `--no-build --binary target/release/gitturtle`.
-Packaging also needs Cargo and the resolved locked sources to collect license
-texts, including with `--no-build`. Review any generated `REVIEW_REQUIRED.md`
-before redistribution: unresolved upstream notices block a public binary release.
-The collector's `--require-complete` mode enforces that release gate; local
-development packaging reports the gaps without claiming distribution clearance.
-`build-info.json` records the packaging revision,
-working-tree status, executable hash and whether the packager rebuilt it;
-it does not certify the source identity of an arbitrary reused binary.
-Current executables also embed their own source revision, source-tree state,
-target, build profile, compiler version and build time. These belong to the
-executable and remain available after the source checkout moves or changes.
-`unknown` identifies a source archive without Git metadata; `modified` records
-local source changes and is not a reproducible commit identity. Keep the
-executable SHA-256 with reports or measurement records involving such a build.
+existing outputs, including dangling symlinks. Payload preparation and archive
+creation finish in a private staging directory before the final outputs appear.
+A failed license/identity check leaves no completed bundle or archive.
+
+Both modes use the explicit x86-64 target path, regardless of other Cargo target
+settings. `--no-build` requires a release from the packaging checkout's current
+commit and workspace version. To reuse a separately built artifact, pass its path
+explicitly, for example `--no-build --binary target/release/gitturtle`.
+The packager checks the ELF architecture and embedded source revision, version,
+profile and target, then records the executable digest. It rejects unavailable or
+mismatched compiled identity. `--expected-revision`, `--expected-version` and
+`--expected-sha256` can pin the intended inputs explicitly:
+
+```sh
+./scripts/package-linux.sh --no-build \
+  --expected-revision "$(git rev-parse HEAD)" \
+  --expected-version 0.1.0 \
+  --expected-sha256 "$(sha256sum target/x86_64-unknown-linux-gnu/release/gitturtle | cut -d ' ' -f 1)" \
+  dist/verified-local-preview
+```
+
+Use the version of the intended checkout in place of `0.1.0` when it changes.
+For `--no-build`, a modified packaging checkout or modified compiled source also
+requires `--expected-sha256`: a commit ID alone cannot distinguish two local
+builds with different uncommitted changes. Keep the expected digest from the
+identified build; these checks do not authenticate a binary from an untrusted
+sender. The bounded `--build-info` probe runs without a display or saved app state.
+
+Packaging needs Cargo and the resolved locked sources to collect license texts,
+including with `--no-build`. Local development bundles retain unresolved notices
+in `licenses/REVIEW_REQUIRED.md` and record `distribution: development`.
+Use `--distribution` for downloadable CI/release artifacts. It invokes the
+collector's `--require-complete` gate and requires a clean release executable and
+clean packaging checkout; unresolved upstream notices refuse distribution.
+Reviewing the inventory alone does not clear a missing authoritative notice.
+
+The bundle's format-2 `build-info.json` records compiled identity, packaging
+revision/tree status, executable and lockfile hashes, license-inventory hash,
+notice gaps, signing status (`unsigned` on Linux), distribution status and whether
+the packager rebuilt the executable. `SHA256SUMS` covers this manifest, the shared
+identity helper, installer and payload resources. The external format-1
+`.tar.gz.manifest.json` adds archive name, size and SHA-256 plus the package-manifest
+hash and contents. Before installation, the installer checks the bundled
+manifest against the executable and license inventory; the external manifest
+records archive identity for download verification. It is not a signature.
+
+Current executables embed their own source revision, source-tree state, target,
+build profile, compiler version and build time. These remain available after the
+source checkout moves. `unknown` identifies a source archive without Git metadata
+and cannot satisfy the verified package contract. `modified` records local source
+changes and needs the executable SHA-256 in evidence; it is not a reproducible
+commit identity.
+
+### Validate a package change
+
+Run focused source fixtures before packaging:
+
+```sh
+python3 -m unittest discover -s scripts/ci/tests -p 'test_package_*.py'
+python3 scripts/test-install-linux.py
+bash -n scripts/package-linux.sh
+```
+
+The source fixtures use synthetic payloads/tool doubles and skip real-bundle
+checks unless supplied a bundle. They establish refusal and recovery behavior,
+not a native/package acceptance result. For that result, verify the produced
+archive checksum, extract into a new directory, and pass the extracted bundle to:
+
+```sh
+python3 scripts/test-install-linux.py --bundle /absolute/path/to/extracted/gitturtle-linux-x86_64
+```
+
+This uses disposable homes to check actual payload installation, corruption,
+upgrade and rollback after removing the extracted bundle. Record hashes for the
+archive, compiled executable and installed executable, then perform a real smoke
+launch from the installed path. Identify the actual desktop/session used; the
+[desktop checklist](#ubuntu-desktop-acceptance-checklist) still applies.
 
 The packaged executable embeds UI assets. Build on the oldest supported target
 (Ubuntu 24.04 here) rather than transferring a binary built against newer glibc.

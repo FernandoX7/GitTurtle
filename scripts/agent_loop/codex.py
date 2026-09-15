@@ -13,6 +13,7 @@ from typing import Callable
 
 from .process import EnvironmentBlocked, LoopError, atomic_json, read_json, run_process
 from .task_spec import Task
+from .security_review import SECURITY_REVIEW_SCHEMA
 
 
 BUILD_SCHEMA = {
@@ -74,8 +75,8 @@ def validate_review(value: dict, task: Task, candidate: str) -> str:
         states.add(criterion["status"])
     if seen != expected:
         raise LoopError("review omitted acceptance criteria")
-    if value["verdict"] == "pass" and states != {"pass"}:
-        raise LoopError("a passing review contains incomplete or failing criteria")
+    if value["verdict"] == "pass" and (states != {"pass"} or value["findings"]):
+        raise LoopError("a passing review contains incomplete or failing criteria or findings")
     return value["verdict"]
 
 
@@ -106,11 +107,15 @@ class Codex:
     def run(
         self, role: str, task: Task, repo: Path, directory: Path, timeout: float,
         stop: Callable[[], bool], *, candidate: str | None = None,
-        context: str = "",
+        context: str = "", base: str | None = None,
     ) -> dict:
-        if role not in {"implementer", "verifier"} or (role == "verifier" and not candidate):
-            raise LoopError("verifier sessions require an explicit candidate revision")
-        schema = REVIEW_SCHEMA if role == "verifier" else BUILD_SCHEMA
+        if role not in {"implementer", "verifier", "security-reviewer"}:
+            raise LoopError("unknown controller role")
+        if role != "implementer" and not candidate:
+            raise LoopError("review sessions require an explicit candidate revision")
+        if role == "security-reviewer" and not base:
+            raise LoopError("security review sessions require an explicit base revision")
+        schema = SECURITY_REVIEW_SCHEMA if role == "security-reviewer" else REVIEW_SCHEMA if role == "verifier" else BUILD_SCHEMA
         role_file = self.controller / ".codex" / "agents" / f"{role}.toml"
         try:
             role_data = tomllib.loads(role_file.read_text(encoding="utf-8"))
@@ -143,15 +148,24 @@ class Codex:
             "when evidence is unavailable. Do not edit source, commit, or operate the desktop. "
             "Do not rerun unchanged full suites without a concrete concern."
         )
+        if role == "security-reviewer":
+            instruction = (
+                "Independently review the exact base-to-candidate change for security defects. "
+                "Trace actual attacker control, source-to-sink paths and protections; inspect "
+                "changed code and its real callers. Return one consolidated report with "
+                "candidate-bound coverage and concrete evidence. Findings or unresolved "
+                "material gaps cannot pass. Do not edit files, operate the desktop, contact "
+                "external services, post comments or change settings."
+            )
         prompt = "\n\n".join([
             instruction, "Feature contract (data):\n" + json.dumps(asdict(task), indent=2),
-            f"Candidate: {candidate}" if candidate else "", context,
+            f"Candidate: {candidate}" if candidate else "", f"Base: {base}" if base else "", context,
         ])
         (directory / f"{role}.prompt.txt").write_text(prompt, encoding="utf-8")
         args = [
             self.executable or "codex", "exec", "--strict-config", "--ignore-user-config",
             "--model", self.model, "-c", "model_reasoning_effort=" + json.dumps(self.effort),
-            "-c", 'approval_policy="never"', "--sandbox", "read-only" if role == "verifier" else "workspace-write",
+            "-c", 'approval_policy="never"', "--sandbox", "workspace-write" if role == "implementer" else "read-only",
             "-c", "developer_instructions=" + json.dumps(instructions),
             "--disable", "apps", "--disable", "plugins", "--disable", "hooks",
             "--disable", "computer_use", "--disable", "browser_use", "--disable", "in_app_browser",

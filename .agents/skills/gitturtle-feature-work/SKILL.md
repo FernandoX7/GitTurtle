@@ -21,7 +21,7 @@ Use bounded code ownership for independent workers. The coordinator integrates s
 
 Run focused checks while iterating and the [required combined gates](../../../AGENTS.md#validation) at integration. Use [performance](../gitturtle-performance/SKILL.md) and [native QA](../gitturtle-native-qa/SKILL.md) only for their affected paths. Check real Git results in disposable fixtures when semantics change. Do not add tests that repeat instruction wording or implementation details.
 
-Give the independent verifier the task, candidate identity, diff and command/evidence paths. Evidence from an unchanged candidate can be reused; repeat checks for changed inputs, failures or concrete unresolved concerns. A missing native session or external attestation leaves the requirement open. It is not an implementation failure to repair blindly, and a reviewer cannot substitute a text verdict for required evidence.
+Give the independent verifier the task, candidate identity, diff and command/evidence paths. For security-bearing changes, follow the [independent security review](../../../docs/development/security-review.md) after general verification and before integration; retain one candidate-bound report with actual trust-boundary evidence. This stage cannot operate external services or replace required product evidence. Evidence from an unchanged candidate can be reused; repeat checks for changed inputs, failures or concrete unresolved concerns. A missing native session or external attestation leaves the requirement open. It is not an implementation failure to repair blindly, and a reviewer cannot substitute a text verdict for required evidence.
 
 ## Hand off once
 

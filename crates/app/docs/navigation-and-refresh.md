@@ -82,6 +82,17 @@ Linux registers essential private/common Git roots and refs before bounded worki
 
 Directory creation and renames add only the affected subtree. Coalesced index events update tracked ancestors; ignore edits reconsider the affected subtree, and external excludes/config changes reconsider coverage. Lost events allow one bounded reconciliation per continuous burst. Scans stop at 16,384 registrations, 200,000 entries, or two seconds; at most 256 omitted roots are retained. Freed registrations retry omitted roots once, while explicit Refresh or focus regain can reconnect degraded coverage. Ordinary quiet reads do not repeatedly rebuild an unchanged degraded watcher. No timer polls the tree. Core watch policy bounds tracked paths to 100,000 and source path/rule bytes to 16 MiB, with a 1 MiB individual ignore-file bound; Git subprocesses retain their existing passive deadlines and output limits.
 
+## Retained commit messages
+
+The inspection's `inspector_message` belongs with the existing
+`file_history::ReturnContext`, including nested File History and warm tabs. File
+activation and Compare/Back keep its OID and viewport. Selecting a different OID
+invalidates its display pieces and starts at the beginning; replacing a
+repository or closing its tab releases them. Projects/Settings remove the view
+without discarding its state. Cold restoration deliberately starts the message
+at the top, rather than persisting a second copy of commit text. Copy callbacks
+revalidate the displayed OID against the current loaded selection.
+
 ## Repository tabs
 
 `repository_tabs.rs` owns canonical worktree tab identity, saved bookmarks, and retained `ReturnContext` chains. Each window has one active repository reader/watcher; switching invalidates pending reads, releases its history stream off the UI thread, pauses PDF/model/Markdown work throughout retained contexts, freezes GIF playback, and restores the new tab before a passive rescan. A selected immutable commit can remain outside the visible history window. Opening aliases deduplicates after core discovery; linked worktrees retain separate tabs and drafts.

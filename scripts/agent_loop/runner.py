@@ -21,9 +21,10 @@ from .codex import Codex, validate_review
 from .git import changed_paths, clean, clone, commit, committed_paths, git, head, identity, source_root, write_limits
 from .process import EnvironmentBlocked, LoopError, atomic_json, digest, read_json, run_process, reconcile_processes
 from .task_spec import Task, load_spec, path_allowed, required_evidence, select_ready
+from .security_review import candidate_requires_security, validate_security_review
 
 
-CONTROLS = (".codex", ".agents", "scripts/agent_loop", "scripts/agent-loop.py", "scripts/check-agent-guidance.py", "docs/development/tasks.json", "docs/development/task.schema.json")
+CONTROLS = (".codex", ".agents", "scripts/agent_loop", "scripts/agent-loop.py", "scripts/check-agent-guidance.py", "docs/development/tasks.json", "docs/development/task.schema.json", "docs/development/security-review.md")
 EVIDENCE_KINDS = {"native", "performance", "package", "vendor"}
 EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
 
@@ -65,7 +66,16 @@ def profiles_for(task: Task, paths: list[str]) -> set[str]:
         profiles.update({"vendor", "rust"})
     if any((path.startswith("crates/app/") and path.endswith(".rs")) or path.startswith("vendor/gpui") for path in paths):
         profiles.add("native")
-    if any(path.startswith("assets/") or path in {"scripts/package-macos.sh", "scripts/package-linux.sh", "scripts/install-linux.py", "scripts/render-app-icon.sh", "scripts/collect-third-party-licenses.py"} for path in paths):
+    if any(
+        path.startswith("assets/") or path in {
+            "scripts/package-macos.sh", "scripts/package-macos.py", "scripts/package-identity.py",
+            "scripts/package-linux.sh", "scripts/install-linux.py", "scripts/render-app-icon.sh",
+            "scripts/collect-third-party-licenses.py",
+        } or (
+            path.startswith("scripts/release/") and Path(path).suffix in {".py", ".sh"}
+            and not Path(path).name.startswith(("test_", "test-")) and "tests" not in Path(path).parts
+        ) for path in paths
+    ):
         profiles.add("package")
     return profiles
 
@@ -130,7 +140,7 @@ class Runner:
         reported = 0
         incomplete = False
         for log in (self.directory / "attempts").glob("**/*.jsonl"):
-            if log.name not in {"implementer.jsonl", "verifier.jsonl"}:
+            if log.name not in {"implementer.jsonl", "verifier.jsonl", "security-reviewer.jsonl"}:
                 continue
             completed = False
             if log.is_symlink() or log.stat().st_size > 32 * 1024 * 1024:
@@ -237,7 +247,7 @@ class Runner:
             raise LoopError("accepted checkout HEAD differs from the journal")
         if active and phase != "accepting":
             record = self.state["tasks"][active["task"]]
-            if phase == "verifying" and record.get("candidate") and record.get("gate_sha256"):
+            if phase in {"verifying", "security_reviewing"} and record.get("candidate") and record.get("gate_sha256"):
                 self.validate_candidate(record)
                 record.update(status="review_blocked", reason="independent review interrupted; candidate and gates retained")
             else:
@@ -328,7 +338,7 @@ class Runner:
         previous = {key: record[key] for key in ("reason", "directory") if key in record}
         record["attempts"] += 1
         record.update(status="building", base=self.state["accepted_head"])
-        for key in ("candidate", "review", "attestations", "gate_sha256"):
+        for key in ("candidate", "review", "review_sha256", "review_inputs", "security_review", "security_review_sha256", "security_review_inputs", "security_required", "security_paths", "attestations", "gate_sha256"):
             record.pop(key, None)
         directory = self.directory / "attempts" / task.id / str(record["attempts"])
         record["directory"] = str(directory)
@@ -374,7 +384,7 @@ class Runner:
         except EnvironmentBlocked as error:
             if self.state["phase"] == "accepting":
                 raise
-            record.update(status="review_blocked" if self.state["phase"] == "verifying" else "blocked", reason=str(error))
+            record.update(status="review_blocked" if self.state["phase"] in {"verifying", "security_reviewing"} else "blocked", reason=str(error))
         except LoopError as error:
             if self.state["phase"] == "accepting":
                 raise  # Git may have moved; preserve intent for reconciliation.
@@ -397,6 +407,24 @@ class Runner:
                 raise LoopError(f"attested {kind} evidence changed")
         return missing
 
+    def review_inputs(self, record: dict, *, security: bool = False) -> dict:
+        inputs = {
+            "base": record["base"], "candidate": record["candidate"],
+            "gate_sha256": record["gate_sha256"], "attestations": record.get("attestations", {}),
+        }
+        if security:
+            inputs.update(paths=record["security_paths"], review_sha256=record["review_sha256"])
+        return inputs
+
+    def saved_review(self, record: dict, key: str, validator) -> bool:
+        if key not in record:
+            return False
+        path = Path(record[key])
+        if path.is_symlink() or not path.is_file() or digest(path) != record.get(key + "_sha256"):
+            raise LoopError(f"{key} evidence changed")
+        verdict = validator(read_json(path))
+        return verdict == "pass" and record.get(key + "_inputs") == self.review_inputs(record, security=key == "security_review")
+
     def review_and_accept(self, task: Task, record: dict) -> None:
         directory = Path(record["directory"])
         repo = directory / "repo"
@@ -407,28 +435,61 @@ class Runner:
         if self.missing_evidence(record):
             record["status"] = "awaiting_evidence"
             return
+        # Git's no-renames diff includes both endpoints and deleted paths. Never
+        # trust an implementer's declared profiles to waive security review.
+        paths = committed_paths(repo, record["base"], candidate)
+        record.update(security_required=candidate_requires_security(repo, record["base"], candidate, paths), security_paths=paths)
         if self.budget_stop():
+            record["status"] = "awaiting_evidence"
             return
-        review_dir = directory / ("review-" + uuid.uuid4().hex[:10])
-        self.state.update(phase="verifying", active={"task": task.id})
-        self.save()
-        value = self.adapter.run(
-            "verifier", task, repo, review_dir, self.timeout(), self.stop_requested,
-            candidate=candidate,
-            context="Gate evidence: " + str(directory / "checks/gates.json") + "\nExternal evidence: " + json.dumps(record.get("attestations", {})),
-        )
-        verdict = validate_review(value, task, candidate)
-        if head(repo) != candidate or not clean(repo):
-            raise LoopError("verifier changed candidate source or HEAD")
-        self.validate_candidate(record)
-        atomic_json(review_dir / "verdict.json", value)
-        record["review"] = str(review_dir / "verdict.json")
-        record["review_sha256"] = digest(Path(record["review"]))
-        self.state.update(phase="idle", active=None)
-        if verdict != "pass":
-            record.update(status="review_blocked" if verdict == "blocked" else "failed", reason=json.dumps(value["findings"]))
+        context = "Gate evidence: " + str(directory / "checks/gates.json") + "\nExternal evidence: " + json.dumps(record.get("attestations", {}))
+        general_validator = lambda value: validate_review(value, task, candidate)
+        if not self.saved_review(record, "review", general_validator):
+            review_dir = directory / ("review-" + uuid.uuid4().hex[:10])
+            self.state.update(phase="verifying", active={"task": task.id})
+            self.save()
+            value = self.adapter.run(
+                "verifier", task, repo, review_dir, self.timeout(), self.stop_requested,
+                candidate=candidate, context=context,
+            )
+            verdict = general_validator(value)
+            if head(repo) != candidate or not clean(repo):
+                raise LoopError("verifier changed candidate source or HEAD")
+            self.validate_candidate(record)
+            self.store_review(record, "review", review_dir, value)
+            if verdict != "pass":
+                record.update(status="review_blocked" if verdict == "blocked" else "failed", reason=json.dumps(value["findings"]))
+                self.save()
+                return
+        if self.budget_stop():
+            record["status"] = "awaiting_evidence"
             self.save()
             return
+        if record["security_required"]:
+            security_validator = lambda value: validate_security_review(value, task, record["base"], candidate, paths)
+            if not self.saved_review(record, "security_review", security_validator):
+                review_dir = directory / ("security-review-" + uuid.uuid4().hex[:10])
+                self.state.update(phase="security_reviewing", active={"task": task.id})
+                self.save()
+                value = self.adapter.run(
+                    "security-reviewer", task, repo, review_dir, self.timeout(), self.stop_requested,
+                    candidate=candidate, base=record["base"],
+                    context=context + "\nChanged paths (data): " + json.dumps(paths)
+                    + "\nGeneral review evidence (not authoritative): " + record["review"],
+                )
+                verdict = security_validator(value)
+                if head(repo) != candidate or not clean(repo):
+                    raise LoopError("security reviewer changed candidate source or HEAD")
+                self.validate_candidate(record)
+                # Security review cannot invalidate and silently replace the
+                # already passing general review, its gates, or attestations.
+                if not self.saved_review(record, "review", general_validator) or self.missing_evidence(record):
+                    raise LoopError("acceptance evidence changed during security review")
+                self.store_review(record, "security_review", review_dir, value)
+                if verdict != "pass":
+                    record.update(status="review_blocked" if verdict == "blocked" else "failed", reason=json.dumps({"findings": value["findings"], "gaps": value["gaps"]}))
+                    self.save()
+                    return
         if self.budget_stop():
             record["status"] = "awaiting_evidence"
             self.save()
@@ -441,15 +502,30 @@ class Runner:
         git(self.repo, "merge", "--quiet", "--ff-only", candidate)
         self.finish_acceptance(task.id, record)
 
+    def store_review(self, record: dict, key: str, directory: Path, value: dict) -> None:
+        atomic_json(directory / "verdict.json", value)
+        record[key] = str(directory / "verdict.json")
+        record[key + "_sha256"] = digest(Path(record[key]))
+        record[key + "_inputs"] = self.review_inputs(record, security=key == "security_review")
+        self.state.update(phase="idle", active=None)
+        self.save()
+
     def finish_acceptance(self, task_id: str, record: dict) -> None:
         if head(self.repo) != record["candidate"] or not clean(self.repo):
             raise LoopError("accepted checkout changed during acceptance")
         self.validate_candidate(record)
-        if digest(Path(record["review"])) != record["review_sha256"]:
-            raise LoopError("review evidence changed during acceptance")
         task = next(task for task in self.tasks if task.id == task_id)
-        if validate_review(read_json(Path(record["review"])), task, record["candidate"]) != "pass":
+        if not self.saved_review(record, "review", lambda value: validate_review(value, task, record["candidate"])):
             raise LoopError("acceptance requires a passing independent review")
+        repo = Path(record["directory"]) / "repo"
+        paths = committed_paths(repo, record["base"], record["candidate"])
+        needs_security = candidate_requires_security(repo, record["base"], record["candidate"], paths)
+        if record.get("security_required") != needs_security or record.get("security_paths") != paths:
+            raise LoopError("security review routing changed during acceptance")
+        if needs_security and not self.saved_review(record, "security_review", lambda value: validate_security_review(
+            value, task, record["base"], record["candidate"], paths,
+        )):
+            raise LoopError("acceptance requires a passing independent security review")
         if self.missing_evidence(record):
             raise LoopError("acceptance requires all external evidence")
         record.update(status="accepted", accepted_at=now(), reason="all required evidence accepted")

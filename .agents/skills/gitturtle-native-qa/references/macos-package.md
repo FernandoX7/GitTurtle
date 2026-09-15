@@ -2,16 +2,18 @@
 
 Read this for a package, app-icon, or bundled-resource task. Follow the [package script](../../../../scripts/package-macos.sh) and [icon pipeline](../../../../assets/icons/README.md); building a package is unnecessary for source-only interaction checks.
 
-If the task asks to verify an existing release, inspect that exact artifact without replacing it. For a requested fresh package, prefer a new `.app` output path until it is verified; the script replaces a matching GitTurtle bundle in place and does not provide rollback. Finish active Git operations and quit the old copy before any authorized replacement. When compiled inputs changed, run from the repository root:
+If the task asks to verify an existing release, inspect that exact artifact without replacing it. For a requested fresh package, prefer a new `.app` output path until it is verified; the script validates a matching GitTurtle bundle and stages its replacement with rollback on publication failure. This is not a retained user-facing previous-version backup. Finish active Git operations and quit the old copy before any authorized replacement. When compiled inputs changed, run from the repository root:
 
 ```sh
-cargo build --release --locked -p gitturtle --target-dir target
+cargo build --release --locked -p gitturtle --target aarch64-apple-darwin --target-dir target
 ./scripts/package-macos.sh --no-build /absolute/path/to/new/GitTurtle.app
 ```
 
 For bundle-resource-only changes, the packaging command may reuse an existing release executable when its source revision and working-tree state are known and its Rust, dependency, and embedded-asset inputs remain unchanged. Packaging compiles `assets/AppIcon.icon` even with `--no-build`. Check `main.rs::Assets` and `EmbeddedAssets`: control SVGs and the branding PNG are embedded; the bundle ships compiled macOS icon resources. An executable timestamp or UUID alone does not establish source freshness; rebuild when provenance is unknown or compiled inputs changed. Repackaging alone does not require repeating clean Rust gates.
 
-The packager copies `target/release/gitturtle` (or `target/debug/gitturtle` with `--debug`). Confirm the actual Cargo output and the executable's `--build-info` identify the intended source, target and profile before packaging. A configured nondefault Cargo target can put a fresh build elsewhere; resolve that mismatch instead of packaging an older file left at the expected path.
+The packager copies `target/aarch64-apple-darwin/release/gitturtle` (or the corresponding `debug` path with `--debug`). For an established binary elsewhere, pass `--no-build --binary /absolute/path/to/gitturtle`. Confirm its `--build-info`, expected source/version and SHA-256 before packaging. Reusing a modified build or packaging checkout requires `--expected-sha256` to pin the reviewed input; a timestamp is insufficient. The current package supports arm64 only and requires Xcode 26+, Metal and the declared icon-tool prerequisites.
+
+Use `--archive-dir /absolute/new/directory` to produce the version/source-labelled ZIP, checksum and archive manifest. The detached `.app.build-info.json` records pre-sign and final executable digests; ZIP `build-info.json` remains outside the app's sealed resources. Extract the actual archive and validate its manifest, signature and launch path. `--distribution` requires complete notices and a clean release identity. Preserve failed-stage diagnostics if publication detects concurrent output changes.
 
 For packaged checks, select the intended app by its absolute path; multiple local bundles can share an identifier. For timing a package, start that package's executable with the environment and repository argument before attaching UI automation, for example when validating the default output:
 

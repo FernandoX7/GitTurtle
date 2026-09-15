@@ -24,31 +24,36 @@ Tasks launched at the repository root explicitly read the affected crate/vendor 
 
 ## Roles and acceptance
 
-In coordinated agent work, the coordinator owns integration and commits. Three recurring roles have ready-to-use Codex definitions; their responsibilities can also be assigned in other tools:
+In coordinated agent work, the coordinator owns integration and commits. Four recurring roles have ready-to-use Codex definitions; their responsibilities can also be assigned in other tools:
 
 - [Implementer](../.codex/agents/implementer.toml): one bounded feature, focused tests and a structured handoff.
 - [Verifier](../.codex/agents/verifier.toml): an independent assessment of the identified candidate and its acceptance evidence.
+- [Security reviewer](../.codex/agents/security-reviewer.toml): a separate, evidence-based assessment of the changed trust boundaries under the [security review contract](development/security-review.md).
 - [Librarian](../.codex/agents/librarian.toml): assigned guidance, research and evidence reconciliation.
 
 Architecture planning is a phase when uncertainty warrants it; crate ownership and existing skills provide domain specialization. One worker owns native UI/package interaction. There is no mandatory agent count or an always-running design, research or performance persona.
 
 The implementer and verifier also apply the architecture review when shared state or contracts change. The librarian reconciles module ownership, platform capabilities and validation routes with the actual source. The [September 15 maintainability audit](development/2026-09-15-maintainability-audit.md) records specific drift corrections and proposed implementation increments, including their evidence limits.
 
-The controller snapshots approved task contracts and records attempt state outside them. Workers return results; they do not mark themselves passing or change grading rules. Every `AGENTS.md`, the agent/skill definitions and controller/task-policy files are protected during unattended attempts. Maintain them through explicitly scoped interactive work. Acceptance requires applicable deterministic checks, a separate verifier and every required external attestation for the same candidate. Native, package, performance and vendor evidence remains explicit; missing coverage defers acceptance and dependent work.
+The controller snapshots approved task contracts and records attempt state outside them. Workers return results; they do not mark themselves passing or change grading rules. Every `AGENTS.md`, the agent/skill definitions and controller/task-policy files are protected during unattended attempts. Maintain them through explicitly scoped interactive work. Acceptance requires applicable deterministic checks, a separate verifier, conditional independent security review and every required external attestation for the same candidate. Security review follows general verification, binds the base/candidate/changed paths and evidence, and cannot pass with findings or material gaps. The coordinator keeps one consolidated report; the reviewer does not post comments or operate external services. Native, package, performance and vendor evidence remains explicit; missing coverage defers acceptance and dependent work.
 
 The Codex role files omit `model` and `model_reasoning_effort`, preserving interactive inheritance. A separate unattended CLI process receives the operator's explicit `--model` and `--effort`; it cannot infer the desktop session's choice. The runner controls child configuration to avoid unrelated global overrides. No repository-wide Ultra setting is introduced.
 
-The verifier requests `sandbox_mode = "read-only"`. This is a default, not a universal guarantee: Codex reapplies live parent permission overrides when spawning a child. Review-only instructions and controller candidate-mutation checks remain necessary. The librarian's assigned-path restriction is likewise a role contract, not a filesystem access-control list. See [official subagent configuration and permission behavior](https://learn.chatgpt.com/docs/agent-configuration/subagents).
+Both reviewers request `sandbox_mode = "read-only"`. This is a default, not a universal guarantee: Codex reapplies live parent permission overrides when spawning a child. Review-only instructions and controller candidate-mutation checks remain necessary. The librarian's assigned-path restriction is likewise a role contract, not a filesystem access-control list. See [official subagent configuration and permission behavior](https://learn.chatgpt.com/docs/agent-configuration/subagents).
 
 ## Sustained work
 
-Use durable task contracts, progress records and evidence for sustained work in the chosen tool. Fresh implementation and verifier sessions limit accumulated context. The optional Codex controller manages an authorized dependency queue; interactive Codex goals require an explicit user request. An ordinary feature request does not authorize creating a goal or automation.
+Use durable task contracts, progress records and evidence for sustained work in the chosen tool. Fresh implementation and review sessions limit accumulated context. The optional Codex controller manages an authorized dependency queue; interactive Codex goals require an explicit user request. An ordinary feature request does not authorize creating a goal or automation.
 
-The controller uses private local clones with independent Git metadata and removed origin; it does not reset, stage or commit in the caller's checkout. It creates atomic Conventional Commits in attempt clones, then fetches accepted candidates locally and fast-forwards its private accepted branch. It does not integrate into the source branch, push or publish. Attempts, sessions, elapsed time and optional reported-output limits bound each run. Stop/resume and external evidence registration are explicit operator commands; installing this architecture does not start an automation.
+The controller uses private local clones with independent Git metadata and removed origin; it does not reset, stage or commit in the caller's checkout. It creates atomic Conventional Commits in attempt clones, then fetches accepted candidates locally and fast-forwards its private accepted branch. It does not integrate into the source branch, push or publish. Attempts, sessions, elapsed time and optional reported-output limits bound each run, including the security stage. Interrupted security review retains successful general verification and gates; unchanged successful reviews are reused after input and evidence validation. New policy applies to new runs, while saved runs retain their original controller snapshot. Stop/resume and external evidence registration are explicit operator commands; installing this architecture does not start an automation.
 
 Changed-path inference adds conservative native evidence requirements for app Rust and native toolkit patches, and package evidence for assets/package scripts. A pending candidate becomes stale when unrelated accepted work advances its base; it must be rebuilt and verified against the new base. The [runbook](development/README.md#native-and-external-attestations) explains how to avoid collecting evidence for a superseded candidate.
 
 See the [runbook](development/README.md) for command semantics, recovery and platform limits. Controller tests establish orchestration behavior only. Neither a valid configuration nor a short test proves unattended hours of successful product implementation.
+
+## Security process change — September 15, 2026
+
+The repository owner explicitly changed the initiative scope from CodeQL automation to a dedicated security reviewer. The [security review contract](development/security-review.md) records its evidence threshold, conditional routing, limitations and controller enforcement. The original queue remains immutable; its superseded CodeQL clauses are not represented as passed. Product validation and external evidence requirements remain independent of this process change.
 
 ## Research decisions — September 15, 2026
 

@@ -3,23 +3,40 @@ set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 build=true
+distribution=false
 executable="$project_root/target/x86_64-unknown-linux-gnu/release/gitturtle"
-if [[ "${1:-}" == "--no-build" ]]; then
-  build=false
-  shift
-  if [[ "${1:-}" == "--binary" ]]; then
-    executable="${2:?--binary needs the path to the intended release executable}"
-    shift 2
+binary_explicit=false
+identity_args=()
+bundle=""
+usage() {
+  echo "Usage: scripts/package-linux.sh [--no-build [--binary PATH]] [--distribution] [--expected-revision SHA] [--expected-version VERSION] [--expected-sha256 SHA256] [output-directory]"
+}
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --help) usage; exit 0 ;;
+    --no-build) build=false; shift ;;
+    --distribution) distribution=true; identity_args+=(--distribution); shift ;;
+    --binary) executable="${2:?--binary needs a path}"; binary_explicit=true; shift 2 ;;
+    --expected-revision|--expected-version|--expected-sha256)
+      identity_args+=("$1" "${2:?identity option needs a value}"); shift 2 ;;
+    --*) usage >&2; exit 1 ;;
+    *)
+      if [[ -n "$bundle" ]]; then usage >&2; exit 1; fi
+      bundle="$1"; shift ;;
+  esac
+done
+if [[ "$(uname -s)" != Linux || "$(uname -m)" != x86_64 ]]; then
+  echo "This package requires Linux x86-64." >&2; exit 1
+fi
+if [[ "$binary_explicit" == true && "$build" == true ]]; then
+  echo "--binary requires --no-build." >&2; exit 1
+fi
+bundle="${bundle:-$project_root/dist/gitturtle-linux-x86_64}"
+for output in "$bundle" "$bundle.tar.gz" "$bundle.tar.gz.sha256" "$bundle.tar.gz.manifest.json"; do
+  if [[ -e "$output" || -L "$output" ]]; then
+    echo "Output already exists: $output. Choose a new output directory." >&2; exit 1
   fi
-fi
-if [[ "${1:-}" == "--help" ]]; then
-  echo "Usage: scripts/package-linux.sh [--no-build [--binary PATH]] [output-directory]"
-  exit 0
-fi
-if [[ "$#" -gt 1 || "$(uname -s)" != Linux || "$(uname -m)" != x86_64 ]]; then
-  echo "Usage: scripts/package-linux.sh [--no-build [--binary PATH]] [output-directory] (Linux x86-64)" >&2
-  exit 1
-fi
+done
 for command in python3 cargo desktop-file-validate sha256sum tar; do
   if ! command -v "$command" >/dev/null; then
     echo "Missing $command. Install the packaging prerequisites in docs/linux.md." >&2
@@ -43,25 +60,38 @@ if [[ ! -x "$executable" ]]; then
   echo "Release executable missing. Run this script without --no-build." >&2
   exit 1
 fi
-bundle="${1:-$project_root/dist/gitturtle-linux-x86_64}"
-if [[ -e "$bundle" || -e "$bundle.tar.gz" ]]; then
-  echo "Output already exists: $bundle (or its .tar.gz). Choose a new output directory." >&2
-  exit 1
+# Build all payloads privately before exposing a completed output. A failed
+# strict notice collection leaves no apparently verified bundle or archive.
+parent="$(dirname "$bundle")"
+mkdir -p "$parent"
+parent="$(cd "$parent" && pwd)"
+bundle_name="$(basename "$bundle")"
+bundle="$parent/$bundle_name"
+staging="$(mktemp -d "$parent/.gitturtle-package.XXXXXX")"
+trap 'rm -rf "$staging"' EXIT
+staged_bundle="$staging/$bundle_name"
+mkdir -p "$staged_bundle/bin" "$staged_bundle/icons"
+if [[ -L "$executable" || ! -f "$executable" ]]; then
+  echo "Expected a regular release executable, not a symlink." >&2; exit 1
 fi
-mkdir -p "$bundle/bin" "$bundle/icons"
-bundle="$(cd "$bundle" && pwd)"
-install -m755 "$executable" "$bundle/bin/gitturtle"
-install -m755 "$project_root/scripts/install-linux.py" "$bundle/install.py"
-install -m644 "$project_root/assets/app-icon.png" "$bundle/icons/app-icon.png"
-install -m644 "$project_root/docs/linux.md" "$bundle/README.md"
+install -m755 "$executable" "$staged_bundle/bin/gitturtle"
+install -m755 "$project_root/scripts/install-linux.py" "$staged_bundle/install.py"
+install -m644 "$project_root/scripts/package-identity.py" "$staged_bundle/package_identity.py"
+install -m644 "$project_root/assets/app-icon.png" "$staged_bundle/icons/app-icon.png"
+install -m644 "$project_root/docs/linux.md" "$staged_bundle/README.md"
+license_args=()
+if [[ "$distribution" == true ]]; then license_args+=(--require-complete); fi
 python3 "$project_root/scripts/collect-third-party-licenses.py" \
-  --target x86_64-unknown-linux-gnu "$bundle/licenses"
-python3 - "$project_root" "$bundle" "$build" <<'PY'
+  --target x86_64-unknown-linux-gnu "${license_args[@]}" "$staged_bundle/licenses"
+if [[ "$build" == true ]]; then identity_args+=(--built); fi
+python3 "$project_root/scripts/package-identity.py" \
+  --root "$project_root" --binary "$staged_bundle/bin/gitturtle" \
+  --licenses "$staged_bundle/licenses" --target x86_64-unknown-linux-gnu \
+  --profile release --signing unsigned "${identity_args[@]}" \
+  --output "$staged_bundle/build-info.json"
+python3 - "$project_root" "$staged_bundle" <<'PY'
 import hashlib
-import json
-import os
 from pathlib import Path
-import subprocess
 import sys
 from PIL import Image
 
@@ -77,38 +107,49 @@ with Image.open(bundle / "icons/app-icon.png") as image:
         path = bundle / f"icons/hicolor/{size}x{size}/apps/com.gitturtle.desktop.png"
         path.parent.mkdir(parents=True, exist_ok=True)
         image.resize((size, size), Image.Resampling.LANCZOS).save(path)
-def git(*args):
-    result = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True)
-    return result.stdout.strip() if result.returncode == 0 else "unavailable"
-probe_env = dict(os.environ, ZED_HEADLESS="1")
-for name in ("DISPLAY", "WAYLAND_DISPLAY"):
-    probe_env.pop(name, None)
-try:
-    probe = subprocess.run([str(bundle / "bin/gitturtle"), "--build-info"],
-                           env=probe_env, capture_output=True, text=True, timeout=5)
-    compiled_identity = json.loads(probe.stdout) if probe.returncode == 0 else None
-    if not isinstance(compiled_identity, dict) or compiled_identity.get("application") != "GitTurtle":
-        compiled_identity = None
-except (subprocess.TimeoutExpired, ValueError):
-    compiled_identity = None
-info = {
-    "target": "x86_64-unknown-linux-gnu",
-    "packaged_from_revision": git("rev-parse", "HEAD"),
-    "packaging_tree_status": git("status", "--porcelain"),
-    "release_built_by_packager": sys.argv[3] == "true",
-    "binary_sha256": hashlib.sha256((bundle / "bin/gitturtle").read_bytes()).hexdigest(),
-    "compiled_identity": compiled_identity,
-    "note": "With --no-build, verify the reused executable's source identity separately.",
-}
-(bundle / "build-info.json").write_text(json.dumps(info, indent=2) + "\n")
 files = sorted(path for path in bundle.rglob("*") if path.is_file())
 (bundle / "SHA256SUMS").write_text("".join(
     f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(bundle)}\n" for path in files
 ))
 PY
-# Neutral archive ownership avoids leaking the builder's account IDs and lets
-# single-UID user namespaces extract normally without unmapped-owner failures.
-tar --owner=0 --group=0 --numeric-owner -C "$(dirname "$bundle")" -czf "$bundle.tar.gz" "$(basename "$bundle")"
-(cd "$(dirname "$bundle")" && sha256sum "$(basename "$bundle").tar.gz" > "$(basename "$bundle").tar.gz.sha256")
-echo "Built $bundle.tar.gz"
+# Archive owner IDs are neutral. The manifest names the compiled source, version
+# and target; a caller may use gitturtle-VERSION-TARGET-SHA as its output basename.
+tar --sort=name --owner=0 --group=0 --numeric-owner -C "$staging" -czf "$staged_bundle.tar.gz" -- "$bundle_name"
+(cd "$staging" && sha256sum -- "$bundle_name.tar.gz" > "$bundle_name.tar.gz.sha256")
+python3 - "$project_root" "$staged_bundle" "$bundle" <<'PY_PACKAGE'
+import importlib.util
+import json
+import os
+from pathlib import Path
+import sys
+
+root, stage, destination = map(Path, sys.argv[1:])
+spec = importlib.util.spec_from_file_location("package_identity", root / "scripts/package-identity.py")
+identity = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(identity)
+archive = Path(str(stage) + ".tar.gz")
+outer = Path(str(archive) + ".manifest.json")
+outer.write_text(json.dumps(identity.archive_manifest(archive, stage / "build-info.json"), indent=2) + "\n")
+outputs = [(Path(str(stage) + suffix), Path(str(destination) + suffix))
+           for suffix in (".tar.gz", ".tar.gz.sha256", ".tar.gz.manifest.json")]
+# Files use exclusive hard-link creation, so even a concurrent collision cannot
+# overwrite unrelated output. Reserve the bundle directory exclusively as well.
+published = []
+reserved = False
+try:
+    destination.mkdir()
+    reserved = True
+    for source, target in outputs:
+        os.link(source, target)
+        published.append(target)
+    os.replace(stage, destination)  # destination is our own empty reservation
+    reserved = False
+except BaseException:
+    for target in reversed(published):
+        target.unlink()
+    if reserved:
+        destination.rmdir()
+    raise
+PY_PACKAGE
+echo "Built $bundle.tar.gz ($([[ "$distribution" == true ]] && echo complete-notices || echo development))"
 echo "Extract anywhere, then run: python3 \"$bundle/install.py\""

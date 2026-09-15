@@ -89,6 +89,7 @@ class ReviewTests(unittest.TestCase):
             ("criteria object", lambda value: value.update(criteria={})),
             ("findings string", lambda value: value.update(findings="looks good")),
             ("unknown field", lambda value: value.update(approved=True)),
+            ("false pass", lambda value: value.update(findings=["A concrete blocking defect remains."])),
         ]
         for label, mutate in mutations:
             with self.subTest(label=label):
@@ -109,7 +110,7 @@ class CodexProcessTests(unittest.TestCase):
         self.controller = self.root / "controller"
         roles = self.controller / ".codex/agents"
         roles.mkdir(parents=True)
-        for role in ("implementer", "verifier"):
+        for role in ("implementer", "verifier", "security-reviewer"):
             (roles / f"{role}.toml").write_text(
                 f'name = "{role}"\ndescription = "Fixture role"\n'
                 'developer_instructions = "Inspect the fixture contract."\n', encoding="utf-8"
@@ -203,6 +204,27 @@ class CodexProcessTests(unittest.TestCase):
         self.assertEqual(args[args.index("--sandbox") + 1], "read-only")
         self.assertIn("Candidate: " + "a" * 40, capture["prompt"])
         self.assertEqual(validate_review(result, self.task, "a" * 40), "pass")
+
+    def test_security_reviewer_uses_read_only_schema_and_explicit_base(self):
+        from agent_loop.test_security_review import passing_security
+        response = passing_security(self.task.id, "b" * 40, "a" * 40)
+        self.fake_codex(response=response)
+        result = self.session("security-reviewer", candidate="a" * 40, base="b" * 40)
+        self.assertEqual(result, response)
+        capture = json.loads(self.invocation.read_text())
+        args = capture["args"]
+        self.assertEqual(args[args.index("--sandbox") + 1], "read-only")
+        self.assertIn("Base: " + "b" * 40, capture["prompt"])
+        schema = json.loads(Path(args[args.index("--output-schema") + 1]).read_text())
+        self.assertIn("coverage", schema["required"])
+        self.assertEqual(self.adapter.output_tokens, 37)
+
+    def test_security_reviewer_missing_identity_never_launches(self):
+        self.fake_codex()
+        for options in ({}, {"candidate": "a" * 40}, {"base": "b" * 40}):
+            with self.subTest(options=options), self.assertRaisesRegex(LoopError, "explicit"):
+                self.session("security-reviewer", **options)
+        self.assertFalse(self.invocation.exists())
 
     def test_verifier_without_a_candidate_never_launches(self):
         self.fake_codex(response=passing_review())

@@ -1,0 +1,295 @@
+{
+  "schema_version": 1,
+  "runs": [
+    {
+      "repository": "example/gitturtle",
+      "run": {
+        "id": 101,
+        "workflow_id": 500,
+        "name": "Quality",
+        "path": ".github/workflows/quality.yml",
+        "run_attempt": 1,
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "event": "push",
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-09-15T10:00:00Z",
+        "run_started_at": "2026-09-15T10:00:10Z",
+        "updated_at": "2026-09-15T10:04:20Z"
+      },
+      "jobs_complete": true,
+      "jobs": [
+        {
+          "id": 1001,
+          "run_id": 101,
+          "run_attempt": 1,
+          "name": "quality (ubuntu-24.04)",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-15T10:00:20Z",
+          "completed_at": "2026-09-15T10:02:20Z",
+          "labels": [
+            "ubuntu-24.04"
+          ],
+          "steps": [
+            {
+              "number": 1,
+              "name": "Restore Rust cache",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-09-15T10:00:20Z",
+              "completed_at": "2026-09-15T10:00:30Z",
+              "log": "Cache restored successfully\nCache Size: ~125 MB (131072000 B)\n",
+              "cache": {
+                "restore_seconds": 10,
+                "hit": true,
+                "size_bytes": 131072000
+              }
+            },
+            {
+              "number": 2,
+              "name": "Test workspace",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-09-15T10:00:30Z",
+              "completed_at": "2026-09-15T10:01:50Z",
+              "log": "2026-09-15T10:00:30.000Z    Compiling gitturtle-core v0.1.0\n2026-09-15T10:01:30.000Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 00s\n2026-09-15T10:01:31.000Z      Running unittests src/lib.rs\n2026-09-15T10:01:49.000Z test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 18.00s\n"
+            },
+            {
+              "number": 3,
+              "name": "Save Rust cache",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-09-15T10:01:50Z",
+              "completed_at": "2026-09-15T10:02:00Z",
+              "log": "Cache saved successfully\n",
+              "cache": {
+                "save_seconds": 10
+              }
+            }
+          ]
+        },
+        {
+          "id": 1002,
+          "run_id": 101,
+          "run_attempt": 1,
+          "name": "quality (macos-14)",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-15T10:00:30Z",
+          "completed_at": "2026-09-15T10:04:10Z",
+          "labels": [
+            "macos-14",
+            "ARM64"
+          ],
+          "steps": [
+            {
+              "number": 1,
+              "name": "Restore Rust cache",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-09-15T10:00:30Z",
+              "completed_at": "2026-09-15T10:00:35Z",
+              "log": "Cache not found for input keys: rust-macos-fixture\n",
+              "cache": {
+                "restore_seconds": 5,
+                "hit": false
+              }
+            },
+            {
+              "number": 2,
+              "name": "Test workspace",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-09-15T10:00:35Z",
+              "completed_at": "2026-09-15T10:04:00Z"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "example/gitturtle",
+      "run": {
+        "id": 102,
+        "workflow_id": 500,
+        "name": "Quality",
+        "path": ".github/workflows/quality.yml",
+        "run_attempt": 1,
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "event": "pull_request",
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-09-15T10:00:02Z",
+        "run_started_at": "2026-09-15T10:00:12Z",
+        "updated_at": "2026-09-15T10:01:02Z"
+      },
+      "jobs_complete": true,
+      "jobs": [
+        {
+          "id": 1003,
+          "run_id": 102,
+          "run_attempt": 1,
+          "name": "PR checks",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-15T10:00:22Z",
+          "completed_at": "2026-09-15T10:00:52Z",
+          "labels": [
+            "self-hosted",
+            "Linux",
+            "X64"
+          ],
+          "steps": [
+            {
+              "number": 1,
+              "name": "Validate guidance",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-09-15T10:00:22Z",
+              "completed_at": "2026-09-15T10:00:42Z"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "example/gitturtle",
+      "run": {
+        "id": 103,
+        "run_attempt": 1,
+        "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "event": "pull_request",
+        "status": "completed",
+        "conclusion": "failure",
+        "created_at": "2026-09-15T11:00:00Z",
+        "run_started_at": "2026-09-15T11:00:10Z",
+        "updated_at": "2026-09-15T11:02:00Z"
+      },
+      "jobs_complete": true,
+      "jobs": [
+        {
+          "id": 1004,
+          "run_id": 103,
+          "run_attempt": 1,
+          "name": "Linux failure",
+          "status": "completed",
+          "conclusion": "failure",
+          "started_at": "2026-09-15T11:00:20Z",
+          "completed_at": "2026-09-15T11:01:50Z",
+          "labels": [
+            "ubuntu-24.04",
+            "X64"
+          ],
+          "steps": [
+            {
+              "number": 1,
+              "name": "Test workspace",
+              "status": "completed",
+              "conclusion": "failure",
+              "started_at": "2026-09-15T11:00:30Z",
+              "completed_at": "2026-09-15T11:01:45Z",
+              "log": "2026-09-15T11:00:30.000Z    Compiling gitturtle-core v0.1.0\n2026-09-15T11:01:30.000Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 00s\n2026-09-15T11:01:31.000Z      Running unittests src/lib.rs\n2026-09-15T11:01:44.000Z error: test failed\n"
+            },
+            {
+              "number": 2,
+              "name": "Strict Clippy",
+              "status": "completed",
+              "conclusion": "skipped",
+              "started_at": null,
+              "completed_at": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "example/gitturtle",
+      "run": {
+        "id": 104,
+        "run_attempt": 1,
+        "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+        "event": "push",
+        "status": "completed",
+        "conclusion": "cancelled",
+        "created_at": "2026-09-15T12:00:00Z",
+        "run_started_at": "2026-09-15T12:00:05Z",
+        "updated_at": "2026-09-15T12:01:00Z"
+      },
+      "jobs_complete": true,
+      "jobs": [
+        {
+          "id": 1005,
+          "run_id": 104,
+          "run_attempt": 1,
+          "name": "Interrupted tests",
+          "status": "completed",
+          "conclusion": "cancelled",
+          "started_at": "2026-09-15T12:00:10Z",
+          "completed_at": "2026-09-15T12:00:50Z",
+          "labels": [
+            "Linux",
+            "ARM64"
+          ],
+          "steps": [
+            {
+              "number": 1,
+              "name": "Test workspace",
+              "status": "completed",
+              "conclusion": "cancelled",
+              "started_at": "2026-09-15T12:00:10Z",
+              "completed_at": null,
+              "log": "Compiling gitturtle-core v0.1.0\nThe operation was canceled.\n"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "example/gitturtle",
+      "run": {
+        "id": 105,
+        "run_attempt": 1,
+        "head_sha": "dddddddddddddddddddddddddddddddddddddddd",
+        "event": "push",
+        "status": "queued",
+        "conclusion": null,
+        "created_at": "2026-09-15T13:00:00Z",
+        "run_started_at": null,
+        "updated_at": "2026-09-15T13:00:00Z"
+      },
+      "jobs_complete": true,
+      "jobs": []
+    },
+    {
+      "repository": "example/gitturtle",
+      "run": {
+        "id": 106,
+        "run_attempt": 2,
+        "head_sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "event": "workflow_dispatch",
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-09-15T14:00:00Z",
+        "run_started_at": "2026-09-15T14:30:00Z",
+        "updated_at": "2026-09-15T14:31:00Z"
+      },
+      "jobs_complete": true,
+      "jobs": [
+        {
+          "id": 1006,
+          "run_id": 106,
+          "run_attempt": 2,
+          "name": "Unavailable step detail",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-15T14:30:10Z",
+          "completed_at": "2026-09-15T14:30:50Z",
+          "labels": [
+            "custom-runner"
+          ]
+        }
+      ]
+    }
+  ]
+}

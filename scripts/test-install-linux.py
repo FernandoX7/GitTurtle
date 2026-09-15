@@ -2,6 +2,10 @@
 """Installer recovery tests; --bundle adds real-bundle checks in disposable homes."""
 
 import argparse
+import contextlib
+import copy
+import fcntl
+import io
 import importlib.util
 import json
 import os
@@ -18,6 +22,9 @@ SCRIPT = Path(__file__).with_name("install-linux.py")
 SPEC = importlib.util.spec_from_file_location("gitturtle_installer", SCRIPT)
 installer = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(installer)
+PACKAGE_SPEC = importlib.util.spec_from_file_location("package_identity_fixture", SCRIPT.with_name("package-identity.py"))
+package_identity = importlib.util.module_from_spec(PACKAGE_SPEC)
+PACKAGE_SPEC.loader.exec_module(package_identity)
 BUNDLE = None
 
 
@@ -131,6 +138,23 @@ class BackupTests(unittest.TestCase):
             process.terminate()
             process.wait(timeout=5)
 
+    def test_support_and_backup_symlinks_are_refused(self):
+        external = self.root / "unrelated"
+        external.mkdir()
+        marker = external / "keep"
+        marker.write_text("unchanged")
+        self.data.mkdir()
+        (self.data / "gitturtle").symlink_to(external, target_is_directory=True)
+        with self.assertRaisesRegex(RuntimeError, "invalid installation directory"):
+            installer.save_backup(installer.installed_targets(self.home, self.data), self.home, self.data)
+        (self.data / "gitturtle").unlink()
+        (self.data / "gitturtle").mkdir()
+        (self.data / "gitturtle/install-backups").symlink_to(external, target_is_directory=True)
+        with self.assertRaisesRegex(RuntimeError, "invalid installation directory"):
+            installer.save_backup(installer.installed_targets(self.home, self.data), self.home, self.data)
+        self.assertEqual(marker.read_text(), "unchanged")
+        self.assertEqual(list(external.iterdir()), [marker])
+
 
 class RealBundleTests(unittest.TestCase):
     def setUp(self):
@@ -191,35 +215,212 @@ class RealBundleTests(unittest.TestCase):
 
 
 class BundlePayloadTests(unittest.TestCase):
+    """Synthetic payload tests; native probes and desktop commands are mocked."""
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="gitturtle-bundle-test-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.bundle, self.home, self.data = (self.root / name for name in ("bundle", "home", "data"))
+        self.binary = self.home / ".local/bin/gitturtle"
+        self.names = {"bin/gitturtle", "install.py", "package_identity.py", "README.md", "build-info.json",
+                      "icons/app-icon.png", "licenses/LICENSE", "licenses/THIRD_PARTY_NOTICES.md",
+                      "licenses/dependencies.json"}
+        self.names.update(f"icons/hicolor/{size}x{size}/apps/{installer.APP_ID}.png"
+                          for size in installer.ICON_SIZES)
+        for name in self.names:
+            source = self.bundle / name
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_bytes(b"checksummed synthetic fixture payload")
+        header = bytearray(32)
+        header[:6] = b"\x7fELF\x02\x01"
+        header[18:20] = (62).to_bytes(2, "little")
+        (self.bundle / "bin/gitturtle").write_bytes(header)
+        self.compiled = dict(application="GitTurtle", version="0.1.0", source_revision="a" * 40,
+                             source_tree="clean", target="x86_64-unknown-linux-gnu", profile="release",
+                             rustc="rustc 1.98.0", build_unix_seconds="1789492155")
+        inventory = dict(target=self.compiled["target"], cargo_lock_sha256="b" * 64,
+                         review_required=[], dependencies=[{"name": "fixture"}])
+        (self.bundle / "licenses/dependencies.json").write_text(json.dumps(inventory))
+        self.info = dict(format=2, application="GitTurtle", bundle_id=installer.APP_ID,
+                         distribution="development", target=self.compiled["target"],
+                         compiled_identity=self.compiled,
+                         packaged_from_revision=self.compiled["source_revision"], packaging_tree_status="clean",
+                         binary_sha256=installer.digest_file(self.bundle / "bin/gitturtle"),
+                         input_binary_sha256=installer.digest_file(self.bundle / "bin/gitturtle"),
+                         cargo_lock_sha256=inventory["cargo_lock_sha256"],
+                         license_inventory_sha256=installer.digest_file(self.bundle / "licenses/dependencies.json"),
+                         license_review_required=[], signing="unsigned")
+        (self.bundle / "build-info.json").write_text(json.dumps(self.info))
+        self.write_checksums()
+        self.binary.parent.mkdir(parents=True)
+        self.binary.write_bytes(b"preserved existing executable")
+        self.unrelated = self.data / "unrelated/settings.json"
+        self.unrelated.parent.mkdir(parents=True)
+        self.unrelated.write_text("preserved unrelated settings and drafts")
+
+    def write_checksums(self):
+        (self.bundle / "SHA256SUMS").write_text("".join(
+            f"{installer.digest_file(self.bundle / name)}  {name}\n" for name in sorted(self.names)))
+
+    def native_doubles(self, *, compiled=None, dependencies=None):
+        stack = contextlib.ExitStack()
+        stack.enter_context(patch.object(installer, "__file__", str(self.bundle / "install.py")))
+        stack.enter_context(patch.object(installer, "package_tools", return_value=package_identity))
+        probe = stack.enter_context(patch.object(package_identity, "probe", return_value=compiled or self.compiled))
+        stack.enter_context(patch.object(installer.shutil, "which", return_value="fixture-tool"))
+        stack.enter_context(patch.object(installer.subprocess, "run", return_value=dependencies or
+                                        subprocess.CompletedProcess([], 0, stdout="", stderr="")))
+        stack.enter_context(patch.object(installer, "refresh_desktop"))
+        stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+        return stack, probe
+
+    def assert_preserved(self):
+        self.assertEqual(self.binary.read_bytes(), b"preserved existing executable")
+        self.assertEqual(self.unrelated.read_text(), "preserved unrelated settings and drafts")
+
     def test_unlisted_icon_cannot_replace_an_unrelated_desktop_icon(self):
-        with tempfile.TemporaryDirectory(prefix="gitturtle-bundle-test-") as temporary:
-            root = Path(temporary)
-            bundle, home, data = root / "bundle", root / "home", root / "data"
-            names = {"bin/gitturtle", "install.py", "README.md", "build-info.json", "icons/app-icon.png",
-                     "licenses/LICENSE", "licenses/THIRD_PARTY_NOTICES.md", "licenses/dependencies.json"}
-            names.update(f"icons/hicolor/{size}x{size}/apps/{installer.APP_ID}.png"
-                         for size in installer.ICON_SIZES)
-            for name in names:
-                source = bundle / name
-                source.parent.mkdir(parents=True, exist_ok=True)
-                source.write_bytes(b"checksummed fixture payload")
-            (bundle / "SHA256SUMS").write_text("".join(
-                f"{installer.digest_file(bundle / name)}  {name}\n" for name in sorted(names)))
-            extra = "icons/hicolor/48x48/apps/unrelated.png"
-            (bundle / extra).write_bytes(b"unchecked extra icon")
-            destination = data / extra
-            destination.parent.mkdir(parents=True)
-            destination.write_bytes(b"keep unrelated icon")
+        extra = "icons/hicolor/48x48/apps/unrelated.png"
+        (self.bundle / extra).write_bytes(b"unchecked extra icon")
+        destination = self.data / extra
+        destination.parent.mkdir(parents=True)
+        destination.write_bytes(b"keep unrelated icon")
+        context, _ = self.native_doubles()
+        with context:
+            installer.install_bundle(self.home, self.data)
+        self.assertEqual(destination.read_bytes(), b"keep unrelated icon")
+        self.assertEqual(self.binary.read_bytes(), (self.bundle / "bin/gitturtle").read_bytes())
 
-            with (patch.object(installer, "__file__", str(bundle / "install.py")),
-                  patch.object(installer.shutil, "which", return_value="fixture-tool"),
-                  patch.object(installer.subprocess, "run", return_value=subprocess.CompletedProcess(
-                      [], 0, stdout="", stderr="")),
-                  patch.object(installer, "refresh_desktop")):
-                installer.install_bundle(home, data)
+    def test_checksum_mismatch_missing_required_and_duplicate_entries_do_not_probe_or_install(self):
+        valid = (self.bundle / "SHA256SUMS").read_text()
+        first = valid.splitlines()[0]
+        variants = (valid.replace(first[:64], "f" * 64, 1),
+                    "\n".join(line for line in valid.splitlines() if not line.endswith("  package_identity.py")),
+                    valid + first + "\n")
+        for checksum_text in variants:
+            with self.subTest(checksum_text=checksum_text[:80]):
+                (self.bundle / "SHA256SUMS").write_text(checksum_text)
+                context, probe = self.native_doubles()
+                with context, self.assertRaises(RuntimeError):
+                    installer.install_bundle(self.home, self.data)
+                probe.assert_not_called()
+                self.assert_preserved()
 
-            self.assertEqual(destination.read_bytes(), b"keep unrelated icon")
-            self.assertEqual((home / ".local/bin/gitturtle").read_bytes(), b"checksummed fixture payload")
+    def test_checksum_paths_cannot_traverse_or_follow_symlinks(self):
+        valid = (self.bundle / "SHA256SUMS").read_text()
+        for name in ("../unrelated", "/absolute", "icons//file", "icons/./file", "icons\\file"):
+            with self.subTest(name=name):
+                (self.bundle / "SHA256SUMS").write_text(f"{'a' * 64}  {name}\n" + valid)
+                context, probe = self.native_doubles()
+                with context, self.assertRaisesRegex(RuntimeError, "Invalid bundle checksum entry"):
+                    installer.install_bundle(self.home, self.data)
+                probe.assert_not_called()
+                self.assert_preserved()
+        (self.bundle / "SHA256SUMS").write_text(valid)
+        target = self.bundle / "icons/app-icon.png"
+        target.unlink()
+        target.symlink_to(self.unrelated)
+        context, probe = self.native_doubles()
+        with context, self.assertRaisesRegex(RuntimeError, "symlink"):
+            installer.install_bundle(self.home, self.data)
+        probe.assert_not_called()
+        self.assert_preserved()
+
+    def test_coherent_checksums_do_not_bypass_package_identity_validation(self):
+        invalid = copy.deepcopy(self.info)
+        invalid["compiled_identity"]["source_revision"] = "f" * 40
+        (self.bundle / "build-info.json").write_text(json.dumps(invalid))
+        self.write_checksums()
+        context, probe = self.native_doubles()
+        with context, self.assertRaisesRegex(package_identity.PackageError, "source_revision"):
+            installer.install_bundle(self.home, self.data)
+        probe.assert_not_called()
+        self.assert_preserved()
+
+    def test_unchecked_license_is_refused_before_installation(self):
+        (self.bundle / "licenses/extra-notice.txt").write_text("unchecked")
+        context, probe = self.native_doubles()
+        with context, self.assertRaisesRegex(RuntimeError, "unchecked license"):
+            installer.install_bundle(self.home, self.data)
+        probe.assert_not_called()
+        self.assert_preserved()
+
+    def test_runtime_or_compiled_identity_failure_preserves_existing_installation(self):
+        context, probe = self.native_doubles(dependencies=subprocess.CompletedProcess(
+            [], 0, stdout="libmissing.so => not found", stderr=""))
+        with context, self.assertRaisesRegex(RuntimeError, "Runtime library"):
+            installer.install_bundle(self.home, self.data)
+        probe.assert_not_called()
+        self.assert_preserved()
+        context, _ = self.native_doubles(compiled=dict(self.compiled, version="99.0.0"))
+        with context, self.assertRaisesRegex(RuntimeError, "identity differs"):
+            installer.install_bundle(self.home, self.data)
+        self.assert_preserved()
+
+    def test_partial_copy_failure_restores_installed_payload_and_keeps_recovery(self):
+        metadata = self.data / "gitturtle/build-info.json"
+        metadata.parent.mkdir(parents=True)
+        metadata.write_text("previous build identity")
+        launcher = self.data / f"applications/{installer.APP_ID}.desktop"
+        launcher.parent.mkdir(parents=True)
+        launcher.write_text("previous launcher")
+        real_replace = installer.replace_file
+        failed = False
+
+        def fail_once(source, destination, mode):
+            nonlocal failed
+            if destination == launcher and not failed:
+                failed = True
+                raise OSError("fixture interrupted copy")
+            return real_replace(source, destination, mode)
+
+        context, _ = self.native_doubles()
+        with context, patch.object(installer, "replace_file", side_effect=fail_once):
+            with self.assertRaisesRegex(OSError, "fixture interrupted copy"):
+                installer.install_bundle(self.home, self.data)
+        self.assertTrue(failed)
+        self.assert_preserved()
+        self.assertEqual(metadata.read_text(), "previous build identity")
+        self.assertEqual(launcher.read_text(), "previous launcher")
+        marker = json.loads((self.data / "gitturtle/previous-installation.json").read_text())
+        backup = self.data / "gitturtle/install-backups" / marker["backup"]
+        installer.backup_entries(backup, self.home, self.data)
+        self.assertFalse((self.data / "gitturtle/licenses/LICENSE").exists())
+
+
+class InstallationLockTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="gitturtle-lock-test-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.home, self.data = self.root / "home", self.root / "data"
+        self.support = self.data / "gitturtle"
+        self.support.mkdir(parents=True)
+
+    def invoke(self):
+        with (patch.object(installer.Path, "home", return_value=self.home),
+              patch.object(installer, "data_path", return_value=self.data),
+              patch.object(installer.platform, "system", return_value="Linux"),
+              patch.object(installer.platform, "machine", return_value="x86_64"),
+              patch.object(sys, "argv", ["install.py"]),
+              patch.object(installer, "install_bundle") as install):
+            try:
+                installer.install()
+            finally:
+                install.assert_not_called()
+
+    def test_concurrent_installation_is_refused_without_touching_payload(self):
+        with (self.support / "install.lock").open("a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaisesRegex(RuntimeError, "Another GitTurtle installation"):
+                self.invoke()
+
+    def test_symlink_lock_is_refused_without_touching_target(self):
+        marker = self.root / "unrelated"
+        marker.write_text("preserve")
+        (self.support / "install.lock").symlink_to(marker)
+        with self.assertRaisesRegex(RuntimeError, "Invalid installation lock"):
+            self.invoke()
+        self.assertEqual(marker.read_text(), "preserve")
 
 
 if __name__ == "__main__":

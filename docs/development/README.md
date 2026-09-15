@@ -12,7 +12,7 @@ For an authorized list of independent features, the optional local [controller](
 
 ## Task contracts and ownership
 
-[tasks.json](tasks.json) is the versioned feature specification; [task.schema.json](task.schema.json) describes its format. The initial list is empty deliberately. Add concrete, authorized work before running it; historical milestone notes are evidence sources, not an automatically approved backlog.
+[tasks.json](tasks.json) is the versioned feature specification; [task.schema.json](task.schema.json) describes its format. The current authorized queue covers the [commit inspector and CI/CD initiative](commit-inspector-and-ci.md), including its native, hosted-validation and release checkpoints. Add only concrete, authorized work; historical milestone notes are evidence sources, not an automatically approved backlog.
 
 A useful task states its observable outcome, acceptance steps, dependencies, owned paths and verification requirements. Keep a feature small enough to review and commit as one cohesive change, including necessary tests and documentation. State whether it promises core behavior, an integrated native workflow, a measurement or a package. Validate the graph before a run: duplicate IDs, missing dependencies and cycles cannot be repaired by guessing a new task order.
 
@@ -23,10 +23,11 @@ For changes to shared interfaces, retained state, persistence, scheduling, platf
 | Coordinator/controller | Task contract, immutable run snapshot, candidate commits, checks, acceptance and integration decisions |
 | [Implementer](../../.codex/agents/implementer.toml) | One task's source changes, focused tests and structured handoff; no index or commits |
 | [Verifier](../../.codex/agents/verifier.toml) | Independent assessment of the identified candidate, its acceptance criteria and evidence; no source or acceptance edits |
+| [Security reviewer](../../.codex/agents/security-reviewer.toml) | Separate assessment of affected trust boundaries and evidence under the [security review contract](security-review.md); no source, acceptance or external-service actions |
 | [Librarian](../../.codex/agents/librarian.toml) | Assigned documentation, research and evidence reconciliation; no acceptance-state edits |
 | Native/package owner | Exclusive app operation, fixture/state preservation and evidence for the exact build |
 
-Workers cannot edit their grading rules during an attempt. Every `AGENTS.md`, agent/skill definitions, controller source, guidance checker and task specification/schema is protected from unattended patches. Maintain those files through an explicitly scoped interactive change with independent review. The controller records results outside `tasks.json`; a model's claim of success does not update the specification or satisfy missing evidence.
+Workers cannot edit their grading rules during an attempt. Every `AGENTS.md`, agent/skill definitions, controller source, security-review policy, guidance checker and task specification/schema is protected from unattended patches. Maintain those files through an explicitly scoped interactive change with independent review. The controller records results outside `tasks.json`; a model's claim of success does not update the specification or satisfy missing evidence.
 
 The implementer's `ready` response means its source patch is ready for controller gates. It reports planned external attestations as pending in its summary; the controller creates the candidate before collecting those attestations. `blocked` means a missing capability or decision prevents preparing the patch itself. Neither response is a final acceptance verdict.
 
@@ -36,7 +37,7 @@ Profiles are `docs`, `tooling`, `rust`, `native`, `performance`, `package` and `
 
 Use the `performance` profile for an explicit latency/resource acceptance requirement or a material hot-path change that needs measurement. Applying the performance skill to passive-read correctness does not by itself require a benchmark or that profile.
 
-The controller always runs guidance checks and conservatively adds profiles from the changed paths. Rust source/manifests/toolchain changes require Rust gates; scripts and CI require tooling checks; vendor changes also require vendor evidence. Rust changes under `crates/app/` and native UI toolkit patches require native evidence. Assets and package scripts require package evidence. Declaring only `docs` cannot bypass these requirements. Use interactive review for a narrower justified validation plan instead of weakening the unattended classifier.
+The controller always runs guidance checks and conservatively adds profiles from the changed paths. Rust source/manifests/toolchain changes require Rust gates; scripts and CI require tooling checks; vendor changes also require vendor evidence. Rust changes under `crates/app/` and native UI toolkit patches require native evidence. Assets, package scripts and production release helpers require package evidence; package-macos.py and the shared package-identity.py are included. Schema-only files and unit-test fixtures do not establish a package claim. Declaring only `docs` cannot bypass these requirements. Use interactive review for a narrower justified validation plan instead of weakening the unattended classifier.
 
 | Changed behavior | Required evidence source |
 | --- | --- |
@@ -50,7 +51,9 @@ The controller always runs guidance checks and conservatively adds profiles from
 | Vendor/dependencies | Patch provenance, relevant paired consumers and excluded-package coverage limits; [vendor guide](../../vendor/AGENTS.md) |
 | Package/platform | Artifact identity, resources, signature/installation and applicable native smoke; [macOS package procedure](../../.agents/skills/gitturtle-native-qa/references/macos-package.md) or [Linux runbook](../linux.md) |
 
-The controller's deterministic checks and the reviewer's independent judgment have different jobs. Reuse successful gate evidence for an unchanged candidate; rerun when inputs change, checks fail or a concrete concern remains. A core fixture, AX tree or compile cannot replace native interaction. A headless benchmark cannot establish native responsiveness.
+Security-bearing changes additionally require the [independent security stage](security-review.md). It follows the general verifier and uses a separate read-only session. The controller conservatively routes all changes except recognized prose/static artwork, including unknown paths, rename endpoints and deletions. A missing or failed security verdict leaves acceptance open; the agent never posts automatic PR comments.
+
+The controller's deterministic checks and the reviewers' independent judgment have different jobs. Reuse successful gate evidence for an unchanged candidate; rerun when inputs change, checks fail or a concrete concern remains. A core fixture, AX tree or compile cannot replace native interaction. A headless benchmark cannot establish native responsiveness.
 
 ## Run the controller
 
@@ -68,7 +71,7 @@ Start from a clean source checkout with a tracked, committed task specification.
 
 The controller stages explicit intended paths, checks the staged diff and creates the task's atomic Conventional Commit in its attempt clone. After acceptance, it fetches that exact commit from the local attempt clone and fast-forwards the private `accepted` branch. These local Git operations do not update the caller's checkout, index, branch or remote. Candidate patches and failed attempt clones remain available for review.
 
-`run` requires explicit `--model`, `--effort`, `--max-tasks`, `--max-attempts` and `--max-minutes`. Choose model and effort to match the active session; an independent CLI process cannot infer the desktop selection. Role files contain no model or effort overrides. Child sessions use controlled configuration and the explicitly supplied selection instead of inheriting unrelated global settings. The adapter disables desktop/browser/plugin tools and runs the verifier with a read-only sandbox; actual native work belongs to the separate evidence owner.
+`run` requires explicit `--model`, `--effort`, `--max-tasks`, `--max-attempts` and `--max-minutes`. Choose model and effort to match the active session; an independent CLI process cannot infer the desktop selection. Role files contain no model or effort overrides. Child sessions use controlled configuration and the explicitly supplied selection instead of inheriting unrelated global settings. The adapter disables desktop/browser/plugin tools and runs both reviewers with read-only sandboxes; actual native work belongs to the separate evidence owner.
 
 The following is an illustrative bounded run, not a repository model/effort default or an enabled schedule:
 
@@ -121,7 +124,9 @@ Child sessions, gates and Git writes have a watchdog and durable process records
 
 If the controller dies, closing its private pipe requests termination of the owned process group. Resume waits for recorded cleanup before retrying. A substituted ownership lock or unreadable completion record leaves cleanup unconfirmed. If the watchdog itself was killed before confirming cleanup, the run refuses automatic recovery; inspect the retained process record and workload. Never delete the record or signal a saved PID to guess that cleanup succeeded. Commands that deliberately detach into another session fall outside process-group ownership and are unsupported.
 
-An orderly pause retains its unused time. After an abrupt exit, recovery conservatively charges elapsed time since the last saved record, including downtime, and replays reported usage from child transcripts. With an output cap configured, incomplete usage requires explicit renewal of `--max-output-tokens` before another session. That renewal acknowledges an unknown amount; it does not turn reported output into a billing limit. A provider/session or gate capability failure pauses the affected work for explicit continuation instead of repeatedly rebuilding it in the same run.
+An orderly pause retains its unused time. After an abrupt exit, recovery conservatively charges elapsed time since the last saved record, including downtime, and replays reported usage from child transcripts. With an output cap configured, incomplete usage requires explicit renewal of `--max-output-tokens` before another session. That renewal acknowledges an unknown amount; it does not turn reported output into a billing limit. The security stage shares those limits and usage accounting. A successful general or security review is reused only for unchanged candidate/base and evidence inputs; interrupted security review preserves successful general verification.
+
+A provider/session or gate capability failure pauses the affected work for explicit continuation instead of repeatedly rebuilding it in the same run.
 
 Resume can explicitly provide a fresh `--max-minutes` allowance and new total caps for `--max-tasks`, `--max-attempts` and `--max-output-tokens`; prior accepted tasks, attempts and reported output still count. Omitted options preserve the saved bounds. Read `resume --help` before changing these limits. Exact interruption behavior is covered by the controller's tests; no long-running model-driven feature run is established by this implementation alone.
 

@@ -3,7 +3,6 @@ use columns::ColumnId;
 use gpui_kit::base::ElementExt;
 use gpui_kit::base::{Scrollbar, ScrollbarMode};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
-use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::prelude::FluentBuilder;
 
 fn reveal_resized_selection(
@@ -1017,6 +1016,8 @@ impl GitTurtle {
         let colors = palette(cx);
         let index = self.visible[position];
         let commit = &self.commits[index];
+        let subject = commit_message::summary(&commit.subject);
+        let author = commit_message::summary(&commit.author);
         let active = self.selected_commit == Some(index);
         let columns = self.history_column_layout();
         let lane_colors = graph::colors(cx);
@@ -1077,8 +1078,8 @@ impl GitTurtle {
             .role(Role::ListBoxOption)
             .aria_label(format!(
                 "{} · {} · {} · {} parent{}{}",
-                commit.subject,
-                commit.author,
+                subject,
+                author,
                 short_oid(&commit.oid),
                 commit.parents.len(),
                 if commit.parents.len() == 1 { "" } else { "s" },
@@ -1139,7 +1140,7 @@ impl GitTurtle {
                         .pr_3()
                         .truncate()
                         .text_size(crate::appearance::ui_text(13.))
-                        .child(commit.subject.clone())
+                        .child(subject.clone())
                         .into_any_element(),
                     ColumnId::Author => cell
                         .pl(px(10.))
@@ -1147,7 +1148,7 @@ impl GitTurtle {
                         .truncate()
                         .text_size(crate::appearance::ui_text(11.))
                         .text_color(rgb(colors.muted))
-                        .child(commit.author.clone())
+                        .child(author.clone())
                         .into_any_element(),
                     ColumnId::Date => cell
                         .pl(px(10.))
@@ -1207,8 +1208,32 @@ impl GitTurtle {
                 ))
                 .into_any_element();
         };
-        let oid = commit.oid.clone();
-        let message = format!("{}\n\n{}", commit.subject, commit.body);
+        div()
+            .size_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .bg(rgb(colors.panel))
+            .border_l_1()
+            .border_color(rgb(colors.border))
+            .child(self.render_commit_message(commit, false, cx))
+            .child(
+                div()
+                    .id("commit-inspector-files")
+                    .debug_selector(|| "commit-inspector-files".into())
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.render_files(cx)),
+            )
+            .into_any_element()
+    }
+
+    pub(super) fn render_commit_metadata(
+        &self,
+        commit: &Commit,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = palette(cx);
         let mut parents = div().flex().flex_wrap().gap_1();
         for (i, parent) in commit.parents.iter().take(128).enumerate() {
             parents = parents.child(
@@ -1226,194 +1251,30 @@ impl GitTurtle {
             );
         }
         if commit.parents.len() > 128 {
-            parents = parents.child(
-                div()
-                    .text_size(crate::appearance::ui_text(10.))
-                    .text_color(rgb(colors.muted))
-                    .child(format!("Showing 128 of {} parents", commit.parents.len())),
-            );
+            parents = parents.child(format!("Showing 128 of {} parents", commit.parents.len()));
         }
         if commit.parents.is_empty() {
-            parents = parents.child(
-                div()
-                    .text_size(crate::appearance::ui_text(10.))
-                    .text_color(rgb(colors.muted))
-                    .child("Root commit · empty-tree comparison"),
-            );
+            parents = parents.child("Root commit · empty-tree comparison");
         }
         div()
-            .size_full()
+            .id("commit-metadata")
+            .role(Role::Group)
+            .aria_label("Commit author and comparison parents")
             .min_w_0()
+            .p_3()
             .flex()
             .flex_col()
-            .bg(rgb(colors.panel))
-            .border_l_1()
-            .border_color(rgb(colors.border))
-            .child(
-                div()
-                    .id("commit-metadata")
-                    .role(Role::Group)
-                    .aria_label("Selected commit details")
-                    .max_h(relative(0.45))
-                    .flex_shrink_0()
-                    .px_4()
-                    .py_3()
-                    .border_b_1()
-                    .border_color(rgb(colors.border))
-                    .overflow_y_scrollbar()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_wrap()
-                                    .items_center()
-                                    .gap_1()
-                                    .text_size(crate::appearance::ui_text(10.))
-                                    .text_color(rgb(colors.muted))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w(appearance::ui_size(60.))
-                                            .truncate()
-                                            .child("Commit details"),
-                                    )
-                                    .child(self.render_commit_recovery_menu(commit, cx))
-                                    .child(
-                                        button("copy-commit", "", "copy", false)
-                                            .accessibility_label(format!(
-                                                "Copy commit hash {}",
-                                                commit.oid
-                                            ))
-                                            .tooltip(format!(
-                                                "Copy full commit hash · {}",
-                                                commit.oid
-                                            ))
-                                            .on_click(move |_, _, cx| {
-                                                cx.write_to_clipboard(ClipboardItem::new_string(
-                                                    oid.clone(),
-                                                ))
-                                            }),
-                                    )
-                                    .children((!commit.body.is_empty()).then(|| {
-                                        button("message", "Message", "", self.details).on_click(
-                                            cx.listener(|this, _, _, cx| {
-                                                this.details = !this.details;
-                                                cx.notify();
-                                            }),
-                                        )
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .id("commit-subject")
-                                    .role(Role::Label)
-                                    .aria_label(commit.subject.clone())
-                                    .tooltip({
-                                        let subject = commit.subject.clone();
-                                        move |window, cx| {
-                                            Tooltip::new(subject.clone()).build(window, cx)
-                                        }
-                                    })
-                                    .text_size(crate::appearance::ui_text(15.))
-                                    .line_height(relative(1.35))
-                                    .line_clamp(2)
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(commit.subject.clone()),
-                            )
-                            .child(
-                                div()
-                                    .id("commit-author-and-identity")
-                                    .role(Role::Label)
-                                    .aria_label(format!(
-                                        "{} · {}. Commit {}",
-                                        commit.author,
-                                        full_date(commit.timestamp),
-                                        commit.oid,
-                                    ))
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .py_1()
-                                    .child(
-                                        div()
-                                            .size(px(30.))
-                                            .flex_shrink_0()
-                                            .rounded_full()
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .bg(rgba((colors.hunk << 8) | 0x22))
-                                            .text_color(rgb(colors.hunk))
-                                            .text_size(crate::appearance::ui_text(11.))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child(
-                                                commit
-                                                    .author
-                                                    .split_whitespace()
-                                                    .filter_map(|part| part.chars().next())
-                                                    .take(2)
-                                                    .flat_map(char::to_uppercase)
-                                                    .collect::<String>(),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("commit-author-name")
-                                            .tooltip({
-                                                let author = commit.author.clone();
-                                                move |window, cx| {
-                                                    Tooltip::new(author.clone()).build(window, cx)
-                                                }
-                                            })
-                                            .min_w_0()
-                                            .flex_1()
-                                            .flex()
-                                            .flex_col()
-                                            .gap_0p5()
-                                            .child(
-                                                div()
-                                                    .truncate()
-                                                    .text_size(crate::appearance::ui_text(12.))
-                                                    .child(commit.author.clone()),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(crate::appearance::ui_text(11.))
-                                                    .text_color(rgb(colors.muted))
-                                                    .child(full_date(commit.timestamp)),
-                                            ),
-                                    ),
-                            )
-                            .child(parents)
-                            .children(self.details.then(|| {
-                                div()
-                                    .id("commit-message")
-                                    .flex()
-                                    .flex_col()
-                                    .gap_2()
-                                    .text_size(crate::appearance::ui_text(12.))
-                                    .child(
-                                        button("copy-message", "Copy full message", "copy", false)
-                                            .on_click(move |_, _, cx| {
-                                                cx.write_to_clipboard(ClipboardItem::new_string(
-                                                    message.clone(),
-                                                ))
-                                            }),
-                                    )
-                                    .child(div().child(if commit.body.is_empty() {
-                                        "No extended commit message.".into()
-                                    } else {
-                                        commit.body.clone()
-                                    }))
-                            })),
-                    ),
-            )
-            .child(div().flex_1().min_h_0().child(self.render_files(cx)))
+            .gap_2()
+            .text_size(appearance::ui_text(11.))
+            .text_color(rgb(colors.muted))
+            .child(div().child(commit_message::summary(&commit.author)))
+            .child(format!(
+                "{} · {}",
+                full_date(commit.timestamp),
+                short_oid(&commit.oid)
+            ))
+            .child(parents)
+            .child(self.render_commit_recovery_menu(commit, cx))
             .into_any_element()
     }
 
@@ -1537,6 +1398,9 @@ impl GitTurtle {
         };
         div()
             .id(("file", index))
+            .when(active, |row| {
+                row.debug_selector(|| "selected-changed-file".into())
+            })
             .role(Role::ListBoxOption)
             .aria_label(format!("{} · {}", path.display(), file.status.label()))
             .aria_selected(active)
