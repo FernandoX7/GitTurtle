@@ -186,6 +186,7 @@ impl GitTurtle {
     pub(super) fn apply_quiet_snapshot(
         &mut self,
         snapshot: worker::Snapshot,
+        window: &Window,
         cx: &mut Context<Self>,
     ) {
         self.history_updates
@@ -209,13 +210,14 @@ impl GitTurtle {
             self.rebuild_navigation(cx);
             return;
         }
-        self.install_current_history(snapshot, following, cx);
+        self.install_current_history(snapshot, following, window, cx);
     }
 
     fn install_current_history(
         &mut self,
         snapshot: worker::Snapshot,
         following: bool,
+        window: &Window,
         cx: &mut Context<Self>,
     ) {
         self.history_paging = history_paging::State::from_snapshot(&snapshot);
@@ -224,7 +226,7 @@ impl GitTurtle {
             .and_then(|index| self.commits.get(index))
             .cloned();
         let offset = self.history_scroll.0.borrow().base_handle.offset();
-        let height = self.settings.density.history_row_height();
+        let height = f32::from(window.pixel_snap(px(self.settings.density.history_row_height())));
         let top = ((-f32::from(offset.y)) / height).max(0.) as usize;
         let anchor = self
             .visible
@@ -361,7 +363,7 @@ impl GitTurtle {
                                 this.history_updates
                                     .clear_scope_error(&mut this.operation_error);
                                 this.history_updates.captured(&snapshot);
-                                this.install_current_history(snapshot, true, cx);
+                                this.install_current_history(snapshot, true, window, cx);
                                 this.status =
                                     "Latest local history · selected inspector retained".into();
                             }
@@ -525,10 +527,15 @@ mod tests {
         assert!(!follows_latest(WorkspaceMode::History, false, true, 0.));
     }
     #[gpui::test]
-    fn quiet_updates_follow_only_the_top_and_preserve_inspector_focus_and_older_rows(
+    async fn quiet_updates_follow_only_the_top_and_preserve_inspector_focus_and_older_rows(
         cx: &mut TestAppContext,
     ) {
         use gpui_kit::component::Root;
+        use std::{cell::RefCell, rc::Rc};
+
+        // GitTurtle::new starts a real preferences worker. Its reply may wake
+        // the deterministic scheduler from another thread, including on macOS.
+        cx.executor().allow_parking();
         let fixture = tempfile::tempdir().unwrap();
         let repo = GitRepository::init(fixture.path().join("repo"), "main").unwrap();
         let snapshot = move |commits: Vec<Commit>| worker::Snapshot {
@@ -548,7 +555,9 @@ mod tests {
             gpui_kit::init(cx);
             image_lifetime::init(cx);
         });
-        cx.add_window_view(move |window, cx| {
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let observed = captured.clone();
+        let (_, window_cx) = cx.add_window_view(move |window, cx| {
             let app = cx.new(|cx| {
                 let mut app = GitTurtle::new(
                     None,
@@ -561,14 +570,18 @@ mod tests {
                 );
                 let original = snapshot(vec![commit("a", &[])]);
                 app.history_updates.captured(&original);
-                app.install_current_history(original, true, cx);
+                app.install_current_history(original, true, window, cx);
                 app.mode = WorkspaceMode::History;
                 app.selected_commit = Some(0);
                 let content = Arc::new(Content::Notice("retained inspector".into()));
                 app.content = Some(content.clone());
                 window.focus(&app.file_focus, cx);
                 let focus = window.focused(cx);
-                app.apply_quiet_snapshot(snapshot(vec![commit("b", &["a"]), commit("a", &[])]), cx);
+                app.apply_quiet_snapshot(
+                    snapshot(vec![commit("b", &["a"]), commit("a", &[])]),
+                    window,
+                    cx,
+                );
                 assert_eq!(app.commits[app.selected_commit.unwrap()].oid, "a");
                 assert_eq!(app.commits[app.visible[0]].oid, "b");
                 assert_eq!(app.history_scroll.0.borrow().base_handle.offset().y, px(0.));
@@ -585,6 +598,7 @@ mod tests {
                         commit("b", &["a"]),
                         commit("a", &[]),
                     ]),
+                    window,
                     cx,
                 );
                 assert_eq!(
@@ -609,6 +623,7 @@ mod tests {
                         commit("b", &["a"]),
                         commit("a", &[]),
                     ]),
+                    window,
                     cx,
                 );
                 assert_eq!(
@@ -620,7 +635,17 @@ mod tests {
                 assert_eq!(app.history_updates.pending, Some(Update::New(3)));
                 app
             });
+            *captured.borrow_mut() = Some(app.clone());
             Root::new(app, window, cx)
+        });
+        let app = observed.borrow_mut().take().unwrap();
+        let preferences = app.read_with(window_cx, |app, _| {
+            app.preferences_writer.submit_read(|| Ok(()))
+        });
+        preferences.await.unwrap().unwrap();
+        window_cx.executor().run_until_parked();
+        window_cx.update(|_, cx| {
+            app.update(cx, |app, _| app._display_preferences_task = None);
         });
     }
 

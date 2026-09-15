@@ -83,6 +83,41 @@ class BackupTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "symlink"):
             installer.save_backup(installer.installed_targets(self.home, self.data), self.home, self.data)
 
+    def test_restore_rejects_symlink_parent_before_changing_any_file(self):
+        notice = self.data / "gitturtle/licenses/dependency/LICENSE"
+        notice.parent.mkdir(parents=True)
+        notice.write_text("old license")
+        backup = installer.save_backup(installer.installed_targets(self.home, self.data), self.home, self.data)
+        external = self.root / "unrelated files"
+        external.mkdir()
+        victim = external / "LICENSE"
+        victim.write_text("unrelated file")
+        shutil.rmtree(notice.parent)
+        notice.parent.symlink_to(external, target_is_directory=True)
+        self.binary.write_bytes(b"keep current executable")
+
+        with self.assertRaisesRegex(RuntimeError, "symlink"):
+            installer.restore_backup(backup, self.home, self.data)
+
+        self.assertEqual(victim.read_text(), "unrelated file")
+        self.assertEqual(self.binary.read_bytes(), b"keep current executable")
+
+    def test_user_selected_data_root_can_be_a_symlink(self):
+        actual_data = self.root / "selected data storage"
+        actual_data.mkdir()
+        self.data.symlink_to(actual_data, target_is_directory=True)
+        backup = installer.save_backup(installer.installed_targets(self.home, self.data), self.home, self.data)
+        self.binary.write_bytes(b"new executable")
+        installer.restore_backup(backup, self.home, self.data)
+        self.assertEqual(self.binary.read_bytes(), b"previous executable")
+
+    def test_data_path_accepts_absolute_user_selection_and_rejects_relative_path(self):
+        with patch.dict(os.environ, {"XDG_DATA_HOME": str(self.data)}):
+            self.assertEqual(installer.data_path(), self.data)
+        with patch.dict(os.environ, {"XDG_DATA_HOME": "relative/data"}):
+            with self.assertRaisesRegex(RuntimeError, "absolute path"):
+                installer.data_path()
+
     def test_running_installed_executable_is_refused_without_stopping_it(self):
         shutil.copyfile(shutil.which("sleep"), self.binary)
         self.binary.chmod(0o755)
@@ -153,6 +188,38 @@ class RealBundleTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("checksum mismatch", result.stderr)
         self.assertEqual(self.binary.read_bytes(), b"preserved installation")
+
+
+class BundlePayloadTests(unittest.TestCase):
+    def test_unlisted_icon_cannot_replace_an_unrelated_desktop_icon(self):
+        with tempfile.TemporaryDirectory(prefix="gitturtle-bundle-test-") as temporary:
+            root = Path(temporary)
+            bundle, home, data = root / "bundle", root / "home", root / "data"
+            names = {"bin/gitturtle", "install.py", "README.md", "build-info.json", "icons/app-icon.png",
+                     "licenses/LICENSE", "licenses/THIRD_PARTY_NOTICES.md", "licenses/dependencies.json"}
+            names.update(f"icons/hicolor/{size}x{size}/apps/{installer.APP_ID}.png"
+                         for size in installer.ICON_SIZES)
+            for name in names:
+                source = bundle / name
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes(b"checksummed fixture payload")
+            (bundle / "SHA256SUMS").write_text("".join(
+                f"{installer.digest_file(bundle / name)}  {name}\n" for name in sorted(names)))
+            extra = "icons/hicolor/48x48/apps/unrelated.png"
+            (bundle / extra).write_bytes(b"unchecked extra icon")
+            destination = data / extra
+            destination.parent.mkdir(parents=True)
+            destination.write_bytes(b"keep unrelated icon")
+
+            with (patch.object(installer, "__file__", str(bundle / "install.py")),
+                  patch.object(installer.shutil, "which", return_value="fixture-tool"),
+                  patch.object(installer.subprocess, "run", return_value=subprocess.CompletedProcess(
+                      [], 0, stdout="", stderr="")),
+                  patch.object(installer, "refresh_desktop")):
+                installer.install_bundle(home, data)
+
+            self.assertEqual(destination.read_bytes(), b"keep unrelated icon")
+            self.assertEqual((home / ".local/bin/gitturtle").read_bytes(), b"checksummed fixture payload")
 
 
 if __name__ == "__main__":

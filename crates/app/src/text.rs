@@ -118,9 +118,7 @@ pub fn refresh_editor(
 /// changes to match the next layout's line/character dimensions.
 pub fn rescale_editor(editor: &Entity<EditorState>, ratio: f32, cx: &mut App) {
     editor.update(cx, |state, cx| {
-        let offset = state.scroll_offset();
-        state.set_scroll_offset(gpui_kit::point(offset.x * ratio, offset.y * ratio), cx);
-        cx.notify();
+        state.rescale_scroll_offset(ratio, cx);
     });
 }
 

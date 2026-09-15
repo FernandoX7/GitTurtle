@@ -50,6 +50,12 @@ enum Target {
     },
 }
 impl State {
+    pub(super) fn rescale_lists(&self, scales: settings::ListScales) {
+        if let Some(active) = &self.active {
+            active.lineage.rescale_lists(scales);
+            active.previous.rescale_lists(scales);
+        }
+    }
     pub(super) fn pause_for_tab(&mut self) {
         if let Some(active) = &mut self.active {
             active.context.pause_for_tab();

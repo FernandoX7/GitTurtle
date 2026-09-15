@@ -302,7 +302,7 @@ impl GitTurtle {
         if let Some(snapshot) = refresh.snapshot {
             match snapshot {
                 Ok(worker::QuietHistory::Refreshed(snapshot)) => {
-                    self.apply_quiet_snapshot(snapshot, cx)
+                    self.apply_quiet_snapshot(snapshot, window, cx)
                 }
                 Ok(worker::QuietHistory::Retained { metadata, error }) => {
                     self.history_updates.scope_unavailable();

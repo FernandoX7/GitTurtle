@@ -379,6 +379,51 @@ pub struct State {
     save_path: Option<PathBuf>,
 }
 impl State {
+    pub(super) fn rescale_text_viewports(
+        &mut self,
+        lists: Option<settings::ListScales>,
+        code_ratio: f32,
+        cx: &mut App,
+    ) {
+        for tab in &mut self.tabs {
+            if let Some(scales) = lists {
+                tab.saved.history_y *= scales.history;
+                tab.saved.file_y *= scales.files;
+            }
+            if let Some(warm) = &mut tab.warm {
+                if code_ratio != 1.0 {
+                    warm.context.rescale_code(code_ratio, cx);
+                    warm.file_history.rescale_code(code_ratio, cx);
+                    warm.inspections.rescale_code(code_ratio, cx);
+                }
+                if let Some(scales) = lists {
+                    for (scroll, ratio) in [
+                        (&warm.history_scroll, scales.history),
+                        (&warm.file_scroll, scales.files),
+                        (&warm.nav_scroll, scales.navigation),
+                        (&warm.working_scroll, scales.files),
+                    ] {
+                        settings::rescale_list_scroll(scroll, ratio);
+                    }
+                    warm.blame.rescale_lists(scales);
+                    warm.file_history.rescale_lists(scales);
+                    warm.inspections.rescale_lists(scales);
+                    warm.history_list_layout = None;
+                    warm.file_list_layout = None;
+                }
+            }
+        }
+        if let Some(scales) = lists {
+            for saved in [&mut self.restoring, &mut self.document_restore]
+                .into_iter()
+                .flatten()
+            {
+                saved.history_y *= scales.history;
+                saved.file_y *= scales.files;
+            }
+        }
+    }
+
     pub fn from_session(session: Session) -> Self {
         let active = (!session.tabs.is_empty()).then_some(session.active);
         Self {
@@ -2069,6 +2114,191 @@ mod tests {
                 app._display_preferences_task = None;
             })
         });
+    }
+
+    #[gpui::test]
+    fn fractional_list_scaling_preserves_cold_and_restoring_bookmarks(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|window, cx| {
+            let bookmark = Bookmark {
+                history_y: -3400.,
+                file_y: -4400.,
+                ..Default::default()
+            };
+            let mut state = State {
+                tabs: vec![Tab {
+                    path: PathBuf::from("fixture"),
+                    saved: bookmark.clone(),
+                    warm: None,
+                    error: None,
+                }],
+                restoring: Some(bookmark.clone()),
+                document_restore: Some(bookmark),
+                ..Default::default()
+            };
+            let mut previous = 1.;
+            for scale in [1.25, 1.15, 1.] {
+                let scales = settings::ListScales::new(
+                    previous,
+                    scale,
+                    appearance::Density::Comfortable,
+                    window,
+                );
+                state.rescale_text_viewports(scales, 1., cx);
+                for saved in [
+                    &state.tabs[0].saved,
+                    state.restoring.as_ref().unwrap(),
+                    state.document_restore.as_ref().unwrap(),
+                ] {
+                    let history = -100. * f32::from(window.pixel_snap(px(34. * scale)));
+                    let files = -100. * f32::from(window.pixel_snap(px(44. * scale)));
+                    assert!((saved.history_y - history).abs() < 0.01);
+                    assert!((saved.file_y - files).abs() < 0.01);
+                }
+                previous = scale;
+            }
+        });
+    }
+
+    #[gpui::test]
+    async fn desktop_scale_updates_each_window_and_retained_tab_once(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let fixture = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+        });
+        let mut windows = Vec::new();
+        let mut apps = Vec::new();
+        let mut editors = Vec::new();
+        for index in 0..2 {
+            let repository =
+                GitRepository::init(fixture.path().join(format!("repo-{index}")), "main").unwrap();
+            let saved = fixture.path().join(format!("session-{index}.json"));
+            let mut captured = None;
+            let window = cx.add_window(|window, cx| {
+                let app = cx.new(|cx| {
+                    GitTurtle::new(
+                        None,
+                        Preferences::default(),
+                        Session::default(),
+                        activity::State::default(),
+                        recovery_drafts::State::default(),
+                        window,
+                        cx,
+                    )
+                });
+                captured = Some(app.clone());
+                gpui_kit::component::Root::new(app, window, cx)
+            });
+            let app = captured.unwrap();
+            let pair = cx.update(|cx| {
+                window
+                    .update(cx, |_, window, cx| {
+                        app.update(cx, |app, cx| {
+                            app.repository_tabs.save_path = Some(saved);
+                            app.repository = Some(repository);
+                            let retained =
+                                text::editor("retained source\n", "text", None, window, cx);
+                            retained.update(cx, |editor, cx| {
+                                editor.set_selected_range(1..5, cx);
+                                editor.set_scroll_offset(point(px(-40.), px(-400.)), cx);
+                            });
+                            app.before_editor = Some(retained.clone());
+                            app.history_scroll
+                                .0
+                                .borrow()
+                                .base_handle
+                                .set_offset(point(px(-10.), px(-200.)));
+                            app.history_list_layout = Some((size(px(600.), px(400.)), px(34.)));
+                            assert!(app.retain_active_tab(window, cx));
+                            let active = text::editor("active source\n", "text", None, window, cx);
+                            active.update(cx, |editor, cx| {
+                                editor.set_selected_range(2..6, cx);
+                                editor.set_scroll_offset(point(px(-20.), px(-300.)), cx);
+                            });
+                            app.before_editor = Some(active.clone());
+                            app.history_scroll
+                                .0
+                                .borrow()
+                                .base_handle
+                                .set_offset(point(px(-15.), px(-100.)));
+                            (active, retained)
+                        })
+                    })
+                    .unwrap()
+            });
+            windows.push(window);
+            apps.push(app);
+            editors.push(pair);
+        }
+        cx.executor().run_until_parked();
+        // Publish the same per-App notification used by the Linux bridge,
+        // without changing process-wide font globals shared by parallel tests.
+        cx.update(|cx| {
+            cx.set_global(appearance::DesktopTextScale(1.25));
+            cx.set_global(appearance::DesktopTextScale(1.5));
+        });
+        cx.update(|cx| cx.set_global(appearance::DesktopTextScale(1.5)));
+        for (factor, scale) in [(1.5, 1.5), (1., 1.)] {
+            cx.update(|cx| cx.set_global(appearance::DesktopTextScale(scale)));
+            cx.update(|cx| {
+                for (app, (active, retained)) in apps.iter().zip(&editors) {
+                    let app = app.read(cx);
+                    assert_eq!(app.before_editor.as_ref(), Some(active));
+                    assert_eq!(
+                        active.read(cx).scroll_offset(),
+                        point(px(-20. * factor), px(-300. * factor))
+                    );
+                    assert_eq!(active.read(cx).selected_range(), 2..6);
+                    assert_eq!(
+                        retained.read(cx).scroll_offset(),
+                        point(px(-40. * factor), px(-400. * factor))
+                    );
+                    assert_eq!(retained.read(cx).selected_range(), 1..5);
+                    assert_eq!(
+                        app.history_scroll.0.borrow().base_handle.offset(),
+                        point(px(-15.), px(-100. * factor))
+                    );
+                    let tab = &app.repository_tabs.tabs[0];
+                    let warm = tab.warm.as_ref().unwrap();
+                    assert_eq!(
+                        warm.history_scroll.0.borrow().base_handle.offset(),
+                        point(px(-10.), px(-200. * factor))
+                    );
+                    assert_eq!(tab.saved.history_y, -200. * factor);
+                    assert!(warm.history_list_layout.is_none());
+                    assert_eq!(
+                        app.settings.interface_text_size,
+                        appearance::DEFAULT_INTERFACE_TEXT_SIZE
+                    );
+                    assert_eq!(
+                        app.settings.code_text_size,
+                        appearance::DEFAULT_CODE_TEXT_SIZE
+                    );
+                }
+            });
+        }
+        for (window, app) in windows.into_iter().zip(apps) {
+            cx.update(|cx| {
+                window
+                    .update(cx, |_, window, _| window.remove_window())
+                    .unwrap()
+            });
+            let (saved, preferences) = cx.update(|cx| {
+                (
+                    app.read(cx)
+                        .repository_tabs
+                        .save_completion
+                        .clone()
+                        .unwrap(),
+                    app.read(cx).preferences_writer.submit_read(|| Ok(())),
+                )
+            });
+            saved.await.unwrap();
+            preferences.await.unwrap().unwrap();
+        }
+        cx.executor().run_until_parked();
     }
 
     #[gpui::test]

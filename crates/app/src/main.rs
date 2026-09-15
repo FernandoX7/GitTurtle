@@ -9,6 +9,7 @@ mod columns;
 mod command_palette;
 mod commit_drafts;
 mod conflicts;
+mod desktop_text;
 mod diff_view;
 mod editor_find;
 mod file_history;
@@ -681,6 +682,7 @@ impl GitTurtle {
             .push(cx.observe_window_activation(window, |this, window, cx| {
                 if window.is_window_active() {
                     native_accessibility::sync_preferences(cx);
+                    desktop_text::refresh(cx);
                     this.apply_motion_preferences(cx);
                 }
                 if window.is_window_active() && this.repository.is_some() {
@@ -1803,6 +1805,7 @@ fn main() {
     gpui_kit::application().with_assets(Assets).run(move |cx| {
         gpui_kit::init(cx);
         native_accessibility::sync_preferences(cx);
+        let desktop_text = desktop_text::start(cx);
         native_accessibility::bind_keys(cx);
         image_lifetime::init(cx);
         interactive_rebase::init(cx);
@@ -1825,6 +1828,7 @@ fn main() {
         let bounds = Bounds::centered(None, size(px(1480.), px(980.)), cx);
         cx.activate(true);
         cx.spawn(async move |cx| {
+            desktop_text::ready(desktop_text, cx).await;
             let opened = cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),

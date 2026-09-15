@@ -587,14 +587,12 @@ impl ConflictView {
     pub(super) fn rescale_code(&mut self, ratio: f32, cx: &mut Context<Self>) {
         for reader in self.readers.iter().flatten() {
             reader.update(cx, |reader, cx| {
-                let scroll = reader.scroll_offset();
-                reader.set_scroll_offset(point(scroll.x * ratio, scroll.y * ratio), cx);
+                reader.rescale_scroll_offset(ratio, cx);
             });
         }
         if let Some(editor) = &self.resolution {
             editor.update(cx, |editor, cx| {
-                let scroll = editor.scroll_offset();
-                editor.set_scroll_offset(point(scroll.x * ratio, scroll.y * ratio), cx);
+                editor.rescale_scroll_offset(ratio, cx);
             });
         }
     }
