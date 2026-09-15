@@ -37,7 +37,7 @@ class SimulatedAppleCommands:
     def __init__(self, report, *, failure=None, identity=None, architecture="arm64",
                  response=None, log_changes=None, signature_changes=None,
                  entitlements=None, cancel=None, nonzero_response=None, corrupt_copy=False,
-                 actual_cancel=False, imported_identity=None):
+                 actual_cancel=False, imported_identity=None, submission_response=None):
         self.report = report
         self.calls = []
         self.failure = failure
@@ -52,6 +52,7 @@ class SimulatedAppleCommands:
         self.corrupt_copy = corrupt_copy
         self.actual_cancel = actual_cancel
         self.imported_identity = imported_identity
+        self.submission_response = submission_response
         self.private = None
         self.submitted = None
 
@@ -114,7 +115,7 @@ class SimulatedAppleCommands:
         elif label == "submit-notarization":
             if self.nonzero_response == label:
                 raise signing.CommandFailure(label, 1, json.dumps({"id": SUBMISSION}).encode())
-            return json.dumps({"id": SUBMISSION}).encode(), b""
+            return json.dumps(self.submission_response or {"id": SUBMISSION}).encode(), b""
         elif label == "wait-for-notarization":
             saved = json.loads((self.submitted.parent / "signing-result.json").read_text())
             if saved["notarization"] != {"id": SUBMISSION, "status": "submitted"}:
@@ -236,6 +237,29 @@ class SigningSimulationTests(unittest.TestCase):
         self.behavior = {"corrupt_copy": True}
         with self.assertRaisesRegex(signing.SigningError, "copied content changed"):
             self.run_sign()
+        self.assertEqual([call[0] for call in self.commands.calls], ["copy-trusted-app"])
+        self.assertFalse(self.commands.private.exists())
+        self.assert_failed_without_final()
+
+    def test_input_replaced_after_initial_digest_refuses_before_executable_invocation(self):
+        snapshot = signing.content_snapshot
+        executable = self.app / "Contents/MacOS/gitturtle"
+        original_digest = self.args.executable_sha256
+        replaced = False
+
+        def replace_before_snapshot(app):
+            nonlocal replaced
+            if not replaced:
+                executable.write_bytes(executable.read_bytes() + b"REPLACEMENT-AFTER-DIGEST")
+                replaced = True
+            return snapshot(app)
+
+        with patch.object(signing, "content_snapshot", side_effect=replace_before_snapshot):
+            with self.assertRaisesRegex(signing.SigningError, "Copied pre-sign executable digest mismatch"):
+                self.run_sign()
+        self.assertTrue(replaced)
+        self.assertNotEqual(signing.digest(executable), original_digest)
+        self.assertEqual(self.report()["pre_sign_executable_sha256"], original_digest)
         self.assertEqual([call[0] for call in self.commands.calls], ["copy-trusted-app"])
         self.assertFalse(self.commands.private.exists())
         self.assert_failed_without_final()
@@ -373,6 +397,9 @@ class SigningSimulationTests(unittest.TestCase):
             {"response": {"id": SUBMISSION, "status": "Invalid"}, "log_changes": {"status": "Invalid", "statusCode": 4000}},
             {"log_changes": {"sha256": "0" * 64}},
             {"log_changes": {"jobId": "138cf36c-2fe5-466b-b3b5-d0028b22b3a4"}},
+            {"log_changes": {"jobId": None}},
+            {"log_changes": {"jobId": "not-a-uuid"}},
+            {"log_changes": {"jobId": 17}},
             {"log_changes": {"statusCode": 4000}},
             {"log_changes": {"issues": [{"severity": "error", "code": 123}]}},
         )
@@ -384,6 +411,25 @@ class SigningSimulationTests(unittest.TestCase):
             self.assert_failed_without_final()
             self.assertNotIn("staple-ticket", [call[0] for call in self.commands.calls])
             shutil.rmtree(self.args.output)
+
+    def test_equivalent_uuid_case_in_submission_wait_and_log_is_accepted(self):
+        for changes in (
+            {"log_changes": {"jobId": SUBMISSION.upper()}},
+            {"submission_response": {"id": SUBMISSION.upper()},
+             "response": {"id": SUBMISSION.upper(), "status": "Accepted"},
+             "log_changes": {"jobId": SUBMISSION.upper()}},
+        ):
+            self.behavior = changes
+            with self.subTest(changes=changes):
+                try:
+                    report = self.run_sign()
+                    self.assertEqual(report["status"], "signed-notarized-stapled")
+                    self.assertEqual(report["notarization"]["id"], SUBMISSION)
+                    self.assertEqual(report["notarization"]["log"]["job_id"], SUBMISSION)
+                    self.assert_cleanup()
+                finally:
+                    if self.args.output.exists():
+                        shutil.rmtree(self.args.output)
 
     def test_nonzero_rejection_retains_validated_log_without_stapling(self):
         self.behavior = {"nonzero_response": "wait-for-notarization",

@@ -348,16 +348,20 @@ def verify_signature(command, app: Path, args) -> dict:
             "entitlements": {}, "secure_timestamp": True}
 
 
-def submission_id(response: dict) -> str:
-    value = response.get("id")
+def canonical_submission_id(value) -> str:
     try:
         return str(uuid.UUID(value))
     except (ValueError, TypeError, AttributeError):
         raise SigningError("Notary response has no valid submission ID; do not resubmit blindly") from None
 
 
+def submission_id(response: dict) -> str:
+    return canonical_submission_id(response.get("id"))
+
+
 def notary_log_summary(data: dict, identifier: str, archive_digest: str) -> dict:
-    if data.get("jobId") != identifier or data.get("sha256") != archive_digest:
+    identifier = canonical_submission_id(identifier)
+    if canonical_submission_id(data.get("jobId")) != identifier or data.get("sha256") != archive_digest:
         raise SigningError("Notarization log does not identify the submitted archive")
     status = data.get("status")
     code = data.get("statusCode")
@@ -416,6 +420,8 @@ def sign(args, command_factory=Commands, environ=None, platform=None) -> dict:
             app = private / "GitTurtle.app"
             command("copy-trusted-app", ["/usr/bin/ditto", str(args.app), str(app)])
             staged_executable = validate_bundle(app, args)
+            if digest(staged_executable) != args.executable_sha256:
+                raise SigningError("Copied pre-sign executable digest mismatch")
             if content_snapshot(app) != source_contents or content_snapshot(args.app) != source_contents:
                 raise SigningError("Input app or copied content changed during preparation")
             report["compiled_identity"] = verify_identity(command, staged_executable, args)
