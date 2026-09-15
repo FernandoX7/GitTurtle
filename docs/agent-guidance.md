@@ -2,6 +2,8 @@
 
 GitTurtle's agents develop the native Rust/GPUI client. They are development tooling; the client has no model integration. The [development workflow](development/README.md) is the operator guide, while product execution evidence remains tied to the source/build recorded in [validation](validation.md).
 
+The shared guides, skills and review contracts apply across AI tools. The `.codex/agents` definitions and current controller adapter are an optional Codex integration. Contributors can use other tools or work directly from the [contribution guide](../CONTRIBUTING.md).
+
 ## Instruction layout
 
 | Source | Responsibility |
@@ -18,11 +20,11 @@ GitTurtle's agents develop the native Rust/GPUI client. They are development too
 | [Task specification](development/tasks.json) and [schema](development/task.schema.json) | Versioned feature outcomes, dependencies, scope and evidence requirements |
 | [Controller](../scripts/agent-loop.py) | Isolated execution, fresh sessions, checks, evidence and acceptance state |
 
-Tasks launched at the repository root explicitly read the affected crate/vendor guide because scoped instruction discovery follows the working directory. Conditional references avoid loading unrelated subsystems. Keep feature progress in run state and dated evidence rather than adding changing task lists to AGENTS.md.
+Tasks launched at the repository root explicitly read the affected crate/vendor guide because automatic instruction discovery varies by tool and working directory. Conditional references avoid loading unrelated subsystems. Keep feature progress in run state and dated evidence rather than adding changing task lists to AGENTS.md.
 
 ## Roles and acceptance
 
-The coordinator owns integration and commits. Three project agent definitions supply recurring specialization:
+In coordinated agent work, the coordinator owns integration and commits. Three recurring roles have ready-to-use Codex definitions; their responsibilities can also be assigned in other tools:
 
 - [Implementer](../.codex/agents/implementer.toml): one bounded feature, focused tests and a structured handoff.
 - [Verifier](../.codex/agents/verifier.toml): an independent assessment of the identified candidate and its acceptance evidence.
@@ -34,13 +36,13 @@ The implementer and verifier also apply the architecture review when shared stat
 
 The controller snapshots approved task contracts and records attempt state outside them. Workers return results; they do not mark themselves passing or change grading rules. Every `AGENTS.md`, the agent/skill definitions and controller/task-policy files are protected during unattended attempts. Maintain them through explicitly scoped interactive work. Acceptance requires applicable deterministic checks, a separate verifier and every required external attestation for the same candidate. Native, package, performance and vendor evidence remains explicit; missing coverage defers acceptance and dependent work.
 
-Role files omit `model` and `model_reasoning_effort`, preserving interactive inheritance. A separate unattended CLI process receives the operator's explicit `--model` and `--effort`; it cannot infer the desktop session's choice. The runner controls child configuration to avoid unrelated global overrides. No repository-wide Ultra setting is introduced.
+The Codex role files omit `model` and `model_reasoning_effort`, preserving interactive inheritance. A separate unattended CLI process receives the operator's explicit `--model` and `--effort`; it cannot infer the desktop session's choice. The runner controls child configuration to avoid unrelated global overrides. No repository-wide Ultra setting is introduced.
 
 The verifier requests `sandbox_mode = "read-only"`. This is a default, not a universal guarantee: Codex reapplies live parent permission overrides when spawning a child. Review-only instructions and controller candidate-mutation checks remain necessary. The librarian's assigned-path restriction is likewise a role contract, not a filesystem access-control list. See [official subagent configuration and permission behavior](https://learn.chatgpt.com/docs/agent-configuration/subagents).
 
 ## Sustained work
 
-Use native Codex goals when the user explicitly requests a goal for one coherent interactive milestone, and the task controller for an authorized dependency queue. An ordinary feature request does not authorize creating a goal or automation. Fresh implementation and verifier sessions limit accumulated context. Durable contracts and evidence make interrupted work inspectable outside a chat.
+Use durable task contracts, progress records and evidence for sustained work in the chosen tool. Fresh implementation and verifier sessions limit accumulated context. The optional Codex controller manages an authorized dependency queue; interactive Codex goals require an explicit user request. An ordinary feature request does not authorize creating a goal or automation.
 
 The controller uses private local clones with independent Git metadata and removed origin; it does not reset, stage or commit in the caller's checkout. It creates atomic Conventional Commits in attempt clones, then fetches accepted candidates locally and fast-forwards its private accepted branch. It does not integrate into the source branch, push or publish. Attempts, sessions, elapsed time and optional reported-output limits bound each run. Stop/resume and external evidence registration are explicit operator commands; installing this architecture does not start an automation.
 

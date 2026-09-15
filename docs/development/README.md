@@ -2,11 +2,13 @@
 
 GitTurtle combines maintained code contracts with bounded feature work and independent acceptance. The [root guide](../../AGENTS.md) remains the shared contract. [Agent architecture](../agent-guidance.md) explains the role definitions and September 15, 2026 research decisions; [Contributing](../../CONTRIBUTING.md#commit-cohesive-changes) defines atomic Conventional Commits.
 
+Use the shared guides and validation procedures with your chosen development tools. The checked-in agent configurations and unattended controller provide an optional Codex integration; other tools can follow the same contracts directly.
+
 ## Choose the working mode
 
-For one coherent interactive milestone, keep acceptance criteria in the task. Use Codex's goal support when available and explicitly requested by the user; an ordinary feature request does not authorize creating a goal. The coordinator can delegate bounded work while retaining integration and commit ownership. A goal is useful for sustained work toward one outcome; it does not replace the queue's dependency, candidate or evidence records.
+For one coherent interactive milestone, keep acceptance criteria in the task. The coordinator can delegate bounded work while retaining integration and commit ownership. Record progress and evidence so work can continue across sessions with the contributor's chosen tools.
 
-For an authorized list of independent features, use the local [controller](../../scripts/agent-loop.py). Each feature gets a fresh implementation session and a separate verifier. The controller selects eligible work, runs declared checks and records acceptance. No background run starts merely because these files exist.
+For an authorized list of independent features, the optional local [controller](../../scripts/agent-loop.py) provides fresh implementation sessions and separate verification through its current Codex adapter. It selects eligible work, runs declared checks and records acceptance. No background run starts merely because these files exist.
 
 ## Task contracts and ownership
 
@@ -52,7 +54,9 @@ The controller's deterministic checks and the reviewer's independent judgment ha
 
 ## Run the controller
 
-Requirements: macOS or Linux, Python 3.11 or later, Git with an author identity, the Codex CLI and an existing successful Codex sign-in. This runner uses saved Codex authentication; it does not require a new API key. Preflight checks the installed CLI's required flags; Rust/native prerequisites depend on the selected tasks. Check available commands before execution:
+The requirements in this section apply to the optional Codex runner. For interactive Codex work, its goal support is also optional and requires an explicit user request; an ordinary feature request does not authorize creating a goal.
+
+Runner requirements: macOS or Linux, Python 3.11 or later, Git with an author identity, the Codex CLI and an existing successful Codex sign-in. This runner uses saved Codex authentication; it does not require a new API key. Preflight checks the installed CLI's required flags; Rust/native prerequisites depend on the selected tasks. Check available commands before execution:
 
 ```sh
 python3 scripts/agent-loop.py --help

@@ -18,7 +18,7 @@ Link directly to current primary sources. For code, name the file/symbol and rev
 
 ## Compatibility and alternatives
 
-- Relevant Rust, Git, GPUI, OS or Codex versions and existing pinned dependencies.
+- Relevant Rust, Git, GPUI, OS or development-tool versions and existing pinned dependencies.
 - Alternatives and their concrete tradeoffs.
 - Existing contracts, licensing/provenance or resource limits affected.
 - Evidence that could change the recommendation.

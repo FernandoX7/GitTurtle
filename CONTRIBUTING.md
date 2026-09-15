@@ -4,9 +4,11 @@ Thanks for helping make GitTurtle useful. Small bug fixes, clearer docs, reprodu
 
 GitTurtle is a native Rust/GPUI Git client for macOS and Linux. Keep changes focused on local history inspection and everyday Git work, with explicit user actions for writes and network access. The [design](DESIGN.md), [architecture](docs/architecture.md) and [project agreements](AGENTS.md) explain the boundaries. Please follow the [code of conduct](CODE_OF_CONDUCT.md).
 
+Use your preferred editor and AI tools, if any. The same architecture, commit and validation requirements apply to every contribution. The [agent workflow](docs/development/README.md) includes optional tooling for coordinated development.
+
 ## Set up a checkout
 
-Fork the repository, clone your fork, and create a `codex/` branch for your change. Install Git and [rustup](https://rustup.rs/). `rust-toolchain.toml` selects Rust 1.98.0, rustfmt and Clippy; keep `Cargo.lock` in use.
+Fork the repository, clone your fork, and create a branch for your change. Install Git and [rustup](https://rustup.rs/). `rust-toolchain.toml` selects Rust 1.98.0, rustfmt and Clippy; keep `Cargo.lock` in use.
 
 - **macOS:** install Xcode 26 or later and its Metal toolchain. The [packaging guide](docs/user-guide.md#package-locally-on-macos) describes local ad-hoc-signed builds.
 - **Linux:** follow the [Ubuntu 24.04 runtime and build prerequisites](docs/linux.md#build-from-source-on-ubuntu-2404). A desktop session and graphics drivers are required for native interaction; headless compilation is a separate check.
