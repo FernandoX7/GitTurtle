@@ -869,13 +869,18 @@ mod tests {
             RecoveryEditor { recovery }
         });
         let output = path.clone();
+        let (save_finished, saved) = std::sync::mpsc::channel();
         let identity = key('a');
         editor.update(window_cx, |editor, _| {
             drop(editor.recovery.queue_save(
                 &writer,
                 identity.clone(),
                 Some(draft(identity.clone(), "first")),
-                move |batch| save_at(batch, &output),
+                move |batch| {
+                    let result = save_at(batch, &output);
+                    let _ = save_finished.send(());
+                    result
+                },
             ));
             assert!(
                 editor
@@ -902,6 +907,13 @@ mod tests {
             .executor()
             .spawn(async move {
                 release.send(()).unwrap();
+                // This task is first polled by the quit wait. Keep the real
+                // worker/fsync scheduling outside GPUI's 200 ms test deadline;
+                // shutdown ownership, not disk latency, is under test here.
+                // Without the retained observer, quit never polls this task.
+                saved
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .expect("the accepted recovery save must finish");
             })
             .detach();
         cx.quit();

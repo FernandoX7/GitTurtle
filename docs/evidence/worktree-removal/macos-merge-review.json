@@ -1,0 +1,48 @@
+{
+  "build": {
+    "application": "GitTurtle",
+    "version": "0.1.0",
+    "source_revision": "0d4d8ce184bc0941ff4e3b8f0c9437773126cd6a",
+    "source_tree": "clean",
+    "target": "aarch64-apple-darwin",
+    "profile": "release",
+    "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+    "build_unix_seconds": "1789472565",
+    "executable_uuid": "745B2A93-A96C-3098-8497-44CAB9861D52",
+    "executable_sha256": "273ff71f06e115ec0c0f42abc3d1556ed4125695de4c84008cb4cb9b2a2ca5b3"
+  },
+  "host": {
+    "os": "macOS 27.0",
+    "architecture": "arm64",
+    "git": "2.54.0 (Apple Git-157)"
+  },
+  "fixture": {
+    "worktrees_before": 6,
+    "worktrees_after": 5,
+    "disposable": true
+  },
+  "local_checks": {
+    "workspace_tests_passed": 771,
+    "workspace_tests_failed": 0,
+    "workspace_tests_ignored": 5,
+    "format": true,
+    "app_check": true,
+    "strict_workspace_clippy": true,
+    "release_build": true,
+    "package_plist_and_signature": true,
+    "original_app_state_restored": true
+  },
+  "git_assertions": {
+    "removed_checkout": true,
+    "removed_private_metadata": true,
+    "registration_removed": true,
+    "all_branch_refs_preserved": true,
+    "main_head_preserved": true,
+    "main_index_preserved": true,
+    "dirty_content_preserved": true,
+    "hidden_content_preserved": true,
+    "locked_registration_preserved": true,
+    "ignored_content_preserved": true,
+    "late_change_preserved": true
+  }
+}

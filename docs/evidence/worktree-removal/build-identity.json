@@ -1,0 +1,14 @@
+{
+  "application": "GitTurtle",
+  "version": "0.1.0",
+  "source_revision": "c188020b065f7fcd40f1f53b12d2104fd972cf77",
+  "source_tree": "modified",
+  "target": "x86_64-unknown-linux-gnu",
+  "profile": "debug",
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+  "build_unix_seconds": "1789441899",
+  "implemented_source_commit": "9585271fc48767db11fbc562b1d6283c2bf0c767",
+  "executable_sha256": "d882c76ffc91ca5ba951cfefa71295ef67200bda7a46e747a0371e471c829ad4",
+  "native_source_input_sha256": "e29978e706d0139a116b3de97d92d0a18ef7dbb11e376084e31512f0d213f00b",
+  "native_source_input_method": "SHA-256 over sorted git ls-files paths under crates, vendor, assets plus Cargo.toml, Cargo.lock and rust-toolchain.toml; each path, NUL, file bytes, NUL. Excludes new cfg(test) crates/app/src/worktrees/tests.rs, untracked at capture time."
+}

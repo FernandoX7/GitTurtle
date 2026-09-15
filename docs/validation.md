@@ -4,6 +4,35 @@ Use the [current validation guidance](#current-validation-guidance) for the affe
 
 This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native workflow evidence is primarily macOS-specific; the September 14 entries add Pop!_OS startup and clean Ubuntu/virtual-native checks. Platform execution and access limits belong to the applicable dated record and [platform runbook](linux.md); the earlier [environment report](benchmarks/2026-09-09-milestone-environment.md) describes its own session. The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Public binary release prerequisites belong in the [launch checklist](public-launch.md); the Linux runbook includes a local teammate bundle.
 
+## September 15 PR #5 macOS merge review
+
+Source `0d4d8ce` passed 771 workspace tests, strict Clippy, formatting, app check
+and release compilation. The [worktree-removal review](worktree-removal-validation.md#september-15-macos-merge-review-and-security-fixes)
+records CodeQL flow fixes, explicit fixture copies, verified local macOS package
+identity, native cancellation/refusal/removal checks, and independent branch,
+index and sibling-content preservation. Hosted results are recorded on PR #5;
+this entry does not claim a new Linux native or notarized-distribution pass.
+
+## September 15 PR #5 maintainer review
+
+Clean release source `3b0a958` passed 775 workspace tests (five existing ignores),
+formatting, app check, strict workspace Clippy and release compilation. The
+[maintainer validation record](worktree-removal-validation.md#september-15-maintainer-review-of-pr-5)
+documents stale-review cancellation, checkout/admin identity guards, the Ubuntu
+draft-shutdown fixture correction, and native Wayland checks for protected
+targets, cancellation, fresh review, cleanup and branch retention. macOS native
+interaction and hosted checks are scoped separately from this local evidence.
+
+## September 14 guarded worktree removal
+
+Implementation commits `95d97a7` and `9585271` add navigator removal actions,
+keyboard access, hidden-change/lock guards and verified cleanup. The
+[worktree removal validation record](worktree-removal-validation.md) documents
+743 passing workspace tests (five intentionally ignored), strict Clippy, and
+native Linux/X11 checks of protected targets, cancellation, stale review,
+successful Git/filesystem cleanup and branch retention. macOS runtime and
+hosted CI are separate from this local evidence.
+
 ## September 14 PR #4 desktop text and security validation
 
 Clean application source `0700984951001289a6c7490f81e72b749cd4120e` was built,
