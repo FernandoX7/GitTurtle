@@ -138,7 +138,10 @@ class SigningSimulationTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        # macOS's temporary directory can live beneath /var -> /private/var.
+        # Resolve only our newly owned fixture; production must still reject
+        # caller-supplied aliases before normalizing input/output paths.
+        self.root = Path(self.temporary.name).resolve()
         self.app = self.root / "Input.app"
         resources = self.app / "Contents/Resources"
         resources.mkdir(parents=True)
@@ -269,6 +272,18 @@ class SigningSimulationTests(unittest.TestCase):
         with self.assertRaisesRegex(signing.SigningError, "inside the input"):
             self.run_sign()
         self.assertFalse((self.app / "output").exists())
+
+    def test_symlinked_input_and_output_ancestors_refuse_before_commands(self):
+        alias = self.root / "alias"
+        alias.symlink_to(self.root, target_is_directory=True)
+        for field, name in (("app", "Input.app"), ("output", "signed")):
+            with self.subTest(field=field), patch.object(self.args, field, alias / name):
+                with self.assertRaisesRegex(signing.SigningError, "Symlinked"):
+                    self.run_sign()
+            self.assertIsNone(self.commands)
+            self.assertFalse((self.root / "signed").exists())
+            self.assertEqual(signing.digest(self.app / "Contents/MacOS/gitturtle"),
+                             self.args.executable_sha256)
 
     def test_compiled_identity_and_architecture_must_match(self):
         base = {"application": "GitTurtle", "source_revision": "b" * 40,
