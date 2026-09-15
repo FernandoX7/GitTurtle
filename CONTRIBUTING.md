@@ -105,3 +105,24 @@ remains separately required. Do not change repository rules or bypass a failed
 requirement merely to obtain a green PR.
 
 Sanitize screenshots, logs and fixtures before posting: remove credentials, private remote URLs, personal paths, identities and proprietary repository content. For a suspected vulnerability, use [private security reporting](SECURITY.md) rather than an issue or public PR.
+
+### Focused security review
+
+Assign an independent, read-only security verifier before pushing changes to
+credentials, repository writes, external commands, or CI/package/release trust
+boundaries. Use the existing verifier workflow with that explicit scope and the
+session's selected model and effort. Also use it to triage new scanner alerts;
+reuse conclusions for unchanged code and revisit them when its callers or trust
+boundary change.
+
+The verifier traces the actual input, caller, guarded operation and consequence.
+It distinguishes intentional operator-selected paths from paths supplied across
+an untrusted boundary, and reproduces concrete concerns in disposable fixtures.
+Group repeated alerts by cause into one coordinator report with the candidate,
+code and alert links, evidence, and any unresolved uncertainty. A separate bot
+that comments on every finding is unnecessary.
+
+Keep CodeQL's required languages, queries and merge thresholds. Fix confirmed
+defects; record a specific source-to-sink rationale for each supported
+false-positive disposition. Leave uncertain findings open. Do not remove queries,
+exclude code, or make cosmetic source changes merely to silence a scanner.
