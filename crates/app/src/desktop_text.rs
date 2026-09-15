@@ -537,13 +537,13 @@ mod portal {
                         return None;
                     }
                     output.extend_from_slice(&buffer[..count]);
-                    if count == 0 {
-                        if let Some(status) = child.0.try_wait().ok()? {
-                            return status
-                                .success()
-                                .then(|| String::from_utf8(output).ok())
-                                .flatten();
-                        }
+                    if count == 0
+                        && let Some(status) = child.0.try_wait().ok()?
+                    {
+                        return status
+                            .success()
+                            .then(|| String::from_utf8(output).ok())
+                            .flatten();
                     }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
