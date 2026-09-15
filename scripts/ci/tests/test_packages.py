@@ -14,7 +14,7 @@ import struct
 import tarfile
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import zipfile
 
 SPEC = importlib.util.spec_from_file_location("ci_packages", Path(__file__).resolve().parents[1] / "packages.py")
@@ -77,15 +77,39 @@ class ArchiveTests(unittest.TestCase):
                 if (self.root / "extracted").exists():
                     shutil.rmtree(self.root / "extracted")
 
-    def test_pax_header_cannot_request_unbounded_metadata_allocation(self):
+    def test_tar_reader_refuses_unbounded_read_before_decompressing(self):
+        stream = Mock()
+        reader = packages.TarReader(stream)
+        for size in (-1, packages.MAX_LOG + 1, 2**40):
+            with self.subTest(size=size), self.assertRaisesRegex(packages.Error, "metadata read"):
+                reader.read(size)
+        stream.read.assert_not_called()
+
+    def test_truncated_pax_header_is_refused_without_unbounded_reads(self):
         archive = self.root / "huge-header.tar.gz"
         header = tarfile.TarInfo("pax")
         header.type = tarfile.XHDTYPE
         header.size = 2**40
         with gzip.open(archive, "wb") as out:
             out.write(header.tobuf(format=tarfile.GNU_FORMAT))
-        with self.assertRaisesRegex(packages.Error, "metadata read"):
-            packages.extract(archive, self.root / "extracted")
+        original_read = gzip.GzipFile.read
+        read_sizes = []
+
+        def bounded_read(stream, size=-1):
+            # Fail before a faulty reader could actually allocate a huge buffer.
+            self.assertGreaterEqual(size, 0)
+            self.assertLessEqual(size, packages.MAX_LOG)
+            read_sizes.append(size)
+            return original_read(stream, size)
+
+        # Newer Python versions bound extended-header reads themselves and can
+        # reject this truncated header before our oversized-read guard fires.
+        # Either refusal is valid; an unbounded decompressor read is never valid.
+        with patch.object(gzip.GzipFile, "read", bounded_read):
+            with self.assertRaises((packages.Error, tarfile.ReadError)):
+                packages.extract(archive, self.root / "extracted")
+        self.assertTrue(read_sizes)
+        self.assertEqual(list((self.root / "extracted").iterdir()), [])
 
     def test_extract_refuses_existing_output_and_symlink(self):
         archive = self.tar([("file", b"new", tarfile.REGTYPE)])
