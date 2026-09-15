@@ -155,11 +155,15 @@ class RecoveryTests(unittest.TestCase):
         for path in (
             "assets/AppIcon.icon/icon.json", "scripts/package-macos.sh", "scripts/render-app-icon.sh",
             "scripts/package-linux.sh", "scripts/install-linux.py", "scripts/collect-third-party-licenses.py",
+            "scripts/package-macos.py", "scripts/package-identity.py",
+            "scripts/release/identity.py", "scripts/release/sign-macos.py", "scripts/release/publish.sh",
         ):
             with self.subTest(path=path):
                 self.assertIn("package", profiles_for(feature, [path]))
         self.assertNotIn("native", profiles_for(feature, ["crates/git-core/src/status.rs"]))
-        self.assertNotIn("package", profiles_for(feature, ["docs/one.md"]))
+        for path in ("docs/one.md", "scripts/release/test_release_identity.py", "scripts/release/tests/fixture.py", "scripts/release/schema.json"):
+            with self.subTest(path=path):
+                self.assertNotIn("package", profiles_for(feature, [path]))
 
     def test_all_agents_policies_remain_protected_under_broad_scope(self):
         self.prepare()

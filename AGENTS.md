@@ -27,7 +27,7 @@ Read the affected crate's instructions before edits or reviews, including when s
 | App icon and control artwork | [Asset conventions](assets/icons/README.md), `assets/AppIcon.icon`, `scripts/render-app-icon.sh`, `scripts/package-macos.sh` |
 | Current native workflows, packaging and evidence | [Validation matrix](docs/validation.md#current-validation-guidance), `scripts/package-macos.sh`, `docs/benchmarks/` |
 | CI and platform build setup | [Quality workflow](.github/workflows/quality.yml), `Cargo.toml`; configured jobs are not evidence of an executed hosted run |
-| Development agents, feature contracts and unattended execution | [Development workflow](docs/development/README.md); [agent architecture](docs/agent-guidance.md); [feature-work skill](.agents/skills/gitturtle-feature-work/SKILL.md) |
+| Development agents, feature contracts and unattended execution | [Development workflow](docs/development/README.md); [agent architecture](docs/agent-guidance.md); [feature-work skill](.agents/skills/gitturtle-feature-work/SKILL.md); [security review](docs/development/security-review.md) |
 
 ## Architecture and non-negotiable behavior
 
