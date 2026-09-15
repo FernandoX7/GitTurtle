@@ -616,6 +616,7 @@ struct WarmTab {
 impl GitTurtle {
     fn tab_retained_bytes(&self) -> usize {
         history_bytes(&self.commits, &self.graph)
+            + self.inspector_message.retained_bytes()
             + self
                 .content
                 .as_ref()
@@ -1241,6 +1242,7 @@ impl GitTurtle {
             self.blame = blame::State::default();
             self.discard_history_search();
             self.commits.clear();
+            self.inspector_message = commit_message::State::default();
             self.graph.clear();
             self.visible.clear();
             self.files.clear();

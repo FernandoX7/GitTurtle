@@ -129,6 +129,7 @@ impl Lineage {
 /// Holds the existing editors and scroll handles, so closing revision history
 /// restores selection and viewport without rebuilding the previous preview.
 pub(super) struct ReturnContext {
+    inspector_message: commit_message::State,
     files: Vec<FileChange>,
     file_filter: String,
     selected_file: Option<usize>,
@@ -266,6 +267,7 @@ impl ReturnContext {
                 .map(repository_tabs::file_bytes)
                 .sum::<usize>()
             + self.file_filter.capacity()
+            + self.inspector_message.retained_bytes()
     }
     pub(super) fn rescale_code(&self, ratio: f32, cx: &mut App) {
         for editor in [&self.patch_editor, &self.before_editor, &self.after_editor]
@@ -294,6 +296,9 @@ impl ReturnContext {
 }
 
 impl GitTurtle {
+    pub(super) fn file_history_entry(&self) -> Option<&FileHistoryEntry> {
+        self.file_history.lineage.as_ref()?.entry()
+    }
     pub(super) fn file_history_preview_origins(&self) -> Option<markdown_view::Origins> {
         let entry = self.file_history.lineage.as_ref()?.entry()?;
         Some(markdown_view::Origins::revisions(
@@ -307,6 +312,7 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) -> ReturnContext {
         ReturnContext {
+            inspector_message: std::mem::take(&mut self.inspector_message),
             files: std::mem::take(&mut self.files),
             file_filter: self.file_filter.read(cx).value().to_string(),
             selected_file: self.selected_file.take(),
@@ -358,6 +364,7 @@ impl GitTurtle {
         self.file_filter.update(cx, |input, cx| {
             input.set_value(retained.file_filter.clone(), window, cx)
         });
+        self.inspector_message = retained.inspector_message;
         self.files = retained.files;
         self.refresh_file_filter(cx);
         self.selected_file = retained.selected_file;
@@ -646,6 +653,7 @@ impl GitTurtle {
         else {
             return;
         };
+        self.inspector_message.select(&entry.commit.oid);
         let change = entry.change.clone();
         lineage.selected = Some(index);
         lineage.error = None;
@@ -710,6 +718,9 @@ impl GitTurtle {
             .border_color(rgb(p.border))
             .child(
                 div()
+                    .id("file-history-header")
+                    .max_h(relative(0.30))
+                    .overflow_y_scroll()
                     .flex_shrink_0()
                     .px_3()
                     .py_3()
@@ -730,7 +741,7 @@ impl GitTurtle {
                                     .child("File history"),
                             )
                             .child(
-                                button("close-file-history", "Back", "arrow-left", false)
+                                button("close-file-history", "Back", "arrow-left", false).debug_selector(|| "close-file-history".into())
                                     .accessibility_label(
                                         "Close file history and restore previous view",
                                     )
@@ -752,6 +763,7 @@ impl GitTurtle {
                     .child(
                         div()
                             .flex()
+                            .flex_wrap()
                             .items_center()
                             .gap_2()
                             .child(
@@ -783,6 +795,7 @@ impl GitTurtle {
                     .child(
                         div()
                             .flex()
+                            .flex_wrap()
                             .items_center()
                             .gap_2()
                             .child(
@@ -812,9 +825,13 @@ impl GitTurtle {
                             ),
                     ),
             )
-            .children(entry.map(|entry| self.render_revision_details(entry, cx)))
+            .child(div().flex_1().min_h_0().flex().flex_col()
+                .children(entry.map(|entry| self.render_commit_message(&entry.commit, true, cx)))
             .children(lineage.error.as_ref().map(|error| {
                 div()
+                    .id("file-history-failure")
+                    .max_h(relative(0.35))
+                    .overflow_y_scroll()
                     .flex_shrink_0()
                     .px_3()
                     .py_2()
@@ -848,7 +865,7 @@ impl GitTurtle {
             }))
             .child(
                 div()
-                    .id("file-revision-list")
+                    .id("file-revision-list").debug_selector(|| "file-revision-list".into())
                     .role(Role::ListBox)
                     .aria_label("File revisions, newest first")
                     .tab_stop(true)
@@ -880,8 +897,12 @@ impl GitTurtle {
                         .into_any_element()
                     }),
             )
+            )
             .child(
                 div()
+                    .id("file-history-footer")
+                    .max_h(relative(0.25))
+                    .overflow_y_scroll()
                     .flex_shrink_0()
                     .border_t_1()
                     .border_color(rgb(p.border))
@@ -913,10 +934,11 @@ impl GitTurtle {
                     .child(
                         div()
                             .flex()
+                            .flex_wrap()
                             .items_center()
                             .gap_2()
                             .child(
-                                button("newer-file-page", "Newer page", "", false)
+                                button("newer-file-page", "Newer page", "", false).debug_selector(|| "newer-file-page".into())
                                     .disabled(busy || previous_page.is_none())
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         if let Some(offset) = previous_page {
@@ -930,7 +952,7 @@ impl GitTurtle {
                                     })),
                             )
                             .child(
-                                button("older-file-page", "Older page", "", false)
+                                button("older-file-page", "Older page", "", false).debug_selector(|| "older-file-page".into())
                                     .disabled(busy || next_page.is_none())
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         if let Some(offset) = next_page {
@@ -948,9 +970,12 @@ impl GitTurtle {
             .into_any_element()
     }
 
-    fn render_revision_details(&self, entry: &FileHistoryEntry, cx: &App) -> AnyElement {
+    pub(super) fn render_revision_metadata(
+        &self,
+        entry: &FileHistoryEntry,
+        cx: &App,
+    ) -> AnyElement {
         let p = palette(cx);
-        let oid = entry.commit.oid.clone();
         let before = entry
             .change
             .old_path
@@ -963,68 +988,32 @@ impl GitTurtle {
             .map_or("Absent (deleted)".into(), |path| path.display().to_string());
         div()
             .id("file-revision-details")
-            .max_h(px(210.))
-            .overflow_y_scroll()
-            .flex_shrink_0()
+            .min_w_0()
             .p_3()
             .flex()
             .flex_col()
             .gap_2()
-            .border_b_1()
-            .border_color(rgb(p.border))
-            .child(
-                div()
-                    .text_size(crate::appearance::ui_text(13.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(entry.commit.subject.clone()),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        button("copy-file-revision", short_oid(&oid), "copy", false)
-                            .tooltip("Copy revision commit hash")
-                            .on_click(move |_, _, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(oid.clone()))
-                            }),
-                    )
-                    .child(
-                        div()
-                            .text_size(crate::appearance::ui_text(10.))
-                            .text_color(rgb(p.muted))
-                            .child(entry.change.status.label()),
-                    ),
-            )
-            .child(
-                div()
-                    .text_size(crate::appearance::ui_text(11.))
-                    .text_color(rgb(p.muted))
-                    .child(format!(
-                        "{} · {}",
-                        entry.commit.author,
-                        full_date(entry.commit.timestamp)
-                    )),
-            )
-            .child(
-                div()
-                    .text_size(crate::appearance::ui_text(10.))
-                    .text_color(rgb(p.muted))
-                    .child(entry.parent_oid.as_ref().map_or(
-                        "Root revision · compared with an empty tree".into(),
-                        |parent| format!("Compared with first parent {}", short_oid(parent)),
-                    )),
-            )
-            .child(
-                div()
-                    .text_size(crate::appearance::ui_text(11.))
-                    .child(if before == after {
-                        before
-                    } else {
-                        format!("Before: {before}\nAfter: {after}")
-                    }),
-            )
+            .text_size(appearance::ui_text(11.))
+            .text_color(rgb(p.muted))
+            .child(format!(
+                "{} · {}",
+                commit_message::summary(&entry.commit.author),
+                full_date(entry.commit.timestamp)
+            ))
+            .child(format!(
+                "{} · {}",
+                short_oid(&entry.commit.oid),
+                entry.change.status.label()
+            ))
+            .child(entry.parent_oid.as_ref().map_or(
+                "Root revision · compared with an empty tree".into(),
+                |parent| format!("Compared with first parent {}", short_oid(parent)),
+            ))
+            .child(div().text_color(rgb(p.text)).child(if before == after {
+                before
+            } else {
+                format!("Before: {before}\nAfter: {after}")
+            }))
             .into_any_element()
     }
 
@@ -1047,14 +1036,15 @@ impl GitTurtle {
             "{} · {} · {}",
             short_oid(&entry.commit.oid),
             entry.change.status.label(),
-            entry.commit.author
+            commit_message::summary(&entry.commit.author)
         );
-        let tooltip = format!("{}\n{}\n{}", entry.commit.subject, detail, path);
+        let subject = commit_message::summary(&entry.commit.subject);
+        let tooltip = format!("{subject}\n{detail}\n{path}");
         div()
             .id(("file-revision", index))
             .role(Role::ListBoxOption)
             .aria_selected(active)
-            .aria_label(format!("{} · {}", entry.commit.subject, detail))
+            .aria_label(format!("{subject} · {detail}"))
             .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
             .h(crate::appearance::ui_size(68.))
             .w_full()
@@ -1074,7 +1064,7 @@ impl GitTurtle {
                     .truncate()
                     .text_size(crate::appearance::ui_text(12.))
                     .font_weight(FontWeight::MEDIUM)
-                    .child(entry.commit.subject.clone()),
+                    .child(subject),
             )
             .child(
                 div()
@@ -1101,7 +1091,8 @@ impl GitTurtle {
 
 #[cfg(test)]
 mod tests {
-    use super::{Destination, Lineage, PAGE_SIZE, Position};
+    use super::*;
+    use core::prelude::v1::test;
     use gitturtle_core::{ChangeStatus, Commit, FileChange, FileHistoryEntry, FileHistoryPage};
     use std::path::PathBuf;
 
@@ -1183,6 +1174,76 @@ mod tests {
 
     fn lineage() -> Lineage {
         Lineage::new("/fixture".into(), "f".repeat(40), "current.txt".into())
+    }
+
+    #[gpui::test]
+    fn rendered_messages_leave_revision_navigation_and_copy_the_selected_entry(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::commit_message::tests::{commit, draw, fixture};
+        let (_, app, cx) = fixture(cx, vec![commit("a", "Original history", "Original body")]);
+        let expected = cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let retained = app.take_inspection_context(window, cx);
+                let mut lineage = lineage();
+                let request = lineage.begin(0, Position::First);
+                let mut page = page(&lineage, 20, Some(PAGE_SIZE));
+                page.entries[0].commit.subject = "Wrapped revision title 東京 🐢 ".repeat(100);
+                page.entries[0].commit.body = "Paragraph.\n\n".repeat(1000);
+                let expected = commit_message::full_message(&page.entries[0].commit);
+                assert!(lineage.accept(request, page));
+                app.file_history = State {
+                    lineage: Some(lineage),
+                    retained: Some(Box::new(retained)),
+                    ..State::default()
+                };
+                expected
+            })
+        });
+        for font in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(font, 12, window, cx));
+            draw(cx);
+            let revision_list = cx.debug_bounds("file-revision-list").unwrap();
+            assert!(
+                revision_list.size.height >= appearance::ui_size(68.),
+                "at least one entire revision must remain usable: {revision_list:?}"
+            );
+            let inspector = cx.debug_bounds("inspector-test").unwrap();
+            for id in [
+                "copy-message",
+                "copy-commit",
+                "close-file-history",
+                "newer-file-page",
+                "older-file-page",
+            ] {
+                let control = cx.debug_bounds(id).unwrap();
+                assert!(
+                    control.left() >= inspector.left() && control.right() <= inspector.right(),
+                    "{id}: {control:?}"
+                );
+            }
+            let button = cx.debug_bounds("copy-message").unwrap();
+            cx.simulate_click(button.center(), Modifiers::default());
+            cx.read(|cx| {
+                assert!(
+                    cx.read_from_clipboard().unwrap().text().unwrap() == expected,
+                    "copy must preserve the selected file revision message"
+                )
+            });
+        }
+        cx.update(|window, cx| {
+            appearance::apply_text_sizes(13, 12, window, cx);
+            app.update(cx, |app, cx| app.back_to_history(window, cx));
+        });
+        draw(cx);
+        let copy = cx.debug_bounds("copy-message").unwrap();
+        cx.simulate_click(copy.center(), Modifiers::default());
+        cx.read(|cx| {
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().unwrap(),
+                "Original history\n\nOriginal body"
+            )
+        });
     }
 
     #[test]
