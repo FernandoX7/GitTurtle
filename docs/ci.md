@@ -353,9 +353,11 @@ test command with `TMPDIR="$PWD/.local/ci-observability/tmp"`.
 Validated September 15, 2026 on Linux x86_64 with Python 3.12.3, for the source
 patch based on `076bb27ac1d94c84b5e4d5a8accff1195b15ff83`:
 
-- The focused unittest command above passed **54 tests**. This includes skipped
+- The focused unittest command above passed **63 tests**. This includes skipped
   jobs, missing-start queue uncertainty, quoted and compound credential redaction
-  in stdout/logs/build timing artifacts, paths containing spaces, truncated HTTP
+  including escaped and HTML-encoded Authorization headers in stdout/logs/build
+  timing artifacts, historical exported-log replay, same-workflow duplicate
+  detection, paths containing spaces, truncated HTTP
   responses, malformed Unicode, and child cleanup after output failure.
 - Syntax parsing and all four help commands above passed. The test module also
   passed Python AST parsing.
@@ -372,16 +374,21 @@ TMPDIR="$PWD/.local/ci-observability/tmp" PYTHONDONTWRITEBYTECODE=1 \
   python3 -B -m unittest discover -s scripts/agent_loop -t scripts -p 'test_*.py'
 ```
 
-It ran **132 tests and failed with 18 failures and 53 errors**. The sandbox
-reports unexpected ownership on filesystem ancestors, and the inherited
-controller Git-record destination is outside the writable checkout. These prevent
-the controller's protected-record and Git-fixture setup. The local log is
-`.local/ci-observability/tooling-tests.log`. No controller or permission controls
-were changed; rerunning that gate in the controller's validation environment
-remains pending.
+The implementation sandbox run of **132 tests failed with 18 failures and 53
+errors**: ancestor ownership and a controller Git-record destination outside the
+writable checkout prevented protected-record and Git-fixture setup. That failure
+is preserved in `.local/ci-observability/tooling-tests.log`. The controller
+subsequently passed its guidance and tooling gates on candidate `1da53d7`, using
+the proper private validation environment. No controller or permission controls
+were changed. The integrated replay and redaction repairs passed the 63 helper
+tests and workflow lint separately. Independent controller review remains paused
+after two CLI provider failures; successful command gates do not establish task
+acceptance. Interactive independent review and hosted C1 evidence are separate
+requirements.
 
 These are local source checks. Rust/native builds were not run for this CI helper
-patch. The controller owns the candidate commit and its independent gates.
+patch. The coordinator owns interactive candidate commits; the paused controller keeps
+its original candidates and independent gate records.
 Hosted C1 remains pending until candidate-bound observations exist.
 Native, product-performance, package and vendor attestations are not required by
 this tooling-only contract; controller-added requirements, if any, follow candidate

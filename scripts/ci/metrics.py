@@ -57,7 +57,10 @@ def sanitize(value):
     # Authorization values contain a scheme and may include spaces, quoted
     # parameters and commas (e.g. Basic or Digest). Drop the rest of that line
     # instead of retaining a credential after redacting only its scheme.
-    value = re.sub(r'''(?i)\b((?:proxy-)?authorization)["']?[ \t]*[:=][ \t]*[^\r\n]*''', r"\1=[redacted]", value)
+    value = re.sub(
+        r'''(?i)\b((?:proxy-)?authorization)(?:\\?["']|&quot;|&#(?:34|39);)?[ \t]*[:=][ \t]*[^\r\n]*''',
+        r"\1=[redacted]", value,
+    )
     # Credential keys also occur in JSON and compound names such as access_token,
     # refreshToken and client-secret. As with authorization, discard the rest of
     # the line: quoted values can contain whitespace, commas and escaped quotes.
