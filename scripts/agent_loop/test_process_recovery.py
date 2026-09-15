@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
@@ -15,7 +16,7 @@ import unittest
 from unittest.mock import patch
 
 from agent_loop import process
-from agent_loop.process import EnvironmentBlocked, reconcile_processes, run_process
+from agent_loop.process import EnvironmentBlocked, LoopError, reconcile_processes, run_process
 
 
 @unittest.skipUnless(os.name == "posix", "Watchdog ownership supports macOS and Linux")
@@ -44,7 +45,8 @@ class ProcessRecoveryTests(unittest.TestCase):
         module = self.root / "snapshot/scripts/agent_loop"
         module.mkdir(parents=True)
         (module / "__init__.py").write_text("")
-        shutil.copyfile(process.__file__, module / "process.py")
+        for name in ("process.py", "records.py"):
+            shutil.copyfile(Path(process.__file__).with_name(name), module / name)
         ready = self.root / "ready"
         pid_file = self.root / "worker-pids.json"
         leaf_code = (
@@ -148,6 +150,33 @@ class ProcessRecoveryTests(unittest.TestCase):
         self.assertTrue(records[0]["cleanup_confirmed"])
         self.assertEqual(records[0]["result"]["stopped"], "executable unavailable")
 
+    def test_failed_watchdog_spawn_and_record_write_close_both_control_descriptors(self):
+        descriptors = []
+        original_pipe, original_write = os.pipe, process.atomic_json_at
+
+        def capture_pipe():
+            pair = original_pipe()
+            descriptors.extend(pair)
+            return pair
+
+        def fail_completion_write(directory, name, record):
+            if record["state"] == "complete":
+                raise LoopError("fixture completion write failed")
+            original_write(directory, name, record)
+
+        with (patch.object(process.os, "pipe", side_effect=capture_pipe),
+              patch.object(process, "atomic_json_at", side_effect=fail_completion_write),
+              patch.object(process.subprocess, "Popen", side_effect=OSError("fixture spawn failure"))):
+            with self.assertRaisesRegex(LoopError, "fixture completion write failed"):
+                run_process(["fixture-never-started"], self.root, self.root / "failed.log", 5)
+        self.assertEqual(len(descriptors), 2)
+        for fd in descriptors:
+            with self.subTest(fd=fd), self.assertRaises(OSError) as raised:
+                os.fstat(fd)
+            self.assertEqual(raised.exception.errno, errno.EBADF)
+        with self.assertRaisesRegex(EnvironmentBlocked, "cleanup is unconfirmed"):
+            reconcile_processes(self.root)
+
     def test_callback_exception_still_closes_control_pipe_and_confirms_cleanup(self):
         def fail_stop():
             raise RuntimeError("fixture callback failure")
@@ -183,6 +212,20 @@ class ProcessRecoveryTests(unittest.TestCase):
         path.write_text(" " * (process.MAX_LAUNCH_BYTES + 1))
         with self.assertRaisesRegex(EnvironmentBlocked, "size limit"):
             reconcile_processes(self.root)
+
+    def test_directory_alias_for_shared_output_preserves_both_streams_and_limit(self):
+        logs = self.root / "logs"
+        logs.mkdir()
+        alias = self.root / "alias"
+        alias.symlink_to(self.root, target_is_directory=True)
+        output = logs / "combined.log"
+        result = run_process(
+            [sys.executable, "-c", "import os; os.write(1, b'answer\\n'); os.write(2, b'diagnostic\\n')"],
+            self.root, output, 5, stderr_path=alias / "logs" / output.name, max_log_bytes=18,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIsNone(result.stopped)
+        self.assertEqual(output.read_bytes(), b"answer\ndiagnostic\n")
 
 
 if __name__ == "__main__":
