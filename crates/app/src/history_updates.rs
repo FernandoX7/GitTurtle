@@ -525,10 +525,15 @@ mod tests {
         assert!(!follows_latest(WorkspaceMode::History, false, true, 0.));
     }
     #[gpui::test]
-    fn quiet_updates_follow_only_the_top_and_preserve_inspector_focus_and_older_rows(
+    async fn quiet_updates_follow_only_the_top_and_preserve_inspector_focus_and_older_rows(
         cx: &mut TestAppContext,
     ) {
         use gpui_kit::component::Root;
+        use std::{cell::RefCell, rc::Rc};
+
+        // GitTurtle::new starts a real preferences worker. Its reply may wake
+        // the deterministic scheduler from another thread, including on macOS.
+        cx.executor().allow_parking();
         let fixture = tempfile::tempdir().unwrap();
         let repo = GitRepository::init(fixture.path().join("repo"), "main").unwrap();
         let snapshot = move |commits: Vec<Commit>| worker::Snapshot {
@@ -548,7 +553,9 @@ mod tests {
             gpui_kit::init(cx);
             image_lifetime::init(cx);
         });
-        cx.add_window_view(move |window, cx| {
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let observed = captured.clone();
+        let (_, window_cx) = cx.add_window_view(move |window, cx| {
             let app = cx.new(|cx| {
                 let mut app = GitTurtle::new(
                     None,
@@ -620,7 +627,17 @@ mod tests {
                 assert_eq!(app.history_updates.pending, Some(Update::New(3)));
                 app
             });
+            *captured.borrow_mut() = Some(app.clone());
             Root::new(app, window, cx)
+        });
+        let app = observed.borrow_mut().take().unwrap();
+        let preferences = app.read_with(window_cx, |app, _| {
+            app.preferences_writer.submit_read(|| Ok(()))
+        });
+        preferences.await.unwrap().unwrap();
+        window_cx.executor().run_until_parked();
+        window_cx.update(|_, cx| {
+            app.update(cx, |app, _| app._display_preferences_task = None);
         });
     }
 
