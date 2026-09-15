@@ -6,7 +6,7 @@ use crate::{
 };
 use gpui_kit::{
     App, AppContext, ClipboardItem, Context, Entity, Focusable, HighlightStyle, InteractiveElement,
-    IntoElement, ParentElement, Pixels, Render, Styled, Subscription, Window,
+    IntoElement, ParentElement, Pixels, Render, Styled, Subscription, Window, canvas,
     component::input::{Copy, EditorState, TextDecoration},
     div, point, px, rgb,
 };
@@ -275,8 +275,9 @@ pub struct SplitView {
     _subscriptions: Vec<Subscription>,
 }
 
-/// Editor scroll setters defer application until layout. A notification from
-/// the setter still contains the old offset and must never bounce it back.
+/// Track accepted viewport changes and acknowledgments independently from
+/// selection. Laid-out editors publish linked offsets immediately; cold editors
+/// may still acknowledge their initial request after layout.
 #[derive(Default)]
 struct LinkedScroll {
     applied: [Pixels; 2],
@@ -388,6 +389,17 @@ pub fn new(
                 let next = editor.read(cx).scroll_offset();
                 if let Some((other, y)) = this.scroll.observe(side, next.y) {
                     let target = point(this.editors[other].read(cx).scroll_offset().x, y);
+                    if diff_view::scroll_trace_enabled() {
+                        diff_view::trace_scroll(
+                            "split_link",
+                            format_args!(
+                                "source={:?} target={:?} applied={:?} requested={target:?}",
+                                this.editors[side].entity_id(),
+                                this.editors[other].entity_id(),
+                                this.editors[other].read(cx).scroll_offset(),
+                            ),
+                        );
+                    }
                     this.editors[other]
                         .update(cx, |editor, cx| editor.set_scroll_offset(target, cx));
                     cx.notify();
@@ -419,7 +431,8 @@ pub fn new(
 
 impl SplitView {
     pub fn rescale_code(&mut self, ratio: f32, cx: &mut Context<Self>) {
-        self.initial_row = None;
+        // An editor that has never painted still owns its initial logical
+        // change row; the first measured layout will resolve that request.
         self.scroll.pending =
             std::array::from_fn(|side| Some(self.editors[side].read(cx).scroll_offset().y * ratio));
         for editor in &self.editors {
@@ -531,7 +544,8 @@ impl Render for SplitView {
         let p = palette(cx);
         let search_heights = self.search_heights;
         let reserved_height = search_heights[0].max(search_heights[1]);
-        div().size_full().flex().children((0..2).map(|side| {
+        let trace_editors = diff_view::scroll_trace_enabled().then(|| self.editors.clone());
+        div().size_full().relative().flex().children((0..2).map(|side| {
             let editor = self.editors[side].clone();
             let padding = reserved_height - search_heights[side];
             let presentation = Arc::clone(&self.presentation);
@@ -576,6 +590,31 @@ impl Render for SplitView {
                         .pt(padding)
                         .child(div().flex_1().min_h_0().child(self.views[side].clone())),
                 )
+        })).children(trace_editors.map(|editors| {
+            // Painted after both panes, so one record contains their actual
+            // same-frame geometry. The transparent observer has no hitbox and
+            // never requests another frame or changes either editor.
+            canvas(
+                |_, _, _| (),
+                move |_, _, window, cx| {
+                    let before = editors[0].read(cx);
+                    let after = editors[1].read(cx);
+                    diff_view::trace_scroll(
+                        "split_paint",
+                        format_args!(
+                            "window={:?} editors={:?} before_offset={:?} after_offset={:?} before_text={:?} after_text={:?} before_visible={:?} after_visible={:?}",
+                            window.window_handle().window_id(),
+                            [editors[0].entity_id(), editors[1].entity_id()],
+                            before.scroll_offset(),
+                            after.scroll_offset(),
+                            before.text_bounds(),
+                            after.text_bounds(),
+                            before.visible_row_range(),
+                            after.visible_row_range(),
+                        ),
+                    );
+                },
+            ).absolute().size_full()
         }))
     }
 }
@@ -583,6 +622,146 @@ impl Render for SplitView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::core::prelude::v1::test;
+    use gpui_kit as gpui;
+
+    struct FontProbe {
+        split: Entity<SplitView>,
+        font_size: Pixels,
+    }
+    impl Render for FontProbe {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            // Exercise the real SplitView subscriptions and Editor layout with
+            // a per-window font override; process-wide appearance stays intact
+            // for other tests running in parallel.
+            div()
+                .w(px(900.))
+                .h(px(400.))
+                .flex()
+                .children(self.split.read(cx).editors.iter().map(|editor| {
+                    gpui::component::input::Editor::new(editor)
+                        .readonly(true)
+                        .text_size(self.font_size)
+                        .w(px(450.))
+                        .h_full()
+                }))
+        }
+    }
+
+    fn long_presentation() -> Arc<SplitPresentation> {
+        let lines = vec!["source row\n"; 800];
+        let rows = (0..800)
+            .map(|row| Row {
+                old: Some(row),
+                new: Some(row),
+                changed: row == 549,
+            })
+            .collect::<Vec<_>>();
+        Arc::new(SplitPresentation::from_rows(&[lines.clone(), lines], &rows))
+    }
+
+    fn notify_measured_editors(split: &Entity<SplitView>, cx: &mut gpui::VisualTestContext) {
+        // GPUI suppresses observer notifications during paint. A subsequent
+        // editor event (for example focus or selection) exposes the measured
+        // viewport to SplitView's production subscriptions.
+        cx.update(|_, cx| {
+            for editor in split.read(cx).editors.clone() {
+                editor.update(cx, |_, cx| cx.notify());
+            }
+        });
+        cx.cx.update(|_| {});
+        cx.executor().run_until_parked();
+    }
+
+    #[gpui::test]
+    fn fractional_split_layout_preserves_both_measured_viewports(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui::init);
+        let (probe, cx) = cx.add_window_view(|window, cx| FontProbe {
+            split: new(long_presentation(), "text", window, cx),
+            font_size: px(12.),
+        });
+        let split = cx.read(|cx| probe.read(cx).split.clone());
+        for _ in 0..3 {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            notify_measured_editors(&split, cx);
+        }
+        cx.read(|cx| {
+            for editor in &split.read(cx).editors {
+                assert_eq!(editor.read(cx).line_height(), Some(px(18.)));
+                assert_eq!(editor.read(cx).visible_row_range().unwrap().start, 546);
+            }
+        });
+        for (font, ratio, height) in [(15., 1.25, 23.), (12., 0.8, 18.)] {
+            cx.update(|_, cx| {
+                probe.update(cx, |probe, cx| {
+                    probe.font_size = px(font);
+                    split.update(cx, |split, cx| split.rescale_code(ratio, cx));
+                    cx.notify();
+                });
+            });
+            cx.cx.update(|_| {});
+            // Include each paint and the following observer acknowledgments,
+            // not just a final stabilized state after linked corrections.
+            for _ in 0..3 {
+                cx.update(|window, cx| {
+                    window.draw(cx).clear(cx);
+                    for editor in &split.read(cx).editors {
+                        let editor = editor.read(cx);
+                        assert_eq!(editor.line_height(), Some(px(height)));
+                        assert_eq!(editor.scroll_offset().y, px(-546. * height));
+                        assert_eq!(editor.visible_row_range().unwrap().start, 546);
+                    }
+                });
+                notify_measured_editors(&split, cx);
+                cx.read(|cx| {
+                    let split = split.read(cx);
+                    assert_eq!(split.scroll.applied, [px(-546. * height); 2]);
+                    assert_eq!(split.scroll.pending, [None; 2]);
+                });
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn scale_change_before_first_paint_keeps_the_split_change_row(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui::init);
+        let (probe, cx) = cx.add_window_view(move |window, cx| {
+            let split = new(long_presentation(), "text", window, cx);
+            split.update(cx, |split, cx| {
+                assert_eq!(split.initial_row, Some(546));
+                assert!(
+                    split
+                        .editors
+                        .iter()
+                        .all(|editor| editor.read(cx).line_height().is_none())
+                );
+                split.rescale_code(1.25, cx);
+                assert_eq!(split.initial_row, Some(546));
+            });
+            FontProbe {
+                split,
+                font_size: px(15.),
+            }
+        });
+        let split = cx.read(|cx| probe.read(cx).split.clone());
+        for _ in 0..3 {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            notify_measured_editors(&split, cx);
+        }
+        cx.read(|cx| {
+            let split = split.read(cx);
+            assert!(split.initial_row.is_none());
+            for editor in &split.editors {
+                let editor = editor.read(cx);
+                assert_eq!(editor.line_height(), Some(px(23.)));
+                assert_eq!(editor.scroll_offset().y, px(-23. * 546.));
+                assert_eq!(editor.visible_row_range().unwrap().start, 546);
+            }
+            assert_eq!(split.scroll.applied, [px(-23. * 546.); 2]);
+            assert_eq!(split.scroll.pending, [None; 2]);
+        });
+    }
+
     #[test]
     fn linked_scroll_ignores_deferred_notifications_and_follows_bursts_and_reversal() {
         let mut scroll = LinkedScroll::default();

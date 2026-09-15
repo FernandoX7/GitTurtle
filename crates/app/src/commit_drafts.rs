@@ -219,14 +219,19 @@ mod tests {
             Composer { saver }
         });
         let output = destination.clone();
+        let (save_finished, saved) = mpsc::channel();
         composer.update(window_cx, |composer, _| {
             drop(composer.saver.queue_with(
                 &executor,
                 "/fixture/worktree".into(),
                 draft("Earlier title"),
                 move |drafts| {
-                    std::fs::write(&output, serde_json::to_vec(drafts)?)?;
-                    Ok(())
+                    let result = (|| {
+                        std::fs::write(&output, serde_json::to_vec(drafts)?)?;
+                        Ok(())
+                    })();
+                    let _ = save_finished.send(());
+                    result
                 },
             ));
             assert!(
@@ -251,6 +256,13 @@ mod tests {
             .executor()
             .spawn(async move {
                 release.send(()).unwrap();
+                // This task runs only when the retained quit observer waits.
+                // Finish the real worker I/O before yielding back to GPUI's
+                // 200 ms deadline, so CPU/disk contention cannot time out a
+                // test of completion ownership rather than save performance.
+                saved
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .expect("the accepted composer save must finish");
             })
             .detach();
         cx.quit();

@@ -1,6 +1,8 @@
 # Architecture
 
-GitTurtle v0.1 uses Rust and GPUI Kit 0.6 with its matching GPUI dependency set. The app renders native GPU-backed elements and uses the platform repository picker. It contains no webview shell or AI features. Native macOS checks are recorded per build in the [validation notes](validation.md); Linux remains a portability target.
+GitTurtle uses Rust and GPUI Kit with its matching pinned GPUI dependency set; [Cargo.toml](../crates/app/Cargo.toml) and `Cargo.lock` identify the versions. The app renders native GPU-backed elements and uses the platform repository picker. It contains no webview shell or AI product features. macOS and Linux integration and package behavior are implemented; actual platform coverage is recorded per build in the [validation notes](validation.md) and [Linux runbook](linux.md).
+
+Use the [architecture review](development/architecture-review.md) when extending shared interfaces, retained state, persistence, scheduling or platform/dependency boundaries. Scoped guides own module routes and conditional contracts; dated audits identify follow-up work without certifying a release.
 
 ```mermaid
 flowchart LR
@@ -18,7 +20,7 @@ flowchart LR
     Session --> Git[Read-only Git service]
     Git --> Objects[Persistent cat-file reader]
     Git --> Metadata[Branches / worktrees / history / changed files]
-    Objects --> Preview[Text diff or bounded image decoder]
+    Objects --> Preview[Prepared text or bounded preview data]
     Preview --> Cache[Byte- and entry-bounded LRU]
     Metadata --> Result[Owned snapshot or content]
     Cache --> Result
@@ -37,7 +39,7 @@ flowchart LR
 ## Boundaries
 
 - `crates/git-core/src/lib.rs` owns Git discovery, passive commands, object protocol, byte-safe file paths, parent comparisons, and local LFS resolution. `history.rs` owns bounded search/file-history streams and active process cancellation. Passive commands use fixed arguments and disable helpers, optional locks, lazy fetching, and replacement objects. `work.rs` and its partial-staging, branch, integration, and recovery modules own typed writes and their prepared snapshots. The explicit-write policy preserves normal Git hooks, filters, signing, identity, and credentials without inheriting a different repository or index target from the process environment.
-- `crates/preview` owns synchronous raster/SVG decoding and limits. It returns image pixels and original/display dimensions. SVG external content and unsupported effects produce explicit errors. Git symlinks are inspected as stored text, never followed into the filesystem.
+- `crates/preview` owns bounded supplied-byte image/animation, PDF/text, metadata, Mermaid and mesh/CAD decoding, including the supported GLB appearance/deformation/animation subsets. It returns owned pixels, text or retained geometry; native handles stay on the decoder stack. Platform-specific and unsupported cases remain explicit in the [decoder contracts](../crates/preview/AGENTS.md) and [support matrix](file-previews.md). Repository asset resolution belongs to core; a decoder filename is only a format hint, and Git symlinks are inspected as stored text.
 - `crates/app/src/worker.rs` owns one active read and one replaceable pending request, retained repository session, graph preparation, render-image conversion, and immutable preview cache. Replacing or cancelling a request signals the active core history process as well as cooperative graph checkpoints. Other Git reads retain individual deadlines. Working-file comparisons use this worker but bypass the immutable cache.
 - `crates/app/src/operations.rs` supplies bounded serial executors. `workspace.rs` routes working status and explicit Git operations through one executor; settings, recent projects, and coalesced commit drafts share a separate persistence executor. Accepted operations survive dropped UI reply receivers and are never replaced by selection changes. Queue saturation and panics return errors rather than silently retrying writes.
 - `history_search.rs` retains the ordinary history context while showing pinned search results. `file_history.rs` owns a contextual, paged first-parent lineage and restores the previous comparison on close. Both use the existing worker and reject replies from superseded repository/selection generations.
@@ -46,6 +48,8 @@ flowchart LR
 - `projects.rs` owns the native project hub and emits Open/Clone/Create/Back intent. `settings.rs` applies user settings and submits explicit repository identity edits. `preferences.rs` merges the latest stored settings/recents before atomic replacement outside repositories; `appearance.rs` and `columns.rs` own semantic palettes, density, visibility, and bounded column widths.
 - `crates/app/src/navigation.rs` builds the local/remote branch hierarchy independently of GPUI. Folder keys include their local or remote namespace; leaves retain their original branch indices. Search reveals matching ancestors, while the caller retains expansion choices. Nesting is bounded at sixteen folder levels without dropping the remaining branch-name suffix.
 - The GPUI view owns workspace mode, selection, scope, focus, virtualized lists, and current editors/textures. Each request has a generation; a late result cannot change the current selection. Only the visible text mode creates an editor initially. Refresh resolves reference identity from fresh local state.
+
+The diagram shows the primary history/working-copy path. Executors created by `GitTurtle::new` belong to that window; PDF/model rendering uses shared bounded lanes, and desktop-text observation belongs to the application. Repository tabs retain or evict state within those owners. The [app ownership map](../crates/app/AGENTS.md) and [content/lifetime contract](../crates/app/docs/content-and-layout.md) define these distinctions. GitHub transport, drafts and attempt recovery follow the separate [collaboration contract](github-collaboration.md).
 
 ## Workspace modes and read stages
 
@@ -135,7 +139,7 @@ The worker retains at most 32 content entries and 128 MiB of counted CPU payload
 
 The [Git service budgets](../crates/git-core/README.md#budgets-and-behavior) describe raw-object, partial-staging, stash, and write limits. Bounds report incomplete or unavailable work rather than silently truncating editable content.
 
-The UI traces distinguish commit selection through changed-file presentation (`gitturtle.commit_files_frame_ms`) from file activation through preview preparation (`gitturtle.file_preview_frame_ms`). Each ends at a GPUI frame callback and checks the selection generation and workspace mode. These are separate from worker timings and do not measure OS display presentation or completed GPU execution. Back transitions need their own interaction checks; absence of a preview trace is not a zero-latency result. See [validation](validation.md) for the recorded builds, measurements, and limits, and [design](../DESIGN.md) for the intended interaction language. Ordinary history uses captured incremental traversal; Previous and Newest rebuild a bounded earlier window without retaining all history. Current format subsets are specified in the [preview matrix](file-previews.md), and executed Linux gates are distinguished from unverified Linux desktop interaction in the [environment report](benchmarks/2026-09-09-milestone-environment.md).
+The UI traces distinguish commit selection through changed-file presentation (`gitturtle.commit_files_frame_ms`) from file activation through preview preparation (`gitturtle.file_preview_frame_ms`). Each ends at a GPUI frame callback and checks the selection generation and workspace mode. These are separate from worker timings and do not measure OS display presentation or completed GPU execution. Back transitions need their own interaction checks; absence of a preview trace is not a zero-latency result. See [validation](validation.md) for the recorded builds, measurements, and limits, and [design](../DESIGN.md) for the intended interaction language. Ordinary history uses captured incremental traversal; Previous rebuilds a bounded earlier window without retaining all history; Latest captures current local tips. Current format subsets are specified in the [preview matrix](file-previews.md). The [Linux runbook](linux.md) and dated validation records distinguish compilation, virtual-desktop checks and real desktop evidence.
 
 Graph rows hold immutable edges in `Arc<[Edge]>`, prepared by the worker. Visible-row render callbacks share those buffers instead of copying the edge vectors on each redraw. This adds a one-time conversion cost during layout; the [construction and clone benchmark](benchmarks/2026-09-08-shared-graph-edges.json) records both sides of that tradeoff separately from native frame measurements. Empty rows and node-only fallback share empty storage.
 

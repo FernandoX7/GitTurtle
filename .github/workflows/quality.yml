@@ -17,6 +17,24 @@ defaults:
     shell: bash --noprofile --norc -euo pipefail {0}
 
 jobs:
+  agent-tooling:
+    name: Development tooling · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify Python runtime
+        run: python3 -c 'import sys; print(sys.version); assert sys.version_info >= (3, 11), "Python 3.11 or newer is required"'
+      - name: Validate development guidance
+        run: python3 scripts/check-agent-guidance.py
+      - name: Test development tooling
+        run: python3 -m unittest discover -s scripts/agent_loop -t scripts -p 'test_*.py'
   rust:
     name: Rust · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -65,6 +83,7 @@ jobs:
         run: |
           package_dir="$RUNNER_TEMP/gitturtle-linux-package"
           scripts/package-linux.sh --no-build --binary target/release/gitturtle "$package_dir"
+          python3 scripts/test-install-linux.py --bundle "$package_dir"
           unpacked="$(mktemp -d "$RUNNER_TEMP/gitturtle-unpacked.XXXXXX")"
           tar -xzf "$package_dir.tar.gz" -C "$unpacked"
           install_home="$(mktemp -d "$RUNNER_TEMP/gitturtle-install.XXXXXX")"

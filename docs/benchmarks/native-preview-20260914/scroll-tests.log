@@ -1,0 +1,16 @@
+   Compiling gpui-base v0.6.0 (/work/GitTurtle/vendor/gpui-base)
+   Compiling gitturtle-core v0.1.0 (/work/GitTurtle/crates/git-core)
+   Compiling gitturtle v0.1.0 (/work/GitTurtle/crates/app)
+   Compiling gpui-component v0.6.0 (/work/GitTurtle/vendor/gpui-component)
+   Compiling gpui-kit v0.6.0
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 26.97s
+     Running unittests src/main.rs (target/debug/deps/gitturtle-69e5973680ff8f9b)
+
+running 4 tests
+test scroll_tests::a_cold_editor_applies_its_requested_viewport_on_first_layout ... ok
+test scroll_tests::a_new_wheel_gesture_supersedes_pending_linked_scroll ... ok
+test scroll_tests::programmatic_scroll_stays_within_rendered_document_bounds ... ok
+test scroll_tests::linked_offsets_are_current_before_the_next_repaint ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 363 filtered out; finished in 0.00s
+

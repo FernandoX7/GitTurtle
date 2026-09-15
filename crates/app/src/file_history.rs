@@ -170,6 +170,12 @@ pub(super) struct State {
 }
 
 impl State {
+    pub(super) fn rescale_lists(&self, scales: settings::ListScales) {
+        settings::rescale_list_scroll(&self.scroll, scales.lineage);
+        if let Some(previous) = &self.previous {
+            previous.rescale_lists(scales);
+        }
+    }
     pub(super) fn pause_for_tab(&mut self) {
         self.task = None;
         if let Some(lineage) = &mut self.lineage {
@@ -1098,6 +1104,40 @@ mod tests {
     use super::{Destination, Lineage, PAGE_SIZE, Position};
     use gitturtle_core::{ChangeStatus, Commit, FileChange, FileHistoryEntry, FileHistoryPage};
     use std::path::PathBuf;
+
+    #[test]
+    fn scaling_preserves_nested_file_history_list_rows() {
+        use crate::settings::ListScales;
+        use gpui_kit::{point, px};
+        let state = super::State {
+            previous: Some(Box::default()),
+            ..Default::default()
+        };
+        state
+            .scroll
+            .0
+            .borrow()
+            .base_handle
+            .set_offset(point(px(0.), px(-6800.)));
+        let previous = state.previous.as_ref().unwrap();
+        previous
+            .scroll
+            .0
+            .borrow()
+            .base_handle
+            .set_offset(point(px(0.), px(-13600.)));
+        state.rescale_lists(ListScales {
+            history: 1.,
+            files: 1.,
+            navigation: 1.,
+            lineage: 85. / 68.,
+        });
+        assert_eq!(state.scroll.0.borrow().base_handle.offset().y, px(-8500.));
+        assert_eq!(
+            previous.scroll.0.borrow().base_handle.offset().y,
+            px(-17000.)
+        );
+    }
 
     fn change(old: Option<PathBuf>, new: Option<PathBuf>) -> FileChange {
         FileChange {

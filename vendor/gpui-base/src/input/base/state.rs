@@ -348,6 +348,9 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(crate) scroll_handle: ScrollHandle,
     /// The deferred scroll offset to apply on next layout.
     pub(crate) deferred_scroll_offset: Option<Point<Pixels>>,
+    /// Logical vertical position retained across font changes until the next
+    /// painted layout supplies its actual (rounded) line height.
+    pub(crate) deferred_scroll_row: Option<f32>,
     /// The size of the scrollable content.
     pub(crate) scroll_size: gpui::Size<Pixels>,
     pub(super) editor_scrollbar_snapshot: Cell<Option<EditorScrollbarSnapshot>>,
@@ -680,6 +683,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             editor_scrollbar_snapshot: Cell::new(None),
             editor_paddings: Edges::default(),
             deferred_scroll_offset: None,
+            deferred_scroll_row: None,
             preferred_column: None,
             placeholder: SharedString::default(),
             mask_pattern: MaskPattern::default(),
@@ -981,6 +985,7 @@ impl<M: InputModeKind> InputBaseState<M> {
         // override the cursor-follow scroll for the next painted frame to keep
         // the start visible; the deferred offset is consumed during that paint.
         self.scroll_handle.set_offset(point(px(0.), px(0.)));
+        self.deferred_scroll_row = None;
         if self.is_single_line() {
             self.deferred_scroll_offset = Some(point(px(0.), px(0.)));
         }
@@ -1848,6 +1853,10 @@ impl<M: InputModeKind> InputBaseState<M> {
             .unwrap_or(window.line_height());
         let delta = event.delta.pixel_delta(line_height);
 
+        // A direct gesture supersedes an earlier programmatic request. Leaving
+        // that request pending would restore its older offset in the next paint.
+        self.deferred_scroll_offset = None;
+        self.deferred_scroll_row = None;
         let old_offset = self.scroll_handle.offset();
         self.update_scroll_offset(Some(old_offset + delta), cx);
 
@@ -1975,6 +1984,7 @@ impl<M: InputModeKind> InputBaseState<M> {
         scroll_offset.x = scroll_offset.x.min(px(0.));
         scroll_offset.y = scroll_offset.y.clamp(safe_y_min, px(0.));
         self.deferred_scroll_offset = Some(scroll_offset);
+        self.deferred_scroll_row = None;
         cx.notify();
     }
 
@@ -2121,10 +2131,52 @@ impl<M: InputModeKind> InputBaseState<M> {
 
     /// Set scroll offset of the editor viewport.
     ///
-    /// The offset will be clamped to the valid range, and applied after the next layout.
+    /// Update the current viewport immediately when geometry is available, then
+    /// clamp again at layout. Observers of linked editors must see the requested
+    /// viewport before another gesture can arrive, rather than a stale paint ack.
     pub fn set_scroll_offset(&mut self, offset: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
+        self.deferred_scroll_row = None;
         self.deferred_scroll_offset = Some(offset);
+        if self.last_layout.is_some() {
+            self.update_scroll_offset(Some(offset), cx);
+            // Use the accepted range for visible-row layout too, not a raw
+            // request that would only be corrected after text was painted.
+            self.deferred_scroll_offset = Some(self.scroll_handle.offset());
+        }
         cx.notify();
+    }
+
+    /// Preserve the logical viewport when the next layout changes text size.
+    /// Unlike an ordinary scroll, this must not clamp to the old text bounds:
+    /// growing a font near the document end would lose the requested offset.
+    /// Vertical position uses measured line heights, not the font-size ratio:
+    /// rounding a fractional height can otherwise move the viewport by many
+    /// rows in a long document. The next layout applies its actual height and
+    /// bounds; newer wheel input still supersedes this deferred request.
+    pub fn rescale_scroll_offset(&mut self, ratio: f32, cx: &mut Context<Self>) {
+        let offset = self
+            .deferred_scroll_offset
+            .unwrap_or(self.scroll_handle.offset());
+        if self.deferred_scroll_row.is_none() {
+            self.deferred_scroll_row = self
+                .last_layout
+                .as_ref()
+                .filter(|layout| layout.line_height > px(0.))
+                .map(|layout| f32::from(offset.y) / f32::from(layout.line_height));
+        }
+        let offset = point(offset.x * ratio, offset.y * ratio);
+        self.deferred_scroll_offset = Some(offset);
+        self.scroll_handle.set_offset(offset);
+        cx.notify();
+    }
+
+    pub(super) fn resolve_scroll_line_height(&mut self, line_height: Pixels) {
+        if let (Some(row), Some(offset)) =
+            (self.deferred_scroll_row, &mut self.deferred_scroll_offset)
+        {
+            offset.y = line_height * row;
+            self.scroll_handle.set_offset(*offset);
+        }
     }
 
     /// Laid-out line height; `None` before first layout.

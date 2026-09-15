@@ -1,8 +1,117 @@
 # Validation notes
 
-Current milestone: [security, architecture and resource bounds](security-quality-milestone.md), with the canonical [design contract](../DESIGN.md). The prior [native polish](native-polish-milestone.md), [review and recovery native/build verification](review-native-verification.md) and [macOS milestone evidence](macos-native-verification.md) remain tied to their named builds.
+Use the [current validation guidance](#current-validation-guidance) for the affected workflow and the canonical [design contract](../DESIGN.md) for expected behavior. Dated records below describe their identified builds; the completed [security, architecture and resource milestone](security-quality-milestone.md), [native polish](native-polish-milestone.md), [review and recovery verification](review-native-verification.md) and [macOS milestone](macos-native-verification.md) remain historical evidence. New development tasks and their acceptance requirements belong in the [development workflow](development/README.md).
 
-This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native workflow evidence is primarily macOS-specific; the September 14 entries add Pop!_OS startup and clean Ubuntu/virtual-native checks. Current platform execution and access limits belong in these dated records, the active milestone and [environment report](benchmarks/2026-09-09-milestone-environment.md). The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Published distribution packages are outside the current milestone; the Linux runbook now includes a local teammate bundle.
+This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native workflow evidence is primarily macOS-specific; the September 14 entries add Pop!_OS startup and clean Ubuntu/virtual-native checks. Platform execution and access limits belong to the applicable dated record and [platform runbook](linux.md); the earlier [environment report](benchmarks/2026-09-09-milestone-environment.md) describes its own session. The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Public binary release prerequisites belong in the [launch checklist](public-launch.md); the Linux runbook includes a local teammate bundle.
+
+## September 15 PR #5 macOS merge review
+
+Source `0d4d8ce` passed 771 workspace tests, strict Clippy, formatting, app check
+and release compilation. The [worktree-removal review](worktree-removal-validation.md#september-15-macos-merge-review-and-security-fixes)
+records CodeQL flow fixes, explicit fixture copies, verified local macOS package
+identity, native cancellation/refusal/removal checks, and independent branch,
+index and sibling-content preservation. Hosted results are recorded on PR #5;
+this entry does not claim a new Linux native or notarized-distribution pass.
+
+## September 15 PR #5 maintainer review
+
+Clean release source `3b0a958` passed 775 workspace tests (five existing ignores),
+formatting, app check, strict workspace Clippy and release compilation. The
+[maintainer validation record](worktree-removal-validation.md#september-15-maintainer-review-of-pr-5)
+documents stale-review cancellation, checkout/admin identity guards, the Ubuntu
+draft-shutdown fixture correction, and native Wayland checks for protected
+targets, cancellation, fresh review, cleanup and branch retention. macOS native
+interaction and hosted checks are scoped separately from this local evidence.
+
+## September 14 guarded worktree removal
+
+Implementation commits `95d97a7` and `9585271` add navigator removal actions,
+keyboard access, hidden-change/lock guards and verified cleanup. The
+[worktree removal validation record](worktree-removal-validation.md) documents
+743 passing workspace tests (five intentionally ignored), strict Clippy, and
+native Linux/X11 checks of protected targets, cancellation, stale review,
+successful Git/filesystem cleanup and branch retention. macOS runtime and
+hosted CI are separate from this local evidence.
+
+## September 14 PR #4 desktop text and security validation
+
+Clean application source `0700984951001289a6c7490f81e72b749cd4120e` was built,
+packaged and installed as Linux x86-64 release 0.1.0, using Rust 1.98.0 and the
+existing Ubuntu 24.04 build environment. The executable SHA-256 is
+`ba54f643d8262c409715933c165bda0c91e052d70cd0a0d8f42eb3dc1e4b3a2c`.
+Subsequent validation-record edits do not change that executable's source identity.
+
+Formatting, `cargo check --locked -p gitturtle`,
+`cargo test --locked --workspace` (**756 passed, zero failed, five explicit
+ignores**), strict workspace Clippy with all targets, and release compilation
+passed. Focused checks exercised observer cancellation and bounds, the repeated
+asynchronous history fixture, actual rendered editor/list metrics, two-window
+notifications, retained tabs, nested lists and passive-refresh anchors. The
+[security review](pr4-security-review.md) accounts for every initial CodeQL alert,
+the four reproduced tooling/fixture defects and the new defensive-check finding.
+Fresh hosted checks and merged-main alert state are tracked separately in
+[PR #4](https://github.com/FernandoX7/GitTurtle/pull/4).
+
+Native interaction used the same release executable, disposable two-commit
+repositories with a 600-line source file, multiple changed ranges, an inserted
+alignment row and long lines. A native Wayland window ran under nested Weston
+with software graphics and the host's real GNOME settings portal. Its desktop
+lacks the newer `font-rendering` key, exercising that fallback. Screenshots and
+scroll traces verified:
+
+- Live 100%, 125% and 150% text sizes retained the selected source and logical
+  viewport. Both split editors kept row 546 with offsets 9828, 12558 and 14742
+  pixels for measured line heights 18, 23 and 27 pixels. Unified view retained
+  patch row 150 through the fractional change.
+- Find query, match, source selection and keyboard focus survived live changes;
+  a retained repository tab reopened at the same logical row after a hidden
+  size change. Literal source copying excluded gutters, and typing into the
+  read-only source left the fixture unchanged.
+- Code/gutter wheel input, reversal, horizontal scrolling and Back to the
+  selected history context worked. Matching pane offsets and visible row ranges
+  were checked in the rendered frames.
+- Changing grayscale to `rgba` repainted the glyphs. `none` retained grayscale,
+  matching the documented toolkit limitation. Original desktop preferences were
+  restored after testing.
+
+A separate native X11 window under Xvfb kept 18-pixel source lines at a portal
+text factor of 150%, confirming no extra portal multiplier on that backend.
+This is virtual X11 and nested Wayland evidence, not a physical-display,
+Ubuntu-desktop, KDE, mixed-DPI or native macOS acceptance run. It establishes
+neither a frame-rate improvement nor physical-panel sharpness. The cold split
+regression verifies a retained initial-row request resolves after a measured
+editor notification; it does not establish positioning on the first paint alone.
+
+All **11 Linux installer tests** passed with the final real bundle, including
+relocation and rollback. The installed executable matched the validated hash;
+all three genuine configuration files remained byte-identical across installation,
+and all four repository tabs retained their order and selection on restart.
+The previous executable and all 1,228 recovery entries passed checksum/ownership
+validation. Recovery uses the installed script's `--rollback` option described in
+[the Linux runbook](linux.md). Existing public-binary notice gaps remain documented;
+this was a local installation. Private captures and machine/repository details
+are not part of the public evidence.
+
+## September 14 refresh, history and split-diff preview
+
+Source `417b5e8` was installed for this earlier Linux x86-64 release 0.1.0 Preview session, binary
+SHA-256 `45606c5a195d1696096b93ea0fa3a38b67b025990ea794f25f91d4211e5729c2`.
+The [native investigation and final acceptance](benchmarks/2026-09-14-native-preview.md)
+record physical GNOME/Wayland scale-2 code/gutter scrolling, long lines,
+Find/selection/copy, Show latest, build diagnostics and recoverable installation.
+Final code and gutter runs had zero mismatched pane offsets; the evidence does
+not establish a general frame-rate improvement. Supplemental native X11 checks
+cover disposable stage/commit/View commit/fetch/pull/push and a linked-worktree
+picker open. All genuine tabs and preferences survived the host upgrade.
+
+The [refresh investigation](benchmarks/2026-09-14-refresh-reliability.md)
+documents the reproduced directory limit, disappearing-directory handling,
+ignore/tracked policy, linked-worktree roots and the native sibling-event
+regression. Final workspace tests passed 729 tests with five explicit ignores;
+strict Clippy and release build passed. Public binary notice gaps, untested
+platforms and compositor/scale limits remain explicit. The separate static
+[website](../website/README.md) has current native captures and a Cloudflare
+deployment plan; no public deployment or DNS change is implied.
 
 ## September 14 public-launch preparation
 
@@ -222,21 +331,25 @@ spoken VoiceOver and sleep/wake remain unverified.
 
 ## Current validation guidance
 
-The dated records below apply to their named builds, including the behavior and limitations those builds had. They do not establish native or package coverage for subsequent source changes. The [current feature overview](user-guide.md#current-source-features), [architecture and bounds](architecture.md), [active milestone](security-quality-milestone.md), [previous macOS milestone](macos-milestone.md), and [earlier everyday-work implementation record](everyday-work-plan.md) distinguish implemented behavior from build-specific evidence. Earlier package passes do not establish coverage for the ten current feature areas. The [preview matrix](file-previews.md), [profiles](profiles.md), [command palette](command-palette.md) and [rewritten-series review](rewritten-series.md) specify the corresponding implemented behavior; the active ledger records their native acceptance.
+The dated records on this page apply to their named builds and environments. They do not establish native or package coverage for later source changes. Use the [current feature overview](user-guide.md#current-source-features), [architecture and bounds](architecture.md), [preview matrix](file-previews.md), [profiles](profiles.md), [command palette](command-palette.md) and [rewritten-series review](rewritten-series.md) for implemented behavior. The completed [security milestone](security-quality-milestone.md), [macOS milestone](macos-milestone.md) and [everyday-work record](everyday-work-plan.md) remain evidence for their identified inputs, rather than an active feature queue.
 
-For changes to the current workflows, use disposable repositories and local remotes for mutations, and select the relevant checks below. Record the exercised source/build identity and independently inspect Git results; the presence of a control or a passing core fixture does not by itself verify its native interaction.
+For changes to the current workflows, use disposable repositories and local remotes for mutations, and select the relevant checks below. Record source revision and relevant dirty-input identity, executable/package identity, target/profile, OS, display backend and scale. Compare `--build-info` with the exercised artifact and independently inspect Git results; a control or passing core fixture does not by itself verify native interaction. Required evidence belongs to the current [task contract](development/README.md#task-contracts-and-ownership), with new results recorded under their actual date/build.
 
 | Current workflow | Relevant validation |
 | --- | --- |
 | Repository tabs and local workspaces | Open a new repository after a search, verify independent inputs, canonical alias deduplication and linked-worktree identity, eight-tab bound, pin/group/reorder/close, captured in-flight writes, draft recovery and lazy restart bookmarks. Exercise moved/missing paths and explicit picker recovery. |
-| Incremental ordinary history | Page across the5,000-row/64MiB window with an older selection retained; verify stable OIDs, connected graph frontier and native Older/Previous/Newest behavior. Inspect slim and lane-overflow graphs, rapid selection, cancellation and search discontinuity. Use the [120k fixture measurements](benchmarks/2026-09-10-history-pagination.md) for backend comparisons and separate native callbacks. |
+| Projects and repository opening | Open/cancel the native picker, search/clear recents, clone from a local remote and create an unborn repository. Check paths with spaces, nonempty destinations, missing/moved repositories, picker/tool failures, duplicate submission, retained form input and return to the captured repository. A failed open must preserve the prior worktree's outcome and cannot apply late content from another repository. |
+| Persistent app state and shutdown | Use disposable app stores for supported-version migration, corrupt/unsupported/nonregular stores, capacity and failed-save paths. Verify visible Saving/Saved/error feedback, exact commit/conflict/GitHub draft text, tab/order/bookmark retention and normal quit/final-window close followed by restart. Preserve invalid originals and newer edits after a failed older save; a Git write followed by app-store failure must not replay Git. Follow the [persistence contract](../crates/app/docs/writes-and-persistence.md#preferences-and-commit-drafts): confirmed Saved is the durability boundary for slow I/O or forced termination; normal-shutdown evidence does not establish crash-time saving. |
+| Incremental ordinary history | Page across the 5,000-row/64 MiB window with an older selection retained; verify stable OIDs, connected graph frontier and native Older/Previous/Latest behavior, top following without selection changes, and the Show latest cue while browsing older rows or Compare. Inspect slim and lane-overflow graphs, rapid selection, cancellation and search discontinuity. Use the [120k fixture measurements](benchmarks/2026-09-10-history-pagination.md) for backend comparisons and separate native callbacks. |
 | Interactive model comparison | Exercise pointer and keyboard orbit/pan/zoom/fit, standard views, linked and independent cameras, edges, orientation, units, missing sides and captured originals. Compare GLB material-only and texture-only revisions, static skins/morphs, clip selection, Play/Pause, scrubbing, different durations and Reduce Motion. Check fixed cameras and current-pose Fit, malformed appearance fallback, paused/hidden quiescence, rapid activation/Back, tabs and closure. Compare changed transforms/scale, absent and unsupported sides in History and Working Changes; retain separate path filters through navigation and refresh. Compare curved analytic and mapped STEP fixtures within the [finite support matrix](file-previews.md), then repeat opens/tab changes/window closure while observing resource retirement. |
-| PDF and rendered Markdown | Navigate PDF beyond page8 with entry/previous/next, unequal counts, linked positions, zoom, extracted text and literal copy; retain state across Back/tabs/restart and evict bounded cached pages. Check native Markdown prose/tables/code/Mermaid, revision-correct local images, explicit local/external links, linked scrolling, keyboard reading and exact source staging. |
+| PDF and rendered Markdown | On a supported platform, navigate PDF beyond page 8 with entry/previous/next, unequal counts, linked positions, zoom, extracted text and literal copy; retain state across Back/tabs/restart and evict bounded cached pages. Check native Markdown prose/tables/code/Mermaid, revision-correct local images, explicit local/external links, linked scrolling, keyboard reading and exact source staging. Verify explicit unsupported-format feedback against the [platform limits](linux.md#platform-limits), without treating metadata recognition as rendering. |
 | GitHub collaboration | Open/close the offline native panel through the palette; check keyboard activation, visible composers, confirmations, refreshed PR and recovery lists at narrow/wide sizes, both densities, larger text and light/dark themes. Reply, resolve/reopen, page authoritative conversations and retain exact drafts through navigation, tabs and restart. Check stale account/head/thread identities, missing context, permissions, rate limits, partial failures, persistence failures, cancellation and uncertainty. Real connection, PRs/comments/reviews and hosted CI require specifically authorized disposable context; record independently verified live results and credential access separately. |
 | Precise staging and commits | Exercise hunk and changed-line stage/unstage with mixed index/worktree edits; verify unrelated index entries and working bytes. Check whole-file fallback explanations, exact Title/Description bytes, hook/signing failures, and worktree-specific draft retention through navigation and restart. |
 | Conflicts and integration | Inspect base and both named sides, rebase labels, manual and complete-side resolution, external edits, stale-save refusal, and editor handoff. Verify Continue's staged-path review, external operation detection, Abort preservation, and Keep files without losing HEAD/index/worktree state. |
 | Stashes and commit recovery | Inspect staged/unstaged/untracked saved content; restore with and without staged state; confirm the stash survives success and conflict until an explicit Drop. Check amend, eligible Undo, revert/cherry-pick and merge-parent choice, including stale targets, failures, and independent work. |
 | Branches and remotes | Review actual switch/create/integration targets, invalid rename names and destination collisions, tracking/upstream changes, safe deletion, and linked-worktree occupancy. Verify remote configuration separately from explicit fetch/pull/push. |
+| Named profiles and identity | Follow [profile semantics](profiles.md): create/edit/delete definitions without changing Git, then review and explicitly apply the actual author/signing settings and shared/private worktree scope. Check retained editor text, stale definitions/configuration, held locks, active-operation refusal and visible mismatch after external edits. Preserve includes, unrelated configuration and signing requirements. An assignment-save failure after a successful Git write must surface the storage problem without repeating or undoing that write. |
+| Rewritten-series review and publication | Use the [native rewrite fixtures](recovery-rewrite-native-cases.md) and [series contract](rewritten-series.md) for original/new messages, changed/reordered/possible/ambiguous pairs, missing objects, inspector activation and Back/close cancellation. Publication requires a separate explicit destination check and reviewed exact lease. Exercise local/remote/URL movement, hook refusal, cancellation after remote update, explicit completion detection and fresh review after movement against a disposable local remote; returning focus or reopening the app must not publish or retry. |
 | Search and file history | Find a match beyond loaded history, retain pinned scope across ref movement, cancel active work, and continue a bounded scan without claiming exhaustion. Cross file-history page and rename boundaries, inspect deletions/merge parents, and retain query, revision, selection, viewport, and focus through Compare/Back/Settings. |
 | Diff and refresh interactions | Inspect unified and split alignment, Find, copying without padding/gutter text, opposite-side scrolling, and partial selections. Make external file/ref changes, switch focus away and back, and verify coalesced local refresh retains context/drafts while invalidating stale selections. Exercise watcher errors and manual recovery. |
 | Authentication and cancellation | Use disposable loopback transports and configured helpers for username/token prompts, expired credentials, SSH-agent transport, host verification, configured commit/tag signatures and signing refusal, exact-secret diagnostic/progress masking, cancellation and no replay. Verify retained index/working state and explicit remote targets. Test detached helpers retaining output or input pipes; the app must stop and join its own I/O threads. [Local authentication/signing evidence](authentication.md#verification-and-limits) is separate from live-provider access, real Keychain unlock and hardware-backed signing. |
@@ -244,12 +357,14 @@ For changes to the current workflows, use disposable repositories and local remo
 | Tags and ignore | Filter and inspect tags; review lightweight/annotated creation and signing; refuse moved-tag deletion and changed remote destinations; verify that named-tag Push creates only that remote ref. Preview literal file/directory rules in shared/local destinations, preserve formatting and unrelated work, refuse stale/symbolic writes, and keep tracked paths tracked without staging. |
 | Image comparison | Exercise side-by-side, Overlay opacity and draggable Wipe with linked pan/zoom, keyboard adjustment, checkerboards, different source sizes/downsample ratios and missing sides. Verify scale labels, gesture cancellation, retained navigation and unchanged decoder bounds. |
 | macOS conventions and accessibility | Check menu availability, standard shortcuts, Help, Hide/Minimize/Close, captured Finder/editor handoff and launcher failures. Exercise follow-system appearance and manual themes without losing editor context. Inspect ordinary keyboard focus, names and supported selected/expanded/disabled states, and record available transparency/contrast/motion settings separately from unsupported hardware or OS versions. Exercise VoiceOver names, roles, selected/expanded/disabled states, current-row announcements, editing, modal containment, restored focus and status/error announcements using the [native accessibility contract](native-accessibility.md); record actual settings and build-specific results. |
+| Linux desktop integration and text | Follow the [desktop checklist](linux.md#ubuntu-desktop-acceptance-checklist) for the affected session: visible Menu and shortcut help, Control-based shortcuts, client/server window decorations, move/maximize/restore/close, picker success/cancel/portal failure and explicit editor launch. Check live Wayland portal text-size/antialiasing changes, missing-portal/fontconfig fallback, focus-return recovery and X11 DPI without applying a second text multiplier. Retain logical source rows, split/gutter alignment, selection, Find and hidden-tab context through scaling. Record physical/nested/virtual backend, compositor, GPU and scale; semantic-tree exposure is not screen-reader or IME acceptance. |
+| Packages, upgrades and build diagnostics | Use the [macOS](../.agents/skills/gitturtle-native-qa/references/macos-package.md) or [Linux](../.agents/skills/gitturtle-native-qa/references/linux-package.md) package procedure for the affected target. Match source/compiled identity, executable and artifact hashes, metadata, embedded/bundled assets, notices and the running path. Check About/Copy bug diagnostics and exact information flags without opening app state. On Linux, use installer fixtures and the actual bundle for relocation, active-process refusal, corruption and rollback preservation; on macOS, distinguish local ad-hoc signing from notarization and other-machine acceptance. Package/library/headless checks do not replace real desktop interaction or clear the [public release requirements](public-launch.md#before-a-public-binary-release). |
 
-Native checks should also cover narrow/wide layouts, long names, large lists, ten themes, both densities, keyboard focus, hover/selection/disabled states, and empty/loading/error states for the affected controls. Existing image and package evidence remains scoped to its dated records. Final combined Rust/dependency gates and package checks follow [the project validation agreement](../AGENTS.md#validation); a docs-only update requires link and diff review, without rebuilding the app.
+Native checks should cover relevant narrow/wide layouts, long names, large lists, themes, densities, independent interface/code text sizes, keyboard focus, hover/selection/disabled states, and empty/loading/error states for the affected controls. Changes shared across the palette or scaling system need representative light/dark and boundary-size coverage; use all supported themes when the change affects every palette. Distinguish pointer, keyboard and screen-reader results. Final combined Rust/dependency gates and package checks follow [the project validation agreement](../AGENTS.md#validation); a docs-only update requires link and diff review, without rebuilding the app.
 
 ### Retained review and recovery workflow checks
 
-These rows describe required checks, not completed native passes. Record results and the exercised build in [the current milestone ledger](security-quality-milestone.md); keep final release, installed executable identity and platform/account-dependent evidence separate. Re-run a successful check only after relevant changes or a concrete unresolved concern.
+These rows describe checks to select for the affected feature, not completed native passes or a mandatory full sweep. Record new results with the exercised build and task; retain [milestone evidence](security-quality-milestone.md) under its original identity. Keep final release, installed executable identity and platform/account-dependent evidence separate. Re-run a successful check only after relevant changes or a concrete unresolved concern.
 
 | Required feature | Current validation scope |
 | --- | --- |
@@ -272,7 +387,7 @@ The [September 8 everyday backend report](benchmarks/2026-09-08-everyday-workflo
 
 Current semantics and focused fixture commands are documented in [authentication](authentication.md), [tags and ignore](macos-git-actions.md), and [attribution, images and macOS conventions](macos-features.md). The [Liquid Glass investigation](liquid-glass-investigation.md) records the actual native prototype and compositing limitation; the integrated appearance remains opaque. The [previous macOS backend report](benchmarks/2026-09-08-macos-milestone-backend.md) identifies its source inputs and measurement scope independently of native frame evidence.
 
-The authored [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests, formatting, strict all-target Clippy and release compilation on macOS 15 and Ubuntu 24.04, using disposable mutation fixtures and no publication jobs. Record a hosted run separately when available. Local test/configuration validation is not a claim that either hosted runner passed.
+The authored [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests, formatting, strict all-target Clippy and release compilation on macOS 15 and Ubuntu 24.04. It also configures Python guidance/controller tests, and Linux bundle/install/license, ELF and no-display checks. These use disposable mutation fixtures and publish no artifacts. Record actual hosted results separately; this configuration establishes neither a hosted pass nor physical-desktop, screen-reader, macOS-package or distribution acceptance.
 
 ## Review and recovery installed release — September 9, 2026
 
@@ -573,7 +688,7 @@ Process RSS snapshots were about 142.3 MiB after the outbound traversal and 143.
 
 ## Current limits and follow-up
 
-- Ordinary history streams an immutable captured traversal in500-commit pages and retains a5,000-row/64MiB window, plus one selected inspection. Older continues forward; Previous replays and discards bounded earlier pages; Newest returns to the captured beginning. Refresh resolves current refs again. Repository-wide search is separate: it pins local tips or selected ancestry, supports cancellation and explicit continuation, and retains up to 10,000 matches or 64 MiB of metadata. Scan, byte, and time stops do not establish exhaustion.
+- Ordinary history streams an immutable captured traversal in500-commit pages and retains a5,000-row/64MiB window, plus one selected inspection. Older continues forward; Previous replays and discards bounded earlier pages; Latest captures current local tips and returns to row zero while retaining the selected inspector. Refresh resolves current refs again. Repository-wide search is separate: it pins local tips or selected ancestry, supports cancellation and explicit continuation, and retains up to 10,000 matches or 64 MiB of metadata. Scan, byte, and time stops do not establish exhaustion.
 - Local filesystem and regained-focus events request coalesced read-only refreshes; manual Refresh remains available. Active writes and foreground reads take priority, and failed watchers report a recovery action. No refresh fetches objects. Fetch, fast-forward Pull, and non-force Push require explicit actions; the dated native network checks used local remotes, not a hosting provider's credential flow.
 - Supported text changes allow hunk and changed-line staging/unstaging. Binary, oversized, filtered/normalized, renamed, and mode/type-changing files use whole-file actions; ambiguous missing-final-newline selections require a complete replacement or hunk. Commit Title/Description drafts are persisted per worktree, subject to the bounded preference file.
 - Unified and aligned split diffs coexist with Before/After source tabs. Text previews and manual conflict editors are bounded to 2 MiB and 100,000 lines per side. Parent controls expose the first 128 parents of unusually large merge commits with an explicit count notice. Rename detection uses a 1,000-candidate limit.

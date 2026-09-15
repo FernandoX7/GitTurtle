@@ -72,6 +72,48 @@ public-page check also found **Sponsor this project**, and the destination
 offers one-time and monthly contributions; see the
 [funding activation record](funding.md).
 
+## Current source-preview preparation
+
+The [draft preview notes](preview-release-notes.md) cover the implemented
+refresh recovery, new-commit affordances, split-pane synchronization, build
+diagnostics, recoverable Linux upgrades, and the published static marketing
+site. They remain draft binary-release copy; no public binary is announced. The current
+[refresh validation](benchmarks/2026-09-14-refresh-reliability.md) and
+[native investigation](benchmarks/2026-09-14-native-preview.md) supplement the
+historical launch record below; their exact build and environment boundaries
+remain authoritative. The owner's machine was reinstalled with the validated
+`417b5e8` native build, preserving settings and a recoverable previous
+installation. Its executable hash remained unchanged. Use the native record's
+executable identity and package hashes rather than inferring them from a source
+commit or an earlier diagnostic prototype. The changes and evidence are now
+public on `main` through merge `483782d`; the resulting hosted CI run is pending,
+not a recorded pass.
+
+The [website](../website/README.md) lives separately in `website/public/` and
+requires no native build or package-manager installation. It presents real app
+screenshots and source-build guidance, with no binary Download button. Its
+README records screenshot provenance, completed browser checks, remaining
+checks, and the Cloudflare Pages deployment.
+
+Website publication was separately approved and completed:
+
+- [x] Publish the reviewed static assets to project `gitturtle` at
+  [gitturtle.pages.dev](https://gitturtle.pages.dev). Deployment
+  `b39cf661-dde0-4d54-bfc1-347c9f62893e` contains the exact `website/public/`
+  bytes from source `0db617969b94c565ec1f89d94a03055e705c1efb`.
+- [x] Create the approved `gitturtle.com` custom-domain binding and its apex
+  CNAME to `gitturtle.pages.dev`. This was the only DNS record added.
+- [x] Confirm Cloudflare reports `gitturtle.com` active with verification and
+  certificate validation active. Authoritative DNS, Cloudflare and Google DNS
+  return its addresses. HTTPS at those addresses validates the domain certificate
+  and serves the exact reviewed files. DNS propagation temporarily limited local
+  browser verification, which used the Pages hostname. See the website QA record
+  for this boundary.
+
+The full [deployment record and procedure](../website/README.md#cloudflare-pages-deployment)
+is maintained with the site, including remaining browser checks and rollback
+instructions. Website publication does not clear or authorize a binary release.
+
 ## Before a public binary release
 
 - [ ] Resolve the target's `licenses/REVIEW_REQUIRED.md` entries and pass
@@ -79,9 +121,17 @@ offers one-time and monthly contributions; see the
   Local packages retain available notices and report unresolved attribution;
   they do not establish completed license clearance. See the
   [notice inventory and source requirements](../THIRD_PARTY_NOTICES.md).
+  Linux currently requires the complete notices for `mac` 0.1.1 and the Rust
+  `ufbx` 0.11.3 wrapper. The [exact-source review](licenses/linux-notice-review.md)
+  records evidence and prepared, unsent maintainer follow-ups. Other targets
+  have additional records; a Linux pass would not clear them.
 - [ ] Build and test the exact release source/target, record the executable and
   archive hashes, and include the generated licenses and any required sources.
-  Establish the source identity separately when using `--no-build`.
+  Establish the source identity separately when using `--no-build`. Compare
+  the executable's `--build-info` output with the package metadata, retain
+  the previous installation, and record an installation/rollback check using
+  the packaged payload. Wait for active Git operations to finish before
+  replacing a local installation.
 - [ ] Complete the relevant real macOS and Ubuntu 24.04 x86-64 desktop checks,
   including native menus, shortcut help, picker, window controls, and scaling.
   Do not describe an ad-hoc-signed local macOS bundle as notarized, or a local

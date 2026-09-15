@@ -2257,13 +2257,13 @@ name = "gitturtle"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ashpd",
  "block2 0.6.2",
  "chrono",
  "futures",
  "gitturtle-core",
  "gitturtle-preview",
  "gpui-kit",
- "ignore",
  "image",
  "libc",
  "markdown",
@@ -2284,6 +2284,7 @@ name = "gitturtle-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ignore",
  "rustix",
  "sha2 0.10.9",
  "similar",

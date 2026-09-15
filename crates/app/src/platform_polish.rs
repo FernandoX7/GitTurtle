@@ -349,21 +349,70 @@ impl GitTurtle {
         shortcuts::open_help(window, cx);
     }
     pub(super) fn about(&self, window: &mut Window, cx: &mut Context<Self>) {
-        window.open_alert_dialog(cx, |dialog, _, cx| {
+        let report = build_info::diagnostics(
+            window.scale_factor(),
+            self.effective_theme(cx),
+            self.settings.density,
+            self.settings.interface_text_size,
+            self.settings.code_text_size,
+        );
+        let details = cx.new(|_| AboutDetails {
+            report,
+            copied: false,
+        });
+        window.open_alert_dialog(cx, move |dialog, _, _| {
             dialog
                 .title("About GitTurtle")
                 .description("A native Git workspace for history inspection and everyday Git work.")
-                .child(
-                    div()
-                        .id("about-gitturtle-version")
-                        .role(Role::Label)
-                        .aria_label(concat!("GitTurtle version ", env!("CARGO_PKG_VERSION")))
-                        .text_color(rgb(palette(cx).muted))
-                        .child(concat!("Version ", env!("CARGO_PKG_VERSION"))),
-                )
+                .width(appearance::ui_size(550.))
+                .child(details.clone())
                 .button_props(
                     gpui_kit::component::dialog::DialogButtonProps::default().ok_text("Done"),
                 )
         });
+    }
+}
+
+struct AboutDetails {
+    report: String,
+    copied: bool,
+}
+
+impl Render for AboutDetails {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let revision = &build_info::REVISION[..build_info::REVISION.len().min(12)];
+        div()
+            .id("about-gitturtle-details")
+            .max_h((window.viewport_size().height - appearance::ui_size(230.)).max(px(100.)))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .text_size(appearance::ui_text(12.))
+            .child(
+                div().id("about-gitturtle-version").role(Role::Label)
+                    .aria_label(build_info::summary())
+                    .child(format!("Version {} · Preview", build_info::VERSION)),
+            )
+            .child(
+                div().text_color(rgb(palette(cx).muted))
+                    .child(format!("Source {revision} · {}", build_info::TREE)),
+            )
+            .child(
+                div().text_color(rgb(palette(cx).muted))
+                    .child(format!("{} · {} build", build_info::TARGET, build_info::PROFILE)),
+            )
+            .child(
+                div().text_color(rgb(palette(cx).muted))
+                    .child("Bug diagnostics include build and display settings. Repository paths, file content and account details are omitted."),
+            )
+            .child(
+                button("copy-bug-diagnostics", if self.copied { "Diagnostics copied" } else { "Copy bug diagnostics" }, "copy", false)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(this.report.clone()));
+                        this.copied = true;
+                        cx.notify();
+                    })),
+            )
     }
 }

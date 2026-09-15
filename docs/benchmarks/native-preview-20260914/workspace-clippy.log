@@ -1,0 +1,7 @@
+    Checking ignore v0.4.33
+    Checking gpui-base v0.6.0 (/work/GitTurtle/vendor/gpui-base)
+   Compiling gitturtle v0.1.0 (/work/GitTurtle/crates/app)
+    Checking gitturtle-core v0.1.0 (/work/GitTurtle/crates/git-core)
+    Checking gpui-component v0.6.0 (/work/GitTurtle/vendor/gpui-component)
+    Checking gpui-kit v0.6.0
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.97s

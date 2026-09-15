@@ -70,7 +70,7 @@ Keep addition/deletion backgrounds quiet in diffs and status tiles. Color never 
 
 The dimensions below describe the default 13 px interface and 12 px code sizes. Settings independently adjusts interface text from 11–18 and code text from 10–24, with separate reset controls. Scale relevant row/control heights and editor gutters with their text; retain selection, focus and viewports when changing sizes. Larger sizes must keep the minimum 1,000 × 680 content window usable through appropriate scrolling.
 
-- UI: system sans serif, 13 px regular; 13 px medium for selected labels and panel headings. macOS uses the platform UI font; Linux uses its available system sans family.
+- UI: system sans serif, 13 px regular; 13 px medium for selected labels and panel headings. macOS uses the platform UI font; Linux uses its available system sans family, follows the desktop's antialiasing preference (grayscale unless the session asks for subpixel rendering) and multiplies both text sizes by the desktop text scaling factor on Wayland; see the [Linux runbook](docs/linux.md#platform-limits).
 - Code, hashes, and aligned numerical data: system monospace, 12 px, with gutters and aligned overlays using the native editor’s measured line height. Code text must support selection and copying.
 - Main repository title: 14 px semibold. Commit summary in the right inspector: 15 px medium, wrapping to two or three lines before explicit expansion. Avoid large display typography in repository views.
 - Section labels: 11 px medium, restrained letter spacing, uppercase only for short headings such as LOCAL BRANCHES. No all-uppercase sentences.

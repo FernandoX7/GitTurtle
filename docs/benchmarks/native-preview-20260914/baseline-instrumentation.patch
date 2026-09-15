@@ -1,0 +1,193 @@
+--- a/crates/app/src/diff_view.rs
++++ b/crates/app/src/diff_view.rs
+@@ -21,11 +21,40 @@
+     },
+     div, fill, point, px, relative, rgb, size,
+ };
+-use std::{cell::Cell, collections::BTreeSet, ops::Range, rc::Rc, sync::Arc};
++use std::{
++    cell::Cell,
++    collections::BTreeSet,
++    ops::Range,
++    rc::Rc,
++    sync::{Arc, OnceLock},
++    time::Instant,
++};
+ 
+ const FONT_SIZE: f32 = 12.;
+ const CELL_PADDING: f32 = 9.;
+ const ACTION_WIDTH: f32 = 28.;
++
++/// Opt-in observations of existing input and paint work. This deliberately does
++/// not request a frame: idle samples must not create the work being measured.
++pub(crate) fn scroll_trace_enabled() -> bool {
++    scroll_trace_start().is_some()
++}
++
++fn scroll_trace_start() -> Option<&'static Instant> {
++    static START: OnceLock<Option<Instant>> = OnceLock::new();
++    START
++        .get_or_init(|| std::env::var_os("GITTURTLE_TRACE_SCROLL").map(|_| Instant::now()))
++        .as_ref()
++}
++
++pub(crate) fn trace_scroll(kind: &str, details: std::fmt::Arguments<'_>) {
++    if let Some(start) = scroll_trace_start() {
++        eprintln!(
++            "gitturtle.scroll kind={kind} time_us={} {details}",
++            start.elapsed().as_micros()
++        );
++    }
++}
+ 
+ pub enum DiffViewEvent {
+     ApplyPartial {
+@@ -205,6 +234,7 @@
+         let painted_scroll = Rc::clone(&self.pending_scroll);
+         let gutter_origin = Rc::clone(&self.gutter_origin);
+         let rows = Arc::clone(&self.rows);
++        let trace_label = self.label.clone();
+         let row_count = rows.len();
+         let column_width = self.column_width * crate::appearance::code_scale();
+         let single_column = self.single_column;
+@@ -283,6 +313,9 @@
+                                     point(bounds.origin.x + px(action_width), bounds.origin.y),
+                                     size(bounds.size.width - px(action_width), bounds.size.height),
+                                 );
++                                if scroll_trace_enabled() {
++                                    trace_editor_paint(&editor, &trace_label, bounds, window, cx);
++                                }
+                                 paint_gutter(
+                                     &editor,
+                                     &rows,
+@@ -307,6 +340,59 @@
+                 el.child(self.render_partial_selection(cx))
+             })
+     }
++}
++
++fn trace_editor_paint(
++    editor: &Entity<EditorState>,
++    label: &SharedString,
++    gutter_bounds: Bounds<Pixels>,
++    window: &mut Window,
++    cx: &App,
++) {
++    let state = editor.read(cx);
++    let input_bounds = state.input_bounds();
++    trace_scroll(
++        "editor_paint",
++        format_args!(
++            "window={:?} editor={:?} label={label:?} scale={} offset={:?} text={:?} input={input_bounds:?} line_height={:?} visible={:?}",
++            window.window_handle().window_id(),
++            editor.entity_id(),
++            window.scale_factor(),
++            state.scroll_offset(),
++            state.text_bounds(),
++            state.line_height(),
++            state.visible_row_range(),
++        ),
++    );
++    let editor = editor.clone();
++    let label = label.clone();
++    // Capture sees events before the editor's ordinary bubble listener can
++    // consume them. The observer never changes focus, offsets or propagation.
++    window.on_mouse_event(move |event: &gpui_kit::ScrollWheelEvent, phase, _, cx| {
++        if phase != gpui_kit::DispatchPhase::Capture
++            || (!input_bounds.contains(&event.position) && !gutter_bounds.contains(&event.position))
++        {
++            return;
++        }
++        let state = editor.read(cx);
++        let Some(height) = state.line_height() else {
++            return;
++        };
++        trace_scroll(
++            "input",
++            format_args!(
++                "editor={:?} label={label:?} area={} delta={:?} before={:?}",
++                editor.entity_id(),
++                if gutter_bounds.contains(&event.position) {
++                    "gutter"
++                } else {
++                    "code"
++                },
++                event.delta.pixel_delta(height),
++                state.scroll_offset(),
++            ),
++        );
++    });
+ }
+ 
+ impl DiffView {
+--- a/crates/app/src/split_diff.rs
++++ b/crates/app/src/split_diff.rs
+@@ -6,7 +6,7 @@
+ };
+ use gpui_kit::{
+     App, AppContext, ClipboardItem, Context, Entity, Focusable, HighlightStyle, InteractiveElement,
+-    IntoElement, ParentElement, Pixels, Render, Styled, Subscription, Window,
++    IntoElement, ParentElement, Pixels, Render, Styled, Subscription, Window, canvas,
+     component::input::{Copy, EditorState, TextDecoration},
+     div, point, px, rgb,
+ };
+@@ -388,6 +388,17 @@
+                 let next = editor.read(cx).scroll_offset();
+                 if let Some((other, y)) = this.scroll.observe(side, next.y) {
+                     let target = point(this.editors[other].read(cx).scroll_offset().x, y);
++                    if diff_view::scroll_trace_enabled() {
++                        diff_view::trace_scroll(
++                            "split_link",
++                            format_args!(
++                                "source={:?} target={:?} applied={:?} requested={target:?}",
++                                this.editors[side].entity_id(),
++                                this.editors[other].entity_id(),
++                                this.editors[other].read(cx).scroll_offset(),
++                            ),
++                        );
++                    }
+                     this.editors[other]
+                         .update(cx, |editor, cx| editor.set_scroll_offset(target, cx));
+                     cx.notify();
+@@ -531,7 +542,8 @@
+         let p = palette(cx);
+         let search_heights = self.search_heights;
+         let reserved_height = search_heights[0].max(search_heights[1]);
+-        div().size_full().flex().children((0..2).map(|side| {
++        let trace_editors = diff_view::scroll_trace_enabled().then(|| self.editors.clone());
++        div().size_full().relative().flex().children((0..2).map(|side| {
+             let editor = self.editors[side].clone();
+             let padding = reserved_height - search_heights[side];
+             let presentation = Arc::clone(&self.presentation);
+@@ -576,6 +588,31 @@
+                         .pt(padding)
+                         .child(div().flex_1().min_h_0().child(self.views[side].clone())),
+                 )
++        })).children(trace_editors.map(|editors| {
++            // Painted after both panes, so one record contains their actual
++            // same-frame geometry. The transparent observer has no hitbox and
++            // never requests another frame or changes either editor.
++            canvas(
++                |_, _, _| (),
++                move |_, _, window, cx| {
++                    let before = editors[0].read(cx);
++                    let after = editors[1].read(cx);
++                    diff_view::trace_scroll(
++                        "split_paint",
++                        format_args!(
++                            "window={:?} editors={:?} before_offset={:?} after_offset={:?} before_text={:?} after_text={:?} before_visible={:?} after_visible={:?}",
++                            window.window_handle().window_id(),
++                            [editors[0].entity_id(), editors[1].entity_id()],
++                            before.scroll_offset(),
++                            after.scroll_offset(),
++                            before.text_bounds(),
++                            after.text_bounds(),
++                            before.visible_row_range(),
++                            after.visible_row_range(),
++                        ),
++                    );
++                },
++            ).absolute().size_full()
+         }))
+     }
+ }

@@ -1,4 +1,4 @@
-use gitturtle_core::{GitRepository, WorktreeCommand, WriteCommand};
+use gitturtle_core::{GitRepository, WorktreeCommand, WorktreeDetails, WriteCommand};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -47,7 +47,22 @@ impl Fixture {
         .unwrap();
         destination
     }
+    fn removal_plan(&self, destination: &Path) -> WorktreeDetails {
+        let repo = self.repo();
+        let tree = repo
+            .worktrees()
+            .unwrap()
+            .into_iter()
+            .find(|tree| tree.path == destination)
+            .unwrap();
+        repo.worktree_details(&tree).unwrap()
+    }
 }
+
+fn remove(plan: WorktreeDetails) -> WriteCommand {
+    WriteCommand::Worktree(Arc::new(WorktreeCommand::Remove(plan)))
+}
+
 fn git_at(root: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .arg("-C")
@@ -195,6 +210,23 @@ fn worktree_removal_refuses_dirty_ignored_locked_main_missing_and_stale_identity
     let tree = trees.iter().find(|tree| tree.path == destination).unwrap();
     let clean = repo.worktree_details(tree).unwrap();
     assert!(clean.removal_blocked.is_none());
+    fs::write(destination.join("tracked"), "valuable tracked edits\n").unwrap();
+    assert!(repo.execute(&remove(clean.clone())).is_err());
+    git_at(&destination, &["add", "tracked"]);
+    assert!(repo.execute(&remove(clean.clone())).is_err());
+    assert_eq!(
+        fs::read(destination.join("tracked")).unwrap(),
+        b"valuable tracked edits\n"
+    );
+    assert_eq!(
+        git_at(&destination, &["show", ":tracked"]),
+        "valuable tracked edits"
+    );
+    git_at(
+        &destination,
+        &["restore", "--staged", "--worktree", "--", "tracked"],
+    );
+    f.git(&["config", "status.showUntrackedFiles", "no"]);
     fs::write(destination.join("untracked"), "precious\n").unwrap();
     assert!(
         repo.execute(&WriteCommand::Worktree(Arc::new(WorktreeCommand::Remove(
@@ -213,6 +245,12 @@ fn worktree_removal_refuses_dirty_ignored_locked_main_missing_and_stale_identity
     let dirty = repo.worktree_details(tree).unwrap();
     assert_eq!(dirty.ignored_files, 1);
     assert!(dirty.removal_blocked.is_some());
+    assert!(repo.execute(&remove(clean.clone())).is_err());
+    assert!(repo.execute(&remove(dirty)).is_err());
+    assert_eq!(
+        fs::read(destination.join("ignored")).unwrap(),
+        b"ignored but valuable\n"
+    );
     fs::remove_file(destination.join("ignored")).unwrap();
     f.git(&["worktree", "lock", destination.to_str().unwrap()]);
     assert!(
@@ -267,6 +305,459 @@ fn worktree_removal_refuses_dirty_ignored_locked_main_missing_and_stale_identity
         f.git(&["rev-parse", "parallel"]),
         f.git(&["rev-parse", "HEAD"])
     );
+}
+
+#[test]
+fn worktree_removal_cleans_registration_private_metadata_and_folder_preserving_other_work() {
+    let f = Fixture::new();
+    let repo = f.repo();
+    f.git(&["config", "extensions.worktreeConfig", "true"]);
+    f.git(&["config", "--worktree", "user.name", "Private Main"]);
+    let destination = f.create("remove-target");
+    let sibling = f.create("sibling");
+    for (path, name) in [(&destination, "Target"), (&sibling, "Sibling")] {
+        git_at(path, &["config", "--worktree", "user.name", name]);
+    }
+    // Source and sibling worktrees can both contain independent staged and
+    // unstaged work. Removal must touch only the reviewed linked worktree.
+    for path in [&f.root, &sibling] {
+        fs::write(path.join("tracked"), "staged\n").unwrap();
+        git_at(path, &["add", "tracked"]);
+        fs::write(path.join("tracked"), "unstaged\n").unwrap();
+        fs::write(path.join("untracked"), "keep me\n").unwrap();
+    }
+    let target_private = GitRepository::open(&destination)
+        .unwrap()
+        .git_directories()
+        .unwrap()
+        .0;
+    assert!(target_private.join("index").is_file());
+    assert!(target_private.join("logs/HEAD").is_file());
+    assert!(target_private.join("config.worktree").is_file());
+    let refs = f.git(&["show-ref"]);
+    let config = fs::read(f.root.join(".git/config")).unwrap();
+    let mut preserved = Vec::new();
+    for path in [&f.root, &sibling] {
+        let private = GitRepository::open(path)
+            .unwrap()
+            .git_directories()
+            .unwrap()
+            .0;
+        for file in ["HEAD", "index", "config.worktree", "logs/HEAD"] {
+            let path = private.join(file);
+            preserved.push((path.clone(), fs::read(path).unwrap()));
+        }
+        for file in ["tracked", "untracked", ".git"] {
+            let path = path.join(file);
+            if path.is_file() {
+                preserved.push((path.clone(), fs::read(path).unwrap()));
+            }
+        }
+    }
+    let outcome = repo.execute(&remove(f.removal_plan(&destination))).unwrap();
+    assert!(outcome.message.contains("branch remains available"));
+    assert_eq!(
+        fs::symlink_metadata(&destination).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+    assert_eq!(
+        fs::symlink_metadata(&target_private).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+    let trees = repo.worktrees().unwrap();
+    assert_eq!(trees.len(), 2);
+    assert!(trees.iter().any(|tree| tree.path == f.root));
+    assert!(trees.iter().any(|tree| tree.path == sibling));
+    assert_eq!(f.git(&["show-ref"]), refs);
+    assert_eq!(fs::read(f.root.join(".git/config")).unwrap(), config);
+    for (path, bytes) in preserved {
+        assert_eq!(fs::read(&path).unwrap(), bytes, "{}", path.display());
+    }
+}
+
+#[test]
+fn worktree_removal_refuses_hidden_changes_and_preserves_index_flags() {
+    for flag in ["--assume-unchanged", "--skip-worktree"] {
+        let f = Fixture::new();
+        let repo = f.repo();
+        let destination = f.create("hidden-changes");
+        let reviewed = f.removal_plan(&destination);
+        git_at(&destination, &["update-index", flag, "tracked"]);
+        fs::write(destination.join("tracked"), "hidden valuable work\n").unwrap();
+        let linked = GitRepository::open(&destination).unwrap();
+        let index = linked.git_directories().unwrap().0.join("index");
+        let index_before = fs::read(&index).unwrap();
+        // These flags suppress the very status checks used by non-force Git
+        // removal; the additional guard must independently detect them.
+        assert!(linked.status().unwrap().entries.is_empty());
+        let blocked = f.removal_plan(&destination);
+        assert!(
+            blocked
+                .removal_blocked
+                .as_deref()
+                .unwrap()
+                .contains("assume-unchanged or skip-worktree")
+        );
+        assert!(repo.execute(&remove(reviewed)).is_err());
+        assert!(repo.execute(&remove(blocked)).is_err());
+        assert_eq!(
+            fs::read(destination.join("tracked")).unwrap(),
+            b"hidden valuable work\n"
+        );
+        assert_eq!(fs::read(index).unwrap(), index_before);
+        assert_eq!(repo.worktrees().unwrap().len(), 2);
+    }
+}
+
+#[test]
+fn worktree_removal_cleans_detached_worktree_without_claiming_a_branch_was_retained() {
+    let f = Fixture::new();
+    let repo = f.repo();
+    let destination = f.create("detached-target");
+    git_at(&destination, &["checkout", "--detach"]);
+    let private = GitRepository::open(&destination)
+        .unwrap()
+        .git_directories()
+        .unwrap()
+        .0;
+    let refs = f.git(&["show-ref"]);
+    let outcome = repo.execute(&remove(f.removal_plan(&destination))).unwrap();
+    assert!(outcome.message.contains("Removed detached worktree"));
+    assert!(!outcome.message.contains("branch remains"));
+    assert!(!destination.exists());
+    assert!(!private.exists());
+    assert_eq!(repo.worktrees().unwrap().len(), 1);
+    assert_eq!(f.git(&["show-ref"]), refs);
+}
+
+#[test]
+fn worktree_removal_refuses_private_locks_and_operation_state_without_cleanup() {
+    let f = Fixture::new();
+    let repo = f.repo();
+    let destination = f.create("private-state");
+    let reviewed = f.removal_plan(&destination);
+    let private = GitRepository::open(&destination)
+        .unwrap()
+        .git_directories()
+        .unwrap()
+        .0;
+    for file in [
+        "index.lock",
+        "HEAD.lock",
+        "config.worktree.lock",
+        "BISECT_START",
+        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+    ] {
+        let path = private.join(file);
+        let contents = format!("{}\n", f.git(&["rev-parse", "HEAD"]));
+        fs::write(&path, &contents).unwrap();
+        let blocked = f.removal_plan(&destination);
+        assert!(blocked.removal_blocked.is_some(), "{file}");
+        assert!(repo.execute(&remove(reviewed.clone())).is_err(), "{file}");
+        assert!(repo.execute(&remove(blocked)).is_err(), "{file}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), contents);
+        assert_eq!(fs::read(destination.join("tracked")).unwrap(), b"base\n");
+        fs::remove_file(path).unwrap();
+    }
+    for name in ["sequencer", "rebase-merge", "rebase-apply"] {
+        let directory = private.join(name);
+        fs::create_dir(&directory).unwrap();
+        let blocked = f.removal_plan(&destination);
+        assert!(blocked.removal_blocked.is_some(), "{name}");
+        assert!(repo.execute(&remove(reviewed.clone())).is_err(), "{name}");
+        assert!(repo.execute(&remove(blocked)).is_err(), "{name}");
+        assert!(directory.is_dir());
+        fs::remove_dir(directory).unwrap();
+    }
+    assert_eq!(repo.worktrees().unwrap().len(), 2);
+}
+
+#[test]
+fn worktree_removal_refuses_stale_branch_commit_and_replaced_repository() {
+    let f = Fixture::new();
+    let repo = f.repo();
+    let destination = f.create("stale-target");
+    let reviewed = f.removal_plan(&destination);
+    git_at(&destination, &["checkout", "--detach"]);
+    assert!(repo.execute(&remove(reviewed)).is_err());
+    let reviewed = f.removal_plan(&destination);
+    git_at(&destination, &["commit", "--allow-empty", "-m", "Moved"]);
+    assert!(repo.execute(&remove(reviewed)).is_err());
+    let reviewed = f.removal_plan(&destination);
+    let moved = f.destination("original-folder");
+    fs::rename(&destination, &moved).unwrap();
+    let replacement = Fixture::new();
+    fs::rename(&replacement.root, &destination).unwrap();
+    let replacement_head = git_at(&destination, &["rev-parse", "HEAD"]);
+    assert!(repo.execute(&remove(reviewed)).is_err());
+    assert_eq!(
+        git_at(&destination, &["rev-parse", "HEAD"]),
+        replacement_head
+    );
+    assert_eq!(fs::read(destination.join("tracked")).unwrap(), b"base\n");
+    assert_eq!(fs::read(moved.join("tracked")).unwrap(), b"base\n");
+    assert_eq!(repo.worktrees().unwrap().len(), 2);
+}
+
+#[test]
+fn worktree_removal_refuses_replaced_directories_at_the_same_paths() {
+    for replace_private in [false, true] {
+        let f = Fixture::new();
+        let repo = f.repo();
+        let destination = f.create("same-path");
+        let private = GitRepository::open(&destination)
+            .unwrap()
+            .git_directories()
+            .unwrap()
+            .0;
+        let reviewed = f.removal_plan(&destination);
+        let replaced = if replace_private {
+            &private
+        } else {
+            &destination
+        };
+        let saved = f.destination("original-directory");
+        let retained_file = if replace_private { "index" } else { "tracked" };
+        let retained_bytes = fs::read(replaced.join(retained_file)).unwrap();
+        fs::rename(replaced, &saved).unwrap();
+        fs::create_dir(replaced).unwrap();
+        // Reconstruct the known fixture with unchanged Git metadata and working
+        // bytes, without recursively copying discovered filesystem paths.
+        let files: &[&str] = if replace_private {
+            for directory in ["logs", "refs"] {
+                if saved.join(directory).is_dir() {
+                    fs::create_dir(replaced.join(directory)).unwrap();
+                }
+            }
+            &[
+                "HEAD",
+                "ORIG_HEAD",
+                "commondir",
+                "gitdir",
+                "index",
+                "logs/HEAD",
+            ]
+        } else {
+            &[".git", "tracked"]
+        };
+        for file in files {
+            // Git versions/configurations can omit these auxiliary files.
+            if matches!(*file, "ORIG_HEAD" | "logs/HEAD") && !saved.join(file).is_file() {
+                continue;
+            }
+            fs::copy(saved.join(file), replaced.join(file)).unwrap();
+        }
+        // Branch, commit, registration, clean status, and all path strings are
+        // unchanged, but this is a different checkout/administration directory.
+        assert_eq!(f.removal_plan(&destination).tree, reviewed.tree);
+        let error = repo.execute(&remove(reviewed)).unwrap_err();
+        assert!(error.to_string().contains("changed after review"));
+        assert_eq!(fs::read(destination.join("tracked")).unwrap(), b"base\n");
+        assert_eq!(
+            fs::read(replaced.join(retained_file)).unwrap(),
+            retained_bytes
+        );
+        assert!(private.is_dir());
+        assert!(saved.is_dir());
+        assert_eq!(repo.worktrees().unwrap().len(), 2);
+
+        repo.execute(&remove(f.removal_plan(&destination))).unwrap();
+        assert!(!destination.exists());
+        assert!(!private.exists());
+        assert!(saved.is_dir());
+        assert_eq!(fs::read(saved.join(retained_file)).unwrap(), retained_bytes);
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn worktree_removal_refuses_redirected_administration_and_git_files() {
+    use std::os::unix::fs::symlink;
+
+    for redirect in ["private", "worktrees", "gitfile", "alias"] {
+        let f = Fixture::new();
+        let repo = f.repo();
+        let destination = f.create("redirected");
+        let reviewed = f.removal_plan(&destination);
+        let private = GitRepository::open(&destination)
+            .unwrap()
+            .git_directories()
+            .unwrap()
+            .0;
+        let external = f.destination("external-administration");
+        let original_index = fs::read(private.join("index")).unwrap();
+        let retained_index = match redirect {
+            "private" => {
+                fs::rename(&private, &external).unwrap();
+                fs::write(
+                    external.join("commondir"),
+                    f.root.join(".git").as_os_str().as_encoded_bytes(),
+                )
+                .unwrap();
+                symlink(&external, &private).unwrap();
+                external.join("index")
+            }
+            "worktrees" => {
+                let parent = private.parent().unwrap();
+                fs::rename(parent, &external).unwrap();
+                let moved = external.join(private.file_name().unwrap());
+                fs::write(
+                    moved.join("commondir"),
+                    f.root.join(".git").as_os_str().as_encoded_bytes(),
+                )
+                .unwrap();
+                symlink(&external, parent).unwrap();
+                moved.join("index")
+            }
+            "gitfile" => {
+                fs::rename(destination.join(".git"), &external).unwrap();
+                symlink(&external, destination.join(".git")).unwrap();
+                private.join("index")
+            }
+            "alias" => {
+                symlink(&private, private.parent().unwrap().join("alias")).unwrap();
+                private.join("index")
+            }
+            _ => unreachable!(),
+        };
+        // A plain non-force Git removal can follow an administration-root
+        // symlink and empty its target. Refuse before dispatching that write.
+        let tree = repo
+            .worktrees()
+            .unwrap()
+            .into_iter()
+            .find(|tree| tree.path == destination)
+            .unwrap();
+        assert!(repo.worktree_details(&tree).is_err(), "{redirect}");
+        assert!(repo.execute(&remove(reviewed)).is_err(), "{redirect}");
+        assert_eq!(
+            fs::read(&retained_index).unwrap(),
+            original_index,
+            "{redirect}"
+        );
+        assert_eq!(fs::read(destination.join("tracked")).unwrap(), b"base\n");
+        assert_eq!(
+            git_at(&destination, &["rev-parse", "HEAD"]),
+            f.git(&["rev-parse", "HEAD"])
+        );
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn worktree_removal_preserves_byte_paths_and_stored_symlink_targets() {
+    #[cfg(target_os = "linux")]
+    use std::os::unix::ffi::OsStringExt;
+    use std::{ffi::OsString, os::unix::fs::symlink};
+
+    let unicode = (
+        OsString::from("linked-é\nname"),
+        OsString::from(".é\nvaluable.keep"),
+    );
+    // APFS rejects invalid UTF-8 names. Keep Unicode/newline coverage on
+    // every Unix platform and exercise arbitrary filename bytes on Linux.
+    #[cfg(target_os = "linux")]
+    let names = [
+        unicode,
+        (
+            OsString::from_vec(b"linked-\xff\nname".to_vec()),
+            OsString::from_vec(b".\xff\nvaluable.keep".to_vec()),
+        ),
+    ];
+    #[cfg(not(target_os = "linux"))]
+    let names = [unicode];
+
+    for (directory_name, ignored_name) in names {
+        let f = Fixture::new();
+        let repo = f.repo();
+        let external = f.destination("external-content");
+        fs::write(&external, b"valuable outside content\n").unwrap();
+        symlink(&external, f.root.join("stored-link")).unwrap();
+        fs::write(f.root.join(".gitignore"), b"*.keep\n").unwrap();
+        f.git(&["add", "stored-link", ".gitignore"]);
+        f.git(&["commit", "-m", "Stored link and ignore rule"]);
+        let destination = f.root.parent().unwrap().join(directory_name);
+        let plan = repo
+            .create_worktree_plan(&destination, "byte-path", true, "HEAD")
+            .unwrap();
+        repo.execute(&WriteCommand::Worktree(Arc::new(WorktreeCommand::Create(
+            plan,
+        ))))
+        .unwrap();
+        let reviewed = f.removal_plan(&destination);
+        let ignored = destination.join(ignored_name);
+        fs::write(&ignored, b"ignored local content\n").unwrap();
+        let blocked = f.removal_plan(&destination);
+        assert_eq!(blocked.ignored_files, 1);
+        assert!(repo.execute(&remove(reviewed)).is_err());
+        assert!(repo.execute(&remove(blocked)).is_err());
+        assert_eq!(fs::read(&ignored).unwrap(), b"ignored local content\n");
+        fs::remove_file(ignored).unwrap();
+        repo.execute(&remove(f.removal_plan(&destination))).unwrap();
+        assert!(!destination.exists());
+        assert_eq!(fs::read(&external).unwrap(), b"valuable outside content\n");
+        assert_eq!(repo.worktrees().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn worktree_removal_refuses_current_linked_tree_and_preserves_initialized_submodules() {
+    let f = Fixture::new();
+    let submodule = Fixture::new();
+    f.git(&[
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        submodule.root.to_str().unwrap(),
+        "module",
+    ]);
+    f.git(&["commit", "-m", "Add submodule"]);
+    let repo = f.repo();
+    let destination = f.create("submodule-target");
+    git_at(
+        &destination,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "update",
+            "--init",
+        ],
+    );
+    let linked = GitRepository::open(&destination).unwrap();
+    let tree = repo
+        .worktrees()
+        .unwrap()
+        .into_iter()
+        .find(|tree| tree.path == destination)
+        .unwrap();
+    let current = linked.worktree_details(&tree).unwrap();
+    assert!(current.current);
+    assert!(
+        current
+            .removal_blocked
+            .as_deref()
+            .unwrap()
+            .contains("currently open")
+    );
+    assert!(linked.execute(&remove(current)).is_err());
+    let reviewed = f.removal_plan(&destination);
+    assert!(reviewed.removal_blocked.is_none());
+    let private = linked.git_directories().unwrap().0;
+    let refs = f.git(&["show-ref"]);
+    let error = repo.execute(&remove(reviewed)).unwrap_err();
+    assert!(error.to_string().contains("did not report success"));
+    assert!(format!("{error:#}").contains("submodules"));
+    assert!(private.join("index").is_file());
+    assert_eq!(
+        fs::read(destination.join("module/tracked")).unwrap(),
+        b"base\n"
+    );
+    assert_eq!(repo.worktrees().unwrap().len(), 2);
+    assert_eq!(f.git(&["show-ref"]), refs);
 }
 
 #[test]

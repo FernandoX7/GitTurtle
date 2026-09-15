@@ -1,0 +1,14 @@
+Checking https://gitturtle.com/
+Explicit DNS override: gitturtle.com -> 104.21.32.143; system DNS unchanged; TLS verification and hostname/SNI retained.
+PASS verified certificate for gitturtle.com; expires 2026-12-13 22:30 UTC (90.0 days remaining)
+PASS homepage 200, expected title, security headers and revalidating cache
+PASS HTTP permanently redirects to HTTPS with nested path and query intact
+PASS nested custom 404, noindex, root-absolute links/assets and security headers
+PASS stylesheet 200, security headers, ETag and expected cache policy
+PASS script 200, security headers, ETag and expected cache policy
+PASS font 200, security headers, ETag and expected cache policy
+PASS screenshot 200, security headers, ETag and expected cache policy
+PASS stylesheet ETag revalidation returns 304
+PASS font ETag revalidation returns 304
+PASS screenshot ETag revalidation returns 304
+Smoke checks passed: 10 HTTP requests and one verified TLS connection. Certificate renewal is provider-managed; this checks current expiry, not a future renewal.
