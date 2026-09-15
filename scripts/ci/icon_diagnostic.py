@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""One Xcode 26.2 actool/assetutil sample; no Rust, package, signing or retry.
+"""One Xcode 26.3 on macOS 26 actool/assetutil sample; no Rust, package, signing or retry.
 
-The workflow runs one production-wrapper sample on a fresh macos-15 runner. Only the
+The workflow runs one production-wrapper sample on a fresh macos-26 runner. Only the
 evidence directory may be uploaded; compiled icons remain in the work directory.
 """
 from __future__ import annotations
@@ -184,7 +184,7 @@ def crash_snapshot():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--xcode", choices=("26.2",), required=True)
+    parser.add_argument("--xcode", choices=("26.3",), required=True)
     parser.add_argument("--sample", choices=("1", "2", "3"), required=True)
     parser.add_argument("--method", choices=("wrapper",), required=True)
     parser.add_argument("--directory", type=Path, required=True)
@@ -203,6 +203,8 @@ def main():
     try:
         if platform.system() != "Darwin" or platform.machine() != "arm64":
             raise RuntimeError("Diagnostic requires the specified Apple Silicon macOS runner")
+        if platform.mac_ver()[0].split(".")[0] != "26":
+            raise RuntimeError("This diagnostic requires macOS 26; no fallback")
         result["package_helper_sha256"] = digest(ROOT / "scripts/package-macos.py")
         if result["package_helper_sha256"] != EXPECTED_WRAPPER:
             raise RuntimeError("Refresh onto the reviewed repaired helper before running this diagnostic")

@@ -1,5 +1,5 @@
 # Disposable diagnostic branch only. Never merge this replacement workflow.
-name: Manual macOS toolchain diagnostic
+name: Manual macOS 26 catalog diagnostic
 
 on:
   workflow_dispatch:
@@ -13,13 +13,13 @@ defaults:
 
 jobs:
   catalog-diagnostic:
-    name: Xcode 26.2 · production wrapper · sample ${{ matrix.sample }}
+    name: macOS 26 · Xcode 26.3 · production wrapper · sample ${{ matrix.sample }}
     strategy:
       fail-fast: false
       max-parallel: 3
       matrix:
         sample: [1, 2, 3]
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -30,12 +30,12 @@ jobs:
           CI_DIAGNOSTIC_SAMPLE: ${{ matrix.sample }}
         run: |
           umask 077
-          python3 scripts/ci/icon_diagnostic.py --xcode 26.2 --method wrapper --sample "$CI_DIAGNOSTIC_SAMPLE" --directory "$RUNNER_TEMP/gitturtle-catalog-diagnostic"
+          python3 scripts/ci/icon_diagnostic.py --xcode 26.3 --method wrapper --sample "$CI_DIAGNOSTIC_SAMPLE" --directory "$RUNNER_TEMP/gitturtle-catalog-diagnostic"
       - name: Preserve only diagnostic text and JSON
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: catalog-diagnostic-26.2-${{ matrix.sample }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: catalog-diagnostic-macos26-xcode26.3-${{ matrix.sample }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/gitturtle-catalog-diagnostic/evidence/*.json
             ${{ runner.temp }}/gitturtle-catalog-diagnostic/evidence/*.log
