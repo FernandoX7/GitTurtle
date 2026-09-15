@@ -1,7 +1,8 @@
 # GitTurtle 0.1.0 source preview — draft release notes
 
-Prepared locally for review. This document does not announce a published binary
-or a live website.
+Draft binary-release copy for review; no public binary is announced. The
+marketing site is published at [gitturtle.com](https://gitturtle.com).
+The [Pages hostname](https://gitturtle.pages.dev) is also available.
 
 This preview improves everyday local Git work, with more dependable refresh,
 clearer history updates, and corrected split-diff scrolling.
@@ -30,7 +31,7 @@ clearer history updates, and corrected split-diff scrolling.
   `--version` and `--build-info` work without opening the app. Linux upgrades
   preserve settings, retain a recoverable previous installation, and refuse to
   replace a running installed executable.
-- **A new marketing site is ready for review.** The standalone static site uses
+- **The marketing site is published.** The standalone static site uses
   mint branding, real current app captures, and a manual keyboard-operable
   walkthrough. It links to source installation, documentation, support, GitHub
   and sponsorship, with reduced-motion styles and a JavaScript-free fallback.
@@ -72,6 +73,9 @@ Public Linux binaries remain blocked on the exact `mac` 0.1.1 and Rust `ufbx`
 their own notice review. Before publication, attach final executable/archive
 identities and validation to the release, complete the
 [release gates](public-launch.md#before-a-public-binary-release), and approve the
-publication. Cloudflare access and approval to deploy the reviewed site are a
-separate final step; the [deployment plan](../website/README.md#proposed-cloudflare-pages-deployment)
-preserves unrelated DNS records.
+publication. Website publication was separately approved and completed on
+Cloudflare Pages. The approved `gitturtle.com` binding and apex CNAME are in
+place; Cloudflare reports the domain active and HTTPS verification passed. The
+[deployment record](../website/README.md#cloudflare-pages-deployment) identifies
+the published assets and validation limits. This does not clear or authorize
+a binary release.
