@@ -96,8 +96,8 @@ main/manual runs. Once the new gate has passed on the intended revision, the
 coordinator prepares and obtains authorization for this scoped migration:
 
 1. Read the current main protection and preserve its strict/up-to-date setting,
-   GitHub Actions app binding, review/conversation requirements and independent
-   CodeQL code-scanning rules.
+   GitHub Actions app binding and review/conversation requirements. CodeQL was
+   separately retired by the maintainer; do not reintroduce its inactive rule.
 2. Add the observed `Quality gate` name/app binding alongside the two current
    Rust names using the [required-status-check endpoint](https://docs.github.com/en/rest/branches/branch-protection#update-status-check-protection).
    Verify the binding and actual positive/negative behavior.
@@ -108,10 +108,10 @@ coordinator prepares and obtains authorization for this scoped migration:
 Rollback restores the exact latest pre-migration required-check set through that
 same scoped endpoint, with strictness and unrelated protection unchanged. Preserve
 the compatibility jobs until the migration is proven. Source regressions use a
-reviewed revert; do not remove protection to clear a failed check. CodeQL remains
-an independent security requirement, including its existing languages, queries,
-high/critical thresholds and error policy. A successful Quality gate alone does
-not establish security acceptance or the full merge critical path.
+reviewed revert; do not remove protection to clear a failed check. The independent
+[security review](development/security-review.md) is a development acceptance
+requirement. It is not an automated GitHub status check, and a successful Quality
+gate alone does not establish that the review happened.
 
 ## Parallel validation and coverage
 
@@ -196,7 +196,7 @@ the [measurement procedure](#reproduce-coldwarm-and-prmain-measurements), then r
    simultaneous jobs can increase queue contention and runner minutes even if
    the visible critical path falls. Duplicate Linux package setup/downloads and
    profile-specific build scripts can increase cold cost; report this regression.
-4. The full merge path including every required CodeQL language. A faster release
+4. The full merge path including every active required check. A faster release
    lane alone does not prove a faster merge. Record sample counts, median/tail and
    unavailable observations; a small set does not establish production p95.
 5. Real negative PR cases for each Rust phase: failure, cancellation and unexpected
@@ -350,7 +350,7 @@ their wall-clock span separately from the duplicated runner cost.
 The same repository/run/attempt supplied twice with matching measurements is one
 observation; conflicting snapshots are rejected. Distinct push and PR runs for
 the same commit and workflow ID are potential duplicate work: retain both and
-measure their resource cost. Other workflows, including CodeQL, and other events
+measure their resource cost. Other workflows, including historical CodeQL, and other events
 are separate validation. Without a workflow ID, the report retains each run's
 measurements but makes no duplicate-work claim; matching names or paths alone
 do not establish workflow identity. Keep reruns separate
@@ -460,7 +460,7 @@ comparison variable, not an invisible improvement.
 For failures, record the failing step, time until useful failure feedback and
 runner time consumed before failure, together with retained diagnostics. Record
 cancelled and queued runs as their actual states; they are not zero-cost successes.
-Quality and CodeQL can overlap. Measure the full required-check creation-to-final
+Required checks can overlap. Measure the full required-check creation-to-final
 completion window separately from each workflow and from summed runner minutes.
 
 C1 must also exercise forks, superseded pushes, expected/unexpected skips and
@@ -496,7 +496,8 @@ The initial targets are **under two minutes for inexpensive feedback** and
 **under ten minutes for the warm Quality critical path** on ordinary product PRs.
 They are targets, not measured results or authorization to reduce validation.
 Record cold-run and runner-minute regressions alongside any warm improvement.
-CodeQL may continue to determine the full required-check completion time.
+These baseline runs predate CodeQL retirement. Separate that scope change from
+cache/fanout improvements when comparing the full required-check completion time.
 
 ### Later measurements and C1
 
@@ -715,7 +716,8 @@ Upstream performs additional dependency/age cleanup in its post action. GitHub
 also applies repository-wide
 [cache limits and eviction](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#usage-limits-and-eviction-policy).
 This patch does not change repository storage settings or delete caches through
-the API. Old compatibility generations and CodeQL share that quota. C1 must record
+the API. Old compatibility generations and retained historical CodeQL caches
+share that quota. C1 must record
 actual compressed cache sizes, eviction/miss rates and transfer cost; the local
 baseline's full debug/release disk footprint is not the action's archive size.
 Ordinary source-only PRs neither create new cache generations nor upload entries.
@@ -755,9 +757,10 @@ lock/toolchain/vendor/native invalidation, stale/corrupt cache refusal, post-sav
 cost, actual retained subset/eviction and all required tests executing on warm runs.
 Manual branch repeats alone cannot establish a trusted-main warm cache.
 
-## CodeQL extraction and coverage
+## Security review and historical scanning
 
-The [CodeQL runbook](ci-codeql.md) records the existing advanced setup, preserved
-security categories, supported Rust extractor-cache experiment, baseline warning
-files and C2 hosted comparison/rollback procedure. Quality timing alone does not
-establish the full merge critical path.
+CodeQL was retired at the maintainer's request. The [retirement record](ci-codeql.md)
+preserves the distinction between this scope change and measured CI optimization.
+The [security reviewer](development/security-review.md) checks actual trust
+boundaries before development acceptance; it does not publish per-finding PR
+comments. Preserve historical scan measurements as historical observations.
