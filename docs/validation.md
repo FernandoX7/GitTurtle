@@ -609,7 +609,7 @@ cargo build --release --locked -p gitturtle
 
 Coverage includes repository roots and merge parents, branches and linked worktrees, unusual path bytes, binary/text/mode/type changes, SHA-256 repositories, missing partial-clone objects, local LFS integrity and symlink rejection, Git process deadlines, and repository-file snapshots with hostile configured helpers. Preview tests cover decoding limits, alpha handling, SVG resource rejection, and LFS pointer recognition. App tests exercise queue replacement, stale-work cancellation, cache identity and accounting, BGRA conversion, local LFS arrival, refreshed branch/worktree tips, and graph budgets. New coverage includes branch folder expansion/filtering, retained repository sessions, and old/new line numbering for unified patches, including header-like source text, accumulated gutter-wheel movement, worker-prepared patch metadata, and its cache allocation budget.
 
-A local macOS `.app` can be built with [the packaging script](../scripts/package-macos.sh). It is signed ad-hoc for local use, not notarized. The script's `--debug` option packages a debug build, while the default uses release; `--no-build` reuses the selected profile's existing executable.
+A local Apple Silicon `.app` can be built with [the packaging script](../scripts/package-macos.sh). It is signed ad-hoc for local use, not notarized. The [current package procedure and evidence boundary](benchmarks/ci-packages/macos-package-source.md) describe explicit arm64 target output, verified `--no-build` inputs, detached build identity, optional ZIPs and existing-output recovery. The new source fixtures do not update the historical Mac package passes; exact-candidate macOS execution remains open.
 
 ## Historical column layout update
 

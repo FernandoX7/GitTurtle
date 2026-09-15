@@ -95,6 +95,8 @@ Use Rust 1.98 or newer and an installed Git executable. On macOS, install Xcode 
 
 For Linux prerequisites and a user-local executable, icon and application launcher, see [Build and install locally on Linux](linux.md).
 
+For local Apple Silicon `.app` bundles and optional archives, use [the macOS package procedure](benchmarks/ci-packages/macos-package-source.md). It records exact executable identity and local ad-hoc signing status; notarized distribution remains a separate release step.
+
 ```sh
 cargo run --locked -p gitturtle -- /path/to/repository
 
