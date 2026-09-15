@@ -102,6 +102,30 @@ impl GitRepository {
             );
             let status = repo.status()?;
             details.changed_files = status.entries.len();
+            // Both status and ordinary `git worktree remove` can overlook
+            // modified files marked assume-unchanged or skip-worktree. Never
+            // treat an index that skips these checks as proof of a clean tree.
+            let index = run_git(&repo.path, &["ls-files", "-v", "-z"])?;
+            let unchecked_index = index
+                .split(|byte| *byte == 0)
+                .filter_map(|entry| entry.first())
+                .any(|tag| *tag == b'S' || tag.is_ascii_lowercase());
+            let mut private_state = false;
+            for file in [
+                "index.lock",
+                "HEAD.lock",
+                "config.worktree.lock",
+                "BISECT_START",
+                "sequencer",
+            ] {
+                match std::fs::symlink_metadata(directories.0.join(file)) {
+                    Ok(_) => private_state = true,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(error).context("Unable to inspect worktree Git state");
+                    }
+                }
+            }
             // git worktree remove permits ignored files. Refuse those as well;
             // users must explicitly move/remove their content outside this UI.
             let mut command = passive_status_command(repo.path())?;
@@ -124,10 +148,16 @@ impl GitRepository {
                 .filter(|p| !p.is_empty())
                 .count();
             details.directories = Some(directories);
-            if status.operation.is_some() || status.entries.iter().any(|entry| entry.conflicted) {
+            if private_state {
+                details.removal_blocked = Some("This worktree has a Git lock or active bisect/sequencer state. Finish the operation and inspect its Git state before removal; GitTurtle never removes locks.".into());
+            } else if status.operation.is_some()
+                || status.entries.iter().any(|entry| entry.conflicted)
+            {
                 details.removal_blocked = Some("Finish the active Git operation and resolve conflicts before removing this worktree.".into());
             } else if details.changed_files > 0 || details.ignored_files > 0 {
                 details.removal_blocked = Some("This worktree contains changed, untracked, or ignored files. Commit, stash, or move that content before removal.".into());
+            } else if unchecked_index {
+                details.removal_blocked = Some("This worktree has assume-unchanged or skip-worktree entries, which can hide local changes. Review those files and sparse-checkout settings with Git before removal.".into());
             }
         }
         if main {
@@ -265,10 +295,14 @@ impl GitRepository {
                 command
                     .args(["worktree", "remove", "--"])
                     .arg(&plan.tree.path);
-                format!(
-                    "Removed worktree at {}. Its branch remains available.",
-                    plan.tree.path.display()
-                )
+                if plan.tree.branch.is_some() {
+                    format!(
+                        "Removed worktree at {}. Its branch remains available.",
+                        plan.tree.path.display()
+                    )
+                } else {
+                    format!("Removed detached worktree at {}.", plan.tree.path.display())
+                }
             }
         };
         let output = match checked_write_output(command, None, WRITE_TIMEOUT) {
@@ -290,9 +324,12 @@ impl GitRepository {
                     };
                     return Err(error.context(summary));
                 }
-                return Err(error);
+                return Err(error.context("Worktree removal did not report success. Git may already have removed some files or registration metadata. Refresh and inspect the worktree before another attempt; GitTurtle did not retry, force removal, or delete remaining content."));
             }
         };
+        if let WorktreeCommand::Remove(plan) = operation {
+            self.verify_worktree_removal(plan).context("Git reported worktree removal success, but cleanup could not be verified. Refresh and inspect the worktree and its registration before another attempt; GitTurtle did not retry or delete remaining content.")?;
+        }
         let diagnostic = format!("{}{}", text(&output.stdout), text(&output.stderr));
         Ok(WriteOutcome {
             message: if diagnostic.trim().is_empty() {
@@ -302,6 +339,33 @@ impl GitRepository {
             },
             commit_oid: None,
         })
+    }
+
+    fn verify_worktree_removal(&self, plan: &WorktreeDetails) -> Result<()> {
+        ensure!(
+            !self
+                .worktrees()?
+                .iter()
+                .any(|tree| tree.path == plan.tree.path),
+            "The worktree is still registered with Git."
+        );
+        let (private, _) = plan
+            .directories
+            .as_ref()
+            .context("The reviewed worktree administration directory is unavailable.")?;
+        for (path, label) in [
+            (&plan.tree.path, "worktree folder"),
+            (private, "private Git administration directory"),
+        ] {
+            match std::fs::symlink_metadata(path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error).with_context(|| format!("Unable to inspect the {label}."));
+                }
+                Ok(_) => bail!("The {label} still exists."),
+            }
+        }
+        Ok(())
     }
 }
 
@@ -334,6 +398,52 @@ fn worktree_destination(path: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removal_verification_requires_registration_folder_and_private_metadata_to_be_gone() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("main");
+        GitRepository::init(&root, "main").unwrap();
+        let repo = GitRepository::open(&root).unwrap();
+        let main = repo.worktrees().unwrap().remove(0);
+        let mut plan = repo.worktree_details(&main).unwrap();
+        assert!(
+            repo.verify_worktree_removal(&plan)
+                .unwrap_err()
+                .to_string()
+                .contains("still registered")
+        );
+
+        plan.tree.path = temp.path().join("removed-worktree");
+        let private = temp.path().join("private-metadata");
+        plan.directories.as_mut().unwrap().0 = private.clone();
+        std::fs::create_dir(&plan.tree.path).unwrap();
+        assert!(
+            repo.verify_worktree_removal(&plan)
+                .unwrap_err()
+                .to_string()
+                .contains("worktree folder still exists")
+        );
+        std::fs::remove_dir(&plan.tree.path).unwrap();
+        std::fs::create_dir(&private).unwrap();
+        assert!(
+            repo.verify_worktree_removal(&plan)
+                .unwrap_err()
+                .to_string()
+                .contains("administration directory still exists")
+        );
+        std::fs::remove_dir(&private).unwrap();
+        repo.verify_worktree_removal(&plan).unwrap();
+
+        #[cfg(unix)]
+        {
+            // A replaced path can be a dangling symlink: exists()/is_dir()
+            // would wrongly report successful filesystem cleanup here.
+            std::os::unix::fs::symlink(temp.path().join("missing"), &plan.tree.path).unwrap();
+            assert!(repo.verify_worktree_removal(&plan).is_err());
+        }
+    }
+
     #[test]
     fn cancelling_inspection_terminates_the_active_process_and_clears_scope() {
         let cancellation = HistoryCancellation::default();
