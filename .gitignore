@@ -4,3 +4,5 @@
 *.log
 /tmp/
 /.local/
+__pycache__/
+*.py[cod]

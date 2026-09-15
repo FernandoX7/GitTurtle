@@ -4,6 +4,8 @@ Thanks for helping make GitTurtle useful. Small bug fixes, clearer docs, reprodu
 
 GitTurtle is a native Rust/GPUI Git client for macOS and Linux. Keep changes focused on local history inspection and everyday Git work, with explicit user actions for writes and network access. The [design](DESIGN.md), [architecture](docs/architecture.md) and [project agreements](AGENTS.md) explain the boundaries. Please follow the [code of conduct](CODE_OF_CONDUCT.md).
 
+Use your preferred editor and AI tools, if any. The same architecture, commit and validation requirements apply to every contribution. The [agent workflow](docs/development/README.md) includes optional tooling for coordinated development.
+
 ## Set up a checkout
 
 Fork the repository, clone your fork, and create a branch for your change. Install Git and [rustup](https://rustup.rs/). `rust-toolchain.toml` selects Rust 1.98.0, rustfmt and Clippy; keep `Cargo.lock` in use.
@@ -51,7 +53,7 @@ cargo test --locked -p gitturtle-core
 cargo test --locked -p gitturtle-preview
 ```
 
-Choose the affected test package or a focused test name while iterating. Before submitting code or dependency changes, run the combined checks:
+Choose the affected test package or a focused test name while iterating. Before submitting Rust code or dependency changes, run the combined checks:
 
 ```sh
 cargo test --locked --workspace
@@ -62,6 +64,14 @@ For packaging or performance work, also run `cargo build --release --locked -p g
 
 Docs-only changes need link, command and diff checks. Artwork changes need verification of their consumers and derived resources; see [asset conventions](assets/icons/README.md). Neither requires unrelated Rust tests.
 
+Development-controller changes use `python3 scripts/check-agent-guidance.py` and `python3 -m unittest discover -s scripts/agent_loop -t scripts -p 'test_*.py'`. Follow the [development workflow](docs/development/README.md) for task contracts, isolated runs and evidence; product checks apply when those changes also affect the client.
+
+## Commit cohesive changes
+
+Always use atomic [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/): each commit contains one cohesive change and its necessary code, tests and documentation. Use the form `type(optional-scope): description`, with `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore` or `revert`. Mark an incompatible change with `!` after the type/scope or a `BREAKING CHANGE:` footer. For example, `fix(history): retain selection after refresh` should include the correction and its relevant regression coverage and documentation.
+
+Stage explicit intended paths and inspect the staged diff before each commit. Preserve unrelated staged and working changes. Never amend or rewrite published history without authorization. In coordinated agent work, the coordinator owns the index and commits; the [unattended controller](docs/development/README.md) owns commits inside its isolated checkout, and its workers return file changes without committing.
+
 ## Send a pull request
 
 Describe the problem, resulting behavior and checks you ran. Keep the change reviewable and update the closest documentation when behavior changes. Include any remaining limitations instead of claiming checks you could not run. The PR template is intentionally short; remove sections that do not apply.
@@ -70,7 +80,8 @@ Contributions use pull requests with the macOS and Ubuntu Quality checks passing
 and review conversations resolved. CodeQL scans must complete without unresolved
 high/critical security findings or code-scanning errors. Workflows from external contributors need
 maintainer approval before running. We squash-merge changes using the PR title
-and description, so write those for a reader of the permanent Git history.
+and description, so always use a Conventional Commit PR title and write the
+description for a reader of the permanent Git history.
 Merged branches in this repository are deleted automatically; your fork and
 local branches remain yours.
 

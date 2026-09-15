@@ -49,3 +49,9 @@ All application JSON stores share `preferences::read_store`: open one descriptor
 ## Named Git profiles
 
 `src/profiles.rs` provides the header menu and definition editor; its `store` module uses the existing preference executor and atomic writer. Saving, editing or deleting a definition changes app data only. Applying a profile uses `ProfilePlan` through the ordinary serialized write path, with the displayed worktree/config scope and stale configuration checks. A successful Git write records its app assignment separately; a storage failure must not replay Git application. Read effective author/signing configuration on the worker and show mismatch against the saved assignment. See [profile semantics and limits](../../../docs/profiles.md).
+
+## Build diagnostics
+
+`build.rs` embeds revision, clean/modified/unknown tree state, target, profile, compiler and build time; `build_info` presents that captured identity. Exact `--version`/`--build-info` requests exit before app-data and GPUI initialization. About and Copy bug diagnostics use the compiled values plus an explicit allowlist of display settings. Keep repository paths, credentials, environment dumps and runtime Git/process/network inspection out of this path.
+
+Build metadata describes the executable's compilation, not the current checkout or packaging revision. A modified tree needs a source delta or compiled-input record alongside the executable identity before it can support a verification claim. Keep build-script rerun inputs aligned with compiled app/core/preview, dependency and embedded-asset changes; observing all `.git` activity would create unrelated rebuilds. The [Linux build identity notes](../../../docs/linux.md#build-from-source-on-ubuntu-2404) distinguish package metadata from executable identity. `build_info` unit tests validate the diagnostic allowlist; they do not establish package freshness.

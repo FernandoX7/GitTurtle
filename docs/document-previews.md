@@ -126,11 +126,16 @@ triangle count. It excludes pointer/key delivery, source decoding and completed
 GPU/OS presentation. Superseded results are omitted, never counted as zero.
 
 STL, OBJ, FBX, GLB 2.0 and 3MF use the documented retained-mesh decoders. GLB
-uses captured embedded geometry, nested static scene placements and glTF meters
-converted to Z-up millimeters. Appearance and animation playback are omitted;
-EXT_meshopt_compression uses bounded embedded-view decoding, while unsupported
-deformation, Draco and geometry extensions produce explicit errors. The selected
-scene and any fallback are disclosed. A missing or corrupt local LFS model keeps
+uses captured embedded geometry, supported appearance, skins/morphs and animation,
+with nested scene placements and glTF meters converted to Z-up millimeters.
+Embedded resources and EXT_meshopt_compression stay independently bounded;
+unsupported structural geometry and optional appearance/clip failures follow
+the [GLB contract](interactive-3d.md#glb-20-appearance-deformation-and-animation).
+Per-side clip selection, Play/Pause, scrubbing and sample stepping preserve the
+camera. Warm retained views keep their playback state paused when hidden;
+the serialized camera bookmark does not currently persist clip/time selection
+across a cold restore. The selected scene and any fallback are disclosed.
+A missing or corrupt local LFS model keeps
 its exact pointer and explicit download action, while the opposite available
 model remains usable; preview activation never downloads an object. STEP accepts
 faceted B-rep faces, analytic `CSG_SOLID` sphere/cylinder/torus/block entities and

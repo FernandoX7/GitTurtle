@@ -10,6 +10,21 @@ Back from Compare restores the retained scope, query, loaded history, selection,
 
 Working-status replies check both `work_generation` and canonical repository identity. Refresh and writes use `invalidate_read` to advance the preview generation and cancel obsolete work when mutable content is invalidated, even when the next selection is empty. Retain the user's current path/area at reply time, including movement between staged and unstaged groups; do not restore the selection captured at dispatch. Mutable previews bypass the immutable cache.
 
+## Worker and observer ownership
+
+Bounds apply at each owner's scope, not automatically to the whole process. Trace the owning state and its cancellation/release path before adding background work:
+
+| Work | Current owner and lifetime |
+| --- | --- |
+| History, selected previews, search and quiet reads | Each window's `GitTurtle::worker`; tabs share that reader and invalidate obsolete work when switching. |
+| Accepted Git writes and preference saves | Separate `SerialExecutor` instances created by each `GitTurtle`; accepted writes drain after a reply is dropped. This is not a process-wide Git transaction lock. |
+| Changed/working path filtering | The window's lazy `path_filter::State` executor, with snapshot identity and cancellation tickets; working filtering reuses this lane. |
+| Later PDF pages and model frames | Separate process-wide `OnceLock` renderers in `pdf_view::renderer` and `model_view::renderer`; content owners retain their own caches, generations and cancellation. A shared lane does not make retained view memory global or free. |
+| Stash inspection | The dialog's `StashBrowser` owns a metadata executor and preview `Worker`; replacement/closure must also pause retained documents. |
+| Linux desktop preferences | One app-global `desktop_text::Observer`; see [desktop observers](#desktop-observers). |
+
+New read jobs need a captured identity, a bounded queue/input/result and a terminal path for supersession, error and owner release. Keep accepted writes on their existing path. Do not add a second persistence or Git policy implementation to a native view merely because it uses a separate executor.
+
 ## Pages and focus
 
 Projects and Settings are pages separate from the retained repository modes. Construct elements only for the active `AppPage`; calling a hidden page renderer still builds its lists, controls and previews. Keep the root `app_focus`, history `focus`, and `file_focus` handles distinct. Projects and Settings focus the root so application shortcuts remain reachable. Keep `GitTurtleList` navigation out of editable form fields; hidden editors must not steal focus. Retain the selected file's visibility as lists change. Temporary search expansion must not overwrite saved branch-folder expansion choices.
@@ -24,7 +39,13 @@ Branch/worktree filtering and the branch Switch/Create target belong to the last
 
 Quick Open's source inspector owns `file_focus` while the changed-file list is absent. Modal activation restores that visible destination after the dialog closes. Native editor Escape bubbles to the app's Back handler when Find and editor popovers have not consumed it; closing Find alone keeps the source inspection open.
 
-Command-palette rows are bounded workflow descriptors; highlighting is inert, and activation rechecks live availability and captured repository identity. Dialog rendering uses owned snapshots rather than borrowing its parent entity. Keep initial reads and focus restoration after the parent update/layout boundary, and suppress late read results when the dialog closes. Custom controls also need stable accessible IDs, roles, labels and selected/disabled states; visible text alone does not supply those nodes. See [command dispatch](../../../docs/command-palette.md) and [native semantics, display preferences and toolkit patches](../../../docs/native-accessibility.md) for their conditional contracts.
+Command-palette rows are bounded workflow descriptors; highlighting is inert, and activation rechecks live availability and captured repository identity. `shortcuts::SHORTCUTS` owns app bindings and their platform labels used by menus, tooltips and shortcut help; add actions there instead of maintaining parallel key tables. Help rows describe bindings without dispatching actions. Dialog rendering uses owned snapshots rather than borrowing its parent entity. Keep initial reads and focus restoration after the parent update/layout boundary, and suppress late read results when the dialog closes. Custom controls also need stable accessible IDs, roles, labels and selected/disabled states; visible text alone does not supply those nodes. See [command dispatch](../../../docs/command-palette.md) and [native semantics, display preferences and toolkit patches](../../../docs/native-accessibility.md) for their conditional contracts.
+
+## Desktop observers
+
+`desktop_text::start` installs safe defaults before its bounded initial wait. Linux portal setup, signal reads and `fc-match` fallback run in one app-owned background task; foreground application takes only the latest snapshot. Coalesce wakeups, cap work per signal batch and yield so a continuously ready source cannot starve cancellation. Focus regain requests one refresh and retries an unavailable portal; do not introduce idle polling. Child queries have time and output limits and are killed and reaped on exit. The observer cancels and joins its worker during app shutdown.
+
+Desktop rendering preferences and text factors are app-global inputs, while `GitTurtle` windows apply changed geometry to their own active and retained content. Wayland applies the desktop text factor; X11 already obtains window scaling through the toolkit. Do not persist desktop changes as user-selected app sizes or apply the factor twice. The [Linux platform limits](../../../docs/linux.md#platform-limits) own source precedence and unsupported rendering modes. Portal/process regressions live under `desktop_text`, and `repository_tabs` exercises multi-window/retained geometry; native platform evidence remains separate.
 
 ## Ordinary history paging
 
@@ -63,8 +84,8 @@ Directory creation and renames add only the affected subtree. Coalesced index ev
 
 ## Repository tabs
 
-`repository_tabs.rs` owns canonical worktree tab identity, saved bookmarks, and retained `ReturnContext` chains. There is one active repository reader/watcher; switching invalidates pending reads, releases its history stream off the UI thread, pauses PDF/model/Markdown work throughout retained contexts, freezes GIF playback, and restores the new tab before a passive rescan. A selected immutable commit can remain outside the visible history window. Opening aliases deduplicates after core discovery; linked worktrees retain separate tabs and drafts.
+`repository_tabs.rs` owns canonical worktree tab identity, saved bookmarks, and retained `ReturnContext` chains. Each window has one active repository reader/watcher; switching invalidates pending reads, releases its history stream off the UI thread, pauses PDF/model/Markdown work throughout retained contexts, freezes GIF playback, and restores the new tab before a passive rescan. A selected immutable commit can remain outside the visible history window. Opening aliases deduplicates after core discovery; linked worktrees retain separate tabs and drafts.
 
 Warm restoration keeps the root focus attached while the destination tree changes. After layout, restore the exact retained control only if it still belongs to that tree; a removed tab/control falls back to the visible history or file pane. A newer focus change, repository switch, or modal supersedes that one-time restoration.
 
-Up to eight tabs share a conservative 512 MiB retained-state admission allowance, including nested inspection/source/editor content reservations. Exceeding it refuses switching until a tab is explicitly closed. The 16 MiB application-data session restores cold identities and an addressable top comparison, not decoded content or every nested inspection. Accepted operations stay in the global serialized executor with their captured repository; late result and draft updates route by that path. See [the tab workflow and exact restart bounds](../../../docs/repository-tabs.md).
+Up to eight tabs in a window share a conservative 512 MiB retained-state admission allowance, including nested inspection/source/editor content reservations. Exceeding it refuses switching until a tab is explicitly closed. The 16 MiB application-data session restores cold identities and an addressable top comparison, not decoded content or every nested inspection. Accepted operations stay in that window's serialized executor with their captured repository; late result and draft updates route by that path. See [the tab workflow and exact restart bounds](../../../docs/repository-tabs.md).
