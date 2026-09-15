@@ -78,8 +78,14 @@ Describe the problem, resulting behavior and checks you ran. Keep the change rev
 
 Contributions use pull requests with the macOS and Ubuntu Quality checks passing
 and review conversations resolved. CodeQL scans must complete without unresolved
-high/critical security findings or code-scanning errors. Workflows from external contributors need
-maintainer approval before running. We squash-merge changes using the PR title
+high/critical security findings or code-scanning errors. The checked-in
+[CodeQL workflow](.github/workflows/codeql.yml) scans Actions, JavaScript/TypeScript,
+Python and Rust for every pull request to `main`, including forks. Workflows from
+external contributors need maintainer approval before running; contributors do
+not need to enable scanning on their fork or create an upstream copy of the PR.
+If scans are missing, maintainers should follow the
+[CodeQL setup and recovery procedure](docs/public-launch.md#codeql-setup-and-recovery).
+We squash-merge changes using the PR title
 and description, so always use a Conventional Commit PR title and write the
 description for a reader of the permanent Git history.
 Merged branches in this repository are deleted automatically; your fork and
