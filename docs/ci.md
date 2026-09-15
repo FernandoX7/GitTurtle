@@ -31,8 +31,8 @@ pending real superseding-run evidence at C1.
 
 ### Conservative change routing
 
-The mandatory `Changes and CI policy` job checks guidance, routing/result fixtures
-and both Actions workflows with the pinned linter. The
+The mandatory `Changes and CI policy` job checks guidance, all focused CI helper
+fixtures and every checked-in Actions workflow with the pinned linter. The
 [classifier](../scripts/ci/changes.py) then produces boolean product, tooling and
 website outputs plus a versioned JSON plan. Downstream jobs consume those flags;
 the final gate verifies the same recorded plan and actual job results.
@@ -71,9 +71,9 @@ by GitHub's existing repository policy; C1 must observe a real approved fork run
 
 ### Stable gate and compatibility
 
-`Quality gate` runs with `always()` after classification, both matrix jobs and the
-Website call. It requires successful classification and success for each required
-lane. A skipped lane is accepted only when the recorded classification says it is
+`Quality gate` runs with `always()` after classification, formatting, the debug
+and release platform matrices, development tooling and the Website call. It
+requires successful classification and success for each required lane. A skipped lane is accepted only when the recorded classification says it is
 unneeded. Failures, cancellations, unexpected skips, absent jobs, mismatched
 outputs or unknown classification versions fail. Each matrix keeps
 `fail-fast: false` so one platform failure does not discard the other platform's
@@ -81,12 +81,13 @@ diagnostics. A checkout/evaluator failure also leaves the gate unsuccessful.
 
 The current required names, **`Rust · macos-15`** and **`Rust · ubuntu-24.04`**, remain
 as always-running compatibility jobs. They mirror the complete Quality gate,
-while the actual platform work is named `Rust validation · <platform>`. These
-short compatibility jobs execute on Ubuntu; the names preserve required-check
+while the actual platform work is named `Rust tests and Clippy · <platform>` and
+`Rust release · <platform>`. `Rust formatting` checks the workspace once on Ubuntu.
+These short compatibility jobs execute on Ubuntu; the names preserve required-check
 identity, not a claim that their shell step compiles on macOS. A product change
-cannot pass them unless the actual macOS and Ubuntu Rust matrix and other required
-lanes succeeded. A docs-only change can pass after its justified skips. This
-avoids GitHub's [skipped-job success behavior](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks)
+cannot pass them unless both actual macOS/Ubuntu Rust matrices, formatting and
+other required lanes succeeded. A docs-only change can pass after its justified
+skips. This avoids GitHub's [skipped-job success behavior](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks)
 silently bypassing a failed dependency.
 
 No repository settings change is performed by this source patch. C1 must first
@@ -111,6 +112,101 @@ reviewed revert; do not remove protection to clear a failed check. CodeQL remain
 an independent security requirement, including its existing languages, queries,
 high/critical thresholds and error policy. A successful Quality gate alone does
 not establish security acceptance or the full merge critical path.
+
+## Parallel validation and coverage
+
+After classification, the selected jobs have no build dependencies on each other:
+
+- `Rust formatting` checks `cargo fmt --all -- --check` on Ubuntu with the pinned
+  workspace toolchain. It installs no native packages and restores no target cache.
+- `Rust tests and Clippy · macos-15` and `· ubuntu-24.04` each restore the **debug**
+  cache, run `cargo test --locked --workspace --timings`, then
+  `cargo clippy --locked --workspace --all-targets --timings -- -D warnings`.
+  Cargo's default [test selection](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
+  includes unit/integration tests and doctests. There is no package, test-name,
+  target or feature filter that removes the existing platform-conditional tests.
+- `Rust release · macos-15` and `· ubuntu-24.04` each restore the **release** cache
+  and build `gitturtle` with `--release --locked --timings`. The Linux job then runs
+  the existing bundle and isolated installation checks on its own executable,
+  including archive extraction, installed-byte comparison, notices, desktop entry,
+  dynamic libraries and the expected no-display launch failure. The package is
+  development evidence, not complete-license distribution or native desktop QA.
+  Verified macOS bundling remains a separate initiative task.
+- Development-tooling checks still cover both OSes; Website remains reusable.
+  The mandatory policy job runs all CI helper fixtures and pinned Actions-aware
+  lint on every workflow even for documentation-only changes.
+
+The existing change classifier owns selection, the setup action owns each cache's
+lifetime, and the gate owns the final result. No new cross-job build artifact or
+mutable shared target directory is introduced. Debug/release use separate fresh
+runners and matching setup/finish profiles; a finish cannot remove another lane's
+inputs. Package/artifact consumers must precede finish because its successful-main
+cleanup can remove the application executable. The final gate requires the
+formatter and **both** platform matrices, in addition to tooling/Website according
+to the recorded plan. A successful debug matrix cannot cover a failed, cancelled,
+missing or unexpectedly skipped release matrix. Legacy platform check names keep
+mirroring this complete result until C1's verified protection migration.
+
+### Why two compilation lanes per platform
+
+The September 15 baseline spent roughly 13m18s (macOS) and 10m49s (Linux) compiling
+workspace tests, followed by only 120.672s and 30.049s through the final doctest
+result. The serial Clippy steps took 5m47s and 4m08s; optimized builds added 9m48s
+and 7m03s. These are observations from the
+[baseline PR run](https://github.com/FernandoX7/GitTurtle/actions/runs/34992350894),
+not predictions for the new graph.
+
+Release compilation has a distinct profile and can overlap debug work. Keeping
+Clippy with tests avoids another cold debug dependency build and another cache
+reader/writer family; Clippy remains a separate measured step with strict warnings.
+A failing test stops that debug job before Clippy, as before; the independent
+release job continues to retain its diagnostics. There is no automatic retry.
+The short post-compilation test phase does not justify nextest, partitions or
+additional test runners, so this change introduces none. If later measurements
+show Clippy still dominates the warm critical path, compare a separate Clippy lane
+against the extra cold compilation, setup, transfer and runner time before adopting it.
+
+Each Rust matrix has two fixed OS entries, `fail-fast: false`, `max-parallel: 2`
+and a 45-minute job timeout. Thus at most four compilation runners are requested
+per Quality run, plus the independent inexpensive checks. Formatting is bounded
+at five minutes, policy and the final gate at five, tooling at ten and compatibility
+at two. GitHub may queue those jobs under the repository's existing concurrency
+limits; matrix bounds do not promise simultaneous starts. See the documented
+[matrix controls](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/run-job-variations).
+Failed commands still retain their exit code, sanitized logs and available Cargo
+build timing reports in the three-day diagnostics artifacts. A cancelled runner
+may stop before artifact upload; do not claim a missing report was retained.
+
+### C1 fan-out experiment and acceptance still open
+
+The new `debug`/`release` identities do not reuse the earlier combined-profile
+cache. Verify actual misses on the first cold experiment; an earlier combined
+entry is not evidence that these lanes are warm.
+Compare like-for-like product inputs and pinned runner/toolchain identities using
+the [measurement procedure](#reproduce-coldwarm-and-prmain-measurements), then record:
+
+1. Creation-to-format/policy feedback, per-job queue delay, native/toolchain setup,
+   cache restore interval and observed hit state, test compilation/execution,
+   Clippy, release/package time and the completed post-job save/cleanup interval.
+2. The retained payload subset, compressed sizes and any downloads-only fallback
+   under each 1.5 GiB budget. Separate cold PRs from a successful trusted-main
+   seed and genuinely restored warm PR/main samples on **both** platforms.
+3. Quality creation-to-completion and summed runner intervals across **all** jobs,
+   including inexpensive jobs, cache post-actions and compatibility checks. More
+   simultaneous jobs can increase queue contention and runner minutes even if
+   the visible critical path falls. Duplicate Linux package setup/downloads and
+   profile-specific build scripts can increase cold cost; report this regression.
+4. The full merge path including every required CodeQL language. A faster release
+   lane alone does not prove a faster merge. Record sample counts, median/tail and
+   unavailable observations; a small set does not establish production p95.
+5. Real negative PR cases for each Rust phase: failure, cancellation and unexpected
+   skip, plus docs-only justified skips. Verify the actual gate and both legacy
+   required names remain unsuccessful for a failed required platform. Local result
+   fixtures establish the evaluator's contract, not GitHub's matrix execution.
+
+No hosted improvement is established by this source patch. If cold overhead,
+cache eviction or warm critical-path results miss the initiative targets, propose
+measured tuning while retaining tests, doctests, strict lint and platform coverage.
 
 ## Collect a report
 
@@ -289,11 +385,11 @@ a command name replaces that command's previous files, including after a launch
 failure, while other command records remain.
 
 The summary reserves fields for cache restore duration, save duration, hit/miss,
-size and build timing artifacts. Quality currently has no Cargo/build cache, so
-these cache fields are unavailable. A blank field is not a cache miss, and no
-restore/save duration is assumed to be zero. A future cache owner must supply
-actual restore/save evidence and invalidation context before comparing cache
-benefit.
+size and build timing artifacts. Quality's setup action supplies explicit restore
+and budget records; compressed size and completed post-job save duration need
+hosted evidence. A blank field is not a cache miss, and no restore/save duration
+is assumed to be zero. Supply actual restore/save evidence and invalidation
+context before comparing cache benefit.
 
 Use the same helper locally when investigating a command:
 
@@ -413,7 +509,8 @@ counts/statistics and limitations here when the coordinator establishes them.
 ## Local verification
 
 The controller's tooling profile does not automatically discover these CI helper
-tests. Run them explicitly; Quality also runs them in its development-tooling jobs.
+tests. Run them explicitly; Quality runs them in the mandatory inexpensive policy
+job and on both selected development-tooling platforms.
 From the repository root:
 
 ```sh
@@ -435,7 +532,7 @@ the workflow verifies that digest before execution. With that version available:
 
 ```sh
 actionlint -version
-actionlint -shellcheck='' -pyflakes='' .github/workflows/quality.yml .github/workflows/website.yml
+actionlint -shellcheck='' -pyflakes=''
 ```
 
 The explicit flags make this Actions validation independent of optional installed
@@ -513,13 +610,14 @@ and [Cargo build timings](https://doc.rust-lang.org/cargo/reference/timings.html
 ## Bounded Rust dependency caching
 
 Quality's [Rust setup action](../.github/actions/setup-rust/action.yml) owns native
-setup and the lifetime of optional compilation caches. Each Rust job calls its
+setup and the lifetime of optional compilation caches. Each compilation job calls its
 `setup` phase before validation and its matching `finish` phase **after every
 consumer of `target`**, including package construction and installation checks.
 Finish may remove compiled outputs to bound a successful main cache. Keep future
-binary/artifact consumers before that boundary. Formatting, locked workspace tests
-(including doctests), strict all-target Clippy and locked release compilation run
-on every selected Rust job regardless of a cache hit.
+binary/artifact consumers before that boundary. The debug job always runs locked
+workspace tests (including doctests) and strict all-target Clippy; the separate
+release job always runs locked optimized compilation, regardless of a cache hit.
+Formatting has no compilation cache or native setup.
 
 ### Tool choice and compatible reuse
 
@@ -549,8 +647,9 @@ separates OS/architecture, installed Rust compiler release/host/commit identitie
 and Cargo/Rust/native compiler flags. The local compatibility prefix additionally
 hashes:
 
-- The selected output family: currently `debug-release` for serial validation;
-  `debug` and `release` are separate identities for subsequent phase separation.
+- The selected output family: `debug` for tests/doctests and Clippy, `release` for
+  optimized compilation and packaging. These never restore one another's payload.
+  The earlier combined `debug-release` identity is not used by the split workflow.
 - Actual bytes of all tracked Cargo manifests/lockfiles, toolchain files,
   `build.rs` files, root Cargo configuration, the setup action and every tracked
   vendor file. A vendor C/Rust source edit invalidates without needing a manifest
@@ -595,11 +694,11 @@ Before a save, [.github/actions/setup-rust/cache.py](../.github/actions/setup-ru
 resolves locked all-feature metadata (matching the upstream save graph), then
 accounts logical file bytes plus a conservative 4 KiB per directory/file entry,
 counting hardlinked aliases separately. It permits at most 250,000 entries and
-**3 GiB for the current combined profile**, or **1.5 GiB for each separate profile**.
-These are pre-cleanup payload ceilings, not compressed archive measurements.
-The two current platform families therefore retain at most 6 GiB per compatible
-generation before compression; future debug/release separation keeps that same
-aggregate ceiling across four families.
+**1.5 GiB for each separate profile** (the helper retains a 3 GiB limit for its
+older combined-profile mode). These are pre-cleanup payload ceilings, not
+compressed archive measurements. Four current platform/profile families therefore
+retain at most 6 GiB per compatible generation before compression, the same
+aggregate ceiling as the two earlier combined-profile families.
 
 After removing local package outputs through `cargo clean --locked --package`,
 the helper may clean up to eight largest dependency package groups, stopping new

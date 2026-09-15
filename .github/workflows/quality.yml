@@ -35,8 +35,8 @@ jobs:
           fetch-depth: 0
       - name: Check development guidance
         run: python3 scripts/check-agent-guidance.py
-      - name: Test routing and required results
-        run: python3 -m unittest discover -s scripts/ci/tests -p 'test_changes.py'
+      - name: Test CI helpers and required results
+        run: python3 -B -m unittest discover -s scripts/ci/tests -p 'test_*.py'
       - name: Validate Actions workflow with actionlint 1.7.12
         run: |
           actionlint_dir="$RUNNER_TEMP/actionlint-1.7.12"
@@ -48,7 +48,7 @@ jobs:
             "$actionlint_dir/actionlint.tar.gz" | sha256sum --check --status
           tar -xzf "$actionlint_dir/actionlint.tar.gz" -C "$actionlint_dir" actionlint
           "$actionlint_dir/actionlint" -version
-          "$actionlint_dir/actionlint" -shellcheck='' -pyflakes='' .github/workflows/quality.yml .github/workflows/website.yml
+          "$actionlint_dir/actionlint" -shellcheck='' -pyflakes=''
       - name: Classify changed inputs
         id: classify
         run: python3 scripts/ci/changes.py classify --output "$GITHUB_OUTPUT"
@@ -60,6 +60,7 @@ jobs:
     timeout-minutes: 10
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         os: [macos-15, ubuntu-24.04]
     steps:
@@ -93,14 +94,46 @@ jobs:
           retention-days: 3
           if-no-files-found: warn
           include-hidden-files: false
-  rust:
+  rust-format:
     needs: changes
     if: needs.changes.outputs.product == 'true'
-    name: Rust validation · ${{ matrix.os }}
+    name: Rust formatting
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      CARGO_TERM_COLOR: always
+      GIT_CONFIG_NOSYSTEM: 1
+      GIT_CONFIG_GLOBAL: /dev/null
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # rustup uses rust-toolchain.toml; formatting needs no native libraries,
+      # dependency restore or compilation, and never waits for a Rust build.
+      - name: Format with the pinned workspace toolchain
+        run: python3 scripts/ci/metrics.py measure --name format --directory "$RUNNER_TEMP/ci-metrics" -- cargo fmt --all -- --check
+      - name: Summarize CI measurements
+        if: always()
+        run: python3 scripts/ci/metrics.py summary --directory "$RUNNER_TEMP/ci-metrics" >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve CI measurements and sanitized diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-diagnostics-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-metrics/
+          retention-days: 3
+          if-no-files-found: warn
+          include-hidden-files: false
+
+  rust-debug:
+    needs: changes
+    if: needs.changes.outputs.product == 'true'
+    name: Rust tests and Clippy · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 45
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         os: [macos-15, ubuntu-24.04]
     env:
@@ -116,13 +149,56 @@ jobs:
       - name: Prepare Rust and restore bounded dependencies
         uses: ./.github/actions/setup-rust
         with:
-          profile: debug-release
-      - name: Format
-        run: python3 scripts/ci/metrics.py measure --name format --directory "$RUNNER_TEMP/ci-metrics" -- cargo fmt --all -- --check
-      - name: Locked workspace tests
+          profile: debug
+      # These phases share one cold debug build. Cargo's default workspace
+      # test selection includes unit/integration tests and doctests.
+      - name: Locked workspace tests and doctests
         run: python3 scripts/ci/metrics.py measure --name tests --directory "$RUNNER_TEMP/ci-metrics" -- cargo test --locked --workspace --timings
-      - name: Locked Clippy
+      - name: Locked all-target Clippy
         run: python3 scripts/ci/metrics.py measure --name clippy --directory "$RUNNER_TEMP/ci-metrics" -- cargo clippy --locked --workspace --all-targets --timings -- -D warnings
+      - name: Prepare bounded successful-main debug cache save
+        uses: ./.github/actions/setup-rust
+        with:
+          phase: finish
+          profile: debug
+      - name: Summarize CI measurements
+        if: always()
+        run: python3 scripts/ci/metrics.py summary --directory "$RUNNER_TEMP/ci-metrics" >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve CI measurements and sanitized diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-diagnostics-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-metrics/
+          retention-days: 3
+          if-no-files-found: warn
+          include-hidden-files: false
+
+  rust-release:
+    needs: changes
+    if: needs.changes.outputs.product == 'true'
+    name: Rust release · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+      GIT_CONFIG_NOSYSTEM: 1
+    steps:
+      - name: Isolate CI Git configuration
+        run: printf 'GIT_CONFIG_GLOBAL=%s/gitturtle-ci-gitconfig\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prepare Rust and restore bounded dependencies
+        uses: ./.github/actions/setup-rust
+        with:
+          profile: release
       - name: Locked release compilation
         run: python3 scripts/ci/metrics.py measure --name release --directory "$RUNNER_TEMP/ci-metrics" -- cargo build --release --locked -p gitturtle --timings
       - name: Linux bundle and isolated user installation
@@ -165,7 +241,7 @@ jobs:
         uses: ./.github/actions/setup-rust
         with:
           phase: finish
-          profile: debug-release
+          profile: release
       - name: Summarize CI measurements
         if: always()
         run: python3 scripts/ci/metrics.py summary --directory "$RUNNER_TEMP/ci-metrics" >> "$GITHUB_STEP_SUMMARY"
@@ -190,7 +266,7 @@ jobs:
   quality:
     name: Quality gate
     if: always()
-    needs: [changes, agent-tooling, rust, website]
+    needs: [changes, agent-tooling, rust-format, rust-debug, rust-release, website]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -211,6 +287,7 @@ jobs:
     timeout-minutes: 2
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         os: [macos-15, ubuntu-24.04]
     steps:

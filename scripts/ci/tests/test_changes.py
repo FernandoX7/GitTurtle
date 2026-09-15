@@ -71,11 +71,26 @@ class ClassificationTests(unittest.TestCase):
 
 
 class GateTests(unittest.TestCase):
+    def test_independent_phase_results(self):
+        # Literal job names here model the workflow's needs payload independently
+        # of JOBS, so dropping an expected phase cannot silently update the test.
+        cases = json.loads((Path(__file__).parent / "fixtures/phase-results.json").read_text())
+        for case in cases:
+            with self.subTest(case=case["name"]):
+                plan = changes.classify_paths([case["path"].encode()])
+                needs = {"changes": needs_for(plan)["changes"],
+                         **{job: {"result": result} for job, result in case["results"].items()}}
+                if case["accept"]:
+                    self.assertEqual(len(changes.gate(needs)), 5)
+                else:
+                    with self.assertRaises(changes.PolicyError):
+                        changes.gate(needs)
+
     def test_required_lanes_pass_and_justified_skips_pass(self):
         for paths in [[b"docs/user-guide.md"], [b"website/check.py"], [b"scripts/ci/metrics.py"],
                       [b"crates/app/src/main.rs"]]:
             with self.subTest(paths=paths):
-                self.assertEqual(len(changes.gate(needs_for(changes.classify_paths(paths)))), 3)
+                self.assertEqual(len(changes.gate(needs_for(changes.classify_paths(paths)))), 5)
 
     def test_required_failure_cancellation_and_skip_each_fail(self):
         baseline = needs_for(changes.full_plan("full"))
@@ -91,7 +106,7 @@ class GateTests(unittest.TestCase):
         baseline = needs_for(changes.classify_paths([b"README.md"]))
         for result in ["failure", "cancelled"]:
             needs = copy.deepcopy(baseline)
-            needs["rust"]["result"] = result
+            needs["rust-release"]["result"] = result
             with self.assertRaises(changes.PolicyError):
                 changes.gate(needs)
 
@@ -99,7 +114,7 @@ class GateTests(unittest.TestCase):
         needs = needs_for(changes.classify_paths([b"README.md"]))
         for job in changes.JOBS:
             needs[job]["result"] = "success"
-        self.assertEqual(len(changes.gate(needs)), 3)
+        self.assertEqual(len(changes.gate(needs)), 5)
 
     def test_absent_and_unknown_jobs_fail(self):
         baseline = needs_for(changes.full_plan("full"))
@@ -132,7 +147,7 @@ class GateTests(unittest.TestCase):
     def test_gate_cli_reports_actual_exit_status(self):
         good = needs_for(changes.full_plan("full"))
         bad = copy.deepcopy(good)
-        bad["rust"]["result"] = "skipped"
+        bad["rust-debug"]["result"] = "skipped"
         for needs, expected in [(good, 0), (bad, 1), ({}, 1)]:
             completed = subprocess.run([sys.executable, str(SCRIPT), "gate"],
                                        env={**os.environ, "NEEDS_JSON": json.dumps(needs)},

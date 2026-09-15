@@ -1,0 +1,131 @@
+[
+  {
+    "name": "all product phases completed",
+    "path": "crates/app/src/main.rs",
+    "results": {
+      "rust-format": "success",
+      "rust-debug": "success",
+      "rust-release": "success",
+      "agent-tooling": "success",
+      "website": "success"
+    },
+    "accept": true
+  },
+  {
+    "name": "documentation skips every optional phase",
+    "path": "README.md",
+    "results": {
+      "rust-format": "skipped",
+      "rust-debug": "skipped",
+      "rust-release": "skipped",
+      "agent-tooling": "skipped",
+      "website": "skipped"
+    },
+    "accept": true
+  },
+  {
+    "name": "rust-format skipped cannot pass after sibling success",
+    "path": "crates/app/src/main.rs",
+    "results": {
+      "rust-format": "skipped",
+      "rust-debug": "success",
+      "rust-release": "success",
+      "agent-tooling": "success",
+      "website": "success"
+    },
+    "accept": false
+  },
+  {
+    "name": "rust-debug failure cannot pass after sibling success",
+    "path": "crates/app/src/main.rs",
+    "results": {
+      "rust-format": "success",
+      "rust-debug": "failure",
+      "rust-release": "success",
+      "agent-tooling": "success",
+      "website": "success"
+    },
+    "accept": false
+  },
+  {
+    "name": "rust-debug cancelled cannot pass after sibling success",
+    "path": "crates/app/src/main.rs",
+    "results": {
+      "rust-format": "success",
+      "rust-debug": "cancelled",
+      "rust-release": "success",
+      "agent-tooling": "success",
+      "website": "success"
+    },
+    "accept": false
+  },
+  {
+    "name": "rust-release failure cannot pass after sibling success",
+    "path": "crates/app/src/main.rs",
+    "results": {
+      "rust-format": "success",
+      "rust-debug": "success",
+      "rust-release": "failure",
+      "agent-tooling": "success",
+      "website": "success"
+    },
+    "accept": false
+  },
+  {
+    "name": "rust-release cancelled cannot pass after sibling success",
+    "path": "crates/app/src/main.rs",
+    "results": {
+      "rust-format": "success",
+      "rust-debug": "success",
+      "rust-release": "cancelled",
+      "agent-tooling": "success",
+      "website": "success"
+    },
+    "accept": false
+  },
+  {
+    "name": "rust-release skipped cannot pass after sibling success",
+    "path": "crates/app/src/main.rs",
+    "results": {
+      "rust-format": "success",
+      "rust-debug": "success",
+      "rust-release": "skipped",
+      "agent-tooling": "success",
+      "website": "success"
+    },
+    "accept": false
+  },
+  {
+    "name": "missing release result cannot pass",
+    "path": "crates/app/src/main.rs",
+    "results": {
+      "rust-format": "success",
+      "rust-debug": "success",
+      "agent-tooling": "success",
+      "website": "success"
+    },
+    "accept": false
+  },
+  {
+    "name": "old combined Rust result cannot replace split results",
+    "path": "crates/app/src/main.rs",
+    "results": {
+      "rust": "success",
+      "agent-tooling": "success",
+      "website": "success"
+    },
+    "accept": false
+  },
+  {
+    "name": "docs cancellation is not a justified skip",
+    "path": "README.md",
+    "results": {
+      "rust-format": "cancelled",
+      "rust-debug": "skipped",
+      "rust-release": "skipped",
+      "agent-tooling": "skipped",
+      "website": "skipped"
+    },
+    "accept": false
+  }
+]

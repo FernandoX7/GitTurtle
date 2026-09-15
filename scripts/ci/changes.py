@@ -19,7 +19,10 @@ import tempfile
 MAX_INPUT_BYTES = 4 * 1024 * 1024
 MAX_PATHS = 10000
 LANES = ("product", "tooling", "website")
-JOBS = {"rust": "product", "agent-tooling": "tooling", "website": "website"}
+# Keep each independent required phase explicit. A successful debug matrix
+# cannot compensate for a missing/cancelled release matrix or formatter.
+JOBS = {"rust-format": "product", "rust-debug": "product", "rust-release": "product",
+        "agent-tooling": "tooling", "website": "website"}
 OID = re.compile(r"[0-9a-f]{40}\Z")
 DOC_NAMES = {
     "README.md", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "SECURITY.md",
