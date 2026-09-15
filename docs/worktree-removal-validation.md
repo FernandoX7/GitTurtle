@@ -69,3 +69,79 @@ macOS runtime, native Wayland and hosted CI were not exercised by this check.
 Initialized submodule refusal and hidden index flags were verified in core
 fixtures; they are not claimed as separately exercised native interactions.
 Sparse worktrees with skip-worktree entries require external Git review.
+
+
+## September 15 maintainer review of PR #5
+
+The revised application was exercised from clean source
+`3b0a958ed0533af816fb015fabfc374ba2e055db`. Its Linux x86-64 release executable
+SHA-256 is `39cbefa6f13c689c7039da14f210b5768ad30de87dcc714564b310f194e2a767`;
+embedded build metadata identifies Rust 1.98.0 and release profile. Subsequent
+validation-record edits do not change this executable's source identity.
+
+### Review fixes and automated validation
+
+Removal now refreshes the selected manager row before confirmation and rejects
+cancelled or obsolete asynchronous reviews. Core revalidation also detects
+replacement checkout/admin directories, redirected private administration paths,
+symlinked `.git` entries and ambiguous registrations. Regression fixtures cover
+the reproduced replacement-directory and private-admin-symlink failures. Unix
+fixtures retain byte-safe paths, with invalid UTF-8 pathname coverage confined to
+Linux so the fixtures remain compatible with macOS filesystems. The existing
+conservative refusal of assume-unchanged and skip-worktree entries remains.
+
+The original Ubuntu CI failure was a draft-shutdown fixture timing race: real
+filesystem saves could outlive GPUI's simulated quit polling. The recovery and
+commit draft fixtures now synchronize shutdown with bounded worker completion,
+while preserving the full save queue, removed window and exact final text
+assertions. A controlled slow save reproduced the original failure and passed
+after the change. Negative controls still failed when the quit observer was
+removed or the wrong final text was saved. Production shutdown timing is unchanged.
+
+On the exact source above, `cargo fmt --all -- --check`,
+`cargo check --locked -p gitturtle`, `cargo test --locked --workspace`
+(**775 passed, zero failed, five existing ignores**),
+`cargo clippy --locked --workspace --all-targets -- -D warnings`, and
+`cargo build --release --locked -p gitturtle` all passed. Workspace tests used
+normal concurrency. Focused worktree coverage included nine GPUI tests,
+fifteen core integration tests and two core unit tests.
+
+### Native validation
+
+The actual release application ran with isolated preferences on a nested Weston
+Wayland compositor using software rendering, hosted by Xvfb/Openbox on Linux.
+The disposable fixture contained main, clean, dirty, locked, assume-unchanged,
+skip-worktree and unrelated worktrees. Native accessibility state and screenshots
+were inspected after interaction.
+
+- Keyboard navigation and Shift+F10 opened the exact worktree's manager without
+  switching the current repository. The accessibility hint now describes both
+  branch and worktree actions. Right-click exposed the removal action.
+- Adding an ignored file after the manager's initial inspection made Remove
+  refresh the details and display a disabled action with a protection reason.
+- The confirmation displayed the target folder, branch and full commit ID.
+  Cancel preserved the folder, registration and private administration directory.
+- Adding an untracked file after confirmation opened caused a stale-review
+  refusal. Its contents and worktree metadata survived.
+- After preserving that file outside the target and explicitly reviewing again,
+  confirmation removed only the clean checkout, its registration and its private
+  administration directory. The navigator count changed from seven to six.
+- Git/filesystem assertions verified unchanged main HEAD/index and all branch
+  refs, including the removed worktree's branch. Every other registration, the
+  locked state, hidden edits and dirty/unrelated contents survived.
+- Main, dirty, locked, assume-unchanged and skip-worktree selections displayed
+  their protection reasons with removal disabled. Escape dismissed the manager
+  while retaining the current repository and history context.
+
+The QA app closed normally, the temporary display servers stopped, and the two
+accessibility flags were restored to their original values. The installed app
+and its preferences were preserved. Raw captures and logs are local evidence;
+they are not distribution artifacts.
+
+### Scope
+
+This run does not establish macOS native interaction or packaging, physical-GPU
+behavior, performance, or exhaustive layout coverage. Hosted CI is recorded on
+[PR #5](https://github.com/FernandoX7/GitTurtle/pull/5) separately. Preflight
+identity checks do not make Git removal atomic against concurrent external
+filesystem writers. No force removal or automatic metadata repair is attempted.

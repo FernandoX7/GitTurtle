@@ -4,6 +4,16 @@ Current milestone: [security, architecture and resource bounds](security-quality
 
 This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native workflow evidence is primarily macOS-specific; the September 14 entries add Pop!_OS startup and clean Ubuntu/virtual-native checks. Current platform execution and access limits belong in these dated records, the active milestone and [environment report](benchmarks/2026-09-09-milestone-environment.md). The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Published distribution packages are outside the current milestone; the Linux runbook now includes a local teammate bundle.
 
+## September 15 PR #5 maintainer review
+
+Clean release source `3b0a958` passed 775 workspace tests (five existing ignores),
+formatting, app check, strict workspace Clippy and release compilation. The
+[maintainer validation record](worktree-removal-validation.md#september-15-maintainer-review-of-pr-5)
+documents stale-review cancellation, checkout/admin identity guards, the Ubuntu
+draft-shutdown fixture correction, and native Wayland checks for protected
+targets, cancellation, fresh review, cleanup and branch retention. macOS native
+interaction and hosted checks are scoped separately from this local evidence.
+
 ## September 14 guarded worktree removal
 
 Implementation commits `95d97a7` and `9585271` add navigator removal actions,
