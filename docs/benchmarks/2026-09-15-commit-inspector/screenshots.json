@@ -1,0 +1,23 @@
+{
+  "unicode-dark": {
+    "file": "unicode-dark.png",
+    "sha256": "e2532fad91518749e3a2492162ccc841e9a97041d0b210f7a183d60f6bc5dc76",
+    "source_capture": "installed-eeb-unicode-with-system-font",
+    "pid": 929674,
+    "window_geometry": "WINDOW=12582913\nX=2\nY=44\nWIDTH=1480\nHEIGHT=973\nSCREEN=0\n"
+  },
+  "narrow-enlarged": {
+    "file": "narrow-enlarged.png",
+    "sha256": "aa769319d793ae329fb60e85147c8b7e97541297b73101887b5189a0b3eed83a",
+    "source_capture": "inspector-eeb-narrow-light-18",
+    "pid": 852918,
+    "window_geometry": "WINDOW=6291457\nX=2\nY=44\nWIDTH=1080\nHEIGHT=800\nSCREEN=0\n"
+  },
+  "merge-parents": {
+    "file": "merge-parents.png",
+    "sha256": "e1b4f96254c42e8a46edf6d911d64546a42f5a7645ccb688a62402a0c0fbc695",
+    "source_capture": "inspector-eeb-parent-two",
+    "pid": 852918,
+    "window_geometry": "WINDOW=6291457\nX=2\nY=44\nWIDTH=1080\nHEIGHT=800\nSCREEN=0\n"
+  }
+}

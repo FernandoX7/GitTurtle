@@ -17,6 +17,16 @@ Native records must identify the exact binary and platform; source tests do not
 establish Linux/macOS runtime quality. The initiative's user-deferred macOS
 verification remains open until that evidence is supplied.
 
+## September 15 commit-inspector and Linux package checks
+
+Clean release `eebf47a` exercised the persistent message inspector and an actual
+Linux archive/install/relaunch in virtual Ubuntu 24.04 X11. The
+[dated evidence](benchmarks/2026-09-15-commit-inspector.md) records layout, Unicode,
+large-message copying, native accessibility, merge parents, retained navigation,
+package digests and installer recovery. C0 license clearance, hosted artifact
+transfer and user-owned macOS/Apple verification remain open. Later source and
+fixture commits do not turn this into evidence for another executable.
+
 ## September 15 PR #5 macOS merge review
 
 Source `0d4d8ce` passed 771 workspace tests, strict Clippy, formatting, app check
