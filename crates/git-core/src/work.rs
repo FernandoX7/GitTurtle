@@ -1459,7 +1459,7 @@ fn fresh_destination(path: &Path) -> Result<PathBuf> {
             // separate from the destination path returned to the caller.
             let mut entries = match std::fs::read_dir(&destination) {
                 Ok(entries) => entries,
-                Err(error) => return Err(error.into()),
+                Err(error) => return Err(error).context("Unable to inspect destination folder"),
             };
             ensure!(
                 entries.next().is_none(),
