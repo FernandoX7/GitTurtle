@@ -1,5 +1,214 @@
 # Release preparation
 
+## Tagged release workflow
+
+**Status: source preparation and local simulated tests.** No release, protected
+environment, signing credential or published download is established by these
+files. The coordinator's [C4 checkpoint](development/commit-inspector-and-ci.md#c4--release-rehearsal-and-macos-distribution)
+remains open. The user will verify macOS separately. Complete C0 license notices
+are mandatory for every public binary, including temporary Actions artifacts.
+
+[`release.yml`](../.github/workflows/release.yml) is an explicitly dispatched
+workflow. Ordinary PR, main and tag pushes cannot publish. It supports exactly
+`x86_64-unknown-linux-gnu` and `aarch64-apple-darwin`; choose `linux`, `macos` or
+`linux,macos`. Linux-only runs allocate no macOS runner or Apple credentials.
+
+The release owner chooses the existing tag, exact tag object, workspace version,
+full source commit, supported platform set and successful full Quality run.
+The chosen source must be the current reviewed `main` revision and the workflow
+must execute from that same revision. Older branches, PR artifacts, moved tags
+and mixed-source packages fail. This initial workflow intentionally does not
+release an older maintenance commit; that needs a reviewed extension of the
+trusted-ref policy. It never creates or moves a tag.
+
+### Source, package and privilege boundaries
+
+1. **Context preflight** uses the existing read-only
+   [`identity.py`](../scripts/release/identity.py) to verify the exact tag object,
+   peeled commit, workspace/member versions, lockfile and actual tracked source
+   bytes. It also checks the remote tag and current main revision. The declared
+   Quality run must be a successful `push` or `workflow_dispatch` run from this
+   repository at that source. Actual successful jobs must include formatting,
+   both platform test/Clippy jobs, both platform release jobs and the Quality
+   gate. Skipped product validation is insufficient. A changed Quality attempt
+   requires a newly reviewed context.
+2. **Read-only build jobs** compile the selected explicit targets from clean
+   source. They use the pinned compiler and existing dependency cache, with cache
+   finish after package consumers. macOS jobs select the highest installed full
+   Xcode 26+ before computing cache identity and check its Metal/package tools;
+   signing selects the same supported toolchain family on its own runner. Missing
+   supported tools fail explicitly. The existing packagers require clean release
+   identity and complete target-specific notices. Each extracted archive receives
+   the platform package checks before upload. License gaps fail before upload;
+   development packages cannot become release inputs.
+3. **Optional signing** consumes only the macOS package created by this workflow
+   run and attempt. Archive and manifest digests, source, version, target, original
+   executable digest, full notices and the ad-hoc signature are checked before
+   the credential-bearing step. The constant `gitturtle-macos-signing`
+   environment must authorize the precise context. The signing helper handles
+   credentials and cleanup; no signing step builds Rust or runs PR code.
+4. **Assembly** downloads same-run packages with artifact digest mismatch set to
+   `error`, then independently checks package bytes and every inventory notice
+   digest. Missing or extra promised platforms fail. Cross-platform assembly
+   parses and hashes archives; it does not execute downloaded binaries. A signed
+   Mac package additionally needs the accepted signing report, selected
+   certificate/Team ID, final executable digest and final archive digest.
+5. **Publication** is a separate Ubuntu job with `contents: write`, selected only
+   by an explicit `publish: true`. The constant `gitturtle-release` environment
+   must authorize the context after the exact assembled assets are reviewable.
+   It verifies the assembly digest from the producer job, all local asset bytes,
+   remote tag and unchanged successful Quality evidence before any release write.
+   It rechecks the tag around draft creation and before/after publication; C4
+   must additionally establish the protected-tag boundary described below.
+   No PR-generated binary can enter this path.
+
+The workflow uses immutable action commits. GitHub's
+[manual workflow trigger](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch)
+and [environments](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)
+provide the execution and approval boundaries. An environment name in YAML does
+**not** configure protection. C4 requires the account owner to configure reviewer
+protection, prevent self-approval where supported, restrict deployment to `main`
+and review who can change the environment. Secrets must exist only in the
+signing environment. Neither source tests nor a dispatch attempt certifies these
+live settings.
+
+### Concrete C4 activation and rehearsal
+
+Before dispatch, retain a reviewed input record containing all workflow inputs:
+`tag`, `version`, `commit`, `tag_object`, `quality_run`, `platforms`,
+`macos_signing`, `certificate`, `team_id` and `publish`. The certificate is the
+exact Developer ID Application SHA-1 fingerprint; the Team ID is also explicit.
+Both must be empty for ad-hoc or Linux-only runs. Choose `publish: false` for
+assembly rehearsal; this is the default. No example here invents a release tag
+or authorizes publication.
+
+1. Complete C0 for all chosen targets, refresh the candidate and collect required
+   native/package evidence on that exact build. Ensure the release workflow and
+   package source have been reviewed and integrated into `main`.
+2. The release owner explicitly chooses and approves the version/tag/source,
+   platform and signing set. Establish the existing tag through that separate
+   authorized operation and capture its object SHA; this workflow will not
+   manufacture one. Retain a successful full Quality run for the exact commit.
+3. Configure the protected environments above, leaving activation variables
+   unset initially. For signing, provision the credentials in the component
+   section below. Protect the selected release tag against deletion and force
+   updates and exclude concurrent tag writers throughout publication. GitHub's
+   release-creation API has no atomic “tag still equals this object” condition
+   and can create a missing tag; local preflight cannot enforce remote tag
+   immutability on its own. Do not make Linux-only operation depend on the
+   signing environment.
+4. Dispatch the reviewed input record with publication disabled:
+
+   ```sh
+   gh workflow run release.yml --ref main --json < reviewed-release-inputs.json
+   ```
+
+   The input file is the owner's concrete record, not a repository default. The
+   preflight prints a context SHA-256 binding source, tag object, version,
+   platforms, signing identity and exact Quality evidence. For a notarized
+   rehearsal, set environment variable `GITTURTLE_SIGNING_CONTEXT` to that exact
+   digest only after reviewing the context, then approve the waiting signing job.
+   An absent or different activation value fails instead of falling back.
+5. Download the `release-assembly-RUN-ATTEMPT` artifact. Keep its run URL, exact
+   manifest SHA-256, asset hashes, notices and proposed `RELEASE_NOTES.md`.
+   Hard-verify checksums, extract into disposable locations and follow the native
+   package procedure. For macOS, establish actual Apple acceptance and the
+   quarantined/offline Gatekeeper launch flow described below. These observations
+   cannot be replaced by the source fixtures or a command-line signature check.
+6. Rehearse collision/partial-failure handling with the local tests. Any live
+   draft rehearsal that creates GitHub release objects needs its own approved
+   context; there is no hidden live test publication. If actual public
+   publication is selected, dispatch with `publish: true` and review that run's
+   exact assembly before approving its queued publication job. The fresh build
+   may have different bytes from an earlier rehearsal; verify the current hashes.
+   Set environment variable `GITTURTLE_RELEASE_CONTEXT` to the reviewed context
+   digest only for that explicitly authorized release.
+7. After publication, download the actual release assets into fresh locations,
+   verify hashes and package identity again, and retain the applicable install
+   and native observations. Only then update user-facing download links. Clear
+   both activation variables when the approved operation is finished.
+
+A rehearsal is useful evidence, not authorization to publish a later arbitrary
+version. The context digest deliberately excludes workflow run IDs so the same
+chosen release can be rehearsed again, but receipts include the exact run and
+attempt. Rerunning only failed jobs with an earlier context is refused; use a
+new complete reviewed run. Build timestamps/signing may change asset bytes, so a
+fresh run never establishes an identical publication retry merely by sharing a
+version number.
+
+### Release contents and signing provenance
+
+Assembly contains the selected `.tar.gz` and/or `.zip` files, each detached
+`.sha256` and `.manifest.json`, `SHA256SUMS`, `RELEASE_NOTES.md` and
+`release-manifest.json`. The release manifest binds the context, platform/signing
+labels and all other asset hashes. The manifest's own hash is recorded in the
+workflow summary and publication report. Each archive contains complete license
+notices and its format-2 package identity. macOS keeps `build-info.json` outside
+the app seal. `SHA256SUMS` covers the downloadable payloads and notes; its own
+hash and the other asset hashes are in the release manifest.
+
+Ad-hoc macOS output is labelled `ad-hoc`; it is not Developer ID signed or
+notarized. A selected notarized path never silently falls back. After the signing
+helper completes credential cleanup, the wrapper preserves its signed ZIP entries
+and app metadata, adds only detached package provenance, then computes the final
+archive digest. A bounded extraction establishes ordinary entries; `ditto`
+restores platform metadata into a second private tree. Actual app bytes and
+executable modes are compared before strict signature and staple validation.
+
+The detached `macos-signing-result.json` preserves the helper's original
+`final_archive` as the stapled app ZIP **before** detached package provenance,
+and adds `release_archive` for the exact distributed ZIP. It separately records
+pre-sign, signed and post-staple executable hashes. The final package manifest
+uses `developer-id-notarized` and the actual final executable digest; source,
+version, target, original build input and complete notice checks still apply.
+No already signed app file is edited to insert provenance.
+
+### Publication retries and uncertain outcomes
+
+[`github.py`](../scripts/release/github.py) creates one draft, uploads each
+asset once, downloads and hashes the uploaded bytes, rechecks the complete asset
+set and tag, then publishes once. It leaves `make_latest` false; promoting a
+release to latest is a separate owner decision. The implementation follows the
+[GitHub releases API](https://docs.github.com/en/rest/releases/releases) and
+[release assets API](https://docs.github.com/en/rest/releases/assets). It does
+not request broader workflow-write credentials; an API refusal remains a
+visible unresolved operation.
+
+Before each write, the private publication report records the potentially
+uncertain operation. On an error, cancellation or lost reply, preserve that
+report and inspect GitHub before retrying. An existing complete published release
+is accepted only when identity, exact description, complete asset names/sizes
+and downloaded hashes all match. A different asset, changed description,
+extra/missing asset, existing draft or partial release stops for inspection.
+There is no overwrite, deletion, tag movement or blind resume. If an authorized
+owner decides to recover a partial draft, the owner must first inspect its
+recorded ID and exact uploaded bytes; this initial workflow does not automate
+that recovery.
+
+A local retry reuses neither old signing credentials nor an unknown notarization
+submission. Credential and service ambiguity follows the signing recovery
+procedure below. Action artifacts expire after three days; retain the approved
+release record outside transient run storage before relying on it.
+
+### Source validation for assembly and publication
+
+```sh
+python3 -m py_compile scripts/release/identity.py scripts/release/github.py scripts/release/workflow.py
+python3 scripts/release/workflow.py --help
+python3 -m unittest discover -s scripts/ci/tests -p 'test_release*.py'
+python3 -m unittest discover -s scripts/ci/tests -p 'test_sign_macos.py'
+actionlint -shellcheck='' -pyflakes='' .github/workflows/release.yml
+```
+
+Fixtures exercise real local archive/hash/manifest validation with fabricated
+binary headers, an in-memory GitHub service and explicitly simulated Apple
+commands. They cover exact-source checks, selected platforms, complete notices,
+unsafe paths, digest failures, changed certificates, final signing transforms,
+collisions and uncertain publication. They do not establish hosted workflow
+success, downloadable assets, Apple notarization or native launch. Primary
+GitHub references were checked on 2026-09-15; hosted C4 rehearsal remains required.
+
+
 ## macOS Developer ID signing component
 
 **Status:** source preparation only. The local tests simulate Apple tools and

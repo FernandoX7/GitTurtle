@@ -1,0 +1,335 @@
+name: Release preparation
+
+# No tag-push, PR or main-push publication trigger. Dispatch the reviewed main
+# revision with an existing, explicitly chosen tag. C4 activates environments.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag (version or v followed by version)
+        required: true
+        type: string
+      version:
+        description: Exact workspace version
+        required: true
+        type: string
+      commit:
+        description: Full reviewed main commit SHA (also the workflow revision)
+        required: true
+        type: string
+      tag_object:
+        description: Exact existing tag object SHA, including annotated tag identity
+        required: true
+        type: string
+      quality_run:
+        description: Successful full Quality run ID for this exact main commit
+        required: true
+        type: string
+      platforms:
+        description: Complete promised platform set
+        required: true
+        type: choice
+        options: [linux, macos, 'linux,macos']
+      macos_signing:
+        description: macOS signing mode (select ad-hoc for Linux-only)
+        required: true
+        default: ad-hoc
+        type: choice
+        options: [ad-hoc, notarized]
+      certificate:
+        description: Exact Developer ID certificate SHA-1 (notarized macOS only)
+        required: false
+        type: string
+      team_id:
+        description: Exact Apple Team ID (notarized macOS only)
+        required: false
+        type: string
+      publish:
+        description: Request publication after assembly and protected environment approval
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
+
+# Do not cancel a signing submission or remote publication with a newer request.
+concurrency:
+  group: gitturtle-release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+env:
+  RELEASE_PUBLISH: ${{ inputs.publish }}
+
+jobs:
+  context:
+    name: Verify chosen release context
+    if: github.repository == 'FernandoX7/GitTurtle' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      context: ${{ steps.identity.outputs.context }}
+      linux: ${{ steps.identity.outputs.linux }}
+      macos: ${{ steps.identity.outputs.macos }}
+      matrix: ${{ steps.identity.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Validate exact tag, source, workflow trust and full Quality results
+        id: identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_COMMIT: ${{ inputs.commit }}
+          RELEASE_TAG_OBJECT: ${{ inputs.tag_object }}
+          RELEASE_QUALITY_RUN: ${{ inputs.quality_run }}
+          RELEASE_PLATFORMS: ${{ inputs.platforms }}
+          RELEASE_MACOS_SIGNING: ${{ inputs.macos_signing }}
+          RELEASE_CERTIFICATE: ${{ inputs.certificate }}
+          RELEASE_TEAM: ${{ inputs.team_id }}
+        run: python3 scripts/release/workflow.py preflight
+
+  build:
+    name: Fresh release package · ${{ matrix.target }}
+    needs: context
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.context.outputs.matrix) }}
+    env:
+      RELEASE_CONTEXT: ${{ needs.context.outputs.context }}
+      CARGO_TERM_COLOR: always
+      GIT_CONFIG_NOSYSTEM: 1
+      GIT_CONFIG_GLOBAL: /dev/null
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Select installed Xcode 26 or later before cache identity
+        if: runner.os == 'macOS'
+        run: python3 scripts/release/workflow.py select-xcode
+      - name: Prepare pinned compiler and dependency cache
+        uses: ./.github/actions/setup-rust
+        with:
+          profile: release
+      - name: Require full Xcode 26 and package tools
+        if: runner.os == 'macOS'
+        run: |
+          python3 - <<'PY'
+          import importlib.util
+          spec = importlib.util.spec_from_file_location('macos', 'scripts/package-macos.py')
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          module.prerequisite_versions()
+          PY
+      - name: Build exact target from trusted source
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: |
+          umask 077
+          rustup target add "$RELEASE_TARGET"
+          python3 scripts/ci/metrics.py measure --name release --directory "$RUNNER_TEMP/release-metrics" -- \
+            cargo build --locked --release -p gitturtle --target "$RELEASE_TARGET" --timings
+      - name: Package, verify full notices and exercise extracted package
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: |
+          umask 077
+          python3 scripts/release/workflow.py prepare --target "$RELEASE_TARGET" --directory "$RUNNER_TEMP/release-package"
+      - name: Preserve only verified complete-notice package bytes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-package-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-package/upload/
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+          include-hidden-files: false
+          overwrite: false
+      - name: Finish cache after all binary consumers
+        uses: ./.github/actions/setup-rust
+        with:
+          phase: finish
+          profile: release
+      - name: Summarize build measurements
+        if: always()
+        run: python3 scripts/ci/metrics.py summary --directory "$RUNNER_TEMP/release-metrics" >> "$GITHUB_STEP_SUMMARY"
+
+  sign:
+    name: Sign and notarize the verified macOS package
+    needs: [context, build]
+    if: needs.context.outputs.macos == 'true' && inputs.macos_signing == 'notarized'
+    runs-on: macos-15
+    timeout-minutes: 65
+    environment: gitturtle-macos-signing
+    env:
+      RELEASE_CONTEXT: ${{ needs.context.outputs.context }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Select installed Xcode 26 or later
+        run: python3 scripts/release/workflow.py select-xcode
+      - name: Require this exact signing context to be activated
+        env:
+          GITTURTLE_SIGNING_CONTEXT: ${{ vars.GITTURTLE_SIGNING_CONTEXT }}
+        run: python3 scripts/release/workflow.py activate-signing
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-package-aarch64-apple-darwin-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-signing-input
+          digest-mismatch: error
+      - name: Verify downloaded input before exposing credentials
+        id: input
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          umask 077
+          python3 scripts/release/workflow.py signing-input --directory "$RUNNER_TEMP/release-signing-input"
+      - name: Sign exact app and require accepted notarization and stapling
+        env:
+          GITTURTLE_SIGNING_P12_BASE64: ${{ secrets.GITTURTLE_SIGNING_P12_BASE64 }}
+          GITTURTLE_SIGNING_P12_PASSWORD: ${{ secrets.GITTURTLE_SIGNING_P12_PASSWORD }}
+          GITTURTLE_NOTARY_KEY_BASE64: ${{ secrets.GITTURTLE_NOTARY_KEY_BASE64 }}
+          GITTURTLE_NOTARY_KEY_ID: ${{ secrets.GITTURTLE_NOTARY_KEY_ID }}
+          GITTURTLE_NOTARY_ISSUER_ID: ${{ secrets.GITTURTLE_NOTARY_ISSUER_ID }}
+          SIGNING_APP: ${{ steps.input.outputs.app }}
+          SIGNING_INPUT_SHA256: ${{ steps.input.outputs.binary_sha256 }}
+          SIGNING_CERTIFICATE: ${{ inputs.certificate }}
+          SIGNING_TEAM: ${{ inputs.team_id }}
+          RELEASE_SOURCE: ${{ inputs.commit }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          umask 077
+          python3 scripts/release/sign-macos.py --app "$SIGNING_APP" --output "$RUNNER_TEMP/release-signing" \
+            --source "$RELEASE_SOURCE" --version "$RELEASE_VERSION" --target aarch64-apple-darwin \
+            --executable-sha256 "$SIGNING_INPUT_SHA256" --identity "$SIGNING_CERTIFICATE" --team-id "$SIGNING_TEAM"
+      - name: Verify final signed package and create final checksums
+        run: |
+          umask 077
+          python3 scripts/release/workflow.py finish-signing --directory "$RUNNER_TEMP/release-signing-input" \
+            --signing "$RUNNER_TEMP/release-signing" --output "$RUNNER_TEMP/release-signed-upload"
+      - name: Preserve only completed signed output
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-signed-aarch64-apple-darwin-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-signed-upload/
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+          include-hidden-files: false
+          overwrite: false
+      - name: Preserve sanitized signing state after failure or cancellation
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-signing-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-signing/signing-result.json
+          if-no-files-found: warn
+          retention-days: 3
+          include-hidden-files: false
+
+  assemble:
+    name: Assemble and verify the complete promised release
+    needs: [context, build, sign]
+    if: >-
+      always() && needs.context.result == 'success' && needs.build.result == 'success' &&
+      (needs.sign.result == 'success' || (needs.sign.result == 'skipped' && inputs.macos_signing == 'ad-hoc'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      digest: ${{ steps.assembly.outputs.digest }}
+    env:
+      RELEASE_CONTEXT: ${{ needs.context.outputs.context }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-package-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-inputs
+          digest-mismatch: error
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: inputs.macos_signing == 'notarized'
+        with:
+          pattern: release-signed-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-inputs
+          digest-mismatch: error
+      - name: Require every promised package and write exact release asset plan
+        id: assembly
+        run: |
+          umask 077
+          python3 scripts/release/workflow.py assemble --directory "$RUNNER_TEMP/release-inputs" --output "$RUNNER_TEMP/release-assembly"
+          digest="$(sha256sum "$RUNNER_TEMP/release-assembly/release-manifest.json" | cut -d ' ' -f 1)"
+          printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+          cat "$RUNNER_TEMP/release-assembly/RELEASE_NOTES.md" >> "$GITHUB_STEP_SUMMARY"
+          printf '\nManifest SHA-256: `%s`\n' "$digest" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assembly-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-assembly/
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+          include-hidden-files: false
+          overwrite: false
+
+  publish:
+    name: Publish the reviewed release assembly
+    needs: [context, assemble]
+    if: inputs.publish && needs.assemble.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: gitturtle-release
+    permissions:
+      contents: write
+      actions: read
+    env:
+      RELEASE_CONTEXT: ${{ needs.context.outputs.context }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assembly-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-publication
+          digest-mismatch: error
+      - name: Verify assembly digest and publish once with collision checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITTURTLE_RELEASE_CONTEXT: ${{ vars.GITTURTLE_RELEASE_CONTEXT }}
+          ASSEMBLY_SHA256: ${{ needs.assemble.outputs.digest }}
+        run: |
+          umask 077
+          printf '%s  %s\n' "$ASSEMBLY_SHA256" "$RUNNER_TEMP/release-publication/release-manifest.json" | sha256sum --check --status
+          python3 scripts/release/workflow.py publish --directory "$RUNNER_TEMP/release-publication" --report "$RUNNER_TEMP/release-publication-result.json"
+      - name: Preserve publication state for success, failure or cancellation
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-publication-state-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-publication-result.json
+          if-no-files-found: warn
+          retention-days: 7
+          include-hidden-files: false
