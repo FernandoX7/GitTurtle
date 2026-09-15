@@ -1,4 +1,542 @@
 {
   "version": 1,
-  "tasks": []
+  "tasks": [
+    {
+      "id": "ci-observability",
+      "title": "Make CI time and failure costs measurable",
+      "description": "Add small, reproducible CI measurement tooling and a maintained CI guide. Use the September 15 investigation in docs/development/commit-inspector-and-ci.md as dated starting evidence. This task prepares source and local validation; coordinator checkpoint C1 establishes hosted behavior and measured improvement. Prefer standard-library tooling and existing Actions summaries.",
+      "depends_on": [],
+      "scope": [
+        "scripts/ci/metrics.py",
+        "scripts/ci/tests/**",
+        ".github/workflows/quality.yml",
+        "docs/ci.md"
+      ],
+      "acceptance": [
+        {
+          "id": "timing-model",
+          "description": "Report run/commit identity, event, OS/architecture, queue delay, job and step duration, critical path and total runner time; distinguish compilation from test execution where logs establish it, and mark unavailable values rather than inventing zeroes."
+        },
+        {
+          "id": "representative-inputs",
+          "description": "Meaningful fixture tests cover completed, failed, cancelled, queued and missing-step runs, overlapping jobs and duplicate push/PR observations; summaries never add concurrent durations to claim elapsed time."
+        },
+        {
+          "id": "cache-and-diagnostics",
+          "description": "Provide a place for cache restore/save duration, hit/miss, cache size and build timing artifacts in the workflow summary. Preserve useful failure logs with short explicit retention and avoid credentials or private paths in public output."
+        },
+        {
+          "id": "bounded-operation",
+          "description": "The collector accepts exported data or an explicitly named repository/run, performs only read-only queries, bounds pagination/input, handles API failures clearly and has no implicit publishing or repository mutation."
+        },
+        {
+          "id": "local-verification",
+          "description": "Run the focused scripts/ci fixture tests and syntax/help checks; document exact commands and evidence. Validate any changed workflow with a pinned Actions-aware linter. The tooling profile alone does not run these new tests."
+        },
+        {
+          "id": "documented-baseline",
+          "description": "Document how to reproduce cold/warm and PR/main measurements, including sample size, median/tail, cache state and runner identity. Clearly separate observed September 15 timings from targets and later measurements."
+        }
+      ],
+      "profiles": [
+        "tooling"
+      ],
+      "commit": "ci: add actionable workflow timing diagnostics"
+    },
+    {
+      "id": "ci-run-policy",
+      "title": "Run the right checks once and preserve a reliable merge gate",
+      "description": "Refine Quality and Website event handling, conservative change routing and required-result aggregation. Preserve existing live protection until the coordinator completes C1. This is workflow source preparation; do not edit GitHub repository settings or weaken required platform/security coverage.",
+      "depends_on": [],
+      "scope": [
+        ".github/workflows/quality.yml",
+        ".github/workflows/website.yml",
+        "scripts/ci/changes.py",
+        "scripts/ci/tests/**",
+        "docs/ci.md",
+        "CONTRIBUTING.md"
+      ],
+      "acceptance": [
+        {
+          "id": "single-validation",
+          "description": "Same-repository branch updates with an open PR cause one Quality validation through pull_request; main pushes and manual dispatch remain supported. Superseded PR runs cancel without unrelated PR/main runs cancelling each other. Explain intentional merge-commit versus branch-head coverage."
+        },
+        {
+          "id": "conservative-routing",
+          "description": "Docs/site/tooling-only changes use their relevant inexpensive checks; Rust, manifests, toolchain, native assets, vendor, build scripts and packaging changes activate every affected product/platform check. Renames, deletions, missing comparison data and workflow changes fail conservatively into sufficient coverage."
+        },
+        {
+          "id": "stable-gate",
+          "description": "Expose a stable required result that runs even after upstream failure and fails for a required failed, cancelled or unexpectedly skipped job. Legitimately unneeded jobs can pass only when the recorded change classification justifies it."
+        },
+        {
+          "id": "protection-migration",
+          "description": "Keep compatible results for the currently required Rust macOS/Ubuntu check names until the replacement gate is exercised and the coordinator migrates protection. Document the transition, CodeQL protection and rollback; do not automatically change branch rules."
+        },
+        {
+          "id": "untrusted-contributions",
+          "description": "Retain minimal permissions, immutable action references, safe handling of untrusted paths/PR fields and fork support. Contributor code executes without publication/signing secrets or a privileged pull_request_target checkout."
+        },
+        {
+          "id": "local-verification",
+          "description": "Use pinned Actions-aware lint plus meaningful change-classifier/result-aggregation fixtures for code, docs, website, tooling, vendor, renamed/deleted files and failed/skipped dependencies. Add these focused checks to relevant CI jobs and document their commands."
+        }
+      ],
+      "profiles": [
+        "tooling"
+      ],
+      "commit": "ci: deduplicate runs and route required checks safely"
+    },
+    {
+      "id": "ci-rust-cache",
+      "title": "Reuse Rust compilation safely across CI runs",
+      "description": "Introduce bounded dependency/build caches for the pinned Rust workspace using established tooling. Reuse ci-observability output for diagnostics. Source validation is accepted here; cold/warm hosted correctness and speed are required at C1 before the CI milestone is complete.",
+      "depends_on": [
+        "ci-observability"
+      ],
+      "scope": [
+        ".github/workflows/quality.yml",
+        ".github/actions/setup-rust/action.yml",
+        "scripts/ci/tests/**",
+        "docs/ci.md"
+      ],
+      "acceptance": [
+        {
+          "id": "cache-identity",
+          "description": "Separate incompatible OS/architecture, compiler/toolchain, profile/flags and native build inputs; account for Cargo manifests/lockfile and actual vendored source/build-script changes. Never treat a cache hit as permission to skip required builds or tests."
+        },
+        {
+          "id": "compatible-reuse",
+          "description": "Cache useful Cargo downloads and compiled dependencies across normal source-only changes. Evaluate established Rust caching first, including treatment of local path dependencies; add sccache only for demonstrated benefit and document its limits."
+        },
+        {
+          "id": "trust-and-eviction",
+          "description": "Keep trusted main cache writes separate from untrusted contribution work, store no credentials, bound cache size/retention and avoid profile/job combinations that evict each other continuously. Cache unavailability or corruption falls back to correct rebuilding."
+        },
+        {
+          "id": "observable-results",
+          "description": "Emit restore/save duration, hit/miss and size where available through the measurement contract; describe which outputs are shared and which must rebuild. Cache transfer cost is included in later performance evidence."
+        },
+        {
+          "id": "reproducible-checks",
+          "description": "Preserve locked dependencies, pinned toolchain and action revisions, existing Git configuration isolation and both native platform setups. Do not change product optimization settings to manufacture a CI speedup."
+        },
+        {
+          "id": "local-verification",
+          "description": "Run Actions-aware lint and relevant CI fixture checks. Review invalidation against source-only, lockfile, toolchain, vendor and platform changes; record local evidence and the hosted cases still required by C1."
+        }
+      ],
+      "profiles": [
+        "tooling"
+      ],
+      "commit": "ci: cache Rust dependencies and build outputs"
+    },
+    {
+      "id": "ci-parallel-checks",
+      "title": "Parallelize validation without multiplying cold builds",
+      "description": "Reshape Quality into fast feedback and independent cached Rust/platform jobs using the run policy and cache foundation. Preserve all existing coverage; choose job granularity from the measured compilation-heavy baseline. C1 verifies actual hosted behavior and end-to-end time.",
+      "depends_on": [
+        "ci-run-policy",
+        "ci-rust-cache"
+      ],
+      "scope": [
+        ".github/workflows/quality.yml",
+        ".github/actions/setup-rust/action.yml",
+        "scripts/ci/**",
+        "docs/ci.md",
+        "CONTRIBUTING.md"
+      ],
+      "acceptance": [
+        {
+          "id": "independent-phases",
+          "description": "Formatting and inexpensive checks report promptly; tests, strict Clippy and optimized compilation no longer form one serial job per OS. Reuse compatible caches and measure setup/transfer overhead rather than blindly expanding the matrix."
+        },
+        {
+          "id": "platform-coverage",
+          "description": "Preserve locked workspace tests including doctests and strict all-target Clippy for both macOS and Linux product changes, and optimized build/package coverage for relevant changes. Keep platform-conditional tests and meaningful full integration coverage."
+        },
+        {
+          "id": "test-partition-policy",
+          "description": "Do not shard short test execution just to add runners. If measured evidence justifies nextest or sharding, use reusable builds, preserve doctests explicitly, isolate fixtures and prove every required test is covered; record the dependency/tool decision."
+        },
+        {
+          "id": "failure-behavior",
+          "description": "The stable merge result includes every required lane and cannot turn failures/cancellation into success. Timeouts and concurrency are bounded; failures retain useful logs and test reports without automatic retries hiding reproducible defects."
+        },
+        {
+          "id": "continuous-validation",
+          "description": "Wire focused CI helper tests and pinned workflow lint into inexpensive validation. Keep documentation-only behavior cheap and workflow/shared-build changes conservatively validated."
+        },
+        {
+          "id": "local-verification",
+          "description": "Run all affected helper tests and Actions-aware lint; exercise job-result fixtures and document the final job graph, coverage mapping and C1 cold/warm verification procedure."
+        }
+      ],
+      "profiles": [
+        "tooling"
+      ],
+      "commit": "ci: run cached validation phases concurrently"
+    },
+    {
+      "id": "ci-codeql",
+      "title": "Prepare a faster, coverage-preserving CodeQL configuration",
+      "description": "Prepare a checked-in CodeQL setup and migration runbook informed by the existing default setup and September 15 Rust analysis. The source contract includes local checks and transparent coverage accounting; coordinator checkpoint C2 owns switching live setup and proving hosted analysis. Do not disable default scanning, alter live security rules or claim an unexecuted scan passed.",
+      "depends_on": [
+        "ci-observability"
+      ],
+      "scope": [
+        ".github/workflows/codeql.yml",
+        ".github/codeql/**",
+        "scripts/ci/**",
+        "docs/ci-codeql.md",
+        "docs/ci.md"
+      ],
+      "acceptance": [
+        {
+          "id": "existing-coverage",
+          "description": "Record and preserve the effective Actions, JavaScript/TypeScript, Python and Rust coverage, query/threat settings and required error/high-severity security policy. Resolve language aliases deliberately and retain analysis of maintained vendored patches."
+        },
+        {
+          "id": "measured-optimization",
+          "description": "Use current primary documentation to identify supported Rust extraction/dependency/analysis reuse and appropriate runner resources; distinguish manifest loading, extraction, finalization and query execution. Do not assume Cargo caches or build-mode none eliminate analysis work."
+        },
+        {
+          "id": "coverage-errors",
+          "description": "Account for the baseline scan's four extraction-error files using available logs and document their identities, cause and resolution or remaining uncertainty. A successful job or fewer analyzed files alone does not establish equivalent coverage."
+        },
+        {
+          "id": "no-silent-reduction",
+          "description": "Do not exclude product or maintained vendor code, remove required queries/languages, raise alert thresholds or move required PR coverage solely to a schedule to meet a timing goal. Any material coverage change remains a coordinator decision with concrete evidence."
+        },
+        {
+          "id": "migration-plan",
+          "description": "Document the exact default-to-checked-in setup transition and rollback, expected check identities and full-scan/PR evidence. Keep publication credentials out of analysis and distinguish unavailable hosted capabilities from source defects."
+        },
+        {
+          "id": "local-verification",
+          "description": "Run pinned workflow/config validation and relevant fixtures. Source acceptance reports remaining C2 hosted comparisons explicitly; the initiative stays open until equivalent coverage and actual timing are established."
+        }
+      ],
+      "profiles": [
+        "tooling"
+      ],
+      "commit": "ci: prepare measured CodeQL workflow configuration"
+    },
+    {
+      "id": "ui-commit-messages",
+      "title": "Make full commit messages a beautiful persistent inspector",
+      "description": "Show a readable full title and body immediately in History, Compare and File History using already-loaded commit models. Remove the disclosure state and keep the native inspector calm, compact and consistent with GitTurtle's typography, density, themes and navigation. Apply the app/layout guides; no new Git read, network action or editor framework is needed.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/main.rs",
+        "crates/app/src/views.rs",
+        "crates/app/src/file_history.rs",
+        "crates/app/src/commit_message.rs",
+        "crates/app/src/repository_tabs.rs",
+        "crates/app/src/page_navigation.rs",
+        "crates/app/src/scroll_tests.rs",
+        "crates/app/src/native_accessibility/**",
+        "crates/app/docs/content-and-layout.md",
+        "crates/app/docs/navigation-and-refresh.md",
+        "DESIGN.md",
+        "docs/user-guide.md",
+        "docs/validation.md",
+        "docs/benchmarks/commit-inspector/**"
+      ],
+      "acceptance": [
+        {
+          "id": "reading-order",
+          "description": "Show the full wrapped title followed immediately by available body, then compact metadata/parent controls. Remove the Message toggle, stale details state and two-line title clamp; omit empty-body filler and preserve paragraphs, Unicode, trailers and long unbroken content."
+        },
+        {
+          "id": "visual-quality",
+          "description": "Use existing semantic theme colors, type scales, spacing and control styles. Keep the title prominent, body comfortable to read and metadata quiet, without adding decorative panels or a settings toggle. Native screenshots demonstrate a cohesive result in light/dark themes and both densities."
+        },
+        {
+          "id": "bounded-layout",
+          "description": "Keep at least half the ordinary History/Compare inspector height available for changed files, with a visible usable message scrollbar when needed. File History preserves useful revision navigation and path/rename/parent context. Narrow panes, minimum window size and enlarged interface text have no clipped actions or unintended horizontal overflow."
+        },
+        {
+          "id": "copy-and-accessibility",
+          "description": "Keep clearly labelled keyboard/screen-reader-accessible full-message and full-hash copy actions. Copy preserves the intended complete title/body formatting, including an empty body, without truncating the message to its visible portion."
+        },
+        {
+          "id": "selection-lifetime",
+          "description": "A different selected commit starts at the beginning of its message; file activation and Compare/Back retain the same inspection context. Repository/tab replacement, retained File History and density/font changes cannot restore another commit's message or hide the selected changed file."
+        },
+        {
+          "id": "bounded-work",
+          "description": "Reuse loaded commit data without new passive Git/network work or eager hidden editors. Exercise very large allowed messages and rapid selection; use bounded or virtualized text presentation if needed so merely constraining scroll height does not cause unbounded render work or repeated full-message copying per frame."
+        },
+        {
+          "id": "regression-evidence",
+          "description": "Add focused consuming layout/state tests for affected failure cases and run required Rust checks. Update design wording that currently requires Message expansion and title clamping, and document the final behavior."
+        },
+        {
+          "id": "native-acceptance",
+          "description": "A separate native owner records exact candidate/build identity, screenshots and interaction evidence on macOS and Linux for short/empty/long messages, merge parents, narrow/enlarged layouts, copy, rapid selection and Compare/Back/File History. Missing platform evidence remains pending; compilation alone cannot accept this task."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "feat(ui): show full commit messages in the inspector"
+    },
+    {
+      "id": "dist-macos-package",
+      "title": "Verify macOS package identity and distribution inputs",
+      "description": "Harden the existing macOS packager for exact-source CI artifacts while preserving local ad-hoc packaging. Keep current architecture support explicit and use the existing icon and license pipeline. This promises verified package behavior and therefore needs a candidate-bound package attestation; Developer ID signing is a later task. Existing notice gaps are tracked at C0; local package preparation may be accepted with verified strict distribution refusal and honestly labelled development evidence, but public artifact delivery remains blocked until authoritative notices are complete.",
+      "depends_on": [],
+      "scope": [
+        "scripts/package-macos.sh",
+        "scripts/test-package-macos.py",
+        "scripts/collect-third-party-licenses.py",
+        "scripts/ci/tests/**",
+        "docs/ci.md",
+        "docs/user-guide.md",
+        "docs/validation.md",
+        "docs/benchmarks/ci-packages/**",
+        "docs/licenses/**",
+        "THIRD_PARTY_NOTICES.md"
+      ],
+      "acceptance": [
+        {
+          "id": "source-identity",
+          "description": "Capture and verify compiled source revision, build profile, target/architecture, version and executable hash. Reusing --no-build cannot silently package a stale/wrong executable; missing or mismatched identity fails clearly for CI distribution."
+        },
+        {
+          "id": "native-resources",
+          "description": "Validate Info.plist, executable/resources, compiled icon appearances and collected third-party notices. Distribution requires complete notices; local-development evidence must retain visible unresolved-review records until C0. Pin/declare compatible Xcode, Metal and actool prerequisites; do not claim universal or Intel support from an arm64-only artifact."
+        },
+        {
+          "id": "license-gate",
+          "description": "Require complete collected license notices for distributable CI/release artifacts using the existing --require-complete capability or equivalent strict path; preserve a clearly described local-development mode where appropriate."
+        },
+        {
+          "id": "archive-contract",
+          "description": "Produce or document a deterministic artifact naming/manifest convention with source SHA, version, platform, executable/archive digests and explicit ad-hoc signing status. Do not imply notarization."
+        },
+        {
+          "id": "failure-tests",
+          "description": "Focused disposable fixtures cover missing/wrong binary, identity/version mismatch, incomplete licenses and malformed package inputs while preserving unrelated paths and existing local packaging behavior."
+        },
+        {
+          "id": "package-evidence",
+          "description": "On the exact candidate, build/package and verify signature/plist/resources, extract the archive and smoke-launch the resulting app on macOS. If C0 is open, attest only local-development packaging plus correct strict distribution refusal. Record architecture, source/build identity and limitations; run affected tooling and applicable Rust/package gates."
+        },
+        {
+          "id": "existing-notice-gaps",
+          "description": "Reconcile the existing two Linux/six macOS notice gaps against the exact locked target inventory, using docs/licenses/linux-notice-review.md and prior validation. Add only authoritative, version-matched supplemental texts/provenance if available; preserve unresolved records and prove --require-complete refuses distribution otherwise. Do not fabricate attribution or send upstream messages without explicit authorization."
+        }
+      ],
+      "profiles": [
+        "tooling",
+        "package"
+      ],
+      "commit": "build(macos): verify package provenance and resources"
+    },
+    {
+      "id": "dist-linux-package",
+      "title": "Verify Linux packages for reproducible download and installation",
+      "description": "Extend the existing Ubuntu 24.04 x86-64 tarball and isolated installer validation for CI distribution. Reuse the current format and behavior; avoid introducing new package ecosystems. This task requires exact-candidate Linux package evidence and can progress independently of Apple credentials. Existing notice gaps are tracked at C0; local package preparation may be accepted with verified strict distribution refusal and honestly labelled development evidence, but public artifact delivery remains blocked until authoritative notices are complete.",
+      "depends_on": [],
+      "scope": [
+        "scripts/package-linux.sh",
+        "scripts/install-linux.py",
+        "scripts/test-install-linux.py",
+        "scripts/collect-third-party-licenses.py",
+        "scripts/ci/tests/**",
+        "docs/linux.md",
+        "docs/ci.md",
+        "docs/validation.md",
+        "docs/benchmarks/ci-packages/**",
+        "docs/licenses/**",
+        "THIRD_PARTY_NOTICES.md"
+      ],
+      "acceptance": [
+        {
+          "id": "source-identity",
+          "description": "Verify expected compiled revision/profile/target/version and executable digest for build and --no-build paths. Produce a clear manifest/checksum contract compatible with the existing bundle; refuse stale/wrong artifacts."
+        },
+        {
+          "id": "complete-distribution",
+          "description": "Collect required notices/resources and require complete license collection for downloadable CI/release artifacts. Preserve explicit review-required records in local-development bundles while C0 is open, neutral archive ownership and the documented Ubuntu 24.04 x86-64 runtime baseline."
+        },
+        {
+          "id": "installation-preservation",
+          "description": "Test fresh installation, upgrade and supported uninstall/recovery behavior in isolated homes. Invalid/corrupt inputs and interrupted or failed installation preserve unrelated user files and give actionable errors; do not mutate a real user's installation."
+        },
+        {
+          "id": "download-equivalence",
+          "description": "Extract the actual archived bundle into a clean directory, verify checksums and identity, install it, compare installed bytes and validate desktop integration/runtime dependencies. Building a directory alone does not validate the archive."
+        },
+        {
+          "id": "focused-checks",
+          "description": "Run relevant installer/package fixture tests and syntax checks; document exact commands and current supported behavior rather than claiming unimplemented rollback guarantees."
+        },
+        {
+          "id": "package-evidence",
+          "description": "Record package/source identity and a real smoke launch of the extracted/installed candidate on the claimed Linux session. If C0 is open, attest only local-development packaging plus strict distribution refusal. Distinguish no-display, virtual and actual desktop evidence; run applicable tooling/Rust/package gates."
+        },
+        {
+          "id": "existing-notice-gaps",
+          "description": "Reconcile the existing two Linux/six macOS notice gaps against the exact locked target inventory, using docs/licenses/linux-notice-review.md and prior validation. Add only authoritative, version-matched supplemental texts/provenance if available; preserve unresolved records and prove --require-complete refuses distribution otherwise. Do not fabricate attribution or send upstream messages without explicit authorization."
+        }
+      ],
+      "profiles": [
+        "tooling",
+        "package"
+      ],
+      "commit": "build(linux): verify distributable package integrity"
+    },
+    {
+      "id": "dist-ci-artifacts",
+      "title": "Deliver verified macOS and Linux artifacts from CI",
+      "description": "Connect the verified platform packagers to optimized build jobs and downloadable Actions artifacts. Build each intended executable once per target/configuration and verify the exact archive that users will download. Source changes and package evidence are accepted by the runner; hosted upload/download rollout belongs to C3.",
+      "depends_on": [
+        "ci-parallel-checks",
+        "dist-macos-package",
+        "dist-linux-package"
+      ],
+      "scope": [
+        ".github/workflows/quality.yml",
+        ".github/workflows/packages.yml",
+        ".github/actions/**",
+        "scripts/ci/**",
+        "docs/ci.md",
+        "docs/user-guide.md",
+        "docs/validation.md",
+        "docs/benchmarks/ci-packages/**"
+      ],
+      "acceptance": [
+        {
+          "id": "build-once",
+          "description": "Reuse the intended optimized executable for packaging without rebuilding it under a different profile or accidentally taking a stale target path. Include both declared macOS and Ubuntu targets, compatible native dependencies and exact version/source identity."
+        },
+        {
+          "id": "artifact-metadata",
+          "description": "Configure upload of discoverable version/platform/SHA-labelled archives, checksum and provenance manifests, complete license notices and useful validation reports with explicit retention. Refuse public binary upload while notice review remains incomplete; state ad-hoc versus distribution signing and early-development support accurately."
+        },
+        {
+          "id": "verify-transfer",
+          "description": "Provide a hosted verification step that downloads the uploaded artifact, checks its digests/source/target, extracts it and runs applicable package/install checks. Tie every result to the actual artifact bytes."
+        },
+        {
+          "id": "coverage-boundary",
+          "description": "Preserve required optimized/package coverage for product, package, asset and workflow changes and main builds while retaining justified inexpensive docs-only routing. Package failures are represented in the stable required result."
+        },
+        {
+          "id": "permissions",
+          "description": "Untrusted PR artifacts are clearly identified and cannot be promoted to trusted releases or reach signing secrets. Use minimal permissions and pinned actions; do not publish GitHub Releases from this workflow."
+        },
+        {
+          "id": "verification",
+          "description": "Run workflow lint/helper fixtures and record candidate-bound package checks on both platforms. Exercise strict refusal for unresolved notices and label any local-development archive evidence accordingly. Document C0 notice clearance and the separate C3 hosted round-trip/desktop checks required before public CI artifact delivery is complete."
+        }
+      ],
+      "profiles": [
+        "tooling",
+        "package"
+      ],
+      "commit": "ci: publish verified platform build artifacts"
+    },
+    {
+      "id": "dist-release-workflow",
+      "title": "Prepare trustworthy tagged release assembly",
+      "description": "Implement a reviewed release workflow that assembles verified platform packages for an immutable version/source. Source preparation and failure-path tests are this task's acceptance boundary; live release environments, credentials, hosted rehearsal and publication are coordinator checkpoint C4. Linux delivery must remain possible without Apple signing credentials.",
+      "depends_on": [
+        "dist-ci-artifacts"
+      ],
+      "scope": [
+        ".github/workflows/release.yml",
+        ".github/workflows/packages.yml",
+        ".github/actions/**",
+        "scripts/release/**",
+        "scripts/ci/tests/**",
+        "docs/releases.md",
+        "docs/ci.md",
+        "README.md",
+        "docs/user-guide.md"
+      ],
+      "acceptance": [
+        {
+          "id": "version-and-source",
+          "description": "A release identifies one exact tag/version/commit, validates workspace/package version agreement and required checks for that revision, and consumes only packages with matching manifests/digests. Reject moved tags, stale/untrusted PR artifacts or mixed-source bundles."
+        },
+        {
+          "id": "release-contents",
+          "description": "Prepare platform downloads, archive checksums, complete notices, provenance and clear supported-platform/signing information. Use the established package formats and existing project version source; do not claim downloads exist before publication."
+        },
+        {
+          "id": "publication-boundary",
+          "description": "Separate unprivileged build/test from narrowly privileged release publication through a protected release environment or explicit controlled invocation. No ordinary PR/main build can publish. Document the exact coordinator activation and authorization needed for the chosen release."
+        },
+        {
+          "id": "retry-and-collision",
+          "description": "A retry detects an existing release/assets and verifies exact identity; it never overwrites differing published bytes or moves a tag. Partial/uncertain publication is reported for inspection without blind destructive retry or cleanup."
+        },
+        {
+          "id": "platform-independence",
+          "description": "Allow an explicitly declared supported-platform set, including Linux-only publication when Apple credentials are unavailable; missing promised platforms fail instead of silently disappearing. Ad-hoc macOS packages are never described as notarized."
+        },
+        {
+          "id": "local-verification",
+          "description": "Run Actions-aware lint and meaningful fixtures for version/source mismatch, missing artifacts, checksum failure, incomplete platform sets and retry/collision behavior. Produce a concrete C4 rehearsal/runbook; no public release is created by this task."
+        }
+      ],
+      "profiles": [
+        "tooling"
+      ],
+      "commit": "ci: prepare verified tagged release publication"
+    },
+    {
+      "id": "dist-macos-signing",
+      "title": "Prepare Developer ID signing and notarization",
+      "description": "Integrate distribution signing into the macOS release path while keeping local/PR ad-hoc builds and Linux delivery independent. This task prepares signing workflow source and focused failure tests. Actual Developer ID credentials, Apple service execution and signed package acceptance belong to C4; source acceptance must explicitly retain that open requirement.",
+      "depends_on": [
+        "dist-macos-package",
+        "dist-release-workflow"
+      ],
+      "scope": [
+        ".github/workflows/release.yml",
+        ".github/workflows/packages.yml",
+        ".github/actions/**",
+        "scripts/release/**",
+        "scripts/ci/tests/**",
+        "docs/releases.md",
+        "docs/ci.md"
+      ],
+      "acceptance": [
+        {
+          "id": "current-platform-research",
+          "description": "Use current Apple primary documentation to record the required signing identity, hardened runtime/entitlements, notarization and stapling steps compatible with GPUI and the declared macOS targets. Keep local ad-hoc packaging unchanged."
+        },
+        {
+          "id": "credential-isolation",
+          "description": "Signing runs only for the explicit trusted release context, with narrowly scoped secrets and a temporary keychain cleaned up on success/failure/cancellation. Private keys, import bundles/passwords and secret credential material never appear in logs, caches or downloadable artifacts; public certificate/signature metadata needed to verify the signed app is permitted."
+        },
+        {
+          "id": "exact-binary",
+          "description": "Verify source/version/architecture and package input before signing; after signing/notarization/stapling, compute final digests and provenance for the exact shipped archive. Distinguish pre-sign and post-sign hashes."
+        },
+        {
+          "id": "honest-failure",
+          "description": "Missing credentials, rejected signatures, notarization rejection/timeout or failed stapling cannot produce a successful notarized release or silently fall back to ad-hoc signing. Preserve sanitized diagnostic evidence without automatic publication."
+        },
+        {
+          "id": "verification-contract",
+          "description": "The workflow/runbook requires strict signature validation, successful notarization/staple validation and Gatekeeper/launch checks on the exact downloaded distribution package before a macOS release claim. Actual C4 evidence remains pending until a capable owner performs it."
+        },
+        {
+          "id": "local-tests",
+          "description": "Run lint and meaningful mocked failure-path tests for identity mismatch, missing credentials, cleanup and service failures. Mark simulated checks as simulations; do not equate them with Apple acceptance or shipped-package validation."
+        }
+      ],
+      "profiles": [
+        "tooling"
+      ],
+      "commit": "ci(macos): prepare signed and notarized releases"
+    }
+  ]
 }

@@ -12,7 +12,7 @@ For an authorized list of independent features, the optional local [controller](
 
 ## Task contracts and ownership
 
-[tasks.json](tasks.json) is the versioned feature specification; [task.schema.json](task.schema.json) describes its format. The initial list is empty deliberately. Add concrete, authorized work before running it; historical milestone notes are evidence sources, not an automatically approved backlog.
+[tasks.json](tasks.json) is the versioned feature specification; [task.schema.json](task.schema.json) describes its format. The current authorized queue covers the [commit inspector and CI/CD initiative](commit-inspector-and-ci.md), including its native, hosted-validation and release checkpoints. Add only concrete, authorized work; historical milestone notes are evidence sources, not an automatically approved backlog.
 
 A useful task states its observable outcome, acceptance steps, dependencies, owned paths and verification requirements. Keep a feature small enough to review and commit as one cohesive change, including necessary tests and documentation. State whether it promises core behavior, an integrated native workflow, a measurement or a package. Validate the graph before a run: duplicate IDs, missing dependencies and cycles cannot be repaired by guessing a new task order.
 
