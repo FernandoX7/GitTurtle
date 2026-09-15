@@ -31,8 +31,17 @@ MAX_FILES = 30000
 MAX_TOOL_OUTPUT = 8 * 1024**2
 
 
-def run(command, *, cwd=None, timeout=120):
-    """Bound tool diagnostics/time and terminate only this invocation's group."""
+def diagnostic_excerpt(text):
+    if len(text) <= 8192:
+        return text
+    notice = "\n... [diagnostic output truncated] ...\n"
+    head = (8192 - len(notice)) // 2
+    tail = 8192 - len(notice) - head
+    return text[:head] + notice + text[-tail:]
+
+
+def run(command, *, cwd=None, timeout=120, stdout_only=False):
+    """Bound tools; structured stdout keeps stderr in separate diagnostics."""
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         child = subprocess.Popen([str(item) for item in command], cwd=cwd,
                                  stdin=subprocess.DEVNULL, stdout=out, stderr=err,
@@ -52,13 +61,11 @@ def run(command, *, cwd=None, timeout=120):
             stdout = out.read().decode("utf-8", errors="replace")
             stderr = err.read().decode("utf-8", errors="replace")
             if child.returncode:
-                detail = stderr or stdout
-                if len(detail) > 8192:
-                    notice = "\n... [diagnostic output truncated] ...\n"
-                    head = (8192 - len(notice)) // 2
-                    tail = 8192 - len(notice) - head
-                    detail = detail[:head] + notice + detail[-tail:]
+                detail = diagnostic_excerpt(stderr or stdout)
                 raise PackageError(f"{command[0]} failed ({child.returncode}): {detail}")
+            if stdout_only:
+                sys.stderr.write(diagnostic_excerpt(stderr))
+                return stdout
             return stdout + stderr
         finally:
             try:
@@ -174,7 +181,7 @@ def prerequisite_versions():
 
 
 def inspect_catalog(path):
-    value = json.loads(run(["xcrun", "assetutil", "--info", path]))
+    value = json.loads(run(["xcrun", "assetutil", "--info", path], stdout_only=True))
     if not isinstance(value, list) or not value or not all(isinstance(item, dict) for item in value):
         raise PackageError("Compiled icon catalog could not be inspected")
     # Apple changes rendition schemas between Xcode releases. Retain the actual

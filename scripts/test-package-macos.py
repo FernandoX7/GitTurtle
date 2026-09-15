@@ -533,6 +533,80 @@ class PackageFixtures(unittest.TestCase):
         self.assertFalse(self.bundle.with_name(".GitTurtle.app.package-lock").exists())
 
 
+class CatalogCommandTests(unittest.TestCase):
+    """Exercise the actual consumer/command wrapper with a harmless fake xcrun."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="gitturtle-catalog-command-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.catalog = self.root / "Assets.car"
+        tool = self.root / "xcrun"
+        tool.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json,sys\n"
+            "from pathlib import Path\n"
+            "assert sys.argv[1:3] == ['assetutil', '--info'] and len(sys.argv) == 4\n"
+            "fixture=json.loads(Path(sys.argv[3]).read_text())\n"
+            "sys.stdout.write(fixture['stdout'])\n"
+            "sys.stderr.write(fixture['stderr'])\n"
+            "sys.exit(fixture.get('exit_code', 0))\n"
+        )
+        tool.chmod(0o700)
+        path = mock.patch.dict(os.environ, {"PATH": str(self.root) + os.pathsep + os.environ["PATH"]})
+        path.start()
+        self.addCleanup(path.stop)
+
+    def fixture(self, stdout, stderr, exit_code=0):
+        self.catalog.write_text(json.dumps(dict(stdout=stdout, stderr=stderr, exit_code=exit_code)))
+
+    def test_json_stdout_with_warning_stderr_is_valid_catalog(self):
+        expected = [{"Name": "AppIcon", "AssetType": "Icon Stack"}]
+        warning = "dyld: fixture warning from an otherwise successful tool\n"
+        self.fixture(json.dumps(expected), warning)
+        diagnostics = io.StringIO()
+        with contextlib.redirect_stderr(diagnostics):
+            self.assertEqual(package.inspect_catalog(self.catalog), expected)
+        self.assertEqual(diagnostics.getvalue(), warning)
+
+    def test_long_stderr_keeps_bounded_first_and_last_diagnostics(self):
+        warning = "FIRST_WARNING\n" + "x" * 25000 + "\nFINAL_WARNING\n"
+        self.fixture('[{"Name":"AppIcon"}]', warning)
+        diagnostics = io.StringIO()
+        with contextlib.redirect_stderr(diagnostics):
+            self.assertEqual(package.inspect_catalog(self.catalog), [{"Name": "AppIcon"}])
+        text = diagnostics.getvalue()
+        self.assertLessEqual(len(text), 8192)
+        self.assertTrue(text.startswith("FIRST_WARNING\n"))
+        self.assertTrue(text.endswith("\nFINAL_WARNING\n"))
+        self.assertIn("[diagnostic output truncated]", text)
+
+    def test_junk_stdout_and_invalid_catalog_schema_are_still_refused(self):
+        for stdout, error in [('[{"Name":"AppIcon"}] junk', json.JSONDecodeError),
+                              ('', json.JSONDecodeError), ('[]', package.PackageError),
+                              ('{}', package.PackageError), ('[1]', package.PackageError)]:
+            with self.subTest(stdout=stdout):
+                self.fixture(stdout, "tool warning\n")
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(error):
+                    package.inspect_catalog(self.catalog)
+
+    def test_default_command_output_still_combines_both_streams(self):
+        self.fixture("stdout bytes\n", "stderr bytes\n")
+        diagnostics = io.StringIO()
+        with contextlib.redirect_stderr(diagnostics):
+            self.assertEqual(package.run(["xcrun", "assetutil", "--info", self.catalog]),
+                             "stdout bytes\nstderr bytes\n")
+        self.assertEqual(diagnostics.getvalue(), "")
+
+    def test_structured_command_preserves_failure_status_and_output_limit(self):
+        self.fixture('[{"Name":"AppIcon"}]', "real child failure", 23)
+        with self.assertRaisesRegex(package.PackageError, r"failed \(23\): real child failure"):
+            package.inspect_catalog(self.catalog)
+        self.fixture('[{"Name":"AppIcon"}]', "x" * 1000)
+        with mock.patch.object(package, "MAX_TOOL_OUTPUT", 100), self.assertRaisesRegex(package.PackageError, "diagnostic limit"):
+            package.inspect_catalog(self.catalog)
+
+
 class AliasedTemporaryDirectoryTests(unittest.TestCase):
     def test_backup_race_hooks_fire_with_symlinked_temporary_parent(self):
         # Reproduce macOS's /var alias on every host. The actual race fixtures
