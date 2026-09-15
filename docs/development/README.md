@@ -4,7 +4,7 @@ GitTurtle combines maintained code contracts with bounded feature work and indep
 
 ## Choose the working mode
 
-For one coherent interactive milestone, use Codex's goal support when available and keep its acceptance criteria in the task. The coordinator can delegate bounded work while retaining integration and commit ownership. A goal is useful for sustained work toward one outcome; it does not replace the queue's dependency, candidate or evidence records.
+For one coherent interactive milestone, keep acceptance criteria in the task. Use Codex's goal support when available and explicitly requested by the user; an ordinary feature request does not authorize creating a goal. The coordinator can delegate bounded work while retaining integration and commit ownership. A goal is useful for sustained work toward one outcome; it does not replace the queue's dependency, candidate or evidence records.
 
 For an authorized list of independent features, use the local [controller](../../scripts/agent-loop.py). Each feature gets a fresh implementation session and a separate verifier. The controller selects eligible work, runs declared checks and records acceptance. No background run starts merely because these files exist.
 
@@ -13,6 +13,8 @@ For an authorized list of independent features, use the local [controller](../..
 [tasks.json](tasks.json) is the versioned feature specification; [task.schema.json](task.schema.json) describes its format. The initial list is empty deliberately. Add concrete, authorized work before running it; historical milestone notes are evidence sources, not an automatically approved backlog.
 
 A useful task states its observable outcome, acceptance steps, dependencies, owned paths and verification requirements. Keep a feature small enough to review and commit as one cohesive change, including necessary tests and documentation. State whether it promises core behavior, an integrated native workflow, a measurement or a package. Validate the graph before a run: duplicate IDs, missing dependencies and cycles cannot be repaired by guessing a new task order.
+
+For changes to shared interfaces, retained state, persistence, scheduling, platforms or dependencies, apply the [architecture review](architecture-review.md) when defining the contract. Include the material failure, compatibility and lifecycle requirements before starting an unattended attempt. The implementer and verifier assess these through the existing scoped contracts; no extra standing agent or automatic full-project redesign is required.
 
 | Owner | Responsibility |
 | --- | --- |
@@ -30,6 +32,8 @@ The implementer's `ready` response means its source patch is ready for controlle
 
 Profiles are `docs`, `tooling`, `rust`, `native`, `performance`, `package` and `vendor`; a task may require several. Choose the applicable checks using these existing contracts; do not maintain a second copy of their full checklists. Core and preview changes use `rust` plus their relevant focused fixtures. Controller changes use `tooling` in interactive validation; the remaining four profiles require candidate-bound external attestations in addition to applicable executable checks.
 
+Use the `performance` profile for an explicit latency/resource acceptance requirement or a material hot-path change that needs measurement. Applying the performance skill to passive-read correctness does not by itself require a benchmark or that profile.
+
 The controller always runs guidance checks and conservatively adds profiles from the changed paths. Rust source/manifests/toolchain changes require Rust gates; scripts and CI require tooling checks; vendor changes also require vendor evidence. Rust changes under `crates/app/` and native UI toolkit patches require native evidence. Assets and package scripts require package evidence. Declaring only `docs` cannot bypass these requirements. Use interactive review for a narrower justified validation plan instead of weakening the unattended classifier.
 
 | Changed behavior | Required evidence source |
@@ -40,7 +44,7 @@ The controller always runs guidance checks and conservatively adds profiles from
 | Preview decoder | Format/output behavior and resource/refusal boundaries; [preview guide](../../crates/preview/AGENTS.md#verification) |
 | Rust integration | Required locked workspace tests, strict Clippy and formatting; [root validation](../../AGENTS.md#validation) |
 | Native interaction | Affected real-app workflow, screenshots/semantic observations and exact source/build; [current matrix](../validation.md#current-validation-guidance) and [native QA](../../.agents/skills/gitturtle-native-qa/SKILL.md) |
-| Performance/passive reads | Relevant correctness and release measurements with raw samples, cache conditions and tail latency; [performance skill](../../.agents/skills/gitturtle-performance/SKILL.md) |
+| Performance/passive reads | Passive-preservation and scheduling correctness for the affected reads; release measurements with raw samples, cache conditions and tail latency when required by the performance contract or a concrete concern; [performance skill](../../.agents/skills/gitturtle-performance/SKILL.md) |
 | Vendor/dependencies | Patch provenance, relevant paired consumers and excluded-package coverage limits; [vendor guide](../../vendor/AGENTS.md) |
 | Package/platform | Artifact identity, resources, signature/installation and applicable native smoke; [macOS package procedure](../../.agents/skills/gitturtle-native-qa/references/macos-package.md) or [Linux runbook](../linux.md) |
 

@@ -40,6 +40,8 @@ Read the affected crate's instructions before edits or reviews, including when s
 - Keep preference writes serialized outside the UI thread. Initialize text editors lazily; prepare graph topology and render-image pixels on the worker. Keep selected files visible when lists change.
 - Use GPUI Kit's matching dependency set; pin it through Cargo.lock. Avoid copying GPL Zed editor code into this project.
 
+For shared-interface, state-lifetime, persistence, scheduling, platform or dependency changes, use the [architecture review](docs/development/architecture-review.md). Extend the existing owner, keep interfaces cohesive, and cover the affected failure and recovery contract. Refactor when it simplifies real dependencies or state transitions; file-size targets and additional abstraction layers are not acceptance criteria.
+
 ## Validation
 
 Choose validation for the changed behavior:
@@ -54,7 +56,7 @@ Choose validation for the changed behavior:
 
 Test affected interactions in the real native app using the current validation matrix. Measure the affected path in release mode before claiming a speed improvement; record fixture, hardware, cache state, and tail latency. Tie runtime/package evidence to the exercised source and build; distinguish core fixtures, native interaction, hosted CI, and platform coverage.
 
-Use [gitturtle-performance](.agents/skills/gitturtle-performance/SKILL.md) for scheduling, passive Git reads, caches, or preview hot paths. Routine Git-write semantics follow the core instructions and relevant fixtures. Use [gitturtle-native-qa](.agents/skills/gitturtle-native-qa/SKILL.md) to validate native interactions or a macOS package; it is unnecessary for docs-only work.
+Use [gitturtle-performance](.agents/skills/gitturtle-performance/SKILL.md) for scheduling, passive Git reads, caches, or preview hot paths. Routine Git-write semantics follow the core instructions and relevant fixtures. Use [gitturtle-native-qa](.agents/skills/gitturtle-native-qa/SKILL.md) to validate native interactions or a macOS/Linux package; it is unnecessary for docs-only work.
 
 For a coordinated feature or queued task, use [gitturtle-feature-work](.agents/skills/gitturtle-feature-work/SKILL.md). The task contract defines acceptance; workers cannot edit its grading rules or mark their own work accepted. Keep source changes separate from runner-owned state. A missing native, package, performance or vendor attestation leaves that requirement open and may defer dependent tasks; a compile or reviewer verdict cannot replace the required evidence.
 

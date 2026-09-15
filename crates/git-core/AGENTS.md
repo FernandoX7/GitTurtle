@@ -7,6 +7,7 @@ These instructions supplement the root agreements for `crates/git-core`. The [se
 | Concern | Source | Regression fixtures |
 | --- | --- | --- |
 | Repository discovery, refs/worktrees, object reads, patches, local LFS | `src/lib.rs` | `tests/repository.rs`, `tests/local_directories.rs` |
+| Bounded local-watch inclusion, tracked paths and ignore rules | `src/local_watch.rs` | `tests/local_directories.rs` |
 | Captured document local-image paths, revision/index/worktree assets | `src/preview_assets.rs` | `tests/preview_assets.rs` |
 | Streaming history, cancellable search and file history | `src/history.rs` | `tests/history.rs`, module unit tests |
 | Revision comparisons and tracked-path search/quick open | `src/inspection.rs` | `tests/inspection.rs` |
@@ -28,6 +29,12 @@ These instructions supplement the root agreements for `crates/git-core`. The [se
 
 Process deadlines and byte-input regressions also live in `src/lib.rs` and `src/work.rs` unit tests.
 
+## Extending an operation
+
+Keep an operation's preparation, captured plan, validation and execution together in its owning module. The existing `work` submodules provide this boundary for reviewed writes; expose their owned plans/results through core and route execution through `WriteCommand`. App navigation, queue scheduling and native types stay with the [app consumer](../app/AGENTS.md). A new presentation surface should reuse the same core operation and preservation guards.
+
+Keep operation-specific ref, configuration and path guards beside that operation. Extract shared helpers when callers have the same semantics; passive reads and explicit writes must retain their different command policies. Changes to a shared helper need a review of its actual callers, including refusal and uncertain-outcome behavior.
+
 ## Command policies
 
 - `git_command` and `bounded_output` in `src/lib.rs` isolate passive history/object reads. Plan preparation, status, configuration inspection, and attribution are also passive even when their code lives under `work`.
@@ -46,6 +53,8 @@ Ordinary history uses `history_traversal` and `HistoryTraversal::next_page`: one
 Search continuations retain the returned pinned scope and scanned offset; a budget stop with no matches is not exhaustion. File history retains its immutable anchor, exact revision paths and real merge parents along the first-parent lineage. Working blame uses raw working bytes relative to HEAD, including staged and unstaged edits as uncommitted; preserve explicit shallow-history and truncated-result indicators. Cancellation must stop and reap the active read process, not only discard its reply.
 
 Revision comparison pins both resolved commits and keeps endpoint comparison distinct from changes since one unambiguous merge base. Tracked-path search retains raw paths, explicit truncation and its returned revision scope; working scope includes tracked deletions and conflicts. Missing objects never permit substituting current working content.
+
+`LocalWatchPolicy` supplies bounded inclusion rules from the selected index, nested ignore files and effective shared/global excludes. Preserve tracked paths beneath ignored directories, lazy ignore invalidation and cache accounting when directories disappear. The app owns watch subscriptions, coalescing and refresh scheduling; watch coverage limits must remain visible rather than silently implying complete coverage. Local events authorize passive reads only.
 
 Staged previews compare HEAD to the index snapshot; unstaged previews compare the index snapshot to bounded raw working bytes. Working content has no immutable object ID: use side paths to distinguish absence, and report missing or oversized content explicitly. Preserve descriptor-relative no-follow traversal for working files and local LFS objects; symlinks display their stored target text.
 

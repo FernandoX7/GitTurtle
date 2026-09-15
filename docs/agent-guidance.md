@@ -12,6 +12,7 @@ GitTurtle's agents develop the native Rust/GPUI client. They are development too
 | [Preview guide](../crates/preview/AGENTS.md) | Bounded supplied-byte decoding and presentation contracts |
 | [Vendor guide](../vendor/AGENTS.md) | Patch provenance, paired toolkit changes and consumer regressions |
 | [Feature-work skill](../.agents/skills/gitturtle-feature-work/SKILL.md) | Acceptance-driven implementation and controller-owned handoff |
+| [Architecture review](development/architecture-review.md) | Cohesive boundaries, state ownership, compatibility and failure-path evidence for material changes |
 | [Performance skill](../.agents/skills/gitturtle-performance/SKILL.md) | Affected scheduling/read/cache investigation and conditional measurement procedure |
 | [Native-QA skill](../.agents/skills/gitturtle-native-qa/SKILL.md) | Affected real-app workflows, state restoration and conditional package checks |
 | [Task specification](development/tasks.json) and [schema](development/task.schema.json) | Versioned feature outcomes, dependencies, scope and evidence requirements |
@@ -29,6 +30,8 @@ The coordinator owns integration and commits. Three project agent definitions su
 
 Architecture planning is a phase when uncertainty warrants it; crate ownership and existing skills provide domain specialization. One worker owns native UI/package interaction. There is no mandatory agent count or an always-running design, research or performance persona.
 
+The implementer and verifier also apply the architecture review when shared state or contracts change. The librarian reconciles module ownership, platform capabilities and validation routes with the actual source. The [September 15 maintainability audit](development/2026-09-15-maintainability-audit.md) records specific drift corrections and proposed implementation increments, including their evidence limits.
+
 The controller snapshots approved task contracts and records attempt state outside them. Workers return results; they do not mark themselves passing or change grading rules. Every `AGENTS.md`, the agent/skill definitions and controller/task-policy files are protected during unattended attempts. Maintain them through explicitly scoped interactive work. Acceptance requires applicable deterministic checks, a separate verifier and every required external attestation for the same candidate. Native, package, performance and vendor evidence remains explicit; missing coverage defers acceptance and dependent work.
 
 Role files omit `model` and `model_reasoning_effort`, preserving interactive inheritance. A separate unattended CLI process receives the operator's explicit `--model` and `--effort`; it cannot infer the desktop session's choice. The runner controls child configuration to avoid unrelated global overrides. No repository-wide Ultra setting is introduced.
@@ -37,7 +40,7 @@ The verifier requests `sandbox_mode = "read-only"`. This is a default, not a uni
 
 ## Sustained work
 
-Use native Codex goals for one coherent interactive milestone and the task controller for an authorized dependency queue. Fresh implementation and verifier sessions limit accumulated context. Durable contracts and evidence make interrupted work inspectable outside a chat.
+Use native Codex goals when the user explicitly requests a goal for one coherent interactive milestone, and the task controller for an authorized dependency queue. An ordinary feature request does not authorize creating a goal or automation. Fresh implementation and verifier sessions limit accumulated context. Durable contracts and evidence make interrupted work inspectable outside a chat.
 
 The controller uses private local clones with independent Git metadata and removed origin; it does not reset, stage or commit in the caller's checkout. It creates atomic Conventional Commits in attempt clones, then fetches accepted candidates locally and fast-forwards its private accepted branch. It does not integrate into the source branch, push or publish. Attempts, sessions, elapsed time and optional reported-output limits bound each run. Stop/resume and external evidence registration are explicit operator commands; installing this architecture does not start an automation.
 

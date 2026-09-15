@@ -13,6 +13,8 @@ Describe the observable result and choose the existing validation profile for th
 
 For an uncertain design or new dependency, use the [research template](../../../docs/development/research-template.md) to record the decision, current primary sources, compatibility and enforcement. Planning is conditional; ordinary implementation does not require an architecture agent or a research document.
 
+When changing shared interfaces, retained state, persistence, scheduling or platform/dependency boundaries, use the [architecture review](../../../docs/development/architecture-review.md). Identify the existing owner, affected producer/consumer path and failure behavior before extending it. Include any necessary lifecycle, compatibility or resource acceptance in the task contract; a visible feature alone does not establish those properties. Keep concrete structural follow-ups distinct from reproduced defects and from the authorized feature queue.
+
 ## Implement and verify
 
 Use bounded code ownership for independent workers. The coordinator integrates shared changes and owns the index; one owner operates the native app and package. Preserve the session's chosen model and effort.
