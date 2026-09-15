@@ -1,0 +1,21 @@
+[
+  {"name":"documentation", "paths":["README.md", "docs/user-guide.md", "docs/screenshots/history.png"], "required":[]},
+  {"name":"website", "paths":["website/public/index.html", "website/check.py"], "required":["website"]},
+  {"name":"controller", "paths":["scripts/agent_loop/runner.py", "docs/development/tasks.json"], "required":["tooling"]},
+  {"name":"ci tools", "paths":["scripts/ci/metrics.py", "scripts/ci/tests/test_metrics.py"], "required":["tooling"]},
+  {"name":"agent guide", "paths":["crates/app/AGENTS.md", ".agents/skills/gitturtle-feature-work/SKILL.md"], "required":["tooling"]},
+  {"name":"mixed inexpensive", "paths":["docs/ci.md", "website/public/site.js", "scripts/ci/changes.py"], "required":["tooling", "website"]},
+  {"name":"Rust", "paths":["crates/app/src/main.rs"], "required":["product", "tooling", "website"]},
+  {"name":"manifest", "paths":["Cargo.toml"], "required":["product", "tooling", "website"]},
+  {"name":"lockfile", "paths":["Cargo.lock"], "required":["product", "tooling", "website"]},
+  {"name":"toolchain", "paths":["rust-toolchain.toml"], "required":["product", "tooling", "website"]},
+  {"name":"native asset", "paths":["assets/icons/copy.svg"], "required":["product", "tooling", "website"]},
+  {"name":"vendored Rust", "paths":["vendor/gpui/src/window.rs"], "required":["product", "tooling", "website"]},
+  {"name":"vendor documentation", "paths":["vendor/gpui/README.md"], "required":["product", "tooling", "website"]},
+  {"name":"build script", "paths":["crates/app/build.rs"], "required":["product", "tooling", "website"]},
+  {"name":"package script", "paths":["scripts/package-linux.sh"], "required":["product", "tooling", "website"]},
+  {"name":"workflow", "paths":[".github/workflows/website.yml"], "required":["product", "tooling", "website"]},
+  {"name":"uncompiled Rust probe", "paths":["docs/experiments/native-glass-prototype.rs"], "required":["product", "tooling", "website"]},
+  {"name":"future unknown input", "paths":["native-build.json"], "required":["product", "tooling", "website"]},
+  {"name":"empty comparison", "paths":[], "required":["product", "tooling", "website"]}
+]

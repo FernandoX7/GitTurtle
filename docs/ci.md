@@ -1,4 +1,4 @@
-# CI measurement and diagnostics
+# CI validation, measurement and diagnostics
 
 [Quality](../.github/workflows/quality.yml) validates development tooling and the
 Rust workspace on macOS and Linux. The standard-library
@@ -10,6 +10,106 @@ The source patch prepares local tooling and workflow instrumentation. Hosted
 behavior and improvement remain part of
 [coordinator checkpoint C1](development/commit-inspector-and-ci.md#c1--hosted-quality-and-merge-protection).
 A checked-in workflow or passing fixture is not evidence of an executed hosted run.
+
+## Events and required results
+
+Quality owns normal validation: one `pull_request` run per opened, reopened or
+synchronized PR, pushes to `main`, and explicit `workflow_dispatch`. Branch pushes
+do not also start Quality. A branch without a PR can use manual dispatch. PR runs
+test GitHub's generated **merge commit**, including its interaction with the base;
+they do not claim a separate branch-head build. Main/manual runs test the selected
+checkout. Manual dispatch requests all lanes and does not replace PR-associated
+required checks. See GitHub's [event semantics](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request).
+
+The concurrency group is specific to the PR number. A newer update cancels the
+older run for that PR; unrelated PRs remain independent. Main pushes and manual
+runs use unique run IDs and do not cancel each other or PR validation. A cancelled
+run cannot satisfy the successful aggregate. These are the configured
+[concurrency semantics](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency),
+pending real superseding-run evidence at C1.
+
+### Conservative change routing
+
+The mandatory `Changes and CI policy` job checks guidance, routing/result fixtures
+and both Actions workflows with the pinned linter. The
+[classifier](../scripts/ci/changes.py) then produces boolean product, tooling and
+website outputs plus a versioned JSON plan. Downstream jobs consume those flags;
+the final gate verifies the same recorded plan and actual job results.
+
+- Documentation and documentation images under `docs/`, plus the listed top-level
+  contributor/design documents, use the mandatory inexpensive checks.
+- `website/` changes also call Website's existing Python input check and JavaScript
+  syntax check. Website is a reusable validation workflow with separate manual
+  dispatch; Quality owns its PR/main triggers, avoiding another duplicate run.
+- CI helpers, development-controller files, agent guides and development contracts
+  also run the existing macOS and Ubuntu development-tooling matrix, including all
+  CI helper tests.
+- Rust, manifests, the lockfile/toolchain, native assets, vendored inputs, build or
+  package scripts, workflow/repository-policy changes and unrecognized paths run
+  **all** lanes. Rust keeps formatting, locked workspace tests with doctests,
+  strict all-target Clippy, release compilation and Linux package/install checks.
+
+Routing uses complete local Git diffs after `checkout` fetches history, avoiding
+GitHub path-filter/API changed-file limits. PR classification checks the observed
+merge parents against event base/head identities, compares the merge-base to the
+PR head and also the base to the exercised merge tree. Pushes compare the event's
+before/after identities. A deleted or moved product file still requests product
+coverage: `--no-renames` reports both sides of moves, including deletions.
+Missing objects, stale/malformed event data, empty comparisons, unknown events,
+ambiguous paths or comparisons above 10,000 paths/4 MiB select full validation.
+Each local Git read has a 60-second timeout. No API or network fallback is needed.
+Unknown inputs are expensive by design until their narrower coverage is reviewed.
+
+Paths use NUL delimiters and never become shell fragments or workflow-output
+lines. Only fixed flags and a bounded plan are output. PR titles, branch names and
+other contributor fields are not interpolated into commands. Quality and the
+Website caller/callee use only `contents: read`; checkout does not persist its
+credentials. There is no `pull_request_target`, secret inheritance, publication,
+Pages permission or signing credential. External-fork approval remains controlled
+by GitHub's existing repository policy; C1 must observe a real approved fork run.
+
+### Stable gate and compatibility
+
+`Quality gate` runs with `always()` after classification, both matrix jobs and the
+Website call. It requires successful classification and success for each required
+lane. A skipped lane is accepted only when the recorded classification says it is
+unneeded. Failures, cancellations, unexpected skips, absent jobs, mismatched
+outputs or unknown classification versions fail. Each matrix keeps
+`fail-fast: false` so one platform failure does not discard the other platform's
+diagnostics. A checkout/evaluator failure also leaves the gate unsuccessful.
+
+The current required names, **`Rust · macos-15`** and **`Rust · ubuntu-24.04`**, remain
+as always-running compatibility jobs. They mirror the complete Quality gate,
+while the actual platform work is named `Rust validation · <platform>`. These
+short compatibility jobs execute on Ubuntu; the names preserve required-check
+identity, not a claim that their shell step compiles on macOS. A product change
+cannot pass them unless the actual macOS and Ubuntu Rust matrix and other required
+lanes succeeded. A docs-only change can pass after its justified skips. This
+avoids GitHub's [skipped-job success behavior](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks)
+silently bypassing a failed dependency.
+
+No repository settings change is performed by this source patch. C1 must first
+exercise actual positive/negative PR cases, cancellation, routing, forks and
+main/manual runs. Once the new gate has passed on the intended revision, the
+coordinator prepares and obtains authorization for this scoped migration:
+
+1. Read the current main protection and preserve its strict/up-to-date setting,
+   GitHub Actions app binding, review/conversation requirements and independent
+   CodeQL code-scanning rules.
+2. Add the observed `Quality gate` name/app binding alongside the two current
+   Rust names using the [required-status-check endpoint](https://docs.github.com/en/rest/branches/branch-protection#update-status-check-protection).
+   Verify the binding and actual positive/negative behavior.
+3. Replace the old required names with the verified gate only after those checks.
+   Remove compatibility jobs in a separately reviewed follow-up after the live
+   migration is established.
+
+Rollback restores the exact latest pre-migration required-check set through that
+same scoped endpoint, with strictness and unrelated protection unchanged. Preserve
+the compatibility jobs until the migration is proven. Source regressions use a
+reviewed revert; do not remove protection to clear a failed check. CodeQL remains
+an independent security requirement, including its existing languages, queries,
+high/critical thresholds and error policy. A successful Quality gate alone does
+not establish security acceptance or the full merge critical path.
 
 ## Collect a report
 
@@ -322,6 +422,8 @@ python3 -B scripts/ci/metrics.py --help
 python3 -B scripts/ci/metrics.py report --help
 python3 -B scripts/ci/metrics.py measure --help
 python3 -B scripts/ci/metrics.py summary --help
+python3 -B scripts/ci/changes.py classify --help
+python3 -B scripts/ci/changes.py gate --help
 ```
 
 Validate changed Actions YAML with
@@ -332,7 +434,7 @@ the workflow verifies that digest before execution. With that version available:
 
 ```sh
 actionlint -version
-actionlint -shellcheck='' -pyflakes='' .github/workflows/quality.yml
+actionlint -shellcheck='' -pyflakes='' .github/workflows/quality.yml .github/workflows/website.yml
 ```
 
 The explicit flags make this Actions validation independent of optional installed
@@ -342,6 +444,15 @@ concurrent execution, skipped-job timestamps, duplicate observations, bounded
 collection, HTTP transport failures and credential redaction (including Basic,
 Proxy-Authorization, quoted values and compound keys); they do not establish
 hosted timing or cache reuse.
+
+Routing fixtures additionally cover docs/site/tooling/product/vendor/workflow
+inputs, real Git renames and deletions, stale/missing merge data, literal hostile
+filenames, malformed plans, required failures/cancellation/skips and successful
+justified skips. For the small routing subset alone, run
+`python3 -m unittest discover -s scripts/ci/tests -p 'test_changes.py'`.
+These establish local policy behavior, not GitHub's execution of the DAG,
+matrix-result association, fork approval or live branch protection; those remain
+candidate-bound C1 evidence.
 
 The CI fixtures place temporary files inside the checkout. For other tooling
 tests that use the system temporary directory, use a checkout-local directory when

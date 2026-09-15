@@ -2,6 +2,7 @@ name: Quality
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -9,15 +10,51 @@ permissions:
   contents: read
 
 concurrency:
-  group: quality-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: quality-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.event_name, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:
     shell: bash --noprofile --norc -euo pipefail {0}
 
 jobs:
+  changes:
+    name: Changes and CI policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      product: ${{ steps.classify.outputs.product }}
+      tooling: ${{ steps.classify.outputs.tooling }}
+      website: ${{ steps.classify.outputs.website }}
+      plan: ${{ steps.classify.outputs.plan }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Local comparisons avoid the API/path-filter changed-file limits.
+          fetch-depth: 0
+      - name: Check development guidance
+        run: python3 scripts/check-agent-guidance.py
+      - name: Test routing and required results
+        run: python3 -m unittest discover -s scripts/ci/tests -p 'test_changes.py'
+      - name: Validate Actions workflow with actionlint 1.7.12
+        run: |
+          actionlint_dir="$RUNNER_TEMP/actionlint-1.7.12"
+          mkdir -p "$actionlint_dir"
+          curl --fail --location --silent --show-error --retry 2 --connect-timeout 15 --max-time 60 \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            --output "$actionlint_dir/actionlint.tar.gz"
+          printf '%s  %s\n' '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8' \
+            "$actionlint_dir/actionlint.tar.gz" | sha256sum --check --status
+          tar -xzf "$actionlint_dir/actionlint.tar.gz" -C "$actionlint_dir" actionlint
+          "$actionlint_dir/actionlint" -version
+          "$actionlint_dir/actionlint" -shellcheck='' -pyflakes='' .github/workflows/quality.yml .github/workflows/website.yml
+      - name: Classify changed inputs
+        id: classify
+        run: python3 scripts/ci/changes.py classify --output "$GITHUB_OUTPUT"
   agent-tooling:
+    needs: changes
+    if: needs.changes.outputs.tooling == 'true'
     name: Development tooling · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
@@ -44,19 +81,6 @@ jobs:
           python3 scripts/ci/metrics.py report --help
           python3 scripts/ci/metrics.py measure --help
           python3 scripts/ci/metrics.py summary --help
-      - name: Validate Actions workflow with actionlint 1.7.12
-        if: runner.os == 'Linux'
-        run: |
-          actionlint_dir="$RUNNER_TEMP/actionlint-1.7.12"
-          mkdir -p "$actionlint_dir"
-          curl --fail --location --silent --show-error --retry 2 --connect-timeout 15 --max-time 60 \
-            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
-            --output "$actionlint_dir/actionlint.tar.gz"
-          printf '%s  %s\n' '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8' \
-            "$actionlint_dir/actionlint.tar.gz" | sha256sum --check --status
-          tar -xzf "$actionlint_dir/actionlint.tar.gz" -C "$actionlint_dir" actionlint
-          "$actionlint_dir/actionlint" -version
-          "$actionlint_dir/actionlint" -shellcheck='' -pyflakes='' .github/workflows/quality.yml
       - name: Summarize CI measurements
         if: always()
         run: python3 scripts/ci/metrics.py summary --directory "$RUNNER_TEMP/ci-metrics" >> "$GITHUB_STEP_SUMMARY"
@@ -70,7 +94,9 @@ jobs:
           if-no-files-found: warn
           include-hidden-files: false
   rust:
-    name: Rust · ${{ matrix.os }}
+    needs: changes
+    if: needs.changes.outputs.product == 'true'
+    name: Rust validation · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -157,3 +183,43 @@ jobs:
           retention-days: 3
           if-no-files-found: warn
           include-hidden-files: false
+
+  website:
+    name: Website
+    needs: changes
+    if: needs.changes.outputs.website == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/website.yml
+
+  quality:
+    name: Quality gate
+    if: always()
+    needs: [changes, agent-tooling, rust, website]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require every classified check to succeed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python3 scripts/ci/changes.py gate
+
+  rust-compatibility:
+    # Keep live required names until C1 explicitly migrates repository settings.
+    name: Rust · ${{ matrix.os }}
+    if: always()
+    needs: quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+    steps:
+      - name: Preserve required-check compatibility
+        env:
+          QUALITY_RESULT: ${{ needs.quality.result }}
+        run: test "$QUALITY_RESULT" = success

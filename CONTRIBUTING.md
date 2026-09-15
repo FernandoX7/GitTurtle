@@ -66,6 +66,10 @@ Docs-only changes need link, command and diff checks. Artwork changes need verif
 
 Development-controller changes use `python3 scripts/check-agent-guidance.py` and `python3 -m unittest discover -s scripts/agent_loop -t scripts -p 'test_*.py'`. Follow the [development workflow](docs/development/README.md) for task contracts, isolated runs and evidence; product checks apply when those changes also affect the client.
 
+CI changes also use `python3 -m unittest discover -s scripts/ci/tests -p 'test_*.py'`
+and pinned actionlint 1.7.12 on both Quality and Website workflows. The
+[CI guide](docs/ci.md#local-verification) records the download checksum and commands.
+
 ## Commit cohesive changes
 
 Always use atomic [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/): each commit contains one cohesive change and its necessary code, tests and documentation. Use the form `type(optional-scope): description`, with `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore` or `revert`. Mark an incompatible change with `!` after the type/scope or a `BREAKING CHANGE:` footer. For example, `fix(history): retain selection after refresh` should include the correction and its relevant regression coverage and documentation.
@@ -84,5 +88,14 @@ and description, so always use a Conventional Commit PR title and write the
 description for a reader of the permanent Git history.
 Merged branches in this repository are deleted automatically; your fork and
 local branches remain yours.
+
+Quality runs through PR events, main pushes and manual dispatch; a branch push
+does not duplicate its PR run. PR checks exercise GitHub's test merge commit.
+The [CI routing and gate policy](docs/ci.md#events-and-required-results) selects
+inexpensive checks for docs/site/tooling-only changes and full platform coverage
+for product or uncertain inputs. The current required Rust check names mirror
+the complete Quality gate during the documented protection migration. CodeQL
+remains separately required. Do not change repository rules or bypass a failed
+requirement merely to obtain a green PR.
 
 Sanitize screenshots, logs and fixtures before posting: remove credentials, private remote URLs, personal paths, identities and proprietary repository content. For a suspected vulnerability, use [private security reporting](SECURITY.md) rather than an issue or public PR.

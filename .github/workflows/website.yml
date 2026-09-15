@@ -1,22 +1,17 @@
 name: Website
 
+# Quality owns PR/main routing. This callee only validates static inputs and
+# never receives publication permissions or caller secrets.
 on:
-  push:
-    paths:
-      - 'website/**'
-      - '.github/workflows/website.yml'
-  pull_request:
-    paths:
-      - 'website/**'
-      - '.github/workflows/website.yml'
+  workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: website-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: website-validation-${{ github.run_id }}-${{ github.run_attempt }}
+  cancel-in-progress: false
 
 defaults:
   run:
