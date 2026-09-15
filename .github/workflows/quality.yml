@@ -1,339 +1,38 @@
-name: Quality
+# Disposable diagnostic branch only. Never merge this replacement workflow.
+name: Manual macOS catalog stream diagnostic
 
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
-
-concurrency:
-  group: quality-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.event_name, github.run_id) }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:
     shell: bash --noprofile --norc -euo pipefail {0}
 
 jobs:
-  changes:
-    name: Changes and CI policy
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    outputs:
-      product: ${{ steps.classify.outputs.product }}
-      tooling: ${{ steps.classify.outputs.tooling }}
-      website: ${{ steps.classify.outputs.website }}
-      plan: ${{ steps.classify.outputs.plan }}
+  catalog-diagnostic:
+    name: Catalog streams · Xcode 26.3 · production wrapper
+    runs-on: macos-15
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # Local comparisons avoid the API/path-filter changed-file limits.
-          fetch-depth: 0
-      - name: Check development guidance
-        run: python3 scripts/check-agent-guidance.py
-      - name: Test CI helpers and required results
-        run: python3 -B -m unittest discover -s scripts/ci/tests -p 'test_*.py'
-      - name: Validate Actions workflow with actionlint 1.7.12
+      - name: Compile exact icon and inspect catalog once with the repaired helper
         run: |
-          actionlint_dir="$RUNNER_TEMP/actionlint-1.7.12"
-          mkdir -p "$actionlint_dir"
-          curl --fail --location --silent --show-error --retry 2 --connect-timeout 15 --max-time 60 \
-            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
-            --output "$actionlint_dir/actionlint.tar.gz"
-          printf '%s  %s\n' '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8' \
-            "$actionlint_dir/actionlint.tar.gz" | sha256sum --check --status
-          tar -xzf "$actionlint_dir/actionlint.tar.gz" -C "$actionlint_dir" actionlint
-          "$actionlint_dir/actionlint" -version
-          "$actionlint_dir/actionlint" -shellcheck='' -pyflakes=''
-      - name: Classify changed inputs
-        id: classify
-        run: python3 scripts/ci/changes.py classify --output "$GITHUB_OUTPUT"
-  agent-tooling:
-    needs: changes
-    if: needs.changes.outputs.tooling == 'true'
-    name: Development tooling · ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      max-parallel: 2
-      matrix:
-        os: [macos-15, ubuntu-24.04]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Verify Python runtime
-        run: python3 -c 'import sys; print(sys.version); assert sys.version_info >= (3, 11), "Python 3.11 or newer is required"'
-      - name: Validate development guidance
-        run: python3 scripts/ci/metrics.py measure --name guidance --directory "$RUNNER_TEMP/ci-metrics" -- python3 scripts/check-agent-guidance.py
-      - name: Test development tooling
-        run: python3 scripts/ci/metrics.py measure --name agent-tooling --directory "$RUNNER_TEMP/ci-metrics" -- python3 -m unittest discover -s scripts/agent_loop -t scripts -p 'test_*.py'
-      - name: Test CI measurements
-        run: python3 scripts/ci/metrics.py measure --name ci-tests --directory "$RUNNER_TEMP/ci-metrics" -- python3 -m unittest discover -s scripts/ci/tests -p 'test_*.py'
-      - name: Check CI collector syntax and help
-        run: |
-          python3 -m py_compile scripts/ci/metrics.py
-          python3 scripts/ci/metrics.py --help
-          python3 scripts/ci/metrics.py report --help
-          python3 scripts/ci/metrics.py measure --help
-          python3 scripts/ci/metrics.py summary --help
-      - name: Summarize CI measurements
-        if: always()
-        run: python3 scripts/ci/metrics.py summary --directory "$RUNNER_TEMP/ci-metrics" >> "$GITHUB_STEP_SUMMARY"
-      - name: Preserve CI measurements and sanitized diagnostics
+          umask 077
+          python3 scripts/ci/icon_diagnostic.py --xcode 26.3 --method wrapper --directory "$RUNNER_TEMP/gitturtle-catalog-diagnostic"
+      - name: Preserve only diagnostic text and JSON
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ci-diagnostics-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/ci-metrics/
+          name: catalog-diagnostic-26.3-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/gitturtle-catalog-diagnostic/evidence/*.json
+            ${{ runner.temp }}/gitturtle-catalog-diagnostic/evidence/*.log
           retention-days: 3
-          if-no-files-found: warn
-          include-hidden-files: false
-  rust-format:
-    needs: changes
-    if: needs.changes.outputs.product == 'true'
-    name: Rust formatting
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    env:
-      CARGO_TERM_COLOR: always
-      GIT_CONFIG_NOSYSTEM: 1
-      GIT_CONFIG_GLOBAL: /dev/null
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      # rustup uses rust-toolchain.toml; formatting needs no native libraries,
-      # dependency restore or compilation, and never waits for a Rust build.
-      - name: Format with the pinned workspace toolchain
-        run: python3 scripts/ci/metrics.py measure --name format --directory "$RUNNER_TEMP/ci-metrics" -- cargo fmt --all -- --check
-      - name: Summarize CI measurements
-        if: always()
-        run: python3 scripts/ci/metrics.py summary --directory "$RUNNER_TEMP/ci-metrics" >> "$GITHUB_STEP_SUMMARY"
-      - name: Preserve CI measurements and sanitized diagnostics
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ci-diagnostics-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/ci-metrics/
-          retention-days: 3
-          if-no-files-found: warn
-          include-hidden-files: false
-
-  rust-debug:
-    needs: changes
-    if: needs.changes.outputs.product == 'true'
-    name: Rust tests and Clippy · ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      max-parallel: 2
-      matrix:
-        os: [macos-15, ubuntu-24.04]
-    env:
-      CARGO_TERM_COLOR: always
-      RUST_BACKTRACE: 1
-      GIT_CONFIG_NOSYSTEM: 1
-    steps:
-      - name: Isolate CI Git configuration
-        run: printf 'GIT_CONFIG_GLOBAL=%s/gitturtle-ci-gitconfig\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Prepare Rust and restore bounded dependencies
-        uses: ./.github/actions/setup-rust
-        with:
-          profile: debug
-      # These phases share one cold debug build. Cargo's default workspace
-      # test selection includes unit/integration tests and doctests.
-      - name: Locked workspace tests and doctests
-        run: python3 scripts/ci/metrics.py measure --name tests --directory "$RUNNER_TEMP/ci-metrics" -- cargo test --locked --workspace --timings
-      - name: Locked all-target Clippy
-        run: python3 scripts/ci/metrics.py measure --name clippy --directory "$RUNNER_TEMP/ci-metrics" -- cargo clippy --locked --workspace --all-targets --timings -- -D warnings
-      - name: Prepare bounded successful-main debug cache save
-        uses: ./.github/actions/setup-rust
-        with:
-          phase: finish
-          profile: debug
-      - name: Summarize CI measurements
-        if: always()
-        run: python3 scripts/ci/metrics.py summary --directory "$RUNNER_TEMP/ci-metrics" >> "$GITHUB_STEP_SUMMARY"
-      - name: Preserve CI measurements and sanitized diagnostics
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ci-diagnostics-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/ci-metrics/
-          retention-days: 3
-          if-no-files-found: warn
-          include-hidden-files: false
-
-  rust-release:
-    needs: changes
-    if: needs.changes.outputs.product == 'true'
-    name: Rust release · ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      max-parallel: 2
-      matrix:
-        include:
-          - os: macos-15
-            target: aarch64-apple-darwin
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-    env:
-      CARGO_TERM_COLOR: always
-      RUST_BACKTRACE: 1
-      GIT_CONFIG_NOSYSTEM: 1
-    steps:
-      - name: Isolate CI Git configuration
-        run: printf 'GIT_CONFIG_GLOBAL=%s/gitturtle-ci-gitconfig\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Select installed Xcode 26 or later
-        if: runner.os == 'macOS'
-        run: |
-          python3 - <<'PY_XCODE'
-          import glob, os, pathlib, re, subprocess
-          candidates = []
-          for path in glob.glob('/Applications/Xcode*.app/Contents/Developer'):
-              result = subprocess.run(['xcodebuild', '-version'], env={**os.environ, 'DEVELOPER_DIR': path},
-                                      capture_output=True, text=True, timeout=20)
-              match = re.search(r'^Xcode ([0-9]+(?:\.[0-9]+)*)$', result.stdout, re.MULTILINE)
-              if result.returncode == 0 and match and int(match[1].split('.')[0]) >= 26:
-                  candidates.append((tuple(map(int, match[1].split('.'))), path))
-          if not candidates:
-              raise SystemExit('Packaging requires an installed full Xcode 26+ with Metal tools')
-          selected = max(candidates)[1]
-          with open(os.environ['GITHUB_ENV'], 'a') as output:
-              output.write('DEVELOPER_DIR=' + selected + '\n')
-          print('Selected', pathlib.Path(selected).parent.parent.name)
-          PY_XCODE
-      - name: Prepare Rust and restore bounded dependencies
-        uses: ./.github/actions/setup-rust
-        with:
-          profile: release
-      - name: Install declared package target
-        env:
-          PACKAGE_TARGET: ${{ matrix.target }}
-        run: rustup target add "$PACKAGE_TARGET"
-      - name: Locked release compilation
-        env:
-          PACKAGE_TARGET: ${{ matrix.target }}
-        run: python3 scripts/ci/metrics.py measure --name release --directory "$RUNNER_TEMP/ci-metrics" -- cargo build --release --locked -p gitturtle --target "$PACKAGE_TARGET" --timings
-      - name: Package the exact optimized executable and enforce complete notices
-        id: package
-        env:
-          PACKAGE_TARGET: ${{ matrix.target }}
-          PACKAGE_REVISION: ${{ github.sha }}
-          PACKAGE_EVENT: ${{ github.event_name }}
-          PACKAGE_RUN_ID: ${{ github.run_id }}
-          PACKAGE_ATTEMPT: ${{ github.run_attempt }}
-        run: |
-          # The summary reads root JSON files as command measurements. Keep
-          # package reports nested; the diagnostics upload retains both kinds.
-          mkdir -p "$RUNNER_TEMP/ci-metrics/reports"
-          python3 scripts/ci/metrics.py measure --name package --directory "$RUNNER_TEMP/ci-metrics" -- \
-            python3 scripts/ci/packages.py prepare --target "$PACKAGE_TARGET" --revision "$PACKAGE_REVISION" \
-              --event "$PACKAGE_EVENT" --run-id "$PACKAGE_RUN_ID" --attempt "$PACKAGE_ATTEMPT" \
-              --directory "$RUNNER_TEMP/ci-package" --output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY" \
-              --report "$RUNNER_TEMP/ci-metrics/reports/package-prepared.json"
-      # Only the complete-notice publish directory is eligible. Development
-      # archives and logs are never swept into the public binary artifact.
-      - name: Upload verified early-development CI package
-        id: uploaded
-        if: steps.package.outputs.eligible == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ${{ steps.package.outputs.artifact-name }}
-          path: ${{ runner.temp }}/ci-package/publish/*
-          retention-days: 7
-          compression-level: 0
           if-no-files-found: error
           include-hidden-files: false
-      - name: Download this exact uploaded artifact from Actions
-        if: steps.package.outputs.eligible == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          artifact-ids: ${{ steps.uploaded.outputs.artifact-id }}
-          path: ${{ runner.temp }}/ci-package-download
-          merge-multiple: true
-          digest-mismatch: error
-      - name: Verify downloaded bytes and installation
-        if: steps.package.outputs.eligible == 'true'
-        env:
-          PACKAGE_ARTIFACT_ID: ${{ steps.uploaded.outputs.artifact-id }}
-        run: |
-          python3 scripts/ci/metrics.py measure --name artifact-download-checks --directory "$RUNNER_TEMP/ci-metrics" -- \
-            python3 scripts/ci/packages.py verify --expected "$RUNNER_TEMP/ci-package/prepared.json" \
-              --directory "$RUNNER_TEMP/ci-package-download" --artifact-id "$PACKAGE_ARTIFACT_ID" \
-              --report "$RUNNER_TEMP/ci-metrics/reports/package-transfer.json" --summary "$GITHUB_STEP_SUMMARY"
-      # All target/TRIPLE/release consumers must precede cache finish:
-      # successful main jobs may clean outputs to keep the retained cache bounded.
-      - name: Prepare bounded successful-main cache save
-        uses: ./.github/actions/setup-rust
-        with:
-          phase: finish
-          profile: release
-      - name: Summarize CI measurements
-        if: always()
-        run: python3 scripts/ci/metrics.py summary --directory "$RUNNER_TEMP/ci-metrics" >> "$GITHUB_STEP_SUMMARY"
-      - name: Preserve CI measurements and sanitized diagnostics
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ci-diagnostics-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/ci-metrics/
-          retention-days: 3
-          if-no-files-found: warn
-          include-hidden-files: false
-
-  website:
-    name: Website
-    needs: changes
-    if: needs.changes.outputs.website == 'true'
-    permissions:
-      contents: read
-    uses: ./.github/workflows/website.yml
-
-  quality:
-    name: Quality gate
-    if: always()
-    needs: [changes, agent-tooling, rust-format, rust-debug, rust-release, website]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Require every classified check to succeed
-        env:
-          NEEDS_JSON: ${{ toJSON(needs) }}
-        run: python3 scripts/ci/changes.py gate
-
-  rust-compatibility:
-    # Keep live required names until C1 explicitly migrates repository settings.
-    name: Rust · ${{ matrix.os }}
-    if: always()
-    needs: quality
-    runs-on: ubuntu-24.04
-    timeout-minutes: 2
-    strategy:
-      fail-fast: false
-      max-parallel: 2
-      matrix:
-        os: [macos-15, ubuntu-24.04]
-    steps:
-      - name: Preserve required-check compatibility
-        env:
-          QUALITY_RESULT: ${{ needs.quality.result }}
-        run: test "$QUALITY_RESULT" = success
+          overwrite: false
