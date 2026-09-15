@@ -726,9 +726,11 @@ The helper projects only the extracted registry package directories that pinned
 removes. It preserves current `*-sys` source directories because native build
 scripts can depend on their timestamps, and counts all Git databases and checkouts.
 The [Cargo cache layout](https://doc.rust-lang.org/cargo/guide/cargo-home.html)
-contains both downloadable archives and extracted sources; counting removable
-copies against the compiled-output allowance caused the first trusted-main seed
-to discard every target and refuse all four saves. That
+contains both downloadable archives and extracted sources. The helper previously
+counted those removable copies against the compiled-output allowance. The first
+trusted-main seed discarded every target and refused all four saves, but its
+diagnostics did not measure the removable-source volume. New hosted snapshots
+must quantify the effect of this accounting correction. That
 [observed failure](benchmarks/2026-09-15-ci.md#four-cache-budget-refusals)
 is retained separately from repair validation.
 
