@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GitTurtle development task contract",
+  "description": "The optional controller's active backlog. Editing this queue is authorized feature intake, not an implementation agent's completion report. The controller records results separately. Its Python loader additionally checks dependency references and cycles, unique task and acceptance IDs, Unicode controls, safe glob components, duplicate JSON keys, and the 2 MiB input bound.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "tasks"],
+  "properties": {
+    "version": {"type": "integer", "const": 1},
+    "tasks": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {"$ref": "#/$defs/task"}
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^\\s\\u0000-\\u001f\\u007f-\\u009f](?:[^\\u0000-\\u001f\\u007f-\\u009f]*[^\\s\\u0000-\\u001f\\u007f-\\u009f])?$"
+    },
+    "scope": {
+      "$ref": "#/$defs/text",
+      "maxLength": 256,
+      "pattern": "^(?!/)(?!.*[\\\\:])(?!.*(?:^|/)(?:\\.{1,2}|\\.[gG][iI][tT]|\\.[lL][oO][cC][aA][lL])(?:/|$))(?!.*//)(?!.*/$).+$",
+      "description": "A repository-relative POSIX glob. * and ? match within one segment; ** must be a complete segment and matches zero or more segments. Character classes are supported. Absolute, empty, dot, parent, backslash, colon, control, .git and .local components are forbidden. The loader also rejects glob components that explicitly target reserved metadata or parent components. Broad wildcards never authorize concrete .git or .local paths. Path-name matching does not authorize following symlinks."
+    },
+    "criterion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "description": {"$ref": "#/$defs/text", "maxLength": 2048}
+      }
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "description", "depends_on", "scope", "acceptance", "profiles", "commit"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "title": {"$ref": "#/$defs/text", "maxLength": 160},
+        "description": {"$ref": "#/$defs/text", "maxLength": 4096},
+        "depends_on": {
+          "type": "array",
+          "maxItems": 200,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/id"},
+          "description": "Existing task IDs; self-dependencies and cycles are invalid. Ready tasks retain queue order among those whose dependencies have accepted controller results."
+        },
+        "scope": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/scope"}
+        },
+        "acceptance": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "items": {"$ref": "#/$defs/criterion"},
+          "description": "Observable acceptance criteria with IDs unique within this task. Criteria are contract requirements; accepted or passed fields belong only in controller results."
+        },
+        "profiles": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 7,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": ["docs", "tooling", "rust", "native", "performance", "package", "vendor"]
+          },
+          "description": "Requested validation profiles, never proof of execution. The controller derives minimum checks from changed paths. Native, performance, package and vendor profiles require their corresponding evidence before acceptance."
+        },
+        "commit": {
+          "$ref": "#/$defs/text",
+          "maxLength": 72,
+          "pattern": "^(?:feat|fix|docs|refactor|perf|test|build|ci|chore|revert)(?:\\([A-Za-z0-9][A-Za-z0-9._/-]*\\))?!?: \\S(?:.*\\S)?$",
+          "description": "One Conventional Commit subject, at most 72 characters with optional scope and breaking-change !. No newline or control characters. The controller passes it as a Git argument, never shell code."
+        }
+      }
+    }
+  }
+}
