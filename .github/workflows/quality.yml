@@ -113,22 +113,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install Linux native build dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential clang cmake pkg-config git openssh-client ca-certificates \
-            libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev \
-            libssl-dev libzstd-dev libvulkan-dev \
-            python3 python3-pil desktop-file-utils xdg-utils
-          pkg-config --exists xkbcommon-x11 x11-xcb
-      - name: Install pinned workspace Rust toolchain
-        shell: bash
-        run: |
-          rustup show active-toolchain
-          rustc --version
-          cargo --version
+      - name: Prepare Rust and restore bounded dependencies
+        uses: ./.github/actions/setup-rust
+        with:
+          profile: debug-release
       - name: Format
         run: python3 scripts/ci/metrics.py measure --name format --directory "$RUNNER_TEMP/ci-metrics" -- cargo fmt --all -- --check
       - name: Locked workspace tests
@@ -171,6 +159,13 @@ jobs:
           test "$launch_status" -eq 1
           grep -F 'GitTurtle needs a Wayland or X11 desktop session' "$RUNNER_TEMP/gitturtle-no-display.txt"
           PACKAGE
+      # All consumers of target/release/gitturtle must precede cache finish:
+      # successful main jobs may clean outputs to keep the retained cache bounded.
+      - name: Prepare bounded successful-main cache save
+        uses: ./.github/actions/setup-rust
+        with:
+          phase: finish
+          profile: debug-release
       - name: Summarize CI measurements
         if: always()
         run: python3 scripts/ci/metrics.py summary --directory "$RUNNER_TEMP/ci-metrics" >> "$GITHUB_STEP_SUMMARY"

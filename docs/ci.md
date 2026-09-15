@@ -3,8 +3,9 @@
 [Quality](../.github/workflows/quality.yml) validates development tooling and the
 Rust workspace on macOS and Linux. The standard-library
 [measurement helper](../scripts/ci/metrics.py) makes its time and failure costs
-inspectable. It reports evidence; it does not change run policy, add a build cache,
-retry jobs, publish reports or update repository settings.
+inspectable. The helper reports evidence; the workflow and Rust setup action own
+run policy and optional dependency caching. Collection does not retry jobs, publish
+reports or update repository settings.
 
 The source patch prepares local tooling and workflow instrumentation. Hosted
 behavior and improvement remain part of
@@ -508,3 +509,149 @@ creation.
 Implementation references: [GitHub workflow runs](https://docs.github.com/en/rest/actions/workflow-runs),
 [jobs for a run attempt](https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run-attempt),
 and [Cargo build timings](https://doc.rust-lang.org/cargo/reference/timings.html).
+
+## Bounded Rust dependency caching
+
+Quality's [Rust setup action](../.github/actions/setup-rust/action.yml) owns native
+setup and the lifetime of optional compilation caches. Each Rust job calls its
+`setup` phase before validation and its matching `finish` phase **after every
+consumer of `target`**, including package construction and installation checks.
+Finish may remove compiled outputs to bound a successful main cache. Keep future
+binary/artifact consumers before that boundary. Formatting, locked workspace tests
+(including doctests), strict all-target Clippy and locked release compilation run
+on every selected Rust job regardless of a cache hit.
+
+### Tool choice and compatible reuse
+
+The action pins
+[Swatinem/rust-cache 2.9.2](https://github.com/Swatinem/rust-cache/tree/6323deb102c322ba6fcbdcafc7e3dddab59af2b6)
+to `6323deb102c322ba6fcbdcafc7e3dddab59af2b6`, inspected September 15, 2026.
+Its Node 24 implementation uses the GitHub cache service and removes nondependency
+outputs before saving. No sccache, paid runner, toolchain change or product profile
+optimization is introduced. The established action disables Cargo incremental
+artifacts (`CARGO_INCREMENTAL=0`); workspace optimization, debug information, LTO
+and codegen settings remain those in `Cargo.toml`.
+
+The evaluated implementation's
+[package selection](https://github.com/Swatinem/rust-cache/blob/6323deb102c322ba6fcbdcafc7e3dddab59af2b6/src/workspace.ts)
+excludes every package beneath the workspace root, not only its three declared
+members. Consequently GitTurtle's maintained local GPUI/Mermaid patches and the
+application/core/preview crates rebuild after restoration. The cache reuses
+registry dependency outputs and Cargo downloads when compatible; it does not
+promise reuse of those expensive local libraries. The finish helper uses Cargo's
+own whole-package cleanup for local path packages rather than retaining their
+fingerprints accidentally. This limitation and remaining vendor compilation cost
+must appear in C1 measurements before deciding whether a different established
+cache strategy is justified.
+
+[Upstream key construction](https://github.com/Swatinem/rust-cache/blob/6323deb102c322ba6fcbdcafc7e3dddab59af2b6/src/config.ts)
+separates OS/architecture, installed Rust compiler release/host/commit identities,
+and Cargo/Rust/native compiler flags. The local compatibility prefix additionally
+hashes:
+
+- The selected output family: currently `debug-release` for serial validation;
+  `debug` and `release` are separate identities for subsequent phase separation.
+- Actual bytes of all tracked Cargo manifests/lockfiles, toolchain files,
+  `build.rs` files, root Cargo configuration, the setup action and every tracked
+  vendor file. A vendor C/Rust source edit invalidates without needing a manifest
+  edit. Ordinary application Rust source edits reuse compatible dependency caches.
+- Linux's installed package/version/architecture inventory, Clang, CMake and
+  pkg-config versions, or macOS's Xcode version, SDK version/build, selected Clang
+  and OS build. This includes native ABI/SDK changes and conservative hosted-image
+  updates. `SDKROOT`, deployment target, pkg-config, library/linker and archiver
+  environment inputs also participate through upstream's flag hashing.
+
+The raw manifest/lock digest is part of the compatibility prefix; unlike upstream's
+broader fallback, this deliberately does not restore an older dependency graph.
+Compiler/flags/platform/source mismatches cannot fall back to an incompatible
+prefix. The full upstream key remains in the Actions cache log; local diagnostics
+retain its setup prefix. Changing the versioned `gitturtle-rust-v1` prefix is a
+reviewable way to isolate a cold experiment without deleting another job's cache.
+
+### Trust, failure and storage bounds
+
+Cargo cache storage is isolated under the fresh runner's temporary directory.
+Only its `registry` and `git` subtrees and the workspace `target` are eligible;
+Cargo binaries, configuration and credential files are excluded. Checkout keeps
+`persist-credentials: false`, and existing Git configuration isolation and Linux
+native prerequisites remain in place. No cache is a trusted release input.
+
+Setup always restores with saving disabled. Only a successful **push to
+`FernandoX7/GitTurtle`'s `main`** can register the finish save; PRs, fork PRs and
+manual runs are read-only consumers. Failed/cancelled validation cannot save.
+A main job's finish action checks for the existing exact key without downloading
+again and registers upstream's normal post-job save only when its payload budget
+passes. An existing exact entry is immutable and needs no duplicate save.
+
+The restore action's `cache-hit` means exact match only. A miss, partial match,
+service/extraction error or missing/failed action result discards the restored
+`target`, registry and Git payload before Cargo runs. This also removes a partial
+archive. Cargo downloads and builds from the locked inputs normally. Unexpected
+lockfile mutation during cache metadata discovery is an error, never a cached
+success. The action cannot skip a test command; compilation and test failures
+retain their normal failing result, without blind retries.
+
+Before a save, [.github/actions/setup-rust/cache.py](../.github/actions/setup-rust/cache.py)
+resolves locked all-feature metadata (matching the upstream save graph), then
+accounts logical file bytes plus a conservative 4 KiB per directory/file entry,
+counting hardlinked aliases separately. It permits at most 250,000 entries and
+**3 GiB for the current combined profile**, or **1.5 GiB for each separate profile**.
+These are pre-cleanup payload ceilings, not compressed archive measurements.
+The two current platform families therefore retain at most 6 GiB per compatible
+generation before compression; future debug/release separation keeps that same
+aggregate ceiling across four families.
+
+After removing local package outputs through `cargo clean --locked --package`,
+the helper may clean up to eight largest dependency package groups, stopping new
+cleanup work after 90 seconds (each Cargo command has a 30-second timeout). Cargo
+owns removal of fingerprints, libraries and generated native outputs together.
+If the payload still exceeds its ceiling, the entire target is discarded and a
+bounded downloads-only cache may be saved. If downloads alone exceed the limit,
+or accounting/cleanup fails, no save is registered. It never deletes arbitrary
+build-script `OUT_DIR` members while keeping their fingerprint. This bounds
+retained data without changing the validation just completed; budget fallback may
+reduce warm reuse and must be measured.
+
+Upstream performs additional dependency/age cleanup in its post action. GitHub
+also applies repository-wide
+[cache limits and eviction](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#usage-limits-and-eviction-policy).
+This patch does not change repository storage settings or delete caches through
+the API. Old compatibility generations and CodeQL share that quota. C1 must record
+actual compressed cache sizes, eviction/miss rates and transfer cost; the local
+baseline's full debug/release disk footprint is not the action's archive size.
+Ordinary source-only PRs neither create new cache generations nor upload entries.
+Do not add per-commit/per-run keys or job variants that continually evict useful
+platform entries. If observed storage churn defeats reuse, adjust the retained
+families/budgets in a reviewed change using those measurements.
+
+### Cache observations and pending C1 evidence
+
+`rust-cache-restore.json` uses the existing metrics schema and supplies exact-hit
+state and a monotonic restore interval. Its documented boundary includes action
+initialization, runner dispatch and recovery/cleanup; it is **not** isolated network
+transfer time. `rust-cache-budget.json` records cleanup wall time, the payload
+ceiling, retained pre-cleanup accounting, removed-package count, whole-target
+fallback and save eligibility. Both live in the existing three-day diagnostics
+artifact. The summary displays explicit cache values, preserving unknown fields
+as unavailable and `false`/zero as observations.
+
+Upstream exposes no compressed-byte or save-duration action outputs. Those remain
+`null` before the job ends. The completed Actions job's restore/save step intervals,
+upstream cache-size log and cache inventory provide later evidence. When preparing
+a report export, attach a measured cache value only to its observed step; identify
+whether save time includes cleanup/compression/upload and whether bytes describe
+the compressed archive. Do not substitute the helper's pre-cleanup ceiling for a
+compressed size. Include the final post action in end-to-end job and merge timing.
+
+Local tests exercise source/vendor/native/profile invalidation, isolated path
+refusal, partial restore removal, bounded whole-package cleanup and truthful cache
+summaries. A disposable real Cargo fixture regenerates and tests its build-script
+output after cleanup. Run that optional fixture explicitly with
+`GITTURTLE_CACHE_CARGO_QA=1 python3 -B -m unittest discover -s scripts/ci/tests -p test_rust_cache.py`;
+ordinary development-tooling jobs do not install a Rust toolchain just for that
+fixture. These checks establish source behavior, not a hosted cache hit or speed
+improvement. C1 still requires a reviewed main revision to seed trusted
+entries, cold/warm PR/main samples on each platform, fork read-only behavior,
+lock/toolchain/vendor/native invalidation, stale/corrupt cache refusal, post-save
+cost, actual retained subset/eviction and all required tests executing on warm runs.
+Manual branch repeats alone cannot establish a trusted-main warm cache.

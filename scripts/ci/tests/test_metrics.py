@@ -848,6 +848,27 @@ class CommandDiagnosticsTests(unittest.TestCase):
         self.assertIn("save duration: unavailable", result.stdout)
         self.assertIn("3-day retention", result.stdout)
 
+    def test_summary_preserves_explicit_cache_zero_false_and_unknown_fields(self):
+        with tempfile.TemporaryDirectory(dir=METRICS.parent / "tests") as directory:
+            record = {"schema_version": 1, "name": "rust-cache-restore", "exit_code": 0,
+                      "elapsed_seconds": 0, "cache": {"restore_seconds": 0, "hit": False}}
+            (Path(directory) / "rust-cache-restore.json").write_text(json.dumps(record))
+            result = invoke("summary", "--directory", directory)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("| rust-cache-restore | 0 | unavailable | False | unavailable |", result.stdout)
+        self.assertIn("completed post-job evidence", result.stdout)
+        self.assertNotIn("no Cargo cache configured", result.stdout)
+
+    def test_summary_rejects_invalid_cache_measurements(self):
+        with tempfile.TemporaryDirectory(dir=METRICS.parent / "tests") as directory:
+            for invalid in ({"hit": "true"}, {"restore_seconds": -1}, {"size_bytes": 1.2}):
+                with self.subTest(invalid=invalid):
+                    record = {"schema_version": 1, "name": "rust-cache", "cache": invalid}
+                    (Path(directory) / "rust-cache.json").write_text(json.dumps(record))
+                    result = invoke("summary", "--directory", directory)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertNotIn("Traceback", result.stderr)
+
     def test_only_fresh_cargo_timing_is_retained_as_sanitized_text(self):
         with tempfile.TemporaryDirectory(dir=METRICS.parent / "tests") as directory:
             root = Path(directory)

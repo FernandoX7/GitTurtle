@@ -532,15 +532,25 @@ def job_summary(directory):
     files = sorted(Path(directory).glob("*.json"))
     if len(files) > 100:
         raise MetricsError("too many command measurements")
+    cache_rows = []
     for path in files:
         with path.open("rb") as stream:
             item = object_value(read_json(stream, MAX_RESPONSE), "command measurement")
         if item.get("schema_version") != 1 or not isinstance(item.get("name"), str) or not NAME.fullmatch(item["name"]):
             raise MetricsError("invalid command measurement")
         lines.append("| " + " | ".join(display(label(item.get(key))) for key in ("name", "exit_code", "elapsed_seconds", "cargo_compilation_seconds", "test_harness_seconds", "build_timing_artifact")) + " |")
+        cache = cache_measurement(item.get("cache"))
+        if any(value is not None for value in cache.values()):
+            cache_rows.append("| " + display(label(item["name"])) + " | " + " | ".join(display(cache[key]) for key in ("restore_seconds", "save_seconds", "hit", "size_bytes")) + " |")
     if not files:
         lines += ["", "Command measurements unavailable (the job may have failed before instrumentation)."]
-    lines += ["", "Cache restore duration: unavailable; save duration: unavailable; hit/miss: unavailable; size bytes: unavailable. Quality has no Cargo cache configured yet.", "",
+    if cache_rows:
+        lines += ["", "### Explicit cache observations", "",
+                  "| Measurement | Restore s | Save s | Exact hit | Size bytes |",
+                  "| --- | ---: | ---: | --- | ---: |", *cache_rows]
+    else:
+        lines += ["", "Cache restore duration: unavailable; save duration: unavailable; hit/miss: unavailable; size bytes: unavailable (no explicit cache observation)."]
+    lines += ["", "Unavailable cache fields are not zero. Restore boundaries belong to their measurement record; save/size may require completed post-job evidence.", "",
               "Diagnostics artifact: `ci-diagnostics-<job>-<OS>-<architecture>-<run>-<attempt>` (3-day retention). Logs retain up to 1 MiB per command; build timing text up to 2 MiB per command. Missing Cargo markers/artifacts stay unavailable; harness totals exclude startup and doctest compilation.", "",
               "This summary precedes upload and post-job actions; it does not establish their success or duration. Cancellation or runner loss can prevent final diagnostics.", ""]
     return "\n".join(lines)
