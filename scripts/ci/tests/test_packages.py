@@ -20,6 +20,9 @@ import zipfile
 SPEC = importlib.util.spec_from_file_location("ci_packages", Path(__file__).resolve().parents[1] / "packages.py")
 packages = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(packages)
+MAC_SPEC = importlib.util.spec_from_file_location("package_macos_diagnostics", packages.ROOT / "scripts/package-macos.py")
+macos = importlib.util.module_from_spec(MAC_SPEC)
+MAC_SPEC.loader.exec_module(macos)
 
 
 def sha(data):
@@ -376,6 +379,58 @@ class PrepareTests(unittest.TestCase):
 
 
 class CommandTests(unittest.TestCase):
+    def test_failure_excerpts_preserve_first_cause_and_final_status_within_bound(self):
+        for module, error, name in [(packages, packages.Error, Path(os.sys.executable).name),
+                                    (macos, macos.PackageError, os.sys.executable)]:
+            for size in (100, 8192, 8193, 25000):
+                first, last = "FIRST_CAUSE\n", "\nFINAL_CAUSE\n"
+                diagnostic = first + "x" * (size - len(first) - len(last)) + last
+                with self.subTest(module=module.__name__, size=size):
+                    with self.assertRaises(error) as raised:
+                        module.run([os.sys.executable, "-c",
+                                    f"import sys;sys.stderr.write({diagnostic!r});sys.exit(17)"])
+                    message = str(raised.exception)
+                    prefix = f"{name} failed (17): "
+                    self.assertTrue(message.startswith(prefix))
+                    excerpt = message[len(prefix):]
+                    if len(diagnostic) <= 8192:
+                        self.assertEqual(excerpt, diagnostic)
+                    else:
+                        self.assertLessEqual(len(excerpt), 8192)
+                        self.assertTrue(excerpt.startswith(first))
+                        self.assertTrue(excerpt.endswith(last))
+                        self.assertIn("[diagnostic output truncated]", excerpt)
+
+    def test_nested_wrappers_retain_original_cause_and_both_exit_statuses(self):
+        child = "import sys;sys.stderr.write('ORIGINAL_CAUSE\\n' + 'x' * 25000 + '\\nFINAL_CAUSE\\n');sys.exit(17)"
+        wrapper = (
+            "import importlib.util,sys\n"
+            f"spec=importlib.util.spec_from_file_location('package_macos', {str(packages.ROOT / 'scripts/package-macos.py')!r})\n"
+            "module=importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(module)\n"
+            "try:\n"
+            f"    module.run([sys.executable, '-c', {child!r}])\n"
+            "except module.PackageError as error:\n"
+            "    print(error, file=sys.stderr)\n"
+            "    sys.exit(23)\n"
+        )
+        with self.assertRaises(packages.Error) as raised:
+            packages.run([os.sys.executable, "-c", wrapper])
+        message = str(raised.exception)
+        prefix = f"{Path(os.sys.executable).name} failed (23): "
+        self.assertTrue(message.startswith(prefix))
+        self.assertIn(f"{os.sys.executable} failed (17): ORIGINAL_CAUSE\n", message)
+        self.assertTrue(message.endswith("\nFINAL_CAUSE\n\n"))
+        self.assertIn("[diagnostic output truncated]", message)
+        self.assertLessEqual(len(message[len(prefix):]), 8192)
+
+    def test_success_output_and_allowed_exit_are_unchanged(self):
+        command = [os.sys.executable, "-c", "import sys;sys.stdout.write('complete success output')"]
+        self.assertEqual(macos.run(command), "complete success output")
+        self.assertEqual(packages.run(command), (0, "complete success output"))
+        self.assertEqual(packages.run([os.sys.executable, "-c", "print('allowed');raise SystemExit(2)"],
+                                      allowed=(0, 2)), (2, "allowed\n"))
+
     def test_timeout_and_output_limits_are_failures(self):
         with self.assertRaises(packages.Error):
             packages.run([os.sys.executable, "-c", "import time;time.sleep(10)"], timeout=0.01)

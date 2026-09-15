@@ -48,7 +48,7 @@ def write_json(path, value):
 
 
 def run(command, *, cwd=ROOT, env=None, allowed=(0,), timeout=600):
-    """Bound time/output, retain only the final diagnostic in an ordinary error."""
+    """Bound time/output and preserve the first and last failure diagnostics."""
     with tempfile.TemporaryFile() as output:
         child = subprocess.Popen([str(arg) for arg in command], cwd=cwd, env=env,
                                  stdin=subprocess.DEVNULL, stdout=output,
@@ -64,7 +64,13 @@ def run(command, *, cwd=ROOT, env=None, allowed=(0,), timeout=600):
             output.seek(0)
             text = output.read().decode("utf-8", errors="replace")
             if child.returncode not in allowed:
-                raise Error(f"{Path(command[0]).name} failed ({child.returncode}): {text[-8192:]}")
+                detail = text
+                if len(detail) > 8192:
+                    notice = "\n... [diagnostic output truncated] ...\n"
+                    head = (8192 - len(notice)) // 2
+                    tail = 8192 - len(notice) - head
+                    detail = detail[:head] + notice + detail[-tail:]
+                raise Error(f"{Path(command[0]).name} failed ({child.returncode}): {detail}")
             return child.returncode, text
         finally:
             try:

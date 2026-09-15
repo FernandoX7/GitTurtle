@@ -52,7 +52,13 @@ def run(command, *, cwd=None, timeout=120):
             stdout = out.read().decode("utf-8", errors="replace")
             stderr = err.read().decode("utf-8", errors="replace")
             if child.returncode:
-                raise PackageError(f"{command[0]} failed ({child.returncode}): {(stderr or stdout)[-8192:]}")
+                detail = stderr or stdout
+                if len(detail) > 8192:
+                    notice = "\n... [diagnostic output truncated] ...\n"
+                    head = (8192 - len(notice)) // 2
+                    tail = 8192 - len(notice) - head
+                    detail = detail[:head] + notice + detail[-tail:]
+                raise PackageError(f"{command[0]} failed ({child.returncode}): {detail}")
             return stdout + stderr
         finally:
             try:
