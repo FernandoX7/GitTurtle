@@ -167,10 +167,13 @@ success/error matching now separates `.git` metadata and destination-directory
 enumeration from returned plans and paths, while preserving errors and checks.
 Cleanup fixtures also use dedicated local paths for filesystem mutations.
 
-The other four alerts concerned a recursive test-copy helper. It now checks
-canonical source/destination containment within the disposable fixture and
-refuses symbolic links and special files. These restrictions apply to the test
-helper; linked worktrees may still live outside the source checkout.
+The other four alerts concerned a recursive test-copy helper. It has been
+replaced with explicit copies of the known checkout and private-administration
+fixture files, removing directory-entry-derived paths and recursive traversal.
+The replacement-directory regression retains the original directory and checks
+the copied bytes. Product paths are unchanged; linked worktrees may still live
+outside the source checkout. This fixture-only cleanup does not change the
+application inputs used for the native release above.
 
 The SARIF also contained a command-line alert outside the changed lines. Its
 flow incorrectly crossed distinct Commit and Worktree command variants into a

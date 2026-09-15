@@ -503,35 +503,6 @@ fn worktree_removal_refuses_stale_branch_commit_and_replaced_repository() {
 
 #[test]
 fn worktree_removal_refuses_replaced_directories_at_the_same_paths() {
-    fn copy_directory(source: &Path, destination: &Path, fixture: &Path) {
-        // This helper copies only regular fixture content. Bound both sides
-        // before touching them, including paths returned by directory entries.
-        let source = source.canonicalize().unwrap();
-        assert!(source.starts_with(fixture));
-        let destination = destination
-            .parent()
-            .unwrap()
-            .canonicalize()
-            .unwrap()
-            .join(destination.file_name().unwrap());
-        assert!(destination.starts_with(fixture));
-        fs::create_dir(&destination).unwrap();
-        for entry in fs::read_dir(&source).unwrap() {
-            let entry = entry.unwrap();
-            let kind = entry.file_type().unwrap();
-            assert!(kind.is_dir() || kind.is_file());
-            let source_path = entry.path().canonicalize().unwrap();
-            assert!(source_path.starts_with(&source));
-            let target = destination.join(entry.file_name());
-            assert!(target.starts_with(&destination));
-            if kind.is_dir() {
-                copy_directory(&source_path, &target, fixture);
-            } else {
-                fs::copy(source_path, target).unwrap();
-            }
-        }
-    }
-
     for replace_private in [false, true] {
         let f = Fixture::new();
         let repo = f.repo();
@@ -548,14 +519,46 @@ fn worktree_removal_refuses_replaced_directories_at_the_same_paths() {
             &destination
         };
         let saved = f.destination("original-directory");
+        let retained_file = if replace_private { "index" } else { "tracked" };
+        let retained_bytes = fs::read(replaced.join(retained_file)).unwrap();
         fs::rename(replaced, &saved).unwrap();
-        copy_directory(&saved, replaced, f.root.parent().unwrap());
+        fs::create_dir(replaced).unwrap();
+        // Reconstruct the known fixture with unchanged Git metadata and working
+        // bytes, without recursively copying discovered filesystem paths.
+        let files: &[&str] = if replace_private {
+            for directory in ["logs", "refs"] {
+                if saved.join(directory).is_dir() {
+                    fs::create_dir(replaced.join(directory)).unwrap();
+                }
+            }
+            &[
+                "HEAD",
+                "ORIG_HEAD",
+                "commondir",
+                "gitdir",
+                "index",
+                "logs/HEAD",
+            ]
+        } else {
+            &[".git", "tracked"]
+        };
+        for file in files {
+            // Git versions/configurations can omit these auxiliary files.
+            if matches!(*file, "ORIG_HEAD" | "logs/HEAD") && !saved.join(file).is_file() {
+                continue;
+            }
+            fs::copy(saved.join(file), replaced.join(file)).unwrap();
+        }
         // Branch, commit, registration, clean status, and all path strings are
         // unchanged, but this is a different checkout/administration directory.
         assert_eq!(f.removal_plan(&destination).tree, reviewed.tree);
         let error = repo.execute(&remove(reviewed)).unwrap_err();
         assert!(error.to_string().contains("changed after review"));
         assert_eq!(fs::read(destination.join("tracked")).unwrap(), b"base\n");
+        assert_eq!(
+            fs::read(replaced.join(retained_file)).unwrap(),
+            retained_bytes
+        );
         assert!(private.is_dir());
         assert!(saved.is_dir());
         assert_eq!(repo.worktrees().unwrap().len(), 2);
@@ -564,6 +567,7 @@ fn worktree_removal_refuses_replaced_directories_at_the_same_paths() {
         assert!(!destination.exists());
         assert!(!private.exists());
         assert!(saved.is_dir());
+        assert_eq!(fs::read(saved.join(retained_file)).unwrap(), retained_bytes);
     }
 }
 

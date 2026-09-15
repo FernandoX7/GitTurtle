@@ -8,7 +8,7 @@ This page contains current validation guidance and dated local evidence, with ea
 
 Source `0d4d8ce` passed 771 workspace tests, strict Clippy, formatting, app check
 and release compilation. The [worktree-removal review](worktree-removal-validation.md#september-15-macos-merge-review-and-security-fixes)
-records CodeQL flow fixes, confined fixture copies, verified local macOS package
+records CodeQL flow fixes, explicit fixture copies, verified local macOS package
 identity, native cancellation/refusal/removal checks, and independent branch,
 index and sibling-content preservation. Hosted results are recorded on PR #5;
 this entry does not claim a new Linux native or notarized-distribution pass.
