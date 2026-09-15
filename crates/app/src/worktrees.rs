@@ -23,6 +23,25 @@ fn label(id: &'static str, value: impl Into<SharedString>) -> Stateful<Div> {
 
 impl GitTurtle {
     pub(super) fn open_worktree_manager(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_worktree_manager(None, window, cx);
+    }
+
+    pub(super) fn open_worktree_actions(
+        &mut self,
+        tree: Worktree,
+        remove: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_worktree_manager(Some((tree, remove)), window, cx);
+    }
+
+    fn show_worktree_manager(
+        &mut self,
+        target: Option<(Worktree, bool)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.operation_busy.is_some() {
             return;
         }
@@ -41,7 +60,14 @@ impl GitTurtle {
         manager.update(cx, |this, cx| {
             this.closed
                 .store(false, std::sync::atomic::Ordering::Release);
-            this.refresh(window, cx);
+            if let Some((tree, remove)) = target {
+                this.creating = false;
+                this.filter
+                    .update(cx, |input, cx| input.set_value("", window, cx));
+                this.refresh_target(Some((tree, remove)), window, cx);
+            } else {
+                this.refresh(window, cx);
+            }
         });
         window.open_alert_dialog(cx, move |dialog, _, cx| {
             let done = manager.clone();
@@ -160,6 +186,7 @@ struct WorktreeManager {
     selected: Option<PathBuf>,
     details: Option<WorktreeDetails>,
     pending: bool,
+    reviewing: bool,
     error: Option<String>,
     creating: bool,
     new_branch: bool,
@@ -202,6 +229,7 @@ impl WorktreeManager {
             selected: None,
             details: None,
             pending: false,
+            reviewing: false,
             error: None,
             creating: false,
             new_branch: true,
@@ -221,15 +249,30 @@ impl WorktreeManager {
         self.cancellation.cancel();
         self.task = None;
         self.pending = false;
+        self.reviewing = false;
     }
     fn current(&self, cx: &App) -> bool {
         self.owner.upgrade().is_some_and(|owner| {
             let owner = owner.read(cx);
-            owner.path.as_deref() == Some(self.repo.path()) && owner.operation_busy.is_none()
+            owner.path.as_deref() == Some(self.repo.path())
+                && owner.page == AppPage::Repository
+                && owner.operation_busy.is_none()
         })
+    }
+    fn set_creating(&mut self, creating: bool, cx: &mut Context<Self>) {
+        if self.creating != creating {
+            // A different workflow supersedes a pending review, including a
+            // navigator removal that would otherwise open its confirmation.
+            if self.reviewing {
+                self.cancel();
+            }
+            self.creating = creating;
+            cx.notify();
+        }
     }
     fn read<T: Send + 'static>(
         &mut self,
+        reviewing: bool,
         operation: impl FnOnce(GitRepository) -> anyhow::Result<T> + Send + 'static,
         receive: impl FnOnce(&mut Self, T, &mut Window, &mut Context<Self>) + 'static,
         window: &mut Window,
@@ -237,6 +280,7 @@ impl WorktreeManager {
     ) {
         self.cancel();
         self.pending = true;
+        self.reviewing = reviewing;
         self.error = None;
         self.cancellation = Default::default();
         let cancellation = self.cancellation.clone();
@@ -246,17 +290,32 @@ impl WorktreeManager {
         });
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response.await.unwrap_or_else(|_| Err(anyhow::anyhow!("Worktree read interrupted. Refresh to try again.")));
-            let _ = this.update_in(cx, |this, window, cx| { if this.closed.load(std::sync::atomic::Ordering::Acquire) { return; } this.pending = false; if !this.current(cx) { this.error = Some("The repository changed or an operation started. Reopen Worktrees when it finishes.".into()); } else { match result { Ok(value) => receive(this, value, window, cx), Err(error) => this.error = Some(format!("{error:#}")) } } cx.notify(); });
+            let _ = this.update_in(cx, |this, window, cx| { if this.closed.load(std::sync::atomic::Ordering::Acquire) { return; } this.pending = false; this.reviewing = false; if !this.current(cx) { this.error = Some("The repository context changed or an operation started. Reopen Worktrees when it finishes.".into()); } else { match result { Ok(value) => receive(this, value, window, cx), Err(error) => this.error = Some(format!("{error:#}")) } } cx.notify(); });
         }));
         cx.notify();
     }
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_target(None, window, cx);
+    }
+    fn refresh_target(
+        &mut self,
+        target: Option<(Worktree, bool)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.details = None;
         self.read(
+            target.as_ref().is_some_and(|(_, remove)| *remove),
             |repo| Ok((repo.worktrees()?, repo.branches()?)),
-            |this, (trees, branches), window, cx| {
+            move |this, (trees, branches), window, cx| {
                 this.trees = trees;
                 this.branches = branches;
+                if let Some((tree, remove)) = target {
+                    // Inspect the captured row identity. A stale or removed target
+                    // must never select a different tree for removal.
+                    this.inspect(tree, remove, window, cx);
+                    return;
+                }
                 let selected = this
                     .selected
                     .as_ref()
@@ -272,11 +331,26 @@ impl WorktreeManager {
         );
     }
     fn select(&mut self, tree: Worktree, window: &mut Window, cx: &mut Context<Self>) {
+        self.inspect(tree, false, window, cx);
+    }
+    fn inspect(
+        &mut self,
+        tree: Worktree,
+        remove: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.selected = Some(tree.path.clone());
         self.details = None;
         self.read(
+            remove,
             move |repo| repo.worktree_details(&tree),
-            |this, details, _, _| this.details = Some(details),
+            move |this, details, window, cx| {
+                this.details = Some(details);
+                if remove {
+                    this.confirm_removal(window, cx);
+                }
+            },
             window,
             cx,
         );
@@ -327,7 +401,7 @@ impl WorktreeManager {
         }
         let destination = self.parent.join(folder);
         let new_branch = self.new_branch;
-        self.read(move |repo| repo.create_worktree_plan(&destination, &branch, new_branch, &start), |this, plan: CreateWorktreePlan, window, cx| {
+        self.read(true, move |repo| repo.create_worktree_plan(&destination, &branch, new_branch, &start), |this, plan: CreateWorktreePlan, window, cx| {
             let _ = this.owner.update(cx, |owner, cx| {
                 if owner.path.as_deref() != Some(this.repo.path()) || owner.operation_busy.is_some() { return; }
                 window.close_dialog(cx);
@@ -336,6 +410,23 @@ impl WorktreeManager {
         }, window, cx);
     }
     fn remove(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending || !self.current(cx) {
+            return;
+        }
+        let Some(tree) = self
+            .details
+            .as_ref()
+            .filter(|details| details.removal_blocked.is_none())
+            .map(|details| details.tree.clone())
+        else {
+            return;
+        };
+        // Selection details can remain open while another tool changes the
+        // target. Prepare a fresh review of this exact identity before asking
+        // for confirmation; execution performs its own final stale check.
+        self.inspect(tree, true, window, cx);
+    }
+    fn confirm_removal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(details) = self
             .details
             .clone()
@@ -346,7 +437,7 @@ impl WorktreeManager {
         if self.pending || !self.current(cx) {
             return;
         }
-        let _ = self.owner.update(cx, |owner, cx| { window.close_dialog(cx); owner.confirm_git_write("Remove linked worktree".into(), format!("Folder: {}\nBranch: {}\nCommit: {}\n\nGit will remove this clean worktree folder and its private worktree metadata. The branch remains available and can be opened in another worktree. Shared refs and objects remain.\n\nRemoval refuses if the worktree changes, is locked, becomes unavailable, or contains tracked, untracked, or ignored changes. No force removal or metadata repair is attempted.", details.tree.path.display(), details.tree.branch.as_deref().unwrap_or("Detached HEAD"), details.tree.oid), "Remove worktree", WriteCommand::Worktree(Arc::new(WorktreeCommand::Remove(details))), window, cx); });
+        let _ = self.owner.update(cx, |owner, cx| { window.close_dialog(cx); owner.confirm_git_write("Remove linked worktree".into(), format!("Folder: {}\nBranch: {}\nCommit: {}\n\nGit will remove this clean worktree folder and its private worktree metadata. Removing a worktree does not delete branches or shared objects. Any branch remains available for another worktree.\n\nRemoval refuses if the worktree changes, is locked, becomes unavailable, has active Git state or index flags that hide changes, or contains tracked, untracked, or ignored changes. No force removal or metadata repair is attempted.", details.tree.path.display(), details.tree.branch.as_deref().unwrap_or("Detached HEAD"), details.tree.oid), "Remove worktree", WriteCommand::Worktree(Arc::new(WorktreeCommand::Remove(details))), window, cx); });
     }
 }
 
@@ -379,10 +470,10 @@ impl Render for WorktreeManager {
             .collect();
         div().id("worktree-manager-content").flex().flex_col().gap_3().max_h(px(570.).min(body_height)).overflow_y_scroll()
             .child(div().flex().gap_2()
-                .child(button("worktree-browse-tab", "Manage", "", !self.creating).toggled(!self.creating).on_click(cx.listener(|this, _, _, cx| { this.creating = false; cx.notify(); })))
-                .child(button("worktree-create-tab", "Create worktree…", "plus", self.creating).toggled(self.creating).on_click(cx.listener(|this, _, _, cx| { this.creating = true; cx.notify(); })))
+                .child(button("worktree-browse-tab", "Manage", "", !self.creating).debug_selector(|| "worktree-browse-tab".to_string()).toggled(!self.creating).on_click(cx.listener(|this, _, _, cx| this.set_creating(false, cx))))
+                .child(button("worktree-create-tab", "Create worktree…", "plus", self.creating).debug_selector(|| "worktree-create-tab".to_string()).toggled(self.creating).on_click(cx.listener(|this, _, _, cx| this.set_creating(true, cx))))
                 .child(button("refresh-worktrees", "Refresh", "refresh-cw", false).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx)))))
-            .when(self.pending, |element| element.child(div().flex().gap_2().child(label("worktree-loading", "Reading worktree identities and content…").text_size(crate::appearance::ui_text(12.))).child(button("cancel-worktree-read", "Cancel", "", false).on_click(cx.listener(|this, _, _, cx| { this.cancel(); cx.notify(); })))))
+            .when(self.pending, |element| element.child(div().flex().gap_2().child(label("worktree-loading", "Reading worktree identities and content…").text_size(crate::appearance::ui_text(12.))).child(button("cancel-worktree-read", "Cancel", "", false).debug_selector(|| "cancel-worktree-read".to_string()).on_click(cx.listener(|this, _, _, cx| { this.cancel(); cx.notify(); })))))
             .children(self.error.as_ref().map(|error| label("worktree-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
             .when(!self.creating, |element| element
                 .child(Input::new(&self.filter).aria_label("Filter worktrees by branch or path").cleanable(true))
@@ -395,13 +486,13 @@ impl Render for WorktreeManager {
                     let details = details.clone(); let path = details.tree.path.clone(); let finder = path.clone(); let editor = path.clone();
                     element.child(div().flex().flex_col().gap_2()
                         .child(label("worktree-selected-identity", format!("{}{} · {}\n{}", details.tree.branch.as_deref().unwrap_or("Detached HEAD"), if details.main { " · Main worktree" } else if details.current { " · Current worktree" } else { "" }, short_oid(&details.tree.oid), details.tree.path.display())).text_size(crate::appearance::ui_text(12.)))
-                        .child(label("worktree-selected-status", if details.missing { "Folder missing or unavailable".into() } else { format!("{} changed/untracked files · {} ignored files{}", details.changed_files, details.ignored_files, if details.changed_files == 0 && details.ignored_files == 0 { " · Clean" } else { "" }) }).text_size(crate::appearance::ui_text(12.)))
+                        .child(label("worktree-selected-status", if details.missing { "Folder missing or unavailable".into() } else { format!("{} changed/untracked files · {} ignored files{}", details.changed_files, details.ignored_files, if details.removal_blocked.is_none() { " · Clean" } else { "" }) }).text_size(crate::appearance::ui_text(12.)))
                         .when_some(details.removal_blocked.as_ref(), |element, reason| element.child(label("worktree-removal-protection", reason.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted))))
                         .child(div().flex().flex_wrap().gap_2()
                             .child(button("open-managed-worktree", "Open in GitTurtle", "", false).disabled(unavailable || details.missing || details.current).on_click(cx.listener(move |this, _, window, cx| { let _ = this.owner.update(cx, |owner, cx| { if owner.operation_busy.is_none() && owner.path.as_deref() == Some(this.repo.path()) { window.close_dialog(cx); owner.open(path.clone(), None, window, cx); } }); })))
                             .child(button("reveal-managed-worktree", if cfg!(target_os = "macos") { "Finder" } else { "Files" }, "", false).disabled(details.missing).on_click(move |_, _, cx| cx.reveal_path(&finder)))
                             .child(button("edit-managed-worktree", "Editor", "", false).disabled(unavailable || details.missing).on_click(cx.listener(move |this, _, window, cx| { let _ = this.owner.update(cx, |owner, cx| owner.open_worktree_editor(editor.clone(), window, cx)); })))
-                            .child(button("remove-managed-worktree", "Remove…", "", false).disabled(unavailable || details.removal_blocked.is_some()).on_click(cx.listener(|this, _, window, cx| this.remove(window, cx))))))
+                            .child(button("remove-managed-worktree", "Remove worktree…", "", false).debug_selector(|| "remove-managed-worktree".to_string()).disabled(unavailable || details.removal_blocked.is_some()).on_click(cx.listener(|this, _, window, cx| this.remove(window, cx))))))
                 }))
             .when(self.creating, |element| element
                 .child(div().flex().gap_2().children([(false, "Existing branch"), (true, "New branch")].map(|(new, name)| button(name, name, "", self.new_branch == new).toggled(self.new_branch == new).disabled(self.pending).on_click(cx.listener(move |this, _, _, cx| { this.new_branch = new; this.error = None; cx.notify(); })))))
@@ -419,3 +510,6 @@ impl Render for WorktreeManager {
                 .child(button("review-create-worktree", "Review worktree…", "", false).disabled(unavailable).on_click(cx.listener(|this, _, window, cx| this.prepare_create(window, cx)))))
     }
 }
+
+#[cfg(test)]
+mod tests;

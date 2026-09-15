@@ -1455,8 +1455,14 @@ fn fresh_destination(path: &Path) -> Result<PathBuf> {
                 metadata.is_dir() && !metadata.file_type().is_symlink(),
                 "Destination must be a new or empty directory"
             );
+            // Enumeration only validates occupancy; its result must remain
+            // separate from the destination path returned to the caller.
+            let mut entries = match std::fs::read_dir(&destination) {
+                Ok(entries) => entries,
+                Err(error) => return Err(error).context("Unable to inspect destination folder"),
+            };
             ensure!(
-                std::fs::read_dir(&destination)?.next().is_none(),
+                entries.next().is_none(),
                 "Destination is not empty; choose a new folder"
             );
         }

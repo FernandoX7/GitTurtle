@@ -518,7 +518,7 @@ fn help_entries() -> Vec<HelpEntry> {
         ("Next Control", "tab"),
         ("Previous Control", "shift-tab"),
         ("Activate Focused Button", "space"),
-        ("Branch Actions in Navigator", "shift-f10"),
+        ("Branch / Worktree Actions in Navigator", "shift-f10"),
     ] {
         entries.push(HelpEntry {
             group: "Keyboard Navigation",
