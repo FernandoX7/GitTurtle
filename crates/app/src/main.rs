@@ -259,6 +259,10 @@ struct GitTurtle {
     history_panels: Entity<ResizableState>,
     retained_history_files: Option<(Vec<FileChange>, Option<usize>)>,
     commit_drafts: HashMap<PathBuf, CommitDraft>,
+    /// Client-only project names, keyed by canonical worktree root. The Git
+    /// repository and its folder never see these.
+    project_names: HashMap<PathBuf, String>,
+    rename_project: Option<Entity<projects::RenameProjectForm>>,
     draft_saver: commit_drafts::DraftSaver,
     recovery_drafts: recovery_drafts::State,
     draft_save_error: Option<String>,
@@ -406,6 +410,7 @@ impl GitTurtle {
         let hub = cx.new(|cx| {
             projects::ProjectHub::new(
                 preferences.recent_repositories.clone(),
+                preferences.project_names.clone(),
                 settings.default_branch.clone(),
                 window,
                 cx,
@@ -473,6 +478,8 @@ impl GitTurtle {
             history_panels: cx.new(|_| ResizableState::default()),
             retained_history_files: None,
             commit_drafts: preferences.commit_drafts,
+            project_names: preferences.project_names.clone(),
+            rename_project: None,
             draft_saver: commit_drafts::DraftSaver::default(),
             draft_save_error: None,
             draft_repository: None,
@@ -1245,6 +1252,7 @@ impl GitTurtle {
                 .enumerate()
                 .filter(|(_, w)| {
                     w.path.to_string_lossy().to_lowercase().contains(&query)
+                        || self.project_name(&w.path).to_lowercase().contains(&query)
                         || w.branch
                             .as_ref()
                             .is_some_and(|b| b.to_lowercase().contains(&query))

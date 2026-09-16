@@ -1,0 +1,32 @@
+{
+  "application": "GitTurtle",
+  "version": "0.1.0",
+  "source_revision": "2c981084813fe3b21a85844ae96ab781df51e89a",
+  "source_tree": "clean",
+  "target": "x86_64-unknown-linux-gnu",
+  "profile": "debug",
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+  "build_unix_seconds": "1789567114",
+  "binary_sha256": "49ea1540d1070f1de19a7b6e669dfafa8aad2d4b34b61a5a9ee32fc5ef342e12",
+  "platform": "Linux x86-64; virtual X11 via Xvfb; software graphics",
+  "fixture": "scripts/create-demo-repo.py; disposable repository, symlink and nested src alias; isolated XDG config/data",
+  "native_checks": [
+    "Workspaces and Projects rename entry points",
+    "Focused input selects the saved name; immediate typing replaces it",
+    "Cancel/reopen restores the saved name",
+    "Corrupt preferences keep typed name and inline error visible; original store remains unchanged",
+    "Explicit retry after repairing the fixture preferences saves to canonical worktree root",
+    "128-byte name truncates in tabs and headings",
+    "Restart retains chosen name",
+    "Clearing removes stored name and restores the folder label",
+    "Midnight comfortable 13pt at 1280x900",
+    "Braden compact 18pt at minimum 1000x680",
+    "Fixture git status remains clean"
+  ],
+  "limitations": [
+    "No macOS or Wayland native runtime check",
+    "No screen reader or full theme matrix",
+    "No installed package or release timing claim",
+    "X11 automation required explicit window focus and paced mouse input; screenshots verified resulting state"
+  ]
+}
