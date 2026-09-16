@@ -510,6 +510,43 @@ async fn targeted_removal_refreshes_guards_and_disabled_control_cannot_confirm(
     }
 }
 
+#[test]
+fn force_explanation_lists_deleted_content_state_and_kept_branch() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.second.path.join("notes.txt"), "discard").unwrap();
+    std::fs::write(fixture.second.path.join("build.ignored"), "discard").unwrap();
+    git(&fixture.second.path, &["bisect", "start"]);
+    let details = fixture.repo.worktree_details(&fixture.second).unwrap();
+    let text = force_explanation(&details);
+    assert!(
+        text.contains("• 1 changed or untracked file:\n    Untracked: notes.txt"),
+        "{text}"
+    );
+    assert!(
+        text.contains("• 1 ignored file:\n    build.ignored"),
+        "{text}"
+    );
+    assert!(text.contains("• Bisect in progress (discarded)"), "{text}");
+    assert!(text.contains("Branch 'second' at"), "{text}");
+    assert!(text.contains("nested repository"), "{text}");
+    let detached = fixture
+        .repo
+        .worktree_details(&fixture.first)
+        .map(|mut details| {
+            details.tree.branch = None;
+            force_explanation(&details)
+        })
+        .unwrap();
+    assert!(
+        detached.contains("• No changed or untracked files"),
+        "{detached}"
+    );
+    assert!(
+        detached.contains("no branch points at this detached HEAD"),
+        "{detached}"
+    );
+}
+
 #[gpui::test]
 async fn force_removal_confirms_dirty_target_that_ordinary_removal_refuses(
     cx: &mut TestAppContext,

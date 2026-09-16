@@ -1,7 +1,9 @@
 //! Native worktree manager; all reads run on a bounded serial worker and all
 //! accepted mutations enter GitTurtle's existing operation executor.
 use crate::*;
-use gitturtle_core::{CreateWorktreePlan, WorktreeCommand, WorktreeDetails, WriteCommand};
+use gitturtle_core::{
+    CreateWorktreePlan, StatusEntry, WorktreeCommand, WorktreeDetails, WriteCommand,
+};
 use gpui_kit::{
     component::{WindowExt, dialog::DialogButtonProps},
     prelude::FluentBuilder,
@@ -29,6 +31,90 @@ impl RemovalMode {
             Self::Force => details.force_removal_blocked.as_deref(),
         }
     }
+}
+
+/// Rows shown per list in the force confirmation; the remainder is counted.
+const EFFECT_ROWS: usize = 12;
+
+fn describe_change(entry: &StatusEntry) -> String {
+    let kind = if entry.conflicted {
+        "Conflict"
+    } else if entry.untracked {
+        "Untracked"
+    } else {
+        match (entry.staged.is_some(), entry.unstaged.is_some()) {
+            (true, true) => "Staged and unstaged",
+            (true, false) => "Staged",
+            _ => "Unstaged",
+        }
+    };
+    match &entry.original_path {
+        Some(old) => format!("{kind}: {} → {}", old.display(), entry.path.display()),
+        None => format!("{kind}: {}", entry.path.display()),
+    }
+}
+
+/// Enumerate what Git deletes and what stays, so the review names each effect
+/// instead of a count.
+fn force_explanation(details: &WorktreeDetails) -> String {
+    fn list(text: &mut String, count: usize, singular: &str, plural: &str, rows: Vec<String>) {
+        if count == 0 {
+            text.push_str(&format!("\n• No {plural}"));
+            return;
+        }
+        text.push_str(&format!(
+            "\n• {count} {}:",
+            if count == 1 { singular } else { plural }
+        ));
+        for row in rows.iter().take(EFFECT_ROWS) {
+            text.push_str("\n    ");
+            text.push_str(row);
+        }
+        if count > EFFECT_ROWS {
+            text.push_str(&format!("\n    … and {} more", count - EFFECT_ROWS));
+        }
+    }
+    let mut text = String::from("\n\nGit will delete:");
+    list(
+        &mut text,
+        details.changed_files,
+        "changed or untracked file",
+        "changed or untracked files",
+        details
+            .changed_entries
+            .iter()
+            .map(describe_change)
+            .collect(),
+    );
+    list(
+        &mut text,
+        details.ignored_files,
+        "ignored file",
+        "ignored files",
+        details
+            .ignored_paths
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect(),
+    );
+    for state in &details.operation_state {
+        text.push_str(&format!("\n• {state} (discarded)"));
+    }
+    text.push_str("\n• The worktree folder and its private Git metadata: HEAD, index, reflog, and worktree configuration");
+    text.push_str("\n\nKept:");
+    match &details.tree.branch {
+        Some(branch) => text.push_str(&format!(
+            "\n• Branch '{branch}' at {} in the shared repository; it can be checked out in another worktree",
+            short_oid(&details.tree.oid)
+        )),
+        None => text.push_str(&format!(
+            "\n• Commit {} stays in the object store for now; no branch points at this detached HEAD, so create a branch or tag first to keep it",
+            short_oid(&details.tree.oid)
+        )),
+    }
+    text.push_str("\n• Shared objects, refs, stashes, configuration, and every other worktree");
+    text.push_str("\n\nUncommitted content is not recoverable from Git. Force removal still refuses if the worktree is the main or current worktree, is locked, holds a Git lock file, contains an initialized submodule or nested repository, becomes unavailable, or changes after this review. No lock override or metadata repair is attempted.");
+    text
 }
 
 fn label(id: &'static str, value: impl Into<SharedString>) -> Stateful<Div> {
@@ -475,10 +561,7 @@ impl WorktreeManager {
             ),
             RemovalMode::Force => (
                 "Force remove linked worktree",
-                format!(
-                    "{identity}\nContent to delete: {} changed or untracked files · {} ignored files\n\nGit will delete this worktree folder with its changed, untracked, and ignored files, any unfinished merge, rebase, cherry-pick, bisect, or sequencer state, and any initialized submodule checkout inside it. Uncommitted content is not recoverable from Git. Its private worktree metadata is removed. Committed work stays in the shared repository; the branch remains available for another worktree.\n\nForce removal still refuses if the worktree is the main or current worktree, is locked, holds a Git lock file, becomes unavailable, or changes after this review. No lock override or metadata repair is attempted.",
-                    details.changed_files, details.ignored_files
-                ),
+                format!("{identity}{}", force_explanation(&details)),
                 "Force remove worktree",
                 WorktreeCommand::ForceRemove(details),
             ),
