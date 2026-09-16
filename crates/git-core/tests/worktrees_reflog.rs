@@ -1160,6 +1160,72 @@ fn force_removal_preserves_ignored_and_untracked_bare_nested_repositories() {
     }
 }
 
+#[test]
+fn force_removal_preserves_case_variant_git_folders_and_ignored_content() {
+    for with_repository in [true, false] {
+        let f = Fixture::new();
+        let repo = f.repo();
+        let destination = f.create("case-variant-git");
+        let alias = destination.join(".GIT");
+        // On a case-insensitive filesystem this names the real .git file,
+        // so a distinct .GIT directory cannot exist and this case cannot arise.
+        if fs::symlink_metadata(&alias).is_ok() {
+            continue;
+        }
+        let before = f.removal_plan(&destination);
+        fs::create_dir(&alias).unwrap();
+        fs::write(f.root.join(".git/info/exclude"), ".GIT/\n").unwrap();
+        let valuable = alias.join("valuable.bin");
+        fs::write(&valuable, b"ignored original bytes").unwrap();
+        let nested = alias.join("backup.git");
+        let unique_commit = if with_repository {
+            git_at(&alias, &["init", "--bare", "-q", "backup.git"]);
+            git_at(&nested, &["config", "user.name", "Case Variant Fixture"]);
+            git_at(&nested, &["config", "user.email", "case@example.invalid"]);
+            git_at(&nested, &["config", "commit.gpgSign", "false"]);
+            let tree = git_at(&nested, &["mktree"]);
+            let unique = git_at(
+                &nested,
+                &["commit-tree", &tree, "-m", "Unique case-variant commit"],
+            );
+            git_at(&nested, &["update-ref", "refs/heads/valuable", &unique]);
+            assert!(
+                !Command::new("git")
+                    .arg("-C")
+                    .arg(&f.root)
+                    .args(["cat-file", "-e", &unique])
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+            Some(unique)
+        } else {
+            None
+        };
+        let reviewed = f.removal_plan(&destination);
+        assert!(
+            reviewed.force_removal_blocked.is_some(),
+            "root .GIT content must not be exempted from inspection; with_repository={with_repository}"
+        );
+        fs::write(&valuable, b"ignored replacement bytes").unwrap();
+        for plan in [before, reviewed, f.removal_plan(&destination)] {
+            assert!(repo.execute(&force(plan.clone())).is_err());
+            assert!(repo.execute(&remove(plan)).is_err());
+        }
+        assert_eq!(fs::read(&valuable).unwrap(), b"ignored replacement bytes");
+        if let Some(unique) = unique_commit {
+            assert_eq!(
+                git_at(&nested, &["rev-parse", "refs/heads/valuable"]),
+                unique
+            );
+            assert_eq!(git_at(&nested, &["cat-file", "-t", &unique]), "commit");
+        }
+        assert_eq!(fs::read(destination.join("tracked")).unwrap(), b"base\n");
+        assert_eq!(repo.worktrees().unwrap().len(), 2);
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn force_removal_does_not_follow_directory_file_or_loop_symlinks() {

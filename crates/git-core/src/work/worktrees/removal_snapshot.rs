@@ -111,15 +111,18 @@ impl Scan<'_> {
             if matches!(name.to_bytes(), b"." | b"..") {
                 continue;
             }
-            // Only the selected worktree's root .git belongs to its captured
-            // Git administration. A marker at any deeper level is protected.
-            if name.to_bytes().eq_ignore_ascii_case(b".git") {
-                ensure!(
-                    depth == 0,
-                    "This worktree contains a nested Git repository ({}). Move it outside this worktree before removal; its local commits would be deleted.",
-                    path.display()
-                );
+            // Only the exact root .git name belongs to the captured Git
+            // administration. On case-sensitive filesystems .GIT is separate
+            // user content and must never inherit this exemption.
+            if depth == 0 && name.to_bytes() == b".git" {
                 continue;
+            }
+            if name.to_bytes().eq_ignore_ascii_case(b".git") {
+                bail!(
+                    "This worktree contains a nested Git repository ({}). Move it outside this worktree before removal; its local commits would be deleted.",
+                    path.join(std::ffi::OsStr::from_bytes(name.to_bytes()))
+                        .display()
+                );
             }
             self.entries += 1;
             self.path_bytes = self
