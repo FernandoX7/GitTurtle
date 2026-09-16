@@ -161,6 +161,7 @@ impl GitTurtle {
         self.capture_page_return_focus(window, cx);
         self.cancel_branch_action();
         self.cancel_interactive_rebase_action();
+        self.cancel_discard_action();
         self.page = AppPage::Settings;
         self.column_menu = false;
         self.column_drag = None;

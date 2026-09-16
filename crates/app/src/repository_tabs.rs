@@ -817,6 +817,7 @@ impl GitTurtle {
         self.work_generation = self.work_generation.wrapping_add(1);
         self.status_task = None;
         self.integration_task = None;
+        self.cancel_discard_action();
         self.file_history.pause_for_tab();
         self.revision_inspection.pause_for_tab();
         self.blame.pause_for_tab();
@@ -1230,6 +1231,7 @@ impl GitTurtle {
         }
         let active = self.repository_tabs.active == Some(index);
         if active {
+            self.cancel_discard_action();
             self.persist_commit_draft(window, cx);
             self.invalidate_read();
             self.worker.release_history();

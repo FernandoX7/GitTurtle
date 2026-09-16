@@ -244,6 +244,7 @@ impl GitTurtle {
         self.cancel_branch_action();
         self.cancel_interactive_rebase_action();
         self.cancel_recovery_read();
+        self.cancel_discard_action();
         if self.operation_busy.is_some() {
             return;
         }

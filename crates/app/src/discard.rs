@@ -3,6 +3,8 @@
 use crate::*;
 use gitturtle_core::{ChangeStatus, DiscardPlan, StatusEntry, WriteCommand};
 
+mod review;
+
 const PREPARING: &str = "Reviewing file changes…";
 
 #[derive(Default)]
@@ -55,21 +57,17 @@ impl GitTurtle {
                 if this.operation_busy == Some(PREPARING) {
                     this.operation_busy = None;
                 }
-                if this.path.as_ref() != Some(&repository) || this.page != AppPage::Repository {
+                if this.path.as_ref() != Some(&repository)
+                    || this.repository.as_ref().map(|repo| repo.path())
+                        != Some(repository.as_path())
+                    || this.page != AppPage::Repository
+                {
                     cx.notify();
                     return;
                 }
                 match result {
                     Ok(plan) => {
-                        let (title, explanation, action) = review(&repository, &plan);
-                        this.confirm_git_write(
-                            title,
-                            explanation,
-                            action,
-                            WriteCommand::Discard(Arc::new(plan)),
-                            window,
-                            cx,
-                        );
+                        this.confirm_discard(repository, plan, generation, window, cx);
                     }
                     Err(error) => this.operation_error = Some(format!("{error:#}")),
                 }
@@ -80,64 +78,31 @@ impl GitTurtle {
     }
 }
 
-/// The confirmation names the exact effect for this row. Deleted content is
-/// not recoverable from Git, so the text says which changes disappear.
-fn review(repository: &std::path::Path, plan: &DiscardPlan) -> (String, String, &'static str) {
+/// Describe the whole-file effect, including staged additions that are deleted.
+fn consequence(plan: &DiscardPlan) -> &'static str {
     let entry = &plan.entry;
-    let name = entry
-        .path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| entry.path.display().to_string());
     if entry.untracked {
-        return (
-            format!("Delete untracked file {name}"),
-            format!(
-                "Repository: {}\nFile: {}\n\nThis file is not in the index or the last commit. Git deletes it from the working folder. Its content cannot be recovered from Git.\n\nOther files, the index, and the branch stay as they are. If the file changes before confirmation, this action requires a fresh review.",
-                repository.display(),
-                entry.path.display()
-            ),
-            "Delete file",
-        );
-    }
-    let target = entry.original_path.as_ref().map_or_else(
-        || format!("File: {}", entry.path.display()),
-        |old| format!("Rename: {} → {}", old.display(), entry.path.display()),
-    );
-    let effect = if let Some(old) = &entry.original_path {
-        format!(
-            "Git restores {} from the last commit and removes {} from the index and the working folder.",
-            old.display(),
-            entry.path.display()
-        )
+        "This untracked file will be deleted from the working folder."
+    } else if entry.original_path.is_some() {
+        "The original path will be restored from the last commit. The renamed path will be removed from the index and deleted from the working folder."
     } else if entry.staged == Some(ChangeStatus::Added)
         || entry.unstaged == Some(ChangeStatus::Added)
     {
-        // A staged addition and an intent-to-add row both name a file that
-        // HEAD lacks; restore deletes it.
-        "This file is not in the last commit. Git removes it from the index and deletes it from the working folder.".to_owned()
-    } else if entry.staged == Some(ChangeStatus::Deleted)
-        || entry.unstaged == Some(ChangeStatus::Deleted)
-    {
-        "Git restores this file from the last commit into the index and the working folder."
-            .to_owned()
+        "This file is not in the last commit. It will be removed from the index and deleted from the working folder."
     } else {
-        "Git restores this file's index entry and working content from the last commit.".to_owned()
-    };
-    let scope = match (entry.staged.is_some(), entry.unstaged.is_some()) {
+        "This file will be restored from the last commit in both the index and the working folder."
+    }
+}
+
+fn scope(entry: &StatusEntry) -> &'static str {
+    if entry.untracked {
+        return "Untracked file";
+    }
+    match (entry.staged.is_some(), entry.unstaged.is_some()) {
         (true, true) => "Staged and unstaged changes",
         (true, false) => "Staged changes",
         _ => "Unstaged changes",
-    };
-    (
-        format!("Discard changes to {name}"),
-        format!(
-            "Repository: {}\n{target}\nLast commit: {}\n\n{effect} {scope} to this file are discarded and cannot be recovered from Git.\n\nOther files, their index entries, and the branch stay as they are. If the file, index, or HEAD changes before confirmation, this action requires a fresh review.",
-            repository.display(),
-            plan.head.as_deref().map(short_oid).unwrap_or_default()
-        ),
-        "Discard changes",
-    )
+    }
 }
 
 #[cfg(test)]
