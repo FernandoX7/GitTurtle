@@ -511,40 +511,19 @@ async fn targeted_removal_refreshes_guards_and_disabled_control_cannot_confirm(
 }
 
 #[test]
-fn force_explanation_lists_deleted_content_state_and_kept_branch() {
+fn force_review_distinguishes_preserved_branch_from_detached_commit() {
     let fixture = Fixture::new();
-    std::fs::write(fixture.second.path.join("notes.txt"), "discard").unwrap();
-    std::fs::write(fixture.second.path.join("build.ignored"), "discard").unwrap();
-    git(&fixture.second.path, &["bisect", "start"]);
-    let details = fixture.repo.worktree_details(&fixture.second).unwrap();
-    let text = force_explanation(&details);
+    let mut details = fixture.repo.worktree_details(&fixture.second).unwrap();
+    let text = removal_review::kept_history(&details);
+    assert!(text.contains("Branch ‘second’"), "{text}");
     assert!(
-        text.contains("• 1 changed or untracked file:\n    Untracked: notes.txt"),
+        text.contains("stays available to check out again"),
         "{text}"
     );
-    assert!(
-        text.contains("• 1 ignored file:\n    build.ignored"),
-        "{text}"
-    );
-    assert!(text.contains("• Bisect in progress (discarded)"), "{text}");
-    assert!(text.contains("Branch 'second' at"), "{text}");
-    assert!(text.contains("nested repository"), "{text}");
-    let detached = fixture
-        .repo
-        .worktree_details(&fixture.first)
-        .map(|mut details| {
-            details.tree.branch = None;
-            force_explanation(&details)
-        })
-        .unwrap();
-    assert!(
-        detached.contains("• No changed or untracked files"),
-        "{detached}"
-    );
-    assert!(
-        detached.contains("no branch points at this detached HEAD"),
-        "{detached}"
-    );
+    details.tree.branch = None;
+    let text = removal_review::kept_history(&details);
+    assert!(text.contains("Create a branch or tag first"), "{text}");
+    assert!(text.contains("not a permanent backup"), "{text}");
 }
 
 #[gpui::test]
@@ -715,5 +694,182 @@ async fn cancelled_or_superseded_target_read_cannot_open_removal_confirmation(
             }
         });
     }
+    assert_eq!(fixture.repo.worktrees().unwrap().len(), 3);
+}
+
+#[gpui::test]
+async fn force_review_keeps_warning_target_and_actions_visible_at_large_text(
+    cx: &mut TestAppContext,
+) {
+    let fixture = Fixture::new();
+    let target = fixture._directory.path().join(format!(
+        "worktree with spaces — {}",
+        "long-review-target-".repeat(7)
+    ));
+    git(
+        fixture.repo.path(),
+        &[
+            "worktree",
+            "move",
+            fixture.second.path.to_str().unwrap(),
+            target.to_str().unwrap(),
+        ],
+    );
+    let tree = fixture
+        .repo
+        .worktrees()
+        .unwrap()
+        .into_iter()
+        .find(|tree| tree.path == target)
+        .unwrap();
+    for index in 0..20 {
+        std::fs::write(
+            target.join(format!(
+                "{index:02}-{}.txt",
+                "very-long-untracked-path-".repeat(6)
+            )),
+            "discard",
+        )
+        .unwrap();
+        std::fs::write(target.join(format!("{index:02}-build.ignored")), "discard").unwrap();
+    }
+    let details = fixture.repo.worktree_details(&tree).unwrap();
+    assert_eq!(details.changed_files, 20);
+    assert_eq!(details.ignored_files, 20);
+    let (app, cx) = app_window(cx, fixture.repo.clone());
+    cx.simulate_resize(size(px(1000.), px(680.)));
+    for theme in [
+        appearance::ThemeChoice::Daylight,
+        appearance::ThemeChoice::Midnight,
+    ] {
+        for font in [13, 18] {
+            cx.update(|window, cx| {
+                theme.apply(Some(window), cx);
+                appearance::apply_text_sizes(font, 12, window, cx);
+                app.update(cx, |app, cx| {
+                    app.confirm_force_worktree_removal(details.clone(), window, cx)
+                });
+            });
+            draw(cx);
+            let warning = cx.debug_bounds("worktree-force-warning").unwrap();
+            let identity = cx.debug_bounds("worktree-force-target").unwrap();
+            let body = cx.debug_bounds("worktree-force-effects").unwrap();
+            let confirm = cx.debug_bounds("confirm-force-worktree-removal").unwrap();
+            let cancel = cx.debug_bounds("cancel-force-worktree-removal").unwrap();
+            assert!(warning.top() >= px(0.) && warning.bottom() <= identity.top());
+            assert!(identity.bottom() <= body.top());
+            assert!(body.size.height >= px(100.), "font {font}: {body:?}");
+            assert!(body.bottom() <= confirm.top());
+            assert!(confirm.bottom() < px(680.), "font {font}: {confirm:?}");
+            assert!(cancel.bottom() < px(680.));
+            assert!(confirm.left() >= px(0.) && confirm.right() <= px(1000.));
+            click(cx, "copy-worktree-removal-path");
+            cx.read(|cx| {
+                assert_eq!(
+                    cx.read_from_clipboard().unwrap().text().unwrap(),
+                    target.display().to_string()
+                )
+            });
+            click(cx, "worktree-force-effects");
+            cx.simulate_keystrokes("end");
+            draw(cx);
+            let keep = cx.debug_bounds("worktree-will-keep").unwrap();
+            assert!(
+                body.contains(&keep.center()),
+                "Will keep must be reachable by keyboard: {body:?}, {keep:?}"
+            );
+            let scrolled_body = cx.debug_bounds("worktree-force-effects").unwrap();
+            let fixed_warning = cx.debug_bounds("worktree-force-warning").unwrap();
+            let fixed_identity = cx.debug_bounds("worktree-force-target").unwrap();
+            // The toolkit's opening animation may still translate the whole
+            // dialog; only the effect list's contents should move relative to it.
+            assert_eq!(fixed_warning.size, warning.size);
+            assert_eq!(fixed_identity.size, identity.size);
+            assert_eq!(
+                scrolled_body.top() - fixed_warning.top(),
+                body.top() - warning.top()
+            );
+            assert_eq!(
+                scrolled_body.top() - fixed_identity.top(),
+                body.top() - identity.top()
+            );
+            assert!(
+                cx.debug_bounds("confirm-force-worktree-removal")
+                    .unwrap()
+                    .bottom()
+                    < px(680.)
+            );
+            click(cx, "cancel-force-worktree-removal");
+            assert_no_confirmation(&app, cx);
+            assert!(target.join("00-build.ignored").is_file());
+        }
+    }
+    cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+}
+
+#[gpui::test]
+async fn force_blocker_is_visible_and_disabled_control_preserves_nested_repository(
+    cx: &mut TestAppContext,
+) {
+    let fixture = Fixture::new();
+    let nested = fixture.second.path.join("archive.ignored");
+    std::fs::create_dir(&nested).unwrap();
+    git(&nested, &["init", "--bare"]);
+    let (app, cx) = app_window(cx, fixture.repo.clone());
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_worktree_actions(fixture.second.clone(), None, window, cx)
+        });
+    });
+    let manager = manager(&app, cx);
+    settle(&manager, cx).await;
+    manager.read_with(cx, |manager, _| {
+        let details = manager.details.as_ref().unwrap();
+        assert!(details.removal_blocked.is_some());
+        assert!(
+            details
+                .force_removal_blocked
+                .as_ref()
+                .is_some_and(|reason| reason.contains("nested Git repository"))
+        );
+    });
+    draw(cx);
+    assert!(
+        cx.debug_bounds("worktree-force-removal-protection")
+            .is_some()
+    );
+    assert!(
+        cx.debug_bounds("worktree-removal-protection").is_none(),
+        "Do not recommend force removal when force removal is blocked"
+    );
+    click(cx, "force-remove-managed-worktree");
+    assert_no_confirmation(&app, cx);
+    finish_dialog(cx, false);
+    assert!(nested.join("HEAD").is_file());
+}
+
+#[gpui::test]
+async fn force_confirmation_cannot_follow_a_changed_repository_context(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.second.path.join("keep.ignored"), "keep me").unwrap();
+    let details = fixture.repo.worktree_details(&fixture.second).unwrap();
+    let (app, cx) = app_window(cx, fixture.repo.clone());
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.confirm_force_worktree_removal(details, window, cx)
+        });
+    });
+    draw(cx);
+    app.update(cx, |app, _| {
+        app.path = Some(fixture.first.path.clone());
+        app.repository = Some(GitRepository::open(&fixture.first.path).unwrap());
+    });
+    finish_dialog(cx, false);
+    assert_no_confirmation(&app, cx);
+    assert_eq!(
+        std::fs::read(fixture.second.path.join("keep.ignored")).unwrap(),
+        b"keep me"
+    );
+    assert!(fixture.first.path.join("tracked.txt").is_file());
     assert_eq!(fixture.repo.worktrees().unwrap().len(), 3);
 }

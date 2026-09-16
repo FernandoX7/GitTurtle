@@ -1,9 +1,9 @@
 //! Native worktree manager; all reads run on a bounded serial worker and all
 //! accepted mutations enter GitTurtle's existing operation executor.
 use crate::*;
-use gitturtle_core::{
-    CreateWorktreePlan, StatusEntry, WorktreeCommand, WorktreeDetails, WriteCommand,
-};
+use gitturtle_core::{CreateWorktreePlan, WorktreeCommand, WorktreeDetails, WriteCommand};
+
+mod removal_review;
 use gpui_kit::{
     component::{WindowExt, dialog::DialogButtonProps},
     prelude::FluentBuilder,
@@ -33,94 +33,11 @@ impl RemovalMode {
     }
 }
 
-/// Rows shown per list in the force confirmation; the remainder is counted.
-const EFFECT_ROWS: usize = 12;
-
-fn describe_change(entry: &StatusEntry) -> String {
-    let kind = if entry.conflicted {
-        "Conflict"
-    } else if entry.untracked {
-        "Untracked"
-    } else {
-        match (entry.staged.is_some(), entry.unstaged.is_some()) {
-            (true, true) => "Staged and unstaged",
-            (true, false) => "Staged",
-            _ => "Unstaged",
-        }
-    };
-    match &entry.original_path {
-        Some(old) => format!("{kind}: {} → {}", old.display(), entry.path.display()),
-        None => format!("{kind}: {}", entry.path.display()),
-    }
-}
-
-/// Enumerate what Git deletes and what stays, so the review names each effect
-/// instead of a count.
-fn force_explanation(details: &WorktreeDetails) -> String {
-    fn list(text: &mut String, count: usize, singular: &str, plural: &str, rows: Vec<String>) {
-        if count == 0 {
-            text.push_str(&format!("\n• No {plural}"));
-            return;
-        }
-        text.push_str(&format!(
-            "\n• {count} {}:",
-            if count == 1 { singular } else { plural }
-        ));
-        for row in rows.iter().take(EFFECT_ROWS) {
-            text.push_str("\n    ");
-            text.push_str(row);
-        }
-        if count > EFFECT_ROWS {
-            text.push_str(&format!("\n    … and {} more", count - EFFECT_ROWS));
-        }
-    }
-    let mut text = String::from("\n\nGit will delete:");
-    list(
-        &mut text,
-        details.changed_files,
-        "changed or untracked file",
-        "changed or untracked files",
-        details
-            .changed_entries
-            .iter()
-            .map(describe_change)
-            .collect(),
-    );
-    list(
-        &mut text,
-        details.ignored_files,
-        "ignored file",
-        "ignored files",
-        details
-            .ignored_paths
-            .iter()
-            .map(|path| path.display().to_string())
-            .collect(),
-    );
-    for state in &details.operation_state {
-        text.push_str(&format!("\n• {state} (discarded)"));
-    }
-    text.push_str("\n• The worktree folder and its private Git metadata: HEAD, index, reflog, and worktree configuration");
-    text.push_str("\n\nKept:");
-    match &details.tree.branch {
-        Some(branch) => text.push_str(&format!(
-            "\n• Branch '{branch}' at {} in the shared repository; it can be checked out in another worktree",
-            short_oid(&details.tree.oid)
-        )),
-        None => text.push_str(&format!(
-            "\n• Commit {} stays in the object store for now; no branch points at this detached HEAD, so create a branch or tag first to keep it",
-            short_oid(&details.tree.oid)
-        )),
-    }
-    text.push_str("\n• Shared objects, refs, stashes, configuration, and every other worktree");
-    text.push_str("\n\nUncommitted content is not recoverable from Git. Force removal still refuses if the worktree is the main or current worktree, is locked, holds a Git lock file, contains an initialized submodule or nested repository, becomes unavailable, or changes after this review. No lock override or metadata repair is attempted.");
-    text
-}
-
 fn label(id: &'static str, value: impl Into<SharedString>) -> Stateful<Div> {
     let value = value.into();
     div()
         .id(id)
+        .debug_selector(move || id.into())
         .role(Role::Label)
         .aria_label(value.clone())
         .child(value)
@@ -544,38 +461,26 @@ impl WorktreeManager {
         if self.pending || !self.current(cx) {
             return;
         }
-        let identity = format!(
-            "Folder: {}\nBranch: {}\nCommit: {}",
-            details.tree.path.display(),
-            details.tree.branch.as_deref().unwrap_or("Detached HEAD"),
-            details.tree.oid
-        );
-        let (title, explanation, action, command) = match mode {
-            RemovalMode::Ordinary => (
-                "Remove linked worktree",
-                format!(
-                    "{identity}\n\nGit will remove this clean worktree folder and its private worktree metadata. Removing a worktree does not delete branches or shared objects. Any branch remains available for another worktree.\n\nRemoval refuses if the worktree changes, is locked, becomes unavailable, has active Git state or index flags that hide changes, or contains tracked, untracked, or ignored changes. No force removal or metadata repair is attempted."
-                ),
-                "Remove worktree",
-                WorktreeCommand::Remove(details),
-            ),
-            RemovalMode::Force => (
-                "Force remove linked worktree",
-                format!("{identity}{}", force_explanation(&details)),
-                "Force remove worktree",
-                WorktreeCommand::ForceRemove(details),
-            ),
-        };
         let _ = self.owner.update(cx, |owner, cx| {
             window.close_dialog(cx);
-            owner.confirm_git_write(
-                title.into(),
-                explanation,
-                action,
-                WriteCommand::Worktree(Arc::new(command)),
-                window,
-                cx,
-            );
+            if mode == RemovalMode::Force {
+                owner.confirm_force_worktree_removal(details, window, cx);
+            } else {
+                let identity = format!(
+                    "Folder: {}\nBranch: {}\nCommit: {}",
+                    details.tree.path.display(),
+                    details.tree.branch.as_deref().unwrap_or("Detached HEAD"),
+                    details.tree.oid
+                );
+                owner.confirm_git_write(
+                    "Remove linked worktree".into(),
+                    format!("{identity}\n\nGit will remove this clean worktree folder and its private worktree metadata. Removing a worktree does not delete branches or shared objects. Any branch remains available for another worktree.\n\nRemoval refuses if the worktree changes, is locked, becomes unavailable, has active Git state or index flags that hide changes, or contains tracked, untracked, or ignored changes. No force removal or metadata repair is attempted."),
+                    "Remove worktree",
+                    WriteCommand::Worktree(Arc::new(WorktreeCommand::Remove(details))),
+                    window,
+                    cx,
+                );
+            }
         });
     }
 }
@@ -626,13 +531,14 @@ impl Render for WorktreeManager {
                     element.child(div().flex().flex_col().gap_2()
                         .child(label("worktree-selected-identity", format!("{}{} · {}\n{}", details.tree.branch.as_deref().unwrap_or("Detached HEAD"), if details.main { " · Main worktree" } else if details.current { " · Current worktree" } else { "" }, short_oid(&details.tree.oid), details.tree.path.display())).text_size(crate::appearance::ui_text(12.)))
                         .child(label("worktree-selected-status", if details.missing { "Folder missing or unavailable".into() } else { format!("{} changed/untracked files · {} ignored files{}", details.changed_files, details.ignored_files, if details.removal_blocked.is_none() { " · Clean" } else { "" }) }).text_size(crate::appearance::ui_text(12.)))
-                        .when_some(details.removal_blocked.as_ref(), |element, reason| element.child(label("worktree-removal-protection", reason.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted))))
+                        .when(details.force_removal_blocked.is_none(), |element| element.when_some(details.removal_blocked.as_ref(), |element, reason| element.child(label("worktree-removal-protection", reason.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))))
                         .child(div().flex().flex_wrap().gap_2()
                             .child(button("open-managed-worktree", "Open in GitTurtle", "", false).disabled(unavailable || details.missing || details.current).on_click(cx.listener(move |this, _, window, cx| { let _ = this.owner.update(cx, |owner, cx| { if owner.operation_busy.is_none() && owner.path.as_deref() == Some(this.repo.path()) { window.close_dialog(cx); owner.open(path.clone(), None, window, cx); } }); })))
                             .child(button("reveal-managed-worktree", if cfg!(target_os = "macos") { "Finder" } else { "Files" }, "", false).disabled(details.missing).on_click(move |_, _, cx| cx.reveal_path(&finder)))
                             .child(button("edit-managed-worktree", "Editor", "", false).disabled(unavailable || details.missing).on_click(cx.listener(move |this, _, window, cx| { let _ = this.owner.update(cx, |owner, cx| owner.open_worktree_editor(editor.clone(), window, cx)); })))
                             .child(button("remove-managed-worktree", "Remove worktree…", "", false).debug_selector(|| "remove-managed-worktree".to_string()).disabled(unavailable || details.removal_blocked.is_some()).on_click(cx.listener(|this, _, window, cx| this.remove(RemovalMode::Ordinary, window, cx))))
-                            .child(button("force-remove-managed-worktree", "Force remove worktree…", "", false).debug_selector(|| "force-remove-managed-worktree".to_string()).disabled(unavailable || details.force_removal_blocked.is_some()).on_click(cx.listener(|this, _, window, cx| this.remove(RemovalMode::Force, window, cx))))))
+                            .child(button("force-remove-managed-worktree", "Force remove worktree…", "", false).debug_selector(|| "force-remove-managed-worktree".to_string()).text_color(rgb(p.removed)).disabled(unavailable || details.force_removal_blocked.is_some()).on_click(cx.listener(|this, _, window, cx| this.remove(RemovalMode::Force, window, cx)))))
+                        .when_some(details.force_removal_blocked.as_ref(), |element, reason| element.child(label("worktree-force-removal-protection", format!("Force removal unavailable: {reason}")).debug_selector(|| "worktree-force-removal-protection".into()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))))
                 }))
             .when(self.creating, |element| element
                 .child(div().flex().gap_2().children([(false, "Existing branch"), (true, "New branch")].map(|(new, name)| button(name, name, "", self.new_branch == new).toggled(self.new_branch == new).disabled(self.pending).on_click(cx.listener(move |this, _, _, cx| { this.new_branch = new; this.error = None; cx.notify(); })))))
