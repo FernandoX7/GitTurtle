@@ -233,7 +233,9 @@ pub(super) fn target(command: &gitturtle_core::WriteCommand, fallback: &str) -> 
             WorktreeCommand::Create(plan) => {
                 format!("{} · {}", plan.branch, plan.destination.display())
             }
-            WorktreeCommand::Remove(plan) => plan.tree.path.display().to_string(),
+            WorktreeCommand::Remove(plan) | WorktreeCommand::ForceRemove(plan) => {
+                plan.tree.path.display().to_string()
+            }
         },
         WriteCommand::RecoverReflog(plan) => format!("{} at {}", plan.branch, plan.commit.oid),
         WriteCommand::InteractiveRebase(command) => match command.as_ref() {

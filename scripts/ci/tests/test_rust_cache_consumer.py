@@ -26,7 +26,13 @@ class QuietRegistry(http.server.SimpleHTTPRequestHandler):
 @unittest.skipUnless(os.environ.get("GITTURTLE_CACHE_CARGO_QA") == "1" and shutil.which("cargo"),
                      "Set GITTURTLE_CACHE_CARGO_QA=1 for the pinned Cargo consumer fixture")
 class CargoConsumerFixture(unittest.TestCase):
-    def test_pinned_registry_native_and_git_dependencies_stay_fresh_and_eviction_recovers(self):
+    def test_debug_registry_native_and_git_dependencies_stay_fresh_and_eviction_recovers(self):
+        self.check_profile("debug")
+
+    def test_release_registry_native_and_git_dependencies_stay_fresh_and_eviction_recovers(self):
+        self.check_profile("release")
+
+    def check_profile(self, profile):
         # The server and Git origin are disposable local fixtures, with no public
         # service, user Cargo home, or workspace output used by this test.
         (ROOT / ".local").mkdir(exist_ok=True)
@@ -115,7 +121,7 @@ fn main() {
             run(["cargo", "generate-lockfile"])
             run(["cargo", "fetch", "--locked"])
             locked = (root / "Cargo.lock").read_bytes()
-            command = ["cargo", "test", "--locked", "--offline", "-vv"]
+            command = ["cargo", "test", "--locked", "--offline", "--profile", "dev" if profile == "debug" else "release", "-vv"]
             first = run(command)
             self.assertIn(b"1 passed", first.stdout)
             metadata = json.loads(run(["cargo", "metadata", "--locked", "--offline", "--all-features", "--format-version", "1"]).stdout)
@@ -126,7 +132,7 @@ fn main() {
             self.assertTrue(packages["cache-native-sys"]["source"].startswith("sparse+"), packages["cache-native-sys"]["source"])
             self.assertTrue(packages["cache-git"]["source"].startswith("git+"))
             sys_timestamp = (native_source / "native.c").stat().st_mtime_ns
-            outputs = list(target.glob("debug/build/cache-native-sys-*/out/*")) + list(target.glob("debug/build/cache-git-*/out/*"))
+            outputs = list(target.glob(f"{profile}/build/cache-native-sys-*/out/*")) + list(target.glob(f"{profile}/build/cache-git-*/out/*"))
             self.assertTrue(any(path.suffix == ".a" for path in outputs))
             self.assertTrue(any(path.name == "answer.rs" for path in outputs))
             retained = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in outputs}
@@ -135,7 +141,7 @@ fn main() {
             def execute(command, **kwargs):
                 return run(command, **kwargs).stdout
 
-            result = cache.bound_payload(root, paths, "debug", execute=execute)
+            result = cache.bound_payload(root, paths, profile, execute=execute)
             self.assertTrue(result["save"])
             self.assertFalse(result["dropped_target"])
             self.assertEqual(result["removed_dependency_packages"], 0)
@@ -181,13 +187,13 @@ fn main() {
             # Force exactly the native package to be the largest cleanup choice.
             # Cargo must remove its fingerprint and generated outputs together;
             # the next real consumer then regenerates and links successfully.
-            fingerprints = list(target.glob("debug/.fingerprint/cache-native-sys-*"))
+            fingerprints = list(target.glob(f"{profile}/.fingerprint/cache-native-sys-*"))
             self.assertTrue(fingerprints)
-            padding = target / "debug/build/cache-native-sys-padding/out/padding"
+            padding = target / f"{profile}/build/cache-native-sys-padding/out/padding"
             padding.parent.mkdir(parents=True)
             padding.write_bytes(b"p" * 4 * 1024 * 1024)
-            with patch.object(cache, "SINGLE_PROFILE_LIMIT", result["retained_bytes"] + 2 * 1024 * 1024):
-                evicted = cache.bound_payload(root, paths, "debug", execute=execute)
+            with patch.dict(cache.PROFILE_LIMITS, {profile: result["retained_bytes"] + 2 * 1024 * 1024}):
+                evicted = cache.bound_payload(root, paths, profile, execute=execute)
             self.assertTrue(evicted["save"])
             self.assertFalse(evicted["dropped_target"])
             self.assertEqual(evicted["removed_dependency_packages"], 1)

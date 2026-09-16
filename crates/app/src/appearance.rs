@@ -1,6 +1,6 @@
 //! Native presentation choices shared by history, previews, and settings.
 
-use gpui_kit::component::{Theme, ThemeMode};
+use gpui_kit::component::{Colorize, Theme, ThemeMode};
 use gpui_kit::{App, Global, Pixels, Window, px, rgb};
 use serde::{Deserialize, Serialize};
 use std::sync::{
@@ -539,6 +539,21 @@ impl ThemeChoice {
         theme.colors.button_primary_foreground = rgb(palette.accent_foreground).into();
         theme.colors.button_primary_hover = rgb(palette.accent_hover).into();
         theme.colors.button_primary_active = rgb(palette.accent_active).into();
+        // Danger buttons have their own tokens; the general danger color
+        // alone leaves the toolkit's low-contrast default button untouched.
+        let danger: gpui_kit::Hsla = rgb(palette.removed).into();
+        theme.colors.button_danger = danger;
+        theme.colors.button_danger_foreground = rgb(palette.canvas).into();
+        theme.colors.button_danger_hover = if self.is_light() {
+            danger.darken(0.05)
+        } else {
+            danger.lighten(0.05)
+        };
+        theme.colors.button_danger_active = if self.is_light() {
+            danger.darken(0.1)
+        } else {
+            danger.lighten(0.1)
+        };
         theme.colors.secondary = rgb(palette.subtle).into();
         theme.colors.secondary_foreground = rgb(palette.text).into();
         theme.colors.secondary_hover = rgb(palette.hover).into();
@@ -782,6 +797,19 @@ mod tests {
             let palette = choice.palette();
             let foreground: Hsla = rgb(palette.accent_foreground).into();
             assert_eq!(theme.colors.button_primary_foreground, foreground);
+            for token in [
+                theme.tokens.button_danger,
+                theme.tokens.button_danger_hover,
+                theme.tokens.button_danger_active,
+            ] {
+                let foreground = u32::from(theme.colors.button_danger_foreground.to_rgb()) >> 8;
+                let background = u32::from(token.color.to_rgb()) >> 8;
+                assert!(
+                    contrast(foreground, background) >= 4.5,
+                    "{choice:?} destructive action label must remain readable"
+                );
+                assert_eq!(token.background, Background::from(token.color));
+            }
             for (token, expected) in [
                 (theme.tokens.button_primary, palette.accent),
                 (theme.tokens.button_primary_hover, palette.accent_hover),
