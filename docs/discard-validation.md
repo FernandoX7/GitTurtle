@@ -73,6 +73,22 @@ again with system/global Git configuration disabled. The machine-readable
 record includes the exact corrected test-source digests; final hosted outcomes
 remain on the PR.
 
+CI also exposed an existing macOS race in package build-identity cleanup:
+signaling a zombie-only process group could raise `EPERM` and mask an output-limit
+error. The package probe now keeps a live guard in its owned group until cleanup;
+a parent-owned pipe releases that guard if the caller dies. The five-second
+deadline, 16 KiB aggregate output cap, real exit-status check, descendant cleanup
+and explicit live permission failures remain enforced. Independent security
+review found no outstanding issue in this bounded follow-up. A deterministic
+regression fails the prior helper and passes the repair.
+
+The final helper passed the 317-test CI suite (four platform skips), 157
+development-controller tests, and a build-identity probe of the exact native
+executable recorded below. Local tooling checks used umask `022`; the CI suite
+also isolated system/global Git configuration. These fixture/probe checks do
+not constitute local package installation evidence; hosted release/package
+checks exercise the final helper separately.
+
 ## Native interaction
 
 The real GPUI application ran on Pop!_OS 24.04 x86-64 with virtual X11, lavapipe

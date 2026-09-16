@@ -119,5 +119,38 @@
       "crates/git-core/src/work/discard.rs": "d7ebbfbafd22cca3aafa995f6d73364e03fe6b2023c4b71f60526d24f7fd8024",
       "crates/git-core/tests/discard.rs": "9cb3d441100f3dd4d5454a9708658a3d04701ee7c6ae655b3f021516218d7955"
     }
+  },
+  "ci_probe_followup": {
+    "fix": "A live guard reserves the owned process group until cleanup and exits when its parent-owned pipe closes; bounded output/deadline and real permission failures are preserved",
+    "ci_tests": {
+      "run": 317,
+      "skipped": 4,
+      "errors": 0,
+      "failures": 0
+    },
+    "controller_tests": {
+      "run": 157,
+      "errors": 0,
+      "failures": 0
+    },
+    "local_umask": "022",
+    "source_sha256": {
+      "scripts/package-identity.py": "7cac27f72094877a78c6b0cc2e4c373dbc71c7bd0db5a017bd8385e05430433f",
+      "scripts/ci/tests/test_package_identity.py": "c8922e14d99e8755109710d234d12b5f0b0c407476b3fe51fffa0975bbf237f0"
+    },
+    "native_probe": {
+      "build": {
+        "application": "GitTurtle",
+        "version": "0.1.0",
+        "source_revision": "e9b631f432856b7049505b811a2ff6effb04704c",
+        "source_tree": "clean",
+        "target": "x86_64-unknown-linux-gnu",
+        "profile": "debug",
+        "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+        "build_unix_seconds": "1789571868"
+      },
+      "binary_sha256": "9952233d067d36df20f14e80d996485684c67c574d577753b9344c5ae575dd3b",
+      "probe_source_sha256": "7cac27f72094877a78c6b0cc2e4c373dbc71c7bd0db5a017bd8385e05430433f"
+    }
   }
 }

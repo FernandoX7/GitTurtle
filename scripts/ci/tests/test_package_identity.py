@@ -1,6 +1,7 @@
 """Package provenance/refusal fixtures; no native package evidence is claimed."""
 import contextlib
 import copy
+import errno
 import io
 import importlib.util
 import json
@@ -220,14 +221,27 @@ class IdentityTests(unittest.TestCase):
 
     def test_probe_deadline_covers_child_holding_output_pipe(self):
         program = self.root / "hanging-probe"
-        program.write_text("#!/usr/bin/env python3\nimport os, time\n"
-                           "if os.fork() == 0:\n    time.sleep(30)\n"
+        descendant = self.root / "descendant.pid"
+        program.write_text("#!/usr/bin/env python3\nimport os, time\nfrom pathlib import Path\n"
+                           f"if os.fork() == 0:\n    Path({str(descendant)!r}).write_text(str(os.getpid()))\n"
+                           "    time.sleep(30)\n"
                            "else:\n    print('{}')\n")
         program.chmod(0o755)
         before = time.monotonic()
         with self.assertRaisesRegex(identity.PackageError, "timed out"):
             identity.probe(program)
         self.assertLess(time.monotonic() - before, 8)
+        deadline = time.monotonic() + 2
+        while True:
+            status = subprocess.run(["ps", "-o", "stat=", "-p", descendant.read_text()],
+                                    capture_output=True, text=True, timeout=2)
+            # An orphan can remain a zombie until the host reaps it, but no
+            # live descendant may retain the probe's output pipe after cleanup.
+            if status.returncode == 1 or status.stdout.strip().startswith("Z"):
+                break
+            self.assertEqual(status.returncode, 0, status.stderr)
+            self.assertLess(time.monotonic(), deadline, "probe descendant survived cleanup")
+            time.sleep(0.01)
 
     def test_json_file_limit_and_symlinks_fail_before_read(self):
         path = self.root / "oversized.json"
@@ -256,6 +270,85 @@ class IdentityTests(unittest.TestCase):
                         identity.probe(program)
                 else:
                     self.assertEqual(identity.probe(program), self.value)
+
+    def test_probe_cleanup_handles_darwin_zombie_group_race(self):
+        program = self.root / "exiting-probe"
+        program.write_text("#!/usr/bin/env python3\nimport os\nos.write(1, b'x' * 20000)\n")
+        program.chmod(0o755)
+        spawned = []
+        actual_popen = subprocess.Popen
+        actual_killpg = identity.os.killpg
+
+        def spawn(command, **kwargs):
+            process = actual_popen(command, **kwargs)
+            spawned.append((command, process))
+            return process
+
+        def darwin_killpg(group, signum):
+            probe = next(process for command, process in spawned if command[-1] == "--build-info")
+            def state(pid):
+                status = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
+                                        capture_output=True, text=True, timeout=2)
+                self.assertEqual(status.returncode, 0, status.stderr)
+                return status.stdout.strip()
+            # Force the observed ordering: output overflows, then the probe
+            # exits without being reaped before the group signal is sent.
+            deadline = time.monotonic() + 2
+            while not state(probe.pid).startswith("Z"):
+                self.assertLess(time.monotonic(), deadline, "probe did not exit")
+                time.sleep(0.01)
+            if state(group).startswith("Z"):
+                raise PermissionError(errno.EPERM, "Darwin zombie-only process group")
+            actual_killpg(group, signum)
+
+        with (mock.patch.object(identity.subprocess, "Popen", side_effect=spawn),
+              mock.patch.object(identity.os, "killpg", side_effect=darwin_killpg),
+              self.assertRaisesRegex(identity.PackageError, "output limit")):
+            identity.probe(program)
+        self.assertTrue(all(process.returncode is not None for _, process in spawned))
+        self.assertTrue(all(stream.closed for _, process in spawned
+                            for stream in (process.stdin, process.stdout, process.stderr) if stream is not None))
+
+    def test_probe_surfaces_live_group_permission_failure_and_releases_children(self):
+        program = self.root / "live-probe"
+        program.write_text("#!/usr/bin/env python3\nimport time\n"
+                           "print('x' * 20000, flush=True)\ntime.sleep(30)\n")
+        program.chmod(0o755)
+        spawned = []
+        actual_popen = subprocess.Popen
+
+        def spawn(command, **kwargs):
+            process = actual_popen(command, **kwargs)
+            spawned.append(process)
+            return process
+
+        before = time.monotonic()
+        with (mock.patch.object(identity.subprocess, "Popen", side_effect=spawn),
+              mock.patch.object(identity.os, "killpg", side_effect=PermissionError(errno.EPERM, "live group")),
+              self.assertRaisesRegex(PermissionError, "live group")):
+            identity.probe(program)
+        self.assertLess(time.monotonic() - before, 8)
+        self.assertTrue(all(process.returncode is not None for process in spawned))
+        self.assertTrue(all(stream.closed for process in spawned
+                            for stream in (process.stdin, process.stdout, process.stderr) if stream is not None))
+
+    def test_probe_spawn_failure_releases_guard(self):
+        program = self.root / "unlaunchable-probe"
+        program.write_text("#!/nonexistent/gitturtle-fixture-interpreter\n")
+        program.chmod(0o755)
+        spawned = []
+        actual_popen = subprocess.Popen
+
+        def spawn(command, **kwargs):
+            process = actual_popen(command, **kwargs)
+            spawned.append(process)
+            return process
+
+        with (mock.patch.object(identity.subprocess, "Popen", side_effect=spawn),
+              self.assertRaises(FileNotFoundError)):
+            identity.probe(program)
+        self.assertTrue(spawned)
+        self.assertTrue(all(process.returncode is not None for process in spawned))
 
 
 if __name__ == "__main__":
