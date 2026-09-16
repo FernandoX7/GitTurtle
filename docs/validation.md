@@ -4,6 +4,18 @@ Use the [current validation guidance](#current-validation-guidance) for the affe
 
 This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native workflow evidence is primarily macOS-specific; the September 14 entries add Pop!_OS startup and clean Ubuntu/virtual-native checks. Platform execution and access limits belong to the applicable dated record and [platform runbook](linux.md); the earlier [environment report](benchmarks/2026-09-09-milestone-environment.md) describes its own session. The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Public binary release prerequisites belong in the [launch checklist](public-launch.md); the Linux runbook includes a local teammate bundle.
 
+## September 16 PR #17 file-discard review
+
+Clean application source `e9b631f` includes main `5466b8a` and passed 847
+workspace tests (five existing ignores), strict Clippy, formatting and native
+debug compilation. The [discard validation record](discard-validation.md)
+documents four preservation fixes, independent general/security review,
+bounded destructive confirmation and actual Linux/X11 pointer/keyboard checks.
+Native evidence covers stale content, rename/add/delete, untracked deletion,
+conflict and directory-transition refusal, long paths, enlarged light UI,
+dark UI, cancellation and unrelated index/worktree/ref preservation. macOS
+native, physical desktop and hosted CI evidence remain separately scoped.
+
 ## September 16 PR #13 project-name review
 
 The [project-name validation record](project-names-validation.md) covers main

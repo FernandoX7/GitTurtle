@@ -1,0 +1,105 @@
+{
+  "base": "5466b8a5119dcdd56613cd2e1c1600f4789b35e2",
+  "ui_source": "a1e6d7738f18d544d66111b2bd41e2b9307284f4",
+  "tooltip_source": "a25d9008c11929611286a72a86f6e2013a639802",
+  "platform": "Pop!_OS 24.04 x86_64; virtual X11 (Xvfb), lavapipe Vulkan, scale 1",
+  "builds": [
+    {
+      "application": "GitTurtle",
+      "version": "0.1.0",
+      "source_revision": "a1e6d7738f18d544d66111b2bd41e2b9307284f4",
+      "source_tree": "clean",
+      "target": "x86_64-unknown-linux-gnu",
+      "profile": "debug",
+      "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+      "build_unix_seconds": "1789570926",
+      "binary_sha256": "81f7897c1dd177b738d4eeb0e8c2168a0c68a68ee9eab6db2bf4b59842fd623f"
+    },
+    {
+      "application": "GitTurtle",
+      "version": "0.1.0",
+      "source_revision": "a25d9008c11929611286a72a86f6e2013a639802",
+      "source_tree": "clean",
+      "target": "x86_64-unknown-linux-gnu",
+      "profile": "debug",
+      "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+      "build_unix_seconds": "1789571339",
+      "binary_sha256": "d474774e6a8748a1e9402cc40a0cd25974c294c40304b6e496d0dbcc86fb7ea4"
+    },
+    {
+      "application": "GitTurtle",
+      "version": "0.1.0",
+      "source_revision": "e9b631f432856b7049505b811a2ff6effb04704c",
+      "source_tree": "clean",
+      "target": "x86_64-unknown-linux-gnu",
+      "profile": "debug",
+      "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+      "build_unix_seconds": "1789571868",
+      "binary_sha256": "9952233d067d36df20f14e80d996485684c67c574d577753b9344c5ae575dd3b"
+    }
+  ],
+  "results": [
+    "Dark 13-point 1480x980: staged+unstaged review; initial Enter inert; stale equal-size/restored-timestamp refusal preserved working and index bytes; fresh review restored HEAD; unrelated sibling index/worktree and refs preserved.",
+    "Dark: rename review names both paths; End scrolls; Escape cancels; Shift-Tab to confirm then Enter restores source/removes destination.",
+    "Dark: added file review identifies deletion; pointer confirmation removes index/worktree path; deleted row review restores HEAD bytes.",
+    "Light 18-point 1000x680: long path wraps, warning/actions remain fixed, End reaches explanation, pointer Cancel preserves content.",
+    "Light: untracked delete targets scratch.txt only and preserves sibling changes and refs.",
+    "Light 18-point 1480x980: conflicted row action disabled; pointer click opens no confirmation and preserves conflict bytes/unmerged index.",
+    "Tooltip delta: long path wraps within bounded tooltip; right-click removes tooltip and exposes menu; long review and Escape still work.",
+    "Final e9b631f: minimum-size Daylight 18-point native file/directory refusal preserved staged entries and regular replacement bytes; fresh modified-file review retained inert initial Enter and pointer confirmation restored only selected file while preserving sibling index/worktree, long-path edit, HEAD and refs."
+  ],
+  "limits": [
+    "Virtual X11 only, no physical Wayland or macOS native pass",
+    "Debug source interaction, no release package or performance claim"
+  ],
+  "screenshots": {
+    "dark-confirmation.png": {
+      "source_revision": "a1e6d7738f18d544d66111b2bd41e2b9307284f4",
+      "sha256": "1ca001f10f41d7f8e66c8c5f6959c70bbd6db32a06610a6e16c5fe98892cb910"
+    },
+    "dark-stale-refusal.png": {
+      "source_revision": "a1e6d7738f18d544d66111b2bd41e2b9307284f4",
+      "sha256": "f07c961258fe751969fd8197a6272384015b524186df1a13eb1f87c7dee61a65"
+    },
+    "dark-rename-confirmation.png": {
+      "source_revision": "a1e6d7738f18d544d66111b2bd41e2b9307284f4",
+      "sha256": "4236106e3f9f7a627c5982bf06ab7b7f7a1121c11b1844d6f368a5e1e4b4d8d2"
+    },
+    "final-light-long-confirmation.png": {
+      "source_revision": "a25d9008c11929611286a72a86f6e2013a639802",
+      "sha256": "fda80e1b84134ff11b36f553d74efd6208a0e206323ae221bae1f8a6af3c5fae"
+    },
+    "final-light-clear-menu.png": {
+      "source_revision": "a25d9008c11929611286a72a86f6e2013a639802",
+      "sha256": "aacfc0e47052b33bc1bcdc1644d930dfedd78510ca523a5ba1021d4670143f53"
+    },
+    "accepted-tree-refusal.png": {
+      "source_revision": "e9b631f432856b7049505b811a2ff6effb04704c",
+      "sha256": "6bc4c885ca8d6b9ed0c12404db86b3afc9f3799cef398c182daf1f47556dc396"
+    },
+    "accepted-confirmation.png": {
+      "source_revision": "e9b631f432856b7049505b811a2ff6effb04704c",
+      "sha256": "06de91acdb48d3d2d4fc3aa2a96c21f07cb72f527fc11fd3f4312397dea842cb"
+    },
+    "accepted-restored.png": {
+      "source_revision": "e9b631f432856b7049505b811a2ff6effb04704c",
+      "sha256": "c3fb4ef04bf0402427a0d4dde6843321a5aa7eef4822a4c2a6f464893cfd311c"
+    }
+  },
+  "final_source": "e9b631f432856b7049505b811a2ff6effb04704c",
+  "date": "2026-09-16",
+  "local_checks": {
+    "source_revision": "e9b631f432856b7049505b811a2ff6effb04704c",
+    "workspace_tests": {
+      "passed_unique": 847,
+      "failed": 0,
+      "ignored": 5,
+      "additional_subprocess_repeat": 1
+    },
+    "strict_workspace_clippy": "passed",
+    "formatting": "passed",
+    "guidance": "passed",
+    "native_debug_build": "passed"
+  },
+  "fixture": "Disposable repositories for staged/unstaged changes, rename, add/delete, untracked file, long path, conflict, and file/directory replacement; isolated XDG configuration/data/cache/runtime."
+}
