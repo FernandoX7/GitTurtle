@@ -4,6 +4,16 @@ Use the [current validation guidance](#current-validation-guidance) for the affe
 
 This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native workflow evidence is primarily macOS-specific; the September 14 entries add Pop!_OS startup and clean Ubuntu/virtual-native checks. Platform execution and access limits belong to the applicable dated record and [platform runbook](linux.md); the earlier [environment report](benchmarks/2026-09-09-milestone-environment.md) describes its own session. The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Public binary release prerequisites belong in the [launch checklist](public-launch.md); the Linux runbook includes a local teammate bundle.
 
+## September 16 PR #13 project-name review
+
+The [project-name validation record](project-names-validation.md) covers main
+integration, independent review fixes, 816 passing workspace tests (five existing
+ignores), strict Clippy and real native Linux/X11 checks of clean source
+`2c98108`. Screenshots cover dark/default and minimum-size light/enlarged text,
+inline save failure/retry, focused editing, canceled edits, canonical aliases,
+long names and restoring the folder label. macOS native interaction, screen
+readers and installed-package checks remain outside this evidence.
+
 ## September 16 PR #15 force-removal review
 
 Clean source `c3e4a0f` includes main `7c9dc6c` and passed 803 workspace tests
