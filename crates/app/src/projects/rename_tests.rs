@@ -1,5 +1,6 @@
 use super::*;
 use crate::{activity, image_lifetime, preferences, recovery_drafts, repository_tabs};
+use core::prelude::v1::test;
 use gpui_kit::component::Root;
 
 fn test_app(
@@ -11,12 +12,11 @@ fn test_app(
         image_lifetime::init(cx);
     });
     let fixture = tempfile::tempdir().unwrap();
-    let save_path = fixture.path().join("isolated-session.json");
     let captured = Rc::new(RefCell::new(None));
     let observed = captured.clone();
     let (_, cx) = cx.add_window_view(move |window, cx| {
         let app = cx.new(|cx| {
-            let mut app = GitTurtle::new(
+            GitTurtle::new(
                 None,
                 Preferences::default(),
                 repository_tabs::Session::default(),
@@ -24,21 +24,25 @@ fn test_app(
                 recovery_drafts::State::default(),
                 window,
                 cx,
-            );
-            app.repository_tabs.save_path = Some(save_path);
-            app
+            )
         });
         *captured.borrow_mut() = Some(app.clone());
         Root::new(app, window, cx)
     });
     let app = observed.borrow_mut().take().unwrap();
     cx.simulate_resize(size(px(1000.), px(680.)));
+    settle(cx);
     (fixture, app, cx)
 }
 
 fn settle(cx: &mut VisualTestContext) {
     for _ in 0..3 {
-        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| {
+            // Headless drawing does not deliver platform frame callbacks.
+            // Drive the same deferred focus work that the native frame runs.
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
         cx.run_until_parked();
     }
 }

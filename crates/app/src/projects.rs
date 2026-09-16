@@ -1276,7 +1276,6 @@ impl GitTurtle {
         window.open_alert_dialog(cx, move |dialog, _, cx| {
             let submit = form.clone();
             let cancel = form.clone();
-            let closed = form.clone();
             let pending = form.read(cx).pending;
             dialog
                 .title("Rename project")
@@ -1310,9 +1309,14 @@ impl GitTurtle {
                     submit.update(cx, |form, cx| form.submit(window, cx));
                     false
                 })
-                .on_cancel(move |_, _, cx| !cancel.read(cx).pending)
-                .on_close(move |_, _, cx| {
-                    closed.update(cx, |form, _| form.visible = false);
+                .on_cancel(move |_, _, cx| {
+                    cancel.update(cx, |form, _| {
+                        if form.pending {
+                            return false;
+                        }
+                        form.visible = false;
+                        true
+                    })
                 })
         });
         window.refresh();
