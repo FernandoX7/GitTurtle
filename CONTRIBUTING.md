@@ -96,9 +96,9 @@ Quality runs through PR events, main pushes and manual dispatch; a branch push
 does not duplicate its PR run. PR checks exercise GitHub's test merge commit.
 The [CI routing and gate policy](docs/ci.md#events-and-required-results) selects
 inexpensive checks for docs/site/tooling-only changes and full platform coverage
-for product or uncertain inputs. The current required Rust check names mirror
-the complete Quality gate during the documented protection migration.
-Formatting reports independently; each platform runs
+for product or uncertain inputs. The strict `Quality gate` aggregate is the sole
+required status check; its transitional per-platform mirrors were retired after
+the documented protection migration. Formatting reports independently; each platform runs
 workspace tests (including doctests) and strict all-target Clippy in a shared debug
 job, alongside a separate optimized build/package job. A cache hit never skips
 validation. The [job graph and measurement boundary](docs/ci.md#parallel-validation-and-coverage)

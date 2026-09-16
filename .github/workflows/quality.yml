@@ -304,21 +304,3 @@ jobs:
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: python3 scripts/ci/changes.py gate
-
-  rust-compatibility:
-    # Keep live required names until C1 explicitly migrates repository settings.
-    name: Rust · ${{ matrix.os }}
-    if: always()
-    needs: quality
-    runs-on: ubuntu-24.04
-    timeout-minutes: 2
-    strategy:
-      fail-fast: false
-      max-parallel: 2
-      matrix:
-        os: [macos-15, ubuntu-24.04]
-    steps:
-      - name: Preserve required-check compatibility
-        env:
-          QUALITY_RESULT: ${{ needs.quality.result }}
-        run: test "$QUALITY_RESULT" = success
