@@ -110,7 +110,11 @@ fn review(repository: &std::path::Path, plan: &DiscardPlan) -> (String, String, 
             old.display(),
             entry.path.display()
         )
-    } else if entry.staged == Some(ChangeStatus::Added) {
+    } else if entry.staged == Some(ChangeStatus::Added)
+        || entry.unstaged == Some(ChangeStatus::Added)
+    {
+        // A staged addition and an intent-to-add row both name a file that
+        // HEAD lacks; restore deletes it.
         "This file is not in the last commit. Git removes it from the index and deletes it from the working folder.".to_owned()
     } else if entry.staged == Some(ChangeStatus::Deleted)
         || entry.unstaged == Some(ChangeStatus::Deleted)

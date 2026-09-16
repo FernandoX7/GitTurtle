@@ -155,6 +155,17 @@ fn discard_handles_rename_added_and_deleted_entries() {
     assert!(!f.root.join("new").exists());
     assert!(repo.status().unwrap().entries.is_empty());
 
+    // An intent-to-add row is tracked with an empty index entry; restore
+    // removes it from the index and deletes the file.
+    f.write("intent", "intent\n");
+    f.git(&["add", "-N", "intent"]);
+    let intent = f.entry("intent");
+    assert!(!intent.untracked);
+    assert_eq!(intent.unstaged, Some(ChangeStatus::Added));
+    repo.execute(&discard(f.plan("intent"))).unwrap();
+    assert!(!f.root.join("intent").exists());
+    assert!(repo.status().unwrap().entries.is_empty());
+
     fs::remove_file(f.root.join("tracked")).unwrap();
     assert_eq!(f.entry("tracked").unstaged, Some(ChangeStatus::Deleted));
     repo.execute(&discard(f.plan("tracked"))).unwrap();

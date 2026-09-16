@@ -221,6 +221,48 @@ async fn discard_reviews_exact_entry_and_restores_tracked_file_from_head(cx: &mu
     assert!(fixture.root().join("note.txt").is_file());
 }
 
+#[test]
+fn review_names_deletion_for_added_and_intent_to_add_rows() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.root().join("staged.txt"), "staged\n").unwrap();
+    git(fixture.root(), &["add", "staged.txt"]);
+    std::fs::write(fixture.root().join("intent.txt"), "intent\n").unwrap();
+    git(fixture.root(), &["add", "-N", "intent.txt"]);
+    std::fs::write(fixture.root().join("tracked.txt"), "edited\n").unwrap();
+    for (path, deletes) in [
+        ("staged.txt", true),
+        ("intent.txt", true),
+        ("tracked.txt", false),
+    ] {
+        let entry = fixture.entry(path);
+        assert!(!entry.untracked);
+        let plan = fixture.repo.discard_plan(&entry).unwrap();
+        let (title, explanation, action) = review(fixture.root(), &plan);
+        assert_eq!(title, format!("Discard changes to {path}"));
+        assert_eq!(action, "Discard changes");
+        assert_eq!(
+            explanation.contains("deletes it from the working folder"),
+            deletes,
+            "{explanation}"
+        );
+        assert_eq!(
+            explanation.contains("restores this file's index entry and working content"),
+            !deletes,
+            "{explanation}"
+        );
+        fixture
+            .repo
+            .execute(&WriteCommand::Discard(Arc::new(plan)))
+            .unwrap();
+        assert_eq!(fixture.root().join(path).exists(), !deletes, "{path}");
+    }
+    assert_eq!(
+        std::fs::read(fixture.root().join("tracked.txt")).unwrap(),
+        b"original\n"
+    );
+    assert!(fixture.repo.status().unwrap().entries.is_empty());
+}
+
 #[gpui::test]
 async fn discard_deletes_untracked_file_after_cancel_and_skips_conflicted_rows(
     cx: &mut TestAppContext,
