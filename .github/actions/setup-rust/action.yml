@@ -7,6 +7,9 @@ inputs:
   profile:
     description: Compatible Cargo output family (debug, release or debug-release)
     default: debug-release
+  target:
+    description: Explicit Cargo `--target` triple used by this job's compilation, if any
+    default: ""
 outputs:
   cache-hit:
     description: True only for an exact restored entry; false also includes fallback or unavailable cache
@@ -19,10 +22,12 @@ runs:
       env:
         CACHE_PHASE: ${{ inputs.phase }}
         CACHE_PROFILE: ${{ inputs.profile }}
+        CACHE_TARGET: ${{ inputs.target }}
       run: |
         set -euo pipefail
         case "$CACHE_PHASE" in setup|finish) ;; *) exit 2 ;; esac
         case "$CACHE_PROFILE" in debug|release|debug-release) ;; *) exit 2 ;; esac
+        case "$CACHE_TARGET" in "") ;; [!A-Za-z0-9]*|*[!A-Za-z0-9_.-]*) exit 2 ;; esac
     - name: Install Linux native build dependencies
       if: inputs.phase == 'setup' && runner.os == 'Linux'
       shell: bash
@@ -81,6 +86,7 @@ runs:
       shell: bash
       env:
         CACHE_PROFILE: ${{ inputs.profile }}
+        CACHE_TARGET: ${{ inputs.target }}
       run: python3 .github/actions/setup-rust/cache.py bound
     - name: Register successful main cache save
       if: inputs.phase == 'finish' && steps.bounded.outputs.save == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'FernandoX7/GitTurtle'
