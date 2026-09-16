@@ -5,6 +5,7 @@
 use crate::{
     appearance::{Density, ThemeChoice},
     columns::ColumnSettings,
+    project_library::{ProjectGroup, ProjectLibrary, ProjectNode},
 };
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -39,6 +40,9 @@ pub struct AppSettings {
     pub code_text_size: u8,
     pub reopen_last: bool,
     pub default_branch: String,
+    /// Show the project list on the far left of the window.
+    pub project_pane: bool,
+    pub project_pane_width: f32,
 }
 
 impl Default for AppSettings {
@@ -56,6 +60,8 @@ impl Default for AppSettings {
             code_text_size: crate::appearance::DEFAULT_CODE_TEXT_SIZE,
             reopen_last: true,
             default_branch: "main".into(),
+            project_pane: false,
+            project_pane_width: 240.,
         }
     }
 }
@@ -91,6 +97,11 @@ impl AppSettings {
             self.inspector_width.clamp(280., 480.)
         } else {
             320.
+        };
+        self.project_pane_width = if self.project_pane_width.is_finite() {
+            self.project_pane_width.clamp(180., 360.)
+        } else {
+            240.
         };
         self.interface_text_size = self.interface_text_size.clamp(
             *crate::appearance::INTERFACE_TEXT_RANGE.start(),
@@ -170,6 +181,8 @@ pub struct Preferences {
     /// Display names chosen by the user, keyed by canonical worktree root.
     /// These rename a project in the client only; no folder is ever moved.
     pub project_names: HashMap<PathBuf, String>,
+    /// Known projects and the user's groups for the project list pane.
+    pub project_library: ProjectLibrary,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -183,6 +196,55 @@ struct StoredPreferences {
     commit_drafts: Vec<StoredDraft>,
     #[serde(default)]
     project_names: Vec<StoredProjectName>,
+    #[serde(default)]
+    project_library: Vec<StoredNode>,
+}
+
+/// The saved project list. An externally tagged enum keeps each line of the
+/// settings file readable while the byte-safe path form stays available.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StoredNode {
+    Group(StoredGroup),
+    Project { path: StoredPath },
+}
+
+#[derive(Serialize, Deserialize)]
+struct StoredGroup {
+    id: u32,
+    name: String,
+    #[serde(default)]
+    collapsed: bool,
+    #[serde(default)]
+    nodes: Vec<StoredNode>,
+}
+
+impl StoredNode {
+    fn from_node(node: &ProjectNode) -> Self {
+        match node {
+            ProjectNode::Group(group) => Self::Group(StoredGroup {
+                id: group.id,
+                name: group.name.clone(),
+                collapsed: group.collapsed,
+                nodes: group.nodes.iter().map(Self::from_node).collect(),
+            }),
+            ProjectNode::Project(path) => Self::Project {
+                path: StoredPath::from_path(path),
+            },
+        }
+    }
+
+    fn into_node(self) -> ProjectNode {
+        match self {
+            Self::Group(group) => ProjectNode::Group(ProjectGroup {
+                id: group.id,
+                name: group.name,
+                collapsed: group.collapsed,
+                nodes: group.nodes.into_iter().map(Self::into_node).collect(),
+            }),
+            Self::Project { path } => ProjectNode::Project(path.into_path()),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -294,6 +356,20 @@ impl Preferences {
         Ok(next)
     }
 
+    /// Replace the saved project list. The caller edits a loaded copy, and
+    /// this writer validates the result before it reaches the settings file.
+    pub fn save_project_library(library: &ProjectLibrary) -> Result<Self> {
+        Self::save_project_library_at(library, &settings_path()?)
+    }
+
+    fn save_project_library_at(library: &ProjectLibrary, settings: &Path) -> Result<Self> {
+        library.validate().map_err(anyhow::Error::msg)?;
+        let mut next = Self::load_for_write(settings)?;
+        next.project_library = library.clone();
+        next.save_to(settings)?;
+        Ok(next)
+    }
+
     /// Keys must be canonical worktree roots resolved during repository
     /// discovery. Do not key drafts by a branch, common Git directory, or the
     /// initially requested folder: linked worktrees need independent drafts.
@@ -318,11 +394,11 @@ impl Preferences {
         let bytes = read_store(path, MAX_SETTINGS_BYTES)?;
         let stored: StoredPreferences = serde_json::from_slice(&bytes)?;
         ensure!(
-            matches!(stored.version, 1..=4),
+            matches!(stored.version, 1..=5),
             "Unsupported settings version"
         );
         let mut seen = HashSet::new();
-        let recent_repositories = stored
+        let recent_repositories: Vec<PathBuf> = stored
             .recent_repositories
             .into_iter()
             .map(StoredPath::into_path)
@@ -354,9 +430,30 @@ impl Preferences {
                 "Duplicate saved project name path"
             );
         }
+        // Groups are user-authored too. Refuse a malformed section rather than
+        // letting an unrelated write replace the project list with an empty one.
+        let mut project_library = ProjectLibrary {
+            nodes: stored
+                .project_library
+                .into_iter()
+                .map(StoredNode::into_node)
+                .collect(),
+        };
+        project_library
+            .validate()
+            .map_err(anyhow::Error::msg)
+            .context("Invalid saved project list")?;
+        // A store written before the project list starts from the recents, so
+        // the pane is useful at once. An emptied list stays empty afterwards.
+        if stored.version < 5 {
+            for path in &recent_repositories {
+                project_library.remember(path);
+            }
+        }
         Ok(Self {
             recent_repositories,
             settings,
+            project_library,
             commit_drafts: stored
                 .commit_drafts
                 .into_iter()
@@ -398,7 +495,7 @@ impl Preferences {
             .context("Resolve recent repository path")?;
         let current = Self::load_for_write(settings)?;
         let mut recent_repositories = vec![path.clone()];
-        let mut seen = HashSet::from([path]);
+        let mut seen = HashSet::from([path.clone()]);
         recent_repositories.extend(
             current
                 .recent_repositories
@@ -407,11 +504,16 @@ impl Preferences {
                 .take(MAX_RECENT - 1)
                 .cloned(),
         );
+        let mut project_library = current.project_library;
+        // Opening a project is how the pane learns about it. The recent list
+        // is bounded at ten; the pane keeps the rest of the user's projects.
+        project_library.remember(&path);
         let next = Self {
             recent_repositories,
             settings: current.settings,
             commit_drafts: current.commit_drafts,
             project_names: current.project_names,
+            project_library,
         };
         next.save_to(settings)?;
         *self = next;
@@ -420,7 +522,7 @@ impl Preferences {
 
     fn save_to(&self, path: &Path) -> Result<()> {
         let stored = StoredPreferences {
-            version: 4,
+            version: 5,
             recent_repositories: self
                 .recent_repositories
                 .iter()
@@ -438,6 +540,12 @@ impl Preferences {
                     })
                     .collect()
             },
+            project_library: self
+                .project_library
+                .nodes
+                .iter()
+                .map(StoredNode::from_node)
+                .collect(),
             commit_drafts: {
                 let mut entries: Vec<_> = self.commit_drafts.iter().collect();
                 entries.sort_by_key(|(path, _)| *path);
@@ -940,6 +1048,147 @@ mod tests {
     }
 
     #[test]
+    fn the_project_list_survives_restart_and_unrelated_preference_writes() {
+        let fixture = TestDirectory::new();
+        let path = fixture.0.join("preferences.json");
+        let project = fixture.0.join("turtle-client");
+        let other = fixture.0.join("turtle-core");
+        fs::create_dir(&project).unwrap();
+        fs::create_dir(&other).unwrap();
+        let project = project.canonicalize().unwrap();
+        let other = other.canonicalize().unwrap();
+
+        // A version-four store predates the project list and reads without one.
+        let old = br#"{"version":4,"settings":{"theme":"daylight"}}"#;
+        fs::write(&path, old).unwrap();
+        assert!(
+            Preferences::load_from(&path)
+                .unwrap()
+                .project_library
+                .nodes
+                .is_empty()
+        );
+        assert_eq!(fs::read(&path).unwrap(), old);
+
+        // Opening a project is what teaches the list about it.
+        let mut opened = Preferences::default();
+        opened.remember_at(&project, &path).unwrap();
+        opened.remember_at(&other, &path).unwrap();
+        assert!(opened.project_library.contains_project(&project));
+        assert!(opened.project_library.contains_project(&other));
+
+        let mut library = opened.project_library.clone();
+        let work = library.create_group(None, "Work").unwrap();
+        let clients = library.create_group(Some(work), "Clients").unwrap();
+        library.move_project(&project, Some(clients)).unwrap();
+        library.set_collapsed(work, true);
+        let saved = Preferences::save_project_library_at(&library, &path).unwrap();
+        assert_eq!(saved.project_library, library);
+
+        // An unrelated write merges the list rather than replacing it.
+        Preferences::save_settings_at(
+            &AppSettings {
+                density: Density::Compact,
+                project_pane: true,
+                ..Default::default()
+            },
+            &path,
+        )
+        .unwrap();
+        Preferences::save_project_name_at(&project, Some("Client"), &path).unwrap();
+        let restarted = Preferences::load_from(&path).unwrap();
+        assert_eq!(restarted.project_library, library);
+        assert!(restarted.settings.project_pane);
+        assert_eq!(
+            restarted
+                .project_library
+                .group(work)
+                .map(|group| group.collapsed),
+            Some(true)
+        );
+
+        // Reopening a project already in a group leaves it where the user put it.
+        let mut reopened = Preferences::default();
+        reopened.remember_at(&project, &path).unwrap();
+        assert_eq!(reopened.project_library, library);
+    }
+
+    #[test]
+    fn an_older_store_seeds_the_project_list_from_its_recent_projects_once() {
+        let fixture = TestDirectory::new();
+        let path = fixture.0.join("preferences.json");
+        let first = fixture.0.join("first");
+        let second = fixture.0.join("second");
+        fs::create_dir(&first).unwrap();
+        fs::create_dir(&second).unwrap();
+        let first = first.canonicalize().unwrap();
+        let second = second.canonicalize().unwrap();
+        let older = serde_json::json!({
+            "version": 4,
+            "recent_repositories": [first.to_str().unwrap(), second.to_str().unwrap()],
+        });
+        fs::write(&path, serde_json::to_vec(&older).unwrap()).unwrap();
+
+        let seeded = Preferences::load_from(&path).unwrap();
+        assert_eq!(
+            seeded.project_library.rows(),
+            vec![
+                crate::project_library::LibraryRow::Project {
+                    path: first.clone(),
+                    depth: 0,
+                    parent: None,
+                },
+                crate::project_library::LibraryRow::Project {
+                    path: second.clone(),
+                    depth: 0,
+                    parent: None,
+                },
+            ]
+        );
+        // Reading does not rewrite the file; the next ordinary write does.
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            serde_json::to_vec(&older).unwrap()
+        );
+        Preferences::save_settings_at(&AppSettings::default(), &path).unwrap();
+
+        // A version-five store keeps an emptied list instead of seeding again.
+        Preferences::save_project_library_at(&ProjectLibrary::default(), &path).unwrap();
+        let reloaded = Preferences::load_from(&path).unwrap();
+        assert!(reloaded.project_library.rows().is_empty());
+        assert_eq!(reloaded.recent_repositories, vec![first, second]);
+    }
+
+    #[test]
+    fn an_unusable_saved_project_list_is_refused_rather_than_dropped() {
+        let fixture = TestDirectory::new();
+        let path = fixture.0.join("preferences.json");
+        let project = fixture.0.join("turtle-client");
+        fs::create_dir(&project).unwrap();
+        let project = project.canonicalize().unwrap();
+        let stored = serde_json::json!({
+            "version": 5,
+            "project_library": [
+                {"group": {"id": 1, "name": "Work", "nodes": [
+                    {"project": {"path": project.to_str().unwrap()}}
+                ]}},
+                {"group": {"id": 1, "name": "Also one", "nodes": []}}
+            ]
+        });
+        fs::write(&path, serde_json::to_vec(&stored).unwrap()).unwrap();
+        assert!(Preferences::load_from(&path).is_err());
+        // Every writer reads before it writes, so none of them rewrites the file.
+        assert!(Preferences::save_settings_at(&AppSettings::default(), &path).is_err());
+        assert!(Preferences::save_project_name_at(&project, Some("Client"), &path).is_err());
+        assert!(Preferences::save_project_library_at(&ProjectLibrary::default(), &path).is_err());
+        assert!(Preferences::default().remember_at(&project, &path).is_err());
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&fs::read(&path).unwrap()).unwrap(),
+            stored
+        );
+    }
+
+    #[test]
     fn project_names_reject_unusable_text_and_bound_their_count() {
         let fixture = TestDirectory::new();
         let path = fixture.0.join("preferences.json");
@@ -1103,7 +1352,7 @@ mod tests {
         let saved = Preferences::save_settings_at(&loaded.settings, &path).unwrap();
         assert_eq!(saved.recent_repositories, loaded.recent_repositories);
         let encoded: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(encoded["version"], 4);
+        assert_eq!(encoded["version"], 5);
     }
 
     #[test]

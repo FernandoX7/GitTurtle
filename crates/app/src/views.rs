@@ -1965,10 +1965,42 @@ impl Render for GitTurtle {
             platform_polish::menus(menu_state.0, menu_state.1, cx);
             self.menu_state = Some(menu_state);
         }
-        let body = match self.page {
+        let page = match self.page {
             AppPage::Repository => self.render_repository(window, cx),
             AppPage::Projects => self.hub.clone().into_any_element(),
             AppPage::Settings => self.render_settings(window, cx),
+        };
+        // The pane spans the whole body so a project stays one click away on
+        // Repository and Settings. The hub already lists projects full width.
+        let body = if self.settings.project_pane && self.page != AppPage::Projects {
+            h_resizable("workspace-columns")
+                .with_state(&self.project_panels)
+                .on_resize({
+                    let owner = cx.entity().downgrade();
+                    move |panels, window, cx| {
+                        if let Some(width) = panels.read(cx).sizes().first().copied() {
+                            let _ = owner.update(cx, |this, cx| {
+                                this.settings.project_pane_width = f32::from(width);
+                                this.save_preferences(window, cx);
+                            });
+                        }
+                    }
+                })
+                .child(
+                    resizable_panel()
+                        .size(px(self.settings.project_pane_width))
+                        .size_range(px(180.)..px(360.))
+                        .flex_none()
+                        .child(self.render_project_pane(cx)),
+                )
+                .child(
+                    resizable_panel()
+                        .size_range(px(520.)..px(10000.))
+                        .child(page),
+                )
+                .into_any_element()
+        } else {
+            page
         };
         div()
             .id("gitturtle")

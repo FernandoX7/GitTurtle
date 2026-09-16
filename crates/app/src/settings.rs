@@ -800,6 +800,29 @@ impl GitTurtle {
             .child(
                 div()
                     .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(setting_description(
+                        "Show the project list",
+                        "Keep a pane on the far left to jump between known projects and sort them into groups.",
+                        cx,
+                    ))
+                    .child(
+                        Switch::new("settings-project-pane")
+                            .accessibility_label("Show the project list")
+                            .checked(self.settings.project_pane)
+                            .on_click(cx.listener(|this, checked: &bool, window, cx| {
+                                if this.settings.project_pane != *checked {
+                                    this.settings.project_pane = *checked;
+                                    this.save_preferences(window, cx);
+                                }
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
                     .flex_col()
                     .gap_3()
                     .child(setting_description(

@@ -4,6 +4,33 @@ Use the [current validation guidance](#current-validation-guidance) for the affe
 
 This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native workflow evidence is primarily macOS-specific; the September 14 entries add Pop!_OS startup and clean Ubuntu/virtual-native checks. Platform execution and access limits belong to the applicable dated record and [platform runbook](linux.md); the earlier [environment report](benchmarks/2026-09-09-milestone-environment.md) describes its own session. The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Public binary release prerequisites belong in the [launch checklist](public-launch.md); the Linux runbook includes a local teammate bundle.
 
+## September 16 project list pane
+
+Working source on main `7cd3744` adds an optional project list pane, a saved
+project library with nested user-named groups, and the **Show the project list**
+setting. `cargo fmt --all -- --check`, `cargo clippy --locked --workspace
+--all-targets -- -D warnings` and `cargo test --locked --workspace` passed on
+this Linux host (debug profile; 861 passed, five existing ignores, including new
+library-model, preference round-trip and pane-interaction fixtures).
+
+A debug build ran in a virtual X11 session (Xvfb `:77`, 1600x1000) against a
+disposable `scripts/create-demo-repo.py` fixture, with `XDG_CONFIG_HOME` pointed
+at a scratch directory so no developer preferences were touched. Pointer and key
+input came from a local XTest helper. Verified by screenshot and by reading the
+store: the pane renders on the far left of History and Settings with nested
+groups, indentation, per-group project counts and the open project marked;
+selecting a collapsed group expands it and saves that view; **+** opens the group
+dialog, and a named group appears at the top level; selecting a project opens it
+in a repository tab and moves the marker; a project row's actions menu moves that
+project into another group and updates both counts; the settings switch hides and
+restores the pane and saves `project_pane`.
+
+Limitations: debug profile only, so no timing claim. macOS, Wayland, a physical
+desktop, screen readers, package builds, and theme, density and text-size
+variations of the pane were not exercised. Group and project removal, the depth
+and count limits, and the refusal of a malformed saved list have automated
+coverage only.
+
 ## September 16 PR #17 file-discard review
 
 Clean application source `e9b631f` includes main `5466b8a` and passed 847
