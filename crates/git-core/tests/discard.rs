@@ -277,6 +277,106 @@ fn discard_refuses_worktree_redirection_after_review() {
 }
 
 #[test]
+fn discard_pins_write_target_despite_global_worktree_redirection() {
+    const FIXTURE_ROOT: &str = "GITTURTLE_DISCARD_TARGET_TEST_ROOT";
+    if let Some(root) = std::env::var_os(FIXTURE_ROOT) {
+        let root = PathBuf::from(root);
+        let outside = root.parent().unwrap().join("outside");
+        assert_eq!(
+            git_at(&root, &["config", "--get", "core.worktree"]),
+            outside.to_str().unwrap()
+        );
+        let repo = GitRepository::open(&root).unwrap();
+        let row = repo
+            .status()
+            .unwrap()
+            .entries
+            .into_iter()
+            .find(|row| row.path == Path::new("tracked"))
+            .unwrap();
+        let plan = repo.discard_plan(&row).unwrap();
+        let result = repo.execute(&discard(plan));
+        assert_eq!(
+            fs::read(outside.join("tracked")).unwrap(),
+            b"unreviewed external work\n"
+        );
+        result.unwrap();
+        assert_eq!(fs::read(root.join("tracked")).unwrap(), b"base\n");
+        return;
+    }
+
+    let f = Fixture::new();
+    f.write("tracked", "reviewed bytes\n");
+    let outside = f.root.parent().unwrap().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("tracked"), b"unreviewed external work\n").unwrap();
+    fs::write(outside.join("other"), b"other\n").unwrap();
+    let global = f.root.parent().unwrap().join("global.gitconfig");
+    let included = f.root.parent().unwrap().join("included.gitconfig");
+    f.git(&[
+        "config",
+        "--file",
+        included.to_str().unwrap(),
+        "core.worktree",
+        outside.to_str().unwrap(),
+    ]);
+    f.git(&[
+        "config",
+        "--file",
+        global.to_str().unwrap(),
+        &format!("includeIf.gitdir:{}.path", f.root.join(".git").display()),
+        included.to_str().unwrap(),
+    ]);
+
+    // Isolate configuration in a subprocess; never mutate this test runner's
+    // environment while other disposable fixtures are running in parallel.
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "discard_pins_write_target_despite_global_worktree_redirection",
+            "--nocapture",
+        ])
+        .env(FIXTURE_ROOT, &f.root)
+        .env("GIT_CONFIG_GLOBAL", &global)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn discard_restores_the_raw_reviewed_commit_despite_replace_refs() {
+    let f = Fixture::new();
+    let original = f.git(&["rev-parse", "HEAD"]);
+    f.git(&["checkout", "-q", "-b", "replacement"]);
+    fs::remove_file(f.root.join("tracked")).unwrap();
+    f.write("tracked/child", "replacement tree child\n");
+    f.git(&["add", "-A"]);
+    let tree = f.git(&["write-tree"]);
+    let replacement = f.git(&["commit-tree", &tree, "-m", "Replacement object"]);
+    f.git(&["reset", "--hard"]);
+    f.git(&["checkout", "-q", "main"]);
+    f.write("tracked", "reviewed bytes\n");
+    f.git(&["add", "tracked"]);
+    f.git(&["replace", &original, &replacement]);
+    let repo = f.repo();
+    let plan = f.plan("tracked");
+    let result = repo.execute(&discard(plan));
+    assert!(
+        f.root.join("tracked").is_file(),
+        "Discard restored an unreviewed replacement tree: {result:?}"
+    );
+    result.unwrap();
+    assert_eq!(f.read("tracked"), b"base\n");
+    assert!(repo.status().unwrap().entries.is_empty());
+}
+
+#[test]
 fn discard_refuses_git_directory_redirection_after_review() {
     let f = Fixture::new();
     let repo = f.repo();
@@ -636,6 +736,129 @@ fn discard_refuses_directory_replacements_and_replaced_parent_paths() {
         );
         assert_eq!(fs::read(outside.join("precious")).unwrap(), b"precious\n");
     }
+}
+
+#[test]
+fn discard_refuses_file_replacing_a_committed_directory() {
+    let f = Fixture::new();
+    let repo = f.repo();
+    f.write("dir/a", "first committed file\n");
+    f.write("dir/b", "second committed file\n");
+    f.git(&["add", "dir"]);
+    f.git(&["commit", "-q", "-m", "Directory"]);
+    fs::remove_dir_all(f.root.join("dir")).unwrap();
+    f.write("dir", "replacement file\n");
+    f.git(&["add", "-A"]);
+    f.write("other", "unrelated staged work\n");
+    f.git(&["add", "other"]);
+    let row = f.entry("dir");
+    assert_eq!(row.staged, Some(ChangeStatus::Added));
+    let index = fs::read(f.root.join(".git/index")).unwrap();
+    let status = repo.status().unwrap();
+    let result = repo
+        .discard_plan(&row)
+        .and_then(|plan| repo.execute(&discard(plan)));
+    let error = result.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("directory in the reviewed commit"),
+        "{error:#}"
+    );
+    assert_eq!(f.read("dir"), b"replacement file\n");
+    assert_eq!(fs::read(f.root.join(".git/index")).unwrap(), index);
+    assert_eq!(repo.status().unwrap(), status);
+    assert_eq!(f.git(&["show", ":other"]), "unrelated staged work");
+}
+
+#[test]
+fn discard_refuses_deleted_file_with_staged_descendants() {
+    let f = Fixture::new();
+    let repo = f.repo();
+    fs::remove_file(f.root.join("tracked")).unwrap();
+    f.write("tracked/a", "first staged file\n");
+    f.write("tracked/b", "second staged file\n");
+    f.git(&["add", "-A"]);
+    fs::remove_dir_all(f.root.join("tracked")).unwrap();
+    let row = f.row("tracked", false);
+    assert_eq!(row.staged, Some(ChangeStatus::Deleted));
+    let index = fs::read(f.root.join(".git/index")).unwrap();
+    let status = repo.status().unwrap();
+    let result = repo
+        .discard_plan(&row)
+        .and_then(|plan| repo.execute(&discard(plan)));
+    let error = result.unwrap_err();
+    assert!(
+        error.to_string().contains("staged files beneath"),
+        "{error:#}"
+    );
+    assert!(!f.root.join("tracked").exists());
+    assert_eq!(fs::read(f.root.join(".git/index")).unwrap(), index);
+    assert_eq!(repo.status().unwrap(), status);
+    assert_eq!(f.git(&["show", ":tracked/a"]), "first staged file");
+    assert_eq!(f.git(&["show", ":tracked/b"]), "second staged file");
+}
+
+#[test]
+fn discard_refuses_rename_endpoints_with_committed_or_staged_descendants() {
+    for source_has_descendants in [false, true] {
+        let f = Fixture::new();
+        let repo = f.repo();
+        if source_has_descendants {
+            f.git(&["mv", "tracked", "renamed"]);
+            f.write("tracked/a", "new staged source child\n");
+            f.git(&["add", "tracked"]);
+            fs::remove_dir_all(f.root.join("tracked")).unwrap();
+        } else {
+            f.write("renamed/a", "committed destination child\n");
+            f.git(&["add", "renamed"]);
+            f.git(&["commit", "-q", "-m", "Destination directory"]);
+            f.git(&["rm", "-r", "renamed"]);
+            f.git(&["mv", "tracked", "renamed"]);
+        }
+        let row = f.entry("renamed");
+        assert_eq!(row.original_path.as_deref(), Some(Path::new("tracked")));
+        let index = fs::read(f.root.join(".git/index")).unwrap();
+        let status = repo.status().unwrap();
+        let error = repo.discard_plan(&row).unwrap_err();
+        assert!(
+            error.to_string().contains(if source_has_descendants {
+                "staged files beneath"
+            } else {
+                "directory in the reviewed commit"
+            }),
+            "{error:#}"
+        );
+        assert_eq!(f.read("renamed"), b"base\n");
+        assert!(!f.root.join("tracked").exists());
+        assert_eq!(fs::read(f.root.join(".git/index")).unwrap(), index);
+        assert_eq!(repo.status().unwrap(), status);
+    }
+}
+
+#[test]
+fn discard_nested_file_preserves_staged_siblings() {
+    let f = Fixture::new();
+    let repo = f.repo();
+    f.write("dir/inner/selected", "selected base\n");
+    f.write("dir/inner/sibling", "sibling base\n");
+    f.git(&["add", "dir"]);
+    f.git(&["commit", "-q", "-m", "Nested files"]);
+    f.write("dir/inner/selected", "selected staged\n");
+    f.write("dir/inner/sibling", "unrelated staged work\n");
+    f.git(&["add", "dir"]);
+    f.write("dir/inner/selected", "selected unstaged\n");
+    let sibling = f.entry("dir/inner/sibling");
+    repo.execute(&discard(f.plan("dir/inner/selected")))
+        .unwrap();
+    assert_eq!(f.read("dir/inner/selected"), b"selected base\n");
+    assert_eq!(f.git(&["show", ":dir/inner/selected"]), "selected base");
+    assert_eq!(f.read("dir/inner/sibling"), b"unrelated staged work\n");
+    assert_eq!(
+        f.git(&["show", ":dir/inner/sibling"]),
+        "unrelated staged work"
+    );
+    assert_eq!(repo.status().unwrap().entries, vec![sibling]);
 }
 
 #[test]

@@ -103,6 +103,13 @@ impl GitRepository {
             entry.untracked || head.is_some(),
             "There is no commit to restore from yet. Unstage the file to keep it out of the first commit."
         );
+        if !entry.untracked {
+            ensure_single_file_restore(
+                &self.path,
+                head.as_deref().context("Missing reviewed HEAD")?,
+                &entry.paths(),
+            )?;
+        }
         let mut working = Vec::new();
         let started = Instant::now();
         for path in entry.paths() {
@@ -157,6 +164,15 @@ impl GitRepository {
         );
         let paths = plan.paths();
         let mut command = normal_command(&self.path);
+        // Keep normal write configuration (including filters), but bind its
+        // target and raw objects to the same repository and commit reviewed by
+        // passive reads. Replacement refs must not substitute another tree.
+        command
+            .arg("--git-dir")
+            .arg(&plan.directories[1].path)
+            .arg("--work-tree")
+            .arg(&plan.root)
+            .env("GIT_NO_REPLACE_OBJECTS", "1");
         let input = if plan.entry.untracked {
             // `git clean` has no pathspec-file option; the literal path is one
             // argument. Directories were refused during review, so no nested
@@ -231,6 +247,64 @@ impl GitRepository {
             commit_oid: None,
         })
     }
+}
+
+/// Even literal pathspecs select descendants. Refuse file/tree transitions
+/// whose restore would also change rows outside the reviewed file or rename.
+fn ensure_single_file_restore(root: &Path, head: &str, paths: &[PathBuf]) -> Result<()> {
+    let mut command = git_command(root);
+    command
+        .arg("--literal-pathspecs")
+        .args(["ls-tree", "-z", "--full-tree", head, "--"])
+        .args(paths);
+    let output = bounded_output(command, GIT_TIMEOUT)?;
+    ensure!(
+        output.status.success(),
+        "Unable to inspect the reviewed commit's restore paths: {}",
+        text(&output.stderr).trim()
+    );
+    for record in output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+    {
+        let tab = record
+            .iter()
+            .position(|byte| *byte == b'\t')
+            .context("Malformed restore tree entry")?;
+        let path = path_from_bytes(&record[tab + 1..]);
+        let fields: Vec<_> = record[..tab].split(|byte| *byte == b' ').collect();
+        ensure!(fields.len() == 3, "Malformed restore tree metadata");
+        ensure!(
+            fields[1] != b"tree" && paths.contains(&path),
+            "The path {} is a directory in the reviewed commit. Discard would also restore other files beneath it. Review this file/directory replacement with Git.",
+            path.display()
+        );
+    }
+    let mut command = git_command(root);
+    command
+        .arg("--literal-pathspecs")
+        .args(["ls-files", "--cached", "-z", "--"])
+        .args(paths);
+    let output = bounded_output(command, GIT_TIMEOUT)?;
+    ensure!(
+        output.status.success(),
+        "Unable to inspect the selected index paths: {}",
+        text(&output.stderr).trim()
+    );
+    for record in output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+    {
+        let path = path_from_bytes(record);
+        ensure!(
+            paths.contains(&path),
+            "There are staged files beneath the selected path ({}). Discard would also remove those files from the index. Review this file/directory replacement with Git.",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
