@@ -12,6 +12,25 @@ pub(super) struct State {
     draft: Option<Entity<WorktreeManager>>,
 }
 
+/// Which reviewed removal a navigator action or manager button requests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RemovalMode {
+    /// `git worktree remove` on a clean, unlocked linked worktree.
+    Ordinary,
+    /// `git worktree remove --force`: deletes dirty content and unfinished
+    /// operation state. Locked, main, current and missing worktrees stay refused.
+    Force,
+}
+
+impl RemovalMode {
+    fn blocked(self, details: &WorktreeDetails) -> Option<&str> {
+        match self {
+            Self::Ordinary => details.removal_blocked.as_deref(),
+            Self::Force => details.force_removal_blocked.as_deref(),
+        }
+    }
+}
+
 fn label(id: &'static str, value: impl Into<SharedString>) -> Stateful<Div> {
     let value = value.into();
     div()
@@ -29,16 +48,16 @@ impl GitTurtle {
     pub(super) fn open_worktree_actions(
         &mut self,
         tree: Worktree,
-        remove: bool,
+        removal: Option<RemovalMode>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.show_worktree_manager(Some((tree, remove)), window, cx);
+        self.show_worktree_manager(Some((tree, removal)), window, cx);
     }
 
     fn show_worktree_manager(
         &mut self,
-        target: Option<(Worktree, bool)>,
+        target: Option<(Worktree, Option<RemovalMode>)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -60,11 +79,11 @@ impl GitTurtle {
         manager.update(cx, |this, cx| {
             this.closed
                 .store(false, std::sync::atomic::Ordering::Release);
-            if let Some((tree, remove)) = target {
+            if let Some((tree, removal)) = target {
                 this.creating = false;
                 this.filter
                     .update(cx, |input, cx| input.set_value("", window, cx));
-                this.refresh_target(Some((tree, remove)), window, cx);
+                this.refresh_target(Some((tree, removal)), window, cx);
             } else {
                 this.refresh(window, cx);
             }
@@ -299,21 +318,23 @@ impl WorktreeManager {
     }
     fn refresh_target(
         &mut self,
-        target: Option<(Worktree, bool)>,
+        target: Option<(Worktree, Option<RemovalMode>)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.details = None;
         self.read(
-            target.as_ref().is_some_and(|(_, remove)| *remove),
+            target
+                .as_ref()
+                .is_some_and(|(_, removal)| removal.is_some()),
             |repo| Ok((repo.worktrees()?, repo.branches()?)),
             move |this, (trees, branches), window, cx| {
                 this.trees = trees;
                 this.branches = branches;
-                if let Some((tree, remove)) = target {
+                if let Some((tree, removal)) = target {
                     // Inspect the captured row identity. A stale or removed target
                     // must never select a different tree for removal.
-                    this.inspect(tree, remove, window, cx);
+                    this.inspect(tree, removal, window, cx);
                     return;
                 }
                 let selected = this
@@ -331,24 +352,24 @@ impl WorktreeManager {
         );
     }
     fn select(&mut self, tree: Worktree, window: &mut Window, cx: &mut Context<Self>) {
-        self.inspect(tree, false, window, cx);
+        self.inspect(tree, None, window, cx);
     }
     fn inspect(
         &mut self,
         tree: Worktree,
-        remove: bool,
+        removal: Option<RemovalMode>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.selected = Some(tree.path.clone());
         self.details = None;
         self.read(
-            remove,
+            removal.is_some(),
             move |repo| repo.worktree_details(&tree),
             move |this, details, window, cx| {
                 this.details = Some(details);
-                if remove {
-                    this.confirm_removal(window, cx);
+                if let Some(mode) = removal {
+                    this.confirm_removal(mode, window, cx);
                 }
             },
             window,
@@ -409,14 +430,14 @@ impl WorktreeManager {
             });
         }, window, cx);
     }
-    fn remove(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn remove(&mut self, mode: RemovalMode, window: &mut Window, cx: &mut Context<Self>) {
         if self.pending || !self.current(cx) {
             return;
         }
         let Some(tree) = self
             .details
             .as_ref()
-            .filter(|details| details.removal_blocked.is_none())
+            .filter(|details| mode.blocked(details).is_none())
             .map(|details| details.tree.clone())
         else {
             return;
@@ -424,20 +445,55 @@ impl WorktreeManager {
         // Selection details can remain open while another tool changes the
         // target. Prepare a fresh review of this exact identity before asking
         // for confirmation; execution performs its own final stale check.
-        self.inspect(tree, true, window, cx);
+        self.inspect(tree, Some(mode), window, cx);
     }
-    fn confirm_removal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn confirm_removal(&mut self, mode: RemovalMode, window: &mut Window, cx: &mut Context<Self>) {
         let Some(details) = self
             .details
             .clone()
-            .filter(|details| details.removal_blocked.is_none())
+            .filter(|details| mode.blocked(details).is_none())
         else {
             return;
         };
         if self.pending || !self.current(cx) {
             return;
         }
-        let _ = self.owner.update(cx, |owner, cx| { window.close_dialog(cx); owner.confirm_git_write("Remove linked worktree".into(), format!("Folder: {}\nBranch: {}\nCommit: {}\n\nGit will remove this clean worktree folder and its private worktree metadata. Removing a worktree does not delete branches or shared objects. Any branch remains available for another worktree.\n\nRemoval refuses if the worktree changes, is locked, becomes unavailable, has active Git state or index flags that hide changes, or contains tracked, untracked, or ignored changes. No force removal or metadata repair is attempted.", details.tree.path.display(), details.tree.branch.as_deref().unwrap_or("Detached HEAD"), details.tree.oid), "Remove worktree", WriteCommand::Worktree(Arc::new(WorktreeCommand::Remove(details))), window, cx); });
+        let identity = format!(
+            "Folder: {}\nBranch: {}\nCommit: {}",
+            details.tree.path.display(),
+            details.tree.branch.as_deref().unwrap_or("Detached HEAD"),
+            details.tree.oid
+        );
+        let (title, explanation, action, command) = match mode {
+            RemovalMode::Ordinary => (
+                "Remove linked worktree",
+                format!(
+                    "{identity}\n\nGit will remove this clean worktree folder and its private worktree metadata. Removing a worktree does not delete branches or shared objects. Any branch remains available for another worktree.\n\nRemoval refuses if the worktree changes, is locked, becomes unavailable, has active Git state or index flags that hide changes, or contains tracked, untracked, or ignored changes. No force removal or metadata repair is attempted."
+                ),
+                "Remove worktree",
+                WorktreeCommand::Remove(details),
+            ),
+            RemovalMode::Force => (
+                "Force remove linked worktree",
+                format!(
+                    "{identity}\nContent to delete: {} changed or untracked files · {} ignored files\n\nGit will delete this worktree folder with its changed, untracked, and ignored files, any unfinished merge, rebase, cherry-pick, bisect, or sequencer state, and any initialized submodule checkout inside it. Uncommitted content is not recoverable from Git. Its private worktree metadata is removed. Committed work stays in the shared repository; the branch remains available for another worktree.\n\nForce removal still refuses if the worktree is the main or current worktree, is locked, holds a Git lock file, becomes unavailable, or changes after this review. No lock override or metadata repair is attempted.",
+                    details.changed_files, details.ignored_files
+                ),
+                "Force remove worktree",
+                WorktreeCommand::ForceRemove(details),
+            ),
+        };
+        let _ = self.owner.update(cx, |owner, cx| {
+            window.close_dialog(cx);
+            owner.confirm_git_write(
+                title.into(),
+                explanation,
+                action,
+                WriteCommand::Worktree(Arc::new(command)),
+                window,
+                cx,
+            );
+        });
     }
 }
 
@@ -492,7 +548,8 @@ impl Render for WorktreeManager {
                             .child(button("open-managed-worktree", "Open in GitTurtle", "", false).disabled(unavailable || details.missing || details.current).on_click(cx.listener(move |this, _, window, cx| { let _ = this.owner.update(cx, |owner, cx| { if owner.operation_busy.is_none() && owner.path.as_deref() == Some(this.repo.path()) { window.close_dialog(cx); owner.open(path.clone(), None, window, cx); } }); })))
                             .child(button("reveal-managed-worktree", if cfg!(target_os = "macos") { "Finder" } else { "Files" }, "", false).disabled(details.missing).on_click(move |_, _, cx| cx.reveal_path(&finder)))
                             .child(button("edit-managed-worktree", "Editor", "", false).disabled(unavailable || details.missing).on_click(cx.listener(move |this, _, window, cx| { let _ = this.owner.update(cx, |owner, cx| owner.open_worktree_editor(editor.clone(), window, cx)); })))
-                            .child(button("remove-managed-worktree", "Remove worktree…", "", false).debug_selector(|| "remove-managed-worktree".to_string()).disabled(unavailable || details.removal_blocked.is_some()).on_click(cx.listener(|this, _, window, cx| this.remove(window, cx))))))
+                            .child(button("remove-managed-worktree", "Remove worktree…", "", false).debug_selector(|| "remove-managed-worktree".to_string()).disabled(unavailable || details.removal_blocked.is_some()).on_click(cx.listener(|this, _, window, cx| this.remove(RemovalMode::Ordinary, window, cx))))
+                            .child(button("force-remove-managed-worktree", "Force remove worktree…", "", false).debug_selector(|| "force-remove-managed-worktree".to_string()).disabled(unavailable || details.force_removal_blocked.is_some()).on_click(cx.listener(|this, _, window, cx| this.remove(RemovalMode::Force, window, cx))))))
                 }))
             .when(self.creating, |element| element
                 .child(div().flex().gap_2().children([(false, "Existing branch"), (true, "New branch")].map(|(new, name)| button(name, name, "", self.new_branch == new).toggled(self.new_branch == new).disabled(self.pending).on_click(cx.listener(move |this, _, _, cx| { this.new_branch = new; this.error = None; cx.notify(); })))))

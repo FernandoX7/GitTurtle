@@ -656,9 +656,14 @@ impl GitTurtle {
                             || owner.page != AppPage::Repository
                     });
                     let mut menu = menu.label(tree.path.display().to_string());
-                    for (label, remove) in
-                        [("Worktree actions…", false), ("Remove worktree…", true)]
-                    {
+                    for (label, removal) in [
+                        ("Worktree actions…", None),
+                        ("Remove worktree…", Some(worktrees::RemovalMode::Ordinary)),
+                        (
+                            "Force remove worktree…",
+                            Some(worktrees::RemovalMode::Force),
+                        ),
+                    ] {
                         let owner = branch_owner.clone();
                         let repository = branch_repository.clone();
                         let tree = tree.clone();
@@ -668,7 +673,7 @@ impl GitTurtle {
                                     if this.path == repository && this.page == AppPage::Repository {
                                         this.open_worktree_actions(
                                             tree.clone(),
-                                            remove,
+                                            removal,
                                             window,
                                             cx,
                                         );

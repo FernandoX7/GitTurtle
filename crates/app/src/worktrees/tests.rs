@@ -209,7 +209,7 @@ async fn targeted_worktree_actions_restore_manage_and_cancel_exact_removal(
     finish_dialog(cx, false);
     cx.update(|window, cx| {
         app.update(cx, |app, cx| {
-            app.open_worktree_actions(fixture.second.clone(), false, window, cx)
+            app.open_worktree_actions(fixture.second.clone(), None, window, cx)
         });
     });
     let reopened = manager(&app, cx);
@@ -239,7 +239,7 @@ async fn manager_removal_rechecks_changes_since_selection(cx: &mut TestAppContex
     let (app, cx) = app_window(cx, fixture.repo.clone());
     cx.update(|window, cx| {
         app.update(cx, |app, cx| {
-            app.open_worktree_actions(fixture.first.clone(), false, window, cx)
+            app.open_worktree_actions(fixture.first.clone(), None, window, cx)
         });
     });
     let manager = manager(&app, cx);
@@ -283,7 +283,12 @@ async fn switching_manager_workflow_cancels_pending_removal_review(cx: &mut Test
     ready.await.unwrap();
     cx.update(|window, cx| {
         manager.update(cx, |manager, cx| {
-            manager.inspect(fixture.first.clone(), true, window, cx)
+            manager.inspect(
+                fixture.first.clone(),
+                Some(RemovalMode::Ordinary),
+                window,
+                cx,
+            )
         });
     });
     assert!(manager.read_with(cx, |manager, _| manager.pending));
@@ -376,7 +381,12 @@ async fn accepted_removal_keeps_captured_target_after_manager_closes(cx: &mut Te
     let (app, cx) = app_window(cx, fixture.repo.clone());
     cx.update(|window, cx| {
         app.update(cx, |app, cx| {
-            app.open_worktree_actions(fixture.second.clone(), true, window, cx)
+            app.open_worktree_actions(
+                fixture.second.clone(),
+                Some(RemovalMode::Ordinary),
+                window,
+                cx,
+            )
         });
     });
     let manager = manager(&app, cx);
@@ -447,10 +457,12 @@ async fn targeted_removal_refreshes_guards_and_disabled_control_cannot_confirm(
         .into_iter()
         .find(|tree| tree.path == fixture.repo.path())
         .unwrap();
-    for (target, guard) in [
-        (fixture.first.clone(), "ignored"),
-        (fixture.second.clone(), "locked"),
-        (main, "main"),
+    // Ignored content only blocks ordinary removal; a lock or the main
+    // worktree also blocks force removal, so those rows request force.
+    for (target, guard, mode) in [
+        (fixture.first.clone(), "ignored", RemovalMode::Ordinary),
+        (fixture.second.clone(), "locked", RemovalMode::Force),
+        (main, "main", RemovalMode::Force),
     ] {
         // Navigator rows predate these changes; invoking removal must inspect
         // the current filesystem/lock before deciding whether to confirm.
@@ -464,7 +476,7 @@ async fn targeted_removal_refreshes_guards_and_disabled_control_cannot_confirm(
         }
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
-                app.open_worktree_actions(target.clone(), true, window, cx)
+                app.open_worktree_actions(target.clone(), Some(mode), window, cx)
             });
         });
         let manager = manager(&app, cx);
@@ -478,18 +490,106 @@ async fn targeted_removal_refreshes_guards_and_disabled_control_cannot_confirm(
                     || manager
                         .details
                         .as_ref()
-                        .is_some_and(|details| details.removal_blocked.is_some()),
+                        .is_some_and(|details| mode.blocked(details).is_some()),
                 "guard: {guard}"
             );
         });
         assert_no_confirmation(&app, cx);
-        if cx.debug_bounds("remove-managed-worktree").is_some() {
-            click(cx, "remove-managed-worktree");
-            assert_no_confirmation(&app, cx);
+        let blocked_controls: &[&'static str] = match mode {
+            RemovalMode::Ordinary => &["remove-managed-worktree"],
+            RemovalMode::Force => &["remove-managed-worktree", "force-remove-managed-worktree"],
+        };
+        for selector in blocked_controls {
+            if cx.debug_bounds(selector).is_some() {
+                click(cx, selector);
+                assert_no_confirmation(&app, cx);
+            }
         }
         finish_dialog(cx, false);
         assert!(target.path.exists());
     }
+}
+
+#[gpui::test]
+async fn force_removal_confirms_dirty_target_that_ordinary_removal_refuses(
+    cx: &mut TestAppContext,
+) {
+    let fixture = Fixture::new();
+    let (app, cx) = app_window(cx, fixture.repo.clone());
+    std::fs::write(fixture.second.path.join("build.ignored"), "discard").unwrap();
+    std::fs::write(fixture.second.path.join("notes.txt"), "discard").unwrap();
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_worktree_actions(
+                fixture.second.clone(),
+                Some(RemovalMode::Ordinary),
+                window,
+                cx,
+            )
+        });
+    });
+    let manager = manager(&app, cx);
+    settle(&manager, cx).await;
+    assert_no_confirmation(&app, cx);
+    manager.read_with(cx, |manager, _| {
+        let details = manager.details.as_ref().unwrap();
+        assert_eq!(details.tree, fixture.second);
+        assert_eq!(details.changed_files, 1);
+        assert_eq!(details.ignored_files, 1);
+        assert!(details.removal_blocked.is_some());
+        assert!(details.force_removal_blocked.is_none());
+    });
+    click(cx, "remove-managed-worktree");
+    assert_no_confirmation(&app, cx);
+    // The manager button reviews the exact target again, then confirms.
+    click(cx, "force-remove-managed-worktree");
+    settle(&manager, cx).await;
+    draw(cx);
+    assert!(cx.debug_bounds("operation-consequences").is_some());
+    finish_dialog(cx, true);
+    assert_no_confirmation(&app, cx);
+    assert!(fixture.second.path.join("build.ignored").is_file());
+    assert!(fixture.second.path.join("notes.txt").is_file());
+    assert_eq!(fixture.repo.worktrees().unwrap().len(), 3);
+
+    // The navigator action opens the force confirmation for the captured row.
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_worktree_actions(fixture.second.clone(), Some(RemovalMode::Force), window, cx)
+        });
+    });
+    let reopened = manager.clone();
+    settle(&reopened, cx).await;
+    draw(cx);
+    assert!(cx.debug_bounds("operation-consequences").is_some());
+    finish_dialog(cx, false);
+    let task = app.update(cx, |app, _| app.operation_task.take()).unwrap();
+    task.await;
+    cx.executor().run_until_parked();
+    app.read_with(cx, |app, _| {
+        assert!(app.operation_busy.is_none());
+        assert!(app.operation_error.is_none(), "{:?}", app.operation_error);
+        assert!(
+            app.operation_notice
+                .as_ref()
+                .unwrap()
+                .contains("Force removed worktree")
+        );
+    });
+    assert!(!fixture.second.path.exists());
+    assert!(fixture.first.path.join("tracked.txt").is_file());
+    assert!(fixture.repo.path().join("tracked.txt").is_file());
+    let trees = fixture.repo.worktrees().unwrap();
+    assert_eq!(trees.len(), 2);
+    assert!(trees.iter().all(|tree| tree.path != fixture.second.path));
+    assert!(
+        fixture
+            .repo
+            .branches()
+            .unwrap()
+            .iter()
+            .any(|branch| branch.name == "second")
+    );
 }
 
 #[gpui::test]
@@ -509,7 +609,7 @@ async fn stale_target_never_falls_back_to_another_registered_worktree(cx: &mut T
     for target in [&fixture.first, &fixture.second] {
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
-                app.open_worktree_actions(target.clone(), true, window, cx)
+                app.open_worktree_actions(target.clone(), Some(RemovalMode::Ordinary), window, cx)
             });
         });
         let manager = manager(&app, cx);
@@ -547,7 +647,12 @@ async fn cancelled_or_superseded_target_read_cannot_open_removal_confirmation(
         ready.await.unwrap();
         cx.update(|window, cx| {
             manager.update(cx, |manager, cx| {
-                manager.inspect(fixture.first.clone(), true, window, cx)
+                manager.inspect(
+                    fixture.first.clone(),
+                    Some(RemovalMode::Ordinary),
+                    window,
+                    cx,
+                )
             });
         });
         assert!(manager.read_with(cx, |manager, _| manager.pending));

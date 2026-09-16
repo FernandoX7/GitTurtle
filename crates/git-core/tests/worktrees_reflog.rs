@@ -63,6 +63,10 @@ fn remove(plan: WorktreeDetails) -> WriteCommand {
     WriteCommand::Worktree(Arc::new(WorktreeCommand::Remove(plan)))
 }
 
+fn force(plan: WorktreeDetails) -> WriteCommand {
+    WriteCommand::Worktree(Arc::new(WorktreeCommand::ForceRemove(plan)))
+}
+
 fn git_at(root: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .arg("-C")
@@ -758,6 +762,174 @@ fn worktree_removal_refuses_current_linked_tree_and_preserves_initialized_submod
     );
     assert_eq!(repo.worktrees().unwrap().len(), 2);
     assert_eq!(f.git(&["show-ref"]), refs);
+}
+
+#[test]
+fn force_removal_deletes_dirty_content_and_operation_state_after_fresh_review() {
+    let f = Fixture::new();
+    let repo = f.repo();
+    f.git(&["config", "core.excludesFile", "/dev/null"]);
+    fs::write(f.root.join(".git/info/exclude"), "ignored\n").unwrap();
+    let destination = f.create("forced");
+    let sibling = f.create("sibling");
+    fs::write(destination.join("tracked"), "discarded staged edit\n").unwrap();
+    git_at(&destination, &["add", "tracked"]);
+    fs::write(destination.join("untracked"), "discarded\n").unwrap();
+    fs::write(destination.join("ignored"), "discarded build output\n").unwrap();
+    git_at(&destination, &["bisect", "start"]);
+    // Unrelated work in the source and sibling worktrees must survive.
+    fs::write(f.root.join("tracked"), "kept main edit\n").unwrap();
+    fs::write(sibling.join("untracked"), "kept sibling file\n").unwrap();
+    let target_private = GitRepository::open(&destination)
+        .unwrap()
+        .git_directories()
+        .unwrap()
+        .0;
+    let reviewed = f.removal_plan(&destination);
+    assert_eq!(reviewed.changed_files, 2);
+    assert_eq!(reviewed.ignored_files, 1);
+    assert!(
+        reviewed
+            .removal_blocked
+            .as_deref()
+            .unwrap()
+            .contains("bisect")
+    );
+    assert!(reviewed.force_removal_blocked.is_none());
+    assert!(repo.execute(&remove(reviewed.clone())).is_err());
+    assert_eq!(
+        fs::read(destination.join("tracked")).unwrap(),
+        b"discarded staged edit\n"
+    );
+
+    // Content that changes after review requires a fresh force review.
+    fs::write(destination.join("late"), "late\n").unwrap();
+    let error = repo.execute(&force(reviewed)).unwrap_err();
+    assert!(error.to_string().contains("changed after review"));
+    assert!(destination.join("late").is_file());
+    assert!(target_private.join("BISECT_START").is_file());
+    assert_eq!(repo.worktrees().unwrap().len(), 3);
+
+    let branch_oid = f.git(&["rev-parse", "forced"]);
+    let refs = f.git(&["show-ref"]);
+    let outcome = repo.execute(&force(f.removal_plan(&destination))).unwrap();
+    assert!(outcome.message.contains("Force removed worktree"));
+    assert!(
+        outcome
+            .message
+            .contains("3 changed or untracked and 1 ignored")
+    );
+    assert!(outcome.message.contains("branch remains available"));
+    assert_eq!(
+        fs::symlink_metadata(&destination).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+    assert_eq!(
+        fs::symlink_metadata(&target_private).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+    let trees = repo.worktrees().unwrap();
+    assert_eq!(trees.len(), 2);
+    assert!(trees.iter().all(|tree| tree.path != destination));
+    assert_eq!(f.git(&["rev-parse", "forced"]), branch_oid);
+    assert_eq!(f.git(&["show-ref"]), refs);
+    assert_eq!(
+        fs::read(f.root.join("tracked")).unwrap(),
+        b"kept main edit\n"
+    );
+    assert_eq!(
+        fs::read(sibling.join("untracked")).unwrap(),
+        b"kept sibling file\n"
+    );
+    assert_eq!(f.git(&["show", ":tracked"]), "base");
+}
+
+#[test]
+fn force_removal_refuses_main_current_locked_missing_and_held_lock_files() {
+    let f = Fixture::new();
+    let repo = f.repo();
+    let destination = f.create("protected");
+    fs::write(destination.join("untracked"), "kept\n").unwrap();
+    let trees = repo.worktrees().unwrap();
+    let main = repo.worktree_details(&trees[0]).unwrap();
+    assert!(
+        main.force_removal_blocked
+            .as_deref()
+            .unwrap()
+            .contains("main worktree")
+    );
+    assert!(repo.execute(&force(main)).is_err());
+    let tree = trees
+        .iter()
+        .find(|tree| tree.path == destination)
+        .unwrap()
+        .clone();
+    let linked = GitRepository::open(&destination).unwrap();
+    let current = linked.worktree_details(&tree).unwrap();
+    assert!(
+        current
+            .force_removal_blocked
+            .as_deref()
+            .unwrap()
+            .contains("currently open")
+    );
+    assert!(linked.execute(&force(current)).is_err());
+    let private = linked.git_directories().unwrap().0;
+    for file in ["index.lock", "HEAD.lock", "config.worktree.lock"] {
+        let path = private.join(file);
+        fs::write(&path, "").unwrap();
+        let reviewed = f.removal_plan(&destination);
+        assert!(
+            reviewed
+                .force_removal_blocked
+                .as_deref()
+                .unwrap()
+                .contains("lock file"),
+            "{file}"
+        );
+        assert!(repo.execute(&force(reviewed)).is_err(), "{file}");
+        assert!(path.is_file(), "{file}");
+        fs::remove_file(path).unwrap();
+    }
+    // Unfinished bisect state blocks ordinary removal only.
+    fs::write(private.join("BISECT_START"), "protected\n").unwrap();
+    let reviewed = f.removal_plan(&destination);
+    assert!(reviewed.removal_blocked.is_some());
+    assert!(reviewed.force_removal_blocked.is_none());
+    fs::remove_file(private.join("BISECT_START")).unwrap();
+    f.git(&["worktree", "lock", destination.to_str().unwrap()]);
+    let locked = repo
+        .worktrees()
+        .unwrap()
+        .into_iter()
+        .find(|tree| tree.path == destination)
+        .unwrap();
+    let reviewed = repo.worktree_details(&locked).unwrap();
+    assert!(
+        reviewed
+            .force_removal_blocked
+            .as_deref()
+            .unwrap()
+            .contains("locked")
+    );
+    assert!(repo.execute(&force(reviewed)).is_err());
+    f.git(&["worktree", "unlock", destination.to_str().unwrap()]);
+    let moved = f.destination("temporarily-away");
+    fs::rename(&destination, &moved).unwrap();
+    let missing = repo
+        .worktrees()
+        .unwrap()
+        .into_iter()
+        .find(|tree| tree.path == destination)
+        .unwrap();
+    let reviewed = repo.worktree_details(&missing).unwrap();
+    assert!(reviewed.missing);
+    assert!(reviewed.force_removal_blocked.is_some());
+    assert!(repo.execute(&force(reviewed)).is_err());
+    fs::rename(&moved, &destination).unwrap();
+    assert_eq!(fs::read(destination.join("untracked")).unwrap(), b"kept\n");
+    assert!(private.join("index").is_file());
+    assert_eq!(repo.worktrees().unwrap().len(), 2);
 }
 
 #[test]
