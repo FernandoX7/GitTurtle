@@ -84,36 +84,54 @@ outputs or unknown classification versions fail. Each matrix keeps
 `fail-fast: false` so one platform failure does not discard the other platform's
 diagnostics. A checkout/evaluator failure also leaves the gate unsuccessful.
 
-The current required names, **`Rust · macos-15`** and **`Rust · ubuntu-24.04`**, remain
-as always-running compatibility jobs. They mirror the complete Quality gate,
-while the actual platform work is named `Rust tests and Clippy · <platform>` and
+The actual platform work is named `Rust tests and Clippy · <platform>` and
 `Rust release · <platform>`. `Rust formatting` checks the workspace once on Ubuntu.
-These short compatibility jobs execute on Ubuntu; the names preserve required-check
-identity, not a claim that their shell step compiles on macOS. A product change
-cannot pass them unless both actual macOS/Ubuntu Rust matrices, formatting and
-other required lanes succeeded. A docs-only change can pass after its justified
-skips. This avoids GitHub's [skipped-job success behavior](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks)
+The aggregate cannot pass a product change unless both platform matrices,
+formatting and other required lanes succeed; documentation changes may pass after
+justified skips. This avoids GitHub's [skipped-job success behavior](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks)
 silently bypassing a failed dependency.
 
-No repository settings change is performed by this source patch. C1 must first
-exercise actual positive/negative PR cases, cancellation, routing, forks and
-main/manual runs. Once the new gate has passed on the intended revision, the
-coordinator prepares and obtains authorization for this scoped migration:
+The transitional **`Rust · macos-15`** and **`Rust · ubuntu-24.04`** jobs previously
+mirrored the complete gate from short Ubuntu jobs. On September 15, 2026 at
+23:11:43 UTC, the coordinator applied and verified gate-only main protection:
+`Quality gate`, strict/up-to-date checks enabled, GitHub Actions app ID `15368`.
+The readback at main `b5d681c1c6db21bfb74b3e07da461c3f8de588dc` preserved all
+unrelated protections and the retired CodeQL state. This dated migration result
+does not establish completion of the remaining C1 cache, fork or runtime evidence.
 
-1. Read the current main protection and preserve its strict/up-to-date setting,
-   GitHub Actions app binding and review/conversation requirements. CodeQL was
-   separately retired by the maintainer; do not reintroduce its inactive rule.
-2. Add the observed `Quality gate` name/app binding alongside the two current
-   Rust names using the [required-status-check endpoint](https://docs.github.com/en/rest/branches/branch-protection#update-status-check-protection).
-   Verify the binding and actual positive/negative behavior.
-3. Replace the old required names with the verified gate only after those checks.
-   Remove compatibility jobs in a separately reviewed follow-up after the live
-   migration is established.
+This source cleanup removes only the two transitional mirrors. Integrate it only
+after the planned cache measurements are complete, the then-current main and live
+protection are freshly bound, and independent general and security reviews cover
+the exact cleanup candidate. The classifier, aggregate and every underlying
+validation phase remain unchanged. Source preparation does not establish those
+remaining requirements.
 
-Rollback restores the exact latest pre-migration required-check set through that
-same scoped endpoint, with strictness and unrelated protection unchanged. Preserve
-the compatibility jobs until the migration is proven. Source regressions use a
-reviewed revert; do not remove protection to clear a failed check. The independent
+Repository settings are managed separately through the
+[required-status-check endpoint](https://docs.github.com/en/rest/branches/branch-protection#update-status-check-protection).
+The migration first retained the two Rust requirements while adding the observed
+`Quality gate` app binding, then switched to the verified gate-only requirement.
+Fresh capture and preserving readback cover strictness, app binding and unrelated
+review/conversation settings at each transition. CodeQL was separately retired by
+the maintainer; this cleanup does not reintroduce its inactive rule or modify
+repository settings.
+
+Before the source cleanup, rollback can restore the latest applicable captured
+required-check set through that scoped endpoint while its jobs still exist.
+After cleanup, restore the compatibility jobs **before** requiring their names:
+
+1. Prepare a reviewed revert of the cleanup commit against current main. Restore
+   the removed job block without overwriting newer workflow changes; keep the
+   existing `Quality gate` requirement in place.
+2. Integrate the restoration through the protected PR flow and observe the restored
+   jobs passing on the intended main revision and current main-targeting PR, with
+   the exact GitHub Actions app binding. Source restoration alone is insufficient.
+3. Capture fresh protection, then add the observed Rust checks alongside the gate
+   through the scoped endpoint. Verify the full readback before any separately
+   reviewed change to the aggregate requirement. Preserve strictness, unrelated
+   protections and retired CodeQL state; do not replay a stale settings snapshot.
+
+If a settings request has an uncertain result, read back the live state before
+another action. Never remove protection to clear a failed check. The independent
 [security review](development/security-review.md) is a development acceptance
 requirement. It is not an automated GitHub status check, and a successful Quality
 gate alone does not establish that the review happened.
@@ -163,8 +181,8 @@ inputs. Package/artifact consumers must precede finish because its successful-ma
 cleanup can remove the application executable. The final gate requires the
 formatter and **both** platform matrices, in addition to tooling/Website according
 to the recorded plan. A successful debug matrix cannot cover a failed, cancelled,
-missing or unexpectedly skipped release matrix. Legacy platform check names keep
-mirroring this complete result until C1's verified protection migration.
+missing or unexpectedly skipped release matrix. Removing the transitional mirrors
+does not change that dependency or result contract.
 
 ### Why two compilation lanes per platform
 
@@ -188,8 +206,8 @@ against the extra cold compilation, setup, transfer and runner time before adopt
 Each Rust matrix has two fixed OS entries, `fail-fast: false`, `max-parallel: 2`
 and a 45-minute job timeout. Thus at most four compilation runners are requested
 per Quality run, plus the independent inexpensive checks. Formatting is bounded
-at five minutes, policy and the final gate at five, tooling at ten and compatibility
-at two. GitHub may queue those jobs under the repository's existing concurrency
+at five minutes, policy and the final gate at five, and tooling at ten.
+GitHub may queue those jobs under the repository's existing concurrency
 limits; matrix bounds do not promise simultaneous starts. See the documented
 [matrix controls](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/run-job-variations).
 Failed commands still retain their exit code, sanitized logs and available Cargo
@@ -211,17 +229,19 @@ the [measurement procedure](#reproduce-coldwarm-and-prmain-measurements), then r
    under each profile's pre-registration budget. Separate cold PRs from a successful trusted-main
    seed and genuinely restored warm PR/main samples on **both** platforms.
 3. Quality creation-to-completion and summed runner intervals across **all** jobs,
-   including inexpensive jobs, cache post-actions and compatibility checks. More
-   simultaneous jobs can increase queue contention and runner minutes even if
+   including inexpensive jobs and cache post-actions. Include compatibility checks
+   in historical runs that emitted them. More simultaneous jobs can increase
+   queue contention and runner minutes even if
    the visible critical path falls. Duplicate Linux package setup/downloads and
    profile-specific build scripts can increase cold cost; report this regression.
 4. The full merge path including every active required check. A faster release
    lane alone does not prove a faster merge. Record sample counts, median/tail and
    unavailable observations; a small set does not establish production p95.
 5. Real negative PR cases for each Rust phase: failure, cancellation and unexpected
-   skip, plus docs-only justified skips. Verify the actual gate and both legacy
-   required names remain unsuccessful for a failed required platform. Local result
-   fixtures establish the evaluator's contract, not GitHub's matrix execution.
+   skip, plus docs-only justified skips. Verify the actual gate remains unsuccessful
+   for a failed required platform; the earlier overlap evidence must also cover
+   both legacy required names. Local result fixtures establish the evaluator's
+   contract, not GitHub's matrix execution.
 
 No hosted improvement is established by this source patch. If cold overhead,
 cache eviction or warm critical-path results miss the initiative targets, propose
