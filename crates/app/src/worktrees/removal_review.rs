@@ -196,8 +196,6 @@ impl GitTurtle {
                                 .flex_shrink_0()
                                 .rounded_lg()
                                 .bg(rgb(colors.removed_background))
-                                .border_l_2()
-                                .border_color(rgb(colors.removed))
                                 .px_3()
                                 .py_2()
                                 .text_size(appearance::ui_text(12.))
