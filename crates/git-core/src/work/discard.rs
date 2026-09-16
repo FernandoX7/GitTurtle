@@ -494,12 +494,13 @@ mod tests {
     #[test]
     fn discard_snapshot_refuses_special_files_without_opening_them() {
         let temp = tempfile::TempDir::new().unwrap();
-        rustix::fs::mkfifoat(
-            rustix::fs::CWD,
-            temp.path().join("fifo"),
-            Mode::RUSR | Mode::WUSR,
-        )
-        .unwrap();
+        assert!(
+            Command::new("mkfifo")
+                .arg(temp.path().join("fifo"))
+                .status()
+                .unwrap()
+                .success()
+        );
         assert_eq!(
             working_identity(temp.path(), Path::new("fifo"), Instant::now()).unwrap(),
             WorkingIdentity::Other

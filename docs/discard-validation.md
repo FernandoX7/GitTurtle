@@ -2,9 +2,9 @@
 
 PR #17 includes main `5466b8a`. The review strengthened single-file discard and
 untracked deletion, added a bounded destructive confirmation, and corrected
-context-menu tooltip overlap. Final application source is
-`e9b631f432856b7049505b811a2ff6effb04704c`; later evidence-only commits do not
-change the exercised executable.
+context-menu tooltip overlap. Native build source is
+`e9b631f432856b7049505b811a2ff6effb04704c`; later evidence and test-fixture
+corrections do not change the exercised production behavior.
 
 ## Preservation and independent review
 
@@ -40,7 +40,7 @@ syscalls. Files over 64 MiB and incomplete inspection refuse the action.
 
 ## Automated checks
 
-On final source `e9b631f`, these passed:
+On native build source `e9b631f`, these passed:
 
 - `cargo test --locked --workspace`: **847 tests passed, zero failed, five
   existing ignores**. The renderer isolation subprocess repeats one passing test;
@@ -58,6 +58,17 @@ source/index descendants, replacement objects and preservation of unrelated
 staged/working content. GPUI checks cover inert initial Enter, deliberate focused
 keyboard confirmation, duplicate submission, cancellation/navigation, stale
 repository identity, long paths, enlarged text and tooltip dismissal.
+
+Hosted CI subsequently exposed two test-fixture issues: a cloned submodule did
+not inherit its source repository's local author identity, and rustix's
+`mkfifoat` test helper was unavailable on macOS. The clone now receives explicit
+local fixture identity with signing disabled; the FIFO fixture uses portable
+`mkfifo`. Production behavior is unchanged. The corrected 23 integration tests
+passed with system/global Git configuration disabled and `user.useConfigOnly`
+enabled. The full 847-test workspace suite, strict Clippy and formatting passed
+again with system/global Git configuration disabled. The machine-readable
+record includes the exact corrected test-source digests; final hosted outcomes
+remain on the PR.
 
 ## Native interaction
 

@@ -654,6 +654,15 @@ fn discard_refuses_stale_index_stale_head_conflicted_submodule_and_unborn_target
     ]);
     f.git(&["commit", "-q", "-m", "Add submodule"]);
     let checkout = f.root.join("module");
+    git_at(
+        &checkout,
+        &["config", "user.name", "Discard Submodule Fixture"],
+    );
+    git_at(
+        &checkout,
+        &["config", "user.email", "fixture@example.invalid"],
+    );
+    git_at(&checkout, &["config", "commit.gpgSign", "false"]);
     fs::write(checkout.join("tracked"), "inside\n").unwrap();
     git_at(&checkout, &["commit", "-q", "-am", "Inside"]);
     let entry = f.entry("module");
