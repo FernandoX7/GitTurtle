@@ -57,6 +57,15 @@ impl Fixture {
             .find(|entry| entry.path == Path::new(path))
             .unwrap_or_else(|| panic!("no status entry for {path}"))
     }
+    fn row(&self, path: &str, untracked: bool) -> StatusEntry {
+        self.repo()
+            .status()
+            .unwrap()
+            .entries
+            .into_iter()
+            .find(|entry| entry.path == Path::new(path) && entry.untracked == untracked)
+            .unwrap_or_else(|| panic!("no status row for {path} (untracked: {untracked})"))
+    }
     fn plan(&self, path: &str) -> DiscardPlan {
         self.repo().discard_plan(&self.entry(path)).unwrap()
     }
@@ -273,6 +282,111 @@ fn discard_refuses_stale_index_stale_head_conflicted_submodule_and_unborn_target
     u.repo().execute(&discard(plan)).unwrap();
     assert!(!u.root.join("loose").exists());
     assert_eq!(u.read("first"), b"first\n");
+}
+
+#[test]
+fn discard_refuses_directory_replacements_and_replaced_parent_paths() {
+    let f = Fixture::new();
+    let repo = f.repo();
+    // A tracked file that became a directory of untracked work with a nested
+    // repository deeper inside. Restore would delete the whole subtree.
+    fs::remove_file(f.root.join("tracked")).unwrap();
+    fs::create_dir(f.root.join("tracked")).unwrap();
+    f.write("tracked/new.txt", "new work\n");
+    let nested = f.root.join("tracked/sub");
+    fs::create_dir(&nested).unwrap();
+    git_at(&nested, &["init", "-q"]);
+    let row = f.row("tracked", false);
+    assert_eq!(row.unstaged, Some(ChangeStatus::Deleted));
+    let error = repo.discard_plan(&row).unwrap_err();
+    assert!(error.to_string().contains("now a directory"), "{error:#}");
+    assert_eq!(f.read("tracked/new.txt"), b"new work\n");
+    assert!(nested.join(".git").exists());
+    fs::remove_dir_all(f.root.join("tracked")).unwrap();
+    f.git(&["restore", "--", "tracked"]);
+
+    // A rename whose source path was recreated as a directory.
+    f.git(&["mv", "other", "renamed"]);
+    fs::create_dir(f.root.join("other")).unwrap();
+    f.write("other/keep.txt", "keep\n");
+    let row = f.row("renamed", false);
+    assert_eq!(row.original_path.as_deref(), Some(Path::new("other")));
+    let error = repo.discard_plan(&row).unwrap_err();
+    assert!(error.to_string().contains("now a directory"), "{error:#}");
+    assert_eq!(f.read("other/keep.txt"), b"keep\n");
+    fs::remove_dir_all(f.root.join("other")).unwrap();
+    f.git(&["mv", "renamed", "other"]);
+
+    // A parent path that became an untracked file or a symbolic link.
+    f.write("dir/inner", "inner\n");
+    f.git(&["add", "dir"]);
+    f.git(&["commit", "-q", "-m", "Nested file"]);
+    fs::remove_dir_all(f.root.join("dir")).unwrap();
+    f.write("dir", "a file where the folder was\n");
+    let row = f.row("dir/inner", false);
+    assert_eq!(row.unstaged, Some(ChangeStatus::Deleted));
+    let error = repo.discard_plan(&row).unwrap_err();
+    assert!(error.to_string().contains("parent path"), "{error:#}");
+    assert_eq!(f.read("dir"), b"a file where the folder was\n");
+    fs::remove_file(f.root.join("dir")).unwrap();
+    #[cfg(unix)]
+    {
+        let outside = f.root.parent().unwrap().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("precious"), "precious\n").unwrap();
+        std::os::unix::fs::symlink(&outside, f.root.join("dir")).unwrap();
+        let row = f.row("dir/inner", false);
+        let error = repo.discard_plan(&row).unwrap_err();
+        assert!(error.to_string().contains("parent path"), "{error:#}");
+        assert!(
+            fs::symlink_metadata(f.root.join("dir"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(fs::read(outside.join("precious")).unwrap(), b"precious\n");
+    }
+}
+
+#[test]
+fn discard_refuses_staged_deletion_under_an_untracked_file_and_deletes_that_row_instead() {
+    let f = Fixture::new();
+    let repo = f.repo();
+    f.git(&["rm", "-q", "--cached", "tracked"]);
+    f.write("tracked", "kept locally\n");
+    let staged = f.row("tracked", false);
+    assert_eq!(staged.staged, Some(ChangeStatus::Deleted));
+    let error = repo.discard_plan(&staged).unwrap_err();
+    assert!(error.to_string().contains("occupies"), "{error:#}");
+    assert_eq!(f.read("tracked"), b"kept locally\n");
+
+    // A rename whose source path an untracked file occupies again.
+    f.git(&["restore", "--staged", "--", "tracked"]);
+    f.git(&["mv", "other", "renamed"]);
+    f.write("other", "recreated\n");
+    let row = f.row("renamed", false);
+    let error = repo.discard_plan(&row).unwrap_err();
+    assert!(error.to_string().contains("occupies"), "{error:#}");
+    assert_eq!(f.read("other"), b"recreated\n");
+    fs::remove_file(f.root.join("other")).unwrap();
+    f.git(&["mv", "renamed", "other"]);
+
+    // The untracked row at the same path is its own reviewed target.
+    f.git(&["rm", "-q", "--cached", "tracked"]);
+    f.write("tracked", "kept locally\n");
+    let untracked = f.row("tracked", true);
+    let outcome = repo
+        .execute(&discard(repo.discard_plan(&untracked).unwrap()))
+        .unwrap();
+    assert!(outcome.message.contains("Deleted untracked file tracked"));
+    assert!(!f.root.join("tracked").exists());
+    let rows = repo.status().unwrap().entries;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].staged, Some(ChangeStatus::Deleted));
+    // With the path free again, discarding the staged deletion restores it.
+    repo.execute(&discard(f.plan("tracked"))).unwrap();
+    assert_eq!(f.read("tracked"), b"base\n");
+    assert!(repo.status().unwrap().entries.is_empty());
 }
 
 #[test]

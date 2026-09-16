@@ -53,7 +53,9 @@ impl GitRepository {
             .entries
             .iter()
             .find(|entry| {
-                entry.path == expected.path && entry.original_path == expected.original_path
+                entry.path == expected.path
+                    && entry.original_path == expected.original_path
+                    && entry.untracked == expected.untracked
             })
             .context("This file no longer appears in Changes. Refresh and review it again.")?;
         ensure!(
@@ -82,14 +84,33 @@ impl GitRepository {
         );
         let mut working = Vec::new();
         for path in entry.paths() {
+            ancestors_are_real_directories(&self.path, &path)?;
             let identity = working_identity(&self.path.join(&path))?;
+            let present = matches!(
+                identity,
+                WorkingIdentity::File { .. } | WorkingIdentity::Symlink { .. }
+            );
             if entry.untracked {
                 ensure!(
-                    matches!(
-                        identity,
-                        WorkingIdentity::File { .. } | WorkingIdentity::Symlink { .. }
-                    ),
+                    present,
                     "Untracked directories, including nested repositories, are not deleted here. Remove them outside GitTurtle."
+                );
+            } else {
+                // Git would replace a directory or special file at the path
+                // and delete everything under it, including untracked work.
+                ensure!(
+                    present || identity == WorkingIdentity::Absent,
+                    "The path {} is now a directory or a special file. Git would delete everything under it. Move or remove it with Git before discarding.",
+                    path.display()
+                );
+                // Git records the path as deleted or renamed away, so a file
+                // there is untracked content that restore would overwrite.
+                let git_expects_absent = entry.original_path.as_deref() == Some(path.as_path())
+                    || entry.worktree_mode == "000000";
+                ensure!(
+                    !(present && git_expects_absent),
+                    "An untracked file occupies {} while Git records it as deleted or renamed away. Discard would overwrite that file with the last commit. Delete its untracked row first, or unstage the change to keep the file.",
+                    path.display()
                 );
             }
             working.push(identity);
@@ -147,11 +168,12 @@ impl GitRepository {
         let status = self.status()?;
         ensure!(
             !status.entries.iter().any(|entry| {
-                paths.contains(&entry.path)
-                    || entry
-                        .original_path
-                        .as_ref()
-                        .is_some_and(|old| paths.contains(old))
+                entry.untracked == plan.entry.untracked
+                    && (paths.contains(&entry.path)
+                        || entry
+                            .original_path
+                            .as_ref()
+                            .is_some_and(|old| paths.contains(old)))
             }),
             "Git reported success, but the file still appears in Changes. Refresh and inspect it before another attempt."
         );
@@ -186,6 +208,27 @@ impl GitRepository {
             commit_oid: None,
         })
     }
+}
+
+/// Every existing parent of a reviewed path must be a real directory. Git
+/// replaces a file or symbolic link on a parent path without review.
+fn ancestors_are_real_directories(root: &Path, path: &Path) -> Result<()> {
+    let mut current = PathBuf::new();
+    let components: Vec<_> = path.components().collect();
+    for component in &components[..components.len().saturating_sub(1)] {
+        current.push(component);
+        match std::fs::symlink_metadata(root.join(&current)) {
+            Ok(metadata) if metadata.file_type().is_dir() => {}
+            Ok(_) => bail!(
+                "The parent path {} is now a file or a symbolic link. Git would replace it. Move or remove it before discarding {}.",
+                current.display(),
+                path.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(error).context("Unable to inspect a parent folder."),
+        }
+    }
+    Ok(())
 }
 
 fn working_identity(path: &Path) -> Result<WorkingIdentity> {
