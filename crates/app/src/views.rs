@@ -176,12 +176,12 @@ impl GitTurtle {
                             .unwrap_or_default(),
                     ))
                     .tooltip({
-                        let path = self
+                        let identity = self
                             .path
                             .as_ref()
-                            .map(|path| path.display().to_string())
+                            .map(|path| format!("{}\n{}", self.project_name(path), path.display()))
                             .unwrap_or_else(|| "GitTurtle".into());
-                        move |window, cx| Tooltip::new(path.clone()).build(window, cx)
+                        move |window, cx| Tooltip::new(identity.clone()).build(window, cx)
                     })
                     .flex_1()
                     .max_w(appearance::ui_size(200.))
@@ -542,16 +542,13 @@ impl GitTurtle {
             NavRow::Worktree(i) => {
                 let tree = &self.worktrees[*i];
                 (
-                    tree.path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into_owned(),
+                    self.project_name(&tree.path),
                     "worktree",
                     self.path.as_ref() == Some(&tree.path),
                     0,
                     format!(
-                        "{}\n{}{}{}{}",
+                        "{}\n{}\n{}{}{}{}",
+                        self.project_name(&tree.path),
                         tree.path.display(),
                         tree.branch.as_deref().unwrap_or("Detached HEAD"),
                         if tree.locked { " · locked" } else { "" },
@@ -610,7 +607,7 @@ impl GitTurtle {
                 15.,
                 if active { colors.accent } else { colors.muted },
             ))
-            .child(div().flex_1().truncate().child(name))
+            .child(div().flex_1().min_w_0().truncate().child(name))
             .on_click(
                 cx.listener(move |this, _, window, cx| this.activate_navigation(index, window, cx)),
             );

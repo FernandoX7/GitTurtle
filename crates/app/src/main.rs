@@ -1252,6 +1252,7 @@ impl GitTurtle {
                 .enumerate()
                 .filter(|(_, w)| {
                     w.path.to_string_lossy().to_lowercase().contains(&query)
+                        || self.project_name(&w.path).to_lowercase().contains(&query)
                         || w.branch
                             .as_ref()
                             .is_some_and(|b| b.to_lowercase().contains(&query))

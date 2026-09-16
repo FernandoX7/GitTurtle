@@ -334,6 +334,26 @@ impl Preferences {
         if settings.validate().is_err() {
             settings.default_branch = AppSettings::default().default_branch;
         }
+        // Unlike recents, names are user-authored data. Refuse a malformed or
+        // oversized section instead of silently dropping entries when an
+        // unrelated settings, recent-repository, or draft save rewrites it.
+        ensure!(
+            stored.project_names.len() <= MAX_PROJECT_NAMES,
+            "Too many saved project names"
+        );
+        let mut project_names = HashMap::new();
+        for stored in stored.project_names {
+            let path = stored.path.into_path();
+            ensure!(path.is_absolute(), "Saved project path must be absolute");
+            let name = stored.name.trim();
+            validate_project_name(name)
+                .map_err(anyhow::Error::msg)
+                .context("Invalid saved project name")?;
+            ensure!(
+                project_names.insert(path, name.to_owned()).is_none(),
+                "Duplicate saved project name path"
+            );
+        }
         Ok(Self {
             recent_repositories,
             settings,
@@ -345,17 +365,7 @@ impl Preferences {
                     (path.is_absolute() && !stored.draft.is_empty()).then_some((path, stored.draft))
                 })
                 .collect(),
-            project_names: stored
-                .project_names
-                .into_iter()
-                .filter_map(|stored| {
-                    let path = stored.path.into_path();
-                    let name = stored.name.trim().to_owned();
-                    (path.is_absolute() && validate_project_name(&name).is_ok())
-                        .then_some((path, name))
-                })
-                .take(MAX_PROJECT_NAMES)
-                .collect(),
+            project_names,
         })
     }
 
@@ -472,7 +482,10 @@ pub fn validate_project_name(name: &str) -> std::result::Result<(), String> {
             "Use a project name of at most {MAX_PROJECT_NAME_BYTES} bytes."
         ));
     }
-    if name.chars().any(char::is_control) {
+    if name
+        .chars()
+        .any(|character| character.is_control() || matches!(character, '\u{2028}' | '\u{2029}'))
+    {
         return Err("Use a project name on a single line, without control characters.".into());
     }
     Ok(())
@@ -892,6 +905,14 @@ mod tests {
         .unwrap();
         let mut stale = Preferences::default();
         stale.remember_at(&project, &path).unwrap();
+        let drafts = HashMap::from([(
+            project.clone(),
+            CommitDraft {
+                title: "Keep this draft while renaming".into(),
+                description: "Uncommitted work".into(),
+            },
+        )]);
+        Preferences::save_commit_drafts_at(&drafts, &path).unwrap();
         let restarted = Preferences::load_from(&path).unwrap();
         assert_eq!(
             restarted.project_names.get(&project).map(String::as_str),
@@ -902,6 +923,7 @@ mod tests {
             Some("Core")
         );
         assert_eq!(restarted.settings.density, Density::Compact);
+        assert_eq!(restarted.commit_drafts, drafts);
 
         // Clearing one name leaves the folder and every other name intact.
         Preferences::save_project_name_at(&project, None, &path).unwrap();
@@ -911,6 +933,7 @@ mod tests {
             cleared.project_names.get(&other).map(String::as_str),
             Some("Core")
         );
+        assert_eq!(cleared.commit_drafts, drafts);
         assert_eq!(directory_name(&project), "turtle-client");
         assert_eq!(fs::read_dir(&project).unwrap().count(), 0);
         assert_eq!(fs::read_dir(&other).unwrap().count(), 0);
@@ -921,11 +944,20 @@ mod tests {
         let fixture = TestDirectory::new();
         let path = fixture.0.join("preferences.json");
         let project = fixture.0.join("repository");
-        for name in ["", "   ", "two\nlines", "bell\u{7}", &"x".repeat(129)] {
+        for name in [
+            "",
+            "   ",
+            "two\nlines",
+            "two\u{2028}lines",
+            "two\u{2029}paragraphs",
+            "bell\u{7}",
+            &"x".repeat(129),
+            &"客".repeat(43),
+        ] {
             assert!(validate_project_name(name).is_err(), "{name:?}");
             assert!(Preferences::save_project_name_at(&project, Some(name), &path).is_err());
         }
-        for name in ["Client", "客户端", &"x".repeat(128)] {
+        for name in ["Client", "客户端", &"x".repeat(128), &"客".repeat(42)] {
             validate_project_name(name).unwrap();
         }
         assert!(
@@ -957,6 +989,48 @@ mod tests {
                 .map(String::as_str),
             Some("Renamed")
         );
+    }
+
+    #[test]
+    fn invalid_saved_project_names_are_preserved_by_every_preference_writer() {
+        let fixture = TestDirectory::new();
+        let path = fixture.0.join("preferences.json");
+        let project = fixture.0.join("repository");
+        fs::create_dir(&project).unwrap();
+        let draft = CommitDraft {
+            title: "Preserve this draft".into(),
+            description: "and the original names".into(),
+        };
+        let valid_entry = serde_json::json!({"path": project, "name": "Client"});
+        let excessive: Vec<_> = (0..=MAX_PROJECT_NAMES)
+            .map(|index| {
+                serde_json::json!({
+                    "path": fixture.0.join(format!("repository-{index}")),
+                    "name": format!("Project {index}"),
+                })
+            })
+            .collect();
+        for entries in [
+            vec![serde_json::json!({"path": project, "name": "two\u{2028}lines"})],
+            vec![serde_json::json!({"path": "relative/path", "name": "Client"})],
+            vec![valid_entry.clone(), valid_entry],
+            excessive,
+        ] {
+            let original = serde_json::to_vec(&serde_json::json!({
+                "version": 4,
+                "project_names": entries,
+                "commit_drafts": [{"worktree": project, "draft": draft}],
+            }))
+            .unwrap();
+            fs::write(&path, &original).unwrap();
+            assert!(Preferences::load_from(&path).is_err());
+            assert!(Preferences::save_settings_at(&AppSettings::default(), &path).is_err());
+            assert!(Preferences::default().remember_at(&project, &path).is_err());
+            assert!(Preferences::save_commit_drafts_at(&HashMap::new(), &path).is_err());
+            assert!(Preferences::save_project_name_at(&project, Some("Renamed"), &path).is_err());
+            assert!(Preferences::save_project_name_at(&project, None, &path).is_err());
+            assert_eq!(fs::read(&path).unwrap(), original);
+        }
     }
 
     #[test]
@@ -1156,12 +1230,17 @@ mod tests {
                     description: String::new(),
                 },
             )]),
+            project_names: HashMap::from([(repository.clone(), "Byte-safe project".into())]),
             ..Default::default()
         }
         .save_to(&settings)
         .unwrap();
         let loaded = Preferences::load_from(&settings).unwrap();
-        assert_eq!(loaded.recent_repositories, vec![repository]);
+        assert_eq!(loaded.recent_repositories, vec![repository.clone()]);
+        assert_eq!(
+            loaded.project_names.get(&repository).map(String::as_str),
+            Some("Byte-safe project")
+        );
         assert_eq!(
             loaded.commit_drafts.values().next().unwrap().title,
             "Byte-safe worktree"

@@ -5,7 +5,7 @@ use crate::{
 use gpui_kit::component::{
     Disableable, Icon, Selectable, Sizable, Theme, WindowExt,
     button::{Button, ButtonVariants},
-    dialog::DialogButtonProps,
+    dialog::{Cancel, Confirm, DialogFooter},
     input::{Input, InputEvent, InputState},
     tooltip::Tooltip,
 };
@@ -1264,35 +1264,67 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
+            return;
+        }
         let current = self.project_names.get(&path).cloned();
-        let form = self
-            .rename_project
-            .as_ref()
-            .filter(|form| form.read(cx).path == path)
-            .cloned()
-            .unwrap_or_else(|| {
-                let owner = cx.entity().downgrade();
-                cx.new(|cx| RenameProjectForm::new(owner, path, current, window, cx))
-            });
+        // Each opening starts with the saved value, including after Cancel.
+        let owner = cx.entity().downgrade();
+        let form = cx.new(|cx| RenameProjectForm::new(owner, path, current, window, cx));
+        let focus_form = form.downgrade();
         self.rename_project = Some(form.clone());
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        window.open_alert_dialog(cx, move |dialog, _, cx| {
             let submit = form.clone();
-            let restore = form.clone();
+            let cancel = form.clone();
+            let closed = form.clone();
+            let pending = form.read(cx).pending;
             dialog
                 .title("Rename project")
                 .width(px(520.))
                 .child(form.clone())
-                .button_props(
-                    DialogButtonProps::default()
-                        .ok_text("Save name")
-                        .cancel_text("Cancel")
-                        .show_cancel(true),
+                .keyboard(!pending)
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            crate::button("cancel-rename-project", "Cancel", "", false)
+                                .disabled(pending)
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(Cancel), cx)
+                                }),
+                        )
+                        .child(
+                            crate::button(
+                                "save-project-name",
+                                if pending { "Saving…" } else { "Save name" },
+                                "",
+                                false,
+                            )
+                            .primary()
+                            .disabled(pending)
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(Confirm { secondary: false }), cx)
+                            }),
+                        ),
                 )
-                .on_ok(move |_, window, cx| submit.update(cx, |form, cx| form.submit(window, cx)))
-                .on_cancel(move |_, _, cx| {
-                    restore.update(cx, |form, _| form.error = None);
-                    true
+                .on_ok(move |_, window, cx| {
+                    submit.update(cx, |form, cx| form.submit(window, cx));
+                    false
                 })
+                .on_cancel(move |_, _, cx| !cancel.read(cx).pending)
+                .on_close(move |_, _, cx| {
+                    closed.update(cx, |form, _| form.visible = false);
+                })
+        });
+        window.refresh();
+        window.on_next_frame(move |window, cx| {
+            let _ = focus_form.update(cx, |form, cx| {
+                if form.visible {
+                    form.input.update(cx, |input, cx| {
+                        input.focus(window, cx);
+                        input.select_all(window, cx);
+                    });
+                }
+            });
         });
     }
 
@@ -1302,6 +1334,7 @@ impl GitTurtle {
         &mut self,
         path: PathBuf,
         name: Option<String>,
+        form: WeakEntity<RenameProjectForm>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1314,21 +1347,48 @@ impl GitTurtle {
                     "The settings writer stopped before reporting a result"
                 ))
             });
-            let _ = this.update_in(cx, |this, _, cx| {
-                match result {
-                    Ok(preferences) => {
-                        this.project_names = preferences.project_names;
-                        let names = this.project_names.clone();
-                        this.hub.update(cx, |hub, cx| hub.set_names(names, cx));
-                    }
-                    Err(error) => {
-                        this.operation_error = Some(format!("Could not rename project: {error:#}"))
-                    }
-                }
-                cx.notify();
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.finish_project_rename(form, result, window, cx);
             });
         })
         .detach();
+    }
+
+    fn finish_project_rename(
+        &mut self,
+        form: WeakEntity<RenameProjectForm>,
+        result: anyhow::Result<Preferences>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let visible = self.rename_project.as_ref().is_some_and(|current| {
+            current.entity_id() == form.entity_id() && current.read(cx).visible
+        });
+        match result {
+            Ok(preferences) => {
+                self.project_names = preferences.project_names;
+                let names = self.project_names.clone();
+                self.hub.update(cx, |hub, cx| hub.set_names(names, cx));
+                self.rebuild_navigation(cx);
+                let _ = form.update(cx, |form, cx| {
+                    form.pending = false;
+                    form.visible = false;
+                    cx.notify();
+                });
+                if visible {
+                    window.close_dialog(cx);
+                    self.rename_project = None;
+                }
+            }
+            Err(error) => {
+                let _ = form.update(cx, |form, cx| {
+                    form.pending = false;
+                    form.error = Some(format!("Could not save the project name: {error:#}"));
+                    cx.notify();
+                });
+            }
+        }
+        cx.notify();
     }
 }
 
@@ -1341,6 +1401,8 @@ pub struct RenameProjectForm {
     named: bool,
     input: Entity<InputState>,
     error: Option<String>,
+    pending: bool,
+    visible: bool,
     _subscription: Subscription,
 }
 
@@ -1357,7 +1419,7 @@ impl RenameProjectForm {
         let input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(folder.clone())
-                .default_value(current.unwrap_or_default())
+                .default_value(current.unwrap_or_else(|| folder.clone()))
         });
         let subscription =
             cx.subscribe_in(&input, window, |this, _, event, window, cx| match event {
@@ -1365,7 +1427,7 @@ impl RenameProjectForm {
                     this.error = None;
                     cx.notify();
                 }
-                InputEvent::PressEnter { .. } if this.submit(window, cx) => window.close_dialog(cx),
+                InputEvent::PressEnter { .. } => this.submit(window, cx),
                 _ => {}
             });
         Self {
@@ -1375,26 +1437,40 @@ impl RenameProjectForm {
             named,
             input,
             error: None,
+            pending: false,
+            visible: true,
             _subscription: subscription,
         }
     }
 
-    /// Returns whether the dialog may close. An empty field restores the
-    /// folder name rather than saving a blank one.
-    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    /// Keep the reviewed target and text until persistence reports success.
+    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending || !self.visible {
+            return;
+        }
         let name = match chosen_name(self.input.read(cx).value().as_ref(), &self.folder) {
             Ok(name) => name,
             Err(error) => {
                 self.error = Some(error);
                 cx.notify();
-                return false;
+                return;
             }
         };
         let path = self.path.clone();
-        let _ = self
+        let form = cx.entity().downgrade();
+        self.pending = true;
+        self.error = None;
+        if self
             .owner
-            .update(cx, |owner, cx| owner.rename_project(path, name, window, cx));
-        true
+            .update(cx, |owner, cx| {
+                owner.rename_project(path, name, form, window, cx)
+            })
+            .is_err()
+        {
+            self.pending = false;
+            self.error = Some("The project window is no longer available.".into());
+        }
+        cx.notify();
     }
 }
 
@@ -1422,7 +1498,16 @@ impl Render for RenameProjectForm {
                 .text_size(crate::appearance::ui_text(11.))
                 .text_color(colors.muted_foreground),
             )
-            .child(Input::new(&self.input).aria_label("Project name"))
+            .child(
+                hub_text("rename-project-label", "Project name")
+                    .text_size(crate::appearance::ui_text(12.))
+                    .font_weight(FontWeight::MEDIUM),
+            )
+            .child(
+                Input::new(&self.input)
+                    .aria_label("Project name")
+                    .disabled(self.pending),
+            )
             .child(
                 hub_text(
                     "rename-project-hint",
@@ -1797,3 +1882,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod rename_tests;
