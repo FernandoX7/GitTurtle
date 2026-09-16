@@ -469,3 +469,66 @@ async fn discard_review_keeps_long_paths_and_actions_reachable_without_implicit_
     }
     cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
 }
+
+#[gpui::test]
+async fn working_path_tooltip_wraps_and_yields_to_the_discard_menu(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    let relative = PathBuf::from(format!(
+        "{}/{}.txt",
+        "nested-directory-".repeat(10),
+        "x".repeat(251)
+    ));
+    let absolute = fixture.root().join(&relative);
+    std::fs::create_dir_all(absolute.parent().unwrap()).unwrap();
+    std::fs::write(&absolute, "keep scratch\n").unwrap();
+    let status = fixture.repo.status().unwrap();
+    let index = status
+        .entries
+        .iter()
+        .position(|entry| entry.path == relative)
+        .unwrap();
+    let (app, cx) = app_window(cx, fixture.repo.clone());
+    cx.simulate_resize(size(px(1000.), px(680.)));
+    app.update(cx, |app, cx| {
+        app.mode = WorkspaceMode::Working;
+        app.work_status = Some(Arc::new(status));
+        app.working_rows = vec![workspace::WorkingRow::File(
+            index,
+            gitturtle_core::ChangeArea::Unstaged,
+        )];
+        cx.notify();
+    });
+    draw(cx);
+    let path = cx.debug_bounds("working-path-0").expect("working row");
+    cx.simulate_mouse_move(path.center(), None, Modifiers::default());
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    cx.executor().run_until_parked();
+    draw(cx);
+    let tooltip = cx
+        .debug_bounds("working-path-tooltip")
+        .expect("path tooltip");
+    assert!(tooltip.size.width <= px(420.), "{tooltip:?}");
+    assert!(
+        tooltip.size.height > px(24.) && tooltip.size.height <= px(340.),
+        "{tooltip:?}"
+    );
+    cx.simulate_mouse_down(path.center(), MouseButton::Right, Modifiers::default());
+    cx.simulate_mouse_up(path.center(), MouseButton::Right, Modifiers::default());
+    draw(cx);
+    draw(cx);
+    cx.update(|window, _| {
+        assert!(
+            window
+                .context_stack()
+                .iter()
+                .any(|context| context.contains("PopupMenu"))
+        )
+    });
+    assert!(
+        cx.debug_bounds("working-path-tooltip").is_none(),
+        "the full path must not obscure menu actions"
+    );
+    cx.simulate_keystrokes("escape");
+    assert_eq!(std::fs::read(&absolute).unwrap(), b"keep scratch\n");
+}
