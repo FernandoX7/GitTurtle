@@ -380,7 +380,7 @@ fn worktree_removal_cleans_registration_private_metadata_and_folder_preserving_o
 }
 
 #[test]
-fn worktree_removal_refuses_hidden_changes_and_preserves_index_flags() {
+fn worktree_removal_and_force_refuse_hidden_changes_and_preserve_index_flags() {
     for flag in ["--assume-unchanged", "--skip-worktree"] {
         let f = Fixture::new();
         let repo = f.repo();
@@ -402,11 +402,23 @@ fn worktree_removal_refuses_hidden_changes_and_preserves_index_flags() {
                 .unwrap()
                 .contains("assume-unchanged or skip-worktree")
         );
-        assert!(repo.execute(&remove(reviewed)).is_err());
-        assert!(repo.execute(&remove(blocked)).is_err());
+        assert!(
+            blocked
+                .force_removal_blocked
+                .as_deref()
+                .unwrap()
+                .contains("assume-unchanged or skip-worktree")
+        );
+        assert!(repo.execute(&remove(reviewed.clone())).is_err());
+        assert!(repo.execute(&force(reviewed)).is_err());
+        assert!(repo.execute(&remove(blocked.clone())).is_err());
+        assert!(repo.execute(&force(blocked.clone())).is_err());
+        // Further hidden edits cannot become deletable through an old dialog.
+        fs::write(destination.join("tracked"), "newer hidden valuable work\n").unwrap();
+        assert!(repo.execute(&force(blocked)).is_err());
         assert_eq!(
             fs::read(destination.join("tracked")).unwrap(),
-            b"hidden valuable work\n"
+            b"newer hidden valuable work\n"
         );
         assert_eq!(fs::read(index).unwrap(), index_before);
         assert_eq!(repo.worktrees().unwrap().len(), 2);
@@ -749,9 +761,15 @@ fn worktree_removal_refuses_current_linked_tree_and_preserves_initialized_submod
     );
     assert!(linked.execute(&remove(current)).is_err());
     let reviewed = f.removal_plan(&destination);
-    assert!(reviewed.removal_blocked.is_none());
-    // Single --force would delete the submodule repository under the private
-    // Git directory, so GitTurtle refuses force removal before Git runs.
+    assert!(
+        reviewed
+            .removal_blocked
+            .as_deref()
+            .unwrap()
+            .contains("initialized submodule")
+    );
+    // Both commands protect the submodule and its private repository before
+    // dispatch rather than relying on Git's final refusal.
     assert!(
         reviewed
             .force_removal_blocked
@@ -763,8 +781,7 @@ fn worktree_removal_refuses_current_linked_tree_and_preserves_initialized_submod
     let private = linked.git_directories().unwrap().0;
     let refs = f.git(&["show-ref"]);
     let error = repo.execute(&remove(reviewed)).unwrap_err();
-    assert!(error.to_string().contains("did not report success"));
-    assert!(format!("{error:#}").contains("submodules"));
+    assert!(error.to_string().contains("initialized submodule"));
     assert!(private.join("index").is_file());
     assert_eq!(
         fs::read(destination.join("module/tracked")).unwrap(),
@@ -772,6 +789,75 @@ fn worktree_removal_refuses_current_linked_tree_and_preserves_initialized_submod
     );
     assert_eq!(repo.worktrees().unwrap().len(), 2);
     assert_eq!(f.git(&["show-ref"]), refs);
+}
+
+#[test]
+fn worktree_removal_preserves_retained_private_submodule_repositories() {
+    let f = Fixture::new();
+    let repo = f.repo();
+    let destination = f.create("retained-submodule");
+    let stale = f.removal_plan(&destination);
+    assert!(stale.removal_blocked.is_none());
+    let private = GitRepository::open(&destination)
+        .unwrap()
+        .git_directories()
+        .unwrap()
+        .0;
+    let module = private.join("modules/local");
+    fs::create_dir_all(module.parent().unwrap()).unwrap();
+    f.git(&[
+        "clone",
+        "--bare",
+        f.root.to_str().unwrap(),
+        module.to_str().unwrap(),
+    ]);
+    git_at(&module, &["config", "user.name", "Retained Module Fixture"]);
+    git_at(&module, &["config", "user.email", "module@example.invalid"]);
+    git_at(&module, &["config", "commit.gpgSign", "false"]);
+    let tree = git_at(&module, &["rev-parse", "HEAD^{tree}"]);
+    let unique = git_at(
+        &module,
+        &["commit-tree", &tree, "-m", "Private module commit"],
+    );
+    git_at(&module, &["update-ref", "refs/heads/private-only", &unique]);
+    assert!(
+        !Command::new("git")
+            .arg("-C")
+            .arg(&f.root)
+            .args(["cat-file", "-e", &unique])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let index = fs::read(private.join("index")).unwrap();
+    let module_refs = git_at(&module, &["show-ref"]);
+    let shared_refs = f.git(&["show-ref"]);
+    assert!(repo.execute(&remove(stale.clone())).is_err());
+    assert!(repo.execute(&force(stale)).is_err());
+
+    let reviewed = f.removal_plan(&destination);
+    assert_eq!(reviewed.changed_files, 0);
+    assert_eq!(reviewed.ignored_files, 0);
+    assert_eq!(reviewed.removal_blocked, reviewed.force_removal_blocked);
+    assert!(
+        reviewed
+            .removal_blocked
+            .as_deref()
+            .unwrap()
+            .contains("retains submodule repositories")
+    );
+    for command in [remove(reviewed.clone()), force(reviewed)] {
+        let error = repo.execute(&command).unwrap_err().to_string();
+        assert!(error.contains("retains submodule repositories"));
+        assert!(!error.contains("did not report success"));
+        assert_eq!(git_at(&module, &["cat-file", "-t", &unique]), "commit");
+        assert_eq!(git_at(&module, &["show-ref"]), module_refs);
+        assert_eq!(f.git(&["show-ref"]), shared_refs);
+        assert_eq!(fs::read(private.join("index")).unwrap(), index);
+        assert_eq!(fs::read(destination.join("tracked")).unwrap(), b"base\n");
+        assert_eq!(repo.worktrees().unwrap().len(), 2);
+    }
 }
 
 #[test]
@@ -864,6 +950,305 @@ fn force_removal_deletes_dirty_content_and_operation_state_after_fresh_review() 
         b"kept sibling file\n"
     );
     assert_eq!(f.git(&["show", ":tracked"]), "base");
+}
+
+#[test]
+fn force_removal_revalidates_ignored_contents_and_replacements() {
+    for replace in [false, true] {
+        let f = Fixture::new();
+        let repo = f.repo();
+        fs::write(f.root.join(".git/info/exclude"), "ignored\n").unwrap();
+        let destination = f.create("ignored-changes");
+        let ignored = destination.join("ignored");
+        fs::write(&ignored, "reviewed ignored content\n").unwrap();
+        let private = GitRepository::open(&destination)
+            .unwrap()
+            .git_directories()
+            .unwrap()
+            .0;
+        let index = fs::read(private.join("index")).unwrap();
+        let refs = f.git(&["show-ref"]);
+        let reviewed = f.removal_plan(&destination);
+        assert!(reviewed.force_removal_blocked.is_none());
+        assert_eq!(reviewed.ignored_paths, vec![PathBuf::from("ignored")]);
+        if replace {
+            fs::rename(&ignored, f.destination("old-ignored-file")).unwrap();
+        }
+        fs::write(&ignored, "new valuable ignored content after review\n").unwrap();
+        assert!(repo.execute(&force(reviewed)).is_err());
+        assert_eq!(
+            fs::read(&ignored).unwrap(),
+            b"new valuable ignored content after review\n"
+        );
+        assert_eq!(fs::read(private.join("index")).unwrap(), index);
+        assert_eq!(f.git(&["show-ref"]), refs);
+        assert_eq!(repo.worktrees().unwrap().len(), 2);
+        // Once those exact bytes have been reviewed, force removal still works.
+        repo.execute(&force(f.removal_plan(&destination))).unwrap();
+        assert!(!destination.exists());
+        assert!(!private.exists());
+        assert_eq!(f.git(&["show-ref"]), refs);
+        if replace {
+            assert_eq!(
+                fs::read(f.destination("old-ignored-file")).unwrap(),
+                b"reviewed ignored content\n"
+            );
+        }
+    }
+}
+
+#[test]
+fn force_removal_revalidates_equal_size_contents_with_restored_timestamps() {
+    for path in ["tracked", "untracked", "ignored"] {
+        let f = Fixture::new();
+        let repo = f.repo();
+        fs::write(f.root.join(".git/info/exclude"), "ignored\n").unwrap();
+        let destination = f.create("same-stat");
+        let changed = destination.join(path);
+        fs::write(&changed, "reviewed bytes\n").unwrap();
+        let reviewed = f.removal_plan(&destination);
+        assert!(reviewed.force_removal_blocked.is_none());
+        let original = fs::metadata(&changed).unwrap();
+        fs::write(&changed, "replaced bytes\n").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&changed)
+            .unwrap()
+            .set_times(
+                fs::FileTimes::new()
+                    .set_accessed(original.accessed().unwrap())
+                    .set_modified(original.modified().unwrap()),
+            )
+            .unwrap();
+        let replacement = fs::metadata(&changed).unwrap();
+        assert_eq!(original.len(), replacement.len());
+        assert_eq!(
+            original.modified().unwrap(),
+            replacement.modified().unwrap()
+        );
+        assert!(repo.execute(&force(reviewed)).is_err(), "{path}");
+        assert_eq!(fs::read(&changed).unwrap(), b"replaced bytes\n");
+        assert_eq!(repo.worktrees().unwrap().len(), 2);
+        assert_eq!(git_at(&destination, &["show", ":tracked"]), "base");
+    }
+}
+
+#[test]
+fn force_removal_preserves_nested_repository_inside_tracked_directory() {
+    let f = Fixture::new();
+    fs::create_dir(f.root.join("owned")).unwrap();
+    fs::write(f.root.join("owned/existing"), "tracked outer file\n").unwrap();
+    f.git(&["add", "owned/existing"]);
+    f.git(&[
+        "commit",
+        "-m",
+        "Track directory before adding nested repository",
+    ]);
+    let repo = f.repo();
+    let destination = f.create("tracked-directory");
+    fs::write(destination.join("tracked"), "valuable outer edit\n").unwrap();
+    let before_nested = f.removal_plan(&destination);
+    let nested = destination.join("owned");
+    git_at(&nested, &["init", "-q"]);
+    git_at(&nested, &["config", "user.name", "Nested Fixture"]);
+    git_at(&nested, &["config", "user.email", "nested@example.invalid"]);
+    git_at(&nested, &["config", "commit.gpgSign", "false"]);
+    git_at(&nested, &["add", "existing"]);
+    git_at(&nested, &["commit", "-qm", "Unique nested commit"]);
+    let unique_commit = git_at(&nested, &["rev-parse", "HEAD"]);
+    assert!(
+        !Command::new("git")
+            .arg("-C")
+            .arg(&f.root)
+            .args(["cat-file", "-e", &unique_commit])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let nested_index = fs::read(nested.join(".git/index")).unwrap();
+    let reviewed = f.removal_plan(&destination);
+    assert!(
+        reviewed
+            .force_removal_blocked
+            .as_deref()
+            .unwrap()
+            .contains("nested Git repository")
+    );
+    assert!(repo.execute(&force(before_nested)).is_err());
+    assert!(repo.execute(&force(reviewed)).is_err());
+    assert_eq!(git_at(&nested, &["rev-parse", "HEAD"]), unique_commit);
+    assert_eq!(
+        git_at(&nested, &["cat-file", "-t", &unique_commit]),
+        "commit"
+    );
+    assert_eq!(fs::read(nested.join(".git/index")).unwrap(), nested_index);
+    assert_eq!(
+        fs::read(nested.join("existing")).unwrap(),
+        b"tracked outer file\n"
+    );
+    assert_eq!(
+        fs::read(destination.join("tracked")).unwrap(),
+        b"valuable outer edit\n"
+    );
+    assert_eq!(repo.worktrees().unwrap().len(), 2);
+}
+
+#[test]
+fn force_removal_preserves_ignored_and_untracked_bare_nested_repositories() {
+    for ignored in [false, true] {
+        let f = Fixture::new();
+        let repo = f.repo();
+        let destination = f.create("bare-nested");
+        let before_nested = f.removal_plan(&destination);
+        if ignored {
+            fs::write(f.root.join(".git/info/exclude"), "nested.git/\n").unwrap();
+        }
+        let nested = destination.join("nested.git");
+        git_at(
+            &destination,
+            &["init", "--bare", "-q", nested.to_str().unwrap()],
+        );
+        git_at(&nested, &["config", "user.name", "Nested Fixture"]);
+        git_at(&nested, &["config", "user.email", "nested@example.invalid"]);
+        git_at(&nested, &["config", "commit.gpgSign", "false"]);
+        let tree = git_at(&nested, &["mktree"]);
+        let unique_commit = git_at(
+            &nested,
+            &[
+                "commit-tree",
+                &tree,
+                "-m",
+                "Unique commit in nested bare repository",
+            ],
+        );
+        git_at(
+            &nested,
+            &["update-ref", "refs/heads/valuable", &unique_commit],
+        );
+        assert!(
+            !Command::new("git")
+                .arg("-C")
+                .arg(&f.root)
+                .args(["cat-file", "-e", &unique_commit])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        let reviewed = f.removal_plan(&destination);
+        assert!(
+            reviewed
+                .force_removal_blocked
+                .as_deref()
+                .unwrap()
+                .contains("nested Git repository"),
+            "ignored={ignored}"
+        );
+        assert!(repo.execute(&force(before_nested)).is_err());
+        assert!(repo.execute(&force(reviewed)).is_err());
+        assert_eq!(
+            git_at(&nested, &["rev-parse", "refs/heads/valuable"]),
+            unique_commit
+        );
+        assert_eq!(
+            git_at(&nested, &["cat-file", "-t", &unique_commit]),
+            "commit"
+        );
+        assert_eq!(fs::read(destination.join("tracked")).unwrap(), b"base\n");
+        assert_eq!(repo.worktrees().unwrap().len(), 2);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn force_removal_does_not_follow_directory_file_or_loop_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let f = Fixture::new();
+    let repo = f.repo();
+    let external = Fixture::new();
+    let external_refs = external.git(&["show-ref"]);
+    let external_index = fs::read(external.root.join(".git/index")).unwrap();
+    let destination = f.create("symlinks");
+    symlink(&external.root, destination.join("external-repository")).unwrap();
+    symlink(
+        external.root.join("tracked"),
+        destination.join("external-file"),
+    )
+    .unwrap();
+    symlink(&destination, destination.join("loop")).unwrap();
+    symlink(
+        f.destination("missing-target"),
+        destination.join("dangling"),
+    )
+    .unwrap();
+    let reviewed = f.removal_plan(&destination);
+    assert!(reviewed.force_removal_blocked.is_none());
+    // Changes outside the worktree are not part of this deletion and must
+    // neither stale its review nor be followed while inspecting or removing it.
+    fs::write(external.root.join("tracked"), "new external content\n").unwrap();
+    repo.execute(&force(reviewed)).unwrap();
+    assert!(!destination.exists());
+    assert_eq!(
+        fs::read(external.root.join("tracked")).unwrap(),
+        b"new external content\n"
+    );
+    assert_eq!(external.git(&["show-ref"]), external_refs);
+    assert_eq!(
+        fs::read(external.root.join(".git/index")).unwrap(),
+        external_index
+    );
+    assert_eq!(repo.worktrees().unwrap().len(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn force_removal_refuses_special_files_without_opening_them() {
+    use std::os::unix::{fs::FileTypeExt, net::UnixListener};
+
+    let f = Fixture::new();
+    let repo = f.repo();
+    let destination = f.create("special-file");
+    let before_socket = f.removal_plan(&destination);
+    let socket = destination.join("service.sock");
+    let _listener = UnixListener::bind(&socket).unwrap();
+    let reviewed = f.removal_plan(&destination);
+    assert!(reviewed.force_removal_blocked.is_some());
+    assert!(repo.execute(&force(before_socket)).is_err());
+    assert!(repo.execute(&force(reviewed)).is_err());
+    assert!(
+        fs::symlink_metadata(&socket)
+            .unwrap()
+            .file_type()
+            .is_socket()
+    );
+    assert_eq!(fs::read(destination.join("tracked")).unwrap(), b"base\n");
+    assert_eq!(repo.worktrees().unwrap().len(), 2);
+}
+
+#[test]
+fn force_removal_refuses_content_beyond_inspection_limit() {
+    let f = Fixture::new();
+    let repo = f.repo();
+    fs::write(f.root.join(".git/info/exclude"), "large-ignored\n").unwrap();
+    let destination = f.create("inspection-limit");
+    let before_large_file = f.removal_plan(&destination);
+    let large_file = destination.join("large-ignored");
+    // A sparse file crosses the per-file review budget without allocating its
+    // contents or making this regression expensive to run.
+    let size = 64 * 1024 * 1024 + 1;
+    fs::File::create(&large_file)
+        .unwrap()
+        .set_len(size)
+        .unwrap();
+    let reviewed = f.removal_plan(&destination);
+    assert!(reviewed.force_removal_blocked.is_some());
+    assert!(repo.execute(&force(before_large_file)).is_err());
+    assert!(repo.execute(&force(reviewed)).is_err());
+    assert_eq!(fs::metadata(&large_file).unwrap().len(), size);
+    assert_eq!(fs::read(destination.join("tracked")).unwrap(), b"base\n");
+    assert_eq!(repo.worktrees().unwrap().len(), 2);
 }
 
 #[test]
