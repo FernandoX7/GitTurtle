@@ -1,0 +1,43 @@
+{
+  "application": "GitTurtle",
+  "version": "0.1.0",
+  "source_revision": "c3e4a0f1a75af0f6c6b9dd177a2bbd31c87d9b61",
+  "source_tree": "clean",
+  "target": "x86_64-unknown-linux-gnu",
+  "profile": "debug",
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+  "build_unix_seconds": "1789563921",
+  "binary_sha256": "8175a35842215ff88ef48bd069bee688d98dab7af1c45f81d4b952a40d3155ee",
+  "base_main": "7c9dc6ca451104d653d6fedb28d0b3f9dfdb8172",
+  "workspace_tests": {
+    "passed": 803,
+    "failed": 0,
+    "ignored": 5,
+    "successful_subprocess_repeats": 1
+  },
+  "strict_workspace_clippy": "passed",
+  "formatting": "passed",
+  "native_display": "Xvfb X11 at scale 1, lavapipe software Vulkan",
+  "os": "Pop!_OS 24.04 x86_64",
+  "native_preservation": {
+    "source_revision": "c3e4a0f1a75af0f6c6b9dd177a2bbd31c87d9b61",
+    "target_directory_removed": true,
+    "target_admin_removed": true,
+    "target_unregistered": true,
+    "all_refs_retained": true,
+    "source_head_retained": true,
+    "source_index_bytes_retained": true,
+    "source_working_bytes_retained": true,
+    "stale_target_all_bytes_retained": true,
+    "nested_unique_commit_retained": true
+  },
+  "screenshots_sha256": {
+    "dark-confirmation.png": "8ca09fe7f0aecee8e5145db5a37467423b58c30c0623b8bc25b8f85f414ce004",
+    "dark-scrolled.png": "df2414fbb1e9d637ed7bf2f76e08aa8ddfa1f6cb60fb6529f082b130b2d6a1da",
+    "light-confirmation.png": "91fec5dc564c9e07cb9dc0818f4b0e51d320d32580a48cc712c886fc6ecc1c09",
+    "light-scrolled.png": "3345d5ad65a6e364625936bf16f707aebce20202f2edfa422540edf9092950da",
+    "nested-refusal.png": "c517fda5260dac4b7b5a8a83a7a357981a959ef3f6116bc5fd998cca15a340c8",
+    "removal-success.png": "74c8f55099980322afad08f74fcd235f5b87b08d14fb08d00a278068ab15b38e",
+    "stale-refusal.png": "9f9270e72e3fc2b5cb1ff5a69e9d1187f9c76d2f54c881425b8a0fcc29b7438f"
+  }
+}
