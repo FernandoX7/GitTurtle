@@ -5,6 +5,7 @@
 //! Clones share a persistent `cat-file` process; its lock only protects the wire
 //! protocol. Repository operations themselves do not take that lock.
 
+// NEVER MERGE: C1 ordinary product PR warm-cache measurement probe.
 mod blame;
 mod conflict_blocks;
 mod history;
