@@ -61,9 +61,12 @@ repository identity, long paths, enlarged text and tooltip dismissal.
 
 Hosted CI subsequently exposed two test-fixture issues: a cloned submodule did
 not inherit its source repository's local author identity, and rustix's
-`mkfifoat` test helper was unavailable on macOS. The clone now receives explicit
-local fixture identity with signing disabled; the FIFO fixture uses portable
-`mkfifo`. Production behavior is unchanged. The corrected 23 integration tests
+`mkfifoat` test helper was unavailable on macOS. A later macOS run rejected
+creation of the deliberately invalid UTF-8 working filename. The clone now
+receives explicit local fixture identity with signing disabled; the FIFO fixture
+uses portable `mkfifo`. Filename coverage uses Unicode, newlines and literal
+pathspec characters on Unix, with additional invalid-byte filesystem coverage
+on Linux, matching existing fixtures. Production behavior is unchanged. The corrected 23 integration tests
 passed with system/global Git configuration disabled and `user.useConfigOnly`
 enabled. The full 847-test workspace suite, strict Clippy and formatting passed
 again with system/global Git configuration disabled. The machine-readable

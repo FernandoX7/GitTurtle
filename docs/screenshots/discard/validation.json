@@ -106,7 +106,8 @@
     "production_behavior_changed": false,
     "fixes": [
       "Use portable mkfifo in the special-file test fixture",
-      "Configure cloned-submodule fixture identity and disable signing locally"
+      "Configure cloned-submodule fixture identity and disable signing locally",
+      "Exercise Unicode/newline/literal working filenames on Unix; retain invalid-byte filesystem coverage on Linux because macOS rejects creation"
     ],
     "local_checks": "23 discard integrations with isolated config and user.useConfigOnly=true; full workspace tests, strict all-target Clippy and formatting with system/global Git config disabled passed",
     "workspace_tests": {
@@ -116,7 +117,7 @@
     },
     "source_sha256": {
       "crates/git-core/src/work/discard.rs": "d7ebbfbafd22cca3aafa995f6d73364e03fe6b2023c4b71f60526d24f7fd8024",
-      "crates/git-core/tests/discard.rs": "45afdec7fd00b72d97aadea058a23a2e59fe3ffa3ebaf717039d297a17fda3f3"
+      "crates/git-core/tests/discard.rs": "9cb3d441100f3dd4d5454a9708658a3d04701ee7c6ae655b3f021516218d7955"
     }
   }
 }

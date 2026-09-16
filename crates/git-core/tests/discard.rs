@@ -576,25 +576,35 @@ fn discard_reviews_raw_bytes_without_filters_and_preserves_restore_filters() {
 
 #[cfg(unix)]
 #[test]
-fn discard_preserves_non_utf8_filename_bytes() {
-    use std::os::unix::ffi::OsStringExt;
-
+fn discard_preserves_literal_filename_bytes() {
     let f = Fixture::new();
     let repo = f.repo();
-    let path = PathBuf::from(std::ffi::OsString::from_vec(b"odd\xff\n[ab]*".to_vec()));
-    f.write(&path, "reviewed bytes\n");
+    let paths: Vec<PathBuf> = vec!["odd-海\n[ab]*".into()];
+    // macOS filesystems reject invalid UTF-8 working filenames. Keep Unicode,
+    // newline and literal pathspec coverage on every Unix platform, and test
+    // arbitrary filename bytes on Linux, as the other working-file fixtures do.
+    #[cfg(target_os = "linux")]
+    let paths = {
+        use std::os::unix::ffi::OsStringExt;
+        let mut paths = paths;
+        paths.push(std::ffi::OsString::from_vec(b"odd\xff\n[ab]*".to_vec()).into());
+        paths
+    };
     f.write("keep", "keep\n");
-    let entry = repo
-        .status()
-        .unwrap()
-        .entries
-        .into_iter()
-        .find(|row| row.path == path)
-        .unwrap();
-    let plan = repo.discard_plan(&entry).unwrap();
-    repo.execute(&discard(plan)).unwrap();
-    assert!(!f.root.join(path).exists());
-    assert_eq!(f.read("keep"), b"keep\n");
+    for path in paths {
+        f.write(&path, "reviewed bytes\n");
+        let entry = repo
+            .status()
+            .unwrap()
+            .entries
+            .into_iter()
+            .find(|row| row.path == path)
+            .unwrap();
+        let plan = repo.discard_plan(&entry).unwrap();
+        repo.execute(&discard(plan)).unwrap();
+        assert!(!f.root.join(path).exists());
+        assert_eq!(f.read("keep"), b"keep\n");
+    }
 }
 
 #[test]
