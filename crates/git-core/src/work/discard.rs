@@ -2,6 +2,11 @@
 //! delete one reviewed untracked file. Git owns every write.
 use super::*;
 
+#[cfg(unix)]
+use rustix::fs::{AtFlags, FileType, Mode, OFlags, Stat, fstat, open, openat, readlinkat, statat};
+
+const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(5);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiscardPlan {
     /// The reviewed status row. Execution refuses any other row.
@@ -10,23 +15,26 @@ pub struct DiscardPlan {
     /// an unborn branch.
     pub head: Option<String>,
     root: PathBuf,
+    directories: [DirectoryIdentity; 3],
     working: Vec<WorkingIdentity>,
 }
 
-/// Working-file identity for stale-review detection. Content is never read.
+/// Bounded raw content and filesystem identity for stale-review detection.
+/// Symlinks capture their stored target text, never the linked destination.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum WorkingIdentity {
     Absent,
-    File {
-        len: u64,
-        modified: Option<std::time::SystemTime>,
-    },
-    Symlink {
-        len: u64,
-        modified: Option<std::time::SystemTime>,
-    },
+    File { metadata: String, digest: [u8; 32] },
+    Symlink { metadata: String, digest: [u8; 32] },
     Directory,
     Other,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DirectoryIdentity {
+    path: PathBuf,
+    device: u64,
+    inode: u64,
 }
 
 impl DiscardPlan {
@@ -41,6 +49,19 @@ impl GitRepository {
     /// refuses conflicted, submodule, and untracked-directory targets.
     pub fn discard_plan(&self, expected: &StatusEntry) -> Result<DiscardPlan> {
         ensure!(!self.bare, "Open a working copy to discard changes.");
+        // A cached repository path does not pin Git's effective worktree:
+        // core.worktree or a replaced .git file can redirect later commands.
+        let selected = GitRepository::open(&self.path)?;
+        ensure!(
+            selected.path == self.path && !selected.bare,
+            "The selected repository changed. Reopen it and review the discard again."
+        );
+        let git_directories = selected.git_directories()?;
+        let directories = [
+            directory_identity(&self.path)?,
+            directory_identity(&git_directories.0)?,
+            directory_identity(&git_directories.1)?,
+        ];
         for path in expected.paths() {
             validate_path(&path)?;
         }
@@ -83,9 +104,9 @@ impl GitRepository {
             "There is no commit to restore from yet. Unstage the file to keep it out of the first commit."
         );
         let mut working = Vec::new();
+        let started = Instant::now();
         for path in entry.paths() {
-            ancestors_are_real_directories(&self.path, &path)?;
-            let identity = working_identity(&self.path.join(&path))?;
+            let identity = working_identity(&self.path, &path, started)?;
             let present = matches!(
                 identity,
                 WorkingIdentity::File { .. } | WorkingIdentity::Symlink { .. }
@@ -119,6 +140,7 @@ impl GitRepository {
             entry: entry.clone(),
             head,
             root: self.path.clone(),
+            directories,
             working,
         })
     }
@@ -147,15 +169,15 @@ impl GitRepository {
             // A tracked path missing from HEAD is removed from the index and
             // the working folder; a rename restores its source and removes
             // its destination. Configured filters apply to restored content.
-            command.args([
-                "--literal-pathspecs",
-                "restore",
-                "--source=HEAD",
-                "--staged",
-                "--worktree",
-                "--pathspec-from-file=-",
-                "--pathspec-file-nul",
-            ]);
+            command
+                .args(["--literal-pathspecs", "restore", "--source"])
+                .arg(plan.head.as_deref().context("Missing reviewed HEAD")?)
+                .args([
+                    "--staged",
+                    "--worktree",
+                    "--pathspec-from-file=-",
+                    "--pathspec-file-nul",
+                ]);
             Some(path_input(&paths)?)
         };
         let output = checked_write_output(command, input, WRITE_TIMEOUT).map_err(|error| {
@@ -179,7 +201,8 @@ impl GitRepository {
         );
         if plan.entry.untracked {
             ensure!(
-                working_identity(&self.path.join(&plan.entry.path))? == WorkingIdentity::Absent,
+                working_identity(&self.path, &plan.entry.path, Instant::now())?
+                    == WorkingIdentity::Absent,
                 "Git reported success, but the untracked file still exists. Inspect it before another attempt."
             );
         }
@@ -210,49 +233,202 @@ impl GitRepository {
     }
 }
 
-/// Every existing parent of a reviewed path must be a real directory. Git
-/// replaces a file or symbolic link on a parent path without review.
-fn ancestors_are_real_directories(root: &Path, path: &Path) -> Result<()> {
-    let mut current = PathBuf::new();
-    let components: Vec<_> = path.components().collect();
-    for component in &components[..components.len().saturating_sub(1)] {
-        current.push(component);
-        match std::fs::symlink_metadata(root.join(&current)) {
-            Ok(metadata) if metadata.file_type().is_dir() => {}
-            Ok(_) => bail!(
-                "The parent path {} is now a file or a symbolic link. Git would replace it. Move or remove it before discarding {}.",
-                current.display(),
-                path.display()
-            ),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
-            Err(error) => return Err(error).context("Unable to inspect a parent folder."),
-        }
-    }
+#[cfg(unix)]
+fn directory_identity(path: &Path) -> Result<DirectoryIdentity> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = std::fs::symlink_metadata(path)
+        .context("Unable to inspect the selected repository directory")?;
+    ensure!(
+        metadata.is_dir(),
+        "The selected repository changed. Its working and administration folders must be real directories."
+    );
+    Ok(DirectoryIdentity {
+        path: path.to_owned(),
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+#[cfg(not(unix))]
+fn directory_identity(_path: &Path) -> Result<DirectoryIdentity> {
+    bail!("Safe discard review currently requires macOS or Linux")
+}
+
+fn check_snapshot(started: Instant) -> Result<()> {
+    ensure!(
+        !inspection_cancelled()
+            && !authentication::current_control().is_some_and(|control| control.is_cancelled()),
+        "Discard review cancelled"
+    );
+    ensure!(
+        started.elapsed() <= SNAPSHOT_TIMEOUT,
+        "Discard review exceeded its 5-second inspection limit. Review the file with Git before discarding."
+    );
     Ok(())
 }
 
-fn working_identity(path: &Path) -> Result<WorkingIdentity> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) => {
-            let file_type = metadata.file_type();
-            let modified = metadata.modified().ok();
-            Ok(if file_type.is_file() {
-                WorkingIdentity::File {
-                    len: metadata.len(),
-                    modified,
-                }
-            } else if file_type.is_symlink() {
-                WorkingIdentity::Symlink {
-                    len: metadata.len(),
-                    modified,
-                }
-            } else if file_type.is_dir() {
-                WorkingIdentity::Directory
-            } else {
-                WorkingIdentity::Other
-            })
+/// Open every component relative to a no-follow directory descriptor. An
+/// absent ancestor implies an absent file; any other unsafe parent is refused.
+#[cfg(unix)]
+fn working_identity(root: &Path, path: &Path, started: Instant) -> Result<WorkingIdentity> {
+    check_snapshot(started)?;
+    validate_path(path)?;
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let mut directory = open(root, flags, Mode::empty())
+        .context("Unable to safely open the working folder for discard review")?;
+    let mut current = PathBuf::new();
+    let components: Vec<_> = path.components().collect();
+    for component in &components[..components.len() - 1] {
+        check_snapshot(started)?;
+        current.push(component);
+        match openat(&directory, component.as_os_str(), flags, Mode::empty()) {
+            Ok(parent) => directory = parent,
+            Err(rustix::io::Errno::NOENT) => return Ok(WorkingIdentity::Absent),
+            Err(error) => return Err(error).with_context(|| format!(
+                "Unable to safely inspect the parent path {}. It may be unreadable, a file, or a symbolic link. Inspect it before discarding {}.",
+                current.display(),
+                path.display()
+            )),
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(WorkingIdentity::Absent),
-        Err(error) => Err(error).context("Unable to inspect the working file."),
+    }
+    let name = components.last().context("Missing filename")?.as_os_str();
+    let before = match statat(&directory, name, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(stat) => stat,
+        Err(rustix::io::Errno::NOENT) => return Ok(WorkingIdentity::Absent),
+        Err(error) => return Err(error).context("Unable to inspect the working file"),
+    };
+    let metadata = stat_identity(&before);
+    let identity = match FileType::from_raw_mode(before.st_mode) {
+        FileType::RegularFile => {
+            let length = u64::try_from(before.st_size).context("Invalid working file size")?;
+            ensure!(
+                length <= MAX_BLOB_BYTES as u64,
+                "The file exceeds the 64 MiB discard review limit. Review and discard it with Git."
+            );
+            // NONBLOCK prevents a replacement FIFO from hanging open. Verify
+            // type and identity before reading through this descriptor.
+            let fd = openat(
+                &directory,
+                name,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+                Mode::empty(),
+            )
+            .context("Unable to safely read the working file for discard review")?;
+            let opened = fstat(&fd)?;
+            ensure!(
+                FileType::from_raw_mode(opened.st_mode) == FileType::RegularFile
+                    && metadata == stat_identity(&opened),
+                "The file changed during discard review. Refresh and review it again."
+            );
+            let mut file = std::fs::File::from(fd);
+            let mut contents = Sha256::new();
+            let mut bytes = 0_u64;
+            let mut buffer = [0_u8; 64 * 1024];
+            loop {
+                check_snapshot(started)?;
+                let count = file.read(&mut buffer)?;
+                if count == 0 {
+                    break;
+                }
+                bytes += count as u64;
+                ensure!(
+                    bytes <= MAX_BLOB_BYTES as u64,
+                    "The file grew beyond the 64 MiB discard review limit. Review and discard it with Git."
+                );
+                contents.update(&buffer[..count]);
+            }
+            ensure!(
+                bytes == length && metadata == stat_identity(&fstat(&file)?),
+                "The file changed during discard review. Refresh and review it again."
+            );
+            WorkingIdentity::File {
+                metadata: metadata.clone(),
+                digest: contents.finalize().into(),
+            }
+        }
+        FileType::Symlink => {
+            let target = readlinkat(&directory, name, Vec::new())
+                .context("Unable to read the stored symbolic-link target for discard review")?;
+            WorkingIdentity::Symlink {
+                metadata: metadata.clone(),
+                digest: Sha256::digest(target.to_bytes()).into(),
+            }
+        }
+        FileType::Directory => WorkingIdentity::Directory,
+        _ => WorkingIdentity::Other,
+    };
+    ensure!(
+        metadata == stat_identity(&statat(&directory, name, AtFlags::SYMLINK_NOFOLLOW)?),
+        "The file changed during discard review. Refresh and review it again."
+    );
+    check_snapshot(started)?;
+    Ok(identity)
+}
+
+/// Access time is excluded because the passive snapshot can update it. Mode
+/// is included even when core.filemode or index flags hide executable changes.
+#[cfg(unix)]
+fn stat_identity(stat: &Stat) -> String {
+    format!(
+        "{}|{}|{}|{}|{}|{}|{}|{}",
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_mode,
+        stat.st_size,
+        stat.st_mtime,
+        stat.st_mtime_nsec,
+        stat.st_ctime,
+        stat.st_ctime_nsec
+    )
+}
+
+#[cfg(not(unix))]
+fn working_identity(_root: &Path, _path: &Path, _started: Instant) -> Result<WorkingIdentity> {
+    bail!("Safe discard review currently requires macOS or Linux")
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discard_snapshot_observes_cancellation_and_deadline() {
+        let cancellation = HistoryCancellation::default();
+        let error = run_cancellable_inspection(cancellation.clone(), || {
+            check_snapshot(Instant::now())?;
+            cancellation.cancel();
+            check_snapshot(Instant::now())
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("cancelled"));
+
+        let control = OperationControl::default();
+        let error = run_controlled(control.clone(), || {
+            control.cancel();
+            check_snapshot(Instant::now())
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("cancelled"));
+        assert!(check_snapshot(Instant::now()).is_ok());
+
+        let expired = Instant::now() - SNAPSHOT_TIMEOUT - Duration::from_secs(1);
+        let error = check_snapshot(expired).unwrap_err();
+        assert!(error.to_string().contains("5-second inspection limit"));
+    }
+
+    #[test]
+    fn discard_snapshot_refuses_special_files_without_opening_them() {
+        let temp = tempfile::TempDir::new().unwrap();
+        rustix::fs::mkfifoat(
+            rustix::fs::CWD,
+            temp.path().join("fifo"),
+            Mode::RUSR | Mode::WUSR,
+        )
+        .unwrap();
+        assert_eq!(
+            working_identity(temp.path(), Path::new("fifo"), Instant::now()).unwrap(),
+            WorkingIdentity::Other
+        );
     }
 }

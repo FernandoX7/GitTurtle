@@ -219,6 +219,285 @@ fn discard_deletes_untracked_file_only_after_fresh_review_and_refuses_directorie
 }
 
 #[test]
+fn discard_refuses_changed_bytes_even_when_size_and_modified_time_are_restored() {
+    for path in ["tracked", "untracked"] {
+        let f = Fixture::new();
+        let repo = f.repo();
+        f.write(path, "reviewed bytes\n");
+        let plan = f.plan(path);
+        let absolute = f.root.join(path);
+        let original = fs::metadata(&absolute).unwrap();
+        f.write(path, "replaced bytes\n");
+        fs::File::options()
+            .write(true)
+            .open(&absolute)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(original.modified().unwrap()))
+            .unwrap();
+        let replacement = fs::metadata(&absolute).unwrap();
+        assert_eq!(original.len(), replacement.len());
+        assert_eq!(
+            original.modified().unwrap(),
+            replacement.modified().unwrap()
+        );
+        assert_eq!(f.entry(path), plan.entry);
+        let error = repo.execute(&discard(plan)).unwrap_err();
+        assert!(
+            error.to_string().contains("changed after review"),
+            "{error:#}"
+        );
+        assert_eq!(f.read(path), b"replaced bytes\n");
+        assert_eq!(f.git(&["show", ":tracked"]), "base");
+    }
+}
+
+#[test]
+fn discard_refuses_worktree_redirection_after_review() {
+    let f = Fixture::new();
+    let repo = f.repo();
+    f.write("tracked", "reviewed bytes\n");
+    let plan = f.plan("tracked");
+    let outside = f.root.parent().unwrap().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("tracked"), b"unreviewed work\n").unwrap();
+    fs::write(outside.join("other"), b"other\n").unwrap();
+    f.git(&["config", "core.worktree", outside.to_str().unwrap()]);
+    assert_eq!(repo.status().unwrap().entries[0], plan.entry);
+    let error = repo.execute(&discard(plan)).unwrap_err();
+    assert!(
+        error.to_string().contains("repository changed"),
+        "{error:#}"
+    );
+    assert_eq!(
+        fs::read(outside.join("tracked")).unwrap(),
+        b"unreviewed work\n"
+    );
+    assert_eq!(f.read("tracked"), b"reviewed bytes\n");
+    assert_eq!(f.git(&["show", ":tracked"]), "base");
+}
+
+#[test]
+fn discard_refuses_git_directory_redirection_after_review() {
+    let f = Fixture::new();
+    let repo = f.repo();
+    f.write("tracked", "reviewed bytes\n");
+    let plan = f.plan("tracked");
+    let old_git = f.root.parent().unwrap().join("original.git");
+    fs::rename(f.root.join(".git"), &old_git).unwrap();
+    fs::write(
+        f.root.join(".git"),
+        format!("gitdir: {}\n", old_git.display()),
+    )
+    .unwrap();
+    assert_eq!(f.entry("tracked"), plan.entry);
+    let error = repo.execute(&discard(plan)).unwrap_err();
+    assert!(
+        error.to_string().contains("changed after review"),
+        "{error:#}"
+    );
+    assert_eq!(f.read("tracked"), b"reviewed bytes\n");
+    assert_eq!(f.git(&["show", ":tracked"]), "base");
+}
+
+#[test]
+fn discard_refuses_git_directory_replacement_at_the_same_path() {
+    let f = Fixture::new();
+    let repo = f.repo();
+    f.write("tracked", "reviewed bytes\n");
+    let plan = f.plan("tracked");
+    let parent = f.root.parent().unwrap();
+    let replacement = parent.join("replacement");
+    git_at(
+        parent,
+        &[
+            "clone",
+            "--no-hardlinks",
+            f.root.to_str().unwrap(),
+            replacement.to_str().unwrap(),
+        ],
+    );
+    fs::rename(f.root.join(".git"), parent.join("original.git")).unwrap();
+    fs::rename(replacement.join(".git"), f.root.join(".git")).unwrap();
+    assert_eq!(f.entry("tracked"), plan.entry);
+    let error = repo.execute(&discard(plan)).unwrap_err();
+    assert!(
+        error.to_string().contains("changed after review"),
+        "{error:#}"
+    );
+    assert_eq!(f.read("tracked"), b"reviewed bytes\n");
+    assert_eq!(f.git(&["show", ":tracked"]), "base");
+}
+
+#[cfg(unix)]
+#[test]
+fn discard_refuses_hidden_permission_changes_after_review() {
+    use std::os::unix::fs::PermissionsExt;
+
+    for path in ["tracked", "untracked"] {
+        let f = Fixture::new();
+        let repo = f.repo();
+        f.git(&["config", "core.filemode", "false"]);
+        f.write(path, "reviewed bytes\n");
+        fs::set_permissions(f.root.join(path), fs::Permissions::from_mode(0o644)).unwrap();
+        let plan = f.plan(path);
+        fs::set_permissions(f.root.join(path), fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(f.entry(path), plan.entry);
+        let error = repo.execute(&discard(plan)).unwrap_err();
+        assert!(
+            error.to_string().contains("changed after review"),
+            "{error:#}"
+        );
+        assert_eq!(f.read(path), b"reviewed bytes\n");
+        assert_eq!(
+            fs::metadata(f.root.join(path))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+    }
+}
+
+#[test]
+fn discard_refuses_files_exceeding_the_review_byte_limit() {
+    let f = Fixture::new();
+    for path in ["tracked", "untracked"] {
+        fs::File::create(f.root.join(path))
+            .unwrap()
+            .set_len(gitturtle_core::MAX_BLOB_BYTES as u64 + 1)
+            .unwrap();
+        let error = f.repo().discard_plan(&f.entry(path)).unwrap_err();
+        assert!(
+            error.to_string().contains("64 MiB discard review limit"),
+            "{error:#}"
+        );
+        assert_eq!(
+            fs::metadata(f.root.join(path)).unwrap().len(),
+            gitturtle_core::MAX_BLOB_BYTES as u64 + 1
+        );
+    }
+    assert_eq!(f.git(&["show", ":tracked"]), "base");
+}
+
+#[cfg(unix)]
+#[test]
+fn discard_refuses_unreadable_content_and_preserves_it() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Root can still read mode-000 files, so this refusal fixture requires a
+    // normal user whose filesystem permissions can actually deny the read.
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    for path in ["tracked", "untracked"] {
+        let f = Fixture::new();
+        let repo = f.repo();
+        f.write(path, "reviewed bytes\n");
+        let plan = f.plan(path);
+        let absolute = f.root.join(path);
+        fs::set_permissions(&absolute, fs::Permissions::from_mode(0o000)).unwrap();
+        let error = repo.execute(&discard(plan)).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("Unable to safely read"),
+            "{error:#}"
+        );
+        fs::set_permissions(&absolute, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(f.read(path), b"reviewed bytes\n");
+        assert_eq!(f.git(&["show", ":tracked"]), "base");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn discard_reviews_stored_symlink_targets_and_preserves_their_destinations() {
+    use std::os::unix::fs::symlink;
+
+    let f = Fixture::new();
+    let repo = f.repo();
+    let outside = f.root.parent().unwrap().join("outside");
+    fs::write(&outside, b"precious external work\n").unwrap();
+    fs::remove_file(f.root.join("tracked")).unwrap();
+    symlink(&outside, f.root.join("tracked")).unwrap();
+    let plan = f.plan("tracked");
+    repo.execute(&discard(plan)).unwrap();
+    assert_eq!(f.read("tracked"), b"base\n");
+    assert_eq!(fs::read(&outside).unwrap(), b"precious external work\n");
+
+    // Broken targets remain reviewable because only stored link text is read.
+    symlink("missing-a", f.root.join("untracked")).unwrap();
+    let plan = f.plan("untracked");
+    fs::remove_file(f.root.join("untracked")).unwrap();
+    symlink("missing-b", f.root.join("untracked")).unwrap();
+    assert_eq!(f.entry("untracked"), plan.entry);
+    let error = repo.execute(&discard(plan)).unwrap_err();
+    assert!(
+        error.to_string().contains("changed after review"),
+        "{error:#}"
+    );
+    assert_eq!(
+        fs::read_link(f.root.join("untracked")).unwrap(),
+        Path::new("missing-b")
+    );
+    repo.execute(&discard(f.plan("untracked"))).unwrap();
+    assert!(fs::symlink_metadata(f.root.join("untracked")).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn discard_reviews_raw_bytes_without_filters_and_preserves_restore_filters() {
+    let f = Fixture::new();
+    f.write(".gitattributes", "tracked filter=reviewed\n");
+    f.git(&["add", ".gitattributes"]);
+    f.git(&["commit", "-q", "-m", "Attributes"]);
+    f.git(&[
+        "config",
+        "filter.reviewed.clean",
+        "touch .git/clean-ran; cat",
+    ]);
+    f.git(&[
+        "config",
+        "filter.reviewed.smudge",
+        "touch .git/smudge-ran; cat",
+    ]);
+    f.git(&["config", "filter.reviewed.required", "true"]);
+    f.write("tracked", b"\xff\x00raw work\n");
+    let index = fs::read(f.root.join(".git/index")).unwrap();
+    let repo = f.repo();
+    let plan = f.plan("tracked");
+    assert!(!f.root.join(".git/clean-ran").exists());
+    assert!(!f.root.join(".git/smudge-ran").exists());
+    assert_eq!(fs::read(f.root.join(".git/index")).unwrap(), index);
+    assert_eq!(f.read("tracked"), b"\xff\x00raw work\n");
+    repo.execute(&discard(plan)).unwrap();
+    assert!(f.root.join(".git/smudge-ran").exists());
+    assert_eq!(f.read("tracked"), b"base\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn discard_preserves_non_utf8_filename_bytes() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let f = Fixture::new();
+    let repo = f.repo();
+    let path = PathBuf::from(std::ffi::OsString::from_vec(b"odd\xff\n[ab]*".to_vec()));
+    f.write(&path, "reviewed bytes\n");
+    f.write("keep", "keep\n");
+    let entry = repo
+        .status()
+        .unwrap()
+        .entries
+        .into_iter()
+        .find(|row| row.path == path)
+        .unwrap();
+    let plan = repo.discard_plan(&entry).unwrap();
+    repo.execute(&discard(plan)).unwrap();
+    assert!(!f.root.join(path).exists());
+    assert_eq!(f.read("keep"), b"keep\n");
+}
+
+#[test]
 fn discard_refuses_stale_index_stale_head_conflicted_submodule_and_unborn_targets() {
     let f = Fixture::new();
     let repo = f.repo();
