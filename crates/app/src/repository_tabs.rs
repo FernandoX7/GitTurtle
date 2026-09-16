@@ -1712,7 +1712,8 @@ impl GitTurtle {
         let owner = cx.entity().downgrade();
         let session = self.session_snapshot(cx);
         let active = self.path.clone();
-        let view = cx.new(|cx| LibraryView::new(owner, session, active, window, cx));
+        let names = self.project_names.clone();
+        let view = cx.new(|cx| LibraryView::new(owner, session, active, names, window, cx));
         window.open_alert_dialog(cx, move |dialog, _, _| {
             dialog
                 .title("Local workspaces")
@@ -1760,6 +1761,15 @@ impl GitTurtle {
         }
         self.save_repository_session(window, cx);
     }
+    fn can_rename_repository_tab(&self, path: &Path) -> bool {
+        self.repository_tabs.active_path() == Some(path)
+            && self.path.as_deref() == Some(path)
+            && self
+                .repository
+                .as_ref()
+                .is_some_and(|repository| repository.path() == path)
+    }
+
     fn repository_tabs_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let owner = cx.entity().downgrade();
         button("repository-workspaces", "Workspaces", "worktree", false)
@@ -1783,10 +1793,7 @@ impl GitTurtle {
                     let path = tab.path.clone();
                     let target = path.clone();
                     let owner = owner.clone();
-                    let name = path
-                        .file_name()
-                        .unwrap_or(path.as_os_str())
-                        .to_string_lossy();
+                    let name = this.project_name(&path);
                     menu = menu.item(
                         PopupMenuItem::new(format!("{}  {}", index + 1, name))
                             .checked(active == Some(index))
@@ -1817,6 +1824,19 @@ impl GitTurtle {
                                 }
                             });
                         }),
+                    );
+                    let rename_owner = owner.clone();
+                    let rename_path = path.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new("Rename current project…")
+                            .disabled(!this.can_rename_repository_tab(&path))
+                            .on_click(move |_, window, cx| {
+                                let _ = rename_owner.update(cx, |this, cx| {
+                                    if this.can_rename_repository_tab(&rename_path) {
+                                        this.open_rename_project(rename_path.clone(), window, cx);
+                                    }
+                                });
+                            }),
                     );
                     for (direction, label, disabled) in [
                         (-1, "Move current tab left", active == Some(0)),
@@ -1906,11 +1926,7 @@ impl GitTurtle {
                                 let pinned = self.tab_is_pinned(&tab.path);
                                 let busy = self.operation_busy.is_some()
                                     && self.operation_repository.as_ref() == Some(&tab.path);
-                                let name = tab
-                                    .path
-                                    .file_name()
-                                    .unwrap_or(tab.path.as_os_str())
-                                    .to_string_lossy();
+                                let name = self.project_name(&tab.path);
                                 let label = format!(
                                     "{}{}{}",
                                     if pinned { "★ " } else { "" },
@@ -1936,15 +1952,23 @@ impl GitTurtle {
                                             })
                                             .role(Role::Tab)
                                             .accessibility_label(format!(
-                                                "Repository tab {}, {}{}{}",
+                                                "Repository tab {}, {}, {}{}{}{}{}",
                                                 index + 1,
+                                                name,
                                                 tab.path.display(),
                                                 if selected { ", selected" } else { "" },
-                                                if busy { ", Git operation running" } else { "" }
+                                                if pinned { ", pinned" } else { "" },
+                                                if busy { ", Git operation running" } else { "" },
+                                                if tab.error.is_some() {
+                                                    ", unavailable"
+                                                } else {
+                                                    ""
+                                                }
                                             ))
                                             .max_w(appearance::ui_size(220.))
                                             .tooltip(format!(
-                                                "{}\nSwitch tab {} · {}",
+                                                "{}\n{}\nSwitch tab {} · {}",
+                                                name,
                                                 tab.path.display(),
                                                 index + 1,
                                                 shortcuts::tab_label(index)
@@ -1959,11 +1983,13 @@ impl GitTurtle {
                                                 format!("repository-tab-close-{index}")
                                             })
                                             .accessibility_label(format!(
-                                                "Close repository tab {}; drafts remain saved",
+                                                "Close repository tab {}, {}; drafts remain saved",
+                                                name,
                                                 tab.path.display()
                                             ))
                                             .tooltip(format!(
-                                                "Close {} · drafts remain saved",
+                                                "Close {} · drafts remain saved\n{}",
+                                                name,
                                                 tab.path.display()
                                             ))
                                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -1995,6 +2021,7 @@ struct LibraryView {
     owner: WeakEntity<GitTurtle>,
     session: Session,
     active: Option<PathBuf>,
+    project_names: HashMap<PathBuf, String>,
     name: Entity<InputState>,
     error: Option<String>,
     _subscription: Subscription,
@@ -2004,6 +2031,7 @@ impl LibraryView {
         owner: WeakEntity<GitTurtle>,
         session: Session,
         active: Option<PathBuf>,
+        project_names: HashMap<PathBuf, String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -2014,10 +2042,20 @@ impl LibraryView {
             owner,
             session,
             active,
+            project_names,
             name,
             error: None,
             _subscription: subscription,
         }
+    }
+
+    fn project_identity(&self, path: &Path) -> String {
+        let name = self
+            .project_names
+            .get(path)
+            .cloned()
+            .unwrap_or_else(|| preferences::directory_name(path));
+        format!("{name} · {}", path.display())
     }
 }
 fn workspace_text(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Stateful<Div> {
@@ -2037,12 +2075,12 @@ impl Render for LibraryView {
             |path| {
                 format!(
                     "Create named local workspace and add repository {}",
-                    path.display()
+                    self.project_identity(path)
                 )
             },
         );
         div().flex().flex_col().gap_3().child(workspace_text("local-workspaces-description", "Pinned repositories stay available after their tab closes. Named workspaces are local groups; opening a group only reads its selected repository.").text_size(appearance::ui_text(12.)))
-            .children(self.active.as_ref().map(|path| workspace_text("local-workspaces-current-repository", format!("Current repository: {}", path.display())).text_size(appearance::ui_text(12.))))
+            .children(self.active.as_ref().map(|path| workspace_text("local-workspaces-current-repository", format!("Current repository: {}", self.project_identity(path))).text_size(appearance::ui_text(12.)).truncate().tooltip({let identity=self.project_identity(path);move|window,cx|Tooltip::new(identity.clone()).build(window,cx)})))
             .child(div().flex().items_center().gap_2().child(div().flex_1().child(Input::new(&self.name).aria_label("New local workspace name"))).child(button("create-local-workspace","Create workspace","",false).accessibility_label(create_label).on_click(cx.listener(|this,_,window,cx|{
                 let name=this.name.read(cx).value().trim().to_owned();
                 if name.is_empty()||name.len()>64||name.contains(['\n','\r','\0']){this.error=Some("Use a workspace name of 1–64 bytes.".into());cx.notify();return;}
@@ -2056,7 +2094,7 @@ impl Render for LibraryView {
                 .children(self.session.groups.clone().into_iter().enumerate().map(|(index,group)|{
                     let count=self.session.library.iter().filter(|entry|entry.group.as_ref()==Some(&group)).count();let assign=group.clone();let open=group.clone();let remove=group.clone();
                     let description=format!("{group} · {count} {}", if count == 1 { "repository" } else { "repositories" });
-                    let add_label=self.active.as_ref().map_or_else(||format!("Add current repository to workspace {group}; no repository is open"), |path|format!("Add repository {} to workspace {group}", path.display()));
+                    let add_label=self.active.as_ref().map_or_else(||format!("Add current repository to workspace {group}; no repository is open"), |path|format!("Add repository {} to workspace {group}", self.project_identity(path)));
                     div().flex().items_center().gap_2().child(workspace_text(("local-workspace-name", index), description.clone()).flex_1())
                         .child(button(("open-workspace",index),"Open","",false).accessibility_label(format!("Open workspace {description}")).disabled(count==0).on_click(cx.listener(move|this,_,window,cx|{window.close_dialog(cx);let _=this.owner.update(cx,|owner,cx|owner.open_repository_group(&open,window,cx));})))
                         .child(button(("assign-workspace",index),"Add current","",false).accessibility_label(add_label).disabled(self.active.is_none()).on_click(cx.listener(move|this,_,window,cx|{if let Some(path)=this.active.clone(){let _=this.owner.update(cx,|owner,cx|owner.set_tab_library(path.clone(),None,Some(Some(assign.clone())),window,cx));if let Some(entry)=this.session.library.iter_mut().find(|entry|entry.path.path()==path){entry.group=Some(assign.clone());}else{this.session.library.push(LibraryEntry{path:SavedPath::new(&path),pinned:false,group:Some(assign.clone())});}cx.notify();}})))
@@ -2064,11 +2102,12 @@ impl Render for LibraryView {
                 }))
                 .children(self.session.library.clone().into_iter().enumerate().map(|(index,entry)|{
                     let path=entry.path.path();let remove=path.clone();
-                    let label=format!("{}{}{}",if entry.pinned{"★ "}else{""},path.display(),entry.group.as_ref().map_or(String::new(),|group|format!(" · {group}")));
-                    let accessible=format!("{}repository {}{}",if entry.pinned{"Pinned "}else{""},path.display(),entry.group.as_ref().map_or(String::new(),|group|format!(", workspace {group}")));
-                    div().flex().items_center().gap_2().child(workspace_text(("local-workspace-repository", index),label).aria_label(accessible).flex_1().min_w_0().truncate())
-                        .child(button(("open-library-repo",index),"Open","",false).accessibility_label(format!("Open repository {}", path.display())).on_click(cx.listener(move|this,_,window,cx|{window.close_dialog(cx);let _=this.owner.update(cx,|owner,cx|owner.open_repository_tab(path.clone(),window,cx));})))
-                        .child(button(("remove-library-repo",index),"Remove","",false).accessibility_label(format!("Remove repository {} from local library; keep its folder and drafts", remove.display())).tooltip("Remove from the local library; keep its folder and drafts").on_click(cx.listener(move|this,_,window,cx|{this.session.library.retain(|entry|entry.path.path()!=remove);let _=this.owner.update(cx,|owner,cx|{owner.repository_tabs.library.retain(|entry|entry.path.path()!=remove);owner.save_repository_session(window,cx);});cx.notify();})))
+                    let identity=self.project_identity(&path);
+                    let label=format!("{}{}{}",if entry.pinned{"★ "}else{""},identity,entry.group.as_ref().map_or(String::new(),|group|format!(" · {group}")));
+                    let accessible=format!("{}repository {}{}",if entry.pinned{"Pinned "}else{""},identity,entry.group.as_ref().map_or(String::new(),|group|format!(", workspace {group}")));
+                    div().flex().items_center().gap_2().child(workspace_text(("local-workspace-repository", index),label).aria_label(accessible.clone()).flex_1().min_w_0().truncate().tooltip(move|window,cx|Tooltip::new(accessible.clone()).build(window,cx)))
+                        .child(button(("open-library-repo",index),"Open","",false).accessibility_label(format!("Open repository {identity}")).on_click(cx.listener(move|this,_,window,cx|{window.close_dialog(cx);let _=this.owner.update(cx,|owner,cx|owner.open_repository_tab(path.clone(),window,cx));})))
+                        .child(button(("remove-library-repo",index),"Remove","",false).accessibility_label(format!("Remove repository {identity} from local library; keep its folder and drafts")).tooltip("Remove from the local library; keep its folder and drafts").on_click(cx.listener(move|this,_,window,cx|{this.session.library.retain(|entry|entry.path.path()!=remove);let _=this.owner.update(cx,|owner,cx|{owner.repository_tabs.library.retain(|entry|entry.path.path()!=remove);owner.save_repository_session(window,cx);});cx.notify();})))
                 })))
     }
 }
@@ -2116,6 +2155,103 @@ mod tests {
                 app._display_preferences_task = None;
             })
         });
+    }
+
+    #[gpui::test]
+    async fn rename_tab_waits_for_discovery_and_rejects_stale_or_unavailable_targets(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::component::Root;
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.executor().allow_parking();
+        let fixture = tempfile::tempdir().unwrap();
+        let repository = GitRepository::init(fixture.path().join("repository"), "main").unwrap();
+        let canonical = repository.path().to_owned();
+        let nested = canonical.join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let unavailable = fixture.path().join("missing");
+        let destination = fixture.path().join("isolated-session.json");
+        let mut preferences = Preferences::default();
+        preferences
+            .project_names
+            .insert(canonical.clone(), "Turtle 客户端".into());
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+        });
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let observed = captured.clone();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let app = cx.new(|cx| {
+                let mut app = GitTurtle::new(
+                    None,
+                    preferences,
+                    Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                );
+                app.repository_tabs.save_path = Some(destination);
+                app
+            });
+            *captured.borrow_mut() = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let app = observed.borrow_mut().take().unwrap();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(nested.clone(), window, cx);
+                assert!(!app.can_rename_repository_tab(&nested));
+                assert!(!app.can_rename_repository_tab(&canonical));
+            });
+        });
+        settle_tab_test(&app, cx).await;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                assert_eq!(app.repository_tabs.active_path(), Some(canonical.as_path()));
+                assert!(app.can_rename_repository_tab(&canonical));
+                assert_eq!(app.project_name(&canonical), "Turtle 客户端");
+                assert!(!app.can_rename_repository_tab(&nested));
+                app.nav_mode = NavMode::Worktrees;
+                for (query, expected) in [
+                    ("turtle 客户端", true),
+                    ("repository", true),
+                    ("main", true),
+                    ("not this project", false),
+                    ("", true),
+                ] {
+                    app.nav_search
+                        .update(cx, |search, cx| search.set_value(query, window, cx));
+                    app.rebuild_navigation(cx);
+                    assert_eq!(
+                        app.nav_rows
+                            .iter()
+                            .any(|row| matches!(row, NavRow::Worktree(_))),
+                        expected,
+                        "worktree search must match custom names, paths and branches: {query}"
+                    );
+                }
+                // An accepted Git operation does not block app-only naming.
+                app.operation_busy = Some("Fetching");
+                assert!(app.can_rename_repository_tab(&canonical));
+                app.operation_busy = None;
+                app.open_repository_tab(unavailable.clone(), window, cx);
+                assert!(!app.can_rename_repository_tab(&canonical));
+                assert!(!app.can_rename_repository_tab(&unavailable));
+            });
+        });
+        settle_tab_test(&app, cx).await;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                assert!(!app.can_rename_repository_tab(&unavailable));
+                app.switch_repository_tab(0, window, cx);
+                assert!(app.can_rename_repository_tab(&canonical));
+                assert!(!app.can_rename_repository_tab(&unavailable));
+            });
+        });
+        settle_tab_test(&app, cx).await;
     }
 
     #[gpui::test]

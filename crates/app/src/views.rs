@@ -168,7 +168,7 @@ impl GitTurtle {
                         "Repository {}. {}",
                         self.repository
                             .as_ref()
-                            .map(|repo| repo.name())
+                            .map(|repo| self.project_name(repo.path()))
                             .unwrap_or_default(),
                         self.path
                             .as_ref()
@@ -176,12 +176,12 @@ impl GitTurtle {
                             .unwrap_or_default(),
                     ))
                     .tooltip({
-                        let path = self
+                        let identity = self
                             .path
                             .as_ref()
-                            .map(|path| path.display().to_string())
+                            .map(|path| format!("{}\n{}", self.project_name(path), path.display()))
                             .unwrap_or_else(|| "GitTurtle".into());
-                        move |window, cx| Tooltip::new(path.clone()).build(window, cx)
+                        move |window, cx| Tooltip::new(identity.clone()).build(window, cx)
                     })
                     .flex_1()
                     .max_w(appearance::ui_size(200.))
@@ -197,7 +197,7 @@ impl GitTurtle {
                             .child(
                                 self.repository
                                     .as_ref()
-                                    .map(|r| r.name())
+                                    .map(|repo| self.project_name(repo.path()))
                                     .unwrap_or("GitTurtle".into()),
                             ),
                     )
@@ -302,12 +302,7 @@ impl GitTurtle {
                                 .operation_repository
                                 .as_ref()
                                 .map_or(String::new(), |path| {
-                                    format!(
-                                        " · {}",
-                                        path.file_name()
-                                            .unwrap_or(path.as_os_str())
-                                            .to_string_lossy()
-                                    )
+                                    format!(" · {}", self.project_name(path))
                                 }),
                     )
             }))
@@ -547,16 +542,13 @@ impl GitTurtle {
             NavRow::Worktree(i) => {
                 let tree = &self.worktrees[*i];
                 (
-                    tree.path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into_owned(),
+                    self.project_name(&tree.path),
                     "worktree",
                     self.path.as_ref() == Some(&tree.path),
                     0,
                     format!(
-                        "{}\n{}{}{}{}",
+                        "{}\n{}\n{}{}{}{}",
+                        self.project_name(&tree.path),
                         tree.path.display(),
                         tree.branch.as_deref().unwrap_or("Detached HEAD"),
                         if tree.locked { " · locked" } else { "" },
@@ -615,7 +607,7 @@ impl GitTurtle {
                 15.,
                 if active { colors.accent } else { colors.muted },
             ))
-            .child(div().flex_1().truncate().child(name))
+            .child(div().flex_1().min_w_0().truncate().child(name))
             .on_click(
                 cx.listener(move |this, _, window, cx| this.activate_navigation(index, window, cx)),
             );
@@ -656,9 +648,14 @@ impl GitTurtle {
                             || owner.page != AppPage::Repository
                     });
                     let mut menu = menu.label(tree.path.display().to_string());
-                    for (label, remove) in
-                        [("Worktree actions…", false), ("Remove worktree…", true)]
-                    {
+                    for (label, removal) in [
+                        ("Worktree actions…", None),
+                        ("Remove worktree…", Some(worktrees::RemovalMode::Ordinary)),
+                        (
+                            "Force remove worktree…",
+                            Some(worktrees::RemovalMode::Force),
+                        ),
+                    ] {
                         let owner = branch_owner.clone();
                         let repository = branch_repository.clone();
                         let tree = tree.clone();
@@ -668,7 +665,7 @@ impl GitTurtle {
                                     if this.path == repository && this.page == AppPage::Repository {
                                         this.open_worktree_actions(
                                             tree.clone(),
-                                            remove,
+                                            removal,
                                             window,
                                             cx,
                                         );

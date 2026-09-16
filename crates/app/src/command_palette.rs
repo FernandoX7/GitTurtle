@@ -491,7 +491,7 @@ impl GitTurtle {
                 .map(|repo| {
                     format!(
                         "{} · {}",
-                        repo.name(),
+                        self.project_name(repo.path()),
                         if self.page == AppPage::Repository {
                             "current workspace"
                         } else {
@@ -1004,6 +1004,13 @@ impl Render for Palette {
             )
             .child(
                 div()
+                    .id("command-palette-scope")
+                    .role(Role::Label)
+                    .aria_label(scope.clone())
+                    .tooltip({
+                        let scope = scope.clone();
+                        move |window, cx| Tooltip::new(scope.clone()).build(window, cx)
+                    })
                     .text_size(crate::appearance::ui_text(12.))
                     .text_color(rgb(p.muted))
                     .truncate()

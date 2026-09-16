@@ -125,10 +125,17 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Naming a project changes app data only, so it stays available while
+        // a Git operation runs on some repository.
+        if let projects::ProjectEvent::Rename(path) = event {
+            self.open_rename_project(path.clone(), window, cx);
+            return;
+        }
         if self.operation_busy.is_some() {
             return;
         }
         match event {
+            projects::ProjectEvent::Rename(_) => {}
             projects::ProjectEvent::Open(path) => {
                 if self
                     .repository
@@ -207,7 +214,7 @@ impl GitTurtle {
                 this.hub.update(cx, |hub, cx| hub.set_busy(false, cx));
                 match result {
                     Ok(repo) => {
-                        let message = format!("{} · {}", if label.starts_with("Cloning") { "Repository cloned" } else { "Repository created" }, repo.name());
+                        let message = format!("{} · {}", if label.starts_with("Cloning") { "Repository cloned" } else { "Repository created" }, this.project_name(repo.path()));
                         if this.path == accepted_path && this.page == accepted_page {
                             this.limit = 500; this.open(repo.path().to_owned(), None, window, cx);
                             this.operation_notice = Some(message);

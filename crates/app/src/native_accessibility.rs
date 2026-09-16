@@ -253,7 +253,7 @@ impl GitTurtle {
                 self.open_contextual_branch(branch.name.clone(), branch.remote, window, cx);
             }
             Some(NavRow::Worktree(index)) => {
-                self.open_worktree_actions(self.worktrees[*index].clone(), false, window, cx);
+                self.open_worktree_actions(self.worktrees[*index].clone(), None, window, cx);
             }
             _ => {}
         }

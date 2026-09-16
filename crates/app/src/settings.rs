@@ -685,7 +685,10 @@ impl GitTurtle {
             self.identity_name.read(cx).value().trim() != profile.name
                 || self.identity_email.read(cx).value().trim() != profile.email
         });
-        let repository_name = self.repository.as_ref().map(|repository| repository.name());
+        let repository_name = self
+            .repository
+            .as_ref()
+            .map(|repository| self.project_name(repository.path()));
         let appearance = div()
             .flex()
             .flex_col()
@@ -828,12 +831,26 @@ impl GitTurtle {
             .into_any_element();
 
         let identity = if let Some(repository_name) = repository_name {
+            let repository_identity = format!(
+                "{}\n{}",
+                repository_name,
+                self.path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_default()
+            );
             div()
                 .flex()
                 .flex_col()
                 .gap_4()
                 .child(
                     div()
+                        .id("settings-repository-identity")
+                        .role(Role::Label)
+                        .aria_label(format!("Repository {repository_identity}"))
+                        .tooltip(move |window, cx| {
+                            Tooltip::new(repository_identity.clone()).build(window, cx)
+                        })
                         .rounded(px(8.))
                         .bg(rgb(p.canvas))
                         .p_3()

@@ -4,6 +4,28 @@ Use the [current validation guidance](#current-validation-guidance) for the affe
 
 This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native workflow evidence is primarily macOS-specific; the September 14 entries add Pop!_OS startup and clean Ubuntu/virtual-native checks. Platform execution and access limits belong to the applicable dated record and [platform runbook](linux.md); the earlier [environment report](benchmarks/2026-09-09-milestone-environment.md) describes its own session. The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Public binary release prerequisites belong in the [launch checklist](public-launch.md); the Linux runbook includes a local teammate bundle.
 
+## September 16 PR #13 project-name review
+
+The [project-name validation record](project-names-validation.md) covers main
+integration, independent review fixes, 816 passing workspace tests (five existing
+ignores), strict Clippy and real native Linux/X11 checks of clean source
+`2c98108`. Screenshots cover dark/default and minimum-size light/enlarged text,
+inline save failure/retry, focused editing, canceled edits, canonical aliases,
+long names and restoring the folder label. macOS native interaction, screen
+readers and installed-package checks remain outside this evidence.
+
+## September 16 PR #15 force-removal review
+
+Clean source `c3e4a0f` includes main `7c9dc6c` and passed 803 workspace tests
+(five existing ignores), strict workspace Clippy, formatting and native debug
+compilation. The [force-removal validation record](force-worktree-removal-validation.md)
+documents preservation regressions, independent review, accessible destructive
+confirmation, and real GPUI interaction on virtual Linux X11. Native checks
+covered minimum-size enlarged light UI, dark UI, cancellation, nested-repository
+refusal, stale ignored-content refusal and successful removal with independent
+branch/index/sibling preservation. macOS, physical desktop and hosted-CI results
+remain separate from this local evidence.
+
 ## Commit-inspector validation requirements
 
 The persistent inspector requires candidate-bound native evidence in addition to
@@ -135,6 +157,36 @@ strict Clippy and release build passed. Public binary notice gaps, untested
 platforms and compositor/scale limits remain explicit. The separate static
 [website](../website/README.md) has current native captures and a Cloudflare
 deployment plan; no public deployment or DNS change is implied.
+
+## September 15 client-side project names
+
+Working-tree source (branch `fix/linux-watch-skip-ignored`, on `4dfc334`) adds a
+client-only project name that replaces a project's folder name in the project
+hub, repository tabs and their menu, the repository heading, saved workspaces and
+operation status, while leaving the folder, the repository and Git configuration
+untouched. Names are stored in the existing preferences file under a new
+version-4 `project_names` section, read through the shared bounded store reader
+and written through the serialized preference executor.
+
+`cargo fmt --all -- --check`, `cargo clippy --locked --workspace --all-targets --
+-D warnings` and `cargo test --locked --workspace` passed on this Linux host
+(debug profile; 351 app tests including the new preference round-trip, bound and
+hub-interaction cases).
+
+A debug build was exercised in a virtual X11 session (Xvfb `:77`, 1600x1000)
+against a disposable `scripts/create-demo-repo.py` fixture, with
+`XDG_CONFIG_HOME` pointed at a scratch directory so no developer preferences were
+touched. Verified by screenshot and by reading the store: the hub shows a chosen
+name over the folder name and location; the rename dialog opens from the recent
+row and from **Workspaces → Rename current project…**; saving writes
+`project_names` and updates the hub, tab strip, repository heading and tab menu;
+submitting an empty field removes the entry and restores the folder name
+everywhere; the fixture directory keeps its own name throughout.
+
+Limitations: debug profile only, so no timing claim. X11 pointer and key input
+came from a local XTest helper rather than a desktop session, and macOS, Wayland,
+VoiceOver/Orca, theme and density variations for the new dialog were not
+exercised.
 
 ## September 14 public-launch preparation
 
@@ -396,7 +448,7 @@ These rows describe checks to select for the affected feature, not completed nat
 | 3. Text size and accessibility | Follow [typography and density](../DESIGN.md#typography-and-density): independent interface/code settings and resets, persistence, both densities and ten themes at minimum/wide sizes. Retain selection, focus, Find and viewports through scaling. Inspect names/roles/supported states and Increase Contrast, Reduce Transparency and system light/dark behavior where available. Exercise VoiceOver names, roles, selected/expanded/disabled states, current-row announcements, editing, modal containment, restored focus and status/error announcements using the [native accessibility contract](native-accessibility.md); record actual settings and build-specific results. |
 | 4. Quick Open and path filters | Exercise Command-P immediate typing, worktree versus pinned revision scope, keyboard selection/Return/Escape, Unicode/long/raw-byte paths, deleted/conflicted/unsupported files, no matches and visible truncation. Verify File History/Blame use the inspected target and Back restores an interrupted source preview. Check [bounded discovery](architecture.md#revision-inspection-review-and-recovery), rapid query replacement, repository switching, and changed/working file filters. |
 | 5. Multi-file staging | Exercise Command-toggle, Shift-click/arrow ranges, Command-A, selected counts, directory grouping and separate staged/unstaged identities. Compare Git index/worktree bytes before/after exact selected Stage/Unstage, including renames, binaries and mixed states. Filtering/grouping clears selection; refresh retains only visible survivors; switching repositories clears it. Check stale plans, partial failures, filtered all-files disabling and existing hunk/line staging. See [working operations](user-guide.md#open-a-project-and-work-with-git). |
-| 6. Worktree management | Follow [worktree semantics](parallel-work-recovery.md#worktrees): review and create existing/new branch destinations, inspect state and hand off to GitTurtle/Finder/editor. Refuse occupied branches, stale identities, dirty/untracked/ignored content, locked/missing/main/current worktrees and active conflicts. Verify shared versus private configuration/drafts, branch retention after removal, and honest partial-checkout failure feedback without recursive cleanup. |
+| 6. Worktree management | Follow [worktree semantics](parallel-work-recovery.md#worktrees): review and create existing/new branch destinations, inspect state and hand off to GitTurtle/Finder/editor. Refuse occupied branches, stale identities, dirty/untracked/ignored content, locked/missing/main/current worktrees and active conflicts. Exercise Force remove worktree on a dirty target: its confirmation shows the file counts, ordinary removal stays refused, force removal deletes the folder and retains the branch, the confirmation lists the deleted paths and unfinished state, and locked/main/current/missing targets, held lock files, submodules and nested repositories stay refused. Verify shared versus private configuration/drafts, branch retention after removal, and honest partial-checkout failure feedback without recursive cleanup. |
 | 7. Activity and reflog recovery | Exercise the bounded [activity/reflog workflows](parallel-work-recovery.md): captured repository/target/time, running and final outcomes, cancellation/uncertainty, restart, and explicit next actions without replay. Confirm retained activity excludes secrets and arbitrary diagnostics. Inspect available and expired/missing reflog commits; create the exact recovery branch after revalidation while preserving HEAD, index and working bytes. |
 | 8. Conflict blocks | Follow [block resolution](conflict-blocks.md) across merge, rebase, cherry-pick and stash conflicts, including merge/diff3/zdiff3 markers. Test Previous/Next and shortcuts, Current/Incoming/Both, manual editing, unresolved counts, empty/CRLF sides, malformed markers and fallbacks. Save draft must leave the index conflicted; Save and stage must refuse remaining markers/stale sources and preserve unrelated entries. Retain drafts through file/view changes and unrelated refresh; exercise Continue/Abort/Keep files separately. |
 | 9. Interactive rebase | Follow [native rebase](interactive-rebase.md): reviewed exclusive base, exact sequence, button and Option-arrow reorder, P/R/S/F/D actions, invalid squash/fixup positions, known-remote acknowledgment and stale plans. Verify native reword/squash messages, separate base/replayed-commit labels, hooks/signing failures, intermediate cancellation, conflicts, Continue/Abort and restart resume. Protect tracked/untracked/ignored work and explain unsupported histories; no automatic force-push. |

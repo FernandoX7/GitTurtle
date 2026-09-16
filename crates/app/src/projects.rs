@@ -1,6 +1,11 @@
+use crate::{
+    GitTurtle,
+    preferences::{Preferences, directory_name, validate_project_name},
+};
 use gpui_kit::component::{
-    Disableable, Icon, Selectable, Sizable, Theme,
+    Disableable, Icon, Selectable, Sizable, Theme, WindowExt,
     button::{Button, ButtonVariants},
+    dialog::{Cancel, Confirm, DialogFooter},
     input::{Input, InputEvent, InputState},
     tooltip::Tooltip,
 };
@@ -8,7 +13,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use std::{
     cell::RefCell,
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     rc::Rc,
 };
@@ -17,6 +22,9 @@ use std::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProjectEvent {
     Open(PathBuf),
+    /// Ask to give this project a client-only name. The hub does not save it;
+    /// the application owns the preference writer.
+    Rename(PathBuf),
     Clone {
         source: String,
         destination: PathBuf,
@@ -44,6 +52,7 @@ struct FocusObservation {
 
 pub struct ProjectHub {
     recent: Vec<PathBuf>,
+    names: HashMap<PathBuf, String>,
     filtered: Vec<PathBuf>,
     search: Entity<InputState>,
     source: Entity<InputState>,
@@ -75,6 +84,7 @@ impl EventEmitter<ProjectEvent> for ProjectHub {}
 impl ProjectHub {
     pub fn new(
         recent: Vec<PathBuf>,
+        names: HashMap<PathBuf, String>,
         default_branch: String,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -96,6 +106,7 @@ impl ProjectHub {
         let mut this = Self {
             filtered: recent.clone(),
             recent,
+            names,
             search: search.clone(),
             source: source.clone(),
             parent: parent.clone(),
@@ -178,6 +189,18 @@ impl ProjectHub {
         self.filter_recent(cx);
     }
 
+    pub fn set_names(&mut self, names: HashMap<PathBuf, String>, cx: &mut Context<Self>) {
+        self.names = names;
+        self.filter_recent(cx);
+    }
+
+    fn display_name(&self, path: &Path) -> String {
+        self.names
+            .get(path)
+            .cloned()
+            .unwrap_or_else(|| directory_name(path))
+    }
+
     pub fn set_default_branch(&mut self, branch: String, cx: &mut Context<Self>) {
         if !self.branch_edited {
             // InputState needs a Window; apply this during the next render.
@@ -222,7 +245,10 @@ impl ProjectHub {
         self.filtered = self
             .recent
             .iter()
-            .filter(|path| path.to_string_lossy().to_lowercase().contains(&query))
+            .filter(|path| {
+                path.to_string_lossy().to_lowercase().contains(&query)
+                    || self.display_name(path).to_lowercase().contains(&query)
+            })
             .cloned()
             .collect();
         self.recent_scroll.scroll_to_item(0, ScrollStrategy::Top);
@@ -274,7 +300,7 @@ impl ProjectHub {
             ProjectEvent::Open(_) => ProjectMode::Open,
             ProjectEvent::Clone { .. } => ProjectMode::Clone,
             ProjectEvent::Create { .. } => ProjectMode::Create,
-            ProjectEvent::Back => return,
+            ProjectEvent::Back | ProjectEvent::Rename(_) => return,
         });
         self.error = None;
         self.busy = true;
@@ -379,13 +405,21 @@ impl ProjectHub {
         let palette = crate::appearance::palette(cx);
         let path = self.filtered[index].clone();
         let display = path.display().to_string();
-        let location = path.parent().unwrap_or(&path).display().to_string();
-        let name = path
-            .file_name()
-            .unwrap_or(path.as_os_str())
-            .to_string_lossy()
-            .into_owned();
-        Button::new(("recent-project", index))
+        let folder = directory_name(&path);
+        let name = self.display_name(&path);
+        // A renamed project still has to be identifiable as a folder on disk,
+        // so keep its real folder name beside the location.
+        let location = {
+            let parent = path.parent().unwrap_or(&path).display().to_string();
+            if name == folder {
+                parent
+            } else {
+                format!("{folder} · {parent}")
+            }
+        };
+        let rename_path = path.clone();
+        let rename_name = name.clone();
+        let row = Button::new(("recent-project", index))
             .ghost()
             .h(crate::appearance::ui_size(76.))
             .w_full()
@@ -439,7 +473,31 @@ impl ProjectHub {
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.emit_operation(ProjectEvent::Open(path.clone()), cx)
-            }))
+            }));
+        div()
+            .id(("recent-project-row", index))
+            .w_full()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(div().flex_1().min_w_0().child(row))
+            .child(
+                Button::new(("rename-recent-project", index))
+                    .debug_selector(move || format!("rename-recent-project-{index}"))
+                    .ghost()
+                    .flex_shrink_0()
+                    .size(crate::appearance::ui_size(30.))
+                    .rounded(px(8.))
+                    .icon(Icon::default().path("icons/file-renamed.svg").size(px(15.)))
+                    .accessibility_label(format!("Rename {rename_name}, {display}"))
+                    .tooltip("Rename this project in GitTurtle")
+                    .disabled(self.unavailable())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !this.unavailable() {
+                            cx.emit(ProjectEvent::Rename(rename_path.clone()));
+                        }
+                    })),
+            )
             .into_any_element()
     }
 
@@ -1107,6 +1165,17 @@ fn hub_text(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Stateful
         .child(text)
 }
 
+/// Decide what a submitted rename means. Empty input, or the folder name
+/// typed back, clears the custom name instead of storing a duplicate of it.
+fn chosen_name(value: &str, folder: &str) -> Result<Option<String>, String> {
+    let value = value.trim();
+    if value.is_empty() || value == folder {
+        return Ok(None);
+    }
+    validate_project_name(value)?;
+    Ok(Some(value.to_owned()))
+}
+
 fn unique_recent(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut seen = HashSet::new();
     paths
@@ -1178,6 +1247,300 @@ fn validate_branch(branch: &str) -> Result<(), String> {
     Ok(())
 }
 
+impl GitTurtle {
+    /// The name this project shows in the client. Everything that lists a
+    /// repository goes through here, so a rename is consistent across the
+    /// hub, tabs, menus and status text.
+    pub(super) fn project_name(&self, path: &Path) -> String {
+        self.project_names
+            .get(path)
+            .cloned()
+            .unwrap_or_else(|| directory_name(path))
+    }
+
+    pub(super) fn open_rename_project(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
+            return;
+        }
+        let current = self.project_names.get(&path).cloned();
+        // Each opening starts with the saved value, including after Cancel.
+        let owner = cx.entity().downgrade();
+        let form = cx.new(|cx| RenameProjectForm::new(owner, path, current, window, cx));
+        let focus_form = form.downgrade();
+        self.rename_project = Some(form.clone());
+        window.open_alert_dialog(cx, move |dialog, _, cx| {
+            let submit = form.clone();
+            let cancel = form.clone();
+            let pending = form.read(cx).pending;
+            dialog
+                .title("Rename project")
+                .width(px(520.))
+                .child(form.clone())
+                .keyboard(!pending)
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            crate::button("cancel-rename-project", "Cancel", "", false)
+                                .disabled(pending)
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(Cancel), cx)
+                                }),
+                        )
+                        .child(
+                            crate::button(
+                                "save-project-name",
+                                if pending { "Saving…" } else { "Save name" },
+                                "",
+                                false,
+                            )
+                            .primary()
+                            .disabled(pending)
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(Confirm { secondary: false }), cx)
+                            }),
+                        ),
+                )
+                .on_ok(move |_, window, cx| {
+                    submit.update(cx, |form, cx| form.submit(window, cx));
+                    false
+                })
+                .on_cancel(move |_, _, cx| {
+                    cancel.update(cx, |form, _| {
+                        if form.pending {
+                            return false;
+                        }
+                        form.visible = false;
+                        true
+                    })
+                })
+        });
+        window.refresh();
+        window.on_next_frame(move |window, cx| {
+            let _ = focus_form.update(cx, |form, cx| {
+                if form.visible {
+                    form.input.update(cx, |input, cx| {
+                        input.focus(window, cx);
+                        input.select_all(window, cx);
+                    });
+                }
+            });
+        });
+    }
+
+    /// App data only. `None` restores the folder name. The write shares the
+    /// serialized preference executor with settings and recents.
+    pub(super) fn rename_project(
+        &mut self,
+        path: PathBuf,
+        name: Option<String>,
+        form: WeakEntity<RenameProjectForm>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let response = self
+            .preferences_writer
+            .submit(move || Preferences::save_project_name(&path, name.as_deref()));
+        cx.spawn_in(window, async move |this, cx| {
+            let result = response.await.unwrap_or_else(|_| {
+                Err(anyhow::anyhow!(
+                    "The settings writer stopped before reporting a result"
+                ))
+            });
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.finish_project_rename(form, result, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn finish_project_rename(
+        &mut self,
+        form: WeakEntity<RenameProjectForm>,
+        result: anyhow::Result<Preferences>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let visible = self.rename_project.as_ref().is_some_and(|current| {
+            current.entity_id() == form.entity_id() && current.read(cx).visible
+        });
+        match result {
+            Ok(preferences) => {
+                self.project_names = preferences.project_names;
+                let names = self.project_names.clone();
+                self.hub.update(cx, |hub, cx| hub.set_names(names, cx));
+                self.rebuild_navigation(cx);
+                let _ = form.update(cx, |form, cx| {
+                    form.pending = false;
+                    form.visible = false;
+                    cx.notify();
+                });
+                if visible {
+                    window.close_dialog(cx);
+                    self.rename_project = None;
+                }
+            }
+            Err(error) => {
+                let _ = form.update(cx, |form, cx| {
+                    form.pending = false;
+                    form.error = Some(format!("Could not save the project name: {error:#}"));
+                    cx.notify();
+                });
+            }
+        }
+        cx.notify();
+    }
+}
+
+/// Editing a project's client-side name. The folder on disk is never touched,
+/// so this form validates presentation only and keeps its text on failure.
+pub struct RenameProjectForm {
+    owner: WeakEntity<GitTurtle>,
+    path: PathBuf,
+    folder: String,
+    named: bool,
+    input: Entity<InputState>,
+    error: Option<String>,
+    pending: bool,
+    visible: bool,
+    _subscription: Subscription,
+}
+
+impl RenameProjectForm {
+    fn new(
+        owner: WeakEntity<GitTurtle>,
+        path: PathBuf,
+        current: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let folder = directory_name(&path);
+        let named = current.is_some();
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(folder.clone())
+                .default_value(current.unwrap_or_else(|| folder.clone()))
+        });
+        let subscription =
+            cx.subscribe_in(&input, window, |this, _, event, window, cx| match event {
+                InputEvent::Change => {
+                    this.error = None;
+                    cx.notify();
+                }
+                InputEvent::PressEnter { .. } => this.submit(window, cx),
+                _ => {}
+            });
+        Self {
+            owner,
+            path,
+            folder,
+            named,
+            input,
+            error: None,
+            pending: false,
+            visible: true,
+            _subscription: subscription,
+        }
+    }
+
+    /// Keep the reviewed target and text until persistence reports success.
+    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending || !self.visible {
+            return;
+        }
+        let name = match chosen_name(self.input.read(cx).value().as_ref(), &self.folder) {
+            Ok(name) => name,
+            Err(error) => {
+                self.error = Some(error);
+                cx.notify();
+                return;
+            }
+        };
+        let path = self.path.clone();
+        let form = cx.entity().downgrade();
+        self.pending = true;
+        self.error = None;
+        if self
+            .owner
+            .update(cx, |owner, cx| {
+                owner.rename_project(path, name, form, window, cx)
+            })
+            .is_err()
+        {
+            self.pending = false;
+            self.error = Some("The project window is no longer available.".into());
+        }
+        cx.notify();
+    }
+}
+
+impl Render for RenameProjectForm {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = Theme::global(cx).colors;
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                hub_text(
+                    "rename-project-description",
+                    "This name is shown in GitTurtle only. The folder on disk keeps its own name.",
+                )
+                .text_size(crate::appearance::ui_text(12.))
+                .line_height(relative(1.5))
+                .text_color(colors.muted_foreground),
+            )
+            .child(
+                hub_text(
+                    "rename-project-folder",
+                    format!("Folder: {}", self.path.display()),
+                )
+                .text_size(crate::appearance::ui_text(11.))
+                .text_color(colors.muted_foreground),
+            )
+            .child(
+                hub_text("rename-project-label", "Project name")
+                    .text_size(crate::appearance::ui_text(12.))
+                    .font_weight(FontWeight::MEDIUM),
+            )
+            .child(
+                Input::new(&self.input)
+                    .aria_label("Project name")
+                    .disabled(self.pending),
+            )
+            .child(
+                hub_text(
+                    "rename-project-hint",
+                    if self.named {
+                        format!("Leave this empty to go back to {}.", self.folder)
+                    } else {
+                        format!("Empty keeps the folder name {}.", self.folder)
+                    },
+                )
+                .text_size(crate::appearance::ui_text(11.))
+                .text_color(colors.muted_foreground),
+            )
+            .children(self.error.as_ref().map(|error| {
+                div()
+                    .id("rename-project-error")
+                    .role(Role::Alert)
+                    .aria_label(error.clone())
+                    .a11y_synthetic_children(crate::native_accessibility::assertive)
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(colors.danger)
+                    .p_2()
+                    .text_size(crate::appearance::ui_text(12.))
+                    .text_color(colors.danger)
+                    .child(error.clone())
+            }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1192,7 +1555,8 @@ mod tests {
         let captured = Rc::new(RefCell::new(None));
         let observed = captured.clone();
         let (_, cx) = cx.add_window_view(move |window, cx| {
-            let hub = cx.new(|cx| ProjectHub::new(vec![], "main".into(), window, cx));
+            let hub =
+                cx.new(|cx| ProjectHub::new(vec![], HashMap::new(), "main".into(), window, cx));
             *captured.borrow_mut() = Some(hub.clone());
             gpui_kit::component::Root::new(hub, window, cx)
         });
@@ -1288,8 +1652,9 @@ mod tests {
     #[gpui::test]
     fn populated_project_inputs_keep_their_names_across_modes(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
-        let (hub, cx) =
-            cx.add_window_view(|window, cx| ProjectHub::new(vec![], "main".into(), window, cx));
+        let (hub, cx) = cx.add_window_view(|window, cx| {
+            ProjectHub::new(vec![], HashMap::new(), "main".into(), window, cx)
+        });
         for mode in [ProjectMode::Clone, ProjectMode::Create, ProjectMode::Open] {
             cx.update(|window, cx| {
                 hub.update(cx, |hub, cx| {
@@ -1398,6 +1763,109 @@ mod tests {
         }
     }
 
+    #[gpui::test]
+    fn the_recent_row_rename_control_asks_for_its_own_project(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let client = PathBuf::from("/projects/turtle-client");
+        let core = PathBuf::from("/projects/turtle-core");
+        let recent = vec![client.clone(), core.clone()];
+        let names = HashMap::from([(client.clone(), "Shell".to_owned())]);
+        let captured = Rc::new(RefCell::new(None));
+        let observed = captured.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let hub = cx.new(|cx| ProjectHub::new(recent, names, "main".into(), window, cx));
+            *captured.borrow_mut() = Some(hub.clone());
+            gpui_kit::component::Root::new(hub, window, cx)
+        });
+        let hub = observed.borrow_mut().take().unwrap();
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let recorder = events.clone();
+        let subscription = cx.update(|_, cx| {
+            cx.subscribe(&hub, move |_, event: &ProjectEvent, _| {
+                recorder.borrow_mut().push(event.clone())
+            })
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+
+        // Each row asks for the project on that row, not the first one.
+        for (selector, path) in [
+            ("rename-recent-project-0", &client),
+            ("rename-recent-project-1", &core),
+        ] {
+            let bounds = cx.debug_bounds(selector).expect("rendered rename control");
+            cx.simulate_click(bounds.center(), Modifiers::default());
+            cx.run_until_parked();
+            assert_eq!(
+                events.borrow().last(),
+                Some(&ProjectEvent::Rename(path.clone()))
+            );
+        }
+        // Asking to rename must never start opening a project.
+        assert!(
+            !events
+                .borrow()
+                .iter()
+                .any(|event| matches!(event, ProjectEvent::Open(_)))
+        );
+        cx.read(|cx| assert!(!hub.read(cx).busy));
+        drop(subscription);
+    }
+
+    #[test]
+    fn a_submitted_rename_clears_the_name_for_empty_or_folder_text() {
+        assert_eq!(chosen_name("  ", "turtle").unwrap(), None);
+        assert_eq!(chosen_name("  turtle  ", "turtle").unwrap(), None);
+        assert_eq!(
+            chosen_name("  Turtle Client  ", "turtle").unwrap(),
+            Some("Turtle Client".to_owned())
+        );
+        assert!(chosen_name("two\nlines", "turtle").is_err());
+        assert!(chosen_name(&"x".repeat(129), "turtle").is_err());
+    }
+
+    #[gpui::test]
+    fn renamed_projects_show_and_filter_by_their_chosen_name(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let client = PathBuf::from("/projects/turtle-client");
+        let core = PathBuf::from("/projects/turtle-core");
+        let recent = vec![client.clone(), core.clone()];
+        let names = HashMap::from([(client.clone(), "Shell 客户端".to_owned())]);
+        let (hub, cx) = cx.add_window_view(move |window, cx| {
+            ProjectHub::new(recent, names, "main".into(), window, cx)
+        });
+        cx.update(|_, cx| {
+            assert_eq!(hub.read(cx).display_name(&client), "Shell 客户端");
+            assert_eq!(hub.read(cx).display_name(&core), "turtle-core");
+        });
+
+        // A chosen name is searchable; the folder name still finds the project.
+        for (query, expected) in [
+            ("客户端", vec![client.clone()]),
+            ("shell", vec![client.clone()]),
+            ("turtle-client", vec![client.clone()]),
+            ("turtle-", vec![client.clone(), core.clone()]),
+            ("core", vec![core.clone()]),
+        ] {
+            cx.update(|window, cx| {
+                hub.update(cx, |hub, cx| {
+                    hub.search
+                        .update(cx, |input, cx| input.set_value(query, window, cx));
+                    hub.filter_recent(cx);
+                    assert_eq!(hub.filtered, expected, "{query}");
+                });
+            });
+        }
+
+        // Clearing the name returns the project to its folder name.
+        cx.update(|_, cx| {
+            hub.update(cx, |hub, cx| {
+                hub.set_names(HashMap::new(), cx);
+                assert_eq!(hub.display_name(&client), "turtle-client");
+            });
+        });
+    }
+
     #[test]
     fn recent_projects_keep_order_without_duplicate_paths() {
         let recent = unique_recent(vec!["/tmp/b".into(), "/tmp/a".into(), "/tmp/b".into()]);
@@ -1418,3 +1886,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod rename_tests;

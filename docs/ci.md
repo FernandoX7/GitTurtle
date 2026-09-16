@@ -84,36 +84,54 @@ outputs or unknown classification versions fail. Each matrix keeps
 `fail-fast: false` so one platform failure does not discard the other platform's
 diagnostics. A checkout/evaluator failure also leaves the gate unsuccessful.
 
-The current required names, **`Rust · macos-15`** and **`Rust · ubuntu-24.04`**, remain
-as always-running compatibility jobs. They mirror the complete Quality gate,
-while the actual platform work is named `Rust tests and Clippy · <platform>` and
+The actual platform work is named `Rust tests and Clippy · <platform>` and
 `Rust release · <platform>`. `Rust formatting` checks the workspace once on Ubuntu.
-These short compatibility jobs execute on Ubuntu; the names preserve required-check
-identity, not a claim that their shell step compiles on macOS. A product change
-cannot pass them unless both actual macOS/Ubuntu Rust matrices, formatting and
-other required lanes succeeded. A docs-only change can pass after its justified
-skips. This avoids GitHub's [skipped-job success behavior](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks)
+The aggregate cannot pass a product change unless both platform matrices,
+formatting and other required lanes succeed; documentation changes may pass after
+justified skips. This avoids GitHub's [skipped-job success behavior](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks)
 silently bypassing a failed dependency.
 
-No repository settings change is performed by this source patch. C1 must first
-exercise actual positive/negative PR cases, cancellation, routing, forks and
-main/manual runs. Once the new gate has passed on the intended revision, the
-coordinator prepares and obtains authorization for this scoped migration:
+The transitional **`Rust · macos-15`** and **`Rust · ubuntu-24.04`** jobs previously
+mirrored the complete gate from short Ubuntu jobs. On September 15, 2026 at
+23:11:43 UTC, the coordinator applied and verified gate-only main protection:
+`Quality gate`, strict/up-to-date checks enabled, GitHub Actions app ID `15368`.
+The readback at main `b5d681c1c6db21bfb74b3e07da461c3f8de588dc` preserved all
+unrelated protections and the retired CodeQL state. This dated migration result
+does not establish completion of the remaining C1 cache, fork or runtime evidence.
 
-1. Read the current main protection and preserve its strict/up-to-date setting,
-   GitHub Actions app binding and review/conversation requirements. CodeQL was
-   separately retired by the maintainer; do not reintroduce its inactive rule.
-2. Add the observed `Quality gate` name/app binding alongside the two current
-   Rust names using the [required-status-check endpoint](https://docs.github.com/en/rest/branches/branch-protection#update-status-check-protection).
-   Verify the binding and actual positive/negative behavior.
-3. Replace the old required names with the verified gate only after those checks.
-   Remove compatibility jobs in a separately reviewed follow-up after the live
-   migration is established.
+This source cleanup removes only the two transitional mirrors. Integrate it only
+after the planned cache measurements are complete, the then-current main and live
+protection are freshly bound, and independent general and security reviews cover
+the exact cleanup candidate. The classifier, aggregate and every underlying
+validation phase remain unchanged. Source preparation does not establish those
+remaining requirements.
 
-Rollback restores the exact latest pre-migration required-check set through that
-same scoped endpoint, with strictness and unrelated protection unchanged. Preserve
-the compatibility jobs until the migration is proven. Source regressions use a
-reviewed revert; do not remove protection to clear a failed check. The independent
+Repository settings are managed separately through the
+[required-status-check endpoint](https://docs.github.com/en/rest/branches/branch-protection#update-status-check-protection).
+The migration first retained the two Rust requirements while adding the observed
+`Quality gate` app binding, then switched to the verified gate-only requirement.
+Fresh capture and preserving readback cover strictness, app binding and unrelated
+review/conversation settings at each transition. CodeQL was separately retired by
+the maintainer; this cleanup does not reintroduce its inactive rule or modify
+repository settings.
+
+Before the source cleanup, rollback can restore the latest applicable captured
+required-check set through that scoped endpoint while its jobs still exist.
+After cleanup, restore the compatibility jobs **before** requiring their names:
+
+1. Prepare a reviewed revert of the cleanup commit against current main. Restore
+   the removed job block without overwriting newer workflow changes; keep the
+   existing `Quality gate` requirement in place.
+2. Integrate the restoration through the protected PR flow and observe the restored
+   jobs passing on the intended main revision and current main-targeting PR, with
+   the exact GitHub Actions app binding. Source restoration alone is insufficient.
+3. Capture fresh protection, then add the observed Rust checks alongside the gate
+   through the scoped endpoint. Verify the full readback before any separately
+   reviewed change to the aggregate requirement. Preserve strictness, unrelated
+   protections and retired CodeQL state; do not replay a stale settings snapshot.
+
+If a settings request has an uncertain result, read back the live state before
+another action. Never remove protection to clear a failed check. The independent
 [security review](development/security-review.md) is a development acceptance
 requirement. It is not an automated GitHub status check, and a successful Quality
 gate alone does not establish that the review happened.
@@ -163,8 +181,8 @@ inputs. Package/artifact consumers must precede finish because its successful-ma
 cleanup can remove the application executable. The final gate requires the
 formatter and **both** platform matrices, in addition to tooling/Website according
 to the recorded plan. A successful debug matrix cannot cover a failed, cancelled,
-missing or unexpectedly skipped release matrix. Legacy platform check names keep
-mirroring this complete result until C1's verified protection migration.
+missing or unexpectedly skipped release matrix. Removing the transitional mirrors
+does not change that dependency or result contract.
 
 ### Why two compilation lanes per platform
 
@@ -188,8 +206,8 @@ against the extra cold compilation, setup, transfer and runner time before adopt
 Each Rust matrix has two fixed OS entries, `fail-fast: false`, `max-parallel: 2`
 and a 45-minute job timeout. Thus at most four compilation runners are requested
 per Quality run, plus the independent inexpensive checks. Formatting is bounded
-at five minutes, policy and the final gate at five, tooling at ten and compatibility
-at two. GitHub may queue those jobs under the repository's existing concurrency
+at five minutes, policy and the final gate at five, and tooling at ten.
+GitHub may queue those jobs under the repository's existing concurrency
 limits; matrix bounds do not promise simultaneous starts. See the documented
 [matrix controls](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/run-job-variations).
 Failed commands still retain their exit code, sanitized logs and available Cargo
@@ -208,20 +226,22 @@ the [measurement procedure](#reproduce-coldwarm-and-prmain-measurements), then r
    cache restore interval and observed hit state, test compilation/execution,
    Clippy, release/package time and the completed post-job save/cleanup interval.
 2. The retained payload subset, compressed sizes and any downloads-only fallback
-   under each 1.5 GiB budget. Separate cold PRs from a successful trusted-main
+   under each profile's pre-registration budget. Separate cold PRs from a successful trusted-main
    seed and genuinely restored warm PR/main samples on **both** platforms.
 3. Quality creation-to-completion and summed runner intervals across **all** jobs,
-   including inexpensive jobs, cache post-actions and compatibility checks. More
-   simultaneous jobs can increase queue contention and runner minutes even if
+   including inexpensive jobs and cache post-actions. Include compatibility checks
+   in historical runs that emitted them. More simultaneous jobs can increase
+   queue contention and runner minutes even if
    the visible critical path falls. Duplicate Linux package setup/downloads and
    profile-specific build scripts can increase cold cost; report this regression.
 4. The full merge path including every active required check. A faster release
    lane alone does not prove a faster merge. Record sample counts, median/tail and
    unavailable observations; a small set does not establish production p95.
 5. Real negative PR cases for each Rust phase: failure, cancellation and unexpected
-   skip, plus docs-only justified skips. Verify the actual gate and both legacy
-   required names remain unsuccessful for a failed required platform. Local result
-   fixtures establish the evaluator's contract, not GitHub's matrix execution.
+   skip, plus docs-only justified skips. Verify the actual gate remains unsuccessful
+   for a failed required platform; the earlier overlap evidence must also cover
+   both legacy required names. Local result fixtures establish the evaluator's
+   contract, not GitHub's matrix execution.
 
 No hosted improvement is established by this source patch. If cold overhead,
 cache eviction or warm critical-path results miss the initiative targets, propose
@@ -520,11 +540,15 @@ cache/fanout improvements when comparing the full required-check completion time
 
 ### Later measurements and C1
 
-Pending: candidate-bound hosted PR/main/manual observations, comparable cold/warm
-samples on both platforms, cache overhead and invalidation evidence, preserved
-failure diagnostics, and measured improvement. No later hosted timing is claimed
-by this guide. Add sanitized run links, source identities, raw-sample locations,
-counts/statistics and limitations here when the coordinator establishes them.
+The [September 16 record](benchmarks/2026-09-16-ci.md) documents the first
+trusted-main seed after the capacity repair (all four lanes saved; 3.91 GB of
+archives), a controlled warm PR run that reached the Quality gate 7m39s after
+creation against 20m33s cold, an external fork contribution that restored
+the same archives read-only, and a warm main push that found every key already
+present and uploaded nothing. Those are single observations; medians and tails,
+a new cache generation after a dependency change, hosted invalidation and
+corrupt-restore diagnostics, and save overhead on later main pushes remain
+pending.
 
 ## Local verification
 
@@ -717,9 +741,21 @@ accounts logical file bytes plus a conservative 4 KiB per directory/file entry,
 counting hardlinked aliases separately. Every entry is checked, including source
 trees excluded from the projected payload; symlinks, special files, traversal
 errors, more than 250,000 entries or an expired accounting deadline refuse saving.
-The verified payload limit is **1.5 GiB per separate profile** (the older combined
-mode retains its 3 GiB limit). These are local pre-registration measurements,
-not compressed archive sizes or unconditional archive ceilings.
+The verified logical payload limits are **6 GiB for `debug` and 3.5 GiB for
+`release`**; the older combined mode uses their 9.5 GiB sum. They are sized from
+the [second trusted-main seed](benchmarks/2026-09-15-ci.md#four-budget-timeouts)
+(run 35036670099), whose projected payloads after local cleanup and source pruning
+were about 5.9 GB (Linux debug), 3.9 GB (macOS debug), 3.1 GB (Linux release) and
+2.8 GB (macOS release), including about 0.46 GB of retained downloads per lane,
+and from local `zstd -3 --long=30` measurements of a CI-like payload of the same
+workspace: roughly 6.3× for debug outputs, 5.0× for release outputs and 1.2× for
+archives and index. Applied to those hosted sizes, one generation of four archives
+is estimated at roughly 3.3 GB compressed (under 4 GB even if every retained
+download compressed only 1.2×) against the repository's 10 GB cache quota, of
+which 0.2 GB was in use by historical CodeQL entries. These are local
+pre-registration measurements and compression estimates, not compressed archive
+sizes or unconditional archive ceilings; hosted fit and actual archive sizes remain
+unverified until a new trusted-main seed is observed.
 
 The helper projects only the extracted registry package directories that pinned
 [rust-cache registry cleanup](https://github.com/Swatinem/rust-cache/blob/6323deb102c322ba6fcbdcafc7e3dddab59af2b6/src/cleanup.ts)
@@ -729,15 +765,45 @@ The [Cargo cache layout](https://doc.rust-lang.org/cargo/guide/cargo-home.html)
 contains both downloadable archives and extracted sources. The helper previously
 counted those removable copies against the compiled-output allowance. The first
 trusted-main seed discarded every target and refused all four saves, but its
-diagnostics did not measure the removable-source volume. New hosted snapshots
-must quantify the effect of this accounting correction. That
-[observed failure](benchmarks/2026-09-15-ci.md#four-cache-budget-refusals)
-is retained separately from repair validation.
+diagnostics did not measure the removable-source volume. The second seed measured
+them (about 1.33 GB per lane) and supplied the payload sizes above, then failed
+every lane by exhausting its budget. Both
+[observed failures](benchmarks/2026-09-15-ci.md#four-cache-budget-refusals)
+are retained separately from repair validation.
 
-After removing local package outputs through `cargo clean --locked --package`,
-the helper may clean up to eight largest dependency package groups, stopping new
-cleanup work after 90 seconds (each Cargo command has a 30-second timeout). Cargo
-owns removal of fingerprints, libraries and generated native outputs together.
+After removing local package outputs through `cargo clean --locked --profile
+<profile> --package`, the helper may clean up to eight largest dependency package
+groups. Packages are ranked by bytes attributed only from structured locations
+relative to the target root: the artifact file directly under `deps`, or the whole
+package directory directly under `build` or `.fingerprint`, keyed by the name
+before its trailing hash and matched against the package name and its library-kind
+target names (`lib`, `rlib`, `dylib`, `cdylib`, `staticlib` and `proc-macro`, the
+pinned upstream save targets). Test, example, bench, binary and build-script target
+names and path components above the target root never score, so a dependency test
+named `debug` cannot claim a whole profile tree and each `build_script_build`
+binary counts only for its own package. Eviction is a growth safety valve rather
+than the primary fit mechanism: with this attribution the eight largest dependency
+groups hold roughly 1.0 GB (debug) and 0.5 GB (release) on a local build of this
+workspace. Two separate time bounds apply. A 90-second scheduling budget governs
+starting cleanup work: another dependency eviction begins only while the remaining
+budget covers the last observed cleanup duration plus twice the last measurement
+duration, one measurement of headroom for scan variance (each Cargo command has a
+30-second timeout). A separate 90-second allowance then bounds
+source pruning, the verification scan, the optional whole-target fallback and its
+scan, so an exhausted eviction loop no longer fails the fallback. A scan that
+overruns either bound refuses saving. Both local and dependency cleanup select
+Cargo's `dev` profile for a debug job and `release` for a release job; the older
+combined mode visits both profiles within each selected package group. A job
+that compiles with an explicit `--target` passes that triple to its finish phase
+through the action's `target` input (the release jobs pass their matrix target,
+validated as a plain triple in both the action and the helper); each selected
+group is then cleaned once for the host layout (`target/<profile>`, build scripts
+and procedural macros) and once more with `--target` for the triple layout
+(`target/<triple>/<profile>`, the dependency artifacts). Package-scoped clean
+otherwise defaults to `dev` and, without `--target`, touches only the host layout,
+so the earlier release cleanups were no-ops for both reasons even when the command
+succeeded. The triple appears only in Cargo arguments, never in diagnostics.
+Cargo owns removal of fingerprints, libraries and generated native outputs together.
 Extracted sources stay present through every Cargo command, then only the
 projected source directories are removed. A new scan must equal the projection
 before save registration. If the actual payload still exceeds its ceiling, the
@@ -751,11 +817,12 @@ Pinned upstream post-save metadata discovery recreates the removed pure-Rust
 sources, then its registry cleanup removes them again. The pinned Cargo fixture
 covers that sequence and a real local archive round trip. Upstream catches
 cleanup errors, so the verified pre-registration bound is **not a guarantee that
-every saved archive stays under 1.5 GiB**: a failed upstream cleanup may retain
-recreated sources. Actual post-save sizes and useful compiled payloads on each
-hosted platform/profile must be verified before treating them as eligible warm
-seeds. No claim of an unconditional 6 GiB aggregate archive ceiling follows from
-the four local limits.
+every saved archive stays under its profile limit**: a failed upstream cleanup may
+retain recreated sources. Actual post-save archive sizes, post-save upstream
+behavior, useful compiled payloads and warm reuse on each hosted platform/profile
+remain unverified until a new trusted-main seed. No aggregate archive ceiling
+follows from the four local logical limits; the 3.3 GB figure is a compression
+estimate, not an observed size.
 
 Upstream performs additional dependency/age cleanup in its post action. GitHub
 also applies repository-wide
@@ -776,14 +843,21 @@ families/budgets in a reviewed change using those measurements.
 state and a monotonic restore interval. Its documented boundary includes action
 initialization, runner dispatch and recovery/cleanup; it is **not** isolated network
 transfer time. `rust-cache-budget.json` records cleanup wall time, the payload
-ceiling, retained pre-registration accounting, removed-package count, whole-target
-fallback and save eligibility. Snapshots before/after local cleanup, each dependency
-cleanup, source pruning and target fallback separate logical bytes and entry
+ceiling (also on failure), retained pre-registration accounting, removed-package
+count, whole-target fallback and save eligibility. Snapshots before/after local
+cleanup, each dependency cleanup, source pruning and target fallback separate
+logical bytes and entry
 overhead for target, registry sources (retained/removable), archives/index, and Git
 databases/checkouts. They count library files, generated build-script output files
 and fingerprint files, with their logical bytes. Evictions include bounded safe
 package names/versions and metadata ordinals, never full package IDs or source URLs.
-Completed snapshots survive a later budget failure with a fixed failure reason.
+Fixed stage names and elapsed times separate metadata, profile-specific Cargo
+cleanup, dependency selection, accounting, source pruning and projection
+verification. Completed snapshots,
+stage timings and safe package identities survive a later budget failure with a
+fixed failure reason and failed-stage name. Each package attempt reports whether
+its cleanup commands completed; only the snapshots establish the resulting byte
+change. No Cargo output, package source URL or local path is copied into diagnostics.
 Both records live in the existing three-day diagnostics
 artifact. The summary displays explicit cache values, preserving unknown fields
 as unavailable and `false`/zero as observations.
@@ -802,10 +876,11 @@ summaries. The opt-in
 [consumer fixture](../scripts/ci/tests/test_rust_cache_consumer.py) uses the workspace's
 pinned Cargo with a disposable loopback sparse registry (pure-Rust and native
 `*-sys` packages), a commit-pinned local Git dependency and generated build output.
-It checks source recreation/pruning and local archive restoration, then proves
+It checks debug and release source recreation/pruning and local archive restoration, then proves
 retained dependencies are `Fresh`, the local consumer recompiles, preserved native
 source/output timestamps stay valid, and a fully evicted native package rebuilds
-and links successfully. Run the optional Cargo fixtures explicitly with
+and links successfully. A separate local-crate recovery fixture covers both profiles
+in the older combined mode. Run the optional Cargo fixtures explicitly with
 `GITTURTLE_CACHE_CARGO_QA=1 python3 -B -m unittest discover -s scripts/ci/tests -p 'test_rust_cache*.py'`;
 ordinary development-tooling jobs do not install a Rust toolchain just for these
 fixtures. These checks establish source behavior, not a hosted cache hit, pinned
