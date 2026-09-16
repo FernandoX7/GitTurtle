@@ -12,6 +12,7 @@ mod commit_message;
 mod conflicts;
 mod desktop_text;
 mod diff_view;
+mod discard;
 mod editor_find;
 mod file_history;
 mod folder_picker;
@@ -239,6 +240,7 @@ struct GitTurtle {
     worktree_management: worktrees::State,
     interactive_rebase: interactive_rebase::State,
     ignore_actions: ignore::State,
+    discard_actions: discard::State,
     menu_state: Option<(bool, bool)>,
     #[cfg(target_os = "linux")]
     primary_menu: Entity<PrimaryMenu>,
@@ -450,6 +452,7 @@ impl GitTurtle {
             worktree_management: worktrees::State::default(),
             interactive_rebase: interactive_rebase::State::default(),
             ignore_actions: ignore::State::default(),
+            discard_actions: discard::State::default(),
             menu_state: None,
             #[cfg(target_os = "linux")]
             primary_menu: {
@@ -795,6 +798,7 @@ impl GitTurtle {
         self.cancel_tag_action();
         self.cancel_interactive_rebase_action();
         self.cancel_ignore_action();
+        self.cancel_discard_action();
         self.close_inspections(window, cx);
         self.close_blame(window, cx);
         self.blame = blame::State::default();

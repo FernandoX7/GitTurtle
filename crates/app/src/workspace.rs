@@ -1328,6 +1328,9 @@ impl GitTurtle {
                         let owner = ignore_owner.clone();
                         let repository = ignore_repository.clone();
                         let entry = ignore_entry.clone();
+                        let discard_owner = owner.clone();
+                        let discard_repository = repository.clone();
+                        let discard_entry = entry.clone();
                         menu.item(
                             PopupMenuItem::new(if entry.untracked {
                                 "Ignore…"
@@ -1339,6 +1342,25 @@ impl GitTurtle {
                                 let _ = owner.update(cx, |this, cx| {
                                     if this.path == repository {
                                         this.open_ignore(entry.clone(), window, cx);
+                                    }
+                                });
+                            }),
+                        )
+                        // Discard reverts the whole file to HEAD, so both the
+                        // staged and unstaged rows offer the same action.
+                        .item(
+                            PopupMenuItem::new(if discard_entry.conflicted {
+                                "Discard applies after conflict resolution"
+                            } else if discard_entry.untracked {
+                                "Delete untracked file…"
+                            } else {
+                                "Discard changes…"
+                            })
+                            .disabled(busy || discard_entry.conflicted)
+                            .on_click(move |_, window, cx| {
+                                let _ = discard_owner.update(cx, |this, cx| {
+                                    if this.path == discard_repository {
+                                        this.open_discard(discard_entry.clone(), window, cx);
                                     }
                                 });
                             }),

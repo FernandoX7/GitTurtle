@@ -25,6 +25,7 @@ These instructions supplement the root agreements for `crates/git-core`. The [se
 | Named profile application, atomic identity and signing configuration | `src/work/profiles.rs` | `tests/profiles.rs`, `tests/signing.rs` |
 | Explicit one-object LFS download and resolved text | `src/work/lfs_download.rs` | `tests/lfs_download.rs` |
 | Tags and literal ignore rules | `src/work/tags.rs`, `src/work/ignore.rs` | `tests/tags_ignore.rs` |
+| Single-file discard to HEAD and reviewed untracked deletion | `src/work/discard.rs` | `tests/discard.rs` |
 | Operation cancellation, askpass, signing and redacted diagnostics | `src/work/authentication.rs`, `src/work/diagnostics.rs`, `src/work.rs` | `tests/authentication.rs`, `tests/signing.rs`, `tests/workflow.rs`, module unit tests |
 
 Process deadlines and byte-input regressions also live in `src/lib.rs` and `src/work.rs` unit tests.
@@ -65,6 +66,8 @@ An [explicit LFS download](../../docs/lfs-previews.md) captures the pointer, rep
 Keep checkout's protection of local changes and other worktrees, fast-forward-only pull without rebase/autostash, and ordinary non-force push to one visible branch destination. [Profile and identity edits](../../docs/profiles.md) publish all keys atomically under the configuration lock, stay in repository config or existing private-worktree config, and preserve inherited signing requirements. Init/clone preserve occupied destinations and partial results on failure. Changes to these semantics require a matching user-facing target and behavior, not just a new command flag.
 
 Prepared commands must revalidate the selected repository and the operation's captured refs, index, working bytes, configuration, or reflog before writing. Do not replace a stale plan silently with a new target. Partial staging publishes under the real index lock and preserves unrelated entries; conflict and recovery operations must retain their operation-specific preservation guards. Shared refs/configuration/stashes and private worktree HEAD/index/operation state have different ownership; use `git_directories` to resolve private and common administration directories.
+
+`DiscardPlan` captures one status row, HEAD, and the size/modification identity of each reviewed working path. Execution prepares the same plan again and refuses a different row, index, HEAD, or working identity. Tracked rows use `git restore --source=HEAD --staged --worktree` with literal NUL-delimited paths; one reviewed untracked file uses `git clean --force -- <path>`. Conflicted rows, submodules, untracked directories, and tracked rows on an unborn branch are refused, and success requires that the row leaves status.
 
 Worktree details inspect only the selected worktree. Creation rechecks destination and branch occupancy; removal refuses changed, untracked, ignored, locked, main, current or missing worktrees and never forces cleanup. Reflog recovery revalidates the captured entry and creates a new branch without checkout/reset; missing objects and expired entries remain explicit.
 
