@@ -304,3 +304,75 @@ jobs:
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: python3 scripts/ci/changes.py gate
+
+  # NEVER MERGE: disposable cache invalidation diagnostic bound to the trusted
+  # main seed run 35096197326 (c66aef5). It is additive after the Quality gate,
+  # joins no needs list, restores the unchanged debug caches twice through the
+  # production setup action and never builds, tests, fetches, finishes or
+  # saves. Only JSON observations are retained.
+  cache-diagnostic:
+    name: NEVER MERGE cache invalidation diagnostic · ${{ matrix.os }}
+    if: github.repository == 'FernandoX7/GitTurtle' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # Read-only run, job and cache-service listings for the seed binding.
+      actions: read
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    env:
+      # Match the production debug lanes' compiler-affecting environment.
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+      GIT_CONFIG_NOSYSTEM: 1
+      DIAGNOSTIC_SEED_RUN: "35096197326"
+      DIAGNOSTIC_SEED_COMMIT: c66aef59f324630c8b83bb2760d09644a15da85d
+      DIAGNOSTIC_MAIN_COMMIT: f9731e9f38804bc22e81df3cc5eac9b71ad3ecb7
+    steps:
+      - name: Isolate CI Git configuration
+        run: printf 'GIT_CONFIG_GLOBAL=%s/gitturtle-ci-gitconfig\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The seed and bound main commits are compared locally.
+          fetch-depth: 0
+      - name: Verify the trusted main seed and unchanged cache inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci/cache_diagnostic.py preflight
+      - name: Restore unchanged debug dependencies using production setup
+        id: warm
+        uses: ./.github/actions/setup-rust
+        with:
+          profile: debug
+      - name: Require an exact seed hit with compiled dependencies
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIAGNOSTIC_CACHE_HIT: ${{ steps.warm.outputs.cache-hit }}
+        run: python3 scripts/ci/cache_diagnostic.py warm
+      - name: Change one vendor source input in this disposable checkout
+        run: python3 scripts/ci/cache_diagnostic.py mutate
+      - name: Restore with the changed vendor identity using production setup
+        id: invalidated
+        uses: ./.github/actions/setup-rust
+        with:
+          profile: debug
+      - name: Require a changed key, a service-confirmed miss and cleared roots
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIAGNOSTIC_CACHE_HIT: ${{ steps.invalidated.outputs.cache-hit }}
+        run: python3 scripts/ci/cache_diagnostic.py invalidated
+      # No finish phase, Cargo build/test/fetch, package operation or cache write.
+      - name: Preserve diagnostic JSON only
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cache-diagnostic-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cache-diagnostic/*.json
+          retention-days: 3
+          if-no-files-found: warn
+          include-hidden-files: false
