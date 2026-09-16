@@ -702,7 +702,16 @@ async fn force_review_keeps_warning_target_and_actions_visible_at_large_text(
     cx: &mut TestAppContext,
 ) {
     let fixture = Fixture::new();
-    let target = fixture._directory.path().join(format!(
+    let parent = fixture._directory.path().to_path_buf();
+    // Exercise the same alias resolution on Linux as macOS's temporary
+    // directories, where /var may resolve through /private/var.
+    #[cfg(unix)]
+    let parent = {
+        let alias = parent.join("linked-parent");
+        std::os::unix::fs::symlink(&parent, &alias).unwrap();
+        alias
+    };
+    let target = parent.join(format!(
         "worktree with spaces — {}",
         "long-review-target-".repeat(7)
     ));
@@ -715,6 +724,9 @@ async fn force_review_keeps_warning_target_and_actions_visible_at_large_text(
             target.to_str().unwrap(),
         ],
     );
+    // Git records the resolved destination, rather than the alias used to
+    // create it. Compare and copy that same path throughout the review.
+    let target = target.canonicalize().unwrap();
     let tree = fixture
         .repo
         .worktrees()
