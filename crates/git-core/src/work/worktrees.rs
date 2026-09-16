@@ -1,5 +1,9 @@
 //! Reviewed worktree creation/removal. Git alone owns checkout and cleanup.
 use super::*;
+use sha2::Digest as _;
+
+/// Bound for the review lists; the counts stay complete.
+const EFFECT_LIST_LIMIT: usize = 200;
 
 thread_local! {
     static INSPECTION_CANCELLATION: std::cell::RefCell<Option<HistoryCancellation>> = const { std::cell::RefCell::new(None) };
@@ -39,14 +43,27 @@ pub struct WorktreeDetails {
     pub changed_files: usize,
     /// Ignored files also contain user data and prevent removal.
     pub ignored_files: usize,
+    /// Up to `EFFECT_LIST_LIMIT` status rows that force removal deletes;
+    /// `changed_files` holds the complete count.
+    pub changed_entries: Vec<StatusEntry>,
+    /// Up to `EFFECT_LIST_LIMIT` ignored paths that force removal deletes;
+    /// `ignored_files` holds the complete count.
+    pub ignored_paths: Vec<PathBuf>,
+    /// Unfinished Git state that force removal discards, in display order.
+    pub operation_state: Vec<String>,
     pub removal_blocked: Option<String>,
     /// Force removal deletes changed, untracked and ignored content and any
     /// unfinished operation state. It still refuses main, current, locked or
-    /// missing worktrees and worktrees that hold a Git lock file.
+    /// missing worktrees, held Git lock files, initialized submodules and
+    /// nested repositories, whose commits exist nowhere else.
     pub force_removal_blocked: Option<String>,
     root: PathBuf,
     directories: Option<(PathBuf, PathBuf)>,
     directory_identities: Option<[WorktreeDirectoryIdentity; 4]>,
+    /// SHA-256 over every status row, its working size and modification
+    /// time, and every ignored path. A change that keeps the counts equal
+    /// still requires a fresh review.
+    content_digest: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,11 +122,15 @@ impl GitRepository {
             missing,
             changed_files: 0,
             ignored_files: 0,
+            changed_entries: Vec::new(),
+            ignored_paths: Vec::new(),
+            operation_state: Vec::new(),
             removal_blocked: None,
             force_removal_blocked: None,
             root: self.path.clone(),
             directories: None,
             directory_identities: None,
+            content_digest: None,
         };
         if missing {
             let reason = "The folder is missing or unavailable. Restore or reconnect it before managing it; GitTurtle does not delete directories or prune metadata to repair missing worktrees.";
@@ -170,17 +191,36 @@ impl GitRepository {
             // blocks force removal as well. Bisect and sequencer state is
             // unfinished work that force removal deliberately discards.
             let mut lock_files = false;
-            let mut operation_state = false;
-            for (file, lock) in [
-                ("index.lock", true),
-                ("HEAD.lock", true),
-                ("config.worktree.lock", true),
-                ("BISECT_START", false),
-                ("sequencer", false),
+            let mut operation_state = Vec::new();
+            if let Some(name) = &status.operation {
+                operation_state.push(format!("{name} in progress"));
+            }
+            let conflicts = status
+                .entries
+                .iter()
+                .filter(|entry| entry.conflicted)
+                .count();
+            if conflicts > 0 {
+                operation_state.push(format!("{conflicts} unresolved conflicts"));
+            }
+            for (file, label) in [
+                ("index.lock", None),
+                ("HEAD.lock", None),
+                ("config.worktree.lock", None),
+                ("BISECT_START", Some("Bisect in progress")),
+                (
+                    "sequencer",
+                    Some("Sequencer state from a cherry-pick or revert"),
+                ),
             ] {
                 match std::fs::symlink_metadata(directories.0.join(file)) {
-                    Ok(_) if lock => lock_files = true,
-                    Ok(_) => operation_state = true,
+                    Ok(_) => match label {
+                        Some(label) if status.operation.is_none() || file != "sequencer" => {
+                            operation_state.push(label.into())
+                        }
+                        Some(_) => {}
+                        None => lock_files = true,
+                    },
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     Err(error) => {
                         return Err(error).context("Unable to inspect worktree Git state");
@@ -203,25 +243,128 @@ impl GitRepository {
                 "Unable to inspect ignored worktree content: {}",
                 text(&output.stderr)
             );
-            details.ignored_files = output
+            let ignored: Vec<PathBuf> = output
                 .stdout
                 .split(|b| *b == 0)
                 .filter(|p| !p.is_empty())
-                .count();
+                .map(path_from_bytes)
+                .collect();
+            details.ignored_files = ignored.len();
+            // The digest covers every status row, the size and modification
+            // time of its working path, and every ignored path, so a change
+            // that keeps the counts equal still requires a fresh review.
+            let mut digest = sha2::Sha256::new();
+            for entry in &status.entries {
+                digest.update(entry.path.as_os_str().as_encoded_bytes());
+                digest.update([0]);
+                if let Some(old) = &entry.original_path {
+                    digest.update(old.as_os_str().as_encoded_bytes());
+                }
+                digest.update([0]);
+                digest.update(
+                    format!(
+                        "{:?}|{:?}|{}|{}|{:?}|{:?}|{}|{}|{}",
+                        entry.staged,
+                        entry.unstaged,
+                        entry.untracked,
+                        entry.conflicted,
+                        entry.head_oid,
+                        entry.index_oid,
+                        entry.head_mode,
+                        entry.index_mode,
+                        entry.worktree_mode
+                    )
+                    .as_bytes(),
+                );
+                digest.update([0]);
+                match std::fs::symlink_metadata(tree.path.join(&entry.path)) {
+                    Ok(metadata) => digest.update(
+                        format!(
+                            "{}|{:?}|{:?}",
+                            metadata.len(),
+                            metadata.modified().ok(),
+                            metadata.file_type()
+                        )
+                        .as_bytes(),
+                    ),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        digest.update(b"absent")
+                    }
+                    Err(error) => {
+                        return Err(error).context("Unable to inspect changed worktree content");
+                    }
+                }
+                digest.update([0]);
+            }
+            for path in &ignored {
+                digest.update(path.as_os_str().as_encoded_bytes());
+                digest.update([0]);
+            }
+            details.content_digest = Some(digest.finalize().into());
+            // A nested repository's commits exist nowhere else. Git lists it
+            // as one directory entry, never descends into it, and a single
+            // --force deletes it with the worktree.
+            let nested_repository = status
+                .entries
+                .iter()
+                .map(|entry| &entry.path)
+                .chain(ignored.iter())
+                .find(|path| path.as_os_str().as_encoded_bytes().ends_with(b"/"))
+                .cloned();
+            // An initialized submodule keeps its repository under this
+            // worktree's private Git directory or inside its own checkout;
+            // a deinitialized one can leave a retained repository behind.
+            let stages = run_git(&repo.path, &["ls-files", "-s", "-z"])?;
+            let mut submodule = None;
+            for record in stages
+                .split(|byte| *byte == 0)
+                .filter(|record| !record.is_empty())
+            {
+                if let Some(rest) = record.strip_prefix(b"160000 ")
+                    && let Some(tab) = rest.iter().position(|byte| *byte == b'\t')
+                {
+                    let path = path_from_bytes(&rest[tab + 1..]);
+                    if std::fs::symlink_metadata(tree.path.join(&path).join(".git")).is_ok() {
+                        submodule = Some(path);
+                        break;
+                    }
+                }
+            }
+            let retained_modules = std::fs::symlink_metadata(directories.0.join("modules")).is_ok();
+            details.changed_entries = status
+                .entries
+                .iter()
+                .take(EFFECT_LIST_LIMIT)
+                .cloned()
+                .collect();
+            details.ignored_paths = ignored.iter().take(EFFECT_LIST_LIMIT).cloned().collect();
+            details.operation_state = operation_state;
             details.directories = Some(directories);
             if lock_files {
                 let reason = "This worktree holds a Git lock file (index.lock, HEAD.lock or config.worktree.lock). Another Git process may be active. Inspect and clear the lock with Git before removal; GitTurtle never removes locks, even with force removal.";
                 details.removal_blocked = Some(reason.into());
                 details.force_removal_blocked = Some(reason.into());
-            } else if operation_state
-                || status.operation.is_some()
-                || status.entries.iter().any(|entry| entry.conflicted)
-            {
+            } else if !details.operation_state.is_empty() {
                 details.removal_blocked = Some("Finish the active Git operation, bisect, or sequencer state and resolve conflicts before removing this worktree. Force removal discards that unfinished state.".into());
             } else if details.changed_files > 0 || details.ignored_files > 0 {
                 details.removal_blocked = Some("This worktree contains changed, untracked, or ignored files. Commit, stash, or move that content before removal. Force removal deletes it.".into());
             } else if unchecked_index {
                 details.removal_blocked = Some("This worktree has assume-unchanged or skip-worktree entries, which can hide local changes. Review those files and sparse-checkout settings with Git before removal. Force removal deletes any hidden changes.".into());
+            }
+            if details.force_removal_blocked.is_none() {
+                if let Some(path) = submodule {
+                    details.force_removal_blocked = Some(format!(
+                        "This worktree has an initialized submodule ({}). Its repository and commits would be deleted with the worktree. Push or deinitialize it with Git before force removal.",
+                        path.display()
+                    ));
+                } else if retained_modules {
+                    details.force_removal_blocked = Some("This worktree's private Git directory retains submodule repositories. Their commits would be deleted with the worktree. Inspect and remove them with Git before force removal.".into());
+                } else if let Some(path) = nested_repository {
+                    details.force_removal_blocked = Some(format!(
+                        "This worktree contains a nested Git repository ({}). Its commits exist nowhere else and would be deleted with the worktree. Move or remove it with Git before force removal.",
+                        path.display()
+                    ));
+                }
             }
         }
         let protected = if main {

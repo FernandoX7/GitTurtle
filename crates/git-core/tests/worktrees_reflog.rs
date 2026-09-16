@@ -750,6 +750,16 @@ fn worktree_removal_refuses_current_linked_tree_and_preserves_initialized_submod
     assert!(linked.execute(&remove(current)).is_err());
     let reviewed = f.removal_plan(&destination);
     assert!(reviewed.removal_blocked.is_none());
+    // Single --force would delete the submodule repository under the private
+    // Git directory, so GitTurtle refuses force removal before Git runs.
+    assert!(
+        reviewed
+            .force_removal_blocked
+            .as_deref()
+            .unwrap()
+            .contains("submodule")
+    );
+    assert!(repo.execute(&force(reviewed.clone())).is_err());
     let private = linked.git_directories().unwrap().0;
     let refs = f.git(&["show-ref"]);
     let error = repo.execute(&remove(reviewed)).unwrap_err();
@@ -796,6 +806,12 @@ fn force_removal_deletes_dirty_content_and_operation_state_after_fresh_review() 
             .contains("bisect")
     );
     assert!(reviewed.force_removal_blocked.is_none());
+    assert_eq!(reviewed.changed_entries.len(), 2);
+    assert_eq!(reviewed.ignored_paths, vec![PathBuf::from("ignored")]);
+    assert_eq!(
+        reviewed.operation_state,
+        vec!["Bisect in progress".to_string()]
+    );
     assert!(repo.execute(&remove(reviewed.clone())).is_err());
     assert_eq!(
         fs::read(destination.join("tracked")).unwrap(),
@@ -808,6 +824,12 @@ fn force_removal_deletes_dirty_content_and_operation_state_after_fresh_review() 
     assert!(error.to_string().contains("changed after review"));
     assert!(destination.join("late").is_file());
     assert!(target_private.join("BISECT_START").is_file());
+    assert_eq!(repo.worktrees().unwrap().len(), 3);
+    // A content change that keeps both counts equal also requires a fresh review.
+    let reviewed = f.removal_plan(&destination);
+    fs::write(destination.join("untracked"), "discarded, but longer now\n").unwrap();
+    let error = repo.execute(&force(reviewed)).unwrap_err();
+    assert!(error.to_string().contains("changed after review"));
     assert_eq!(repo.worktrees().unwrap().len(), 3);
 
     let branch_oid = f.git(&["rev-parse", "forced"]);
@@ -897,6 +919,37 @@ fn force_removal_refuses_main_current_locked_missing_and_held_lock_files() {
     assert!(reviewed.removal_blocked.is_some());
     assert!(reviewed.force_removal_blocked.is_none());
     fs::remove_file(private.join("BISECT_START")).unwrap();
+    // A nested repository's commits exist nowhere else. Both an untracked and
+    // an ignored nested repository block force removal.
+    let nested = destination.join("nested");
+    fs::create_dir(&nested).unwrap();
+    git_at(&nested, &["init", "-q"]);
+    let reviewed = f.removal_plan(&destination);
+    assert!(
+        reviewed
+            .force_removal_blocked
+            .as_deref()
+            .unwrap()
+            .contains("nested Git repository")
+    );
+    assert!(repo.execute(&force(reviewed)).is_err());
+    fs::remove_dir_all(&nested).unwrap();
+    f.git(&["config", "core.excludesFile", "/dev/null"]);
+    fs::write(f.root.join(".git/info/exclude"), "build/\n").unwrap();
+    let ignored_nested = destination.join("build/dep");
+    fs::create_dir_all(&ignored_nested).unwrap();
+    git_at(&ignored_nested, &["init", "-q"]);
+    let reviewed = f.removal_plan(&destination);
+    assert_eq!(reviewed.ignored_paths, vec![PathBuf::from("build/dep/")]);
+    assert!(
+        reviewed
+            .force_removal_blocked
+            .as_deref()
+            .unwrap()
+            .contains("nested Git repository")
+    );
+    assert!(repo.execute(&force(reviewed)).is_err());
+    fs::remove_dir_all(destination.join("build")).unwrap();
     f.git(&["worktree", "lock", destination.to_str().unwrap()]);
     let locked = repo
         .worktrees()
