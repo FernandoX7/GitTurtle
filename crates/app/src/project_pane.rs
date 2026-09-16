@@ -474,9 +474,11 @@ impl GitTurtle {
                             .gap_2()
                             .text_size(crate::appearance::ui_text(12.))
                             .when(active, |row| row.text_color(rgb(colors.accent)))
+                            // A project carries the turtle mark; only a group
+                            // keeps the folder, so the two never look alike.
                             .child(crate::icon(
-                                "folder",
-                                13.,
+                                "turtle",
+                                14.,
                                 if active { colors.accent } else { colors.muted },
                             ))
                             .child(div().flex_1().min_w_0().truncate().text_left().child(name)),
