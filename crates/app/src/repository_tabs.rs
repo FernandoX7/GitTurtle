@@ -2234,7 +2234,7 @@ mod tests {
                     );
                 }
                 // An accepted Git operation does not block app-only naming.
-                app.operation_busy = Some("Fetching".into());
+                app.operation_busy = Some("Fetching");
                 assert!(app.can_rename_repository_tab(&canonical));
                 app.operation_busy = None;
                 app.open_repository_tab(unavailable.clone(), window, cx);
