@@ -18,6 +18,7 @@ import selectors
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import tomllib
@@ -70,12 +71,21 @@ def probe(binary: Path) -> dict:
     env = {key: value for key, value in os.environ.items()
            if key not in ("DISPLAY", "WAYLAND_DISPLAY")}
     env["ZED_HEADLESS"] = "1"
-    child = subprocess.Popen([str(binary.resolve()), "--build-info"], env=env,
-                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, start_new_session=True)
+    # Darwin can return EPERM for a process group containing only zombies.
+    # A live guard also reserves the group ID after the probe has been reaped,
+    # so final cleanup cannot signal an unrelated, reused process group.
+    # The parent alone holds its input pipe open, so a terminated caller also
+    # releases the guard instead of leaving a long-lived sleeping helper.
+    guard = subprocess.Popen([sys.executable, "-I", "-S", "-c", "import sys; sys.stdin.buffer.read()"],
+                             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, process_group=0)
+    child = None
     data = {"out": bytearray(), "err": bytearray()}
     deadline = time.monotonic() + 5
     try:
+        child = subprocess.Popen([str(binary.resolve()), "--build-info"], env=env,
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, process_group=guard.pid)
         with selectors.DefaultSelector() as selector:
             for stream, name in ((child.stdout, "out"), (child.stderr, "err")):
                 os.set_blocking(stream.fileno(), False)
@@ -104,13 +114,30 @@ def probe(binary: Path) -> dict:
         return value
     finally:
         # Also stop descendants that retained a pipe or outlived the main probe.
+        cleanup_error = None
         try:
-            os.killpg(child.pid, signal.SIGKILL)
+            os.killpg(guard.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        child.wait()
-        child.stdout.close()
-        child.stderr.close()
+        except OSError as error:
+            cleanup_error = error
+        # Still release our direct children and pipes if group signaling fails.
+        # A live-group permission failure remains an error, never a successful
+        # probe or a reason to wait indefinitely for an unkillable process.
+        for process in (child, guard):
+            if process is None:
+                continue
+            try:
+                process.kill()
+                process.wait(timeout=1)
+            except (OSError, subprocess.SubprocessError) as error:
+                cleanup_error = cleanup_error or error
+            finally:
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    if stream is not None:
+                        stream.close()
+        if cleanup_error is not None:
+            raise cleanup_error
 
 
 def verify_architecture(binary: Path, target: str) -> None:

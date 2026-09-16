@@ -244,6 +244,7 @@ impl GitTurtle {
         self.cancel_branch_action();
         self.cancel_interactive_rebase_action();
         self.cancel_recovery_read();
+        self.cancel_discard_action();
         if self.operation_busy.is_some() {
             return;
         }
@@ -920,9 +921,9 @@ impl GitTurtle {
         let list = uniform_list(
             "working-files",
             self.working_rows.len(),
-            cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+            cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
                 range
-                    .map(|i| this.render_working_row(i, cx))
+                    .map(|i| this.render_working_row(i, window, cx))
                     .collect::<Vec<_>>()
             }),
         )
@@ -1071,7 +1072,12 @@ impl GitTurtle {
             .into_any_element()
     }
 
-    fn render_working_row(&self, position: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn render_working_row(
+        &self,
+        position: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let p = palette(cx);
         let busy = self.operation_busy.is_some();
         match self.working_rows[position] {
@@ -1256,14 +1262,40 @@ impl GitTurtle {
                     .child(
                         div()
                             .id(("working-path", position))
+                            .debug_selector(move || format!("working-path-{position}"))
                             .flex_1()
                             .min_w_0()
                             .flex()
                             .flex_col()
                             .gap_0p5()
-                            .tooltip(move |window, cx| {
-                                Tooltip::new(path_detail.clone()).build(window, cx)
-                            })
+                            // GPUI's existing tooltip can outlive an occluding
+                            // menu. Removing its builder clears that tooltip.
+                            .when(
+                                !window
+                                    .context_stack()
+                                    .iter()
+                                    .any(|context| context.contains("PopupMenu")),
+                                |path| {
+                                    path.tooltip(move |window, cx| {
+                                        let text = path_detail.clone();
+                                        Tooltip::element(move |window, _| {
+                                            div()
+                                                .id("working-path-tooltip")
+                                                .debug_selector(|| "working-path-tooltip".into())
+                                                .max_w(
+                                                    px(420.).min(
+                                                        window.viewport_size().width - px(80.),
+                                                    ),
+                                                )
+                                                .max_h(window.viewport_size().height * 0.5)
+                                                .overflow_hidden()
+                                                .whitespace_normal()
+                                                .child(text.clone())
+                                        })
+                                        .build(window, cx)
+                                    })
+                                },
+                            )
                             .child(
                                 div()
                                     .truncate()
@@ -1335,6 +1367,9 @@ impl GitTurtle {
                         let owner = ignore_owner.clone();
                         let repository = ignore_repository.clone();
                         let entry = ignore_entry.clone();
+                        let discard_owner = owner.clone();
+                        let discard_repository = repository.clone();
+                        let discard_entry = entry.clone();
                         menu.item(
                             PopupMenuItem::new(if entry.untracked {
                                 "Ignore…"
@@ -1346,6 +1381,25 @@ impl GitTurtle {
                                 let _ = owner.update(cx, |this, cx| {
                                     if this.path == repository {
                                         this.open_ignore(entry.clone(), window, cx);
+                                    }
+                                });
+                            }),
+                        )
+                        // Discard reverts the whole file to HEAD, so both the
+                        // staged and unstaged rows offer the same action.
+                        .item(
+                            PopupMenuItem::new(if discard_entry.conflicted {
+                                "Discard applies after conflict resolution"
+                            } else if discard_entry.untracked {
+                                "Delete untracked file…"
+                            } else {
+                                "Discard changes…"
+                            })
+                            .disabled(busy || discard_entry.conflicted)
+                            .on_click(move |_, window, cx| {
+                                let _ = discard_owner.update(cx, |this, cx| {
+                                    if this.path == discard_repository {
+                                        this.open_discard(discard_entry.clone(), window, cx);
                                     }
                                 });
                             }),

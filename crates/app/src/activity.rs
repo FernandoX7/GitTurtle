@@ -211,6 +211,12 @@ pub(super) fn target(command: &gitturtle_core::WriteCommand, fallback: &str) -> 
                 .join(", ")
         ),
         WriteCommand::StageAll => "All unstaged working changes".into(),
+        WriteCommand::Discard(plan) => plan
+            .paths()
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(" ← "),
         WriteCommand::UnstageAll => "All staged changes".into(),
         WriteCommand::ApplyPartial { diff, .. } => {
             format!("{} · exact reviewed partial diff", diff.path.display())

@@ -16,6 +16,8 @@ mod tags;
 pub use tags::*;
 mod ignore;
 pub use ignore::*;
+mod discard;
+pub use discard::*;
 mod recovery;
 pub use recovery::*;
 mod worktrees;
@@ -176,6 +178,7 @@ pub enum WriteCommand {
     PublishRewrite(Arc<LeasedPublishPlan>),
     Tag(Arc<TagCommand>),
     Ignore(Arc<IgnorePlan>),
+    Discard(Arc<DiscardPlan>),
     Recovery(Arc<RecoveryCommand>),
     Branch(Arc<BranchCommand>),
     Integration(IntegrationCommand),
@@ -621,6 +624,7 @@ impl GitRepository {
             WriteCommand::PublishRewrite(plan) => return self.execute_leased_publish(plan),
             WriteCommand::Tag(command) => return self.execute_tag(command),
             WriteCommand::Ignore(plan) => return self.execute_ignore(plan),
+            WriteCommand::Discard(plan) => return self.execute_discard(plan),
             WriteCommand::Recovery(command) => return self.execute_recovery(command),
             WriteCommand::Branch(command) => return self.execute_branch(command),
             WriteCommand::Integration(command) => return self.execute_integration(command),
