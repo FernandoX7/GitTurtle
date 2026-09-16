@@ -520,11 +520,15 @@ cache/fanout improvements when comparing the full required-check completion time
 
 ### Later measurements and C1
 
-Pending: candidate-bound hosted PR/main/manual observations, comparable cold/warm
-samples on both platforms, cache overhead and invalidation evidence, preserved
-failure diagnostics, and measured improvement. No later hosted timing is claimed
-by this guide. Add sanitized run links, source identities, raw-sample locations,
-counts/statistics and limitations here when the coordinator establishes them.
+The [September 16 record](benchmarks/2026-09-16-ci.md) documents the first
+trusted-main seed after the capacity repair (all four lanes saved; 3.91 GB of
+archives), a controlled warm PR run that reached the Quality gate 7m39s after
+creation against 20m33s cold, an external fork contribution that restored
+the same archives read-only, and a warm main push that found every key already
+present and uploaded nothing. Those are single observations; medians and tails,
+a new cache generation after a dependency change, hosted invalidation and
+corrupt-restore diagnostics, and save overhead on later main pushes remain
+pending.
 
 ## Local verification
 
