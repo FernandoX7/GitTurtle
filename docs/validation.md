@@ -136,6 +136,36 @@ platforms and compositor/scale limits remain explicit. The separate static
 [website](../website/README.md) has current native captures and a Cloudflare
 deployment plan; no public deployment or DNS change is implied.
 
+## September 15 client-side project names
+
+Working-tree source (branch `fix/linux-watch-skip-ignored`, on `4dfc334`) adds a
+client-only project name that replaces a project's folder name in the project
+hub, repository tabs and their menu, the repository heading, saved workspaces and
+operation status, while leaving the folder, the repository and Git configuration
+untouched. Names are stored in the existing preferences file under a new
+version-4 `project_names` section, read through the shared bounded store reader
+and written through the serialized preference executor.
+
+`cargo fmt --all -- --check`, `cargo clippy --locked --workspace --all-targets --
+-D warnings` and `cargo test --locked --workspace` passed on this Linux host
+(debug profile; 351 app tests including the new preference round-trip, bound and
+hub-interaction cases).
+
+A debug build was exercised in a virtual X11 session (Xvfb `:77`, 1600x1000)
+against a disposable `scripts/create-demo-repo.py` fixture, with
+`XDG_CONFIG_HOME` pointed at a scratch directory so no developer preferences were
+touched. Verified by screenshot and by reading the store: the hub shows a chosen
+name over the folder name and location; the rename dialog opens from the recent
+row and from **Workspaces → Rename current project…**; saving writes
+`project_names` and updates the hub, tab strip, repository heading and tab menu;
+submitting an empty field removes the entry and restores the folder name
+everywhere; the fixture directory keeps its own name throughout.
+
+Limitations: debug profile only, so no timing claim. X11 pointer and key input
+came from a local XTest helper rather than a desktop session, and macOS, Wayland,
+VoiceOver/Orca, theme and density variations for the new dialog were not
+exercised.
+
 ## September 14 public-launch preparation
 
 Application commit `7d18fef` adds a visible Linux Menu and grouped searchable

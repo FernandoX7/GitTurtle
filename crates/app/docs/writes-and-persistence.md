@@ -40,6 +40,8 @@ Scope drafts to the resolved canonical worktree after discovery. Persist Title a
 
 Commit and recovery draft savers keep their actual accepted completion at app lifetime. Normal application shutdown awaits that completion even after the final window disappears, including a coalesced final edit when the preference queue is full. An earlier repository-session save or an extra queue barrier is not a substitute for the draft save. GPUI allows a 200 ms shutdown grace; a confirmed Saved result remains the durable boundary for slow or failed I/O and forced termination.
 
+Project display names are app data keyed by the canonical worktree root. A name replaces the folder name wherever the client lists that project and never touches the folder, the repository, or Git configuration; clearing it restores the folder name. Validate presentation only (one line, 1-128 bytes) and bound the stored count, refusing a new name at the limit rather than evicting one. The rename form keeps its text when validation fails, and the save merges into the latest stored preferences through the serialized preference executor, so it cannot drop settings, recents or drafts.
+
 Persist normalized column widths/visibility, settings, recents and drafts outside repositories. Do not apply stale save replies over newer UI choices. Repository identity saves use the operation executor, not the app-preferences file.
 
 Preference saves reread the current disk counterpart before atomically merging settings or recents; a stale UI snapshot must not replace both. Preserve read-only loading, supported-version migration and byte-safe recent paths. Invalid or unsupported stores produce a save error rather than being overwritten with defaults.

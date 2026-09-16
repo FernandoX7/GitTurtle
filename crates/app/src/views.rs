@@ -168,7 +168,7 @@ impl GitTurtle {
                         "Repository {}. {}",
                         self.repository
                             .as_ref()
-                            .map(|repo| repo.name())
+                            .map(|repo| self.project_name(repo.path()))
                             .unwrap_or_default(),
                         self.path
                             .as_ref()
@@ -197,7 +197,7 @@ impl GitTurtle {
                             .child(
                                 self.repository
                                     .as_ref()
-                                    .map(|r| r.name())
+                                    .map(|repo| self.project_name(repo.path()))
                                     .unwrap_or("GitTurtle".into()),
                             ),
                     )
@@ -302,12 +302,7 @@ impl GitTurtle {
                                 .operation_repository
                                 .as_ref()
                                 .map_or(String::new(), |path| {
-                                    format!(
-                                        " · {}",
-                                        path.file_name()
-                                            .unwrap_or(path.as_os_str())
-                                            .to_string_lossy()
-                                    )
+                                    format!(" · {}", self.project_name(path))
                                 }),
                     )
             }))

@@ -1783,10 +1783,7 @@ impl GitTurtle {
                     let path = tab.path.clone();
                     let target = path.clone();
                     let owner = owner.clone();
-                    let name = path
-                        .file_name()
-                        .unwrap_or(path.as_os_str())
-                        .to_string_lossy();
+                    let name = this.project_name(&path);
                     menu = menu.item(
                         PopupMenuItem::new(format!("{}  {}", index + 1, name))
                             .checked(active == Some(index))
@@ -1818,6 +1815,15 @@ impl GitTurtle {
                             });
                         }),
                     );
+                    let rename_owner = owner.clone();
+                    let rename_path = path.clone();
+                    menu = menu.item(PopupMenuItem::new("Rename current project…").on_click(
+                        move |_, window, cx| {
+                            let _ = rename_owner.update(cx, |this, cx| {
+                                this.open_rename_project(rename_path.clone(), window, cx)
+                            });
+                        },
+                    ));
                     for (direction, label, disabled) in [
                         (-1, "Move current tab left", active == Some(0)),
                         (
@@ -1906,11 +1912,7 @@ impl GitTurtle {
                                 let pinned = self.tab_is_pinned(&tab.path);
                                 let busy = self.operation_busy.is_some()
                                     && self.operation_repository.as_ref() == Some(&tab.path);
-                                let name = tab
-                                    .path
-                                    .file_name()
-                                    .unwrap_or(tab.path.as_os_str())
-                                    .to_string_lossy();
+                                let name = self.project_name(&tab.path);
                                 let label = format!(
                                     "{}{}{}",
                                     if pinned { "★ " } else { "" },
@@ -2064,7 +2066,8 @@ impl Render for LibraryView {
                 }))
                 .children(self.session.library.clone().into_iter().enumerate().map(|(index,entry)|{
                     let path=entry.path.path();let remove=path.clone();
-                    let label=format!("{}{}{}",if entry.pinned{"★ "}else{""},path.display(),entry.group.as_ref().map_or(String::new(),|group|format!(" · {group}")));
+                    let name=self.owner.read_with(cx,|owner,_|owner.project_name(&path)).unwrap_or_else(|_|preferences::directory_name(&path));
+                    let label=format!("{}{} · {}{}",if entry.pinned{"★ "}else{""},name,path.display(),entry.group.as_ref().map_or(String::new(),|group|format!(" · {group}")));
                     let accessible=format!("{}repository {}{}",if entry.pinned{"Pinned "}else{""},path.display(),entry.group.as_ref().map_or(String::new(),|group|format!(", workspace {group}")));
                     div().flex().items_center().gap_2().child(workspace_text(("local-workspace-repository", index),label).aria_label(accessible).flex_1().min_w_0().truncate())
                         .child(button(("open-library-repo",index),"Open","",false).accessibility_label(format!("Open repository {}", path.display())).on_click(cx.listener(move|this,_,window,cx|{window.close_dialog(cx);let _=this.owner.update(cx,|owner,cx|owner.open_repository_tab(path.clone(),window,cx));})))

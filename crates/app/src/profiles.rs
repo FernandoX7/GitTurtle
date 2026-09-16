@@ -187,7 +187,7 @@ impl GitTurtle {
         }
         let owner = cx.entity().downgrade();
         let path = self.path.clone();
-        let target = self.repository.as_ref().filter(|_| self.page != AppPage::Projects).map(|repo| format!("Target: {}\n{}", repo.name(), repo.path().display())).unwrap_or_else(|| "Choose a repository to apply a profile. Saved profiles are available in every project.".into());
+        let target = self.repository.as_ref().filter(|_| self.page != AppPage::Projects).map(|repo| format!("Target: {}\n{}", self.project_name(repo.path()), repo.path().display())).unwrap_or_else(|| "Choose a repository to apply a profile. Saved profiles are available in every project.".into());
         let store = self.profiles.store.clone();
         let error = self.profiles.error.clone();
         let can_apply = self.repository.is_some() && self.page != AppPage::Projects;

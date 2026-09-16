@@ -685,7 +685,10 @@ impl GitTurtle {
             self.identity_name.read(cx).value().trim() != profile.name
                 || self.identity_email.read(cx).value().trim() != profile.email
         });
-        let repository_name = self.repository.as_ref().map(|repository| repository.name());
+        let repository_name = self
+            .repository
+            .as_ref()
+            .map(|repository| self.project_name(repository.path()));
         let appearance = div()
             .flex()
             .flex_col()

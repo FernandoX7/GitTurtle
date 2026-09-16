@@ -491,7 +491,7 @@ impl GitTurtle {
                 .map(|repo| {
                     format!(
                         "{} · {}",
-                        repo.name(),
+                        self.project_name(repo.path()),
                         if self.page == AppPage::Repository {
                             "current workspace"
                         } else {
