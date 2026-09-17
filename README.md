@@ -23,7 +23,7 @@ GitTurtle is a Git client for **macOS and Linux**, built with Rust and GPUI. Bro
 
 - **Follow the story.** Explore a commit graph, search local history, follow file renames, inspect blame, and compare revisions without losing your place.
 - **Review the details.** Read unified or split diffs, stage files, hunks or changed lines, and compare images with side-by-side, overlay and wipe views.
-- **Keep projects close.** Switch between repository and worktree tabs, save workspaces, and retain a separate commit draft for each worktree.
+- **Keep projects close.** Switch between repository and worktree tabs, save workspaces, keep an optional grouped project list beside your work, and retain a separate commit draft for each worktree.
 - **Work with Git deliberately.** Branch, stash, merge, rebase and recover through named actions and reviews. Fetch, pull and push start when you ask.
 - **Make it comfortable.** Choose light and dark themes, independent interface and code sizes, compact or comfortable spacing, and discover commands through menus and keyboard search.
 

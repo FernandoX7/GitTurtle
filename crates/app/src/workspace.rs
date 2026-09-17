@@ -272,9 +272,11 @@ impl GitTurtle {
         cx.spawn_in(window, async move |this, cx| {
             if let Ok(result) = response.await {
                 let _ = this.update_in(cx, |this, _, cx| match result {
-                    Ok(prefs) => this
-                        .hub
-                        .update(cx, |hub, cx| hub.set_recent(prefs.recent_repositories, cx)),
+                    Ok(prefs) => {
+                        this.absorb_saved_project_library(prefs.project_library);
+                        this.hub
+                            .update(cx, |hub, cx| hub.set_recent(prefs.recent_repositories, cx));
+                    }
                     Err(error) => {
                         this.operation_error =
                             Some(format!("Could not save recent projects: {error:#}"))

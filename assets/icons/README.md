@@ -1,6 +1,6 @@
 # GitTurtle icons
 
-Original SVG artwork created for this project. No third-party icon assets or GitKraken artwork are included.
+Original SVG artwork created for this project. No third-party icon assets or GitKraken artwork are included. `turtle.svg` is a separate monoline control mark drawn in this control style for the project list; it is not traced from the app-icon artwork.
 
 Control icons use a 24 × 24 view box with rounded 1.65-unit white strokes. Render at 16–18 logical pixels for normal controls and use GPUI's SVG color to tint them. White makes raster-mask tinting reliable without depending on CSS `currentColor` interpretation. Keep aspect ratio and provide accessible labels on the containing control.
 

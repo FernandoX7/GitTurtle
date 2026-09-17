@@ -42,6 +42,8 @@ mod pdf_view;
 mod platform_polish;
 mod preferences;
 mod profiles;
+mod project_library;
+mod project_pane;
 mod projects;
 mod recovery;
 mod recovery_drafts;
@@ -116,6 +118,7 @@ gpui_kit::actions!(
         PreviousTextChange,
         ClearSearch,
         ToggleSidebar,
+        ToggleProjectPane,
         BackHistory,
         ShowProjects,
         ShowSettings,
@@ -259,12 +262,16 @@ struct GitTurtle {
     page_origin: AppPage,
     content_panels: Entity<ResizableState>,
     history_panels: Entity<ResizableState>,
+    project_panels: Entity<ResizableState>,
     retained_history_files: Option<(Vec<FileChange>, Option<usize>)>,
     commit_drafts: HashMap<PathBuf, CommitDraft>,
     /// Client-only project names, keyed by canonical worktree root. The Git
     /// repository and its folder never see these.
     project_names: HashMap<PathBuf, String>,
     rename_project: Option<Entity<projects::RenameProjectForm>>,
+    /// Known projects and their user-defined groups, shown by the left pane.
+    project_library: project_library::ProjectLibrary,
+    project_pane: project_pane::State,
     draft_saver: commit_drafts::DraftSaver,
     recovery_drafts: recovery_drafts::State,
     draft_save_error: Option<String>,
@@ -479,9 +486,12 @@ impl GitTurtle {
             page_origin: AppPage::Projects,
             content_panels: cx.new(|_| ResizableState::default()),
             history_panels: cx.new(|_| ResizableState::default()),
+            project_panels: cx.new(|_| ResizableState::default()),
             retained_history_files: None,
             commit_drafts: preferences.commit_drafts,
             project_names: preferences.project_names.clone(),
+            project_library: preferences.project_library.clone(),
+            project_pane: project_pane::State::new(cx),
             rename_project: None,
             draft_saver: commit_drafts::DraftSaver::default(),
             draft_save_error: None,
@@ -600,6 +610,7 @@ impl GitTurtle {
             interaction_started: None,
             inspector_message: commit_message::State::default(),
         };
+        this.rebuild_project_rows();
         this.load_profiles(window, cx);
         this.install_draft_quit_observer(cx);
         this.install_tab_quit_observer(window, cx);
@@ -683,7 +694,11 @@ impl GitTurtle {
                     }
                 }));
         }
-        for panels in [&this.content_panels, &this.history_panels] {
+        for panels in [
+            &this.content_panels,
+            &this.history_panels,
+            &this.project_panels,
+        ] {
             this.subscriptions
                 .push(cx.observe(panels, |_, _, cx| cx.notify()));
         }

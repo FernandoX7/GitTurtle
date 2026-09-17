@@ -4,6 +4,50 @@ Use the [current validation guidance](#current-validation-guidance) for the affe
 
 This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native workflow evidence is primarily macOS-specific; the September 14 entries add Pop!_OS startup and clean Ubuntu/virtual-native checks. Platform execution and access limits belong to the applicable dated record and [platform runbook](linux.md); the earlier [environment report](benchmarks/2026-09-09-milestone-environment.md) describes its own session. The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Public binary release prerequisites belong in the [launch checklist](public-launch.md); the Linux runbook includes a local teammate bundle.
 
+## September 16 project list pane
+
+PR #22 adds an optional project list pane, a saved project library with nested
+user-named groups, and the **Show the project list** setting. Its initial
+revision (`f075c04` on main `7cd3744`) passed the Rust gates and an Xvfb
+session on the contributor's Linux host. The review revision reworked the pane
+into a keyboard tree that shares the History navigator's rows and bindings,
+sorted presentation, hover/right-click/Shift-F10 actions with a shared menu,
+disabled impossible move destinations, an in-pane error strip with Retry, a
+pending-save guard against stale replies, cached presentation rows, and a View
+menu / palette toggle. `cargo fmt --all -- --check`, `cargo clippy --locked
+--workspace --all-targets -- -D warnings` and `cargo test --locked --workspace`
+passed on this Linux host for the working tree over `f075c04` (debug profile;
+app 456 passed with two existing ignores, preview 121 passed with one ignore,
+core 32 of 33). The one core failure, the configured-askpass fixture, fails
+identically on untouched main in this host's Git 2.43 environment and passed in
+the PR's hosted Ubuntu and macOS runs, so it is environmental and unrelated.
+
+A debug build of that working tree ran under XWayland on a GNOME Wayland
+desktop (Pop!_OS, Linux 7.1.5, window 1480x980 logical at about 2.17 scale)
+against three disposable `scripts/create-demo-repo.py` fixtures plus a second
+copy named `alpha`, with `XDG_CONFIG_HOME` in a scratch directory. Pointer and
+key input came from a local XTest helper. Verified by screenshot and by reading
+the store: pane rows match the navigator's 30 px geometry beside it; groups
+come first and each level is sorted by name; the two `alpha` projects show their
+parent folders; the open project keeps the selected surface and accent text;
+hovering a row reveals its actions control; the group menu omits the group's
+own subgroups and checks its current place, and the project menu checks its
+group; a right-click opens the same menu; Down moves the cursor marker,
+Shift-F10 opens the menu under the cursor row, Down selects an item, Return
+runs **Open project** and marks `beta`, and focus returns to the tree; **+**
+opens the group dialog with the Rename project layout; Settings shows the pane
+and the switch; the palette lists **Show or hide the project list**; replacing
+the store with a directory made a collapse fail with the explanation and Retry
+inside the pane while the collapse stayed on screen, and Retry after restoring
+the file saved `collapsed: true`.
+
+Limitations: debug profile only, so no timing claim. The compositor refused a
+programmatic resize, so the 1000x680 clamp has automated coverage only. macOS,
+native Wayland, a physical pointer session, screen readers, package builds, and
+theme, density and text-size variations of the pane were not exercised. Group
+and project removal, the depth and count limits, the stale-reply guard and the
+refusal of a malformed saved list have automated coverage only.
+
 ## September 16 PR #17 file-discard review
 
 Clean application source `e9b631f` includes main `5466b8a` and passed 847

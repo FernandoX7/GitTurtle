@@ -1374,6 +1374,7 @@ impl GitTurtle {
                 let names = self.project_names.clone();
                 self.hub.update(cx, |hub, cx| hub.set_names(names, cx));
                 self.rebuild_navigation(cx);
+                self.rebuild_project_rows();
                 let _ = form.update(cx, |form, cx| {
                     form.pending = false;
                     form.visible = false;
