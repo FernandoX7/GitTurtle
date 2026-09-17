@@ -1,0 +1,90 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo fmt *)",
+      "Bash(cargo check *)",
+      "Bash(cargo clippy *)",
+      "Bash(cargo test *)",
+      "Bash(cargo nextest *)",
+      "Bash(cargo doc *)",
+      "Bash(cargo build *)",
+      "Bash(cargo metadata *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "Bash(git status *)",
+      "Bash(git status)",
+      "Bash(git branch *)",
+      "Bash(git worktree list*)",
+      "Bash(git rev-parse *)",
+      "Bash(git merge-base *)",
+      "Bash(python3 scripts/gate.py *)",
+      "Bash(python3 scripts/check-agent-guidance.py*)",
+      "Bash(python3 scripts/agent-loop.py validate*)",
+      "Bash(python3 scripts/agent-loop.py status *)"
+    ],
+    "deny": [
+      "Bash(git push --force*)",
+      "Bash(git push -f*)",
+      "Bash(git commit --no-verify*)",
+      "Bash(git commit -n *)",
+      "Bash(cargo insta accept*)",
+      "Read(./.env)",
+      "Read(./.env.*)"
+    ]
+  },
+  "env": {
+    "INSTA_UPDATE": "no",
+    "CARGO_TERM_COLOR": "never"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/protect_paths.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/stop_gate.py\"",
+            "timeout": 180,
+            "statusMessage": "Running the fast gate on changed Rust files"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "implementer|implementer-hard",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/stop_gate.py\"",
+            "timeout": 180
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/reinject_task.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

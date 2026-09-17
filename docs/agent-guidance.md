@@ -80,3 +80,7 @@ That audit recorded successful checks across 14 guidance documents: local links/
 ## Maintenance
 
 Keep durable rules here and in the scoped guides, numeric product limits in code, and measured results in dated evidence. Update the closest contract when implementation changes. Validate changed guidance links, commands, TOML and skill frontmatter; validate controller behavior with its focused tests. Do not rerun native/Rust gates merely because development documentation changed.
+
+## Claude Code configuration — September 17, 2026
+
+Claude Code support was added as a second optional integration beside the Codex definitions, without changing them: `CLAUDE.md` files import the guides above, roles live in `.claude/agents/`, path-scoped conventions in `.claude/rules/`, shared skills are symlinked into `.claude/skills/`, and enforcement hooks live in `.claude/settings.json`. The controller accepts `--tool claude` with Codex as the unchanged default, and `scripts/gate.py` provides a fast and a full gate for every tool. Delegated review, QA and exploration roles pin a model alias so planning sessions on a larger model do not spend its quota on delegated work; main-session roles inherit the launched model, preserving the inheritance agreement above. The [usage guide](development/claude-code.md) and the [decision record](development/2026-09-17-claude-code-support.md) carry the details and the dated evidence.
