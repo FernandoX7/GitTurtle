@@ -1,6 +1,8 @@
 {
   "permissions": {
     "deny": [
+      "Bash(python3 scripts/agent_loop/*)",
+      "Bash(python3 scripts/agent-loop.py *)",
       "Bash(git push *)",
       "Bash(git reset --hard *)",
       "Bash(git clean *)",
