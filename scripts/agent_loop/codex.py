@@ -27,11 +27,20 @@ BUILD_SCHEMA = {
 }
 REVIEW_SCHEMA = {
     "type": "object", "additionalProperties": False,
-    "required": ["task_id", "candidate", "verdict", "criteria", "findings"],
+    "required": ["task_id", "candidate", "verdict", "criteria", "findings", "notes"],
     "properties": {
         "task_id": {"type": "string"}, "candidate": {"type": "string"},
         "verdict": {"type": "string", "enum": ["pass", "fail", "blocked"]},
-        "findings": {"type": "array", "items": {"type": "string"}},
+        "findings": {
+            "type": "array", "items": {"type": "string"},
+            "description": "Blocking defects only, each with a file:line reference. A pass must have none; "
+                           "put anything that does not block acceptance in notes.",
+        },
+        "notes": {
+            "type": "array", "items": {"type": "string"},
+            "description": "Observations that do not block acceptance: optional improvements, weaker-than-named "
+                           "guards, follow-up work. Empty when there are none; never a reason to fail.",
+        },
         "criteria": {
             "type": "array", "items": {
                 "type": "object", "additionalProperties": False,
@@ -54,8 +63,9 @@ def validate_review(value: dict, task: Task, candidate: str) -> str:
         raise LoopError("review is for a different task or candidate")
     if not isinstance(value["verdict"], str) or value["verdict"] not in {"pass", "fail", "blocked"}:
         raise LoopError("invalid review verdict")
-    if not isinstance(value["findings"], list) or not all(isinstance(x, str) for x in value["findings"]):
-        raise LoopError("invalid review findings")
+    for field in ("findings", "notes"):
+        if not isinstance(value[field], list) or not all(isinstance(x, str) for x in value[field]):
+            raise LoopError(f"invalid review {field}")
     expected = {criterion["id"] for criterion in task.acceptance}
     seen: set[str] = set()
     states: set[str] = set()
@@ -75,8 +85,11 @@ def validate_review(value: dict, task: Task, candidate: str) -> str:
         states.add(criterion["status"])
     if seen != expected:
         raise LoopError("review omitted acceptance criteria")
+    # Notes are deliberately excluded: a review that passes every criterion may
+    # still record follow-up work, and conflating the two made a sound candidate
+    # fail for observing that the worktree was clean.
     if value["verdict"] == "pass" and (states != {"pass"} or value["findings"]):
-        raise LoopError("a passing review contains incomplete or failing criteria or findings")
+        raise LoopError("a passing review contains incomplete or failing criteria or blocking findings")
     return value["verdict"]
 
 

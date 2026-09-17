@@ -61,6 +61,7 @@ class FakeCodex:
             "task_id": feature.id, "candidate": candidate, "verdict": verdict,
             "criteria": [{"id": "content", "status": "fail" if verdict == "fail" else "unverified" if verdict == "blocked" else "pass", "evidence": "Inspected the actual guide."}],
             "findings": [] if verdict == "pass" else ["The required explanation is incomplete."],
+            "notes": [],
         }
 
 

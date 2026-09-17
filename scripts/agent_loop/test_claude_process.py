@@ -198,7 +198,7 @@ class ClaudeProcessTests(unittest.TestCase):
         for role, options, response, fields in (
             ("implementer", {}, build, ("task_id", "status", "summary")),
             ("verifier", {"candidate": "a" * 40}, passing_review(),
-             ("task_id", "candidate", "verdict", "criteria", "findings")),
+             ("task_id", "candidate", "verdict", "criteria", "findings", "notes")),
         ):
             with self.subTest(role=role):
                 self.fake_claude(structured=response)
