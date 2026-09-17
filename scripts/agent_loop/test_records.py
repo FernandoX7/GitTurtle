@@ -174,6 +174,44 @@ class RecordTests(unittest.TestCase):
             atomic_json(shared / "record.json", {})
         self.assertEqual(list(shared.iterdir()), [])
 
+    def test_group_writable_ancestor_is_named_with_its_mode_and_remedy(self):
+        # An operator whose checkout was created under umask 002 must learn which
+        # ancestor to fix, not just that some directory on the path is shared.
+        ancestor = self.root / "shared"
+        target = ancestor / "records"
+        target.mkdir(parents=True)
+        os.chmod(ancestor, 0o775)
+        for create in (False, True):
+            with self.subTest(create=create):
+                with self.assertRaises(LoopError) as raised:
+                    with open_directory(target, create=create):
+                        self.fail("group-writable ancestor was accepted")
+                message = str(raised.exception)
+                self.assertIn(f"record directory {ancestor} is writable by other users",
+                              message)
+                self.assertIn("(mode 0775)", message)
+                self.assertIn("chmod g-w,o-w", message)
+                self.assertNotIn(str(target), message)
+        self.assertEqual(stat.S_IMODE(ancestor.stat().st_mode), 0o775)
+
+    def test_owner_mismatch_names_the_directory_and_both_user_ids(self):
+        target = self.root / "records"
+        target.mkdir()
+        fd = os.open(target, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        self.addCleanup(os.close, fd)
+        # Only the caller's identity can be varied without root, so the check is
+        # driven directly: a foreign owner on the real path is not reproducible.
+        owner = os.geteuid()
+        cases = ((True, f"uid {owner + 1}"), (False, f"uid {owner + 1} or root"))
+        with patch.object(records.os, "geteuid", return_value=owner + 1):
+            for final, expected in cases:
+                with self.subTest(final=final), self.assertRaises(LoopError) as raised:
+                    records._check_directory(fd, final=final, path=target)
+                message = str(raised.exception)
+                self.assertIn(f"record directory {target} has an unexpected owner",
+                              message)
+                self.assertIn(f"(uid {owner}, expected {expected})", message)
+
     def test_writable_shared_record_is_rejected(self):
         path = self.root / "record.json"
         path.write_bytes(b'{"shared": true}')
