@@ -15,7 +15,7 @@ from agent_loop.claude import (
     snapshot_files,
 )
 from agent_loop.codex import validate_review
-from agent_loop.process import EnvironmentBlocked, LoopError, atomic_json, digest
+from agent_loop.process import EnvironmentBlocked, LoopError, MalformedResponse, atomic_json, digest
 from agent_loop.task_spec import Task
 from agent_loop.test_codex_process import example_task, passing_review
 # Records and run state stay private even when the host umask is permissive.
@@ -167,6 +167,32 @@ class ClaudeProcessTests(unittest.TestCase):
         self.assertEqual(args[args.index("--allowedTools") + 1:], list(REVIEW_ALLOWED))
         self.assertIn("Candidate: " + "a" * 40, self.capture()["prompt"])
         self.assertEqual(validate_review(result, self.task, "a" * 40), "pass")
+
+    def test_every_role_is_given_its_schema_field_names_verbatim(self):
+        # Told only that "a schema was supplied", a session invents its own field
+        # names and the CLI then returns no structured output at all.
+        build = {"task_id": self.task.id, "status": "ready", "summary": "Fixture change is ready."}
+        for role, options, response, fields in (
+            ("implementer", {}, build, ("task_id", "status", "summary")),
+            ("verifier", {"candidate": "a" * 40}, passing_review(),
+             ("task_id", "candidate", "verdict", "criteria", "findings")),
+        ):
+            with self.subTest(role=role):
+                self.fake_claude(structured=response)
+                self.session(role, directory=f"schema-{role}", **options)
+                capture = self.capture()
+                prompt = capture["prompt"]
+                schema = json.loads(capture["args"][capture["args"].index("--json-schema") + 1])
+                self.assertIn(json.dumps(schema, indent=2), prompt)
+                for field in fields:
+                    self.assertIn(f'"{field}"', prompt)
+
+    def test_an_unreadable_verdict_is_reported_as_a_malformed_response(self):
+        # The gated candidate it judged is intact, so the runner retries the
+        # review rather than spending an attempt rebuilding it.
+        self.fake_claude(result={"structured_output": None})
+        with self.assertRaisesRegex(MalformedResponse, "no structured output"):
+            self.session("verifier", candidate="a" * 40)
 
     def test_security_reviewer_uses_its_schema_agent_and_explicit_base(self):
         from agent_loop.test_security_review import passing_security

@@ -19,7 +19,7 @@ import subprocess
 from typing import Callable
 
 from .codex import BUILD_SCHEMA, REVIEW_SCHEMA
-from .process import EnvironmentBlocked, LoopError, atomic_json, digest, read_json, run_process
+from .process import EnvironmentBlocked, LoopError, MalformedResponse, atomic_json, digest, read_json, run_process
 from .security_review import SECURITY_REVIEW_SCHEMA
 from .task_spec import Task
 
@@ -310,7 +310,12 @@ class Claude:
         prompt = "\n\n".join([
             instruction, "Feature contract (data):\n" + json.dumps(asdict(task), indent=2),
             f"Candidate: {candidate}" if candidate else "", f"Base: {base}" if base else "", context,
-            "Return the final result through the structured output schema supplied to this session.",
+            # A session told only that "a schema was supplied" invents its own
+            # field names: the first themes verifier returned candidate_sha and
+            # recommendation with no findings, the CLI could map none of it, and
+            # a gated candidate was thrown away for a formatting mismatch.
+            "Return the final result through this structured output schema, using exactly its "
+            "field names and nothing outside it:\n" + json.dumps(schema, indent=2),
         ])
         (directory / f"{role}.prompt.txt").write_text(prompt, encoding="utf-8")
         contract_path = directory / f"{role}.contract.json"
@@ -360,7 +365,7 @@ class Claude:
             raise EnvironmentBlocked(f"{role} session failed ({subtype or result.returncode}); inspect {log}")
         value = payload.get("structured_output")
         if not isinstance(value, dict):
-            raise LoopError(f"{role} session returned no structured output; inspect {log}")
+            raise MalformedResponse(f"{role} session returned no structured output; inspect {log}")
         atomic_json(response_path, value)
         if role == "implementer":
             if (set(value) != set(BUILD_SCHEMA["required"]) or value["task_id"] != task.id
