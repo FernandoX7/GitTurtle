@@ -311,9 +311,18 @@ class Claude:
                 "material gaps cannot pass. Do not edit files, operate the desktop, contact "
                 "external services, post comments or change settings."
             )
+        # Without this the session learns its limits by trial: the themes
+        # verifier probed `python3 -c`, was refused, concluded "python3 is
+        # denied in this review sandbox" and abandoned a criterion whose command
+        # it was in fact allowed to run.
+        commands = "" if role == "implementer" else (
+            "Commands this session may run: " + ", ".join(REVIEW_ALLOWED) + ". Every other command is "
+            "refused without a prompt. A refusal means that command form is unavailable, not that its "
+            "interpreter is; re-read this list before concluding a check cannot be run."
+        )
         prompt = "\n\n".join([
             instruction, "Feature contract (data):\n" + json.dumps(asdict(task), indent=2),
-            f"Candidate: {candidate}" if candidate else "", f"Base: {base}" if base else "", context,
+            f"Candidate: {candidate}" if candidate else "", f"Base: {base}" if base else "", context, commands,
             # A session told only that "a schema was supplied" invents its own
             # field names: the first themes verifier returned candidate_sha and
             # recommendation with no findings, the CLI could map none of it, and

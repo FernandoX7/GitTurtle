@@ -179,6 +179,18 @@ class ClaudeProcessTests(unittest.TestCase):
         self.assertIn("Bash(python3 scripts/agent-loop.py *)", deny)
         self.assertIn("Bash(python3 scripts/agent_loop/*)", deny)
 
+    def test_a_review_is_told_which_commands_it_may_run(self):
+        # The themes verifier probed a command form it was never allowed, was
+        # refused, and concluded its interpreter was unavailable.
+        self.fake_claude(structured=passing_review())
+        self.session("verifier", candidate="a" * 40)
+        prompt = self.capture()["prompt"]
+        for pattern in REVIEW_ALLOWED:
+            self.assertIn(pattern, prompt)
+        self.fake_claude()
+        self.session(directory="builder")
+        self.assertNotIn("Commands this session may run", self.capture()["prompt"])
+
     def test_every_role_is_given_its_schema_field_names_verbatim(self):
         # Told only that "a schema was supplied", a session invents its own field
         # names and the CLI then returns no structured output at all.
