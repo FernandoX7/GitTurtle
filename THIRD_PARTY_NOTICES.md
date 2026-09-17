@@ -69,6 +69,18 @@ by the OS/user; distribution of those components would require a separate review
   [Tokyo Night](docs/licenses/assets/tokyo-night-LICENSE.txt),
   [Catppuccin](docs/licenses/assets/catppuccin-LICENSE), and
   [Nord](docs/licenses/assets/nord-license). These credits do not imply endorsement.
+- Solarized, One (Atom's One Dark and One Light), Rosé Pine, Dracula with its
+  Alucard light variant, and Kanagawa are the next palette adaptations, queued in
+  [the themes task queue](docs/development/themes/tasks.json) and selected in the
+  [palette research note](docs/development/2026-09-17-theme-palettes.md). Each is
+  MIT; the copyright and permission notices are preserved for
+  [Solarized](docs/licenses/assets/solarized-LICENSE),
+  [One](docs/licenses/assets/atom-one-LICENSE.md),
+  [Rosé Pine](docs/licenses/assets/rose-pine-LICENSE),
+  [Dracula](docs/licenses/assets/dracula-LICENSE), and
+  [Kanagawa](docs/licenses/assets/kanagawa-LICENSE), pinned to their inspected
+  revisions in `docs/licenses/assets/sources.json`. MIT asks for nothing beyond
+  those notices; theme names are used descriptively and imply no endorsement.
 - No font files are bundled by GitTurtle's assets or the selected GPUI icon asset
   bundle. Text uses installed system fonts. Font files present in decoder/text
   dependency test directories are not application assets. Preserve their own
