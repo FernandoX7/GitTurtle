@@ -17,6 +17,7 @@ import sys
 import time
 import uuid
 
+from .claude import Claude, UsageLimited, snapshot_files as claude_snapshot_files
 from .codex import Codex, validate_review
 from .git import changed_paths, clean, clone, commit, committed_paths, git, head, identity, source_root, write_limits
 from .process import EnvironmentBlocked, LoopError, atomic_json, digest, read_json, run_process, reconcile_processes
@@ -24,9 +25,11 @@ from .task_spec import Task, load_spec, path_allowed, required_evidence, select_
 from .security_review import candidate_requires_security, validate_security_review
 
 
-CONTROLS = (".codex", ".agents", "scripts/agent_loop", "scripts/agent-loop.py", "scripts/check-agent-guidance.py", "docs/development/tasks.json", "docs/development/task.schema.json", "docs/development/security-review.md")
+CONTROLS = (".codex", ".agents", ".claude", "scripts/agent_loop", "scripts/agent-loop.py", "scripts/check-agent-guidance.py", "docs/development/tasks.json", "docs/development/task.schema.json", "docs/development/security-review.md")
 EVIDENCE_KINDS = {"native", "performance", "package", "vendor"}
 EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
+TOOLS = ("codex", "claude")
+CLAUDE_OPTIONS = ("retry_effort", "hard_model", "light_model", "max_turns", "review_max_turns", "sandbox")
 
 
 def now() -> str:
@@ -34,7 +37,7 @@ def now() -> str:
 
 
 def controlled(path: str) -> bool:
-    return Path(path).name == "AGENTS.md" or any(path == item or path.startswith(item + "/") for item in CONTROLS)
+    return Path(path).name in {"AGENTS.md", "CLAUDE.md"} or any(path == item or path.startswith(item + "/") for item in CONTROLS)
 
 
 def validate_patch(repo: Path, task: Task, base: str) -> list[str]:
@@ -80,6 +83,22 @@ def profiles_for(task: Task, paths: list[str]) -> set[str]:
     return profiles
 
 
+def make_adapter(controller: Path, settings: dict):
+    """Build the session adapter a run recorded; saved runs without a tool use Codex."""
+    tool = settings.get("tool") or "codex"
+    if tool == "claude":
+        return Claude(
+            controller, settings["model"], settings["effort"],
+            retry_effort=settings.get("retry_effort"), hard_model=settings.get("hard_model", "fable"),
+            light_model=settings.get("light_model", "sonnet"), max_turns=settings.get("max_turns") or 200,
+            review_max_turns=settings.get("review_max_turns") or 120, sandbox=settings.get("sandbox") or "auto",
+            settings_sha256=settings.get("claude_settings_sha256"),
+        )
+    if tool != "codex":
+        raise LoopError(f"unknown session tool {tool!r}")
+    return Codex(controller, settings["model"], settings["effort"])
+
+
 @contextmanager
 def locked(directory: Path):
     lock_path = directory / "lock"
@@ -122,7 +141,8 @@ class Runner:
             if not path.is_file() or digest(path) != expected:
                 raise LoopError(f"controller version changed; resume using {self.controller / 'scripts/agent-loop.py'}")
         self.repo = self.directory / "accepted"
-        self.adapter = adapter or Codex(self.controller, self.state["model"], self.state["effort"])
+        self.adapter = adapter or make_adapter(self.controller, self.state)
+        self.usage_limited: str | None = None
         self.gate_runner = gate_runner
         self.started = time.monotonic()
         self.initial_seconds = self.state["remaining_seconds"]
@@ -139,6 +159,12 @@ class Runner:
     def recover_usage(self) -> None:
         reported = 0
         incomplete = False
+        recover = getattr(self.adapter, "recover_usage", None)
+        if callable(recover):
+            reported, incomplete = recover(self.directory / "attempts")
+            self.initial_tokens = max(self.initial_tokens, reported)
+            self.state["output_usage_incomplete"] = self.state.get("output_usage_incomplete", False) or incomplete
+            return
         for log in (self.directory / "attempts").glob("**/*.jsonl"):
             if log.name not in {"implementer.jsonl", "verifier.jsonl", "security-reviewer.jsonl"}:
                 continue
@@ -178,6 +204,8 @@ class Runner:
     def budget_stop(self) -> str | None:
         if self.stop_requested():
             return "stop requested"
+        if self.usage_limited:
+            return self.usage_limited
         if self.timeout() <= 0:
             return "time budget exhausted"
         cap = self.state.get("max_output_tokens")
@@ -269,7 +297,9 @@ class Runner:
             self.state.update(phase="paused", reason=reason, active=None, budget_running=False)
             self.save()
             return self.state
-        self.state["codex_version"] = self.adapter.preflight()
+        self.state["tool_version"] = self.adapter.preflight()
+        if (self.state.get("tool") or "codex") == "codex":
+            self.state["codex_version"] = self.state["tool_version"]
         if not self.state.get("baseline_passed"):
             self.state["phase"] = "preflight"
             self.save()
@@ -320,6 +350,7 @@ class Runner:
                     except EnvironmentBlocked as error:
                         if self.state["phase"] == "accepting":
                             raise
+                        self.note_limit(error)
                         record.update(status="review_blocked", reason=str(error))
                         self.state.update(phase="idle", active=None)
                         self.save()
@@ -345,6 +376,10 @@ class Runner:
         self.state.update(phase="building", active={"task": task.id})
         self.save()
         repo = directory / "repo"
+        configure = getattr(self.adapter, "configure_attempt", None)
+        if callable(configure):
+            record["session"] = configure(task, record["attempts"])
+            self.save()
         try:
             clone(self.repo, repo, record["base"], tuple(self.state["author"]), owner=self.directory)
             result = self.adapter.run("implementer", task, repo, directory, self.timeout(), self.stop_requested,
@@ -384,7 +419,12 @@ class Runner:
         except EnvironmentBlocked as error:
             if self.state["phase"] == "accepting":
                 raise
-            record.update(status="review_blocked" if self.state["phase"] in {"verifying", "security_reviewing"} else "blocked", reason=str(error))
+            self.note_limit(error)
+            if self.state["phase"] in {"verifying", "security_reviewing"}:
+                status = "review_blocked"
+            else:
+                status = "interrupted" if isinstance(error, UsageLimited) else "blocked"
+            record.update(status=status, reason=str(error))
         except LoopError as error:
             if self.state["phase"] == "accepting":
                 raise  # Git may have moved; preserve intent for reconciliation.
@@ -393,6 +433,12 @@ class Runner:
             if self.state["phase"] != "accepting":
                 self.state.update(phase="idle", active=None)
             self.save()
+
+    def note_limit(self, error: Exception) -> None:
+        # A usage-limit refusal affects every later session; pause the run instead
+        # of consuming an attempt per task.
+        if isinstance(error, UsageLimited) and not self.usage_limited:
+            self.usage_limited = str(error)
 
     def missing_evidence(self, record: dict) -> list[str]:
         supplied = record.get("attestations", {})
@@ -561,7 +607,10 @@ def create_run(repo: Path, spec_path: Path, controller: Path, options: dict) -> 
     if not tasks:
         raise LoopError("task queue is empty; define and commit an authorized milestone first")
     author = identity(root)
-    adapter = Codex(controller, options["model"], options["effort"])
+    tool = options.get("tool") or "codex"
+    if tool not in TOOLS:
+        raise LoopError(f"unknown session tool {tool!r}")
+    adapter = make_adapter(controller, options | {"tool": tool})
     adapter.preflight()
     state_parent = root / ".local" / "agent-loop"
     if (root / ".local").is_symlink() or state_parent.is_symlink():
@@ -574,19 +623,26 @@ def create_run(repo: Path, spec_path: Path, controller: Path, options: dict) -> 
     os.chmod(directory, 0o700)
     shutil.copyfile(spec_path, directory / "tasks.json")
     controller_files = {}
-    for relative in ("scripts/agent_loop", "scripts/agent-loop.py", "scripts/check-agent-guidance.py", ".codex/agents"):
+    sources: list[tuple[str, Path]] = []
+    roles = (".codex/agents",) if tool == "codex" else ()
+    for relative in ("scripts/agent_loop", "scripts/agent-loop.py", "scripts/check-agent-guidance.py", *roles):
         source = controller / relative
         files = sorted(source.rglob("*.py")) if source.is_dir() and relative.startswith("scripts") else sorted(source.glob("*.toml")) if source.is_dir() else [source]
         for file in files:
             if file.is_symlink() or not file.is_file():
                 raise LoopError(f"invalid controller source: {file}")
-            target = directory / "controller" / file.relative_to(controller)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(file, target)
-            controller_files[file.relative_to(controller).as_posix()] = digest(target)
+            sources.append((file.relative_to(controller).as_posix(), file))
+    if tool == "claude":
+        sources.extend(claude_snapshot_files(controller))
+    for relative, file in sources:
+        target = directory / "controller" / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(file, target)  # follows a symlinked skill to its content
+        controller_files[relative] = digest(target)
+    prepared = adapter.prepare_run(directory) if hasattr(adapter, "prepare_run") else {}
     base = head(root)
     clone(root, directory / "accepted", base, author, owner=directory)
-    git(directory / "accepted", "switch", "--quiet", "-c", "codex/agent-" + run_id, owner=directory)
+    git(directory / "accepted", "switch", "--quiet", "-c", getattr(adapter, "branch_prefix", "codex/agent-") + run_id, owner=directory)
     state = {
         "version": 1, "run": str(directory), "source": str(root), "source_head": base,
         "accepted_head": base, "spec_path": relative_spec, "spec_sha256": digest(directory / "tasks.json"),
@@ -594,7 +650,9 @@ def create_run(repo: Path, spec_path: Path, controller: Path, options: dict) -> 
         "created_at": now(), "updated_at": now(), "baseline_passed": False,
         "remaining_seconds": options["max_minutes"] * 60, "output_tokens": 0,
         "tasks": {task.id: {"status": "pending", "attempts": 0} for task in tasks},
+        "tool": tool, **prepared,
         **{key: options[key] for key in ("model", "effort", "max_tasks", "max_attempts", "session_minutes", "max_output_tokens")},
+        **{key: options[key] for key in CLAUDE_OPTIONS if tool == "claude" and key in options},
     }
     atomic_json(directory / "state.json", state)
     return directory
@@ -646,6 +704,14 @@ def main(argv=None) -> int:
             command.add_argument("--max-minutes", type=positive, required=True)
             command.add_argument("--session-minutes", type=positive, default=45)
             command.add_argument("--max-output-tokens", type=positive)
+            command.add_argument("--tool", choices=TOOLS, default="codex", help="session CLI: codex (default) or claude")
+            claude = command.add_argument_group("claude", "options used only with --tool claude")
+            claude.add_argument("--retry-effort", choices=EFFORTS[:5], help="effort for attempt 2 (default: one step above --effort)")
+            claude.add_argument("--hard-model", default="fable", help="model for attempt 3 onward via the implementer-hard agent; none disables")
+            claude.add_argument("--light-model", default="sonnet", help="model for docs/tooling-only tasks on attempt 1; none disables")
+            claude.add_argument("--max-turns", type=positive, default=200, help="turn cap per implementer session")
+            claude.add_argument("--review-max-turns", type=positive, default=120, help="turn cap per review session")
+            claude.add_argument("--sandbox", choices=("auto", "on", "off"), default="auto", help="Bash sandbox for implementer sessions")
     for name in ("status", "resume", "stop", "attest"):
         command = sub.add_parser(name)
         command.add_argument("--run", type=Path, required=True)
