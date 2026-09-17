@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from agent_loop.git import clean, git, head
 from agent_loop.process import LoopError, MalformedResponse, atomic_json, read_json
-from agent_loop.runner import Runner, attest, create_run, locked, main, profiles_for, validate_patch
+from agent_loop.runner import Runner, attest, create_run, gate_context, locked, main, profiles_for, validate_patch
 from agent_loop.task_spec import parse_spec
 # Records and run state stay private even when the host umask is permissive.
 from agent_loop.test_support import setUpModule, tearDownModule
@@ -304,6 +304,22 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("tooling", profiles_for(feature, ["scripts/example.py"]))
         self.assertIn("vendor", profiles_for(feature, ["vendor/example/Cargo.toml"]))
         self.assertIn("package", profiles_for(feature, ["assets/app-icon.png"]))
+
+    def test_review_sessions_receive_the_gate_result_not_only_its_path(self):
+        # A review session cannot read a path outside its checkout, so pointing
+        # at the evidence left every gate-backed criterion unverified.
+        report = self.root / "gates.json"
+        atomic_json(report, {"passed": True, "checks": [
+            {"name": "clippy", "returncode": 0, "elapsed": 4.4, "stopped": None,
+             "argv": ["cargo", "clippy"], "log": "/elsewhere/clippy.log"},
+        ]})
+        context = gate_context(report)
+        self.assertIn(str(report), context)
+        self.assertIn('"passed": true', context)
+        self.assertIn('"name": "clippy"', context)
+        # Only the outcome travels; log paths and argv stay out of the prompt.
+        self.assertNotIn("/elsewhere/clippy.log", context)
+        self.assertIn("unreadable", gate_context(self.root / "absent.json"))
 
     def test_an_unreadable_verdict_retains_the_candidate_instead_of_rebuilding(self):
         class UnreadableVerdict(FakeCodex):

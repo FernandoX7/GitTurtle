@@ -94,6 +94,26 @@ def profiles_for(task: Task, paths: list[str], sources=None) -> set[str]:
     return profiles
 
 
+def gate_context(path: Path) -> str:
+    """The gate result itself, not only where it lives.
+
+    A review session runs with prompts disabled and a command allowlist, so a
+    path outside its checkout is unreadable to it: pointing at the evidence left
+    every gate-backed criterion unverified. The outcome is small, so it travels
+    in the prompt; the path stays for identification.
+    """
+    summary = f"Gate evidence: {path}"
+    try:
+        report = read_json(path)
+    except LoopError:
+        return summary + " (unreadable)"
+    checks = [
+        {key: check.get(key) for key in ("name", "returncode", "elapsed", "stopped")}
+        for check in report.get("checks", []) if isinstance(check, dict)
+    ]
+    return summary + "\nGate result: " + json.dumps({"passed": report.get("passed"), "checks": checks})
+
+
 def revision_sources(repo: Path, base: str, candidate: str):
     """Read a path at both revisions; an absent path reads as empty text."""
     def read(revision: str, path: str) -> str:
@@ -516,7 +536,7 @@ class Runner:
         if self.budget_stop():
             record["status"] = "awaiting_evidence"
             return
-        context = "Gate evidence: " + str(directory / "checks/gates.json") + "\nExternal evidence: " + json.dumps(record.get("attestations", {}))
+        context = gate_context(directory / "checks/gates.json") + "\nExternal evidence: " + json.dumps(record.get("attestations", {}))
         general_validator = lambda value: validate_review(value, task, candidate)
         if not self.saved_review(record, "review", general_validator):
             review_dir = directory / ("review-" + uuid.uuid4().hex[:10])
