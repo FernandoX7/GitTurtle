@@ -34,9 +34,13 @@ REQUIRED_FLAGS = (
 ROLES = ("implementer", "verifier", "security-reviewer")
 REVIEW_TOOLS = "Read,Grep,Glob,Bash"
 REVIEW_DISALLOWED = "Edit,Write,NotebookEdit,Agent"
+# The verifier is asked to run the repository's own checks rather than trust a
+# recorded excerpt, so it reaches every script in scripts/ except the controller
+# itself, which claude-settings.json denies. The runner still requires the
+# checkout to be clean and at the candidate sha when the review returns.
 REVIEW_ALLOWED = (
     "Bash(cargo *)", "Bash(git diff *)", "Bash(git log *)", "Bash(git show *)",
-    "Bash(git status *)", "Bash(python3 scripts/gate.py *)",
+    "Bash(git status *)", "Bash(python3 scripts/*)", "Bash(rustc -vV)",
 )
 LIGHT_PROFILES = frozenset({"docs", "tooling"})
 # Paths pinned into the run snapshot and protected during unattended attempts.
@@ -365,7 +369,13 @@ class Claude:
             raise EnvironmentBlocked(f"{role} session failed ({subtype or result.returncode}); inspect {log}")
         value = payload.get("structured_output")
         if not isinstance(value, dict):
-            raise MalformedResponse(f"{role} session returned no structured output; inspect {log}")
+            # The CLI does not always surface structured output for a long final
+            # message that ends in the verdict, and a 31-turn review usually
+            # writes its reasoning first. The object is still in the transcript,
+            # so read it from there and let the caller validate it as ever.
+            value = self._embedded_result(text, schema)
+        if not isinstance(value, dict):
+            raise MalformedResponse(f"{role} session returned no usable result object; inspect {log}")
         atomic_json(response_path, value)
         if role == "implementer":
             if (set(value) != set(BUILD_SCHEMA["required"]) or value["task_id"] != task.id
@@ -373,6 +383,25 @@ class Claude:
                 or not isinstance(value["summary"], str) or not value["summary"].strip()):
                 raise LoopError("invalid implementation response")
         return value
+
+    @staticmethod
+    def _embedded_result(text: str, schema: dict) -> dict | None:
+        """The last JSON object in `text` carrying every field the schema requires.
+
+        Only the shape is checked here; the task id, candidate sha and verdict
+        are validated by the caller exactly as for structured output, so a quoted
+        or stale object cannot pass as a verdict.
+        """
+        required = set(schema.get("required", ()))
+        found = None
+        for candidate in re.findall(r"```(?:json)?\s*\n(.*?)```", text, re.S) + [text]:
+            try:
+                value = json.loads(candidate.strip())
+            except ValueError:
+                continue
+            if isinstance(value, dict) and required <= set(value):
+                found = value
+        return found
 
     @staticmethod
     def _result_payload(stdout: str) -> dict | None:

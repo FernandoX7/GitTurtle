@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from agent_loop.claude import (
-    CHILD_ENVIRONMENT, REVIEW_ALLOWED, Claude, UsageLimited, effort_above, parse_version,
+    CHILD_ENVIRONMENT, REVIEW_ALLOWED, SETTINGS_TEMPLATE, Claude, UsageLimited, effort_above, parse_version,
     snapshot_files,
 )
 from agent_loop.codex import validate_review
@@ -168,6 +168,17 @@ class ClaudeProcessTests(unittest.TestCase):
         self.assertIn("Candidate: " + "a" * 40, self.capture()["prompt"])
         self.assertEqual(validate_review(result, self.task, "a" * 40), "pass")
 
+    def test_review_sessions_reach_repository_scripts_but_not_the_controller(self):
+        # The verifier is asked to run the project's own checks rather than
+        # trust a recorded excerpt; the controller itself stays out of reach.
+        self.assertIn("Bash(python3 scripts/*)", REVIEW_ALLOWED)
+        self.assertIn("Bash(rustc -vV)", REVIEW_ALLOWED)
+        source = Path(__file__).resolve().parents[2] / SETTINGS_TEMPLATE
+        settings = json.loads(source.read_text())
+        deny = settings["permissions"]["deny"]
+        self.assertIn("Bash(python3 scripts/agent-loop.py *)", deny)
+        self.assertIn("Bash(python3 scripts/agent_loop/*)", deny)
+
     def test_every_role_is_given_its_schema_field_names_verbatim(self):
         # Told only that "a schema was supplied", a session invents its own field
         # names and the CLI then returns no structured output at all.
@@ -190,8 +201,23 @@ class ClaudeProcessTests(unittest.TestCase):
     def test_an_unreadable_verdict_is_reported_as_a_malformed_response(self):
         # The gated candidate it judged is intact, so the runner retries the
         # review rather than spending an attempt rebuilding it.
-        self.fake_claude(result={"structured_output": None})
-        with self.assertRaisesRegex(MalformedResponse, "no structured output"):
+        self.fake_claude(result={"structured_output": None, "result": "I could not complete the review."})
+        with self.assertRaisesRegex(MalformedResponse, "no usable result object"):
+            self.session("verifier", candidate="a" * 40)
+
+    def test_a_verdict_left_in_the_transcript_is_still_read(self):
+        # The CLI does not always surface structured output for a long final
+        # message, so the object in the transcript is the verdict.
+        verdict = passing_review()
+        report = "I inspected the candidate.\n\n```json\n" + json.dumps(verdict) + "\n```\n"
+        self.fake_claude(result={"structured_output": None, "result": report})
+        self.assertEqual(self.session("verifier", candidate="a" * 40), verdict)
+
+    def test_a_transcript_object_missing_required_fields_is_refused(self):
+        # The first themes verifier returned candidate_sha with no findings.
+        report = "```json\n" + json.dumps({"task_id": "one", "candidate_sha": "a" * 40, "verdict": "pass"}) + "\n```"
+        self.fake_claude(result={"structured_output": None, "result": report})
+        with self.assertRaisesRegex(MalformedResponse, "no usable result object"):
             self.session("verifier", candidate="a" * 40)
 
     def test_security_reviewer_uses_its_schema_agent_and_explicit_base(self):
@@ -236,8 +262,8 @@ class ClaudeProcessTests(unittest.TestCase):
             self.session(directory="crash")
 
     def test_missing_structured_output_or_malformed_status_cannot_pass(self):
-        self.fake_claude(result={"structured_output": None})
-        with self.assertRaisesRegex(LoopError, "structured output"):
+        self.fake_claude(result={"structured_output": None, "result": "I stopped before writing a result."})
+        with self.assertRaisesRegex(LoopError, "no usable result object"):
             self.session(directory="unstructured")
         self.fake_claude(structured={"task_id": self.task.id, "status": [], "summary": "Invalid enum."})
         with self.assertRaises(LoopError):
