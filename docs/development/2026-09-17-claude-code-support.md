@@ -33,6 +33,31 @@
 - `python3 scripts/check-agent-guidance.py` validates agent and skill frontmatter, rules, settings and hooks alongside the Codex files; controller and gate behavior have unit tests.
 - Remaining uncertainty: the headless usage-limit payload; whether a saved workflow can be invoked by name from a headless prompt; the plan-unit cost of Fable on Max. Each is worked around rather than depended on.
 
+## Native evidence and the changed-path inference
+
+The controller inferred the `native` profile from paths alone: any `crates/app/**.rs` file in a
+candidate demanded a native attestation. The first themes run stalled on it. `themes-palette-sources`
+declares `["rust", "docs"]` and its candidate adds only `pub const … : u32` tables plus a
+`#[cfg(test)]` module, with `mod sources;` behind `#[cfg_attr(not(test), allow(dead_code))]`; an
+attestation for it would have recorded a screenshot of an app identical to the baseline. The defect
+is systemic rather than particular to that task: `themes-custom-model` declares `["rust"]` and is
+pure model code under the same directory, so it would have stalled the same way.
+
+`scripts/agent_loop/rust_surface.py` now answers the narrower question the profile actually asks.
+It blanks comments, removes `#[cfg(test)]` items, and compares what remains; a change keeps the
+`native` profile unless it removes no non-blank line and every line it adds is a module, a non-glob
+import, a constant, a lint-control attribute or a brace. The additive requirement carries the
+safety: retuning `DEFAULT_INTERFACE_TEXT_SIZE` from 13 to 14 repaints every screen and looks exactly
+like an inert constant, but it removes the old line, so it stays native. Literals are blanked for
+brace matching and kept for comparison, so retitling a button is a rendering change. Anything the
+module cannot positively recognize — a function, an `impl`, a `#[cfg(...)]` attribute, a glob import,
+an item whose extent cannot be determined — keeps the profile. `profiles_for` falls back to the old
+path rule when a caller cannot supply both revisions.
+
+Checked against 120 commits of history: of the 69 that touch app Rust, 65 keep the native profile and
+4 are classified inert; all four were read and are `#[cfg(test)]`-only. A saved run keeps its own
+controller snapshot, so this applies to runs created after it.
+
 ## Outcome
 
 Recorded after implementation: see the commit series on `claude/claude-code-support` and the checks listed in its pull request description.

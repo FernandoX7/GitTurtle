@@ -305,6 +305,28 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("vendor", profiles_for(feature, ["vendor/example/Cargo.toml"]))
         self.assertIn("package", profiles_for(feature, ["assets/app-icon.png"]))
 
+    def test_app_rust_requires_native_evidence_without_the_two_revisions(self):
+        feature = parse_spec({"version": 1, "tasks": [task()]})[0]
+        self.assertIn("native", profiles_for(feature, ["crates/app/src/views.rs"]))
+        self.assertIn("native", profiles_for(feature, ["vendor/gpui/src/window.rs"]))
+
+    def test_app_rust_that_adds_no_rendering_code_skips_native_evidence(self):
+        feature = parse_spec({"version": 1, "tasks": [task()]})[0]
+        table = "pub mod solarized {\n    pub const BASE03: u32 = 0x002b36;\n}\n"
+        sources = {"crates/app/src/appearance/sources.rs": ("", table)}
+        profiles = profiles_for(feature, list(sources), sources.__getitem__)
+        self.assertIn("rust", profiles)
+        self.assertNotIn("native", profiles)
+
+    def test_a_rendering_change_beside_an_inert_one_still_requires_native_evidence(self):
+        feature = parse_spec({"version": 1, "tasks": [task()]})[0]
+        sources = {
+            "crates/app/src/appearance/sources.rs": ("", "pub const BASE03: u32 = 0x002b36;\n"),
+            "crates/app/src/views.rs": ('fn header() { div().child("History"); }\n',
+                                        'fn header() { div().child("Commits"); }\n'),
+        }
+        self.assertIn("native", profiles_for(feature, sorted(sources), sources.__getitem__))
+
 
 if __name__ == "__main__":
     unittest.main()

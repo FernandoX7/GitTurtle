@@ -21,6 +21,7 @@ from .claude import Claude, UsageLimited, snapshot_files as claude_snapshot_file
 from .codex import Codex, validate_review
 from .git import changed_paths, clean, clone, commit, committed_paths, git, head, identity, source_root, write_limits
 from .process import EnvironmentBlocked, LoopError, atomic_json, digest, read_json, run_process, reconcile_processes
+from .rust_surface import renders
 from .task_spec import Task, load_spec, path_allowed, required_evidence, select_ready
 from .security_review import candidate_requires_security, validate_security_review
 
@@ -59,7 +60,14 @@ def validate_patch(repo: Path, task: Task, base: str) -> list[str]:
     return paths
 
 
-def profiles_for(task: Task, paths: list[str]) -> set[str]:
+def profiles_for(task: Task, paths: list[str], sources=None) -> set[str]:
+    """Infer the profiles a candidate touching `paths` must satisfy.
+
+    `sources` maps a path to its (before, after) text and lets app Rust that adds
+    no view, layout or rendering code skip the native profile. Without it every
+    app Rust change keeps that profile, so a caller that cannot read the two
+    revisions errs toward demanding the evidence.
+    """
     profiles = set(task.profiles) | {"docs"}
     if any(path.endswith(".rs") or Path(path).name in {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml"} for path in paths):
         profiles.add("rust")
@@ -67,7 +75,10 @@ def profiles_for(task: Task, paths: list[str]) -> set[str]:
         profiles.add("tooling")
     if any(path.startswith("vendor/") for path in paths):
         profiles.update({"vendor", "rust"})
-    if any((path.startswith("crates/app/") and path.endswith(".rs")) or path.startswith("vendor/gpui") for path in paths):
+    if any(path.startswith("vendor/gpui") for path in paths):
+        profiles.add("native")
+    app_rust = [path for path in paths if path.startswith("crates/app/") and path.endswith(".rs")]
+    if app_rust and (sources is None or any(renders(*sources(path)) for path in app_rust)):
         profiles.add("native")
     if any(
         path.startswith("assets/") or path in {
@@ -81,6 +92,16 @@ def profiles_for(task: Task, paths: list[str]) -> set[str]:
     ):
         profiles.add("package")
     return profiles
+
+
+def revision_sources(repo: Path, base: str, candidate: str):
+    """Read a path at both revisions; an absent path reads as empty text."""
+    def read(revision: str, path: str) -> str:
+        if not git(repo, "ls-tree", "-z", revision, "--", path):
+            return ""
+        return git(repo, "show", f"{revision}:{path}")
+
+    return lambda path: (read(base, path), read(candidate, path))
 
 
 def make_adapter(controller: Path, settings: dict):
@@ -400,7 +421,7 @@ class Runner:
             # Keep the patch and Git object even when gates/review fail.
             patch = git(repo, "diff", "--binary", "--no-ext-diff", "--no-textconv", record["base"], record["candidate"])
             (directory / "candidate.patch").write_bytes(patch.encode("utf-8", "surrogateescape"))
-            profiles = profiles_for(task, paths)
+            profiles = profiles_for(task, paths, revision_sources(repo, record["base"], record["candidate"]))
             record["profiles"] = sorted(profiles)
             record["required_evidence"] = sorted(required_evidence(task) | (profiles & EVIDENCE_KINDS))
             self.state["phase"] = "gating"
