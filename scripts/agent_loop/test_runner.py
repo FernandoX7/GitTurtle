@@ -37,13 +37,15 @@ class FakeCodex:
         self.mutate = mutate
         self.blocked = blocked
         self.calls = []
+        self.sessions = []
         self.output_tokens = 0
 
     def preflight(self):
         return "fixture Codex"
 
-    def run(self, role, feature, repo, directory, timeout, stop, *, candidate=None, context=""):
+    def run(self, role, feature, repo, directory, timeout, stop, *, candidate=None, context="", **options):
         self.calls.append((role, feature.id))
+        self.sessions.append((role, options))
         self.output_tokens += 10
         if role == "implementer":
             (repo / "docs").mkdir(exist_ok=True)
@@ -109,6 +111,11 @@ class RunnerTests(unittest.TestCase):
         state = self.execute(directory, adapter)
         self.assertEqual(state["phase"], "complete")
         self.assertEqual(adapter.calls, [("implementer", "one"), ("verifier", "one"), ("implementer", "two"), ("verifier", "two")])
+        # Implementer sessions name the run's own queue so the edit hook can protect it.
+        self.assertEqual([options.get("spec_path") for role, options in adapter.sessions if role == "implementer"],
+                         ["tasks.json", "tasks.json"])
+        self.assertEqual([options.get("spec_path") for role, options in adapter.sessions if role == "verifier"],
+                         [None, None])
         self.assertEqual(git(directory / "accepted", "log", "-2", "--format=%s").splitlines(), ["docs: explain two workflow", "docs: explain one workflow"])
         self.assertEqual(git(directory / "accepted", "remote").strip(), "")
         self.assertEqual(state["output_tokens"], 40)

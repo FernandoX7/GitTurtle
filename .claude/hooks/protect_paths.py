@@ -4,7 +4,10 @@
 The unattended controller sets GITTURTLE_LOOP=1. In that mode every guidance,
 agent, skill, controller, task-policy and gate-configuration path is protected
 regardless of the task's scope globs; the controller's patch validation is the
-backstop, this hook is the first line. Interactive sessions are unaffected.
+backstop, this hook is the first line. The run's own task queue is named by
+GITTURTLE_TASKS_PATH (a repository-relative POSIX path) because a run can be
+driven from a queue other than docs/development/tasks.json. Interactive
+sessions are unaffected.
 """
 import json
 import os
@@ -40,6 +43,11 @@ def relative_path(raw: str, cwd: Path) -> str:
         return path.as_posix()
 
 
+def active_queue() -> str:
+    """The repository-relative task queue this run was started from, if any."""
+    return (os.environ.get("GITTURTLE_TASKS_PATH") or "").strip()
+
+
 def is_protected(relative: str) -> bool:
     if Path(relative).name in PROTECTED_NAMES:
         return True
@@ -62,6 +70,14 @@ def main() -> int:
         return 0
     cwd = Path(data.get("cwd") or os.getcwd())
     relative = relative_path(str(raw), cwd)
+    queue = active_queue()
+    if queue and relative == queue:
+        sys.stderr.write(
+            f"protected path in a controller session: {relative} is this run's active task "
+            "queue. A worker cannot change the contract it is being graded against; return "
+            "`blocked` with a concrete proposal instead.\n"
+        )
+        return 2
     if not is_protected(relative):
         return 0
     sys.stderr.write(

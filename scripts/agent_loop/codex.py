@@ -107,7 +107,7 @@ class Codex:
     def run(
         self, role: str, task: Task, repo: Path, directory: Path, timeout: float,
         stop: Callable[[], bool], *, candidate: str | None = None,
-        context: str = "", base: str | None = None,
+        context: str = "", base: str | None = None, spec_path: str | None = None,
     ) -> dict:
         if role not in {"implementer", "verifier", "security-reviewer"}:
             raise LoopError("unknown controller role")
@@ -177,6 +177,9 @@ class Codex:
         # A child must not mistake a parent Codex app/goal for its own session.
         for key in ("CODEX_THREAD_ID", "CODEX_TASK_ID", "CODEX_INTERNAL_ORIGINATOR_OVERRIDE"):
             environment.pop(key, None)
+        if spec_path:
+            # The hook protects the run's own queue, which may live outside docs/development/tasks.json.
+            environment["GITTURTLE_TASKS_PATH"] = spec_path
         result = run_process(args, repo, log, timeout, stdin=prompt, stop=stop, env=environment)
         failed_event = False
         completed = False

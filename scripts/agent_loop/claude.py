@@ -250,7 +250,7 @@ class Claude:
     def run(
         self, role: str, task: Task, repo: Path, directory: Path, timeout: float,
         stop: Callable[[], bool], *, candidate: str | None = None,
-        context: str = "", base: str | None = None,
+        context: str = "", base: str | None = None, spec_path: str | None = None,
     ) -> dict:
         if role not in ROLES:
             raise LoopError("unknown controller role")
@@ -330,6 +330,9 @@ class Claude:
         environment.update(CHILD_ENVIRONMENT)
         environment["GITTURTLE_TASK_CONTEXT"] = str(contract_path)
         environment["CARGO_TARGET_DIR"] = str(self.controller.parent / "build")
+        if spec_path:
+            # The hook protects the run's own queue, which may live outside docs/development/tasks.json.
+            environment["GITTURTLE_TASKS_PATH"] = spec_path
         log = directory / f"{role}.stdout.log"
         stderr_log = directory / f"{role}.stderr.log"
         result = run_process(args, repo, log, timeout, stdin=prompt, stop=stop, env=environment, stderr_path=stderr_log)

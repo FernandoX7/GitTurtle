@@ -127,7 +127,7 @@ class SecurityCodex(fixtures.FakeCodex):
         self.mutate_security = mutate_security
         self.stop_after_security = stop_after_security
 
-    def run(self, role, feature, repo, directory, timeout, stop, *, candidate=None, context="", base=None):
+    def run(self, role, feature, repo, directory, timeout, stop, *, candidate=None, context="", base=None, **options):
         if role == "security-reviewer":
             self.calls.append((role, feature.id))
             self.output_tokens += 10
@@ -142,7 +142,7 @@ class SecurityCodex(fixtures.FakeCodex):
                 # Attempt paths are run/attempts/task/number/security-review-id.
                 (directory.parents[3] / "STOP").touch()
             return value
-        result = super().run(role, feature, repo, directory, timeout, stop, candidate=candidate, context=context)
+        result = super().run(role, feature, repo, directory, timeout, stop, candidate=candidate, context=context, **options)
         if role == "implementer":
             (repo / "docs/one.md").unlink()
             (repo / "scripts").mkdir(exist_ok=True)

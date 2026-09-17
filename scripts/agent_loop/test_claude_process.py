@@ -80,9 +80,11 @@ class ClaudeProcessTests(unittest.TestCase):
             "if sys.argv[1:] == ['auth', 'status']:\n"
             "    print(json.dumps({'loggedIn': config['logged_in'], 'subscriptionType': 'max'})); raise SystemExit(0)\n"
             "args = sys.argv[1:]\nprompt = sys.stdin.read()\n"
-            "keys = ['GITTURTLE_LOOP', 'GITTURTLE_TASK_CONTEXT', 'CARGO_TARGET_DIR', 'HOME', 'PATH',\n"
-            "        'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS', 'CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS', 'INSTA_UPDATE']\n"
-            "capture = {'args': args, 'prompt': prompt, 'cwd': os.getcwd(), 'environment': {k: os.environ.get(k) for k in keys}}\n"
+            "keys = ['GITTURTLE_LOOP', 'GITTURTLE_TASK_CONTEXT', 'GITTURTLE_TASKS_PATH', 'CARGO_TARGET_DIR',\n"
+            "        'HOME', 'PATH', 'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS',\n"
+            "        'CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS', 'INSTA_UPDATE']\n"
+            "capture = {'args': args, 'prompt': prompt, 'cwd': os.getcwd(),\n"
+            "           'environment': {k: os.environ[k] for k in keys if k in os.environ}}\n"
             f"Path({str(self.invocation)!r}).write_text(json.dumps(capture))\n"
             "if config['stderr']:\n    print(config['stderr'], file=sys.stderr)\n"
             "if config['raw_stdout'] is not None:\n    sys.stdout.write(config['raw_stdout'])\n"
@@ -137,6 +139,19 @@ class ClaudeProcessTests(unittest.TestCase):
         session = json.loads((attempt / "implementer.session.json").read_text())
         self.assertEqual(session["session_id"], "fixture-session")
         self.assertEqual(session["output_tokens"], 37)
+
+    def test_active_task_queue_reaches_the_session_only_when_supplied(self):
+        """The hook protects the run's own queue, so the session must name it."""
+        self.fake_claude()
+        with patch.dict(os.environ):
+            os.environ.pop("GITTURTLE_TASKS_PATH", None)
+            self.session(directory="queued", spec_path="docs/development/themes/tasks.json")
+            queued = self.capture()["environment"]
+            self.session(directory="unqueued")
+            plain = self.capture()["environment"]
+        self.assertEqual(queued["GITTURTLE_TASKS_PATH"], "docs/development/themes/tasks.json")
+        self.assertEqual(queued["GITTURTLE_LOOP"], "1")
+        self.assertNotIn("GITTURTLE_TASKS_PATH", plain)
 
     def test_verifier_runs_read_only_with_allowlisted_commands(self):
         self.fake_claude(structured=passing_review())

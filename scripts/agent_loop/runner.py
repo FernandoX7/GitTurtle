@@ -383,7 +383,8 @@ class Runner:
         try:
             clone(self.repo, repo, record["base"], tuple(self.state["author"]), owner=self.directory)
             result = self.adapter.run("implementer", task, repo, directory, self.timeout(), self.stop_requested,
-                                      context="Previous attempt evidence (read-only): " + json.dumps(previous))
+                                      context="Previous attempt evidence (read-only): " + json.dumps(previous),
+                                      spec_path=self.state["spec_path"])
             if self.budget_stop():
                 raise LoopError(self.budget_stop())
             if result["status"] == "blocked":
