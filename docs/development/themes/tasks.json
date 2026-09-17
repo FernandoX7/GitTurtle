@@ -201,7 +201,7 @@
     {
       "id": "themes-apply-trace",
       "title": "Trace theme application frames and record a release baseline",
-      "description": "Add a gitturtle.theme_apply_frame_ms trace under GITTURTLE_TRACE that measures apply_appearance from the Settings choose_theme handler to the window's next frame callback, following the existing trace_frame pattern in main.rs, plus a GPUI test proving a theme switch submits no worker job and keeps the retained editor and its Find state. Then record, in release mode, switching across every built-in on the fixture named in docs/development/themes/spec.md section 'Performance'. This is the instrument the editor and picker tasks measure against; the measurement reference under .agents/skills is policy-protected during runs, so document the metric in the benchmark record and crates/app/docs/content-and-layout.md.",
+      "description": "Add a gitturtle.theme_apply_frame_ms trace under GITTURTLE_TRACE that measures apply_appearance from the Settings choose_theme handler to the window's next frame callback, following the existing trace_frame pattern in main.rs, plus a GPUI test proving a theme switch submits no worker job and keeps the retained editor and its Find state. Then record, in release mode, switching across every built-in on the fixture named in docs/development/themes/spec.md section 'Performance'. This is the instrument the editor and picker tasks measure against; add the metric's name, boundary and exclusions to docs/benchmarks/metrics.md (the catalog tasks may extend) and cite it from the benchmark record and crates/app/docs/content-and-layout.md.",
       "depends_on": [
         "themes-batch-alucard-kanagawa"
       ],
