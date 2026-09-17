@@ -1973,6 +1973,10 @@ impl Render for GitTurtle {
         // The pane spans the whole body so a project stays one click away on
         // Repository and Settings. The hub already lists projects full width.
         let body = if self.settings.project_pane && self.page != AppPage::Projects {
+            // A narrow window shrinks the pane toward its minimum before the
+            // repository's own panes lose room; the saved width is untouched.
+            let pane_width = px(self.settings.project_pane_width)
+                .min((window.viewport_size().width - px(800.)).max(px(180.)));
             h_resizable("workspace-columns")
                 .with_state(&self.project_panels)
                 .on_resize({
@@ -1988,10 +1992,10 @@ impl Render for GitTurtle {
                 })
                 .child(
                     resizable_panel()
-                        .size(px(self.settings.project_pane_width))
+                        .size(pane_width)
                         .size_range(px(180.)..px(360.))
                         .flex_none()
-                        .child(self.render_project_pane(cx)),
+                        .child(self.render_project_pane(window, cx)),
                 )
                 .child(
                     resizable_panel()
@@ -2265,6 +2269,9 @@ impl Render for GitTurtle {
                     this.history_sidebar = this.sidebar;
                     cx.notify();
                 }
+            }))
+            .on_action(cx.listener(|this, _: &ToggleProjectPane, window, cx| {
+                this.toggle_project_pane(window, cx)
             }))
             .child(self.render_repository_tabs(window, cx))
             .when(self.page != AppPage::Projects, |root| {

@@ -118,6 +118,7 @@ gpui_kit::actions!(
         PreviousTextChange,
         ClearSearch,
         ToggleSidebar,
+        ToggleProjectPane,
         BackHistory,
         ShowProjects,
         ShowSettings,
@@ -490,7 +491,7 @@ impl GitTurtle {
             commit_drafts: preferences.commit_drafts,
             project_names: preferences.project_names.clone(),
             project_library: preferences.project_library.clone(),
-            project_pane: project_pane::State::default(),
+            project_pane: project_pane::State::new(cx),
             rename_project: None,
             draft_saver: commit_drafts::DraftSaver::default(),
             draft_save_error: None,
@@ -609,6 +610,7 @@ impl GitTurtle {
             interaction_started: None,
             inspector_message: commit_message::State::default(),
         };
+        this.rebuild_project_rows();
         this.load_profiles(window, cx);
         this.install_draft_quit_observer(cx);
         this.install_tab_quit_observer(window, cx);

@@ -260,6 +260,7 @@ pub(super) fn menus(repository: bool, busy: bool, cx: &mut App) {
             MenuItem::separator(),
             action("Back", Box::new(BackHistory), repository),
             action("Toggle Sidebar", Box::new(ToggleSidebar), repository),
+            MenuItem::action("Toggle Project List", ToggleProjectPane),
             MenuItem::action("Search Commits", Search),
         ]),
         Menu::new("Window").items([

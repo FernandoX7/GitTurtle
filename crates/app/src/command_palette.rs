@@ -39,6 +39,7 @@ pub(super) enum CommandId {
     Refresh,
     Search,
     Sidebar,
+    ProjectPane,
     EarlierGraphLanes,
     LaterGraphLanes,
     Editor,
@@ -256,6 +257,12 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
         "Toggle repository sidebar",
         "navigation branches references hide show",
         Some(ShortcutId::Sidebar)
+    ),
+    command!(
+        ProjectPane,
+        "Show or hide the project list",
+        "projects pane groups library sidebar toggle",
+        None
     ),
     command!(
         Editor,
@@ -666,6 +673,7 @@ impl GitTurtle {
                     cx.notify();
                 }
             }
+            CommandId::ProjectPane => self.toggle_project_pane(window, cx),
             CommandId::EarlierGraphLanes | CommandId::LaterGraphLanes => {
                 self.shift_graph_lanes(id == CommandId::LaterGraphLanes);
                 cx.notify();

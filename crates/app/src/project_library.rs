@@ -187,7 +187,7 @@ impl ProjectLibrary {
         }
         let target_depth = match into {
             Some(target) => {
-                if self.is_descendant(id, target) {
+                if self.group_contains(id, target) {
                     return Err("A group cannot move inside one of its own groups.".into());
                 }
                 self.depth_of(target)
@@ -236,10 +236,74 @@ impl ProjectLibrary {
         Ok(())
     }
 
+    /// Rows in saved order, without presentation sorting. Fixtures inspect
+    /// this to check what the file holds; the pane shows `sorted_rows`.
+    #[cfg(test)]
     pub fn rows(&self) -> Vec<LibraryRow> {
         let mut rows = Vec::new();
         collect_rows(&self.nodes, 0, None, &mut rows);
         rows
+    }
+
+    /// The same rows with each level sorted: groups by name, then projects by
+    /// the name the caller displays, both case-insensitively. Saved order
+    /// breaks ties, so the list is stable while it grows.
+    pub fn sorted_rows(&self, name_of: &dyn Fn(&Path) -> String) -> Vec<LibraryRow> {
+        let mut rows = Vec::new();
+        collect_sorted_rows(&self.nodes, 0, None, name_of, &mut rows);
+        rows
+    }
+
+    /// Every group in the sorted presentation order, with its depth.
+    pub fn sorted_groups(&self) -> Vec<GroupEntry> {
+        let mut entries = Vec::new();
+        collect_sorted_groups(&self.nodes, 0, &mut entries);
+        entries
+    }
+
+    /// Every saved project path, in saved order.
+    pub fn projects(&self) -> Vec<&Path> {
+        let mut paths = Vec::new();
+        collect_projects(&self.nodes, &mut paths);
+        paths
+    }
+
+    /// `None` when the group is missing; `Some(None)` at the top level.
+    pub fn parent_of_group(&self, id: u32) -> Option<Option<u32>> {
+        parent_of(
+            &self.nodes,
+            None,
+            &|node| matches!(node, ProjectNode::Group(group) if group.id == id),
+        )
+    }
+
+    /// The group holding a project, or `None` at the top level or when the
+    /// project is not in the list.
+    pub fn parent_of_project(&self, path: &Path) -> Option<u32> {
+        parent_of(
+            &self.nodes,
+            None,
+            &|node| matches!(node, ProjectNode::Project(project) if project == path),
+        )
+        .flatten()
+    }
+
+    /// Whether `candidate` sits anywhere inside `ancestor`.
+    pub fn group_contains(&self, ancestor: u32, candidate: u32) -> bool {
+        self.group(ancestor)
+            .is_some_and(|group| find_group(&group.nodes, candidate).is_some())
+    }
+
+    /// Levels a group occupies, counting itself; `None` when it is missing.
+    pub fn group_height(&self, id: u32) -> Option<usize> {
+        self.group(id).map(subtree_height)
+    }
+
+    /// Group names from the top level down to this group. Empty when missing.
+    pub fn group_path(&self, id: u32) -> Vec<String> {
+        let mut path = Vec::new();
+        group_path(&self.nodes, id, &mut path);
+        path
     }
 
     fn next_group_id(&self) -> u32 {
@@ -253,11 +317,6 @@ impl ProjectLibrary {
     /// One-based: a top-level group has depth one.
     fn depth_of(&self, id: u32) -> Option<usize> {
         depth_of(&self.nodes, id, 1)
-    }
-
-    fn is_descendant(&self, ancestor: u32, candidate: u32) -> bool {
-        self.group(ancestor)
-            .is_some_and(|group| find_group(&group.nodes, candidate).is_some())
     }
 
     fn attach(&mut self, node: ProjectNode, into: Option<u32>) {
@@ -353,6 +412,7 @@ fn collect_groups(nodes: &[ProjectNode], depth: usize, entries: &mut Vec<GroupEn
 
 /// Groups come before projects at each level, like a folder listing. Saved
 /// order decides the rest, so a new group or project joins the end of its kind.
+#[cfg(test)]
 fn collect_rows(
     nodes: &[ProjectNode],
     depth: usize,
@@ -383,6 +443,113 @@ fn collect_rows(
             });
         }
     }
+}
+
+/// Groups first, then projects, each sorted by lowercase name with the saved
+/// position as the tiebreak.
+fn sorted_children<'a>(
+    nodes: &'a [ProjectNode],
+    name_of: &dyn Fn(&Path) -> String,
+) -> (Vec<&'a ProjectGroup>, Vec<&'a PathBuf>) {
+    let mut groups: Vec<(String, usize, &ProjectGroup)> = Vec::new();
+    let mut projects: Vec<(String, usize, &PathBuf)> = Vec::new();
+    for (index, node) in nodes.iter().enumerate() {
+        match node {
+            ProjectNode::Group(group) => groups.push((group.name.to_lowercase(), index, group)),
+            ProjectNode::Project(path) => {
+                projects.push((name_of(path).to_lowercase(), index, path))
+            }
+        }
+    }
+    groups.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    projects.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    (
+        groups.into_iter().map(|(_, _, group)| group).collect(),
+        projects.into_iter().map(|(_, _, path)| path).collect(),
+    )
+}
+
+fn collect_sorted_rows(
+    nodes: &[ProjectNode],
+    depth: usize,
+    parent: Option<u32>,
+    name_of: &dyn Fn(&Path) -> String,
+    rows: &mut Vec<LibraryRow>,
+) {
+    let (groups, projects) = sorted_children(nodes, name_of);
+    for group in groups {
+        rows.push(LibraryRow::Group {
+            id: group.id,
+            name: group.name.clone(),
+            depth,
+            collapsed: group.collapsed,
+            projects: count_projects(&group.nodes),
+        });
+        if !group.collapsed {
+            collect_sorted_rows(&group.nodes, depth + 1, Some(group.id), name_of, rows);
+        }
+    }
+    for path in projects {
+        rows.push(LibraryRow::Project {
+            path: path.clone(),
+            depth,
+            parent,
+        });
+    }
+}
+
+fn collect_sorted_groups(nodes: &[ProjectNode], depth: usize, entries: &mut Vec<GroupEntry>) {
+    let (groups, _) = sorted_children(nodes, &|_| String::new());
+    for group in groups {
+        entries.push(GroupEntry {
+            id: group.id,
+            name: group.name.clone(),
+            depth,
+        });
+        collect_sorted_groups(&group.nodes, depth + 1, entries);
+    }
+}
+
+fn collect_projects<'a>(nodes: &'a [ProjectNode], paths: &mut Vec<&'a Path>) {
+    for node in nodes {
+        match node {
+            ProjectNode::Group(group) => collect_projects(&group.nodes, paths),
+            ProjectNode::Project(path) => paths.push(path),
+        }
+    }
+}
+
+/// The parent group of the first node matching `is_target`, wrapped so a
+/// missing node and a top-level node stay distinguishable.
+fn parent_of(
+    nodes: &[ProjectNode],
+    parent: Option<u32>,
+    is_target: &dyn Fn(&ProjectNode) -> bool,
+) -> Option<Option<u32>> {
+    for node in nodes {
+        if is_target(node) {
+            return Some(parent);
+        }
+        if let ProjectNode::Group(group) = node
+            && let Some(found) = parent_of(&group.nodes, Some(group.id), is_target)
+        {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn group_path(nodes: &[ProjectNode], id: u32, path: &mut Vec<String>) -> bool {
+    for node in nodes {
+        if let ProjectNode::Group(group) = node {
+            path.push(group.name.clone());
+            if group.id == id || group_path(&group.nodes, id, path) {
+                return true;
+            }
+            path.pop();
+        }
+    }
+    false
 }
 
 fn depth_of(nodes: &[ProjectNode], id: u32, depth: usize) -> Option<usize> {
@@ -636,6 +803,67 @@ mod tests {
         assert!(library.contains_project(&project("p0")));
         assert!(library.contains_project(&project("newest")));
         assert!(!library.contains_project(&project("p1")));
+    }
+
+    #[test]
+    fn sorted_rows_order_each_level_by_name_and_keep_saved_order_for_ties() {
+        let mut library = ProjectLibrary::default();
+        for name in ["zeta", "Alpha", "beta"] {
+            assert!(library.remember(&project(name)));
+        }
+        let work = library.create_group(None, "work").unwrap();
+        let archive = library.create_group(None, "Archive").unwrap();
+        let clients = library.create_group(Some(work), "Clients").unwrap();
+        library.move_project(&project("zeta"), Some(work)).unwrap();
+        library
+            .move_project(&project("beta"), Some(clients))
+            .unwrap();
+
+        let names = |row: &LibraryRow| match row {
+            LibraryRow::Group { name, depth, .. } => format!("{depth}:{name}/"),
+            LibraryRow::Project { path, depth, .. } => {
+                format!("{depth}:{}", path.file_name().unwrap().to_string_lossy())
+            }
+        };
+        let name_of = |path: &Path| path.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(
+            library
+                .sorted_rows(&name_of)
+                .iter()
+                .map(names)
+                .collect::<Vec<_>>(),
+            vec![
+                "0:Archive/",
+                "0:work/",
+                "1:Clients/",
+                "2:beta",
+                "1:zeta",
+                "0:Alpha"
+            ]
+        );
+        // The saved order still puts the group the user made first on disk.
+        assert!(matches!(
+            library.rows().first(),
+            Some(LibraryRow::Group { id, .. }) if *id == work
+        ));
+        assert_eq!(
+            library
+                .sorted_groups()
+                .iter()
+                .map(|entry| (entry.id, entry.depth))
+                .collect::<Vec<_>>(),
+            vec![(archive, 0), (work, 0), (clients, 1)]
+        );
+        assert_eq!(library.group_path(clients), vec!["work", "Clients"]);
+        assert_eq!(library.parent_of_group(clients), Some(Some(work)));
+        assert_eq!(library.parent_of_group(work), Some(None));
+        assert_eq!(library.parent_of_group(99), None);
+        assert_eq!(library.parent_of_project(&project("beta")), Some(clients));
+        assert_eq!(library.parent_of_project(&project("Alpha")), None);
+        assert!(library.group_contains(work, clients));
+        assert!(!library.group_contains(clients, work));
+        assert_eq!(library.group_height(work), Some(2));
+        assert_eq!(library.projects().len(), 3);
     }
 
     #[test]

@@ -6,30 +6,47 @@ This page contains current validation guidance and dated local evidence, with ea
 
 ## September 16 project list pane
 
-Working source on main `7cd3744` adds an optional project list pane, a saved
-project library with nested user-named groups, and the **Show the project list**
-setting. `cargo fmt --all -- --check`, `cargo clippy --locked --workspace
---all-targets -- -D warnings` and `cargo test --locked --workspace` passed on
-this Linux host (debug profile; 861 passed, five existing ignores, including new
-library-model, preference round-trip and pane-interaction fixtures).
+PR #22 adds an optional project list pane, a saved project library with nested
+user-named groups, and the **Show the project list** setting. Its initial
+revision (`f075c04` on main `7cd3744`) passed the Rust gates and an Xvfb
+session on the contributor's Linux host. The review revision reworked the pane
+into a keyboard tree that shares the History navigator's rows and bindings,
+sorted presentation, hover/right-click/Shift-F10 actions with a shared menu,
+disabled impossible move destinations, an in-pane error strip with Retry, a
+pending-save guard against stale replies, cached presentation rows, and a View
+menu / palette toggle. `cargo fmt --all -- --check`, `cargo clippy --locked
+--workspace --all-targets -- -D warnings` and `cargo test --locked --workspace`
+passed on this Linux host for the working tree over `f075c04` (debug profile;
+app 456 passed with two existing ignores, preview 121 passed with one ignore,
+core 32 of 33). The one core failure, the configured-askpass fixture, fails
+identically on untouched main in this host's Git 2.43 environment and passed in
+the PR's hosted Ubuntu and macOS runs, so it is environmental and unrelated.
 
-A debug build ran in a virtual X11 session (Xvfb `:77`, 1600x1000) against a
-disposable `scripts/create-demo-repo.py` fixture, with `XDG_CONFIG_HOME` pointed
-at a scratch directory so no developer preferences were touched. Pointer and key
-input came from a local XTest helper. Verified by screenshot and by reading the
-store: the pane renders on the far left of History and Settings with nested
-groups, indentation, per-group project counts and the open project marked;
-selecting a collapsed group expands it and saves that view; **+** opens the group
-dialog, and a named group appears at the top level; selecting a project opens it
-in a repository tab and moves the marker; a project row's actions menu moves that
-project into another group and updates both counts; the settings switch hides and
-restores the pane and saves `project_pane`.
+A debug build of that working tree ran under XWayland on a GNOME Wayland
+desktop (Pop!_OS, Linux 7.1.5, window 1480x980 logical at about 2.17 scale)
+against three disposable `scripts/create-demo-repo.py` fixtures plus a second
+copy named `alpha`, with `XDG_CONFIG_HOME` in a scratch directory. Pointer and
+key input came from a local XTest helper. Verified by screenshot and by reading
+the store: pane rows match the navigator's 30 px geometry beside it; groups
+come first and each level is sorted by name; the two `alpha` projects show their
+parent folders; the open project keeps the selected surface and accent text;
+hovering a row reveals its actions control; the group menu omits the group's
+own subgroups and checks its current place, and the project menu checks its
+group; a right-click opens the same menu; Down moves the cursor marker,
+Shift-F10 opens the menu under the cursor row, Down selects an item, Return
+runs **Open project** and marks `beta`, and focus returns to the tree; **+**
+opens the group dialog with the Rename project layout; Settings shows the pane
+and the switch; the palette lists **Show or hide the project list**; replacing
+the store with a directory made a collapse fail with the explanation and Retry
+inside the pane while the collapse stayed on screen, and Retry after restoring
+the file saved `collapsed: true`.
 
-Limitations: debug profile only, so no timing claim. macOS, Wayland, a physical
-desktop, screen readers, package builds, and theme, density and text-size
-variations of the pane were not exercised. Group and project removal, the depth
-and count limits, and the refusal of a malformed saved list have automated
-coverage only.
+Limitations: debug profile only, so no timing claim. The compositor refused a
+programmatic resize, so the 1000x680 clamp has automated coverage only. macOS,
+native Wayland, a physical pointer session, screen readers, package builds, and
+theme, density and text-size variations of the pane were not exercised. Group
+and project removal, the depth and count limits, the stale-reply guard and the
+refusal of a malformed saved list have automated coverage only.
 
 ## September 16 PR #17 file-discard review
 
