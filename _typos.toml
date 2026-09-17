@@ -26,6 +26,8 @@ extend-ignore-identifiers-re = [
     "^RELA$",
     "^WRONLY$",
     "^fpr$",
+    # Git revision abbreviations cited in dated notes and evidence.
+    "^[0-9a-f]{7,40}$",
 ]
 # Words inside larger identifiers or recorded tokens.
 extend-ignore-words-re = [
