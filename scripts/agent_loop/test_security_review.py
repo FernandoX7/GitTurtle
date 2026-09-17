@@ -13,6 +13,8 @@ from agent_loop.process import EnvironmentBlocked, LoopError, atomic_json, read_
 from agent_loop.runner import Runner, attest, create_run, validate_patch
 from agent_loop.security_review import candidate_requires_security, security_required, validate_security_review
 from agent_loop.task_spec import parse_spec
+# Records and run state stay private even when the host umask is permissive.
+from agent_loop.test_support import setUpModule, tearDownModule
 
 
 def passing_security(task_id="one", base="b" * 40, candidate="a" * 40, paths=None):

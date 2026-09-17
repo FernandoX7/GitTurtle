@@ -18,6 +18,8 @@ from unittest.mock import patch
 from agent_loop.codex import Codex, validate_review
 from agent_loop.process import LoopError, run_process
 from agent_loop.task_spec import Task
+# Records and run state stay private even when the host umask is permissive.
+from agent_loop.test_support import setUpModule, tearDownModule
 
 
 def example_task() -> Task:

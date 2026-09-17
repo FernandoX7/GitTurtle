@@ -18,6 +18,8 @@ from agent_loop.codex import validate_review
 from agent_loop.process import EnvironmentBlocked, LoopError, atomic_json, digest
 from agent_loop.task_spec import Task
 from agent_loop.test_codex_process import example_task, passing_review
+# Records and run state stay private even when the host umask is permissive.
+from agent_loop.test_support import setUpModule, tearDownModule
 
 
 AGENTS = ("implementer", "implementer-hard", "verifier", "security-reviewer")

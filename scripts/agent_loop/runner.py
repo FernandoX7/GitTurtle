@@ -726,6 +726,10 @@ def main(argv=None) -> int:
             command.add_argument("--evidence", type=Path, required=True)
             command.add_argument("--summary", required=True)
     args = parser.parse_args(argv)
+    # Run directories and records are private to this user: records.py refuses a
+    # group- or other-writable record directory or file, so every path the
+    # controller creates must stay private regardless of the shell's umask.
+    os.umask(0o077)
     try:
         if args.command == "validate":
             path = args.tasks if args.tasks.is_absolute() else args.repo / args.tasks

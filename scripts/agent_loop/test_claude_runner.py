@@ -12,6 +12,8 @@ from agent_loop.claude import UsageLimited
 from agent_loop.git import git
 from agent_loop.process import LoopError, read_json
 from agent_loop.runner import Runner, controlled, create_run, make_adapter
+# Records and run state stay private even when the host umask is permissive.
+from agent_loop.test_support import setUpModule, tearDownModule
 
 
 class FakeClaude(fixtures.FakeCodex):

@@ -13,8 +13,10 @@ from unittest.mock import patch
 
 from agent_loop.git import clean, git, head
 from agent_loop.process import LoopError, atomic_json, read_json
-from agent_loop.runner import Runner, attest, create_run, locked, profiles_for, validate_patch
+from agent_loop.runner import Runner, attest, create_run, locked, main, profiles_for, validate_patch
 from agent_loop.task_spec import parse_spec
+# Records and run state stay private even when the host umask is permissive.
+from agent_loop.test_support import setUpModule, tearDownModule
 
 
 CONTROLLER = Path(__file__).resolve().parents[2]
@@ -140,6 +142,22 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(git(self.root, "diff", "--cached", "--binary"), before)
         self.assertEqual(head(self.root), self.original_head)
         self.assertFalse((self.root / ".local").exists())
+
+    def test_cli_run_keeps_run_state_private_under_a_permissive_umask(self):
+        specification = self.prepare()
+        previous = os.umask(0o002)
+        self.addCleanup(os.umask, previous)
+        output = io.StringIO()
+        with patch("agent_loop.runner.Codex.preflight", return_value="fixture Codex"), \
+                patch.object(Runner, "execute", lambda runner: runner.state | {"phase": "complete"}), \
+                redirect_stdout(output):
+            code = main(["run", "--repo", str(self.root), "--tasks", str(specification), "--model", "gpt-6-astra",
+                         "--effort", "high", "--max-tasks", "1", "--max-attempts", "1", "--max-minutes", "1"])
+        self.assertEqual(code, 0, output.getvalue())
+        directory = Path(output.getvalue().splitlines()[0].removeprefix("run: "))
+        for path in (directory.parent, directory, directory / "controller", directory / "accepted",
+                     directory / "tasks.json", directory / "state.json"):
+            self.assertEqual(path.stat().st_mode & 0o077, 0, path)
 
     def test_hidden_index_change_is_rejected_before_commit(self):
         self.prepare()

@@ -16,6 +16,8 @@ from agent_loop.records import (
     LoopError, atomic_json, atomic_json_at, open_directory, read_json, read_json_at,
     validate_basename,
 )
+# Records and run state stay private even when the host umask is permissive.
+from agent_loop.test_support import setUpModule, tearDownModule
 
 
 @unittest.skipUnless(os.name == "posix", "Record descriptors support macOS and Linux")
