@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 
 from agent_loop.git import clean, git, head
-from agent_loop.process import LoopError, atomic_json, read_json
+from agent_loop.process import LoopError, MalformedResponse, atomic_json, read_json
 from agent_loop.runner import Runner, attest, create_run, locked, main, profiles_for, validate_patch
 from agent_loop.task_spec import parse_spec
 # Records and run state stay private even when the host umask is permissive.
@@ -304,6 +304,26 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("tooling", profiles_for(feature, ["scripts/example.py"]))
         self.assertIn("vendor", profiles_for(feature, ["vendor/example/Cargo.toml"]))
         self.assertIn("package", profiles_for(feature, ["assets/app-icon.png"]))
+
+    def test_an_unreadable_verdict_retains_the_candidate_instead_of_rebuilding(self):
+        class UnreadableVerdict(FakeCodex):
+            def run(self, role, feature, repo, directory, timeout, stop, **options):
+                if role != "implementer":
+                    self.calls.append((role, feature.id))
+                    raise MalformedResponse("verifier session returned no structured output")
+                return super().run(role, feature, repo, directory, timeout, stop, **options)
+
+        directory = self.create()
+        adapter = UnreadableVerdict()
+        state = self.execute(directory, adapter)
+        record = state["tasks"]["one"]
+        self.assertEqual(record["status"], "review_blocked")
+        self.assertIn("no structured output", record["reason"])
+        # One implementation, kept whole with its gate evidence for the retry.
+        self.assertEqual([role for role, _ in adapter.calls], ["implementer", "verifier"])
+        self.assertEqual(record["attempts"], 1)
+        self.assertTrue(record["candidate"])
+        self.assertTrue(record["gate_sha256"])
 
     def test_app_rust_requires_native_evidence_without_the_two_revisions(self):
         feature = parse_spec({"version": 1, "tasks": [task()]})[0]

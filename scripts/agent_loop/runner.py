@@ -20,7 +20,7 @@ import uuid
 from .claude import Claude, UsageLimited, snapshot_files as claude_snapshot_files
 from .codex import Codex, validate_review
 from .git import changed_paths, clean, clone, commit, committed_paths, git, head, identity, source_root, write_limits
-from .process import EnvironmentBlocked, LoopError, atomic_json, digest, read_json, run_process, reconcile_processes
+from .process import EnvironmentBlocked, LoopError, MalformedResponse, atomic_json, digest, read_json, run_process, reconcile_processes
 from .rust_surface import renders
 from .task_spec import Task, load_spec, path_allowed, required_evidence, select_ready
 from .security_review import candidate_requires_security, validate_security_review
@@ -368,7 +368,7 @@ class Runner:
                 else:
                     try:
                         self.review_and_accept(task, record)
-                    except EnvironmentBlocked as error:
+                    except (EnvironmentBlocked, MalformedResponse) as error:
                         if self.state["phase"] == "accepting":
                             raise
                         self.note_limit(error)
@@ -447,6 +447,12 @@ class Runner:
             else:
                 status = "interrupted" if isinstance(error, UsageLimited) else "blocked"
             record.update(status=status, reason=str(error))
+        except MalformedResponse as error:
+            if self.state["phase"] == "accepting":
+                raise
+            # The candidate passed its gates; only the verdict was unreadable.
+            # Retry the review on it instead of spending an attempt rebuilding it.
+            record.update(status="review_blocked", reason=str(error))
         except LoopError as error:
             if self.state["phase"] == "accepting":
                 raise  # Git may have moved; preserve intent for reconciliation.
