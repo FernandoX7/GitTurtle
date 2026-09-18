@@ -4,6 +4,46 @@ Use the [current validation guidance](#current-validation-guidance) for the affe
 
 This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native workflow evidence is primarily macOS-specific; the September 14 entries add Pop!_OS startup and clean Ubuntu/virtual-native checks. Platform execution and access limits belong to the applicable dated record and [platform runbook](linux.md); the earlier [environment report](benchmarks/2026-09-09-milestone-environment.md) describes its own session. The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Public binary release prerequisites belong in the [launch checklist](public-launch.md); the Linux runbook includes a local teammate bundle.
 
+## September 18 Alucard and Kanagawa built-in themes
+
+Native QA for `themes-batch-alucard-kanagawa`, which adds the Alucard, Kanagawa
+Wave and Kanagawa Lotus built-ins. Linux/XWayland (GNOME on Wayland, `DISPLAY=:1`,
+`GPUI_X11_SCALE_FACTOR` 1 and 2), window 1000x680, which is the app's
+`window_min_size`, with an absolute throwaway `XDG_CONFIG_HOME` per launch.
+Fixture: `scripts/create-demo-repo.py` at HEAD
+`52f471a1137c617fd8e36db2e6251a18f58c23eb`, plus a disposable copy with a staged
+rename, an edit, an untracked file and a deletion for the Compare and Changes
+captures; nothing was committed to either and no network action was taken.
+
+The captures were taken from build `e00e864ff8949e2e61d343feecca0561e9784173`
+(GitTurtle 0.1.0, `source_tree` clean, release, `x86_64-unknown-linux-gnu`,
+rustc 1.98.0 (88d9e12ae 2026-08-18), binary sha256
+`b97b7393e31e247d26faa1c88088d222cc9539ef59914f56db2132c04ab06cf2`). Evidence
+committed to a repository can never describe the commit that contains it, so
+this entry names the revision under test; a later build that ships these themes
+reuses it only when it renders the same captures.
+
+Each theme was recorded in the Settings picker with its own card scrolled into
+view and checkmarked, and in History with a selected row, a hovered row, a
+visible accent focus ring, and a diff showing added and removed lines. The
+fifteen screenshots are under
+[`docs/evidence/themes/alucard-kanagawa/`](evidence/themes/alucard-kanagawa/)
+with the per-capture palette check beside them. History for all twenty themes
+at 1x and 2x matches every declared token (120 readings), and the seventeen
+existing themes are unchanged against their earlier captures.
+
+No reading fell below its rule floor on full-coverage glyph cores. The narrowest
+margins are muted text on a hovered selected row at 4.51:1 (Alucard) and 4.52:1
+(Kanagawa Lotus) against 4.5, Kanagawa Wave's selected row against panel at
+1.153:1 against 1.15, and Kanagawa Lotus's added and removed text on their diff
+tiles at 4.51:1. Rendered antialiased text sits below those floors, as recorded
+in [the contrast-margins note](development/themes/contrast-margins.md). Not
+covered: warning and conflict states, the canvas-label-on-fill rule, the primary
+button's hover and pressed states, the picker at 2x, Split, Blame and image
+diffs, and follow-system mode; `accent_foreground` is exact on screen at 2x
+only; Linux/XWayland only, with no macOS, native Wayland, packaging or
+accessibility-label coverage.
+
 ## September 18 Rosé Pine and Dracula built-in themes
 
 Native QA for `themes-batch-rose-pine-dracula`, which adds the Rosé Pine, Rosé
