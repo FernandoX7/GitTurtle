@@ -8,8 +8,8 @@ use std::sync::{
     atomic::{AtomicU8, AtomicU32, Ordering},
 };
 
-// Upstream values for the next built-in themes; the themes that consume them
-// have not landed yet, so only the source tests reference the tables.
+// Upstream values for the adapted built-in themes. Families whose themes have
+// not landed yet are referenced only by the source tests.
 #[cfg_attr(not(test), allow(dead_code))]
 mod sources;
 
@@ -163,6 +163,10 @@ pub enum ThemeChoice {
     Sandstone,
     DeepSea,
     Ember,
+    SolarizedDark,
+    SolarizedLight,
+    OneDark,
+    OneLight,
     #[default]
     #[serde(other)]
     Midnight,
@@ -218,7 +222,7 @@ pub fn palette(cx: &App) -> Palette {
 }
 
 impl ThemeChoice {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 14] = [
         Self::Midnight,
         Self::Daylight,
         Self::Graphite,
@@ -229,6 +233,10 @@ impl ThemeChoice {
         Self::Sandstone,
         Self::DeepSea,
         Self::Ember,
+        Self::SolarizedDark,
+        Self::SolarizedLight,
+        Self::OneDark,
+        Self::OneLight,
     ];
 
     pub fn label(self) -> &'static str {
@@ -243,6 +251,10 @@ impl ThemeChoice {
             Self::Sandstone => "Sandstone",
             Self::DeepSea => "Deep Sea",
             Self::Ember => "Ember",
+            Self::SolarizedDark => "Solarized Dark",
+            Self::SolarizedLight => "Solarized Light",
+            Self::OneDark => "One Dark",
+            Self::OneLight => "One Light",
         }
     }
 
@@ -258,11 +270,22 @@ impl ThemeChoice {
             Self::Sandstone => "Warm paper · terracotta",
             Self::DeepSea => "Ocean ink · turquoise",
             Self::Ember => "Smoked plum · apricot",
+            Self::SolarizedDark => "Deep teal · azure",
+            Self::SolarizedLight => "Warm cream · azure",
+            Self::OneDark => "Soft charcoal · sky",
+            Self::OneLight => "Clean paper · cobalt",
         }
     }
 
     pub fn is_light(self) -> bool {
-        matches!(self, Self::Daylight | Self::Porcelain | Self::Sandstone)
+        matches!(
+            self,
+            Self::Daylight
+                | Self::Porcelain
+                | Self::Sandstone
+                | Self::SolarizedLight
+                | Self::OneLight
+        )
     }
 
     pub fn palette(self) -> Palette {
@@ -503,6 +526,135 @@ impl ThemeChoice {
                 hunk: 0x88c0d0,
                 line_number: 0xa7b4c9,
             },
+            // Families adapted from `sources`. Named constants are upstream
+            // values used unchanged; hex literals marked "tuned" depart from
+            // the upstream value for a readability rule and are listed in
+            // DESIGN.md. Unmarked literals are derived surfaces the upstream
+            // palette does not define (subtle, hover, selected, diff tiles,
+            // accent states).
+            Self::SolarizedDark => {
+                use sources::solarized::{self as s, dark};
+                Palette {
+                    canvas: dark::CANVAS,
+                    panel: dark::PANEL,
+                    subtle: 0x01313d,
+                    hover: 0x103c48,
+                    selected: 0x0b4154,
+                    border: s::BASE01,
+                    // Tuned: base0 and base1 lightened for 4.5:1 on selected rows.
+                    text: 0xb2bdbe,
+                    muted: 0xa5b0b0,
+                    // Tuned: blue lightened for 3:1 on selected and hovered rows.
+                    accent: 0x2e93d9,
+                    accent_foreground: 0x001e26,
+                    accent_hover: 0x48a0de,
+                    accent_active: 0x278ed6,
+                    // Tuned: green, red and violet lightened for 3:1 on row
+                    // surfaces, 4.5:1 in diff tiles and the canvas label.
+                    added: 0x90a600,
+                    removed: 0xe66c6a,
+                    modified: s::YELLOW,
+                    renamed: 0x8488cd,
+                    warning: s::YELLOW,
+                    added_background: 0x103830,
+                    removed_background: 0x1a2c35,
+                    // Tuned: cyan lightened for 4.5:1 on panels.
+                    hunk: 0x2daba2,
+                    // Tuned: base01 lightened for 4.5:1 in the gutter.
+                    line_number: 0x879da5,
+                }
+            }
+            Self::SolarizedLight => {
+                use sources::solarized::{self as s, light};
+                Palette {
+                    canvas: light::CANVAS,
+                    panel: light::PANEL,
+                    subtle: 0xf6efdc,
+                    hover: 0xe3dfcf,
+                    selected: 0xd0dad5,
+                    border: s::BASE1,
+                    // Tuned: base00 and base01 darkened for 4.5:1 on selected rows.
+                    text: 0x394549,
+                    muted: 0x495b61,
+                    // Tuned: blue darkened for a 4.5:1 white label and 3:1 on rows.
+                    accent: 0x2178b6,
+                    accent_foreground: 0xffffff,
+                    accent_hover: 0x1d6aa0,
+                    accent_active: 0x1a5e8f,
+                    // Tuned: every accent darkened for 3:1 on row surfaces,
+                    // 4.5:1 in diff tiles and the canvas label on fills.
+                    added: 0x5f6d00,
+                    removed: 0xc62422,
+                    modified: 0x8c6a00,
+                    renamed: 0x656ac1,
+                    warning: 0x8c6a00,
+                    added_background: 0xece9c3,
+                    removed_background: 0xfae2d1,
+                    // Tuned: blue darkened for 4.5:1 on resting surfaces and 3:1 on rows.
+                    hunk: 0x1d6ca2,
+                    // Tuned: base01 darkened for 4.5:1 on panels.
+                    line_number: 0x566b72,
+                }
+            }
+            Self::OneDark => {
+                use sources::one::dark as o;
+                Palette {
+                    canvas: o::BG,
+                    panel: 0x2e333d,
+                    subtle: 0x21252b,
+                    hover: 0x333943,
+                    selected: 0x323d52,
+                    border: 0x4b5263,
+                    text: o::MONO_1,
+                    // Tuned: mono-2 lightened for 4.5:1 on every row surface.
+                    muted: 0xadb2bb,
+                    accent: o::BLUE,
+                    accent_foreground: 0x1b2533,
+                    accent_hover: 0x7dbdf2,
+                    accent_active: 0x53a8ee,
+                    added: o::GREEN,
+                    // Tuned: red-1 lightened for 4.5:1 in its diff tile and under the canvas label.
+                    removed: 0xe5858d,
+                    modified: o::ORANGE_2,
+                    renamed: o::PURPLE,
+                    warning: o::ORANGE_2,
+                    added_background: 0x353e3c,
+                    removed_background: 0x3e343c,
+                    hunk: o::CYAN,
+                    // Tuned: mono-2 lightened for 4.5:1 in the gutter.
+                    line_number: 0x979da8,
+                }
+            }
+            Self::OneLight => {
+                use sources::one::light as o;
+                Palette {
+                    canvas: o::BG,
+                    panel: 0xffffff,
+                    subtle: 0xf0f0f1,
+                    hover: 0xf1f1f3,
+                    selected: 0xe9edff,
+                    border: 0xd3d3d6,
+                    text: o::MONO_1,
+                    // Tuned: mono-2 darkened for 4.5:1 on selected rows.
+                    muted: 0x62656f,
+                    // Tuned: blue darkened for a 4.5:1 white label.
+                    accent: 0x2f6cf1,
+                    accent_foreground: 0xffffff,
+                    accent_hover: 0x175bef,
+                    accent_active: 0x0f52e3,
+                    // Tuned: green darkened for 3:1 on rows and 4.5:1 in diff tiles.
+                    added: 0x3b763a,
+                    removed: o::RED_2,
+                    modified: o::ORANGE_1,
+                    renamed: o::PURPLE,
+                    warning: o::ORANGE_1,
+                    added_background: 0xe6efe5,
+                    removed_background: 0xf6e7eb,
+                    // Tuned: cyan darkened for 4.5:1 on subtle surfaces.
+                    hunk: 0x0174a5,
+                    line_number: o::MONO_2,
+                }
+            }
         }
     }
 
@@ -839,6 +991,40 @@ mod tests {
     }
 
     #[test]
+    fn solarized_and_one_themes_keep_their_storage_names_labels_and_lightness() {
+        assert_eq!(ThemeChoice::ALL.len(), 14);
+        for (choice, stored, label, light) in [
+            (
+                ThemeChoice::SolarizedDark,
+                "solarized_dark",
+                "Solarized Dark",
+                false,
+            ),
+            (
+                ThemeChoice::SolarizedLight,
+                "solarized_light",
+                "Solarized Light",
+                true,
+            ),
+            (ThemeChoice::OneDark, "one_dark", "One Dark", false),
+            (ThemeChoice::OneLight, "one_light", "One Light", true),
+        ] {
+            assert!(ThemeChoice::ALL.contains(&choice));
+            assert_eq!(serde_json::to_value(choice).unwrap(), stored);
+            assert_eq!(
+                serde_json::from_value::<ThemeChoice>(stored.into()).unwrap(),
+                choice
+            );
+            assert_eq!(choice.label(), label);
+            assert_eq!(choice.is_light(), light);
+            // Two words around a middle dot, like "Deep slate · mint".
+            let (surface, accent) = choice.description().split_once(" · ").unwrap();
+            assert_eq!(surface.split(' ').count(), 2, "{choice:?}");
+            assert_eq!(accent.split(' ').count(), 1, "{choice:?}");
+        }
+    }
+
+    #[test]
     fn saved_daylight_remains_braden_without_changing_its_storage_or_light_mapping() {
         let saved =
             r#"{"theme":"daylight","follow_system":false,"density":"compact","code_text_size":19}"#;
@@ -859,6 +1045,8 @@ mod tests {
             ThemeChoice::Daylight,
             ThemeChoice::Porcelain,
             ThemeChoice::Sandstone,
+            ThemeChoice::SolarizedLight,
+            ThemeChoice::OneLight,
         ] {
             settings.theme = light;
             assert_eq!(
