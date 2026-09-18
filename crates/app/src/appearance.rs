@@ -13,8 +13,9 @@ use std::sync::{
 #[cfg_attr(not(test), allow(dead_code))]
 mod sources;
 
-// The theme editor and picker consume the readability rules and token names;
-// until they land, the palette tests are the only readers of some of them.
+// The theme editor, picker and store consume the readability rules, token names,
+// custom theme model and document format; until they land, the tests are the
+// only readers of most of them.
 #[cfg_attr(not(test), allow(dead_code))]
 pub mod custom;
 
@@ -505,12 +506,19 @@ impl ThemeChoice {
         }
     }
 
-    /// Apply native controls and editor defaults together. Call after GPUI Kit
-    /// initialization; callers invalidate/rebuild existing custom decorations.
+    /// Apply this built-in theme through the one palette application path.
     pub fn apply(self, window: Option<&mut Window>, cx: &mut App) {
-        let palette = self.palette();
+        self.palette().apply(self.is_light(), window, cx);
+    }
+}
+
+impl Palette {
+    /// Apply native controls and editor defaults together. Built-in and custom themes both use
+    /// this path. Call after GPUI Kit initialization; callers invalidate/rebuild existing custom
+    /// decorations.
+    pub fn apply(self, is_light: bool, window: Option<&mut Window>, cx: &mut App) {
         Theme::change(
-            if self.is_light() {
+            if is_light {
                 ThemeMode::Light
             } else {
                 ThemeMode::Dark
@@ -518,16 +526,16 @@ impl ThemeChoice {
             None,
             cx,
         );
-        self.configure(Theme::global_mut(cx));
-        cx.set_global(palette);
+        self.configure(is_light, Theme::global_mut(cx));
+        cx.set_global(self);
         Theme::sync_base(cx);
         if let Some(window) = window {
             window.refresh();
         }
     }
 
-    fn configure(self, theme: &mut Theme) {
-        let palette = self.palette();
+    fn configure(self, is_light: bool, theme: &mut Theme) {
+        let palette = self;
         theme.colors.background = rgb(palette.canvas).into();
         theme.colors.foreground = rgb(palette.text).into();
         theme.colors.muted = rgb(palette.hover).into();
@@ -554,12 +562,12 @@ impl ThemeChoice {
         let danger: gpui_kit::Hsla = rgb(palette.removed).into();
         theme.colors.button_danger = danger;
         theme.colors.button_danger_foreground = rgb(palette.canvas).into();
-        theme.colors.button_danger_hover = if self.is_light() {
+        theme.colors.button_danger_hover = if is_light {
             danger.darken(0.05)
         } else {
             danger.lighten(0.05)
         };
-        theme.colors.button_danger_active = if self.is_light() {
+        theme.colors.button_danger_active = if is_light {
             danger.darken(0.1)
         } else {
             danger.lighten(0.1)
@@ -755,10 +763,23 @@ mod tests {
         // Reuse one theme to cover dark/light and dark/dark switches. Component
         // buttons read token backgrounds but legacy foreground colors, so a
         // palette-only assertion cannot catch a stale white primary button.
+        // A custom palette, built from a base with two edited tokens, takes the same path.
+        let mut edited = ThemeChoice::Nord.palette();
+        edited.set(custom::TokenKind::Accent, 0x1f6f5c);
+        edited.set(custom::TokenKind::Removed, 0xff9aa2);
+        let custom = custom::CustomTheme {
+            id: 1,
+            name: "Edited Nord".into(),
+            base: ThemeChoice::Nord,
+            palette: edited,
+        };
+        let cases = ThemeChoice::ALL
+            .into_iter()
+            .map(|choice| (format!("{choice:?}"), choice.palette(), choice.is_light()))
+            .chain([(custom.name.clone(), custom.palette, custom.is_light())]);
         let mut theme = Theme::default();
-        for choice in ThemeChoice::ALL {
-            choice.configure(&mut theme);
-            let palette = choice.palette();
+        for (choice, palette, is_light) in cases {
+            palette.configure(is_light, &mut theme);
             let foreground: Hsla = rgb(palette.accent_foreground).into();
             assert_eq!(theme.colors.button_primary_foreground, foreground);
             for token in [
@@ -770,7 +791,7 @@ mod tests {
                 let background = u32::from(token.color.to_rgb()) >> 8;
                 assert!(
                     contrast(foreground, background) >= 4.5,
-                    "{choice:?} destructive action label must remain readable"
+                    "{choice} destructive action label must remain readable"
                 );
                 assert_eq!(token.background, Background::from(token.color));
             }
@@ -786,11 +807,11 @@ mod tests {
                 (theme.tokens.scrollbar_thumb, palette.border),
             ] {
                 let color: Hsla = rgb(expected).into();
-                assert_eq!(token.color, color, "{choice:?} resolved color");
+                assert_eq!(token.color, color, "{choice} resolved color");
                 assert_eq!(
                     token.background,
                     Background::from(color),
-                    "{choice:?} renderable background"
+                    "{choice} renderable background"
                 );
             }
         }
