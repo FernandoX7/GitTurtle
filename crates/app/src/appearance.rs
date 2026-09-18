@@ -170,6 +170,9 @@ pub enum ThemeChoice {
     RosePine,
     RosePineDawn,
     Dracula,
+    Alucard,
+    KanagawaWave,
+    KanagawaLotus,
     #[default]
     #[serde(other)]
     Midnight,
@@ -225,7 +228,7 @@ pub fn palette(cx: &App) -> Palette {
 }
 
 impl ThemeChoice {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 20] = [
         Self::Midnight,
         Self::Daylight,
         Self::Graphite,
@@ -243,6 +246,9 @@ impl ThemeChoice {
         Self::RosePine,
         Self::RosePineDawn,
         Self::Dracula,
+        Self::Alucard,
+        Self::KanagawaWave,
+        Self::KanagawaLotus,
     ];
 
     pub fn label(self) -> &'static str {
@@ -264,6 +270,9 @@ impl ThemeChoice {
             Self::RosePine => "Rosé Pine",
             Self::RosePineDawn => "Rosé Pine Dawn",
             Self::Dracula => "Dracula",
+            Self::Alucard => "Alucard",
+            Self::KanagawaWave => "Kanagawa Wave",
+            Self::KanagawaLotus => "Kanagawa Lotus",
         }
     }
 
@@ -286,6 +295,9 @@ impl ThemeChoice {
             Self::RosePine => "Dusky violet · rose",
             Self::RosePineDawn => "Blush paper · pine",
             Self::Dracula => "Night charcoal · purple",
+            Self::Alucard => "Pale parchment · violet",
+            Self::KanagawaWave => "Inky dusk · cornflower",
+            Self::KanagawaLotus => "Rice paper · denim",
         }
     }
 
@@ -298,6 +310,8 @@ impl ThemeChoice {
                 | Self::SolarizedLight
                 | Self::OneLight
                 | Self::RosePineDawn
+                | Self::Alucard
+                | Self::KanagawaLotus
         )
     }
 
@@ -754,6 +768,96 @@ impl ThemeChoice {
                     line_number: 0x8b97bc,
                 }
             }
+            Self::Alucard => {
+                use sources::dracula::alucard as a;
+                Palette {
+                    canvas: a::BACKGROUND,
+                    panel: 0xfffdf5,
+                    subtle: 0xf5f1e1,
+                    hover: 0xefebdb,
+                    selected: a::SELECTION,
+                    border: 0xd9d4bf,
+                    text: a::FOREGROUND,
+                    // Tuned: comment darkened for 4.5:1 on selected and hovered selected rows.
+                    muted: 0x59543e,
+                    accent: a::PURPLE,
+                    accent_foreground: 0xffffff,
+                    accent_hover: 0x563cb8,
+                    accent_active: 0x4a32a2,
+                    added: a::GREEN,
+                    // Tuned: red darkened for 3:1 on hovered selected rows and 4.5:1 in its diff tile.
+                    removed: 0xbf3728,
+                    modified: a::ORANGE,
+                    renamed: a::PURPLE,
+                    warning: a::ORANGE,
+                    added_background: 0xe3f0da,
+                    removed_background: 0xfbe3dc,
+                    hunk: a::CYAN,
+                    line_number: a::COMMENT,
+                }
+            }
+            Self::KanagawaWave => {
+                use sources::kanagawa::wave as k;
+                Palette {
+                    canvas: k::SUMI_INK_3,
+                    panel: k::SUMI_INK_4,
+                    subtle: k::SUMI_INK_2,
+                    hover: k::SUMI_INK_5,
+                    // Tuned: waveBlue1 lightened to stay 1.15:1 apart from the panel.
+                    selected: 0x24364e,
+                    border: k::SUMI_INK_6,
+                    text: k::FUJI_WHITE,
+                    muted: k::OLD_WHITE,
+                    accent: k::CRYSTAL_BLUE,
+                    accent_foreground: k::SUMI_INK_3,
+                    accent_hover: 0x94aee0,
+                    accent_active: 0x6d8dce,
+                    // Tuned: autumnGreen lightened for 4.5:1 in its diff tile.
+                    added: 0x85a07a,
+                    removed: k::PEACH_RED,
+                    modified: k::AUTUMN_YELLOW,
+                    renamed: k::ONI_VIOLET,
+                    warning: k::RONIN_YELLOW,
+                    added_background: k::WINTER_GREEN,
+                    removed_background: k::WINTER_RED,
+                    hunk: k::SPRING_BLUE,
+                    // Tuned: sumiInk6 lightened for 4.5:1 in the gutter.
+                    line_number: 0x9090a9,
+                }
+            }
+            Self::KanagawaLotus => {
+                use sources::kanagawa::lotus as k;
+                Palette {
+                    canvas: k::LOTUS_WHITE_3,
+                    panel: 0xf7f3d1,
+                    subtle: k::LOTUS_WHITE_2,
+                    hover: k::LOTUS_WHITE_1,
+                    selected: k::LOTUS_BLUE_1,
+                    border: k::LOTUS_WHITE_0,
+                    text: k::LOTUS_INK_1,
+                    // Tuned: lotusGray2 darkened for 4.5:1 on every row surface and diff tile.
+                    muted: 0x5a574d,
+                    accent: k::LOTUS_BLUE_4,
+                    accent_foreground: k::LOTUS_WHITE_3,
+                    accent_hover: 0x435c89,
+                    accent_active: 0x3a5077,
+                    // Tuned: lotusGreen2, lotusRed2, lotusYellow3 and lotusOrange2 darkened for
+                    // 3:1 on row surfaces, 4.5:1 in diff tiles and the canvas label on fills.
+                    added: 0x4e6643,
+                    removed: 0xa72428,
+                    modified: 0x996900,
+                    renamed: k::LOTUS_VIOLET_4,
+                    warning: 0x9a5b00,
+                    // Tuned: lotusGreen3 and lotusRed4 blended halfway to the canvas so text
+                    // keeps 4.5:1 inside diff tiles.
+                    added_background: 0xd4deb5,
+                    removed_background: 0xe6c8a8,
+                    // Tuned: lotusBlue4 darkened for 4.5:1 on subtle surfaces.
+                    hunk: 0x476190,
+                    // Tuned: lotusGray2 darkened for 4.5:1 on the canvas.
+                    line_number: 0x6d6a5e,
+                }
+            }
         }
     }
 
@@ -1100,7 +1204,7 @@ mod tests {
 
     #[test]
     fn adapted_family_themes_keep_their_storage_names_labels_and_lightness() {
-        assert_eq!(ThemeChoice::ALL.len(), 17);
+        assert_eq!(ThemeChoice::ALL.len(), 20);
         for (choice, stored, label, light) in [
             (
                 ThemeChoice::SolarizedDark,
@@ -1124,6 +1228,19 @@ mod tests {
                 true,
             ),
             (ThemeChoice::Dracula, "dracula", "Dracula", false),
+            (ThemeChoice::Alucard, "alucard", "Alucard", true),
+            (
+                ThemeChoice::KanagawaWave,
+                "kanagawa_wave",
+                "Kanagawa Wave",
+                false,
+            ),
+            (
+                ThemeChoice::KanagawaLotus,
+                "kanagawa_lotus",
+                "Kanagawa Lotus",
+                true,
+            ),
         ] {
             assert!(ThemeChoice::ALL.contains(&choice));
             assert_eq!(serde_json::to_value(choice).unwrap(), stored);
@@ -1172,6 +1289,8 @@ mod tests {
             ThemeChoice::SolarizedLight,
             ThemeChoice::OneLight,
             ThemeChoice::RosePineDawn,
+            ThemeChoice::Alucard,
+            ThemeChoice::KanagawaLotus,
         ] {
             settings.theme = built_in(light);
             assert_eq!(
