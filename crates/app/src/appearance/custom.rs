@@ -641,10 +641,22 @@ fn built_in_key(choice: ThemeChoice) -> String {
     }
 }
 
-fn built_in_from_key(key: &str) -> Option<ThemeChoice> {
+/// The built-in stored under `key`, or `None` for a key this build does not know. Unlike
+/// `ThemeChoice`'s own deserializer, an unknown key is not read as Midnight.
+pub fn built_in_from_key(key: &str) -> Option<ThemeChoice> {
     ThemeChoice::ALL
         .into_iter()
         .find(|choice| built_in_key(*choice) == key)
+}
+
+/// The base that stands in for one this build does not know, such as a built-in added by a
+/// newer release: Braden for a light palette and Midnight for a dark one.
+pub fn fallback_base(palette: Palette) -> ThemeChoice {
+    if palette.is_light() {
+        ThemeChoice::Daylight
+    } else {
+        ThemeChoice::Midnight
+    }
 }
 
 /// A parsed theme document, before the store assigns an id and resolves name collisions.
@@ -858,11 +870,7 @@ impl CustomTheme {
         let (base, notice) = match built_in_from_key(base) {
             Some(choice) => (choice, None),
             None => {
-                let fallback = if palette.is_light() {
-                    ThemeChoice::Daylight
-                } else {
-                    ThemeChoice::Midnight
-                };
+                let fallback = fallback_base(palette);
                 let notice = format!(
                     "The base theme “{base}” is not available in this version of GitTurtle; {} is used as the base.",
                     fallback.label()

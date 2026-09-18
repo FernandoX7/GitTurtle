@@ -466,6 +466,7 @@ impl GitTurtle {
     }
 
     fn choose_theme(&mut self, theme: ThemeChoice, window: &mut Window, cx: &mut Context<Self>) {
+        let theme = appearance::custom::ThemeSelection::BuiltIn(theme);
         if self.settings.theme == theme && !self.settings.follow_system {
             return;
         }
@@ -608,6 +609,8 @@ impl GitTurtle {
 
     fn render_theme_picker(&self, columns: usize, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
+        // A selection naming a missing custom theme shows the default it resolves to.
+        let selected_theme = self.settings.theme.resolve(&self.custom_themes).selection;
         div()
             .flex()
             .flex_col()
@@ -637,8 +640,9 @@ impl GitTurtle {
                             .flex()
                             .gap_3()
                             .children(row.iter().copied().map(|choice| {
-                                let selected =
-                                    !self.settings.follow_system && self.settings.theme == choice;
+                                let selected = !self.settings.follow_system
+                                    && selected_theme
+                                        == appearance::custom::ThemeSelection::BuiltIn(choice);
                                 Button::new(("settings-theme", choice as usize))
                                     .ghost()
                                     .group("settings-theme-choice")

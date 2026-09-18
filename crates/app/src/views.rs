@@ -1928,11 +1928,16 @@ impl Render for GitTurtle {
             );
             if self.layout_trace != Some(layout) {
                 self.layout_trace = Some(layout);
+                // Built-ins keep the recorded `configured_theme=Daylight` form.
+                let configured_theme = match layout.1 {
+                    appearance::custom::ThemeSelection::BuiltIn(choice) => format!("{choice:?}"),
+                    appearance::custom::ThemeSelection::Custom(id) => format!("custom:{id}"),
+                };
                 eprintln!(
-                    "gitturtle.layout viewport={:.0}x{:.0} configured_theme={:?} density={:?} interface={} code={} targets={}",
+                    "gitturtle.layout viewport={:.0}x{:.0} configured_theme={} density={:?} interface={} code={} targets={}",
                     f32::from(layout.0.width),
                     f32::from(layout.0.height),
-                    layout.1,
+                    configured_theme,
                     layout.2,
                     layout.3,
                     layout.4,

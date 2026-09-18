@@ -271,6 +271,8 @@ struct GitTurtle {
     rename_project: Option<Entity<projects::RenameProjectForm>>,
     /// Known projects and their user-defined groups, shown by the left pane.
     project_library: project_library::ProjectLibrary,
+    /// Saved custom themes, which a custom `settings.theme` selection resolves against.
+    custom_themes: Vec<appearance::custom::CustomTheme>,
     project_pane: project_pane::State,
     draft_saver: commit_drafts::DraftSaver,
     recovery_drafts: recovery_drafts::State,
@@ -314,7 +316,7 @@ struct GitTurtle {
     git_actions_open: bool,
     layout_trace: Option<(
         Size<Pixels>,
-        appearance::ThemeChoice,
+        appearance::custom::ThemeSelection,
         appearance::Density,
         u8,
         u8,
@@ -491,6 +493,7 @@ impl GitTurtle {
             commit_drafts: preferences.commit_drafts,
             project_names: preferences.project_names.clone(),
             project_library: preferences.project_library.clone(),
+            custom_themes: preferences.custom_themes.clone(),
             project_pane: project_pane::State::new(cx),
             rename_project: None,
             draft_saver: commit_drafts::DraftSaver::default(),
@@ -1841,7 +1844,7 @@ fn main() {
         interactive_rebase::init(cx);
         preferences
             .settings
-            .resolved_theme(cx.window_appearance())
+            .resolved_theme(cx.window_appearance(), &preferences.custom_themes)
             .apply(None, cx);
         shortcuts::bind_keys(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());

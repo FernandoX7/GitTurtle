@@ -272,8 +272,9 @@ pub(super) fn menus(repository: bool, busy: bool, cx: &mut App) {
 }
 
 impl GitTurtle {
-    pub(super) fn effective_theme(&self, cx: &App) -> appearance::ThemeChoice {
-        self.settings.resolved_theme(cx.window_appearance())
+    pub(super) fn effective_theme(&self, cx: &App) -> appearance::custom::ResolvedTheme {
+        self.settings
+            .resolved_theme(cx.window_appearance(), &self.custom_themes)
     }
     pub(super) fn apply_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.effective_theme(cx).apply(Some(window), cx);
@@ -350,9 +351,19 @@ impl GitTurtle {
         shortcuts::open_help(window, cx);
     }
     pub(super) fn about(&self, window: &mut Window, cx: &mut Context<Self>) {
+        // Diagnostics report built-in keys only: a custom theme reports its base,
+        // so a user-chosen theme name never enters a copied bug report.
+        let theme = match self.effective_theme(cx).selection {
+            appearance::custom::ThemeSelection::BuiltIn(choice) => choice,
+            appearance::custom::ThemeSelection::Custom(id) => self
+                .custom_themes
+                .iter()
+                .find(|theme| theme.id == id)
+                .map_or_else(appearance::ThemeChoice::default, |theme| theme.base),
+        };
         let report = build_info::diagnostics(
             window.scale_factor(),
-            self.effective_theme(cx),
+            theme,
             self.settings.density,
             self.settings.interface_text_size,
             self.settings.code_text_size,

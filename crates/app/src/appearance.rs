@@ -13,9 +13,9 @@ use std::sync::{
 #[cfg_attr(not(test), allow(dead_code))]
 mod sources;
 
-// The theme editor, picker and store consume the readability rules, token names,
-// custom theme model and document format; until they land, the tests are the
-// only readers of most of them.
+// The preference store reads the custom theme model; the theme editor and picker
+// will consume the readability rules, token names and document format. Until
+// they land, the tests are the only readers of most of them.
 #[cfg_attr(not(test), allow(dead_code))]
 pub mod custom;
 
@@ -757,9 +757,18 @@ impl ThemeChoice {
         }
     }
 
-    /// Apply this built-in theme through the one palette application path.
+    /// Apply this built-in theme through the one palette application path. The app
+    /// applies a `ResolvedTheme`; test fixtures apply a built-in directly.
+    #[cfg(test)]
     pub fn apply(self, window: Option<&mut Window>, cx: &mut App) {
-        self.palette().apply(self.is_light(), window, cx);
+        custom::ResolvedTheme::built_in(self).apply(window, cx);
+    }
+}
+
+impl custom::ResolvedTheme {
+    /// Apply the resolved built-in or custom palette through the one application path.
+    pub fn apply(self, window: Option<&mut Window>, cx: &mut App) {
+        self.palette.apply(self.is_light, window, cx);
     }
 }
 
@@ -1136,16 +1145,24 @@ mod tests {
         let saved =
             r#"{"theme":"daylight","follow_system":false,"density":"compact","code_text_size":19}"#;
         let mut settings: crate::preferences::AppSettings = serde_json::from_str(saved).unwrap();
-        assert_eq!(settings.theme.label(), "Braden");
+        assert_eq!(
+            settings.theme,
+            custom::ThemeSelection::BuiltIn(ThemeChoice::Daylight)
+        );
+        assert_eq!(ThemeChoice::Daylight.label(), "Braden");
         assert_eq!(
             serde_json::to_value(&settings).unwrap()["theme"],
             "daylight"
         );
         assert_eq!(settings.density, Density::Compact);
         assert_eq!(settings.code_text_size, 19);
+        let resolved = |settings: &crate::preferences::AppSettings, appearance| {
+            settings.resolved_theme(appearance, &[]).selection
+        };
+        let built_in = custom::ThemeSelection::BuiltIn;
         assert_eq!(
-            settings.resolved_theme(gpui_kit::WindowAppearance::Dark),
-            ThemeChoice::Daylight
+            resolved(&settings, gpui_kit::WindowAppearance::Dark),
+            built_in(ThemeChoice::Daylight)
         );
         settings.follow_system = true;
         for light in [
@@ -1156,14 +1173,14 @@ mod tests {
             ThemeChoice::OneLight,
             ThemeChoice::RosePineDawn,
         ] {
-            settings.theme = light;
+            settings.theme = built_in(light);
             assert_eq!(
-                settings.resolved_theme(gpui_kit::WindowAppearance::Light),
-                ThemeChoice::Daylight
+                resolved(&settings, gpui_kit::WindowAppearance::Light),
+                built_in(ThemeChoice::Daylight)
             );
             assert_eq!(
-                settings.resolved_theme(gpui_kit::WindowAppearance::Dark),
-                ThemeChoice::Midnight
+                resolved(&settings, gpui_kit::WindowAppearance::Dark),
+                built_in(ThemeChoice::Midnight)
             );
         }
     }
