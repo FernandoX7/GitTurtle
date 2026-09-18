@@ -167,6 +167,9 @@ pub enum ThemeChoice {
     SolarizedLight,
     OneDark,
     OneLight,
+    RosePine,
+    RosePineDawn,
+    Dracula,
     #[default]
     #[serde(other)]
     Midnight,
@@ -222,7 +225,7 @@ pub fn palette(cx: &App) -> Palette {
 }
 
 impl ThemeChoice {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 17] = [
         Self::Midnight,
         Self::Daylight,
         Self::Graphite,
@@ -237,6 +240,9 @@ impl ThemeChoice {
         Self::SolarizedLight,
         Self::OneDark,
         Self::OneLight,
+        Self::RosePine,
+        Self::RosePineDawn,
+        Self::Dracula,
     ];
 
     pub fn label(self) -> &'static str {
@@ -255,6 +261,9 @@ impl ThemeChoice {
             Self::SolarizedLight => "Solarized Light",
             Self::OneDark => "One Dark",
             Self::OneLight => "One Light",
+            Self::RosePine => "Rosé Pine",
+            Self::RosePineDawn => "Rosé Pine Dawn",
+            Self::Dracula => "Dracula",
         }
     }
 
@@ -274,6 +283,9 @@ impl ThemeChoice {
             Self::SolarizedLight => "Warm cream · azure",
             Self::OneDark => "Soft charcoal · sky",
             Self::OneLight => "Clean paper · cobalt",
+            Self::RosePine => "Dusky violet · rose",
+            Self::RosePineDawn => "Blush paper · pine",
+            Self::Dracula => "Night charcoal · purple",
         }
     }
 
@@ -285,6 +297,7 @@ impl ThemeChoice {
                 | Self::Sandstone
                 | Self::SolarizedLight
                 | Self::OneLight
+                | Self::RosePineDawn
         )
     }
 
@@ -655,6 +668,92 @@ impl ThemeChoice {
                     line_number: o::MONO_2,
                 }
             }
+            Self::RosePine => {
+                use sources::rose_pine::main as r;
+                Palette {
+                    canvas: r::BASE,
+                    panel: r::SURFACE,
+                    subtle: 0x16141f,
+                    hover: r::OVERLAY,
+                    selected: 0x2d2a45,
+                    border: 0x403d52,
+                    text: r::TEXT,
+                    // Tuned: subtle lightened for 4.5:1 on selected rows and diff tiles.
+                    muted: 0xa19db7,
+                    accent: r::ROSE,
+                    accent_foreground: 0x2a1d25,
+                    accent_hover: 0xf3cfcd,
+                    accent_active: 0xe2aeac,
+                    added: r::FOAM,
+                    removed: r::LOVE,
+                    modified: r::GOLD,
+                    renamed: r::IRIS,
+                    warning: r::GOLD,
+                    added_background: 0x1f2e36,
+                    removed_background: 0x351f30,
+                    hunk: r::IRIS,
+                    line_number: r::SUBTLE,
+                }
+            }
+            Self::RosePineDawn => {
+                use sources::rose_pine::dawn as r;
+                Palette {
+                    canvas: r::BASE,
+                    panel: r::SURFACE,
+                    subtle: 0xf4ede4,
+                    hover: r::OVERLAY,
+                    selected: 0xe8dfe2,
+                    border: 0xdfdad9,
+                    text: r::TEXT,
+                    // Tuned: subtle darkened for 4.5:1 on every row surface and diff tile.
+                    muted: 0x5e5b73,
+                    accent: r::PINE,
+                    accent_foreground: 0xffffff,
+                    accent_hover: 0x225a70,
+                    accent_active: 0x1d4d60,
+                    // Tuned: foam, love, gold and iris darkened for 3:1 on row
+                    // surfaces, 4.5:1 in diff tiles and the canvas label on fills.
+                    added: 0x42717a,
+                    removed: 0x985367,
+                    modified: 0x986622,
+                    renamed: 0x86719d,
+                    warning: 0x986622,
+                    added_background: 0xe4ecea,
+                    removed_background: 0xf6e3e3,
+                    hunk: r::PINE,
+                    // Tuned: subtle darkened for 4.5:1 on canvas.
+                    line_number: 0x716d89,
+                }
+            }
+            Self::Dracula => {
+                use sources::dracula::dark as d;
+                Palette {
+                    canvas: d::BACKGROUND,
+                    panel: 0x2e303e,
+                    subtle: 0x21222c,
+                    hover: 0x383a4a,
+                    selected: d::SELECTION,
+                    border: 0x4a4d62,
+                    text: d::FOREGROUND,
+                    // Tuned: comment lightened for 4.5:1 on every row surface and diff tile.
+                    muted: 0xb8bfd6,
+                    accent: d::PURPLE,
+                    accent_foreground: d::BACKGROUND,
+                    accent_hover: 0xcfaefb,
+                    accent_active: 0xb083f7,
+                    added: d::GREEN,
+                    // Tuned: red lightened for 3:1 on selected rows and 4.5:1 in its diff tile.
+                    removed: 0xff6f6f,
+                    modified: d::ORANGE,
+                    renamed: d::PURPLE,
+                    warning: d::ORANGE,
+                    added_background: 0x2b4136,
+                    removed_background: 0x472e3a,
+                    hunk: d::CYAN,
+                    // Tuned: comment lightened for 4.5:1 in the gutter.
+                    line_number: 0x8b97bc,
+                }
+            }
         }
     }
 
@@ -991,8 +1090,8 @@ mod tests {
     }
 
     #[test]
-    fn solarized_and_one_themes_keep_their_storage_names_labels_and_lightness() {
-        assert_eq!(ThemeChoice::ALL.len(), 14);
+    fn adapted_family_themes_keep_their_storage_names_labels_and_lightness() {
+        assert_eq!(ThemeChoice::ALL.len(), 17);
         for (choice, stored, label, light) in [
             (
                 ThemeChoice::SolarizedDark,
@@ -1008,6 +1107,14 @@ mod tests {
             ),
             (ThemeChoice::OneDark, "one_dark", "One Dark", false),
             (ThemeChoice::OneLight, "one_light", "One Light", true),
+            (ThemeChoice::RosePine, "rose_pine", "Rosé Pine", false),
+            (
+                ThemeChoice::RosePineDawn,
+                "rose_pine_dawn",
+                "Rosé Pine Dawn",
+                true,
+            ),
+            (ThemeChoice::Dracula, "dracula", "Dracula", false),
         ] {
             assert!(ThemeChoice::ALL.contains(&choice));
             assert_eq!(serde_json::to_value(choice).unwrap(), stored);
@@ -1047,6 +1154,7 @@ mod tests {
             ThemeChoice::Sandstone,
             ThemeChoice::SolarizedLight,
             ThemeChoice::OneLight,
+            ThemeChoice::RosePineDawn,
         ] {
             settings.theme = light;
             assert_eq!(
