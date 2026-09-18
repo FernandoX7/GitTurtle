@@ -58,6 +58,29 @@ Checked against 120 commits of history: of the 69 that touch app Rust, 65 keep t
 4 are classified inert; all four were read and are `#[cfg(test)]`-only. A saved run keeps its own
 controller snapshot, so this applies to runs created after it.
 
+## An untracked mirror stops a run from accepting anything
+
+`clean()` uses `--untracked-files=all`, so a single untracked file anywhere in an
+attempt checkout fails `validate_candidate` with "candidate source or HEAD
+changed", and `source_root()` refuses a dirty source when a run is created. On
+2026-09-18 a Codex mirror — `.codex/config.toml`, `.codex/hooks/`, six untracked
+agent `.toml` files and copies of the five Claude-only skills under
+`.agents/skills/` — appeared inside all four attempt checkouts of the running
+loop at the same instant, including one nothing had touched since it was cloned.
+Two candidates that had already passed their gates could not be validated, for
+files unrelated to either of them.
+
+The handoff records the same mirror being parked on 2026-09-17; this copy differs
+from that one, so something recreates it. It is parked again under
+`.local/codex-mirror-2026-09-18/`. Note that `.codex/` mixes tracked and
+untracked entries: `implementer.toml`, `librarian.toml`, `security-reviewer.toml`
+and `verifier.toml` are in the repository, so clearing the directory wholesale
+deletes tracked policy files and `git checkout -- .codex` is needed afterwards.
+
+Until whatever writes it is identified, a run that stops accepting for no visible
+reason is worth checking with `git status --porcelain --untracked-files=all` in
+the attempt checkout before looking anywhere else.
+
 ## Outcome
 
 Recorded after implementation: see the commit series on `claude/claude-code-support` and the checks listed in its pull request description.
