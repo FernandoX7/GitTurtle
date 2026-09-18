@@ -21,15 +21,39 @@ SECURITY_REVIEW_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "required": ["task_id", "base", "candidate", "verdict", "reviewed_paths", "coverage", "findings", "gaps"],
     "properties": {
-        "task_id": STRING, "base": STRING, "candidate": STRING,
-        "verdict": {"type": "string", "enum": ["pass", "fail", "blocked"]},
-        "reviewed_paths": STRINGS,
+        "task_id": {**STRING, "description": "The contract's id, exactly."},
+        "base": {**STRING, "description": "The base sha you were given, exactly."},
+        "candidate": {**STRING, "description": "The candidate sha you were given, exactly."},
+        "verdict": {
+            "type": "string", "enum": ["pass", "fail", "blocked"],
+            "description": "pass requires no findings, no gaps, and every reviewed path covered; "
+                           "fail requires at least one finding; blocked requires at least one gap.",
+        },
+        "reviewed_paths": {
+            **STRINGS,
+            "description": "Exactly the candidate's changed paths, each once, and nothing else.",
+        },
         "coverage": {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
             "required": ["boundary", "paths", "evidence"],
-            "properties": {"boundary": STRING, "paths": STRINGS, "evidence": STRING},
+            "properties": {
+                "boundary": {**STRING, "description": "The trust boundary this entry covers."},
+                "paths": {
+                    **STRINGS,
+                    "description": "The changed paths from reviewed_paths this boundary covers, each once. "
+                                   "Only those: name any unchanged file you consulted in evidence instead. "
+                                   "Together the entries must cover every reviewed path.",
+                },
+                "evidence": {
+                    **STRING,
+                    "description": "What you traced or ran for this boundary, naming any unchanged file "
+                                   "you consulted. Never empty.",
+                },
+            },
         }},
-        "findings": {"type": "array", "items": {
+        "findings": {
+            "description": "Security defects only. Required for fail; empty to pass.",
+            "type": "array", "items": {
             "type": "object", "additionalProperties": False,
             "required": ["severity", "location", "attacker_control", "source", "sink", "impact", "evidence", "remediation"],
             "properties": {
@@ -37,7 +61,10 @@ SECURITY_REVIEW_SCHEMA = {
                 **{key: STRING for key in ("location", "attacker_control", "source", "sink", "impact", "evidence", "remediation")},
             },
         }},
-        "gaps": STRINGS,
+        "gaps": {
+            **STRINGS,
+            "description": "Concrete things you could not verify and why. Required for blocked; empty to pass.",
+        },
     },
 }
 

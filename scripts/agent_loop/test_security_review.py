@@ -11,7 +11,9 @@ from agent_loop import test_runner as fixtures
 from agent_loop.git import committed_paths, git, head
 from agent_loop.process import EnvironmentBlocked, LoopError, atomic_json, read_json
 from agent_loop.runner import Runner, attest, create_run, validate_patch
-from agent_loop.security_review import candidate_requires_security, security_required, validate_security_review
+from agent_loop.security_review import (
+    SECURITY_REVIEW_SCHEMA, candidate_requires_security, security_required, validate_security_review,
+)
 from agent_loop.task_spec import parse_spec
 # Records and run state stay private even when the host umask is permissive.
 from agent_loop.test_support import setUpModule, tearDownModule
@@ -43,6 +45,23 @@ class SecurityReviewTests(unittest.TestCase):
 
     def validate(self, value):
         return validate_security_review(value, self.task, "b" * 40, "a" * 40, ["scripts/one.py"])
+
+    def test_every_rule_the_validator_enforces_is_stated_in_the_schema(self):
+        # A session only learns these from the schema it is handed. Coverage
+        # paths silently meant "the changed paths this boundary covers", so a
+        # reviewer that also listed the reference files it read was rejected.
+        coverage = SECURITY_REVIEW_SCHEMA["properties"]["coverage"]["items"]["properties"]
+        self.assertIn("Only those", coverage["paths"]["description"])
+        self.assertIn("cover every reviewed path", coverage["paths"]["description"])
+        self.assertIn("changed paths", SECURITY_REVIEW_SCHEMA["properties"]["reviewed_paths"]["description"])
+        self.assertIn("blocked requires", SECURITY_REVIEW_SCHEMA["properties"]["verdict"]["description"])
+        self.assertIn("empty to pass", SECURITY_REVIEW_SCHEMA["properties"]["gaps"]["description"])
+
+    def test_context_files_beside_the_changed_paths_are_still_refused(self):
+        value = passing_security()
+        value["coverage"][0]["paths"] = value["reviewed_paths"] + ["docs/licenses/assets/sources.json"]
+        with self.assertRaisesRegex(LoopError, "unknown or duplicate paths"):
+            self.validate(value)
 
     def test_routes_security_bearing_and_unknown_paths_even_in_mixed_patches(self):
         for path in (

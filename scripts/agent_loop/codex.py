@@ -20,17 +20,21 @@ BUILD_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "required": ["task_id", "status", "summary"],
     "properties": {
-        "task_id": {"type": "string"},
+        "task_id": {"type": "string", "description": "The contract's id, exactly."},
         "status": {"type": "string", "enum": ["ready", "blocked"]},
-        "summary": {"type": "string"},
+        "summary": {"type": "string", "description": "What changed, which checks ran and what they said. Never empty."},
     },
 }
 REVIEW_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "required": ["task_id", "candidate", "verdict", "criteria", "findings", "notes"],
     "properties": {
-        "task_id": {"type": "string"}, "candidate": {"type": "string"},
-        "verdict": {"type": "string", "enum": ["pass", "fail", "blocked"]},
+        "task_id": {"type": "string", "description": "The contract's id, exactly."},
+        "candidate": {"type": "string", "description": "The candidate sha you were given, exactly."},
+        "verdict": {
+            "type": "string", "enum": ["pass", "fail", "blocked"],
+            "description": "pass requires every criterion to pass and findings to be empty.",
+        },
         "findings": {
             "type": "array", "items": {"type": "string"},
             "description": "Blocking defects only, each with a file:line reference. A pass must have none; "
@@ -42,13 +46,18 @@ REVIEW_SCHEMA = {
                            "guards, follow-up work. Empty when there are none; never a reason to fail.",
         },
         "criteria": {
+            "description": "Every acceptance criterion of the contract, each exactly once, by its id.",
             "type": "array", "items": {
                 "type": "object", "additionalProperties": False,
                 "required": ["id", "status", "evidence"],
                 "properties": {
-                    "id": {"type": "string"},
+                    "id": {"type": "string", "description": "The acceptance criterion's id from the contract."},
                     "status": {"type": "string", "enum": ["pass", "fail", "unverified"]},
-                    "evidence": {"type": "string"},
+                    "evidence": {
+                        "type": "string",
+                        "description": "What you ran or read that settles it, or the concrete gap that "
+                                       "leaves it unverified. Never empty.",
+                    },
                 },
             },
         },
