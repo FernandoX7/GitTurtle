@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from agent_loop import test_runner as fixtures
 from agent_loop.git import committed_paths, git, head
-from agent_loop.process import EnvironmentBlocked, LoopError, atomic_json, read_json
+from agent_loop.process import EnvironmentBlocked, LoopError, MalformedResponse, atomic_json, read_json
 from agent_loop.runner import Runner, attest, create_run, validate_patch
 from agent_loop.security_review import (
     SECURITY_REVIEW_SCHEMA, candidate_requires_security, security_required, validate_security_review,
@@ -45,6 +45,26 @@ class SecurityReviewTests(unittest.TestCase):
 
     def validate(self, value):
         return validate_security_review(value, self.task, "b" * 40, "a" * 40, ["scripts/one.py"])
+
+    def test_a_malformed_shape_retries_while_a_wrong_verdict_still_fails(self):
+        # The themes security reviewer put a `gaps` key inside every coverage
+        # entry. That verdict is unusable, but the candidate it judged is gated
+        # and intact, so the review is retried rather than ending the run.
+        shape = passing_security()
+        shape["coverage"][0]["gaps"] = []
+        with self.assertRaisesRegex(MalformedResponse, "invalid security review coverage entry"):
+            self.validate(shape)
+        # A review that names another candidate, or passes while carrying
+        # findings, says something about the candidate and must stay fatal:
+        # retrying it would let a reviewer be re-rolled until it passed.
+        for mutate in (lambda v: v.update(candidate="0" * 40),
+                       lambda v: v.update(findings=[finding()]),
+                       lambda v: v.update(reviewed_paths=[])):
+            value = passing_security()
+            mutate(value)
+            with self.assertRaises(LoopError) as caught:
+                self.validate(value)
+            self.assertNotIsInstance(caught.exception, MalformedResponse)
 
     def test_every_rule_the_validator_enforces_is_stated_in_the_schema(self):
         # A session only learns these from the schema it is handed. Coverage

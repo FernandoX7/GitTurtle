@@ -408,8 +408,14 @@ class Claude:
                 value = json.loads(candidate.strip())
             except ValueError:
                 continue
-            if isinstance(value, dict) and required <= set(value):
-                found = value
+            if not isinstance(value, dict) or not required <= set(value):
+                continue
+            # A schema that forbids extra properties means it: the CLI would have
+            # rejected them, so a transcript object must be held to the same bar
+            # rather than handed on for a validator to reject fatally later.
+            if schema.get("additionalProperties") is False and not set(value) <= set(schema.get("properties", {})):
+                continue
+            found = value
         return found
 
     @staticmethod

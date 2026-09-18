@@ -11,7 +11,7 @@ import re
 
 from .git import git
 
-from .process import LoopError
+from .process import LoopError, MalformedResponse
 from .task_spec import Task
 
 
@@ -123,39 +123,39 @@ def _strings(value: object, label: str, *, nonempty: bool = False) -> list[str]:
 
 def validate_security_review(value: dict, task: Task, base: str, candidate: str, paths: list[str]) -> str:
     if not isinstance(value, dict) or set(value) != set(SECURITY_REVIEW_SCHEMA["required"]):
-        raise LoopError("security review has missing or unknown fields")
+        raise MalformedResponse("security review has missing or unknown fields")
     if value["task_id"] != task.id or value["base"] != base or value["candidate"] != candidate:
         raise LoopError("security review is for a different task, base or candidate")
     verdict = value["verdict"]
     if not isinstance(verdict, str) or verdict not in {"pass", "fail", "blocked"}:
-        raise LoopError("invalid security review verdict")
+        raise MalformedResponse("invalid security review verdict")
     reviewed = _strings(value["reviewed_paths"], "reviewed paths")
     expected = set(paths)
     if len(reviewed) != len(set(reviewed)) or set(reviewed) != expected:
         raise LoopError("security review paths must match the candidate exactly once")
     if not isinstance(value["coverage"], list):
-        raise LoopError("invalid security review coverage")
+        raise MalformedResponse("invalid security review coverage")
     covered: set[str] = set()
     for item in value["coverage"]:
         if not isinstance(item, dict) or set(item) != {"boundary", "paths", "evidence"}:
-            raise LoopError("invalid security review coverage entry")
+            raise MalformedResponse("invalid security review coverage entry")
         if not all(isinstance(item[key], str) and item[key].strip() for key in ("boundary", "evidence")):
-            raise LoopError("security review coverage needs a boundary and evidence")
+            raise MalformedResponse("security review coverage needs a boundary and evidence")
         item_paths = _strings(item["paths"], "coverage paths", nonempty=True)
         if not set(item_paths) <= expected or len(item_paths) != len(set(item_paths)):
             raise LoopError("security review coverage contains unknown or duplicate paths")
         covered.update(item_paths)
     findings = value["findings"]
     if not isinstance(findings, list):
-        raise LoopError("invalid security review findings")
+        raise MalformedResponse("invalid security review findings")
     fields = set(SECURITY_REVIEW_SCHEMA["properties"]["findings"]["items"]["required"])
     for finding in findings:
         if not isinstance(finding, dict) or set(finding) != fields:
-            raise LoopError("invalid security review finding")
+            raise MalformedResponse("invalid security review finding")
         if not all(isinstance(finding[key], str) and finding[key].strip() for key in fields):
-            raise LoopError("security findings require control, source, sink, impact and evidence")
+            raise MalformedResponse("security findings require control, source, sink, impact and evidence")
         if finding["severity"] not in {"critical", "high", "medium", "low"}:
-            raise LoopError("invalid security finding severity")
+            raise MalformedResponse("invalid security finding severity")
     gaps = _strings(value["gaps"], "gaps")
     if verdict == "pass" and (findings or gaps or not value["coverage"] or covered != expected):
         raise LoopError("passing security review contains findings, gaps or incomplete coverage")

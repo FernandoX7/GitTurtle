@@ -225,6 +225,16 @@ class ClaudeProcessTests(unittest.TestCase):
         self.fake_claude(result={"structured_output": None, "result": report})
         self.assertEqual(self.session("verifier", candidate="a" * 40), verdict)
 
+    def test_a_transcript_object_with_forbidden_extra_fields_is_refused(self):
+        # additionalProperties is False, so the CLI would never have produced
+        # this; accepting it only defers the rejection to a fatal validator.
+        verdict = passing_review()
+        verdict["reviewer_notes"] = "not in the schema"
+        report = "```json\n" + json.dumps(verdict) + "\n```"
+        self.fake_claude(result={"structured_output": None, "result": report})
+        with self.assertRaisesRegex(MalformedResponse, "no usable result object"):
+            self.session("verifier", candidate="a" * 40)
+
     def test_a_transcript_object_missing_required_fields_is_refused(self):
         # The first themes verifier returned candidate_sha with no findings.
         report = "```json\n" + json.dumps({"task_id": "one", "candidate_sha": "a" * 40, "verdict": "pass"}) + "\n```"
