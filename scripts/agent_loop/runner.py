@@ -362,7 +362,8 @@ class Runner:
                 self.state.update(phase="paused", reason=reason)
                 break
             accepted = {key for key, value in self.state["tasks"].items() if value["status"] == "accepted"}
-            if len(accepted) >= self.state["max_tasks"]:
+            # --max-tasks bounds work accepted by this run; tasks that landed before it only satisfy dependencies.
+            if len([key for key in accepted if "landed" not in self.state["tasks"][key]]) >= self.state["max_tasks"]:
                 self.state.update(phase="complete" if len(accepted) == len(self.tasks) else "paused", reason="accepted-task limit reached")
                 break
             blocked = set(visited)
@@ -644,6 +645,37 @@ class Runner:
                 raise LoopError("gate command log changed")
 
 
+def landed_tasks(root: Path, base: str, tasks: list[Task]) -> dict[str, str]:
+    """Map each task already committed on the source branch to its newest commit.
+
+    The queue is status-free, so a queue continued in a fresh run would otherwise
+    redo accepted work. A task counts as landed only when a single-parent commit
+    reachable from ``base`` carries its exact subject, changes at least one path
+    and only paths inside its scope, and every dependency landed too.
+    """
+    newest: dict[str, str] = {}
+    for line in git(root, "log", "--no-merges", "--format=%H%x1f%s", base).splitlines():
+        sha, _, subject = line.partition("\x1f")
+        newest.setdefault(subject, sha)
+    candidates = {}
+    for task in tasks:
+        sha = newest.get(task.commit)
+        if not sha:
+            continue
+        paths = list(filter(None, git(root, "diff-tree", "--no-commit-id", "--root", "-r", "--name-only", "-z", "--no-renames", sha).split("\0")))
+        if paths and all(path_allowed(path, task.scope) for path in paths):
+            candidates[task.id] = sha
+    landed: dict[str, str] = {}
+    changed = True
+    while changed:
+        changed = False
+        for task in tasks:
+            if task.id in candidates and task.id not in landed and set(task.depends_on) <= landed.keys():
+                landed[task.id] = candidates[task.id]
+                changed = True
+    return landed
+
+
 def create_run(repo: Path, spec_path: Path, controller: Path, options: dict) -> Path:
     root = source_root(repo)
     spec_path = spec_path.resolve()
@@ -689,15 +721,22 @@ def create_run(repo: Path, spec_path: Path, controller: Path, options: dict) -> 
         controller_files[relative] = digest(target)
     prepared = adapter.prepare_run(directory) if hasattr(adapter, "prepare_run") else {}
     base = head(root)
+    landed = landed_tasks(root, base, tasks)
     clone(root, directory / "accepted", base, author, owner=directory)
     git(directory / "accepted", "switch", "--quiet", "-c", getattr(adapter, "branch_prefix", "codex/agent-") + run_id, owner=directory)
+    records = {task.id: {"status": "pending", "attempts": 0} for task in tasks}
+    for task_id, sha in landed.items():
+        records[task_id] = {
+            "status": "accepted", "attempts": 0, "accepted_at": now(), "landed": sha,
+            "reason": f"landed on the source branch before this run as {sha[:12]}",
+        }
     state = {
         "version": 1, "run": str(directory), "source": str(root), "source_head": base,
         "accepted_head": base, "spec_path": relative_spec, "spec_sha256": digest(directory / "tasks.json"),
         "controller_files": controller_files, "author": author, "phase": "idle", "active": None,
         "created_at": now(), "updated_at": now(), "baseline_passed": False,
         "remaining_seconds": options["max_minutes"] * 60, "output_tokens": 0,
-        "tasks": {task.id: {"status": "pending", "attempts": 0} for task in tasks},
+        "tasks": records,
         "tool": tool, **prepared,
         **{key: options[key] for key in ("model", "effort", "max_tasks", "max_attempts", "session_minutes", "max_output_tokens")},
         **{key: options[key] for key in CLAUDE_OPTIONS if tool == "claude" and key in options},

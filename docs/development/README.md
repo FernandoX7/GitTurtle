@@ -81,7 +81,7 @@ python3 scripts/agent-loop.py run \
   --max-tasks 3 --max-attempts 2 --max-minutes 180
 ```
 
-`--session-minutes` bounds each child session and defaults to 45. `--max-tasks` caps accepted tasks, and `--max-attempts` caps attempts per task. Optional `--max-output-tokens` stops between sessions using reported output usage; it is not a hard token or billing cap. A blocked task does not prevent another eligible, unrelated task from running, and its dependents remain ineligible. Gate/child failure, a missing capability, a requested stop and exhausted budgets retain their recorded outcomes; none establishes acceptance.
+`--session-minutes` bounds each child session and defaults to 45. `--max-tasks` caps tasks accepted by the run, and `--max-attempts` caps attempts per task. The task file carries no status, so a new run continues a queue from the branch: a task whose exact commit subject is already reachable from the source head, whose commit changed only paths in its scope, and whose dependencies also landed is recorded as accepted with its `landed` commit, satisfies dependents and does not count toward `--max-tasks`. Optional `--max-output-tokens` stops between sessions using reported output usage; it is not a hard token or billing cap. A blocked task does not prevent another eligible, unrelated task from running, and its dependents remain ineligible. Gate/child failure, a missing capability, a requested stop and exhausted budgets retain their recorded outcomes; none establishes acceptance.
 
 Inspect a run and request a stop using its printed directory:
 

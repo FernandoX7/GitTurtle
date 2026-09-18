@@ -123,6 +123,43 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(git(directory / "accepted", "remote").strip(), "")
         self.assertEqual(state["output_tokens"], 40)
 
+    def land(self, paths, subject):
+        for path in paths:
+            (self.root / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / path).write_text(f"{subject}\n")
+        git(self.root, "add", "--", *paths)
+        git(self.root, "commit", "--quiet", "-m", subject)
+        self.original_head = head(self.root)
+        return self.original_head
+
+    def test_fresh_run_continues_a_queue_whose_tasks_already_landed(self):
+        specification = self.prepare([task("two", ["one"]), task("one")])
+        landed = self.land(["docs/one.md"], "docs: explain one workflow")
+        # A later unrelated commit leaves the match intact.
+        self.land(["docs/three.md"], "docs: explain three workflow")
+        with patch("agent_loop.runner.Codex.preflight", return_value="fixture Codex"):
+            directory = create_run(self.root, specification, CONTROLLER, self.options | {"max_tasks": 1})
+        record = read_json(directory / "state.json")["tasks"]["one"]
+        self.assertEqual((record["status"], record["landed"], record["attempts"]), ("accepted", landed, 0))
+        adapter = FakeCodex()
+        state = self.execute(directory, adapter)
+        # The landed task is not redone and does not count against --max-tasks.
+        self.assertEqual(adapter.calls, [("implementer", "two"), ("verifier", "two")])
+        self.assertEqual(state["phase"], "complete")
+
+    def test_landed_detection_requires_scope_and_landed_dependencies(self):
+        specification = self.prepare([task("one"), task("two", ["one"]), task("three")])
+        # Right subject, wrong paths: not this task's commit.
+        self.land(["docs/one.md", "protected.txt"], "docs: explain one workflow")
+        # In scope, but its dependency never landed.
+        self.land(["docs/two.md"], "docs: explain two workflow")
+        self.land(["docs/three.md"], "docs: explain three workflow")
+        with patch("agent_loop.runner.Codex.preflight", return_value="fixture Codex"):
+            directory = create_run(self.root, specification, CONTROLLER, self.options)
+        tasks = read_json(directory / "state.json")["tasks"]
+        self.assertEqual({key: value["status"] for key, value in tasks.items()},
+                         {"one": "pending", "two": "pending", "three": "accepted"})
+
     def test_red_review_retries_with_failed_commit_preserved(self):
         directory = self.create()
         state = self.execute(directory, FakeCodex(failures=1))
