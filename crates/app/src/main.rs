@@ -1298,7 +1298,7 @@ impl GitTurtle {
         let Some(start) = self.interaction_started.take() else {
             return;
         };
-        if std::env::var_os("GITTURTLE_TRACE").is_none() {
+        if !trace_enabled() {
             return;
         }
         let generation = self.generation;
@@ -1313,6 +1313,19 @@ impl GitTurtle {
                     );
                 }
             });
+        });
+    }
+
+    /// Print `gitturtle.<metric>` from a handler-captured `start` at the
+    /// window's next frame callback. Unlike `trace_frame`, the traced work
+    /// changes neither content generation nor mode, so no staleness guard or
+    /// shared `interaction_started` slot applies; each call prints once.
+    fn trace_next_frame(metric: &'static str, start: Instant, window: &mut Window) {
+        window.on_next_frame(move |_, _| {
+            eprintln!(
+                "gitturtle.{metric}={:.3}",
+                start.elapsed().as_secs_f64() * 1000.
+            );
         });
     }
 
@@ -1900,6 +1913,12 @@ fn main() {
         })
         .detach();
     });
+}
+
+/// Opt-in `gitturtle.*_frame_ms` interaction traces; see
+/// `docs/benchmarks/metrics.md` for each metric's boundary.
+fn trace_enabled() -> bool {
+    std::env::var_os("GITTURTLE_TRACE").is_some()
 }
 
 #[cfg(test)]

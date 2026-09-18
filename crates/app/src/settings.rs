@@ -465,7 +465,11 @@ impl GitTurtle {
             .into_any_element()
     }
 
+    /// Theme switches restyle retained editors in place: no worker job, no
+    /// content re-preparation. `gitturtle.theme_apply_frame_ms` measures this
+    /// handler through the next frame callback under `GITTURTLE_TRACE`.
     fn choose_theme(&mut self, theme: ThemeChoice, window: &mut Window, cx: &mut Context<Self>) {
+        let started = trace_enabled().then(std::time::Instant::now);
         let theme = appearance::custom::ThemeSelection::BuiltIn(theme);
         if self.settings.theme == theme && !self.settings.follow_system {
             return;
@@ -474,6 +478,9 @@ impl GitTurtle {
         self.settings.follow_system = false;
         self.apply_appearance(window, cx);
         self.save_preferences(window, cx);
+        if let Some(start) = started {
+            Self::trace_next_frame("theme_apply_frame_ms", start, window);
+        }
     }
 
     fn save_default_branch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -646,6 +653,9 @@ impl GitTurtle {
                                 Button::new(("settings-theme", choice as usize))
                                     .ghost()
                                     .group("settings-theme-choice")
+                                    .debug_selector(move || {
+                                        format!("settings-theme-{}", choice as usize)
+                                    })
                                     .accessibility_label(format!("{} theme", choice.label()))
                                     .selected(selected)
                                     .toggled(selected)
@@ -1505,5 +1515,161 @@ mod list_scale_tests {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod theme_apply_tests {
+    use super::*;
+    use crate::{split_diff::SplitPresentation, text::PatchPresentation};
+    use core::prelude::v1::test;
+    use std::{cell::RefCell, rc::Rc};
+
+    fn comparison() -> Arc<Content> {
+        let old = (0..200)
+            .map(|row| format!("row {row}\n"))
+            .collect::<String>();
+        let new = old.replace("row 120\n", "row 120 turtle\n");
+        let patch = "diff --git a/file.txt b/file.txt\n--- a/file.txt\n+++ b/file.txt\n@@ -120,3 +120,3 @@\n row 119\n-row 120\n+row 120 turtle\n row 121\n";
+        let presentation = Arc::new(PatchPresentation::prepare(patch));
+        let split = Arc::new(SplitPresentation::prepare(&old, &new, &presentation));
+        Arc::new(Content::Text {
+            diagrams: None,
+            markdown: None,
+            patch: patch.into(),
+            old,
+            new,
+            presentation,
+            split,
+            partial: None,
+            partial_unavailable: None,
+        })
+    }
+
+    fn settle(cx: &mut VisualTestContext) {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
+
+    /// A theme switch restyles the retained comparison in place. It must not
+    /// submit a read, re-prepare content, replace an editor, or reset Find.
+    /// The switches are real clicks on Settings theme cards, so they run the
+    /// same `choose_theme` handler that `gitturtle.theme_apply_frame_ms` traces.
+    #[gpui::test]
+    fn theme_switch_submits_no_job_and_keeps_editor_and_find(cx: &mut TestAppContext) {
+        // GitTurtle::new starts a real preferences worker; saves reply from it.
+        cx.executor().allow_parking();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+        });
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let output = captured.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let app = cx.new(|cx| {
+                GitTurtle::new(
+                    None,
+                    Preferences::default(),
+                    repository_tabs::Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                )
+            });
+            *output.borrow_mut() = Some(app.clone());
+            gpui_kit::component::Root::new(app, window, cx)
+        });
+        let app = captured.borrow().as_ref().unwrap().clone();
+        let content = comparison();
+        // The comparison retains a split view beside the unified editor that
+        // carries Find, as one does after the user has visited both modes.
+        let (editor, split) = cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.mode = WorkspaceMode::Compare;
+                app.content = Some(Arc::clone(&content));
+                app.text_mode = TextMode::Split;
+                app.ensure_editor(window, cx);
+                app.text_mode = TextMode::Unified;
+                app.ensure_editor(window, cx);
+                let split = app.split_view.clone().expect("a retained split view");
+                let editor = app.patch_editor.clone().expect("a retained patch editor");
+                editor.update(cx, |editor, cx| {
+                    editor.open_search(false, cx);
+                    editor.set_search_query("row 12", false, cx);
+                    editor.next_search_match(cx);
+                    editor.next_search_match(cx);
+                });
+                app.show_settings(window, cx);
+                (editor, split)
+            })
+        });
+        settle(cx);
+        let find = |cx: &mut VisualTestContext| {
+            cx.read(|cx| {
+                let session = editor.read(cx).search_session();
+                (
+                    session.open,
+                    session.query.clone(),
+                    session.matcher.matched_ranges().as_ref().clone(),
+                    session.matcher.current_match_index(),
+                )
+            })
+        };
+        let before = find(cx);
+        assert!(before.0, "Find is open before the switch");
+        assert_eq!(before.2.len(), 3, "the patch has three `row 12` lines");
+        assert!(before.3 > 0, "Find advanced past the first match");
+        // `GitTurtle::request` advances the generation, retains a reply task and
+        // shows a loading label for every content read it submits; the
+        // retained content `Arc` below proves nothing re-prepared it.
+        let submissions = |cx: &mut VisualTestContext| {
+            cx.read(|cx| {
+                let app = app.read(cx);
+                (app.generation, app.task.is_some(), app.loading)
+            })
+        };
+        let idle = submissions(cx);
+        assert!(!idle.1 && idle.2.is_none());
+        let initial = cx.read(|cx| app.read(cx).settings.theme);
+        // Light palettes are the first rows of the picker, so their cards are
+        // on screen without scrolling the Settings page.
+        let choices = ThemeChoice::ALL
+            .into_iter()
+            .filter(|choice| {
+                choice.is_light() && appearance::custom::ThemeSelection::BuiltIn(*choice) != initial
+            })
+            .take(2)
+            .collect::<Vec<_>>();
+        assert_eq!(choices.len(), 2);
+        for choice in choices {
+            let selector: &'static str = format!("settings-theme-{}", choice as usize).leak();
+            let card = cx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{} theme card is rendered", choice.label()));
+            cx.simulate_click(card.center(), Modifiers::default());
+            settle(cx);
+            assert_eq!(
+                cx.read(|cx| app.read(cx).settings.theme),
+                appearance::custom::ThemeSelection::BuiltIn(choice),
+                "clicking the {} card chose it",
+                choice.label()
+            );
+        }
+        assert_eq!(submissions(cx), idle, "a theme switch submitted a read");
+        cx.read(|cx| {
+            let app = app.read(cx);
+            assert_eq!(app.page, AppPage::Settings, "Settings stays open");
+            assert!(Arc::ptr_eq(app.content.as_ref().unwrap(), &content));
+            assert_eq!(
+                app.patch_editor.as_ref().map(Entity::entity_id),
+                Some(editor.entity_id())
+            );
+            assert_eq!(
+                app.split_view.as_ref().map(Entity::entity_id),
+                Some(split.entity_id())
+            );
+        });
+        assert_eq!(find(cx), before, "Find query and matches survive");
     }
 }
