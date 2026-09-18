@@ -13,6 +13,11 @@ use std::sync::{
 #[cfg_attr(not(test), allow(dead_code))]
 mod sources;
 
+// The theme editor and picker consume the readability rules and token names;
+// until they land, the palette tests are the only readers of some of them.
+#[cfg_attr(not(test), allow(dead_code))]
+pub mod custom;
+
 pub const DEFAULT_INTERFACE_TEXT_SIZE: u8 = 13;
 pub const DEFAULT_CODE_TEXT_SIZE: u8 = 12;
 pub const INTERFACE_TEXT_RANGE: std::ops::RangeInclusive<u8> = 11..=18;
@@ -682,28 +687,9 @@ impl Density {
 
 #[cfg(test)]
 mod tests {
+    use super::custom::contrast;
     use super::*;
     use gpui_kit::{Background, Hsla};
-
-    fn luminance(rgb: u32) -> f64 {
-        let linear = |channel: u32| {
-            let value = f64::from(channel) / 255.;
-            if value <= 0.04045 {
-                value / 12.92
-            } else {
-                ((value + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        0.2126 * linear((rgb >> 16) & 255)
-            + 0.7152 * linear((rgb >> 8) & 255)
-            + 0.0722 * linear(rgb & 255)
-    }
-
-    fn contrast(a: u32, b: u32) -> f64 {
-        let a = luminance(a);
-        let b = luminance(b);
-        (a.max(b) + 0.05) / (a.min(b) + 0.05)
-    }
 
     #[test]
     fn parallel_test_applications_keep_their_own_text_geometry() {
@@ -744,50 +730,23 @@ mod tests {
     #[test]
     fn palettes_keep_text_and_diff_content_readable_in_each_theme() {
         for choice in ThemeChoice::ALL {
-            let palette = choice.palette();
-            for background in [
-                palette.canvas,
-                palette.panel,
-                palette.subtle,
-                palette.hover,
-                palette.selected,
-                palette.row_hover(true),
-            ] {
-                assert!(
-                    contrast(palette.text, background) >= 4.5,
-                    "{choice:?} primary text"
-                );
-                assert!(
-                    contrast(palette.muted, background) >= 4.5,
-                    "{choice:?} secondary text"
-                );
-                for status in [
-                    palette.added,
-                    palette.removed,
-                    palette.modified,
-                    palette.renamed,
-                ] {
-                    assert!(contrast(status, background) >= 3., "{choice:?} status icon");
-                }
-            }
-            // Provider patch content and its line coordinates share the diff
-            // surfaces; their ordinary-size text needs the text threshold too.
-            for background in [palette.added_background, palette.removed_background] {
-                for foreground in [palette.text, palette.muted] {
-                    assert!(
-                        contrast(foreground, background) >= 4.5,
-                        "{choice:?} diff content and line coordinates"
-                    );
-                }
-            }
-            assert!(contrast(palette.added, palette.added_background) >= 4.5);
-            assert!(contrast(palette.removed, palette.removed_background) >= 4.5);
-            for background in [palette.accent, palette.accent_hover, palette.accent_active] {
-                assert!(
-                    contrast(palette.accent_foreground, background) >= 4.5,
-                    "{choice:?} action button label"
-                );
-            }
+            let issues = choice.palette().readability_issues();
+            assert!(
+                issues.is_empty(),
+                "{choice:?} breaks readability rules: {}",
+                issues
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            );
+        }
+    }
+
+    #[test]
+    fn palette_lightness_matches_each_built_in_choice() {
+        for choice in ThemeChoice::ALL {
+            assert_eq!(choice.is_light(), choice.palette().is_light(), "{choice:?}");
         }
     }
 

@@ -21,13 +21,10 @@ pub(super) fn colors(cx: &App) -> [u32; 6] {
     palette_colors(palette(cx))
 }
 
-fn palette_colors(palette: Palette) -> [u32; 6] {
-    // These themes use a light foreground on dark surfaces, or the inverse.
+/// Lane set for a palette; `Palette::readability_issues` judges the same colors.
+pub(crate) fn palette_colors(palette: Palette) -> [u32; 6] {
     // Keep palette selection cheap for each visible row and paint callback.
-    let brightness = |color: u32| {
-        ((color >> 16) & 255) * 2126 + ((color >> 8) & 255) * 7152 + (color & 255) * 722
-    };
-    if brightness(palette.canvas) > brightness(palette.text) {
+    if palette.is_light() {
         LIGHT_COLORS
     } else {
         DARK_COLORS
@@ -417,29 +414,18 @@ mod tests {
 
     #[test]
     fn graph_lanes_remain_visible_on_all_theme_surfaces_without_changing_identity() {
-        let luminance = |color: u32| {
-            let linear = |channel: u32| {
-                let value = f64::from(channel) / 255.;
-                if value <= 0.04045 {
-                    value / 12.92
-                } else {
-                    ((value + 0.055) / 1.055).powf(2.4)
-                }
-            };
-            0.2126 * linear((color >> 16) & 255)
-                + 0.7152 * linear((color >> 8) & 255)
-                + 0.0722 * linear(color & 255)
-        };
         for choice in crate::appearance::ThemeChoice::ALL {
             let palette = choice.palette();
             let colors = palette_colors(palette);
             assert_eq!(colors.len(), DARK_COLORS.len());
             for color in colors {
-                for background in [palette.canvas, palette.hover, palette.selected] {
-                    let foreground = luminance(color);
-                    let background = luminance(background);
-                    let contrast =
-                        (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05);
+                for background in [
+                    palette.canvas,
+                    palette.panel,
+                    palette.hover,
+                    palette.selected,
+                ] {
+                    let contrast = crate::appearance::custom::contrast(color, background);
                     assert!(contrast >= 3., "{choice:?}: {color:#x} contrast {contrast}");
                 }
             }
