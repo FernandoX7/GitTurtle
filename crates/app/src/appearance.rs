@@ -8,6 +8,11 @@ use std::sync::{
     atomic::{AtomicU8, AtomicU32, Ordering},
 };
 
+// Upstream values for the next built-in themes; the themes that consume them
+// have not landed yet, so only the source tests reference the tables.
+#[cfg_attr(not(test), allow(dead_code))]
+mod sources;
+
 pub const DEFAULT_INTERFACE_TEXT_SIZE: u8 = 13;
 pub const DEFAULT_CODE_TEXT_SIZE: u8 = 12;
 pub const INTERFACE_TEXT_RANGE: std::ops::RangeInclusive<u8> = 11..=18;

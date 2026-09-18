@@ -79,8 +79,13 @@ by the OS/user; distribution of those components would require a separate review
   [Rosé Pine](docs/licenses/assets/rose-pine-LICENSE),
   [Dracula](docs/licenses/assets/dracula-LICENSE), and
   [Kanagawa](docs/licenses/assets/kanagawa-LICENSE), pinned to their inspected
-  revisions in `docs/licenses/assets/sources.json`. MIT asks for nothing beyond
-  those notices; theme names are used descriptively and imply no endorsement.
+  revisions in `docs/licenses/assets/sources.json`. One Light's license at the
+  inspected `atom/one-light-syntax` revision is byte-identical to One Dark's, so
+  the One notice covers both. The upstream values are recorded, with each
+  repository, file and revision, in
+  [`crates/app/src/appearance/sources.rs`](crates/app/src/appearance/sources.rs).
+  MIT asks for nothing beyond those notices; theme names are used descriptively
+  and imply no endorsement.
 - No font files are bundled by GitTurtle's assets or the selected GPUI icon asset
   bundle. Text uses installed system fonts. Font files present in decoder/text
   dependency test directories are not application assets. Preserve their own
