@@ -37,6 +37,32 @@ Hooks live in `.claude/settings.json` so they also fire in headless sessions. Th
 
 Fable 5.1 plans, takes the hard tail and reviews finished runs; Opus 5 implements, verifies, reviews and measures; Sonnet 5 explores and handles docs or tooling tasks. On Max plans Fable draws from the same weekly allowance, uses it faster, and is capped at half of it; past the cap, headless sessions bill usage credits without a prompt. Before an unattended run, check `/usage`, and consider disabling usage credits or setting a spend limit in your account settings. Effort defaults to `high`; raise it for a single session with `--effort xhigh` rather than in project settings.
 
+## Session length
+
+Work to about 40% of the context window, then hand off. Output degrades before
+compaction, not at it — confident claims start drifting from what the tools
+returned — so a fresh session costs less than re-verifying late work. Nothing
+measures this for you; it is a discipline the session applies to itself, and the
+rule lives in [`CLAUDE.md`](../../CLAUDE.md#session-length).
+
+The unattended loop already holds to it structurally, and that is deliberate:
+every attempt is a fresh process, agents cap `maxTurns` (40 for `Explore`, 60–120
+for reviewers, 200 for implementers), and the controller caps `--max-turns` and
+`--session-minutes`. Raising a cap so one session can finish a task trades a
+bounded risk for an unbounded one; prefer splitting the task.
+
+An interactive coordinator has no such cap and is where this goes wrong, because
+a long coordinating session accumulates run state, evidence paths and candidate
+shas that exist nowhere else. Two habits make stopping cheap:
+
+- Keep [`HANDOFF.md`](HANDOFF.md) current as you go, recording run directories,
+  candidate shas and evidence paths when they are produced rather than at the end.
+- Preserve accepted work onto the branch before stopping. Accepted commits live
+  in the run's `accepted` checkout, not your worktree, and a saved run pins its
+  controller by digest — once a harness fix lands, that run refuses to resume and
+  anything left only inside it is stranded. `git fetch <run>/accepted HEAD` then
+  cherry-pick the range onto the branch.
+
 ## Unattended loop
 
 The existing controller runs Claude sessions with `python3 scripts/agent-loop.py run --tool claude ...`; the [runbook](README.md) documents the options, the per-attempt model routing (base model first, higher effort on the retry, the `implementer-hard` role on a stronger model afterwards, a lighter model for docs and tooling tasks), the settings snapshot each session receives, and the pause when a usage limit is reached. Task contracts, evidence, attestations, acceptance and the private accepted branch work exactly as they do for Codex. Every session is a fresh process with the task contract, the previous attempt's reason and a turn cap; the controller runs the gates and a separate read-only verifier and never trusts the implementer's summary. Implementer sessions run with bypass permissions inside the private attempt clone; `--sandbox on` additionally wraps Bash in the Claude Code sandbox, which on Linux needs `bwrap` and `socat` installed (`--sandbox auto`, the default, enables it only when both are present).
