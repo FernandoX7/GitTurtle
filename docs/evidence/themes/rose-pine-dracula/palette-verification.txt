@@ -1,0 +1,39 @@
+file                                         surface        drawn     declared   share result
+rose_pine-history-selected.png               canvas         #191724   #191724    100% ok
+rose_pine-history-selected.png               sidebar panel  #1f1d2e   #1f1d2e    100% ok
+rose_pine-history-selected.png               selected row   #2d2a45   #2d2a45     81% ok
+rose_pine-history-hover.png                  canvas         #191724   #191724    100% ok
+rose_pine-history-hover.png                  selected row   #2d2a45   #2d2a45     81% ok
+rose_pine-history-hover.png                  hovered row    #26233a   #26233a     80% ok
+rose_pine-history-focus.png                  canvas         #191724   #191724    100% ok
+rose_pine-history-focus.png                  sidebar panel  #1f1d2e   #1f1d2e    100% ok
+rose_pine-diff-added-removed.png             removed tile   #351f30   #351f30     64% ok
+rose_pine-diff-added-removed.png             added tile     #1f2e36   #1f2e36     64% ok
+rose_pine-diff-added-removed.png             canvas         #191724   #191724    100% ok
+rose_pine-settings-picker.png                page canvas    #191724   #191724     56% ok
+rose_pine_dawn-history-selected.png          canvas         #faf4ed   #faf4ed    100% ok
+rose_pine_dawn-history-selected.png          sidebar panel  #fffaf3   #fffaf3    100% ok
+rose_pine_dawn-history-selected.png          selected row   #e8dfe2   #e8dfe2     81% ok
+rose_pine_dawn-history-hover.png             canvas         #faf4ed   #faf4ed    100% ok
+rose_pine_dawn-history-hover.png             selected row   #e8dfe2   #e8dfe2     81% ok
+rose_pine_dawn-history-hover.png             hovered row    #f2e9e1   #f2e9e1     80% ok
+rose_pine_dawn-history-focus.png             canvas         #faf4ed   #faf4ed    100% ok
+rose_pine_dawn-history-focus.png             sidebar panel  #fffaf3   #fffaf3    100% ok
+rose_pine_dawn-diff-added-removed.png        removed tile   #f6e3e3   #f6e3e3     64% ok
+rose_pine_dawn-diff-added-removed.png        added tile     #e4ecea   #e4ecea     64% ok
+rose_pine_dawn-diff-added-removed.png        canvas         #faf4ed   #faf4ed    100% ok
+rose_pine_dawn-settings-picker.png           page canvas    #faf4ed   #faf4ed     56% ok
+dracula-history-selected.png                 canvas         #282a36   #282a36    100% ok
+dracula-history-selected.png                 sidebar panel  #2e303e   #2e303e    100% ok
+dracula-history-selected.png                 selected row   #44475a   #44475a     81% ok
+dracula-history-hover.png                    canvas         #282a36   #282a36    100% ok
+dracula-history-hover.png                    selected row   #44475a   #44475a     81% ok
+dracula-history-hover.png                    hovered row    #383a4a   #383a4a     80% ok
+dracula-history-focus.png                    canvas         #282a36   #282a36    100% ok
+dracula-history-focus.png                    sidebar panel  #2e303e   #2e303e    100% ok
+dracula-diff-added-removed.png               removed tile   #472e3a   #472e3a     64% ok
+dracula-diff-added-removed.png               added tile     #2b4136   #2b4136     64% ok
+dracula-diff-added-removed.png               canvas         #282a36   #282a36    100% ok
+dracula-settings-picker.png                  page canvas    #282a36   #282a36     56% ok
+
+0 mismatch(es)
