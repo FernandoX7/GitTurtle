@@ -4,6 +4,41 @@ Use the [current validation guidance](#current-validation-guidance) for the affe
 
 This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native workflow evidence is primarily macOS-specific; the September 14 entries add Pop!_OS startup and clean Ubuntu/virtual-native checks. Platform execution and access limits belong to the applicable dated record and [platform runbook](linux.md); the earlier [environment report](benchmarks/2026-09-09-milestone-environment.md) describes its own session. The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Public binary release prerequisites belong in the [launch checklist](public-launch.md); the Linux runbook includes a local teammate bundle.
 
+## September 18 Solarized and One built-in themes
+
+Native QA for `themes-batch-solarized-one`, which adds the Solarized Dark,
+Solarized Light, One Dark and One Light built-ins. Linux/XWayland (GNOME on
+Wayland, `DISPLAY=:1`, `GPUI_X11_SCALE_FACTOR=1`), window 1000x680, which is the
+app's `window_min_size`. Fixture: `scripts/create-demo-repo.py` at HEAD
+`52f471a1137c617fd8e36db2e6251a18f58c23eb`, plus a disposable copy with one
+renamed, modified and added path for the Compare and Changes captures; nothing
+was committed to either and no network action was taken.
+
+The captures were taken from build `d4ac46bd031d93ab83fa0e549988f1669dc9b4eb`
+(GitTurtle 0.1.0, `source_tree` clean, release, `x86_64-unknown-linux-gnu`,
+rustc 1.98.0 (88d9e12ae 2026-08-18), binary sha256
+`4de9f6fa54463ef58f8dfcbe0b754b050d260b750e8aacc5526a170b414dd332`). Evidence
+committed to a repository can never describe the commit that contains it, so
+that revision is the one under test and this entry names it; the shipped
+palettes are byte-identical to the ones photographed.
+
+Each theme was recorded in the Settings picker with its own card checkmarked, and
+in History with a selected row, a hovered row, a visible accent focus ring, and a
+diff showing added and removed lines. The twenty screenshots are under
+[`docs/evidence/themes/solarized-one/`](evidence/themes/solarized-one/) with the
+per-capture palette check beside them; every sampled surface equals the token the
+build declares, resolved from `crates/app/src/appearance.rs` and
+`crates/app/src/appearance/sources.rs`.
+
+No reading fell below its rule floor. The least headroom is the Solarized Dark
+focus ring at 3.03:1 against the field fill it is painted on, against a 3:1
+minimum. Not covered: `warning` shares `modified`'s value in all four themes and
+no warning or conflict state was reached, so it is unverified as a distinct
+token; `accent_foreground` is confirmed on screen at 2x and passes its declared
+pair at 1x, where a small button label never reaches full glyph coverage; the
+picker's grouping and breakpoints belong to the picker task; Linux/XWayland only,
+with no macOS, packaging or accessibility-label coverage.
+
 ## September 16 project list pane
 
 PR #22 adds an optional project list pane, a saved project library with nested
