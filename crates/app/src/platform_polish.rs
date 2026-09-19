@@ -277,7 +277,11 @@ impl GitTurtle {
             .resolved_theme(cx.window_appearance(), &self.custom_themes)
     }
     pub(super) fn apply_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.effective_theme(cx).apply(Some(window), cx);
+        // An open theme editor shows its draft through the same path.
+        match self.theme_editor.preview() {
+            Some(draft) => draft.apply(draft.is_light(), Some(window), cx),
+            None => self.effective_theme(cx).apply(Some(window), cx),
+        }
         appearance::apply_text_sizes(
             self.settings.interface_text_size,
             self.settings.code_text_size,

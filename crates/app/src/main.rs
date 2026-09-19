@@ -61,6 +61,7 @@ mod split_diff;
 mod tags;
 mod text;
 mod text_review;
+mod theme_editor;
 mod views;
 #[cfg(target_os = "linux")]
 mod window_chrome;
@@ -295,6 +296,7 @@ struct GitTurtle {
     integration_task: Option<Task<()>>,
     profile: Option<gitturtle_core::GitProfile>,
     profiles: profiles::State,
+    theme_editor: theme_editor::State,
     remotes: Vec<gitturtle_core::Remote>,
     working_rows: Vec<workspace::WorkingRow>,
     working_selected: Option<(usize, gitturtle_core::ChangeArea)>,
@@ -516,6 +518,7 @@ impl GitTurtle {
             integration_task: None,
             profile: None,
             profiles: profiles::State::default(),
+            theme_editor: theme_editor::State::default(),
             remotes: Vec::new(),
             working_rows: Vec::new(),
             working_selected: None,

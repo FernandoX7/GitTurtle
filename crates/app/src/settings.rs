@@ -673,7 +673,9 @@ impl GitTurtle {
                                     .rounded(px(10.))
                                     .overflow_hidden()
                                     .child(theme_preview(
-                                        choice,
+                                        choice.palette(),
+                                        choice.label(),
+                                        choice.description(),
                                         selected,
                                         p.accent,
                                         p.accent_foreground,
@@ -684,6 +686,166 @@ impl GitTurtle {
                             }))
                             .children((row.len()..columns).map(|_| div().flex_1().min_w_0()))
                     }))
+            }))
+            .into_any_element()
+    }
+
+    /// Your themes: the saved custom themes with Edit… and Delete…, and New theme….
+    fn render_custom_themes(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx);
+        let pending = self.theme_editor.save_pending();
+        let full = self.custom_themes.len() >= preferences::MAX_CUSTOM_THEMES;
+        let active = (!self.settings.follow_system)
+            .then(|| self.settings.theme.resolve(&self.custom_themes).selection);
+        let warning_counts = self.theme_editor.warning_counts(&self.custom_themes);
+        div()
+            .id("custom-themes-card")
+            // Not a tab stop; lets focus return to New theme… after a delete
+            // removes the focused row (`theme_editor::State::card_focus`).
+            .track_focus(&self.theme_editor.card_focus(cx))
+            .p_4()
+            .rounded(px(10.))
+            .border_1()
+            .border_color(rgb(p.border))
+            .bg(rgb(p.subtle))
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .justify_between()
+                    .gap_3()
+                    .child(setting_description(
+                        "Your themes",
+                        "Start from any built-in theme, adjust its colors with a live preview, and save it under your own name.",
+                        cx,
+                    ))
+                    .child(
+                        button("custom-themes-new", "New theme…", "plus", false)
+                            .debug_selector(|| "custom-themes-new".into())
+                            .disabled(pending || full)
+                            .tooltip(if full {
+                                format!(
+                                    "Up to {} custom themes can be saved",
+                                    preferences::MAX_CUSTOM_THEMES
+                                )
+                            } else {
+                                "Create a theme from a built-in base".into()
+                            })
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_theme_editor(None, window, cx)
+                            })),
+                    ),
+            )
+            .when(self.custom_themes.is_empty(), |card| {
+                card.child(
+                    div()
+                        .text_size(appearance::ui_text(11.))
+                        .text_color(rgb(p.muted))
+                        .child("No custom themes yet."),
+                )
+            })
+            .children(self.custom_themes.iter().zip(warning_counts).map(|(theme, warnings)| {
+                let id = theme.id;
+                let t = theme.palette;
+                let is_active =
+                    active == Some(appearance::custom::ThemeSelection::Custom(id));
+                div()
+                    .id(("custom-theme", id as usize))
+                    .h(appearance::ui_size(30.))
+                    // The hover surface bleeds into the card padding so the
+                    // row content aligns with the card title.
+                    .px(appearance::ui_size(8.))
+                    .mx(appearance::ui_size(-8.))
+                    .rounded(px(6.))
+                    .hover(|row| row.bg(rgb(p.hover)))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_shrink_0()
+                            .rounded(px(3.))
+                            .overflow_hidden()
+                            .border_1()
+                            .border_color(rgb(p.border))
+                            .children(
+                                [t.canvas, t.panel, t.accent, t.added, t.removed].map(|color| {
+                                    div()
+                                        .w(appearance::ui_size(8.))
+                                        .h(appearance::ui_size(16.))
+                                        .bg(rgb(color))
+                                }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(appearance::ui_text(12.))
+                            .text_color(rgb(p.text))
+                            .child(theme.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_size(appearance::ui_text(11.))
+                            .text_color(rgb(p.muted))
+                            .child(theme.base.label()),
+                    )
+                    .when(is_active, |row| {
+                        row.child(icon("check", 12., p.accent))
+                    })
+                    .child(div().flex_1())
+                    .when(warnings > 0, |row| {
+                        let text = format!(
+                            "{warnings} readability warning{}",
+                            if warnings == 1 { "" } else { "s" }
+                        );
+                        row.child(
+                            div()
+                                .id(("custom-theme-warnings", id as usize))
+                                .role(Role::Label)
+                                .aria_label(format!("{}: {text}", theme.name))
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .text_size(appearance::ui_text(11.))
+                                .text_color(rgb(p.muted))
+                                .child(crate::theme_editor::warning_glyph(p))
+                                .child(warnings.to_string()),
+                        )
+                    })
+                    .child(
+                        button(("edit-custom-theme", id as usize), "Edit…", "", false)
+                            .debug_selector(move || format!("edit-custom-theme-{id}"))
+                            .accessibility_label(format!("Edit {} theme", theme.name))
+                            .disabled(pending)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_theme_editor(Some(id), window, cx)
+                            })),
+                    )
+                    .child(
+                        button(("delete-custom-theme", id as usize), "Delete…", "", false)
+                            .debug_selector(move || format!("delete-custom-theme-{id}"))
+                            .accessibility_label(format!("Delete {} theme", theme.name))
+                            .disabled(pending)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.confirm_delete_theme(id, window, cx)
+                            })),
+                    )
+            }))
+            .children(self.theme_editor.error().map(|error| {
+                div()
+                    .id("custom-themes-error")
+                    .role(Role::Label)
+                    .aria_label(error.to_owned())
+                    .text_size(appearance::ui_text(12.))
+                    .text_color(rgb(p.warning))
+                    .child(error.to_owned())
             }))
             .into_any_element()
     }
@@ -731,6 +893,7 @@ impl GitTurtle {
                     ),
             )
             .child(self.render_theme_picker(theme_columns, cx))
+            .child(self.render_custom_themes(cx))
             .child(self.render_text_size_setting(false, cx))
             .child(self.render_text_size_setting(true, cx))
             .child(
@@ -1089,13 +1252,17 @@ impl GitTurtle {
 
 /// A tiny workspace built from native elements stays crisp at any display scale
 /// and previews the same tokens the real controls and diff viewer will use.
-fn theme_preview(
-    choice: ThemeChoice,
+/// The theme editor previews its draft with the same miniature.
+pub(super) fn theme_preview(
+    p: appearance::Palette,
+    label: impl Into<SharedString>,
+    description: impl Into<SharedString>,
     selected: bool,
     active_accent: u32,
     active_foreground: u32,
 ) -> AnyElement {
-    let p = choice.palette();
+    let label = label.into();
+    let description = description.into();
     div()
         .size_full()
         .rounded(px(7.))
@@ -1228,7 +1395,7 @@ fn theme_preview(
                         .text_size(crate::appearance::ui_text(12.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(rgb(p.text))
-                        .child(div().min_w_0().truncate().child(choice.label()))
+                        .child(div().min_w_0().truncate().child(label))
                         .when(selected, |element| {
                             element.child(
                                 div()
@@ -1248,7 +1415,7 @@ fn theme_preview(
                         .font_weight(FontWeight::NORMAL)
                         .text_color(rgb(p.muted))
                         .truncate()
-                        .child(choice.description()),
+                        .child(description),
                 )
                 .child(
                     div().flex().gap(px(4.)).children(

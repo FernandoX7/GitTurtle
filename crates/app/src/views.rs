@@ -1964,6 +1964,7 @@ impl Render for GitTurtle {
                 }));
         }
         self.update_modal_focus(window, cx);
+        self.return_focus_after_delete(window, cx);
         let colors = palette(cx);
         let menu_state = (self.repository.is_some(), self.operation_busy.is_some());
         if self.menu_state != Some(menu_state) {
