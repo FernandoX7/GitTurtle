@@ -76,11 +76,11 @@ Return's rewrite shows the full value, all read with no Home press. An invalid
 value shows a 14 px rounded square on the removed fill with a contrasting × in
 the row's warning slot in both bases at both sizes, replacing the readability
 glyph while the value is invalid and staying after blur; a valid value removes
-it and restores the readability glyph. The 37 screenshots are under
+it and restores the readability glyph. The 39 screenshots are under
 [`docs/evidence/themes/editor/`](evidence/themes/editor/) with
 `flow-verification.txt`, which gives the key sequence and 221 checks, all
 passing. A second run of the same binary passed the same 221 checks and
-reproduced 133 of 134 frames pixel for pixel, including all 37 committed here;
+reproduced 133 of 134 frames pixel for pixel, including all 39 committed here;
 the one bundle-only frame that differs (the Settings picker after the delete
 at 1440x900) does so in one anti-aliased glyph-edge pixel by one level of one
 channel.

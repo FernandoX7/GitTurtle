@@ -362,7 +362,7 @@ pointer: wheel +1 at (60, 400): step Settings down to the base's picker card
     frame: caret [208, 133, 210, 147] (visible phase kept)
     PASS  reopen: dialog shows the saved palette: dialog bg (26, 16, 48) == (26, 16, 48)
     PASS  D2: the typed Canvas row's ink (05, after blur) is pixel-identical to the same value reopened from the store: 0 px differ inside the Canvas hex field between 05 and 10, bbox None; store value #1a1030
-[B] dark-1000x680-11-edit-return-commits.png
+[C] dark-1000x680-11-edit-return-commits.png
     shows: Return rewrote 301018 as #301018; dialog open, preview shown; no Home pressed
     keys since previous capture: Tab x2  # Name -> Base -> Canvas hex | Control+a  # select all | type '#301018'  # reference: the canonical text typed directly, caret at the end | Control+a  # select all | type '301018'  # uppercase, no # | Return  # Return in the hex field
     frame: caret [740, 194, 742, 208] (visible phase kept)
@@ -476,7 +476,7 @@ pointer: wheel +1 at (100, 500): step Settings down to the base's picker card
     frame: caret [248, 155, 250, 169] (visible phase kept)
     PASS  reopen: dialog shows the saved palette: dialog bg (26, 16, 48) == (26, 16, 48)
     PASS  D2: the typed Canvas row's ink (05, after blur) is pixel-identical to the same value reopened from the store: 0 px differ inside the Canvas hex field between 05 and 10, bbox None; store value #1a1030
-[B] dark-1440x900-11-edit-return-commits.png
+[C] dark-1440x900-11-edit-return-commits.png
     shows: Return rewrote 301018 as #301018; dialog open, preview shown; no Home pressed
     keys since previous capture: Tab x2  # Name -> Base -> Canvas hex | Control+a  # select all | type '#301018'  # reference: the canonical text typed directly, caret at the end | Control+a  # select all | type '301018'  # uppercase, no # | Return  # Return in the hex field
     frame: caret [824, 216, 826, 230] (visible phase kept)
@@ -843,7 +843,7 @@ Reproducibility
 ---------------
 A second full run of the same binary in recheck mode (2026-09-19T14:56:39-0500 .. 2026-09-19T15:12:23-0500, run-recheck/ in the bundle)
 gave 221 PASS / 0 FAIL again with fix 3 at 12 of 12 deletes, D1 18 of 18, D2 21 of 21, D3 12 of 12.
-tools/compare.py: committed set 37/37 pixel-identical; full set 133/134 (runs/compare-*.txt): the one pair
+tools/compare.py: committed set 39/39 pixel-identical; full set 133/134 (runs/compare-*.txt): the one pair
 that differs is dark-1440x900-17-base-selected.png (bundle only, the Settings picker after the delete),
 a single pixel at (1156, 544) on a text glyph edge reading (71, 79, 92) in the evidence run and (71, 78, 92)
 in the recheck, a one-level change in one channel of one anti-aliased pixel; the same class of difference
