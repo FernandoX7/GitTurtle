@@ -19,7 +19,7 @@ GitTurtle's development guidance is tool-neutral: `AGENTS.md` and the crate guid
 
 ## Working interactively
 
-Start Claude Code at the repository root so `CLAUDE.md` and the shared settings load. The session model comes from your own settings, not from the project; if your default is Fable, start implementation sessions with `claude --model opus` and keep Fable for planning, because delegated subagents inherit the session model unless their agent file pins one. A background subagent's report reaches the caller only at the next turn boundary, so a planning turn that depends on Explore's answer must wait for that report before writing rather than proceeding in parallel.
+Start Claude Code at the repository root so `CLAUDE.md` and the shared settings load. The session model comes from your own settings, not from the project; if your default is Fable, start implementation sessions with `claude --model opus` and keep Fable for planning, because delegated subagents inherit the session model unless their agent file pins one. A background subagent's report reaches the caller only at the next turn boundary, so a planning turn that depends on Explore's answer must wait for that report before writing rather than proceeding in parallel. The same holds the other way round: a delegated agent that starts a build, a gate or a capture driver waits for it in the foreground — `until [ -f /absolute/path/done.marker ]; do sleep 10; done` — and keeps polling until it holds the result. Going idle with the job still running reports on nothing, and that report is what the coordinator attests.
 
 - Plan or scope with the strongest model: `claude --model fable --agent planner`. The planner writes only specifications, dated research notes, notices and the task queue; it uses the `research` skill for facts that depend on current versions, and queues work through the `queue-intake` skill — a separate queue file goes to the controller with `--tasks <path>`.
 - Implement with `claude` (or `claude --agent implementer` to preload the feature-work and gate skills). The implementer runs the fast gate before finishing; the Stop hook runs it again when Rust files changed and blocks at most twice per session.
@@ -32,6 +32,23 @@ Start Claude Code at the repository root so `CLAUDE.md` and the shared settings 
 `python3 scripts/gate.py fast` covers the crates that changed and is meant to finish in under three minutes on a warm target directory; `python3 scripts/gate.py full` covers the workspace and is what the controller and verifier run. A red run writes `.local/gate/report.md` with the failing stage, the first error as `file:line:col` and the narrowest reproducing command. Host-specific known failures go in `.local/gate/known-failures.txt`, one test name per line. The `gitturtle-gates` skill documents exit codes and strict mode.
 
 Hooks live in `.claude/settings.json` so they also fire in headless sessions. The Stop hook only builds when the Cargo target directory is already warm and gives up after two attempts in a session, so it never turns a turn end into a cold build. `stop_gate.py` can be skipped for a session with `GITTURTLE_SKIP_STOP_GATE=1`; `protect_paths.py` only blocks when the controller sets `GITTURTLE_LOOP=1`, and in that mode it also protects the run's active task queue named by `GITTURTLE_TASKS_PATH` (set by the controller for implementer sessions), whichever file the run uses. The deny list blocks force pushes, hook bypasses and blind snapshot acceptance; everything else follows your permission mode.
+
+## Driving the app for evidence
+
+`native-qa`, `performance-reviewer` and `design-reviewer` each need the running app, and on a single-seat
+Linux host they share one X display. Exactly one of them owns `DISPLAY=:1` at a time. Say in writing when
+the display becomes theirs, and only after the previous owner has confirmed that it stopped launching: on
+2026-09-19 two concurrent launches of the same build cost a discarded QA launch and a discarded performance
+warm-up, and the QA owner could only report the collision after the fact. Serializing the lenses costs
+minutes; repeating a capture set costs an hour.
+
+Every launch gets its own seeded preference store addressed by an **absolute** `XDG_CONFIG_HOME`, written
+before that launch rather than once per session. GitTurtle ignores a relative value
+(`absolute_environment_path` in `crates/app/src/preferences.rs`) and falls back to `~/.config/gitturtle`,
+which is the operator's real store; the themes run's capture helper therefore refuses a launch whose seeded
+store is not where the app will look. Record the executable identity, display, scale factor, window size and
+fixture with the captures, and register evidence in the order the runbook fixes for
+[evidence gated by its own commit](README.md#evidence-gated-by-its-own-commit).
 
 ## Models and budget
 
@@ -61,11 +78,14 @@ shas that exist nowhere else. Two habits make stopping cheap:
   in the run's `accepted` checkout, not your worktree, and a saved run pins its
   controller by digest — once a harness fix lands, that run refuses to resume and
   anything left only inside it is stranded. `git fetch <run>/accepted HEAD` then
-  cherry-pick the range onto the branch.
+  `git cherry-pick -x FETCH_HEAD`, once per accepted commit as it lands rather than
+  as one batch at the end.
 
 ## Unattended loop
 
 The existing controller runs Claude sessions with `python3 scripts/agent-loop.py run --tool claude ...`; the [runbook](README.md) documents the options, the per-attempt model routing (base model first, higher effort on the retry, the `implementer-hard` role on a stronger model afterwards, a lighter model for docs and tooling tasks), the settings snapshot each session receives, and the pause when a usage limit is reached. Task contracts, evidence, attestations, acceptance and the private accepted branch work exactly as they do for Codex. Every session is a fresh process with the task contract, the previous attempt's reason and a turn cap; the controller runs the gates and a separate read-only verifier and never trusts the implementer's summary. Implementer sessions run with bypass permissions inside the private attempt clone; `--sandbox on` additionally wraps Bash in the Claude Code sandbox, which on Linux needs `bwrap` and `socat` installed (`--sandbox auto`, the default, enables it only when both are present).
+
+Watch the host for anything that writes into a checkout behind the run: an editor or another agent tool that mirrors Claude's configuration files rejects a candidate that has already passed its gates, because the controller counts untracked files in the attempt clone. The [decision record](2026-09-17-claude-code-support.md#an-untracked-mirror-stops-a-run-from-accepting-anything) records how that is recognized and worked around while a run is pinned to its controller digest.
 
 ## Definition of done
 

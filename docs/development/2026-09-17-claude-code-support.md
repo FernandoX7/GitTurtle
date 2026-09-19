@@ -77,9 +77,75 @@ untracked entries: `implementer.toml`, `librarian.toml`, `security-reviewer.toml
 and `verifier.toml` are in the repository, so clearing the directory wholesale
 deletes tracked policy files and `git checkout -- .codex` is needed afterwards.
 
-Until whatever writes it is identified, a run that stops accepting for no visible
-reason is worth checking with `git status --porcelain --untracked-files=all` in
-the attempt checkout before looking anywhere else.
+A run that stops accepting for no visible reason is still worth checking with
+`git status --porcelain --untracked-files=all` in the attempt checkout before
+looking anywhere else.
+
+Identified on 2026-09-19: the writer is an IDE-level sweep, not a Codex session.
+The Orca IDE is running, the user-level Claude Stop hook reports every session
+directory to it, and the sweep byte-copies `.claude/skills/*` into
+`.agents/skills/*` and `.claude/agents/*.md` into `.codex/agents/*.toml` in every
+directory a Claude session has run in, at IDE start and every 12 h (observed
+2026-09-18 22:12:54 and 2026-09-19 10:12:54 local). That is why it appears in all
+attempt checkouts at the same instant, including one nothing had touched since it
+was cloned; it rejected the themes editor's second attempt again on 2026-09-19 at
+15:13Z.
+
+While a run is in flight the mitigation has to live outside the repository,
+because a controller fix changes the digest that run resumes against:
+`.local/themes-evidence/tooling/mirror_janitor.py <absolute run directory> 5`
+polls every attempt checkout (`attempts/*/*/repo`) every five seconds and runs
+`git clean -fd` with `.codex` and `.agents/skills` pathspecs, so it removes
+untracked files only. It is a loop in an ignored directory rather than a service,
+so restart it after a reboot and check it with an anchored
+`pgrep -f '^python3 .*mirror_janitor.py'`. The controller-side fix is queued as
+#23 below.
+
+## Evidence gated by its own commit — September 19, 2026
+
+The themes queue's editor task (`themes-editor`, run `20260919T143547Z-8e458d6a`) made the ordering cost
+concrete. Its `native-evidence` criterion requires the captures under `docs/evidence/themes/` and a dated
+`docs/validation.md` entry, and `no-reprepare-budget` a release record under `docs/benchmarks/` — that is,
+inside the commit they validate. So the captures and the measurement were taken on candidate `3927b57`,
+committed onto the run's accepted base, and the candidate the controller then rebuilt on that base,
+`b4dd250`, was the one attested — after a pixel re-check against the committed set and a re-run of the
+measurement established that its Rust was byte-identical to its predecessor. Five attempts went into the task: the mirror
+sweep above rejected the second, the evidence and benchmark commits (`5d0d4b5`, `33e3e63`, `6096b86` in the
+run's `accepted` checkout) forced the fifth, and the security-review coverage fault below ended the run
+during that fifth attempt's review, after the review itself had passed.
+
+What generalizes is written once, as the runbook's
+[evidence gated by its own commit](README.md#evidence-gated-by-its-own-commit). The findings behind it:
+
+- Every acceptance restales every other pending candidate and costs it an implementer attempt, so a queue of
+  evidence-bound tasks needs `--max-attempts` headroom for rebuilds that contain no new work, and the tasks
+  have to be gated one at a time.
+- `attest` refuses an evidence file larger than 32 MiB and a candidate whose base is no longer `accepted_head`
+  (`scripts/agent_loop/runner.py`), so the registered artifact is a short text or JSON summary naming the
+  retained bundle under an ignored directory, never the bundle.
+- Three lenses — native QA, performance and design — need the same executable on the same display. The QA and
+  performance launches for `b4dd250` overlapped once and cost a capture launch and a warm-up; the attestation
+  summary records the collision. Display ownership and the absolute, per-launch `XDG_CONFIG_HOME` are in the
+  [usage guide](claude-code.md#driving-the-app-for-evidence) until the two role files can be edited.
+- A delegated agent that starts a build, a gate or a capture driver and returns before it finishes reports on
+  nothing the coordinator can attest, so waiting on a completion marker in the foreground is part of the
+  delegation contract rather than the agent's own housekeeping.
+- Accepted work and its evidence live in the run's `accepted` checkout. Cherry-pick each accepted commit onto
+  the contribution branch as it lands (`git fetch <run>/accepted HEAD` then `git cherry-pick -x FETCH_HEAD`);
+  a saved run pins its controller by digest, so a batch left for the end is stranded by the first harness fix.
+
+## Queued edits — after the run ends
+
+A saved run pins `.claude/**` and `scripts/**` by digest and refuses to resume once one of those files
+changes, so these four wait for the run to finish and then land in their own commits, with tests where the
+change is in the harness.
+
+| Edit | Exact change |
+| --- | --- |
+| `.claude/agents/native-qa.md` and the shared [native-QA skill](../../.agents/skills/gitturtle-native-qa/SKILL.md) | State that `XDG_CONFIG_HOME` must be absolute and seeded before **every** launch, not once per session: the app ignores a relative value and falls back to the operator's real `~/.config/gitturtle`, which is how the 2026-09-18 incident wrote it |
+| `.claude/agents/native-qa.md` and `.claude/agents/performance-reviewer.md` | State that exactly one agent owns the display at a time, that ownership is handed over in writing, and that the previous owner stops launching first |
+| Harness #23, mirror exclusion, in `scripts/agent_loop/runner.py` | Exclude untracked files under the protected roots (`.codex/`, `.agents/skills/`) from a candidate and record them instead of failing `validate_patch`; nothing a candidate may legitimately add lives there. Retires the janitor above |
+| Harness #24, security coverage paths, in `scripts/agent_loop/security_review.py` | The schema says each changed path appears "each once", but line 144 requires a nonempty `paths` per coverage entry and raises a fatal `LoopError`. Either state `minItems` in the schema the session receives or accept an empty list, and make the mismatch a structural retry rather than fatal |
 
 ## Outcome
 

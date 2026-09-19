@@ -100,6 +100,8 @@ Before expensive external checks, inspect `status`: the candidate's `base` must 
 
 The assigned owner exercises the exact candidate with the relevant existing skill or contract, preserving genuine app state and using disposable repositories for mutations. Record the build/executable identity, platform and desktop/session, fixture, steps, results and limitations. For measurements, retain raw samples and boundaries. Historical evidence for different code does not satisfy the new candidate.
 
+Exactly one owner operates the app at a time, and ownership changes hands explicitly: the next owner starts only after the previous one has confirmed it stopped launching, because two concurrent launches of the same build in one desktop session invalidate each other's observations and waste the run's remaining budget. Give every launch its own seeded preference store addressed by an absolute path, written before that launch; a relative path is ignored and reaches the operator's real preferences.
+
 After real evidence exists, register it with the exact task and candidate SHA:
 
 ```sh
@@ -110,9 +112,23 @@ python3 scripts/agent-loop.py attest \
 python3 scripts/agent-loop.py resume --run /absolute/path/to/run
 ```
 
-Use a supported evidence kind from `attest --help`. This records a responsible owner's assertion and evidence; it cannot prove the truth of an arbitrary file. The controller still requires the task's remaining checks and independent verdict. If the candidate changes, repeat the affected checks and attach evidence to the new identity.
+Use a supported evidence kind from `attest --help`. `attest` refuses a candidate whose base is no longer `accepted_head`, a symlinked evidence path and a file larger than 32 MiB, so register a short text or JSON summary that names the retained bundle and keep captures, raw samples and logs in the run directory or an ignored evidence directory. This records a responsible owner's assertion and evidence; it cannot prove the truth of an arbitrary file. The controller still requires the task's remaining checks and independent verdict. If the candidate changes, repeat the affected checks and attach evidence to the new identity.
 
 Live account/network operations, installation over a user's app, publication and releases need their specifically authorized context. Removing the clone's remote does not make arbitrary commands harmless or grant permission to contact other systems. The runner is development tooling, not a security boundary against arbitrary same-user code execution.
+
+### Evidence gated by its own commit
+
+A criterion can require the captures or the measurement record to be part of the commit they validate. That is reachable in only one order, because the evidence has to exist on the base the candidate is rebuilt onto:
+
+1. Let the controller gate the candidate and park it `awaiting_evidence`. Do not collect evidence for a candidate that has not passed its gates.
+2. Clone that attempt's checkout (`attempts/<task>/<attempt>/repo` inside the run) into an ignored working directory named after the candidate, build it in release with an absolute `CARGO_TARGET_DIR` shared by every candidate, and copy the executable to a name carrying the candidate SHA. The shared target directory keeps each rebuild incremental; the renamed executable keeps every observation tied to one identity.
+3. Exercise that exact executable for each required lens — the affected native workflow, the measurement, and the visual review when the criterion is visual — at the window size and density the criterion names.
+4. Commit the captures, any benchmark record and a dated [validation](../validation.md) entry on the run's `accepted` checkout, not in your contribution branch: those commits have to be the rebuilt candidate's ancestors.
+5. Advance `accepted_head` to that commit and `resume`. The pending candidate is now stale, so the controller rebuilds it on the base that carries its evidence, which spends one implementer attempt on a rebuild that contains no new work.
+6. Attest the rebuilt candidate only after re-checking it against the committed captures and re-running the measurement on its executable. The evidence has to describe the build being attested, not its predecessor.
+7. Bring each accepted commit onto the contribution branch as it lands, with `git fetch /absolute/path/to/run/accepted HEAD` followed by `git cherry-pick -x FETCH_HEAD`. Work that exists only inside a run directory is lost as soon as a harness change makes that run unresumable.
+
+Advancing `accepted_head` restales every other pending candidate and costs each one an attempt, so gate and accept evidence-gated tasks strictly one at a time, budget `--max-attempts` for the forced rebuilds, and order the queue so the fewest candidates are waiting when a head advances.
 
 ## Evidence, interruption and continuation
 
