@@ -4,6 +4,90 @@ Use the [current validation guidance](#current-validation-guidance) for the affe
 
 This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native workflow evidence is primarily macOS-specific; the September 14 entries add Pop!_OS startup and clean Ubuntu/virtual-native checks. Platform execution and access limits belong to the applicable dated record and [platform runbook](linux.md); the earlier [environment report](benchmarks/2026-09-09-milestone-environment.md) describes its own session. The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Public binary release prerequisites belong in the [launch checklist](public-launch.md); the Linux runbook includes a local teammate bundle.
 
+## September 19 Theme export and import
+
+Native QA for `themes-import-export`, which adds **Export…** to each custom
+theme row and **Import…** to the Settings › Your themes card, writing and
+reading a `gitturtle-theme` JSON document through the platform's own save and
+open dialogs. Linux/XWayland (GNOME 46.0 on Wayland, `DISPLAY=:1`,
+`WAYLAND_DISPLAY` unset, `GPUI_X11_SCALE_FACTOR` 1), windows 1000x680, the app's
+`window_min_size`, and 1440x900, with an absolute throwaway `XDG_CONFIG_HOME`
+per launch seeded as a version-6 store. Fixture: `scripts/create-demo-repo.py`
+at HEAD `52f471a1137c617fd8e36db2e6251a18f58c23eb`, unmodified and clean
+afterwards; no network action was taken, and the only files written outside the
+throwaway stores were the theme documents the test chose itself.
+
+The captures were taken from build `301d82af8d1cd06fa8a1d7ded1892e89ffd1a4e0`
+(GitTurtle 0.1.0, `source_tree` clean, release, `x86_64-unknown-linux-gnu`,
+rustc 1.98.0 (88d9e12ae 2026-08-18), binary sha256
+`84d80a41545fe6e40318cb5cedb773f187eaa28c60756523ff4e2d858f39acd2`). As with the
+editor entry above, evidence committed to a repository cannot describe the commit
+that contains it, so this entry names the revision under test; the build that
+ships export and import reuses these captures only when it renders them
+identically, which the evidence driver re-checks pixel for pixel. Two captures,
+`transfer-1000x680-07-exported.png` and `transfer-1440x900-07-exported.png`,
+quote the absolute path they wrote, so that re-check has to pass the same output
+directories it used here.
+
+Five launches, 52 checks passed and none failed. Export, an Escape-cancelled
+export, a delete, an import of that document, two name collisions, an
+Escape-cancelled import, nine refusals and the unknown-base notice were each
+exercised at 1000x680 and the central ones again at 1440x900. Verified from the
+preference store's own bytes rather than from the screen: the exported document
+is 690 bytes, sha256
+`c4c8271ed6eca156074fea6eb8b65f7b22ef6a078b247a3b6e4fe0fbd32b9ad8`, carrying
+exactly the keys `format`, `version`, `name`, `base`, `tokens` and exactly the 21
+snake_case token names in spec order, byte-identical from both window sizes and
+equal to the stored theme; every refusal and every cancelled dialog left the
+store byte-identical; the selection stayed `"midnight"` through all imports, with
+the page colour unchanged, which is what "added, not applied" means; the
+collisions saved `Harbor Dusk (imported)` then `Harbor Dusk (imported) (2)`; and
+a document naming a base this build does not know was stored against the
+`daylight` fallback with the notice the spec requires. Latency was dominated by
+the portal, not the app: 1.25 s from the keystroke to a visible save dialog,
+0.599 s from accepting it to the written-path report, and 1.228–1.244 s from
+accepting the open dialog to the message across ten imports and refusals,
+including a 70 KiB file refused on size.
+
+**On the dialogs themselves this record is deliberately not a screenshot.**
+`prompt_for_new_path` and `prompt_for_paths` reach a real
+`xdg-desktop-portal-gnome` dialog here, which is a Wayland window of the
+compositor: `org.gnome.Shell.Screenshot.ScreenshotArea` and
+`Introspect.GetWindows` both refuse, and XTest cannot drive it. The dialogs are
+therefore recorded as D-Bus transcripts and AT-SPI reads — `SaveFile` with
+`current_name` `harbor-dusk.gitturtle-theme.json`, `OpenFile` with
+`directory false`, `multiple false` and the app's own `Import theme` accept
+label, `Response(0, uris)` on acceptance and `Response(2)` on Escape — which
+establishes the spec's properties on the wire rather than by reading a picture,
+and leaves the dialog's *appearance* unrecorded. That appearance belongs to the
+portal backend rather than to GitTurtle. The app's own surfaces, where the
+messages live, are captured normally. Because the portal works on this host, the
+spec's guidance branch was exercised separately on a private session bus with no
+FileChooser service, where both actions reported the picker guidance and changed
+nothing.
+
+Two limits of this record, and two defects found on the revision under test.
+GPUI does not register with AT-SPI on this desktop, so the accessible names of
+the new controls rest on the `#[gpui::test]` assertions rather than on anything
+observed; and on Linux the portal navigates into a folder instead of returning
+it, so the folder refusal cannot be reached. The defects: nothing bounds the
+document text interpolated into the card's message, so a document that is valid
+except for a ~64 KiB unknown `base` imports successfully and leaves about 64,700
+characters in the notice until the next card action — the app stays responsive
+(first repaint 0.582–0.600 s, 0.12–0.13 s of CPU, one Tab repainting in
+0.030–0.065 s) but the card's lower border and the settings below it are pushed
+off screen, the page growing from 30 wheel steps to 145; and the row's
+**Export…** tooltip never appears, at either window size and after 5.2 s, while
+the header's **Import…** tooltip appears in the same launch. Both are required to
+be fixed in the revision that ships, together with two `docs/user-guide.md`
+inaccuracies found here — the suggested file name is a slug of the theme name
+rather than the name itself, and the promised folder refusal cannot occur on
+Linux. None of those fixes changes a resting frame, which is why these captures
+can still describe the shipping build; the pixel re-check against this set is
+what establishes that, and it is a precondition of the attestation. The
+measurements behind the defects are retained outside the repository with the rest
+of the bundle.
+
 ## September 19 Custom theme editor
 
 Native QA for `themes-editor`, which adds Settings › Your themes (New theme…,

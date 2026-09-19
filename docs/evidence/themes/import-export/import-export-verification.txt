@@ -1,0 +1,81 @@
+Theme export and import — native verification (Linux/XWayland, 2026-09-19)
+
+Build under test: gitturtle-301d82a, GitTurtle 0.1.0, release, x86_64-unknown-linux-gnu,
+rustc 1.98.0 (88d9e12ae 2026-08-18), source_revision 301d82af8d1cd06fa8a1d7ded1892e89ffd1a4e0,
+source_tree clean, sha256 84d80a41545fe6e40318cb5cedb773f187eaa28c60756523ff4e2d858f39acd2.
+Fixture repository: theme-fixture at 52f471a1137c617fd8e36db2e6251a18f58c23eb, clean before and
+after every launch. Command per launch: `gitturtle-301d82a <fixture>` with DISPLAY=:1,
+WAYLAND_DISPLAY unset, GPUI_X11_SCALE_FACTOR=1, an absolute XDG_CONFIG_HOME created and seeded
+for that launch alone, HOME redirected into the run directory (so the save dialog's start folder
+and every written document stay there), and no network. Windows 1000x680 (the minimum) and
+1440x900. The app is driven from the keyboard; the pointer only wheels the Settings page to the
+Your themes card and, in the 32-theme capture, rests on a disabled button.
+
+The file dialogs are not the app's own: on this desktop (GNOME 46, mutter, Xwayland :1)
+prompt_for_new_path and prompt_for_paths reach a real xdg-desktop-portal-gnome dialog, which is a
+Wayland client of the compositor. python-xlib cannot see or photograph it and XTest input never
+arrives there; the dialogs are therefore recorded through AT-SPI and the portal's D-Bus traffic,
+and driven with compositor input. There is no capture of a dialog in this set — the app's own
+window is what these PNGs show.
+
+Captures (1000x680 unless the name says otherwise):
+
+transfer-1000x680-06-app-while-save-dialog.png  Save File dialog open: New theme…, Import…,
+    Edit…, Export… and Delete… are all disabled and the focus ring stays on Export….
+transfer-1000x680-07-exported.png  Accepting the dialog's suggested name wrote the document and
+    the card reports it: Exported “Harbor Dusk” to <path>/harbor-dusk.gitturtle-theme.json.
+transfer-1000x680-08-export-cancelled.png  Escape in the save dialog: the card is back to its
+    no-message height (105 px), nothing was written, the store is unchanged.
+transfer-1000x680-11-deleted.png  The theme deleted; the window returned to Midnight.
+transfer-1000x680-13-imported.png  The exported document imported: the row is highlighted on the
+    selected surface, the checkmark is not on it (added, not applied), notice Imported “Harbor Dusk”.
+transfer-1000x680-14-collision.png  The same document imported again: Imported “Harbor Dusk
+    (imported)”. A theme named “Harbor Dusk” already exists, so the imported one was renamed.
+transfer-1000x680-15-import-cancelled.png  Escape in the open dialog: no message, no change.
+transfer-1000x680-16-refuse-notjson.png  This file is not a GitTurtle theme: expected ident at
+    line 1 column 2.
+transfer-1000x680-17-refuse-badformat.png  This file is not a GitTurtle theme: “format” must be
+    “gitturtle-theme”.
+transfer-1000x680-18-refuse-version2.png  This theme was exported by a newer GitTurtle (format
+    version 2). Update GitTurtle to import it.
+transfer-1000x680-19-refuse-missingtoken.png  The theme file is missing the token “hunk”.
+transfer-1000x680-20-refuse-unknownkey.png  The theme file has an unknown key “author”.
+transfer-1000x680-21-refuse-nonhex.png  The token “canvas” must be a #rrggbb color, not
+    "rebeccapurple".
+transfer-1000x680-22-refuse-oversize.png  This theme file is larger than 64 KiB, the most
+    GitTurtle imports.
+transfer-1000x680-23-refuse-symlink.png  A theme file must be a regular file; this one is a
+    symbolic link.
+transfer-1000x680-24-refuse-folder-not-selectable.png  A folder cannot be handed to the app at
+    all: the portal's files-only dialog navigates into it, so the card is unchanged.
+transfer-1000x680-25-unknown-base.png  Imported “Aurora Light”. The base theme “aurora-9” is not
+    available in this version of GitTurtle; Braden is used as the base. The row shows the
+    readability warning count of that palette (52), which is advisory for custom themes.
+transfer-1440x900-07-exported.png, -13-imported.png, -21-refuse-nonhex.png, -25-unknown-base.png
+    The same four states in the wider window; the written path wraps inside the card.
+noportal-1000x680-01-export-guidance.png, -03-import-guidance.png  With a private session bus
+    that has no FileChooser portal: Could not choose where to save / Could not choose a file:
+    Portal request failed: … followed by Check that xdg-desktop-portal and a FileChooser backend
+    are running in your desktop session. Neither suggests passing a repository path, which only
+    the folder picker does.
+collision2-1000x680-02-collision-2.png  With “Harbor Dusk” and “Harbor Dusk (imported)” already
+    saved, a third import of the same document becomes “Harbor Dusk (imported) (2)”.
+bound-1000x680-00-bound-card.png  With 32 saved themes, New theme… and Import… are drawn
+    disabled while each row keeps Edit…, Export… and Delete….
+transfer-1000x680-exported-document.json  The 690-byte document the export wrote, byte for byte:
+    format, version, name, base and the 21 snake_case tokens in specification order, pretty
+    printed with a final newline. sha256
+    c4c8271ed6eca156074fea6eb8b65f7b22ef6a078b247a3b6e4fe0fbd32b9ad8; the 1440x900 run wrote the
+    same bytes.
+
+Every capture here uses short strings, so none of them depends on how a long document string is
+rendered: the unknown key is "author", the bad colour "rebeccapurple", the unknown base
+"aurora-9", the missing token "hunk", and the over-64-KiB document is refused on size before it is
+parsed, so its capture shows only the constant sentence. The two export captures quote the
+absolute path the app wrote, so reproducing them needs the same run directory.
+
+Checks: 52 PASS, 0 FAIL, 2 NOTE across five launches (transfer 23 at each size, the 32-theme card
+3, the portal-failure pair 2, the second collision suffix 1). Both NOTEs are the folder case above. The full bundle, with
+the driver, the AT-SPI dialog trees, the portal D-Bus transcripts, the preference stores read
+from disk at every step and the per-step flow logs, is
+.local/themes-evidence/evidence-import-export-301d82a/.

@@ -1,0 +1,52 @@
+transfer-1000x680-06-app-while-save-dialog.png  ed5090ce897139c4292833970a0c3de8ae9c783998cd8bb72133520c0aff2a2e  run-1000x680/captures/06-app-while-save-dialog.png
+    the app while the native Save File dialog is up: every Your themes action is disabled and the focus ring stays on Export…
+transfer-1000x680-07-exported.png  3cbaa0fbffaddff5018c21a79ac65b35ae175f8598ce9f9f712f557d46d3e216  run-1000x680/captures/07-exported.png
+    the inline report of the written path after accepting the suggested file name
+transfer-1000x680-08-export-cancelled.png  e28c7e695c4bbdc719fe6af9f536ef473d19a6469f15844bfcbdb447a70a4d3c  run-1000x680/captures/08-export-cancelled.png
+    Escape in the save dialog: no message, nothing written
+transfer-1000x680-11-deleted.png  5688a6200401cd20b56dd61037f24eac1f13251d81b19509819a3f65269e0324  run-1000x680/captures/11-deleted.png
+    the theme deleted, the base palette applied
+transfer-1000x680-13-imported.png  0dc75da22c6e5289be357970a179f922555ca2e5618bbe30d8d5b5a22f0f08ef  run-1000x680/captures/13-imported.png
+    the exported document imported: added and highlighted, not applied (no checkmark)
+transfer-1000x680-14-collision.png  66b99aa3b75a6b47acb47ac07b6308c71e5a3b34d9ccd38443c747dd54729866  run-1000x680/captures/14-collision.png
+    importing the same document again: “Harbor Dusk (imported)”
+transfer-1000x680-15-import-cancelled.png  8c6ddc4214fd1436ceff1f0d3fa1fd44188703f2582537315ea128fb54fcb0fa  run-1000x680/captures/15-import-cancelled.png
+    Escape in the open dialog: no message, no change
+transfer-1000x680-16-refuse-notjson.png  8f85c272b4befad16f5e6496a132fd4a674215edfc32d5bc5ea7f07e9e059c45  run-1000x680/captures/16-refuse-notjson.png
+    refused: bytes that are not JSON
+transfer-1000x680-17-refuse-badformat.png  7c57e8c1c8e36abcd85a75fb876d7dadf807ceea02e03f6fce5b64e666eb6ff9  run-1000x680/captures/17-refuse-badformat.png
+    refused: a wrong “format”
+transfer-1000x680-18-refuse-version2.png  36b3c67828a524161ae7ce1c333860bfdb5cb9f3d38d782048afd6ceefac2502  run-1000x680/captures/18-refuse-version2.png
+    refused: format version 2
+transfer-1000x680-19-refuse-missingtoken.png  ab9941b19afbc546bedcbd832ef5d0b59bec84119fbc18b24606161bdf82ca4b  run-1000x680/captures/19-refuse-missingtoken.png
+    refused: a missing token
+transfer-1000x680-20-refuse-unknownkey.png  19bd0a7670cc880c3ed15a188809f3387df72e2e8b2a25d21459f0ad46cd3ab3  run-1000x680/captures/20-refuse-unknownkey.png
+    refused: an unknown top-level key
+transfer-1000x680-21-refuse-nonhex.png  10cd790c42724bc63e9d592156d4013b7ea6fbd6d66e37bd7dd4f2b399663fb9  run-1000x680/captures/21-refuse-nonhex.png
+    refused: a token that is not #rrggbb
+transfer-1000x680-22-refuse-oversize.png  322ea8cab63d6dff7a7ca3ea7555ab5ced75e9992002ede93d700aba3468e832  run-1000x680/captures/22-refuse-oversize.png
+    refused: a document over 64 KiB
+transfer-1000x680-23-refuse-symlink.png  45bbd38e0885552001b65d979f3042a708661e830498524c5b7016c8a79bbff7  run-1000x680/captures/23-refuse-symlink.png
+    refused: a symbolic link
+transfer-1000x680-24-refuse-folder-not-selectable.png  8c6ddc4214fd1436ceff1f0d3fa1fd44188703f2582537315ea128fb54fcb0fa  run-1000x680/captures/24-refuse-folder-not-selectable.png
+    a folder: the portal's files-only dialog navigates into it instead of returning it, so nothing reaches the app
+transfer-1000x680-25-unknown-base.png  206dc16e4e744cb21e19017b976745b9317828266473b2e29995693282ecea3f  run-1000x680/captures/25-unknown-base.png
+    an unknown base is replaced by Braden with a notice
+transfer-1440x900-07-exported.png  27b552bd35dfa20483ce83acbb5435725158845042864bbceb0097b5f0a06bda  run-1440x900/captures/07-exported.png
+    the same export at 1440x900: the written path wraps inside the card
+transfer-1440x900-13-imported.png  f9e18e9b4a784a609fee96459f9d9ae7e51807bcc5a1ddf5aa85e4b57fbfccb2  run-1440x900/captures/13-imported.png
+    the same import at 1440x900
+transfer-1440x900-21-refuse-nonhex.png  49bc11736461ebea973917e6d1a95aad64b492d599e544051df75a8025c4706b  run-1440x900/captures/21-refuse-nonhex.png
+    the same refusal at 1440x900
+transfer-1440x900-25-unknown-base.png  616ba610c536ae92e957b32608302e0c6bd010fbb09b8dacd1c90dde691bd14b  run-1440x900/captures/25-unknown-base.png
+    the same notice at 1440x900
+noportal-1000x680-01-export-guidance.png  d1bfa6d24cdad0bf3deb9b5fdc0b8e4fd3618d454114a496827c7af1b8b17520  run-noportal/captures/01-export-guidance.png
+    no FileChooser portal on the bus: Export… reports the picker guidance
+noportal-1000x680-03-import-guidance.png  061904f4ca7c6f3fdeaddcaf1cb7d6b46d4c7c3dc12635a678f5c253f178d27b  run-noportal/captures/03-import-guidance.png
+    no FileChooser portal on the bus: Import… reports the picker guidance
+bound-1000x680-00-bound-card.png  8a02969ac0e3073a0e1d7d725f054214f79768f69824251b514dd085f7f6b49a  run-bound/captures/00-bound-card.png
+    32 saved themes: New theme… and Import… are disabled
+transfer-1000x680-exported-document.json  c4c8271ed6eca156074fea6eb8b65f7b22ef6a078b247a3b6e4fe0fbd32b9ad8  run-1000x680/exported-document.json
+    the 690-byte document the export wrote, as the app wrote it
+collision2-1000x680-02-collision-2.png  5d033f2507194897a19b598ff0872657343589ef6d5f4e08c047bc5b35c3589e  run-collision2/captures/02-collision-2.png
+    a third import with “<name>” and “<name> (imported)” already saved: “<name> (imported) (2)”
