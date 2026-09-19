@@ -1,0 +1,854 @@
+Custom theme editor (themes-editor): native flow verification
+================================================================
+Build under test: 3927b57bbb913e35ee4a8b48f12b5c7eaa19f686 (GitTurtle 0.1.0, source_tree clean, release, x86_64-unknown-linux-gnu, rustc 1.98.0 (88d9e12ae 2026-08-18))
+Binary sha256: 1faff02061c9f07500cbf74827ae61d425d145caef6a153682230ef239bbe593
+Fixture: scripts/create-demo-repo.py repository at HEAD 52f471a1137c617fd8e36db2e6251a18f58c23eb (not modified)
+Backend: Linux 7.1.5-76070105-generic, GNOME on Wayland, app under XWayland (DISPLAY=:1, WAYLAND_DISPLAY unset), GPUI_X11_SCALE_FACTOR=1; windows 1000x680 and 1440x900 logical = physical
+Driver invocation: 2026-09-19T14:36:09-0500 .. 2026-09-19T14:51:56-0500; scenarios light-1000x680,light-1440x900,dark-1000x680,dark-1440x900,fixes-1440x900,fixes-1000x680,deletefocus-light-1000x680-1,deletefocus-dark-1000x680-1,deletefocus-light-1440x900-1,deletefocus-dark-1440x900-1,deletefocus-light-1000x680-2,deletefocus-dark-1000x680-2,deletefocus-light-1440x900-2,deletefocus-dark-1440x900-2; mode evidence
+Driver invocation: 2026-09-19T14:52:07-0500 .. 2026-09-19T14:56:20-0500; scenarios dark-1000x680,dark-1440x900; mode evidence
+Driver command: python3 tools/drive_editor.py --binary <abs>/gitturtle-3927b57 --output <abs>/run-evidence --source <abs>/src-3927b57 --mode evidence (all 14 scenarios), then the same with --scenarios dark-1000x680,dark-1440x900 after the D2 read of the # glyph cell was narrowed to the glyph's own columns; the second invocation replaced those two scenarios' captures and checks
+Each launch: <binary> <fixture> with XDG_CONFIG_HOME=<absolute fresh dir>, WAYLAND_DISPLAY unset,
+DISPLAY=:1, seeded preferences.json {"version": 6, "settings": {"theme": <seed>}}.
+Frames: grabbed from the app's own X window, pointer parked on the status bar before each grab,
+taken once consecutive grabs over 1.15 s agree (a blinking caret is kept in its visible phase).
+Colour checks sample exact 8-bit values: the dialog background and the Settings page background
+are both painted with the canvas token. [C] = committed here, [B] = in the evidence bundle only.
+Checks named 'D1'..'D3' assert the three corrections claimed for this build over cd563f6 (that build's
+design review, sections D1-D3) and FAIL when the defect reproduces: D1 the token column's always-visible
+scrollbar in a 16 px track reserved at the column's right edge (thumb visible at rest in the wide and the
+stacked layout and in both bases, the track holding nothing but its background and the thumb, the rows'
+right edge 16 px left of cd563f6's so the thumb never overlays a picker, the Diff group painted once the
+last row is tabbed to); D2 the 78 px hex field (a typed #rrggbb shows all seven characters with the caret,
+the value stays complete after focus leaves, the typed row's ink is pixel-identical to the same value
+reopened from the store, Return's rewrite shows the full value) read as the field is, with no Home press
+before any read; D3 the invalid glyph (a 14 px rounded square on the removed fill with a contrasting × in
+the row's warning slot, replacing the readability glyph while the value is invalid, kept after blur, gone
+with the readability glyph back once the value is valid). Checks named 'fix 1'..'fix 3' re-assert the
+attempt-3 corrections that passed on cd563f6: fix 1 the Delete confirmation's keyboard focus (opens on
+Cancel, Tab stays inside, Return on Cancel and Escape close, Return on Delete theme deletes), fix 2 the
+Readability list in view in the frame that first shows its focus (grabs of the dialog body right after the
+Tab, no further input), fix 3 keyboard focus on New theme… after a delete (Space must open New theme;
+counted across the flows and the deletefocus launches). Checks named 'kept:' re-assert the rest of what
+passed on cd563f6. Every check is listed under the capture it follows.
+
+Keyboard route (all scenarios)
+------------------------------
+Ctrl+comma opens Settings. The Your themes card is brought on screen with the mouse wheel over the
+page (Tab moves focus to off-screen Settings controls without scrolling); after that the pointer rests
+on the status bar and is not moved again until Delete, so no pointer event repaints a frame. Tab x28
+from the title bar's Menu button reaches New theme…; Space activates it. Dialog Tab order observed:
+Name, Base, (Keep colors, Replace colors while the base question shows), then per row hex field and
+colour picker (row k: hex at Tab 2+2k, picker 3+2k), the Readability list (44), Reset to base (45),
+Cancel (46), Save (47), wrapping to Name. Base menu: Space opens, Down moves (the first Down
+highlights nothing, group labels are skipped), Return chooses. Ctrl+A selects a field's text.
+Light flows save with Return on Save and cancel with Return on Cancel; dark flows save with Return
+in Name and cancel with Escape. Delete…: Space opens the confirmation, whose keyboard focus must be on
+Cancel; Tab moves to Delete theme and a second Tab must stay inside the alert; Return on Cancel and
+Escape close it; Return on Delete theme deletes. The deletefocus-* scenarios launch with the flow's
+saved theme already in the store and active, reach Delete… by Tab x28 + Tab x2, and delete once per
+launch. Hex fields are read exactly as they are after typing, with the caret at the end and no Home
+press (cd563f6's driver pressed Home before every read because its 70 px field scrolled the leading #
+out of view; D2 checks that the 78 px field never does). Return in a hex field: the field interior must
+match the frame where the lowercase text was typed directly; the frame typed before Return is the
+contrasting reference. The scrollbar track is painted in the canvas colour (the app's scrollbar track
+colour), so what shows at rest is the 6 px thumb in the border colour inside the reserved 16 px column;
+D1 reads that column and lists every other colour found in it.
+
+Scenario light-1000x680  (pid 2179467, terminated by the driver (SIGTERM))
+-----------------------
+XDG_CONFIG_HOME=<bundle>/run-evidence/config/light-1000x680 (removed after the run); seeded {"version": 6, "settings": {"theme": "porcelain"}}
+pointer: wheel +20 at (60, 400): scroll Settings until the Your themes card is on screen
+pointer: wheel -60 at (60, 400): scroll Settings to the top
+[B] light-1000x680-00-settings-before.png
+    shows: Settings, Your themes empty, seeded porcelain active
+    keys since previous capture: Control+comma  # open Settings
+    PASS  before: page canvas is the seeded theme's: page (246, 247, 252) vs porcelain canvas (246, 247, 252)
+    PASS  before: store has no custom themes: custom_themes=[] theme=porcelain
+[B] light-1000x680-01-new-theme-focused.png
+    shows: keyboard focus ring on New theme…
+    keys since previous capture: Tab x28  # title bar Menu ... theme cards ... New theme…
+[B] light-1000x680-02-new-dialog.png
+    shows: New theme dialog, Name focused, base porcelain
+    keys since previous capture: space  # activate New theme…
+    frame: caret [208, 133, 210, 147] (visible phase kept)
+    PASS  new: dialog painted in the active palette: dialog bg (246, 247, 252) == porcelain canvas (246, 247, 252)
+    PASS  kept: Base button is 200 px wide and 28 px tall; Name is 28 px tall: Base 200x28 px, Name border height 28 px
+[B] light-1000x680-03-base-menu.png
+    shows: Base menu open: Light and Dark groups, current base checked
+    keys since previous capture: Control+a  # select all | type 'Paper Lantern'  # Name | Tab  # to Base | space  # open the Base menu
+    PASS  kept: Base menu at least as wide as the button and not a fixed 420 px tall: menu region (598, 123, 808, 658): 210x535 px in a 1000x680 window
+[C] light-1000x680-04-base-chosen.png
+    shows: base Braden chosen on an unedited draft: tokens replaced at once
+    keys since previous capture: Down x2  # to Braden | Return  # choose Braden
+    PASS  base: unedited draft follows the chosen base (live preview): dialog bg (244, 246, 250) == daylight canvas (244, 246, 250)
+    PASS  D1: the token column shows its scrollbar thumb at rest in the reserved track (Braden base, unedited, 1000x680): border-coloured thumb columns bbox (793, 169, 798, 349) (6 px wide, runs >= 48 px) inside the 16 px track x=787..802; track pixels that are neither the track background (244, 246, 250) nor the thumb colour (210, 220, 232): 16 [((224, 231, 239), 8), ((212, 221, 233), 8)] (thumb corners)
+    PASS  kept: the first edit recolours in the same frame as its keystroke: 140 grabs in 0.4 s after the key; 0 showed the new digit with the old colour; first recoloured grab at 0.068 s
+[C] light-1000x680-04b-canvas-typed.png
+    shows: Canvas #fff7e8 just typed, caret at the end, no Home: all seven characters in the 78 px field
+    keys since previous capture: Tab  # to Canvas hex | Control+a  # select all | type '#fff7e'  # Canvas, all but the last digit (invalid, draft unchanged) | type '8'  # last digit: the edit becomes valid
+    frame: caret [740, 194, 742, 208] (visible phase kept)
+    PASS  D2: after typing #rrggbb the focused field shows all seven characters with the caret (no Home): canvas ink groups [(692, 704), (706, 711), (713, 718), (720, 725), (727, 738)], caret [(740, 741)]; reference panel groups [(692, 704), (706, 711), (713, 718), (720, 725), (727, 731), (734, 738)] (caret []); first ink column 692 vs the reference's 692; the # cell (x hex_left+8..+16) identical to the reference's; field bg (255, 247, 232)
+[C] light-1000x680-05-edit-warning.png
+    shows: Canvas #fff7e8 and Muted #5c6a82 typed; two warnings; focus on the Muted picker
+    keys since previous capture: Tab  # to Canvas picker | Tab x13  # to Muted text hex | Control+a  # select all | type '5C6A82'  # Muted text, uppercase without # | Tab  # to Muted text picker
+    PASS  edit: whole window follows the draft canvas: dialog bg (255, 247, 232) == typed #fff7e8 (255, 247, 232)
+    PASS  D2: after focus leaves, the typed Canvas field still shows the full value from its # (no Home): canvas ink groups [(692, 704), (706, 711), (713, 718), (720, 725), (727, 738)], caret []; reference panel groups [(692, 704), (706, 711), (713, 718), (720, 725), (727, 731), (734, 738)] (caret []); first ink column 692 vs the reference's 692; the # cell (x hex_left+8..+16) identical to the reference's; field bg (255, 247, 232)
+    PASS  D1: the token column shows its scrollbar thumb at rest in the reserved track (edited draft, 1000x680): border-coloured thumb columns bbox (793, 169, 798, 341) (6 px wide, runs >= 48 px) inside the 16 px track x=787..802; track pixels that are neither the track background (255, 247, 232) nor the thumb colour (210, 220, 232): 16 [((229, 231, 232), 8), ((212, 221, 232), 8)] (thumb corners)
+    PASS  D1: the rows end before the track: the focused picker's ring is left of the thumb and 16 px left of cd563f6's: picker ring bbox (767, 429, 786, 448); track starts x=787; thumb x=793; cd563f6 picker right edge 802 - now 786 = 16 px
+    PASS  edit: warning glyph on the Muted text row, none on Canvas: warning-coloured glyph pixels muted=133 canvas=0; predicted list ['Muted text on Selected 4.4:1, needs 4.5:1', 'Muted text on Selected row hover 4.0:1, needs 4.5:1']
+    PASS  kept: focused picker has a 2 px accent ring, a resting one a 1 px border-colour edge: 84 accent px around the focused Muted picker; resting Canvas picker: 24 exact border-colour px on its rounded 1 px edge, 0 accent px
+[C] light-1000x680-06-invalid-focused.png
+    shows: #12 in Muted text with focus: removed outline, Save disabled, draft kept
+    keys since previous capture: Shift+Tab  # back to Muted text hex | Control+a  # select all | type '#12'  # invalid value, field keeps focus
+    frame: caret [713, 432, 715, 446] (visible phase kept)
+    PASS  invalid hex field outlined in removed while focused: border (181, 51, 81) == removed (181, 51, 81)
+    PASS  D3: an invalid value shows the × glyph on the removed fill in the row's warning slot, replacing the readability glyph: removed-fill glyph bbox (641, 432, 654, 445) size (14, 14) (155 removed px, 41 other px inside = the ×, centre (203, 109, 125)); expected 14x14 at x=hex_left-42=641, y=432; warning-coloured px in the slot: 0
+    PASS  invalid: Save disabled (not the accent fill): Save fill (218, 228, 211), accent (8, 117, 93)
+    PASS  invalid: last valid draft kept: dialog bg (255, 247, 232) still (255, 247, 232); 2059 px differ from 05 (field, picker ring, Save), bbox (641, 429, 803, 647)
+    PASS  invalid: outline stays after focus leaves: border (181, 51, 81) == removed (181, 51, 81)
+    PASS  D3: the invalid glyph stays after focus leaves the field: removed-fill glyph bbox (641, 432, 654, 445) size (14, 14) (155 removed px, 41 other px inside = the ×, centre (203, 109, 125)); expected 14x14 at x=hex_left-42=641, y=432; warning-coloured px in the slot: 0
+    PASS  valid again: frame returns to the 05 capture exactly (Save re-enabled): 0 px differ, bbox None
+    PASS  D3: a valid value again removes the × glyph and restores the readability glyph: removed px in the slot 0; warning glyph bbox (642, 433, 653, 444) size (12, 12) (112 px)
+[B] light-1000x680-07-warnings-focused.png
+    shows: keyboard focus on the Readability list, in view with an accent outline
+    keys since previous capture: Tab  # leave the field | Shift+Tab  # back to Muted text hex | Control+a  # select all | type '5C6A82'  # valid again | Tab  # to Muted text picker | Tab x26  # rows ... to the Hunk and links picker | Tab  # to the Readability list (grabs of the body right after the key)
+    PASS  fix 2: Tab to the Readability list brings it into view in the frame that first shows its focus: 1086 body grabs in 1.0 s (~1 ms apart), 1 distinct frames after the key; first changed grab at 0.041 s already shows the target: (205, 510, 778, 602); sequence [(0.041, True)]; settled capture: outline (205, 510, 778, 602) (05 frame, list not focused: None)
+[C] light-1000x680-08-saved.png
+    shows: dialog closed; theme listed under Your themes, active, warning count 2
+    keys since previous capture: Tab x3  # to Save | Return  # Return on Save
+    PASS  save: store version 6 holds the theme and selects it: version=6 custom_themes=[(1, 'Paper Lantern', 'daylight', '#fff7e8', '#5c6a82')] theme={'custom': 1} other tokens equal base: True
+    PASS  save: window keeps the saved palette: page (255, 247, 232) == (255, 247, 232)
+    PASS  kept: Your themes row content aligns with the card title: swatch strip left x=50 (row y=347); title/description leftmost ink x=50
+[B] light-1000x680-09-before-edit.png
+    shows: keyboard focus on Edit…; reference frame for Cancel
+    keys since previous capture: Tab  # New theme… -> Edit…
+[C] light-1000x680-10-edit-reopened.png
+    shows: Edit theme with the saved name, base, values and warnings
+    keys since previous capture: space  # activate Edit…
+    frame: caret [208, 133, 210, 147] (visible phase kept)
+    PASS  reopen: dialog shows the saved palette: dialog bg (255, 247, 232) == (255, 247, 232)
+    PASS  D2: the typed Canvas row's ink (05, after blur) is pixel-identical to the same value reopened from the store: 0 px differ inside the Canvas hex field between 05 and 10, bbox None; store value #fff7e8
+[C] light-1000x680-11-edit-return-commits.png
+    shows: Return rewrote FFE4E4 as #ffe4e4; dialog open, preview shown; no Home pressed
+    keys since previous capture: Tab x2  # Name -> Base -> Canvas hex | Control+a  # select all | type '#ffe4e4'  # reference: the canonical text typed directly, caret at the end | Control+a  # select all | type 'FFE4E4'  # uppercase, no # | Return  # Return in the hex field
+    frame: caret [740, 194, 742, 208] (visible phase kept)
+    PASS  D2: after Return the rewritten value shows all seven characters with the caret (no Home): canvas ink groups [(692, 704), (706, 711), (713, 718), (720, 725), (727, 738)], caret [(740, 741)]; reference panel groups [(692, 704), (706, 711), (713, 718), (720, 725), (727, 731), (734, 738)] (caret []); first ink column 692 vs the reference's 692; the # cell (x hex_left+8..+16) identical to the reference's; field bg (255, 228, 228)
+    PASS  Return in a valid hex field rewrites it lowercase and saves nothing: field reads '#ffe4e4': identical to the typed lowercase frame at shift +0 px (caret-only regions []); vs the frame typed before Return: 328 px, mean channel diff 26.91, ratio inf; dialog open with bg (255, 228, 228); store unchanged: True
+[C] light-1000x680-12-cancel-focused.png
+    shows: keyboard focus on Cancel with the unsaved canvas previewed
+    keys since previous capture: Tab  # to Canvas picker | Shift+Tab x5  # picker -> hex -> Base -> Name -> Save -> Cancel
+[C] light-1000x680-13-cancelled.png
+    shows: the saved palette is back, focus on Edit…
+    keys since previous capture: Return  # Return on Cancel
+    PASS  Return on the focused Cancel cancels (frame identical to 09, store unchanged): 0 px differ from 09, bbox None; store unchanged: True
+[B] light-1000x680-14-before-delete.png
+    shows: keyboard focus on Delete…; reference frame for the alert
+    keys since previous capture: Tab  # Edit… -> Delete…
+[C] light-1000x680-15-delete-confirm.png
+    shows: alert names the theme and its base; keyboard focus must be on Cancel inside the alert
+    keys since previous capture: space  # activate Delete…
+    PASS  fix 1: the Delete confirmation opens with focus on Cancel (FAILs when focus is outside the alert): alert open True; accent-tinted ring px: Cancel 488, Delete theme 20, title bar Menu 0 -> focus on cancel
+[B] light-1000x680-15b-tab-in-alert.png
+    shows: second Tab from Cancel: focus still inside the alert
+    keys since previous capture: Tab  # Tab: Cancel -> Delete theme | Tab  # Tab again: must stay inside the alert
+    PASS  fix 1: Tab stays inside the alert: after Tab: delete (Cancel 0, Delete theme 714, title bar Menu 0 px); after a second Tab: cancel (Cancel 488, Delete theme 20, title bar Menu 0 px)
+    PASS  fix 1: Return on Cancel closes without deleting (frame identical to 14): Cancel focused: True; alert closed: True; store unchanged: True; 0 px differ from 14, bbox None
+    PASS  fix 1: Escape closes the alert without deleting (frame identical to 14): reopened with focus on cancel; closed by Escape: True; 0 px differ from 14, bbox None; store unchanged: True
+    PASS  fix 1: the reopened alert focuses Cancel and Tab reaches Delete theme: reopened with focus on cancel; after Tab: delete (Delete theme ring 714 px)
+[C] light-1000x680-16-deleted.png
+    shows: theme gone from Your themes; base palette applied; focus on New theme…
+    keys since previous capture: Return  # Return on Cancel | space  # Delete… again | Escape  # Escape in the alert | space  # Delete… again | Tab  # Tab: Cancel -> Delete theme | Return  # Return on Delete theme
+    PASS  fix 1: Return on Delete theme deletes; the store selects the base: custom_themes=[] theme='daylight'
+    PASS  delete: base palette applied: page (244, 246, 250) == daylight canvas (244, 246, 250)
+    PASS  fix 3: after the delete, keyboard focus is on New theme…: Space opened the New theme dialog: True (first grab at 0.045 s); dialog bg (244, 246, 250) (base canvas (244, 246, 250)); store unchanged: True; accent-tinted ring px at the right of the page in 16: {'count': 870, 'bbox': (830, 287, 952, 320)}
+[B] light-1000x680-17-base-selected.png
+    shows: picker: Braden card outlined and checked
+    keys since previous capture: space  # Space: whatever has focus activates | Escape  # close the New theme dialog
+    PASS  delete: base card is the selected picker card: card (290, 455, 36, 338), wheel steps 0
+Predicted Readability list (Python mirror of readability_issues): ['Muted text on Selected 4.4:1, needs 4.5:1', 'Muted text on Selected row hover 4.0:1, needs 4.5:1']
+Latency (s, input event to first grab showing the result; grab-bound, ~30-60 ms per grab; observation only): dialog_open 0.078, preview_canvas 0.068, save_to_page 0.059, preview_recanvas 0.068, cancel_restore 0.029, delete_to_base 0.049
+
+Scenario light-1440x900  (pid 2181066, terminated by the driver (SIGTERM))
+-----------------------
+XDG_CONFIG_HOME=<bundle>/run-evidence/config/light-1440x900 (removed after the run); seeded {"version": 6, "settings": {"theme": "porcelain"}}
+pointer: wheel +15 at (100, 500): scroll Settings until the Your themes card is on screen
+pointer: wheel -60 at (100, 500): scroll Settings to the top
+[B] light-1440x900-00-settings-before.png
+    shows: Settings, Your themes empty, seeded porcelain active
+    keys since previous capture: Control+comma  # open Settings
+    PASS  before: page canvas is the seeded theme's: page (246, 247, 252) vs porcelain canvas (246, 247, 252)
+    PASS  before: store has no custom themes: custom_themes=[] theme=porcelain
+[B] light-1440x900-01-new-theme-focused.png
+    shows: keyboard focus ring on New theme…
+    keys since previous capture: Tab x28  # title bar Menu ... theme cards ... New theme…
+[B] light-1440x900-02-new-dialog.png
+    shows: New theme dialog, Name focused, base porcelain
+    keys since previous capture: space  # activate New theme…
+    frame: caret [248, 155, 250, 169] (visible phase kept)
+    PASS  new: dialog painted in the active palette: dialog bg (246, 247, 252) == porcelain canvas (246, 247, 252)
+    PASS  kept: Base button is 200 px wide and 28 px tall; Name is 28 px tall: Base 200x28 px, Name border height 28 px
+[B] light-1440x900-03-base-menu.png
+    shows: Base menu open: Light and Dark groups, current base checked
+    keys since previous capture: Control+a  # select all | type 'Paper Lantern'  # Name | Tab  # to Base | space  # open the Base menu
+    PASS  kept: Base menu at least as wide as the button and not a fixed 420 px tall: menu region (998, 145, 1208, 792): 210x647 px in a 1440x900 window
+[C] light-1440x900-04-base-chosen.png
+    shows: base Braden chosen on an unedited draft: tokens replaced at once
+    keys since previous capture: Down x2  # to Braden | Return  # choose Braden
+    PASS  base: unedited draft follows the chosen base (live preview): dialog bg (244, 246, 250) == daylight canvas (244, 246, 250)
+    PASS  D1: the token column shows its scrollbar thumb at rest in the reserved track (Braden base, unedited, 1440x900): border-coloured thumb columns bbox (877, 191, 882, 711) (6 px wide, runs >= 48 px) inside the 16 px track x=871..886; track pixels that are neither the track background (244, 246, 250) nor the thumb colour (210, 220, 232): 16 [((224, 231, 239), 8), ((212, 221, 233), 8)] (thumb corners)
+    PASS  kept: the first edit recolours in the same frame as its keystroke: 51 grabs in 0.4 s after the key; 0 showed the new digit with the old colour; first recoloured grab at 0.075 s
+[B] light-1440x900-04b-canvas-typed.png
+    shows: Canvas #fff7e8 just typed, caret at the end, no Home: all seven characters in the 78 px field
+    keys since previous capture: Tab  # to Canvas hex | Control+a  # select all | type '#fff7e'  # Canvas, all but the last digit (invalid, draft unchanged) | type '8'  # last digit: the edit becomes valid
+    frame: caret [824, 216, 826, 230] (visible phase kept)
+    PASS  D2: after typing #rrggbb the focused field shows all seven characters with the caret (no Home): canvas ink groups [(776, 788), (790, 795), (797, 802), (804, 809), (811, 822)], caret [(824, 825)]; reference panel groups [(776, 788), (790, 795), (797, 802), (804, 809), (811, 815), (818, 822)] (caret []); first ink column 776 vs the reference's 776; the # cell (x hex_left+8..+16) identical to the reference's; field bg (255, 247, 232)
+[C] light-1440x900-05-edit-warning.png
+    shows: Canvas #fff7e8 and Muted #5c6a82 typed; two warnings; focus on the Muted picker
+    keys since previous capture: Tab  # to Canvas picker | Tab x13  # to Muted text hex | Control+a  # select all | type '5C6A82'  # Muted text, uppercase without # | Tab  # to Muted text picker
+    PASS  edit: whole window follows the draft canvas: dialog bg (255, 247, 232) == typed #fff7e8 (255, 247, 232)
+    PASS  D2: after focus leaves, the typed Canvas field still shows the full value from its # (no Home): canvas ink groups [(776, 788), (790, 795), (797, 802), (804, 809), (811, 822)], caret []; reference panel groups [(776, 788), (790, 795), (797, 802), (804, 809), (811, 815), (818, 822)] (caret []); first ink column 776 vs the reference's 776; the # cell (x hex_left+8..+16) identical to the reference's; field bg (255, 247, 232)
+    PASS  D1: the token column shows its scrollbar thumb at rest in the reserved track (edited draft, 1440x900): border-coloured thumb columns bbox (877, 191, 882, 711) (6 px wide, runs >= 48 px) inside the 16 px track x=871..886; track pixels that are neither the track background (255, 247, 232) nor the thumb colour (210, 220, 232): 16 [((229, 231, 232), 8), ((212, 221, 232), 8)] (thumb corners)
+    PASS  D1: the rows end before the track: the focused picker's ring is left of the thumb and 16 px left of cd563f6's: picker ring bbox (851, 451, 870, 470); track starts x=871; thumb x=877; cd563f6 picker right edge 886 - now 870 = 16 px
+    PASS  edit: warning glyph on the Muted text row, none on Canvas: warning-coloured glyph pixels muted=133 canvas=0; predicted list ['Muted text on Selected 4.4:1, needs 4.5:1', 'Muted text on Selected row hover 4.0:1, needs 4.5:1']
+    PASS  kept: focused picker has a 2 px accent ring, a resting one a 1 px border-colour edge: 84 accent px around the focused Muted picker; resting Canvas picker: 24 exact border-colour px on its rounded 1 px edge, 0 accent px
+[B] light-1440x900-06-invalid-focused.png
+    shows: #12 in Muted text with focus: removed outline, Save disabled, draft kept
+    keys since previous capture: Shift+Tab  # back to Muted text hex | Control+a  # select all | type '#12'  # invalid value, field keeps focus
+    frame: caret [797, 454, 799, 468] (visible phase kept)
+    PASS  invalid hex field outlined in removed while focused: border (181, 51, 81) == removed (181, 51, 81)
+    PASS  D3: an invalid value shows the × glyph on the removed fill in the row's warning slot, replacing the readability glyph: removed-fill glyph bbox (725, 454, 738, 467) size (14, 14) (155 removed px, 41 other px inside = the ×, centre (203, 109, 125)); expected 14x14 at x=hex_left-42=725, y=454; warning-coloured px in the slot: 0
+    PASS  invalid: Save disabled (not the accent fill): Save fill (218, 228, 211), accent (8, 117, 93)
+    PASS  invalid: last valid draft kept: dialog bg (255, 247, 232) still (255, 247, 232); 2059 px differ from 05 (field, picker ring, Save), bbox (725, 451, 1203, 867)
+    PASS  invalid: outline stays after focus leaves: border (181, 51, 81) == removed (181, 51, 81)
+    PASS  D3: the invalid glyph stays after focus leaves the field: removed-fill glyph bbox (725, 454, 738, 467) size (14, 14) (155 removed px, 41 other px inside = the ×, centre (203, 109, 125)); expected 14x14 at x=hex_left-42=725, y=454; warning-coloured px in the slot: 0
+    PASS  valid again: frame returns to the 05 capture exactly (Save re-enabled): 0 px differ, bbox None
+    PASS  D3: a valid value again removes the × glyph and restores the readability glyph: removed px in the slot 0; warning glyph bbox (726, 455, 737, 466) size (12, 12) (112 px)
+[B] light-1440x900-07-warnings-focused.png
+    shows: keyboard focus on the Readability list, in view with an accent outline
+    keys since previous capture: Tab  # leave the field | Shift+Tab  # back to Muted text hex | Control+a  # select all | type '5C6A82'  # valid again | Tab  # to Muted text picker | Tab x26  # rows ... to the Hunk and links picker | Tab  # to the Readability list (grabs of the body right after the key)
+    PASS  fix 2: Tab to the Readability list brings it into view in the frame that first shows its focus: 391 body grabs in 1.0 s (~3 ms apart), 1 distinct frames after the key; first changed grab at 0.069 s already shows the target: (911, 365, 1194, 457); sequence [(0.069, True)]; settled capture: outline (911, 365, 1194, 457) (05 frame, list not focused: None)
+[C] light-1440x900-08-saved.png
+    shows: dialog closed; theme listed under Your themes, active, warning count 2
+    keys since previous capture: Tab x3  # to Save | Return  # Return on Save
+    PASS  save: store version 6 holds the theme and selects it: version=6 custom_themes=[(1, 'Paper Lantern', 'daylight', '#fff7e8', '#5c6a82')] theme={'custom': 1} other tokens equal base: True
+    PASS  save: window keeps the saved palette: page (255, 247, 232) == (255, 247, 232)
+    PASS  kept: Your themes row content aligns with the card title: swatch strip left x=171 (row y=662); title/description leftmost ink x=171
+[B] light-1440x900-09-before-edit.png
+    shows: keyboard focus on Edit…; reference frame for Cancel
+    keys since previous capture: Tab  # New theme… -> Edit…
+[C] light-1440x900-10-edit-reopened.png
+    shows: Edit theme with the saved name, base, values and warnings
+    keys since previous capture: space  # activate Edit…
+    frame: caret [248, 155, 250, 169] (visible phase kept)
+    PASS  reopen: dialog shows the saved palette: dialog bg (255, 247, 232) == (255, 247, 232)
+    PASS  D2: the typed Canvas row's ink (05, after blur) is pixel-identical to the same value reopened from the store: 0 px differ inside the Canvas hex field between 05 and 10, bbox None; store value #fff7e8
+[B] light-1440x900-11-edit-return-commits.png
+    shows: Return rewrote FFE4E4 as #ffe4e4; dialog open, preview shown; no Home pressed
+    keys since previous capture: Tab x2  # Name -> Base -> Canvas hex | Control+a  # select all | type '#ffe4e4'  # reference: the canonical text typed directly, caret at the end | Control+a  # select all | type 'FFE4E4'  # uppercase, no # | Return  # Return in the hex field
+    frame: caret [824, 216, 826, 230] (visible phase kept)
+    PASS  D2: after Return the rewritten value shows all seven characters with the caret (no Home): canvas ink groups [(776, 788), (790, 795), (797, 802), (804, 809), (811, 822)], caret [(824, 825)]; reference panel groups [(776, 788), (790, 795), (797, 802), (804, 809), (811, 815), (818, 822)] (caret []); first ink column 776 vs the reference's 776; the # cell (x hex_left+8..+16) identical to the reference's; field bg (255, 228, 228)
+    PASS  Return in a valid hex field rewrites it lowercase and saves nothing: field reads '#ffe4e4': identical to the typed lowercase frame at shift +0 px (caret-only regions []); vs the frame typed before Return: 328 px, mean channel diff 26.91, ratio inf; dialog open with bg (255, 228, 228); store unchanged: True
+[B] light-1440x900-12-cancel-focused.png
+    shows: keyboard focus on Cancel with the unsaved canvas previewed
+    keys since previous capture: Tab  # to Canvas picker | Shift+Tab x5  # picker -> hex -> Base -> Name -> Save -> Cancel
+[C] light-1440x900-13-cancelled.png
+    shows: the saved palette is back, focus on Edit…
+    keys since previous capture: Return  # Return on Cancel
+    PASS  Return on the focused Cancel cancels (frame identical to 09, store unchanged): 0 px differ from 09, bbox None; store unchanged: True
+[B] light-1440x900-14-before-delete.png
+    shows: keyboard focus on Delete…; reference frame for the alert
+    keys since previous capture: Tab  # Edit… -> Delete…
+[B] light-1440x900-15-delete-confirm.png
+    shows: alert names the theme and its base; keyboard focus must be on Cancel inside the alert
+    keys since previous capture: space  # activate Delete…
+    PASS  fix 1: the Delete confirmation opens with focus on Cancel (FAILs when focus is outside the alert): alert open True; accent-tinted ring px: Cancel 488, Delete theme 20, title bar Menu 0 -> focus on cancel
+[B] light-1440x900-15b-tab-in-alert.png
+    shows: second Tab from Cancel: focus still inside the alert
+    keys since previous capture: Tab  # Tab: Cancel -> Delete theme | Tab  # Tab again: must stay inside the alert
+    PASS  fix 1: Tab stays inside the alert: after Tab: delete (Cancel 0, Delete theme 714, title bar Menu 0 px); after a second Tab: cancel (Cancel 488, Delete theme 20, title bar Menu 0 px)
+    PASS  fix 1: Return on Cancel closes without deleting (frame identical to 14): Cancel focused: True; alert closed: True; store unchanged: True; 0 px differ from 14, bbox None
+    PASS  fix 1: Escape closes the alert without deleting (frame identical to 14): reopened with focus on cancel; closed by Escape: True; 0 px differ from 14, bbox None; store unchanged: True
+    PASS  fix 1: the reopened alert focuses Cancel and Tab reaches Delete theme: reopened with focus on cancel; after Tab: delete (Delete theme ring 714 px)
+[C] light-1440x900-16-deleted.png
+    shows: theme gone from Your themes; base palette applied; focus on New theme…
+    keys since previous capture: Return  # Return on Cancel | space  # Delete… again | Escape  # Escape in the alert | space  # Delete… again | Tab  # Tab: Cancel -> Delete theme | Return  # Return on Delete theme
+    PASS  fix 1: Return on Delete theme deletes; the store selects the base: custom_themes=[] theme='daylight'
+    PASS  delete: base palette applied: page (244, 246, 250) == daylight canvas (244, 246, 250)
+    PASS  fix 3: after the delete, keyboard focus is on New theme…: Space opened the New theme dialog: True (first grab at 0.085 s); dialog bg (244, 246, 250) (base canvas (244, 246, 250)); store unchanged: True; accent-tinted ring px at the right of the page in 16: {'count': 0, 'bbox': None}
+[B] light-1440x900-17-base-selected.png
+    shows: picker: Braden card outlined and checked
+    keys since previous capture: space  # Space: whatever has focus activates | Escape  # close the New theme dialog
+    PASS  delete: base card is the selected picker card: card (290, 455, 157, 399), wheel steps 0
+Predicted Readability list (Python mirror of readability_issues): ['Muted text on Selected 4.4:1, needs 4.5:1', 'Muted text on Selected row hover 4.0:1, needs 4.5:1']
+Latency (s, input event to first grab showing the result; grab-bound, ~30-60 ms per grab; observation only): dialog_open 0.067, preview_canvas 0.075, save_to_page 0.077, preview_recanvas 0.074, cancel_restore 0.047, delete_to_base 0.068
+
+Scenario dark-1000x680  (pid 2190837, terminated by the driver (SIGTERM))
+----------------------
+XDG_CONFIG_HOME=<bundle>/run-evidence/config/dark-1000x680 (removed after the run); seeded {"version": 6, "settings": {"theme": "graphite"}}
+pointer: wheel +20 at (60, 400): scroll Settings until the Your themes card is on screen
+pointer: wheel -60 at (60, 400): scroll Settings to the top
+pointer: wheel +1 at (60, 400): step Settings down to the base's picker card
+pointer: wheel +1 at (60, 400): step Settings down to the base's picker card
+pointer: wheel +1 at (60, 400): step Settings down to the base's picker card
+pointer: wheel +1 at (60, 400): step Settings down to the base's picker card
+pointer: wheel +1 at (60, 400): step Settings down to the base's picker card
+pointer: wheel +1 at (60, 400): step Settings down to the base's picker card
+[B] dark-1000x680-00-settings-before.png
+    shows: Settings, Your themes empty, seeded graphite active
+    keys since previous capture: Control+comma  # open Settings
+    PASS  before: page canvas is the seeded theme's: page (24, 25, 29) vs graphite canvas (24, 25, 29)
+    PASS  before: store has no custom themes: custom_themes=[] theme=graphite
+[B] dark-1000x680-01-new-theme-focused.png
+    shows: keyboard focus ring on New theme…
+    keys since previous capture: Tab x28  # title bar Menu ... theme cards ... New theme…
+[B] dark-1000x680-02-new-dialog.png
+    shows: New theme dialog, Name focused, base graphite
+    keys since previous capture: space  # activate New theme…
+    frame: caret [208, 133, 210, 147] (visible phase kept)
+    PASS  new: dialog painted in the active palette: dialog bg (24, 25, 29) == graphite canvas (24, 25, 29)
+    PASS  kept: Base button is 200 px wide and 28 px tall; Name is 28 px tall: Base 200x28 px, Name border height 28 px
+[B] dark-1000x680-03-base-menu.png
+    shows: Base menu open: Light and Dark groups, current base checked
+    keys since previous capture: Control+a  # select all | type 'Night Harbor'  # Name | Tab  # to Base | space  # open the Base menu
+    PASS  kept: Base menu at least as wide as the button and not a fixed 420 px tall: menu region (598, 123, 806, 655): 208x532 px in a 1000x680 window
+[C] dark-1000x680-04-base-chosen.png
+    shows: base Midnight chosen on an unedited draft: tokens replaced at once
+    keys since previous capture: Down x10  # to Midnight | Return  # choose Midnight
+    PASS  base: unedited draft follows the chosen base (live preview): dialog bg (16, 21, 31) == midnight canvas (16, 21, 31)
+    PASS  D1: the token column shows its scrollbar thumb at rest in the reserved track (Midnight base, unedited, 1000x680): border-coloured thumb columns bbox (793, 169, 798, 349) (6 px wide, runs >= 48 px) inside the 16 px track x=787..802; track pixels that are neither the track background (16, 21, 31) nor the thumb colour (43, 55, 73): 16 [((32, 41, 56), 8), ((42, 53, 71), 8)] (thumb corners)
+    PASS  kept: the first edit recolours in the same frame as its keystroke: 136 grabs in 0.4 s after the key; 0 showed the new digit with the old colour; first recoloured grab at 0.066 s
+[B] dark-1000x680-04b-canvas-typed.png
+    shows: Canvas #1a1030 just typed, caret at the end, no Home: all seven characters in the 78 px field
+    keys since previous capture: Tab  # to Canvas hex | Control+a  # select all | type '#1a103'  # Canvas, all but the last digit (invalid, draft unchanged) | type '0'  # last digit: the edit becomes valid
+    frame: caret [740, 194, 742, 208] (visible phase kept)
+    PASS  D2: after typing #rrggbb the focused field shows all seven characters with the caret (no Home): canvas ink groups [(692, 698), (700, 704), (706, 711), (713, 718), (720, 725), (727, 731), (733, 738)], caret [(740, 741)]; reference panel groups [(692, 698), (700, 704), (706, 711), (713, 718), (720, 725), (727, 731), (734, 738)] (caret []); first ink column 692 vs the reference's 692; the # cell (x hex_left+9..+15) identical to the reference's; field bg (31, 28, 55)
+[C] dark-1000x680-05-edit-warning.png
+    shows: Canvas #1a1030 and Muted #8a96a8 typed; two warnings; focus on the Muted picker
+    keys since previous capture: Tab  # to Canvas picker | Tab x13  # to Muted text hex | Control+a  # select all | type '8A96A8'  # Muted text, uppercase without # | Tab  # to Muted text picker
+    PASS  edit: whole window follows the draft canvas: dialog bg (26, 16, 48) == typed #1a1030 (26, 16, 48)
+    PASS  D2: after focus leaves, the typed Canvas field still shows the full value from its # (no Home): canvas ink groups [(692, 698), (700, 704), (706, 711), (713, 718), (720, 725), (727, 731), (733, 738)], caret []; reference panel groups [(692, 698), (700, 704), (706, 711), (713, 718), (720, 725), (727, 731), (734, 738)] (caret []); first ink column 692 vs the reference's 692; the # cell (x hex_left+9..+15) identical to the reference's; field bg (31, 28, 55)
+    PASS  D1: the token column shows its scrollbar thumb at rest in the reserved track (edited draft, 1000x680): border-coloured thumb columns bbox (793, 169, 798, 341) (6 px wide, runs >= 48 px) inside the 16 px track x=787..802; track pixels that are neither the track background (26, 16, 48) nor the thumb colour (43, 55, 73): 16 [((36, 39, 63), 8), ((42, 53, 72), 8)] (thumb corners)
+    PASS  D1: the rows end before the track: the focused picker's ring is left of the thumb and 16 px left of cd563f6's: picker ring bbox (767, 429, 786, 448); track starts x=787; thumb x=793; cd563f6 picker right edge 802 - now 786 = 16 px
+    PASS  edit: warning glyph on the Muted text row, none on Canvas: warning-coloured glyph pixels muted=133 canvas=0; predicted list ['Muted text on Selected 3.9:1, needs 4.5:1', 'Muted text on Selected row hover 3.4:1, needs 4.5:1']
+    PASS  kept: focused picker has a 2 px accent ring, a resting one a 1 px border-colour edge: 84 accent px around the focused Muted picker; resting Canvas picker: 24 exact border-colour px on its rounded 1 px edge, 0 accent px
+[B] dark-1000x680-06-invalid-focused.png
+    shows: #12 in Muted text with focus: removed outline, Save disabled, draft kept
+    keys since previous capture: Shift+Tab  # back to Muted text hex | Control+a  # select all | type '#12'  # invalid value, field keeps focus
+    frame: caret [713, 432, 715, 446] (visible phase kept)
+    PASS  invalid hex field outlined in removed while focused: border (255, 149, 168) == removed (255, 149, 168)
+    PASS  D3: an invalid value shows the × glyph on the removed fill in the row's warning slot, replacing the readability glyph: removed-fill glyph bbox (641, 432, 654, 445) size (14, 14) (155 removed px, 41 other px inside = the ×, centre (212, 124, 145)); expected 14x14 at x=hex_left-42=641, y=432; warning-coloured px in the slot: 0
+    PASS  invalid: Save disabled (not the accent fill): Save fill (40, 47, 69), accent (117, 224, 187)
+    PASS  invalid: last valid draft kept: dialog bg (26, 16, 48) still (26, 16, 48); 2066 px differ from 05 (field, picker ring, Save), bbox (641, 429, 803, 647)
+    PASS  invalid: outline stays after focus leaves: border (255, 149, 168) == removed (255, 149, 168)
+    PASS  D3: the invalid glyph stays after focus leaves the field: removed-fill glyph bbox (641, 432, 654, 445) size (14, 14) (155 removed px, 41 other px inside = the ×, centre (212, 124, 145)); expected 14x14 at x=hex_left-42=641, y=432; warning-coloured px in the slot: 0
+    PASS  valid again: frame returns to the 05 capture exactly (Save re-enabled): 0 px differ, bbox None
+    PASS  D3: a valid value again removes the × glyph and restores the readability glyph: removed px in the slot 0; warning glyph bbox (642, 433, 653, 444) size (12, 12) (112 px)
+[B] dark-1000x680-07-warnings-focused.png
+    shows: keyboard focus on the Readability list, in view with an accent outline
+    keys since previous capture: Tab  # leave the field | Shift+Tab  # back to Muted text hex | Control+a  # select all | type '8A96A8'  # valid again | Tab  # to Muted text picker | Tab x26  # rows ... to the Hunk and links picker | Tab  # to the Readability list (grabs of the body right after the key)
+    PASS  fix 2: Tab to the Readability list brings it into view in the frame that first shows its focus: 1052 body grabs in 1.0 s (~1 ms apart), 1 distinct frames after the key; first changed grab at 0.052 s already shows the target: (205, 510, 778, 602); sequence [(0.052, True)]; settled capture: outline (205, 510, 778, 602) (05 frame, list not focused: None)
+[C] dark-1000x680-08-saved.png
+    shows: dialog closed; theme listed under Your themes, active, warning count 2
+    keys since previous capture: Tab x4  # Reset, Cancel, Save, wrap to Name | Return  # Return in Name saves
+    PASS  save: store version 6 holds the theme and selects it: version=6 custom_themes=[(1, 'Night Harbor', 'midnight', '#1a1030', '#8a96a8')] theme={'custom': 1} other tokens equal base: True
+    PASS  save: window keeps the saved palette: page (26, 16, 48) == (26, 16, 48)
+    PASS  kept: Your themes row content aligns with the card title: swatch strip left x=50 (row y=347); title/description leftmost ink x=50
+[B] dark-1000x680-09-before-edit.png
+    shows: keyboard focus on Edit…; reference frame for Cancel
+    keys since previous capture: Tab  # New theme… -> Edit…
+[C] dark-1000x680-10-edit-reopened.png
+    shows: Edit theme with the saved name, base, values and warnings
+    keys since previous capture: space  # activate Edit…
+    frame: caret [208, 133, 210, 147] (visible phase kept)
+    PASS  reopen: dialog shows the saved palette: dialog bg (26, 16, 48) == (26, 16, 48)
+    PASS  D2: the typed Canvas row's ink (05, after blur) is pixel-identical to the same value reopened from the store: 0 px differ inside the Canvas hex field between 05 and 10, bbox None; store value #1a1030
+[B] dark-1000x680-11-edit-return-commits.png
+    shows: Return rewrote 301018 as #301018; dialog open, preview shown; no Home pressed
+    keys since previous capture: Tab x2  # Name -> Base -> Canvas hex | Control+a  # select all | type '#301018'  # reference: the canonical text typed directly, caret at the end | Control+a  # select all | type '301018'  # uppercase, no # | Return  # Return in the hex field
+    frame: caret [740, 194, 742, 208] (visible phase kept)
+    PASS  D2: after Return the rewritten value shows all seven characters with the caret (no Home): canvas ink groups [(692, 704), (706, 711), (713, 718), (720, 725), (727, 738)], caret [(740, 741)]; reference panel groups [(692, 698), (700, 704), (706, 711), (713, 718), (720, 725), (727, 731), (734, 738)] (caret []); first ink column 692 vs the reference's 692; the # cell (x hex_left+9..+15) identical to the reference's; field bg (47, 28, 39)
+    PASS  Return in a valid hex field rewrites it lowercase and saves nothing: field reads '#301018': identical to the typed lowercase frame at shift +0 px (caret-only regions []); vs the frame typed before Return: 357 px, mean channel diff 27.3, ratio inf; dialog open with bg (48, 16, 24); store unchanged: True
+[C] dark-1000x680-13-cancelled.png
+    shows: the saved palette is back, focus on Edit…
+    keys since previous capture: Tab  # to Canvas picker | Escape  # Escape cancels
+    PASS  cancel: Escape discards (frame identical to 09, store unchanged): 0 px differ from 09, bbox None; store unchanged: True
+[B] dark-1000x680-14-before-delete.png
+    shows: keyboard focus on Delete…; reference frame for the alert
+    keys since previous capture: Tab  # Edit… -> Delete…
+[B] dark-1000x680-15-delete-confirm.png
+    shows: alert names the theme and its base; keyboard focus must be on Cancel inside the alert
+    keys since previous capture: space  # activate Delete…
+    PASS  fix 1: the Delete confirmation opens with focus on Cancel (FAILs when focus is outside the alert): alert open True; accent-tinted ring px: Cancel 456, Delete theme 16, title bar Menu 0 -> focus on cancel
+[B] dark-1000x680-15b-tab-in-alert.png
+    shows: second Tab from Cancel: focus still inside the alert
+    keys since previous capture: Tab  # Tab: Cancel -> Delete theme | Tab  # Tab again: must stay inside the alert
+    PASS  fix 1: Tab stays inside the alert: after Tab: delete (Cancel 0, Delete theme 690, title bar Menu 0 px); after a second Tab: cancel (Cancel 456, Delete theme 16, title bar Menu 0 px)
+    PASS  fix 1: Return on Cancel closes without deleting (frame identical to 14): Cancel focused: True; alert closed: True; store unchanged: True; 0 px differ from 14, bbox None
+    PASS  fix 1: Escape closes the alert without deleting (frame identical to 14): reopened with focus on cancel; closed by Escape: True; 0 px differ from 14, bbox None; store unchanged: True
+    PASS  fix 1: the reopened alert focuses Cancel and Tab reaches Delete theme: reopened with focus on cancel; after Tab: delete (Delete theme ring 690 px)
+[C] dark-1000x680-16-deleted.png
+    shows: theme gone from Your themes; base palette applied; focus on New theme…
+    keys since previous capture: Return  # Return on Cancel | space  # Delete… again | Escape  # Escape in the alert | space  # Delete… again | Tab  # Tab: Cancel -> Delete theme | Return  # Return on Delete theme
+    PASS  fix 1: Return on Delete theme deletes; the store selects the base: custom_themes=[] theme='midnight'
+    PASS  delete: base palette applied: page (16, 21, 31) == midnight canvas (16, 21, 31)
+    PASS  fix 3: after the delete, keyboard focus is on New theme…: Space opened the New theme dialog: True (first grab at 0.044 s); dialog bg (16, 21, 31) (base canvas (16, 21, 31)); store unchanged: True; accent-tinted ring px at the right of the page in 16: {'count': 870, 'bbox': (830, 287, 952, 320)}
+[C] dark-1000x680-17-base-selected.png
+    shows: picker: Midnight card outlined and checked
+    keys since previous capture: space  # Space: whatever has focus activates | Escape  # close the New theme dialog
+    PASS  delete: base card is the selected picker card: card (460, 625, 36, 338), wheel steps 6
+Predicted Readability list (Python mirror of readability_issues): ['Muted text on Selected 3.9:1, needs 4.5:1', 'Muted text on Selected row hover 3.4:1, needs 4.5:1']
+Latency (s, input event to first grab showing the result; grab-bound, ~30-60 ms per grab; observation only): dialog_open 0.058, preview_canvas 0.066, save_to_page 0.06, preview_recanvas 0.066, cancel_restore 0.03, delete_to_base 0.041
+
+Scenario dark-1440x900  (pid 2193026, terminated by the driver (SIGTERM))
+----------------------
+XDG_CONFIG_HOME=<bundle>/run-evidence/config/dark-1440x900 (removed after the run); seeded {"version": 6, "settings": {"theme": "graphite"}}
+pointer: wheel +15 at (100, 500): scroll Settings until the Your themes card is on screen
+pointer: wheel -60 at (100, 500): scroll Settings to the top
+pointer: wheel +1 at (100, 500): step Settings down to the base's picker card
+pointer: wheel +1 at (100, 500): step Settings down to the base's picker card
+pointer: wheel +1 at (100, 500): step Settings down to the base's picker card
+[B] dark-1440x900-00-settings-before.png
+    shows: Settings, Your themes empty, seeded graphite active
+    keys since previous capture: Control+comma  # open Settings
+    PASS  before: page canvas is the seeded theme's: page (24, 25, 29) vs graphite canvas (24, 25, 29)
+    PASS  before: store has no custom themes: custom_themes=[] theme=graphite
+[B] dark-1440x900-01-new-theme-focused.png
+    shows: keyboard focus ring on New theme…
+    keys since previous capture: Tab x28  # title bar Menu ... theme cards ... New theme…
+[B] dark-1440x900-02-new-dialog.png
+    shows: New theme dialog, Name focused, base graphite
+    keys since previous capture: space  # activate New theme…
+    frame: caret [248, 155, 250, 169] (visible phase kept)
+    PASS  new: dialog painted in the active palette: dialog bg (24, 25, 29) == graphite canvas (24, 25, 29)
+    PASS  kept: Base button is 200 px wide and 28 px tall; Name is 28 px tall: Base 200x28 px, Name border height 28 px
+[B] dark-1440x900-03-base-menu.png
+    shows: Base menu open: Light and Dark groups, current base checked
+    keys since previous capture: Control+a  # select all | type 'Night Harbor'  # Name | Tab  # to Base | space  # open the Base menu
+    PASS  kept: Base menu at least as wide as the button and not a fixed 420 px tall: menu region (998, 145, 1206, 789): 208x644 px in a 1440x900 window
+[C] dark-1440x900-04-base-chosen.png
+    shows: base Midnight chosen on an unedited draft: tokens replaced at once
+    keys since previous capture: Down x10  # to Midnight | Return  # choose Midnight
+    PASS  base: unedited draft follows the chosen base (live preview): dialog bg (16, 21, 31) == midnight canvas (16, 21, 31)
+    PASS  D1: the token column shows its scrollbar thumb at rest in the reserved track (Midnight base, unedited, 1440x900): border-coloured thumb columns bbox (877, 191, 882, 711) (6 px wide, runs >= 48 px) inside the 16 px track x=871..886; track pixels that are neither the track background (16, 21, 31) nor the thumb colour (43, 55, 73): 16 [((32, 41, 56), 8), ((42, 53, 71), 8)] (thumb corners)
+    PASS  kept: the first edit recolours in the same frame as its keystroke: 58 grabs in 0.4 s after the key; 0 showed the new digit with the old colour; first recoloured grab at 0.07 s
+[B] dark-1440x900-04b-canvas-typed.png
+    shows: Canvas #1a1030 just typed, caret at the end, no Home: all seven characters in the 78 px field
+    keys since previous capture: Tab  # to Canvas hex | Control+a  # select all | type '#1a103'  # Canvas, all but the last digit (invalid, draft unchanged) | type '0'  # last digit: the edit becomes valid
+    frame: caret [824, 216, 826, 230] (visible phase kept)
+    PASS  D2: after typing #rrggbb the focused field shows all seven characters with the caret (no Home): canvas ink groups [(776, 782), (784, 788), (790, 795), (797, 802), (804, 809), (811, 815), (817, 822)], caret [(824, 825)]; reference panel groups [(776, 782), (784, 788), (790, 795), (797, 802), (804, 809), (811, 815), (818, 822)] (caret []); first ink column 776 vs the reference's 776; the # cell (x hex_left+9..+15) identical to the reference's; field bg (31, 28, 55)
+[C] dark-1440x900-05-edit-warning.png
+    shows: Canvas #1a1030 and Muted #8a96a8 typed; two warnings; focus on the Muted picker
+    keys since previous capture: Tab  # to Canvas picker | Tab x13  # to Muted text hex | Control+a  # select all | type '8A96A8'  # Muted text, uppercase without # | Tab  # to Muted text picker
+    PASS  edit: whole window follows the draft canvas: dialog bg (26, 16, 48) == typed #1a1030 (26, 16, 48)
+    PASS  D2: after focus leaves, the typed Canvas field still shows the full value from its # (no Home): canvas ink groups [(776, 782), (784, 788), (790, 795), (797, 802), (804, 809), (811, 815), (817, 822)], caret []; reference panel groups [(776, 782), (784, 788), (790, 795), (797, 802), (804, 809), (811, 815), (818, 822)] (caret []); first ink column 776 vs the reference's 776; the # cell (x hex_left+9..+15) identical to the reference's; field bg (31, 28, 55)
+    PASS  D1: the token column shows its scrollbar thumb at rest in the reserved track (edited draft, 1440x900): border-coloured thumb columns bbox (877, 191, 882, 711) (6 px wide, runs >= 48 px) inside the 16 px track x=871..886; track pixels that are neither the track background (26, 16, 48) nor the thumb colour (43, 55, 73): 16 [((36, 39, 63), 8), ((42, 53, 72), 8)] (thumb corners)
+    PASS  D1: the rows end before the track: the focused picker's ring is left of the thumb and 16 px left of cd563f6's: picker ring bbox (851, 451, 870, 470); track starts x=871; thumb x=877; cd563f6 picker right edge 886 - now 870 = 16 px
+    PASS  edit: warning glyph on the Muted text row, none on Canvas: warning-coloured glyph pixels muted=133 canvas=0; predicted list ['Muted text on Selected 3.9:1, needs 4.5:1', 'Muted text on Selected row hover 3.4:1, needs 4.5:1']
+    PASS  kept: focused picker has a 2 px accent ring, a resting one a 1 px border-colour edge: 84 accent px around the focused Muted picker; resting Canvas picker: 24 exact border-colour px on its rounded 1 px edge, 0 accent px
+[C] dark-1440x900-06-invalid-focused.png
+    shows: #12 in Muted text with focus: removed outline, Save disabled, draft kept
+    keys since previous capture: Shift+Tab  # back to Muted text hex | Control+a  # select all | type '#12'  # invalid value, field keeps focus
+    frame: caret [797, 454, 799, 468] (visible phase kept)
+    PASS  invalid hex field outlined in removed while focused: border (255, 149, 168) == removed (255, 149, 168)
+    PASS  D3: an invalid value shows the × glyph on the removed fill in the row's warning slot, replacing the readability glyph: removed-fill glyph bbox (725, 454, 738, 467) size (14, 14) (155 removed px, 41 other px inside = the ×, centre (212, 124, 145)); expected 14x14 at x=hex_left-42=725, y=454; warning-coloured px in the slot: 0
+    PASS  invalid: Save disabled (not the accent fill): Save fill (40, 47, 69), accent (117, 224, 187)
+    PASS  invalid: last valid draft kept: dialog bg (26, 16, 48) still (26, 16, 48); 2066 px differ from 05 (field, picker ring, Save), bbox (725, 451, 1203, 867)
+    PASS  invalid: outline stays after focus leaves: border (255, 149, 168) == removed (255, 149, 168)
+    PASS  D3: the invalid glyph stays after focus leaves the field: removed-fill glyph bbox (725, 454, 738, 467) size (14, 14) (155 removed px, 41 other px inside = the ×, centre (212, 124, 145)); expected 14x14 at x=hex_left-42=725, y=454; warning-coloured px in the slot: 0
+    PASS  valid again: frame returns to the 05 capture exactly (Save re-enabled): 0 px differ, bbox None
+    PASS  D3: a valid value again removes the × glyph and restores the readability glyph: removed px in the slot 0; warning glyph bbox (726, 455, 737, 466) size (12, 12) (112 px)
+[C] dark-1440x900-07-warnings-focused.png
+    shows: keyboard focus on the Readability list, in view with an accent outline
+    keys since previous capture: Tab  # leave the field | Shift+Tab  # back to Muted text hex | Control+a  # select all | type '8A96A8'  # valid again | Tab  # to Muted text picker | Tab x26  # rows ... to the Hunk and links picker | Tab  # to the Readability list (grabs of the body right after the key)
+    PASS  fix 2: Tab to the Readability list brings it into view in the frame that first shows its focus: 367 body grabs in 1.0 s (~3 ms apart), 1 distinct frames after the key; first changed grab at 0.05 s already shows the target: (911, 365, 1194, 457); sequence [(0.05, True)]; settled capture: outline (911, 365, 1194, 457) (05 frame, list not focused: None)
+[C] dark-1440x900-08-saved.png
+    shows: dialog closed; theme listed under Your themes, active, warning count 2
+    keys since previous capture: Tab x4  # Reset, Cancel, Save, wrap to Name | Return  # Return in Name saves
+    PASS  save: store version 6 holds the theme and selects it: version=6 custom_themes=[(1, 'Night Harbor', 'midnight', '#1a1030', '#8a96a8')] theme={'custom': 1} other tokens equal base: True
+    PASS  save: window keeps the saved palette: page (26, 16, 48) == (26, 16, 48)
+    PASS  kept: Your themes row content aligns with the card title: swatch strip left x=171 (row y=662); title/description leftmost ink x=171
+[B] dark-1440x900-09-before-edit.png
+    shows: keyboard focus on Edit…; reference frame for Cancel
+    keys since previous capture: Tab  # New theme… -> Edit…
+[C] dark-1440x900-10-edit-reopened.png
+    shows: Edit theme with the saved name, base, values and warnings
+    keys since previous capture: space  # activate Edit…
+    frame: caret [248, 155, 250, 169] (visible phase kept)
+    PASS  reopen: dialog shows the saved palette: dialog bg (26, 16, 48) == (26, 16, 48)
+    PASS  D2: the typed Canvas row's ink (05, after blur) is pixel-identical to the same value reopened from the store: 0 px differ inside the Canvas hex field between 05 and 10, bbox None; store value #1a1030
+[B] dark-1440x900-11-edit-return-commits.png
+    shows: Return rewrote 301018 as #301018; dialog open, preview shown; no Home pressed
+    keys since previous capture: Tab x2  # Name -> Base -> Canvas hex | Control+a  # select all | type '#301018'  # reference: the canonical text typed directly, caret at the end | Control+a  # select all | type '301018'  # uppercase, no # | Return  # Return in the hex field
+    frame: caret [824, 216, 826, 230] (visible phase kept)
+    PASS  D2: after Return the rewritten value shows all seven characters with the caret (no Home): canvas ink groups [(776, 788), (790, 795), (797, 802), (804, 809), (811, 822)], caret [(824, 825)]; reference panel groups [(776, 782), (784, 788), (790, 795), (797, 802), (804, 809), (811, 815), (818, 822)] (caret []); first ink column 776 vs the reference's 776; the # cell (x hex_left+9..+15) identical to the reference's; field bg (47, 28, 39)
+    PASS  Return in a valid hex field rewrites it lowercase and saves nothing: field reads '#301018': identical to the typed lowercase frame at shift +0 px (caret-only regions []); vs the frame typed before Return: 357 px, mean channel diff 27.3, ratio inf; dialog open with bg (48, 16, 24); store unchanged: True
+[C] dark-1440x900-13-cancelled.png
+    shows: the saved palette is back, focus on Edit…
+    keys since previous capture: Tab  # to Canvas picker | Escape  # Escape cancels
+    PASS  cancel: Escape discards (frame identical to 09, store unchanged): 0 px differ from 09, bbox None; store unchanged: True
+[B] dark-1440x900-14-before-delete.png
+    shows: keyboard focus on Delete…; reference frame for the alert
+    keys since previous capture: Tab  # Edit… -> Delete…
+[B] dark-1440x900-15-delete-confirm.png
+    shows: alert names the theme and its base; keyboard focus must be on Cancel inside the alert
+    keys since previous capture: space  # activate Delete…
+    PASS  fix 1: the Delete confirmation opens with focus on Cancel (FAILs when focus is outside the alert): alert open True; accent-tinted ring px: Cancel 456, Delete theme 16, title bar Menu 0 -> focus on cancel
+[B] dark-1440x900-15b-tab-in-alert.png
+    shows: second Tab from Cancel: focus still inside the alert
+    keys since previous capture: Tab  # Tab: Cancel -> Delete theme | Tab  # Tab again: must stay inside the alert
+    PASS  fix 1: Tab stays inside the alert: after Tab: delete (Cancel 0, Delete theme 690, title bar Menu 0 px); after a second Tab: cancel (Cancel 456, Delete theme 16, title bar Menu 0 px)
+    PASS  fix 1: Return on Cancel closes without deleting (frame identical to 14): Cancel focused: True; alert closed: True; store unchanged: True; 0 px differ from 14, bbox None
+    PASS  fix 1: Escape closes the alert without deleting (frame identical to 14): reopened with focus on cancel; closed by Escape: True; 0 px differ from 14, bbox None; store unchanged: True
+    PASS  fix 1: the reopened alert focuses Cancel and Tab reaches Delete theme: reopened with focus on cancel; after Tab: delete (Delete theme ring 690 px)
+[C] dark-1440x900-16-deleted.png
+    shows: theme gone from Your themes; base palette applied; focus on New theme…
+    keys since previous capture: Return  # Return on Cancel | space  # Delete… again | Escape  # Escape in the alert | space  # Delete… again | Tab  # Tab: Cancel -> Delete theme | Return  # Return on Delete theme
+    PASS  fix 1: Return on Delete theme deletes; the store selects the base: custom_themes=[] theme='midnight'
+    PASS  delete: base palette applied: page (16, 21, 31) == midnight canvas (16, 21, 31)
+    PASS  fix 3: after the delete, keyboard focus is on New theme…: Space opened the New theme dialog: True (first grab at 0.068 s); dialog bg (16, 21, 31) (base canvas (16, 21, 31)); store unchanged: True; accent-tinted ring px at the right of the page in 16: {'count': 0, 'bbox': None}
+[B] dark-1440x900-17-base-selected.png
+    shows: picker: Midnight card outlined and checked
+    keys since previous capture: space  # Space: whatever has focus activates | Escape  # close the New theme dialog
+    PASS  delete: base card is the selected picker card: card (649, 814, 157, 399), wheel steps 3
+Predicted Readability list (Python mirror of readability_issues): ['Muted text on Selected 3.9:1, needs 4.5:1', 'Muted text on Selected row hover 3.4:1, needs 4.5:1']
+Latency (s, input event to first grab showing the result; grab-bound, ~30-60 ms per grab; observation only): dialog_open 0.064, preview_canvas 0.07, save_to_page 0.077, preview_recanvas 0.076, cancel_restore 0.056, delete_to_base 0.073
+
+Scenario fixes-1440x900  (pid 2184776, terminated by the driver (SIGTERM))
+-----------------------
+XDG_CONFIG_HOME=<bundle>/run-evidence/config/fixes-1440x900 (removed after the run); seeded {"version": 6, "settings": {"theme": "midnight"}}
+pointer: wheel +15 at (100, 500): scroll Settings until the Your themes card is on screen
+[B] fixes-1440x900-01-new-dialog.png
+    shows: wide layout: token rows, the scrollbar thumb at rest in its track, and the side column
+    keys since previous capture: Control+comma  # open Settings | Tab x28  # title bar Menu ... theme cards ... New theme… | space  # New theme…
+    frame: caret [248, 155, 250, 169] (visible phase kept)
+    PASS  D1: the token column shows its scrollbar thumb at rest in the reserved track (Midnight, unedited, wide layout): border-coloured thumb columns bbox (877, 191, 882, 711) (6 px wide, runs >= 48 px) inside the 16 px track x=871..886; track pixels that are neither the track background (16, 21, 31) nor the thumb colour (43, 55, 73): 16 [((32, 41, 56), 8), ((42, 53, 71), 8)] (thumb corners)
+    PASS  kept: token rows are 30 px, each starting at its predecessor's bottom: Canvas hex border y [220]..[224], Panel [250]..[254]: pitch 30 px; Canvas to Selected 150 px (5 rows)
+    PASS  kept: the Text group label keeps its height (22 px label + group gap): Selected row bottom to Text row top 28 px
+    PASS  D2: hex field is 78 px wide (70 px on cd563f6): focused Canvas hex border spans 78 px
+[B] fixes-1440x900-02-canvas-hex-focused.png
+    shows: focus in the Canvas hex field
+    keys since previous capture: Tab x2  # row pitch: Name -> Base -> Canvas hex | Tab x2  # Canvas picker -> Panel hex | Tab x8  # to Selected hex | Tab x2  # to Text hex | Shift+Tab x10  # back to Panel hex | Shift+Tab x2  # Panel hex -> Canvas picker -> Canvas hex
+    frame: caret [776, 216, 778, 230] (visible phase kept)
+[B] fixes-1440x900-03-picker-focused.png
+    shows: focus on the Canvas colour picker: 2 px accent ring; Panel picker at rest
+    keys since previous capture: Tab  # to the Canvas colour picker
+    PASS  kept: focused picker has a 2 px accent ring, a resting one a 1 px border-colour edge: 84 accent px around the focused Canvas picker (0 expected before focus: 0); 24 border-colour px on the resting Panel picker
+    PASS  D1: the rows end before the track: the focused picker's ring is left of the thumb and 16 px left of cd563f6's: picker ring bbox (851, 213, 870, 232); track starts x=871; thumb x=877; cd563f6 picker right edge 886 - now 870 = 16 px
+    PASS  D2: after typing #rrggbb the focused field shows all seven characters with the caret (no Home): canvas ink groups [(776, 782), (784, 788), (790, 795), (797, 802), (804, 809), (811, 815), (817, 822)], caret [(824, 825)]; reference panel groups [(776, 782), (784, 788), (790, 795), (797, 802), (804, 809), (811, 815), (818, 822)] (caret []); first ink column 776 vs the reference's 776; the # cell (x hex_left+8..+16) identical to the reference's; field bg (31, 28, 55)
+[B] fixes-1440x900-04-return-in-hex.png
+    shows: Return rewrote 1A1030 as #1a1030; the dialog stays open; no Home pressed
+    keys since previous capture: Shift+Tab  # back to Canvas hex | Control+a  # select all | type '#1a1030'  # reference: canonical text, caret at the end | Control+a  # select all | type '1A1030'  # uppercase, no # | Return  # Return in a valid hex field
+    frame: caret [824, 216, 826, 230] (visible phase kept)
+    PASS  Return in a valid hex field rewrites it lowercase and saves nothing: field reads '#1a1030': identical to the typed lowercase frame at shift +0 px (caret-only regions []); vs the frame typed before Return: 340 px, mean channel diff 25.24, ratio inf; custom_themes=[]; dialog bg (26, 16, 48)
+    PASS  D2: after Return the rewritten value shows all seven characters with the caret (no Home): canvas ink groups [(776, 782), (784, 788), (790, 795), (797, 802), (804, 809), (811, 815), (817, 822)], caret [(824, 825)]; reference panel groups [(776, 782), (784, 788), (790, 795), (797, 802), (804, 809), (811, 815), (818, 822)] (caret []); first ink column 776 vs the reference's 776; the # cell (x hex_left+8..+16) identical to the reference's; field bg (31, 28, 55)
+    PASS  D2: after focus leaves, the Canvas field still shows the full value from its # (no Home): canvas ink groups [(776, 782), (784, 788), (790, 795), (797, 802), (804, 809), (811, 815), (817, 822)], caret []; reference panel groups [(776, 782), (784, 788), (790, 795), (797, 802), (804, 809), (811, 815), (818, 822)] (caret []); first ink column 776 vs the reference's 776; the # cell (x hex_left+8..+16) identical to the reference's; field bg (31, 28, 55)
+[C] fixes-1440x900-05-invalid-name.png
+    shows: Name 'Midnight' refused while the field has focus: removed outline, message, Save disabled
+    keys since previous capture: Tab  # to the Canvas picker: the field loses focus | Shift+Tab x3  # Canvas picker -> Canvas hex -> Base -> Name | Control+a  # select all | type 'Midnight'  # a built-in theme's name
+    frame: caret [294, 155, 296, 169] (visible phase kept)
+    PASS  kept: an invalid Name shows the removed outline while focused: removed-colour border rows [148, 175] at x=400 (height 28); Save fill (40, 47, 69)
+[B] fixes-1440x900-05-base-question.png
+    shows: the edited draft asks Replace colors or Keep colors
+    keys since previous capture: Control+a  # select all | type 'My Midnight'  # valid name again | Tab  # Name -> Base | space  # open the Base menu | Down x2  # to Braden | Return  # choose Braden after an edit
+    PASS  base question: edited draft not replaced before the answer: dialog bg (26, 16, 48)
+[B] fixes-1440x900-06-keep-colors-focused.png
+    shows: keyboard focus on Keep colors
+    keys since previous capture: Tab  # Base -> Keep colors
+[C] fixes-1440x900-07-kept-focus-on-base.png
+    shows: Keep colors: base Braden adopted, draft kept, focus back on Base
+    keys since previous capture: Return  # Return on Keep colors
+    PASS  Return on Keep colors keeps the draft: dialog bg (26, 16, 48) (Base label reads Braden in the capture)
+    PASS  focus returns to Base after answering: 1190 accent-tinted ring px on the Base button (dominant (72, 120, 118)); 0 while Keep colors had focus
+[B] fixes-1440x900-08-tab-after-answer.png
+    shows: Tab after answering moves focus into the rows
+    keys since previous capture: Tab  # Base -> Canvas hex
+    frame: caret [824, 216, 826, 230] (visible phase kept)
+    PASS  after Keep colors, Tab moves focus inside the dialog: 2232 px changed, bbox (764, 145, 1206, 235); hex focus ring at y [220]..[224]
+[C] fixes-1440x900-08b-diff-group-visible.png
+    shows: Tab to the last row: the column scrolled to its end, Diff group label and rows visible, thumb at the bottom of the track
+    keys since previous capture: Tab x40  # Canvas hex -> ... -> Hunk and links hex, the last row (Diff group)
+    frame: caret [776, 801, 778, 815] (visible phase kept)
+    PASS  D1: the Diff group is visible once the last row is tabbed to (thumb moved to the end, label and rows painted): Hunk and links focus ring y [805]..[809]; thumb (877, 297, 882, 817) vs at rest (877, 191, 882, 711) (moved 106 px); ink px (label column, hex column): Diff label band (101, 0), Added background row (144, 238), Removed background row (132, 246)
+[B] fixes-1440x900-09-escaped.png
+    shows: Escape discarded the draft: Midnight re-applied
+    keys since previous capture: Escape  # Escape
+    PASS  Escape cancels after the base question: page (16, 21, 31) == (16, 21, 31); custom_themes=[] theme=midnight
+Latency (s, input event to first grab showing the result; grab-bound, ~30-60 ms per grab; observation only): escape_restore 0.078
+
+Scenario fixes-1000x680  (pid 2185807, terminated by the driver (SIGTERM))
+-----------------------
+XDG_CONFIG_HOME=<bundle>/run-evidence/config/fixes-1000x680 (removed after the run); seeded {"version": 6, "settings": {"theme": "midnight"}}
+pointer: wheel +20 at (60, 400): scroll Settings until the Your themes card is on screen
+[B] fixes-1000x680-01-new-dialog.png
+    shows: stacked 640 px dialog, Name focused, scrollbar thumb at rest in its track
+    keys since previous capture: Control+comma  # open Settings | Tab x28  # title bar Menu ... theme cards ... New theme… | space  # New theme…
+    frame: caret [208, 133, 210, 147] (visible phase kept)
+    PASS  D1: the token column shows its scrollbar thumb at rest in the reserved track (Midnight, unedited, stacked layout): border-coloured thumb columns bbox (793, 169, 798, 349) (6 px wide, runs >= 48 px) inside the 16 px track x=787..802; track pixels that are neither the track background (16, 21, 31) nor the thumb colour (43, 55, 73): 16 [((32, 41, 56), 8), ((42, 53, 71), 8)] (thumb corners)
+    PASS  kept: token rows are 30 px, each starting at its predecessor's bottom: Canvas hex border y [198]..[202], Panel [228]..[232]: pitch 30 px; Canvas to Selected 150 px (5 rows)
+    PASS  kept: the Text group label keeps its height (22 px label + group gap): Selected row bottom to Text row top 28 px
+    PASS  D2: hex field is 78 px wide (70 px on cd563f6): focused Canvas hex border spans 78 px
+[C] fixes-1000x680-02-hidden-row-focused.png
+    shows: focus in the Hunk and links hex field: the body scrolled to it; Diff group visible; thumb moved down
+    keys since previous capture: Tab x2  # row pitch: Name -> Base -> Canvas hex | Tab x2  # Canvas picker -> Panel hex | Tab x8  # to Selected hex | Tab x2  # to Text hex | Shift+Tab x10  # back to Panel hex | Tab x37  # Panel hex -> ... -> Removed background picker (the row before the last) | Tab  # to the Hunk and links hex, the last row, below the fold (grabs of the body right after the key)
+    frame: caret [692, 581, 694, 595] (visible phase kept)
+    PASS  kept: Tab to a row below the fold scrolls it into view in the frame that first shows its focus: 1033 body grabs in 1.0 s (~1 ms apart), 3 distinct frames after the key; first changed grab at 0.032 s already shows the target: [585, 586, 587, 588, 589]; sequence [(0.032, True), (0.07, True), (0.581, True)]; settled: accent focus ring in the hex column at y [585]..[589]; body changed, bbox (194, 123, 799, 600)
+    PASS  D1: the Diff group is visible once the last row is tabbed to (thumb moved to the end, label and rows painted): Hunk and links focus ring y [585]..[589]; thumb (793, 310, 798, 490) vs at rest (793, 169, 798, 349) (moved 141 px); ink px (label column, hex column): Diff label band (89, 0), Added background row (146, 250), Removed background row (131, 256)
+[B] fixes-1000x680-03-hidden-row-picker-focused.png
+    shows: focus on the last row's picker
+    keys since previous capture: Tab  # to the Hunk and links picker
+    PASS  D1: the rows end before the track: the focused picker's ring is left of the thumb and 16 px left of cd563f6's: picker ring bbox (767, 578, 786, 597); track starts x=787; thumb x=793; cd563f6 picker right edge 802 - now 786 = 16 px
+[C] fixes-1000x680-04-readability-focused.png
+    shows: focus on the Readability list (no pointer event since): in view with an accent outline
+    keys since previous capture: Tab  # to the Readability list (grabs of the body right after the key)
+    PASS  fix 2: Tab to the Readability list brings it into view in the frame that first shows its focus: 1076 body grabs in 1.0 s (~1 ms apart), 1 distinct frames after the key; first changed grab at 0.04 s already shows the target: (205, 552, 778, 602); sequence [(0.04, True)]; settled capture: outline (205, 552, 778, 602); 112812 px changed from 03, bbox (197, 164, 799, 603)
+[B] fixes-1000x680-05-reset-focused.png
+    shows: next Tab: focus on Reset to base; the list stays in view
+    keys since previous capture: Tab  # to Reset to base
+
+Scenario deletefocus-light-1000x680-1  (pid 2186551, terminated by the driver (SIGTERM))
+-------------------------------------
+XDG_CONFIG_HOME=<bundle>/run-evidence/config/deletefocus-light-1000x680-1 (removed after the run); seeded {"version": 6, "settings": {"theme": {"custom": 1}}, "custom_themes": [{"id": 1, "name": "Paper Lantern", "base": "daylight", "tokens": {"canvas": "#fff7e8", "panel": "#ffffff", "subtle": "#edf1f7", "hover": "#e7ecf3", "border": "#d2dce8", "selected": "#daece6", "text": "#253247", "muted": "#5c6a82", "line_number": "#61728a", "accent": "#08755d", "accent_foreground": "#ffffff", "accent_hover": "#06654f", "accent_active": "#055440", "added": "#146744", "removed": "#b53351", "modified": "#875a14", "renamed": "#7850b4", "warning": "#875a14", "added_background": "#e2f1e9", "removed_background": "#f9e5eb", "hunk": "#3764ae"}}]}
+pointer: wheel +20 at (60, 400): scroll Settings until the Your themes card is on screen
+[B] deletefocus-light-1000x680-1-00-settings-before.png
+    shows: Settings with the seeded custom theme Paper Lantern (base Braden) active
+    keys since previous capture: Control+comma  # open Settings
+    PASS  before: page canvas is the seeded custom theme's: page (255, 247, 232) == #fff7e8 (255, 247, 232)
+[B] deletefocus-light-1000x680-1-01-delete-focused.png
+    shows: keyboard focus on Delete…
+    keys since previous capture: Tab x28  # title bar Menu ... theme cards ... New theme… | Tab x2  # New theme… -> Edit… -> Delete…
+[B] deletefocus-light-1000x680-1-02-delete-confirm.png
+    shows: alert names the theme and its base; keyboard focus must be on Cancel
+    keys since previous capture: space  # activate Delete…
+    PASS  fix 1: the Delete confirmation opens with focus on Cancel (FAILs when focus is outside the alert): alert open True; accent-tinted ring px: Cancel 488, Delete theme 20, title bar Menu 0 -> focus on cancel
+[B] deletefocus-light-1000x680-1-03-deleted.png
+    shows: theme gone from Your themes; base palette applied; focus on New theme…
+    keys since previous capture: Tab  # Tab: Cancel -> Delete theme | Return  # Return on Delete theme
+    PASS  delete: the store empties custom_themes and selects the base, which is applied: custom_themes=[] theme='daylight'; page (244, 246, 250) == daylight canvas (244, 246, 250)
+    PASS  fix 3: after the delete, keyboard focus is on New theme…: Space opened the New theme dialog: True (first grab at 0.054 s); dialog bg (244, 246, 250) (base canvas (244, 246, 250)); store unchanged: True; accent-tinted ring px at the right of the page in 03: {'count': 870, 'bbox': (830, 287, 952, 320)}
+[B] deletefocus-light-1000x680-1-04-new-theme-opened.png
+    shows: Space on the focused New theme… opened the dialog in the base palette
+    keys since previous capture: space  # Space: whatever has focus activates
+    frame: caret [208, 133, 210, 147] (visible phase kept)
+Latency (s, input event to first grab showing the result; grab-bound, ~30-60 ms per grab; observation only): delete_to_base 0.04
+
+Scenario deletefocus-dark-1000x680-1  (pid 2187097, terminated by the driver (SIGTERM))
+------------------------------------
+XDG_CONFIG_HOME=<bundle>/run-evidence/config/deletefocus-dark-1000x680-1 (removed after the run); seeded {"version": 6, "settings": {"theme": {"custom": 1}}, "custom_themes": [{"id": 1, "name": "Night Harbor", "base": "midnight", "tokens": {"canvas": "#1a1030", "panel": "#171e2b", "subtle": "#131a25", "hover": "#222c3c", "border": "#2b3749", "selected": "#223b3b", "text": "#e8eef7", "muted": "#8a96a8", "line_number": "#899bb5", "accent": "#75e0bb", "accent_foreground": "#0a241d", "accent_hover": "#99edcf", "accent_active": "#5ccca6", "added": "#75e0bb", "removed": "#ff95a8", "modified": "#e8bc79", "renamed": "#c1a5f5", "warning": "#e8bc79", "added_background": "#19322d", "removed_background": "#382531", "hunk": "#95baff"}}]}
+pointer: wheel +20 at (60, 400): scroll Settings until the Your themes card is on screen
+[B] deletefocus-dark-1000x680-1-00-settings-before.png
+    shows: Settings with the seeded custom theme Night Harbor (base Midnight) active
+    keys since previous capture: Control+comma  # open Settings
+    PASS  before: page canvas is the seeded custom theme's: page (26, 16, 48) == #1a1030 (26, 16, 48)
+[B] deletefocus-dark-1000x680-1-01-delete-focused.png
+    shows: keyboard focus on Delete…
+    keys since previous capture: Tab x28  # title bar Menu ... theme cards ... New theme… | Tab x2  # New theme… -> Edit… -> Delete…
+[B] deletefocus-dark-1000x680-1-02-delete-confirm.png
+    shows: alert names the theme and its base; keyboard focus must be on Cancel
+    keys since previous capture: space  # activate Delete…
+    PASS  fix 1: the Delete confirmation opens with focus on Cancel (FAILs when focus is outside the alert): alert open True; accent-tinted ring px: Cancel 456, Delete theme 16, title bar Menu 0 -> focus on cancel
+[B] deletefocus-dark-1000x680-1-03-deleted.png
+    shows: theme gone from Your themes; base palette applied; focus on New theme…
+    keys since previous capture: Tab  # Tab: Cancel -> Delete theme | Return  # Return on Delete theme
+    PASS  delete: the store empties custom_themes and selects the base, which is applied: custom_themes=[] theme='midnight'; page (16, 21, 31) == midnight canvas (16, 21, 31)
+    PASS  fix 3: after the delete, keyboard focus is on New theme…: Space opened the New theme dialog: True (first grab at 0.053 s); dialog bg (16, 21, 31) (base canvas (16, 21, 31)); store unchanged: True; accent-tinted ring px at the right of the page in 03: {'count': 870, 'bbox': (830, 287, 952, 320)}
+[B] deletefocus-dark-1000x680-1-04-new-theme-opened.png
+    shows: Space on the focused New theme… opened the dialog in the base palette
+    keys since previous capture: space  # Space: whatever has focus activates
+    frame: caret [208, 133, 210, 147] (visible phase kept)
+Latency (s, input event to first grab showing the result; grab-bound, ~30-60 ms per grab; observation only): delete_to_base 0.041
+
+Scenario deletefocus-light-1440x900-1  (pid 2187561, terminated by the driver (SIGTERM))
+-------------------------------------
+XDG_CONFIG_HOME=<bundle>/run-evidence/config/deletefocus-light-1440x900-1 (removed after the run); seeded {"version": 6, "settings": {"theme": {"custom": 1}}, "custom_themes": [{"id": 1, "name": "Paper Lantern", "base": "daylight", "tokens": {"canvas": "#fff7e8", "panel": "#ffffff", "subtle": "#edf1f7", "hover": "#e7ecf3", "border": "#d2dce8", "selected": "#daece6", "text": "#253247", "muted": "#5c6a82", "line_number": "#61728a", "accent": "#08755d", "accent_foreground": "#ffffff", "accent_hover": "#06654f", "accent_active": "#055440", "added": "#146744", "removed": "#b53351", "modified": "#875a14", "renamed": "#7850b4", "warning": "#875a14", "added_background": "#e2f1e9", "removed_background": "#f9e5eb", "hunk": "#3764ae"}}]}
+pointer: wheel +15 at (100, 500): scroll Settings until the Your themes card is on screen
+[B] deletefocus-light-1440x900-1-00-settings-before.png
+    shows: Settings with the seeded custom theme Paper Lantern (base Braden) active
+    keys since previous capture: Control+comma  # open Settings
+    PASS  before: page canvas is the seeded custom theme's: page (255, 247, 232) == #fff7e8 (255, 247, 232)
+[B] deletefocus-light-1440x900-1-01-delete-focused.png
+    shows: keyboard focus on Delete…
+    keys since previous capture: Tab x28  # title bar Menu ... theme cards ... New theme… | Tab x2  # New theme… -> Edit… -> Delete…
+[B] deletefocus-light-1440x900-1-02-delete-confirm.png
+    shows: alert names the theme and its base; keyboard focus must be on Cancel
+    keys since previous capture: space  # activate Delete…
+    PASS  fix 1: the Delete confirmation opens with focus on Cancel (FAILs when focus is outside the alert): alert open True; accent-tinted ring px: Cancel 488, Delete theme 20, title bar Menu 0 -> focus on cancel
+[B] deletefocus-light-1440x900-1-03-deleted.png
+    shows: theme gone from Your themes; base palette applied; focus on New theme…
+    keys since previous capture: Tab  # Tab: Cancel -> Delete theme | Return  # Return on Delete theme
+    PASS  delete: the store empties custom_themes and selects the base, which is applied: custom_themes=[] theme='daylight'; page (244, 246, 250) == daylight canvas (244, 246, 250)
+    PASS  fix 3: after the delete, keyboard focus is on New theme…: Space opened the New theme dialog: True (first grab at 0.073 s); dialog bg (244, 246, 250) (base canvas (244, 246, 250)); store unchanged: True; accent-tinted ring px at the right of the page in 03: {'count': 0, 'bbox': None}
+[B] deletefocus-light-1440x900-1-04-new-theme-opened.png
+    shows: Space on the focused New theme… opened the dialog in the base palette
+    keys since previous capture: space  # Space: whatever has focus activates
+    frame: caret [248, 155, 250, 169] (visible phase kept)
+Latency (s, input event to first grab showing the result; grab-bound, ~30-60 ms per grab; observation only): delete_to_base 0.073
+
+Scenario deletefocus-dark-1440x900-1  (pid 2188046, terminated by the driver (SIGTERM))
+------------------------------------
+XDG_CONFIG_HOME=<bundle>/run-evidence/config/deletefocus-dark-1440x900-1 (removed after the run); seeded {"version": 6, "settings": {"theme": {"custom": 1}}, "custom_themes": [{"id": 1, "name": "Night Harbor", "base": "midnight", "tokens": {"canvas": "#1a1030", "panel": "#171e2b", "subtle": "#131a25", "hover": "#222c3c", "border": "#2b3749", "selected": "#223b3b", "text": "#e8eef7", "muted": "#8a96a8", "line_number": "#899bb5", "accent": "#75e0bb", "accent_foreground": "#0a241d", "accent_hover": "#99edcf", "accent_active": "#5ccca6", "added": "#75e0bb", "removed": "#ff95a8", "modified": "#e8bc79", "renamed": "#c1a5f5", "warning": "#e8bc79", "added_background": "#19322d", "removed_background": "#382531", "hunk": "#95baff"}}]}
+pointer: wheel +15 at (100, 500): scroll Settings until the Your themes card is on screen
+[B] deletefocus-dark-1440x900-1-00-settings-before.png
+    shows: Settings with the seeded custom theme Night Harbor (base Midnight) active
+    keys since previous capture: Control+comma  # open Settings
+    PASS  before: page canvas is the seeded custom theme's: page (26, 16, 48) == #1a1030 (26, 16, 48)
+[B] deletefocus-dark-1440x900-1-01-delete-focused.png
+    shows: keyboard focus on Delete…
+    keys since previous capture: Tab x28  # title bar Menu ... theme cards ... New theme… | Tab x2  # New theme… -> Edit… -> Delete…
+[B] deletefocus-dark-1440x900-1-02-delete-confirm.png
+    shows: alert names the theme and its base; keyboard focus must be on Cancel
+    keys since previous capture: space  # activate Delete…
+    PASS  fix 1: the Delete confirmation opens with focus on Cancel (FAILs when focus is outside the alert): alert open True; accent-tinted ring px: Cancel 456, Delete theme 16, title bar Menu 0 -> focus on cancel
+[B] deletefocus-dark-1440x900-1-03-deleted.png
+    shows: theme gone from Your themes; base palette applied; focus on New theme…
+    keys since previous capture: Tab  # Tab: Cancel -> Delete theme | Return  # Return on Delete theme
+    PASS  delete: the store empties custom_themes and selects the base, which is applied: custom_themes=[] theme='midnight'; page (16, 21, 31) == midnight canvas (16, 21, 31)
+    PASS  fix 3: after the delete, keyboard focus is on New theme…: Space opened the New theme dialog: True (first grab at 0.068 s); dialog bg (16, 21, 31) (base canvas (16, 21, 31)); store unchanged: True; accent-tinted ring px at the right of the page in 03: {'count': 0, 'bbox': None}
+[B] deletefocus-dark-1440x900-1-04-new-theme-opened.png
+    shows: Space on the focused New theme… opened the dialog in the base palette
+    keys since previous capture: space  # Space: whatever has focus activates
+    frame: caret [248, 155, 250, 169] (visible phase kept)
+Latency (s, input event to first grab showing the result; grab-bound, ~30-60 ms per grab; observation only): delete_to_base 0.075
+
+Scenario deletefocus-light-1000x680-2  (pid 2188513, terminated by the driver (SIGTERM))
+-------------------------------------
+XDG_CONFIG_HOME=<bundle>/run-evidence/config/deletefocus-light-1000x680-2 (removed after the run); seeded {"version": 6, "settings": {"theme": {"custom": 1}}, "custom_themes": [{"id": 1, "name": "Paper Lantern", "base": "daylight", "tokens": {"canvas": "#fff7e8", "panel": "#ffffff", "subtle": "#edf1f7", "hover": "#e7ecf3", "border": "#d2dce8", "selected": "#daece6", "text": "#253247", "muted": "#5c6a82", "line_number": "#61728a", "accent": "#08755d", "accent_foreground": "#ffffff", "accent_hover": "#06654f", "accent_active": "#055440", "added": "#146744", "removed": "#b53351", "modified": "#875a14", "renamed": "#7850b4", "warning": "#875a14", "added_background": "#e2f1e9", "removed_background": "#f9e5eb", "hunk": "#3764ae"}}]}
+pointer: wheel +20 at (60, 400): scroll Settings until the Your themes card is on screen
+[B] deletefocus-light-1000x680-2-00-settings-before.png
+    shows: Settings with the seeded custom theme Paper Lantern (base Braden) active
+    keys since previous capture: Control+comma  # open Settings
+    PASS  before: page canvas is the seeded custom theme's: page (255, 247, 232) == #fff7e8 (255, 247, 232)
+[B] deletefocus-light-1000x680-2-01-delete-focused.png
+    shows: keyboard focus on Delete…
+    keys since previous capture: Tab x28  # title bar Menu ... theme cards ... New theme… | Tab x2  # New theme… -> Edit… -> Delete…
+[B] deletefocus-light-1000x680-2-02-delete-confirm.png
+    shows: alert names the theme and its base; keyboard focus must be on Cancel
+    keys since previous capture: space  # activate Delete…
+    PASS  fix 1: the Delete confirmation opens with focus on Cancel (FAILs when focus is outside the alert): alert open True; accent-tinted ring px: Cancel 488, Delete theme 20, title bar Menu 0 -> focus on cancel
+[B] deletefocus-light-1000x680-2-03-deleted.png
+    shows: theme gone from Your themes; base palette applied; focus on New theme…
+    keys since previous capture: Tab  # Tab: Cancel -> Delete theme | Return  # Return on Delete theme
+    PASS  delete: the store empties custom_themes and selects the base, which is applied: custom_themes=[] theme='daylight'; page (244, 246, 250) == daylight canvas (244, 246, 250)
+    PASS  fix 3: after the delete, keyboard focus is on New theme…: Space opened the New theme dialog: True (first grab at 0.052 s); dialog bg (244, 246, 250) (base canvas (244, 246, 250)); store unchanged: True; accent-tinted ring px at the right of the page in 03: {'count': 870, 'bbox': (830, 287, 952, 320)}
+[B] deletefocus-light-1000x680-2-04-new-theme-opened.png
+    shows: Space on the focused New theme… opened the dialog in the base palette
+    keys since previous capture: space  # Space: whatever has focus activates
+    frame: caret [208, 133, 210, 147] (visible phase kept)
+Latency (s, input event to first grab showing the result; grab-bound, ~30-60 ms per grab; observation only): delete_to_base 0.051
+
+Scenario deletefocus-dark-1000x680-2  (pid 2188946, terminated by the driver (SIGTERM))
+------------------------------------
+XDG_CONFIG_HOME=<bundle>/run-evidence/config/deletefocus-dark-1000x680-2 (removed after the run); seeded {"version": 6, "settings": {"theme": {"custom": 1}}, "custom_themes": [{"id": 1, "name": "Night Harbor", "base": "midnight", "tokens": {"canvas": "#1a1030", "panel": "#171e2b", "subtle": "#131a25", "hover": "#222c3c", "border": "#2b3749", "selected": "#223b3b", "text": "#e8eef7", "muted": "#8a96a8", "line_number": "#899bb5", "accent": "#75e0bb", "accent_foreground": "#0a241d", "accent_hover": "#99edcf", "accent_active": "#5ccca6", "added": "#75e0bb", "removed": "#ff95a8", "modified": "#e8bc79", "renamed": "#c1a5f5", "warning": "#e8bc79", "added_background": "#19322d", "removed_background": "#382531", "hunk": "#95baff"}}]}
+pointer: wheel +20 at (60, 400): scroll Settings until the Your themes card is on screen
+[B] deletefocus-dark-1000x680-2-00-settings-before.png
+    shows: Settings with the seeded custom theme Night Harbor (base Midnight) active
+    keys since previous capture: Control+comma  # open Settings
+    PASS  before: page canvas is the seeded custom theme's: page (26, 16, 48) == #1a1030 (26, 16, 48)
+[B] deletefocus-dark-1000x680-2-01-delete-focused.png
+    shows: keyboard focus on Delete…
+    keys since previous capture: Tab x28  # title bar Menu ... theme cards ... New theme… | Tab x2  # New theme… -> Edit… -> Delete…
+[B] deletefocus-dark-1000x680-2-02-delete-confirm.png
+    shows: alert names the theme and its base; keyboard focus must be on Cancel
+    keys since previous capture: space  # activate Delete…
+    PASS  fix 1: the Delete confirmation opens with focus on Cancel (FAILs when focus is outside the alert): alert open True; accent-tinted ring px: Cancel 456, Delete theme 16, title bar Menu 0 -> focus on cancel
+[B] deletefocus-dark-1000x680-2-03-deleted.png
+    shows: theme gone from Your themes; base palette applied; focus on New theme…
+    keys since previous capture: Tab  # Tab: Cancel -> Delete theme | Return  # Return on Delete theme
+    PASS  delete: the store empties custom_themes and selects the base, which is applied: custom_themes=[] theme='midnight'; page (16, 21, 31) == midnight canvas (16, 21, 31)
+    PASS  fix 3: after the delete, keyboard focus is on New theme…: Space opened the New theme dialog: True (first grab at 0.05 s); dialog bg (16, 21, 31) (base canvas (16, 21, 31)); store unchanged: True; accent-tinted ring px at the right of the page in 03: {'count': 870, 'bbox': (830, 287, 952, 320)}
+[B] deletefocus-dark-1000x680-2-04-new-theme-opened.png
+    shows: Space on the focused New theme… opened the dialog in the base palette
+    keys since previous capture: space  # Space: whatever has focus activates
+    frame: caret [208, 133, 210, 147] (visible phase kept)
+Latency (s, input event to first grab showing the result; grab-bound, ~30-60 ms per grab; observation only): delete_to_base 0.052
+
+Scenario deletefocus-light-1440x900-2  (pid 2189693, terminated by the driver (SIGTERM))
+-------------------------------------
+XDG_CONFIG_HOME=<bundle>/run-evidence/config/deletefocus-light-1440x900-2 (removed after the run); seeded {"version": 6, "settings": {"theme": {"custom": 1}}, "custom_themes": [{"id": 1, "name": "Paper Lantern", "base": "daylight", "tokens": {"canvas": "#fff7e8", "panel": "#ffffff", "subtle": "#edf1f7", "hover": "#e7ecf3", "border": "#d2dce8", "selected": "#daece6", "text": "#253247", "muted": "#5c6a82", "line_number": "#61728a", "accent": "#08755d", "accent_foreground": "#ffffff", "accent_hover": "#06654f", "accent_active": "#055440", "added": "#146744", "removed": "#b53351", "modified": "#875a14", "renamed": "#7850b4", "warning": "#875a14", "added_background": "#e2f1e9", "removed_background": "#f9e5eb", "hunk": "#3764ae"}}]}
+pointer: wheel +15 at (100, 500): scroll Settings until the Your themes card is on screen
+[B] deletefocus-light-1440x900-2-00-settings-before.png
+    shows: Settings with the seeded custom theme Paper Lantern (base Braden) active
+    keys since previous capture: Control+comma  # open Settings
+    PASS  before: page canvas is the seeded custom theme's: page (255, 247, 232) == #fff7e8 (255, 247, 232)
+[B] deletefocus-light-1440x900-2-01-delete-focused.png
+    shows: keyboard focus on Delete…
+    keys since previous capture: Tab x28  # title bar Menu ... theme cards ... New theme… | Tab x2  # New theme… -> Edit… -> Delete…
+[B] deletefocus-light-1440x900-2-02-delete-confirm.png
+    shows: alert names the theme and its base; keyboard focus must be on Cancel
+    keys since previous capture: space  # activate Delete…
+    PASS  fix 1: the Delete confirmation opens with focus on Cancel (FAILs when focus is outside the alert): alert open True; accent-tinted ring px: Cancel 488, Delete theme 20, title bar Menu 0 -> focus on cancel
+[B] deletefocus-light-1440x900-2-03-deleted.png
+    shows: theme gone from Your themes; base palette applied; focus on New theme…
+    keys since previous capture: Tab  # Tab: Cancel -> Delete theme | Return  # Return on Delete theme
+    PASS  delete: the store empties custom_themes and selects the base, which is applied: custom_themes=[] theme='daylight'; page (244, 246, 250) == daylight canvas (244, 246, 250)
+    PASS  fix 3: after the delete, keyboard focus is on New theme…: Space opened the New theme dialog: True (first grab at 0.068 s); dialog bg (244, 246, 250) (base canvas (244, 246, 250)); store unchanged: True; accent-tinted ring px at the right of the page in 03: {'count': 0, 'bbox': None}
+[B] deletefocus-light-1440x900-2-04-new-theme-opened.png
+    shows: Space on the focused New theme… opened the dialog in the base palette
+    keys since previous capture: space  # Space: whatever has focus activates
+    frame: caret [248, 155, 250, 169] (visible phase kept)
+Latency (s, input event to first grab showing the result; grab-bound, ~30-60 ms per grab; observation only): delete_to_base 0.063
+
+Scenario deletefocus-dark-1440x900-2  (pid 2190174, terminated by the driver (SIGTERM))
+------------------------------------
+XDG_CONFIG_HOME=<bundle>/run-evidence/config/deletefocus-dark-1440x900-2 (removed after the run); seeded {"version": 6, "settings": {"theme": {"custom": 1}}, "custom_themes": [{"id": 1, "name": "Night Harbor", "base": "midnight", "tokens": {"canvas": "#1a1030", "panel": "#171e2b", "subtle": "#131a25", "hover": "#222c3c", "border": "#2b3749", "selected": "#223b3b", "text": "#e8eef7", "muted": "#8a96a8", "line_number": "#899bb5", "accent": "#75e0bb", "accent_foreground": "#0a241d", "accent_hover": "#99edcf", "accent_active": "#5ccca6", "added": "#75e0bb", "removed": "#ff95a8", "modified": "#e8bc79", "renamed": "#c1a5f5", "warning": "#e8bc79", "added_background": "#19322d", "removed_background": "#382531", "hunk": "#95baff"}}]}
+pointer: wheel +15 at (100, 500): scroll Settings until the Your themes card is on screen
+[B] deletefocus-dark-1440x900-2-00-settings-before.png
+    shows: Settings with the seeded custom theme Night Harbor (base Midnight) active
+    keys since previous capture: Control+comma  # open Settings
+    PASS  before: page canvas is the seeded custom theme's: page (26, 16, 48) == #1a1030 (26, 16, 48)
+[B] deletefocus-dark-1440x900-2-01-delete-focused.png
+    shows: keyboard focus on Delete…
+    keys since previous capture: Tab x28  # title bar Menu ... theme cards ... New theme… | Tab x2  # New theme… -> Edit… -> Delete…
+[B] deletefocus-dark-1440x900-2-02-delete-confirm.png
+    shows: alert names the theme and its base; keyboard focus must be on Cancel
+    keys since previous capture: space  # activate Delete…
+    PASS  fix 1: the Delete confirmation opens with focus on Cancel (FAILs when focus is outside the alert): alert open True; accent-tinted ring px: Cancel 456, Delete theme 16, title bar Menu 0 -> focus on cancel
+[B] deletefocus-dark-1440x900-2-03-deleted.png
+    shows: theme gone from Your themes; base palette applied; focus on New theme…
+    keys since previous capture: Tab  # Tab: Cancel -> Delete theme | Return  # Return on Delete theme
+    PASS  delete: the store empties custom_themes and selects the base, which is applied: custom_themes=[] theme='midnight'; page (16, 21, 31) == midnight canvas (16, 21, 31)
+    PASS  fix 3: after the delete, keyboard focus is on New theme…: Space opened the New theme dialog: True (first grab at 0.067 s); dialog bg (16, 21, 31) (base canvas (16, 21, 31)); store unchanged: True; accent-tinted ring px at the right of the page in 03: {'count': 0, 'bbox': None}
+[B] deletefocus-dark-1440x900-2-04-new-theme-opened.png
+    shows: Space on the focused New theme… opened the dialog in the base palette
+    keys since previous capture: space  # Space: whatever has focus activates
+    frame: caret [248, 155, 250, 169] (visible phase kept)
+Latency (s, input event to first grab showing the result; grab-bound, ~30-60 ms per grab; observation only): delete_to_base 0.055
+
+Checks: 221/221 PASS
+Fix 3 count (focus on New theme… after a delete): 12 of 12 deletes across 12 launches: light-1000x680 PASS, light-1440x900 PASS, deletefocus-light-1000x680-1 PASS, deletefocus-dark-1000x680-1 PASS, deletefocus-light-1440x900-1 PASS, deletefocus-dark-1440x900-1 PASS, deletefocus-light-1000x680-2 PASS, deletefocus-dark-1000x680-2 PASS, deletefocus-light-1440x900-2 PASS, deletefocus-dark-1440x900-2 PASS, dark-1000x680 PASS, dark-1440x900 PASS
+D1 scrollbar: 18 of 18 PASS across 6 scenarios
+D2 hex field: 21 of 21 PASS across 6 scenarios
+D3 invalid glyph: 12 of 12 PASS across 4 scenarios
+fix 1 Delete alert focus: 32 of 32 PASS across 12 scenarios
+fix 2 Readability list in view: 5 of 5 PASS across 5 scenarios
+kept: 27 of 27 PASS across 6 scenarios
+
+Notes on the results
+--------------------
+The first invocation ran all 14 scenarios and failed two D2 checks on the tooling, not on the app: the
+"after Return" read compared a # glyph cell that reached one column past the glyph, where the 3 of #301018
+(the dark flows' second canvas) has an anti-aliased edge the untouched reference row's 1 does not, so the
+cell differed while the field showed the full value (the captures show #301018 with the caret after it).
+The cell was narrowed to the glyph's own seven columns and the two dark flows were run again into this
+directory; only that second invocation's captures and checks of those scenarios are kept. Two smoke runs
+before the evidence run (runs/smoke1-flow-log.json, runs/smoke2-flow-log.json, not part of the evidence)
+repaired the driver's caret-phase choice (cd563f6's driver compared the caret box against the pixel to its
+left, which is glyph ink when the caret follows the last character, and then kept the hidden phase) and
+moved the wide layout's Tab-to-the-last-row step after the base question, since scrolling the column to
+its end and back leaves the Canvas row at the top of the viewport rather than at its resting y.
+The row geometry of this build was measured first with tools/probe_geometry.py (probe/ in the bundle):
+the hex field's left border is 24 px left of cd563f6's (16 px reserved track + 8 px wider field), the
+picker box 84 px right of it, row y unchanged.
+
+Reproducibility
+---------------
+A second full run of the same binary in recheck mode (2026-09-19T14:56:39-0500 .. 2026-09-19T15:12:23-0500, run-recheck/ in the bundle)
+gave 221 PASS / 0 FAIL again with fix 3 at 12 of 12 deletes, D1 18 of 18, D2 21 of 21, D3 12 of 12.
+tools/compare.py: committed set 37/37 pixel-identical; full set 133/134 (runs/compare-*.txt): the one pair
+that differs is dark-1440x900-17-base-selected.png (bundle only, the Settings picker after the delete),
+a single pixel at (1156, 544) on a text glyph edge reading (71, 79, 92) in the evidence run and (71, 78, 92)
+in the recheck, a one-level change in one channel of one anti-aliased pixel; the same class of difference
+was seen once in 76 same-binary pairs on an earlier build and is reported, not excused.
+To re-check another build:
+  python3 tools/drive_editor.py --binary <abs> --output <abs dir> --source <abs src> --mode recheck
+  python3 tools/make_commit_set.py <abs dir> <abs dir>/commit-set
+  python3 tools/compare.py docs/evidence/themes/editor <abs dir>/commit-set

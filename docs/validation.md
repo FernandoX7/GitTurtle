@@ -4,6 +4,98 @@ Use the [current validation guidance](#current-validation-guidance) for the affe
 
 This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native workflow evidence is primarily macOS-specific; the September 14 entries add Pop!_OS startup and clean Ubuntu/virtual-native checks. Platform execution and access limits belong to the applicable dated record and [platform runbook](linux.md); the earlier [environment report](benchmarks/2026-09-09-milestone-environment.md) describes its own session. The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Public binary release prerequisites belong in the [launch checklist](public-launch.md); the Linux runbook includes a local teammate bundle.
 
+## September 19 Custom theme editor
+
+Native QA for `themes-editor`, which adds Settings › Your themes (New theme…,
+Edit…, Delete…) and the New theme / Edit theme dialog with a live preview.
+Linux/XWayland (GNOME on Wayland, `DISPLAY=:1`, `WAYLAND_DISPLAY` unset,
+`GPUI_X11_SCALE_FACTOR` 1), windows 1000x680, which is the app's
+`window_min_size` and gives the stacked 640 px dialog, and 1440x900, which gives
+the 1,000 px two-column dialog, with an absolute throwaway `XDG_CONFIG_HOME` per
+launch seeded as a version-6 store. Fixture: `scripts/create-demo-repo.py` at
+HEAD `52f471a1137c617fd8e36db2e6251a18f58c23eb`; the editor writes only app
+preferences, nothing was written to the fixture and no network action was taken.
+
+The captures were taken from build `3927b57bbb913e35ee4a8b48f12b5c7eaa19f686`
+(GitTurtle 0.1.0, `source_tree` clean, release, `x86_64-unknown-linux-gnu`,
+rustc 1.98.0 (88d9e12ae 2026-08-18), binary sha256
+`1faff02061c9f07500cbf74827ae61d425d145caef6a153682230ef239bbe593`). Evidence
+committed to a repository can never describe the commit that contains it, so
+this entry names the revision under test; a later build that ships the editor
+reuses it only when it renders the same captures, which the evidence driver
+re-captures for a pixel comparison. Earlier builds of the same patch were
+exercised first: in `a6cc84d` Return anywhere in the dialog saved, Keep colors
+lost keyboard focus and focus moved to rows out of view; `bb9f332` fixed those
+but squeezed the token rows to about 20 px, left the focused Readability list
+out of view at 1000x680 and deleted the theme on Return in the Delete
+confirmation's Cancel; `30e41b8` fixed those but opened the Delete confirmation
+with keyboard focus on the title bar's Menu button behind it, scrolled the
+focused Readability list into view at 1000x680 only on the next input event,
+and returned focus to New theme… after a delete in only four of eight runs;
+`cd563f6` fixed those and passed this flow, but its design review found three
+defects: the token column scrolled with no scrollbar and hid the Diff group at
+1440x900 and nine of twenty-one tokens at 1000x680 at rest, the 70 px hex field
+scrolled the leading `#` out of view once seven characters were typed and kept
+it hidden after blur (the driver had masked this by pressing Home before every
+read), and an invalid hex value was signalled by the removed-colour outline
+alone.
+
+The dialog was operated from the keyboard alone, in a light base (Braden,
+stored `daylight`, starting from Porcelain) and a dark base (Midnight, starting
+from Graphite) at both sizes; the pointer only wheel-scrolled Settings to the
+Your themes card and, after Delete, to the base's picker card. Token rows are
+30 px apart with the group labels intact, Name and Base are 28 px tall, Base is
+200 px with a menu wider than it and sized to the window, the picker shows a
+1 px border-color edge at rest and a 2 px accent ring focused, and the Your
+themes row aligns with the card title. The first valid edit recolored the
+dialog and the page behind it to exactly the typed canvas in the frame of its
+keystroke (no intermediate frame in 51–140 grabs). Two warnings appeared in
+each base ("Muted text on Selected 3.9:1, needs 4.5:1"), invalid hex and an
+invalid Name were outlined in the removed color while focused and disabled
+Save, Save stored the theme in `custom_themes` of a version-6 store and
+selected it, Edit… reopened it, Return in a hex field rewrote the value as
+lowercase `#rrggbb`, kept the dialog open and saved nothing, Return on Cancel
+and Escape restored a frame pixel-identical to the one before the dialog
+opened, the Delete confirmation opened with focus on Cancel with Tab contained
+and Escape closing it, the focused Readability list was in view at 1000x680 in
+the first frame that showed its focus, and Space opened New theme after every
+delete: 12 of 12 across 12 launches.
+
+The three defects of `cd563f6` do not reproduce. The token column shows a 6 px
+scrollbar thumb in the border color at rest inside a 16 px track at its right
+edge in the wide and the stacked layout and in both bases (the track is painted
+in the canvas color, like every scrollbar track in the app, so the thumb is what
+shows); the track holds nothing but its background and the thumb, and the
+focused picker's ring ends before it, 16 px left of where it ended on `cd563f6`.
+Tab to the last row scrolls the column to its end with the thumb at the bottom
+of the track and the Diff group label and rows painted at both sizes. The hex
+field is 78 px: a typed `#rrggbb` shows all seven characters with the caret
+after the last one, the value is complete after focus leaves, the typed row's
+field is pixel-identical to the same value reopened from the store, and
+Return's rewrite shows the full value, all read with no Home press. An invalid
+value shows a 14 px rounded square on the removed fill with a contrasting × in
+the row's warning slot in both bases at both sizes, replacing the readability
+glyph while the value is invalid and staying after blur; a valid value removes
+it and restores the readability glyph. The 37 screenshots are under
+[`docs/evidence/themes/editor/`](evidence/themes/editor/) with
+`flow-verification.txt`, which gives the key sequence and 221 checks, all
+passing. A second run of the same binary passed the same 221 checks and
+reproduced 133 of 134 frames pixel for pixel, including all 37 committed here;
+the one bundle-only frame that differs (the Settings picker after the delete
+at 1440x900) does so in one anti-aliased glyph-edge pixel by one level of one
+channel.
+
+Not covered: the 32-theme bound, name messages other than a built-in name, Reset
+to base, **Replace colors**, a failed or refused save, closing the window with
+the editor open, restart persistence, follow-system mode, other text sizes or
+density, 2x scale, the picker popover itself, pointer scrolling of the token
+column and dragging the thumb, the `theme_apply_frame_ms` budget (the
+performance review's), and import and export (the next task); Linux/XWayland
+only, with no macOS, native Wayland, packaging or accessibility-label coverage
+(the app does not register with AT-SPI on this desktop, so the invalid row's
+"value is not #rrggbb" label and the scrollbar's name rest on the `gpui::test`
+assertions alone).
+
 ## September 18 Alucard and Kanagawa built-in themes
 
 Native QA for `themes-batch-alucard-kanagawa`, which adds the Alucard, Kanagawa
