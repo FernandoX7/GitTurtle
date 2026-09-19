@@ -333,7 +333,6 @@
         "crates/app/src/platform_polish.rs",
         "crates/app/src/appearance.rs",
         "crates/app/src/appearance/**",
-        "crates/app/AGENTS.md",
         "crates/app/docs/**",
         "DESIGN.md",
         "docs/validation.md",
@@ -351,11 +350,11 @@
         },
         {
           "id": "no-reprepare-budget",
-          "description": "The live preview applies at most once per frame for a burst of edits and submits no worker job (test), and gitturtle.theme_apply_frame_ms for ten consecutive edits in release mode has p95 ≤ 16 ms on the fixture of themes-apply-trace, recorded under docs/benchmarks/ with the build identity and attested by the performance-reviewer."
+          "description": "The live preview applies at most once per frame for a burst of edits and submits no worker job (test); gitturtle.theme_apply_frame_ms for editor edits runs from the edit handler through the frame that shows the draft, docs/benchmarks/metrics.md states that edit boundary, and ten consecutive edits are recorded in release mode on the fixture of themes-apply-trace under docs/benchmarks/ with the build identity, raw samples, statistics and the dominant cost, attested by the performance-reviewer. The 16 ms p95 edit budget is owned by themes-draw-cost, not this task."
         },
         {
           "id": "design-contract",
-          "description": "DESIGN.md gains the editor's contract (card, dialog structure, groups, row geometry, warning presentation, keyboard order, Escape and Cancel behavior) and crates/app/AGENTS.md routes theme_editor.rs; the design-reviewer confirms the native evidence against the contract."
+          "description": "DESIGN.md gains the editor's contract (card, dialog structure, groups, row geometry, warning presentation, keyboard order, Escape and Cancel behavior) (crates/app/AGENTS.md already routes theme_editor.rs; every AGENTS.md is protected from unattended patches); the design-reviewer confirms the native evidence against the contract."
         },
         {
           "id": "native-evidence",
@@ -416,11 +415,55 @@
       "commit": "feat(settings): export and import custom themes as JSON"
     },
     {
+      "id": "themes-draw-cost",
+      "title": "Cut the Settings and theme editor frame cost to meet the live-preview budget",
+      "description": "Hard. An early measurement of the theme editor (candidate bb9f332 of an earlier run) recorded ten consecutive live-preview edits at median 45 ms and p95 56.6 ms against the 16 ms budget in docs/development/themes/spec.md section 'Performance', on the themes-apply-trace fixture at scale 2 on the Linux baseline host. apply_appearance costs under 0.2 ms; the time is a whole-window layout, paint and present of Settings plus the editor dialog (about 20 ms at 2x), paid twice when a keystroke renders in the old palette before the coalesced apply, and a Settings switch also draws a second frame when the preference save completes (settings.rs save_preferences notifies unconditionally). Reduce the frame cost in the application path, as the spec's open question on full-window repaints directs: render once per edit and once per switch, avoid re-laying-out or re-painting what a palette change does not alter, and cheapen the twenty theme preview cards and the dialog's rows. Do not change the budget, the gitturtle.theme_apply_frame_ms boundaries recorded in docs/benchmarks/metrics.md, or the visible design.",
+      "depends_on": [
+        "themes-editor"
+      ],
+      "scope": [
+        "crates/app/src/settings.rs",
+        "crates/app/src/theme_editor.rs",
+        "crates/app/src/main.rs",
+        "crates/app/src/views.rs",
+        "crates/app/src/platform_polish.rs",
+        "crates/app/src/appearance.rs",
+        "crates/app/src/appearance/**",
+        "crates/app/docs/**",
+        "docs/benchmarks/**"
+      ],
+      "acceptance": [
+        {
+          "id": "edit-budget",
+          "description": "In release mode on the themes-apply-trace fixture at 2x scale, ten consecutive editor live-preview edits measured with the unchanged gitturtle.theme_apply_frame_ms edit trace have p95 ≤ 16 ms; docs/benchmarks/ gains a dated record with build identity, host, cache state, raw samples and a before/after comparison against the themes-editor record, and the performance-reviewer attests it."
+        },
+        {
+          "id": "switch-no-regression",
+          "description": "The same record shows 60 Settings theme switches cycling ThemeChoice::ALL on that fixture with median ≤ 8 ms and p95 ≤ 16 ms, and UI-thread CPU per switch, measured as in docs/benchmarks/2026-09-18-theme-apply.md, no higher than that baseline's."
+        },
+        {
+          "id": "one-render",
+          "description": "A #[gpui::test] shows that a burst of editor edits and a Settings theme switch each lead to exactly one window draw after the handler: no draw in the old palette before the draft is applied and no second draw from a preference-save completion that changes nothing visible."
+        },
+        {
+          "id": "visual-unchanged",
+          "description": "native-qa re-runs the committed docs/evidence/themes/editor/ captures and the Settings picker captures against the new build and reports no differing pixels outside measured-timing text, or the design-reviewer approves each difference against DESIGN.md."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "performance",
+        "native"
+      ],
+      "commit": "perf(settings): cut the Settings and theme editor frame cost"
+    },
+    {
       "id": "themes-picker",
       "title": "List custom themes in the picker with the built-ins and measure switching",
       "description": "Extend the Settings theme picker with a 'Your themes' group that uses the same preview card from a custom palette with the name and base as description and a warning glyph when readability_issues is non-empty; change choose_theme to take ThemeSelection; tighten the grid to the spec's geometry so twenty built-ins fit; keep follow-system behavior; update DESIGN.md, docs/user-guide.md, docs/native-accessibility.md and docs/validation.md; and measure switching across every built-in and two custom themes in release mode against the budget in docs/development/themes/spec.md section 'Performance'.",
       "depends_on": [
         "themes-import-export",
+        "themes-draw-cost",
         "themes-batch-alucard-kanagawa"
       ],
       "scope": [

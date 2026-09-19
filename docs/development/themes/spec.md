@@ -111,6 +111,8 @@ The editor is an alert dialog like the profile editor, titled **New theme** or *
 
 Hot path: `apply_appearance` (theme switch from the picker, and every live-preview edit). Budget, measured from the switch or edit handler to the next frame callback with a new `gitturtle.theme_apply_frame_ms` trace under `GITTURTLE_TRACE`: median ≤ 8 ms, p95 ≤ 16 ms (one 60 Hz frame), zero worker submissions, editor entity and Find state retained. Release build, fixture: the `scripts/create-demo-repo.py` repository plus one page of at least 1,000 commits loaded and a split comparison of a 2,000-line file retained; 60 switches cycling every built-in and two custom themes; record host, cache state and raw samples under `docs/benchmarks/`. Import parsing is bounded by the 64 KiB limit and runs off the UI thread; store saves are unchanged in cost.
 
+The two paths end at different frames. A switch applies inside its handler, so its trace ends at the next frame callback, before that frame is drawn ([baseline](../../benchmarks/2026-09-18-theme-apply.md)). An edit applies the coalesced draft from a frame callback, so its trace runs through the frame that shows the draft, draw included. An early editor build measured edits at median 45 ms and p95 56.6 ms, dominated by a whole-window draw of Settings plus the dialog (about 20 ms at 2x). By owner decision on 2026-09-19, `themes-editor` records the edit cost without gating on it, and `themes-draw-cost` owns meeting the 16 ms edit budget in the application path; the budget itself is unchanged.
+
 ## Evidence map
 
 | Part | Proof |
