@@ -10,7 +10,7 @@ import re
 import subprocess
 import tempfile
 import uuid
-from typing import Callable
+from typing import Callable, Sequence
 
 from .process import EnvironmentBlocked, LoopError, run_process
 
@@ -78,8 +78,19 @@ def head(repo: Path) -> str:
     return git(repo, "rev-parse", "HEAD").strip()
 
 
-def clean(repo: Path) -> bool:
-    return not git(repo, "status", "--porcelain=v1", "--untracked-files=all").strip()
+def within(path: str, roots: Sequence[str]) -> bool:
+    return any(path == root or path.startswith(root + "/") for root in roots)
+
+
+def status_entries(repo: Path) -> list[tuple[str, str]]:
+    """Porcelain `(XY, path)` pairs; untracked files are listed one by one, never as a directory."""
+    output = git(repo, "status", "--porcelain=v1", "--untracked-files=all", "--no-renames", "-z")
+    return [(entry[:2], entry[3:]) for entry in output.split("\0") if entry]
+
+
+def clean(repo: Path, *, ignore_untracked: Sequence[str] = ()) -> bool:
+    """No change at all, apart from untracked files under `ignore_untracked` roots."""
+    return all(code == "??" and within(path, ignore_untracked) for code, path in status_entries(repo))
 
 
 def source_root(path: Path) -> Path:
@@ -110,9 +121,13 @@ def clone(source: Path, destination: Path, revision: str, author: tuple[str, str
     git(destination, "config", "user.email", author[1], owner=owner)
 
 
-def changed_paths(repo: Path) -> list[str]:
+def untracked_paths(repo: Path) -> list[str]:
+    return list(filter(None, git(repo, "ls-files", "--others", "--exclude-standard", "-z").split("\0")))
+
+
+def changed_paths(repo: Path, *, ignore_untracked: Sequence[str] = ()) -> list[str]:
     tracked = git(repo, "diff", "--no-ext-diff", "--no-textconv", "HEAD", "--name-only", "--no-renames", "-z").split("\0")
-    untracked = git(repo, "ls-files", "--others", "--exclude-standard", "-z").split("\0")
+    untracked = [path for path in untracked_paths(repo) if not within(path, ignore_untracked)]
     return sorted(set(filter(None, tracked + untracked)))
 
 

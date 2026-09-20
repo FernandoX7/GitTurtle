@@ -19,7 +19,7 @@ import uuid
 
 from .claude import Claude, UsageLimited, snapshot_files as claude_snapshot_files
 from .codex import Codex, validate_review
-from .git import changed_paths, clean, clone, commit, committed_paths, git, head, identity, source_root, write_limits
+from .git import changed_paths, clean, clone, commit, committed_paths, git, head, identity, source_root, untracked_paths, within, write_limits
 from .process import EnvironmentBlocked, LoopError, MalformedResponse, atomic_json, digest, read_json, run_process, reconcile_processes
 from .rust_surface import renders
 from .task_spec import Task, load_spec, path_allowed, required_evidence, select_ready
@@ -27,6 +27,11 @@ from .security_review import candidate_requires_security, validate_security_revi
 
 
 CONTROLS = (".codex", ".agents", ".claude", "scripts/agent_loop", "scripts/agent-loop.py", "scripts/check-agent-guidance.py", "docs/development/tasks.json", "docs/development/task.schema.json", "docs/development/security-review.md")
+# An IDE sweep writes byte copies of `.claude/` under these protected roots in
+# every checkout a session ran in. Nothing a candidate may add lives there, so
+# an untracked file under them is left out of the candidate and recorded with
+# the attempt instead of failing it; tracked files there stay protected.
+MIRRORS = (".codex", ".agents/skills")
 EVIDENCE_KINDS = {"native", "performance", "package", "vendor"}
 EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
 TOOLS = ("codex", "claude")
@@ -41,12 +46,28 @@ def controlled(path: str) -> bool:
     return Path(path).name in {"AGENTS.md", "CLAUDE.md"} or any(path == item or path.startswith(item + "/") for item in CONTROLS)
 
 
+def mirror_untracked(repo: Path) -> list[str]:
+    return [path for path in untracked_paths(repo) if within(path, MIRRORS)]
+
+
+def note_mirror(repo: Path, record: dict) -> None:
+    if mirrored := mirror_untracked(repo):
+        record["mirror_untracked"] = sorted(set(record.get("mirror_untracked", ())) | set(mirrored))
+
+
+def checkout_clean(repo: Path, record: dict | None = None) -> bool:
+    """Clean apart from a mirror sweep, which `record` keeps instead of failing."""
+    if record is not None:
+        note_mirror(repo, record)
+    return clean(repo, ignore_untracked=MIRRORS)
+
+
 def validate_patch(repo: Path, task: Task, base: str) -> list[str]:
     if head(repo) != base:
         raise LoopError("worker changed HEAD; the controller alone owns commits")
     if git(repo, "diff", "--cached", "--name-only", "-z"):
         raise LoopError("worker changed the index; the controller alone owns staging")
-    paths = changed_paths(repo)
+    paths = changed_paths(repo, ignore_untracked=MIRRORS)
     if not paths:
         raise LoopError("worker produced no patch; split verification-only work from implementation tasks")
     original_entries = git(repo, "ls-tree", "-z", base, "--", *paths).split("\0")
@@ -296,7 +317,7 @@ class Runner:
     def reconcile(self) -> None:
         reconcile_processes(self.directory)
         actual = head(self.repo)
-        if not clean(self.repo):
+        if not checkout_clean(self.repo):
             raise LoopError("accepted checkout has unexpected changes; preserve and inspect it")
         phase = self.state["phase"]
         active = self.state.get("active")
@@ -348,7 +369,7 @@ class Runner:
             baseline = self.directory / "baseline" / uuid.uuid4().hex
             report = self.gates(self.repo, profiles, baseline)
             self.state["baseline_evidence"] = str(baseline / "gates.json")
-            if not report["passed"] or not clean(self.repo):
+            if not report["passed"] or not checkout_clean(self.repo):
                 self.state["phase"] = "baseline_failed"
                 self.state["budget_running"] = False
                 self.save()
@@ -411,7 +432,7 @@ class Runner:
         previous = {key: record[key] for key in ("reason", "directory") if key in record}
         record["attempts"] += 1
         record.update(status="building", base=self.state["accepted_head"])
-        for key in ("candidate", "review", "review_sha256", "review_inputs", "security_review", "security_review_sha256", "security_review_inputs", "security_required", "security_paths", "attestations", "gate_sha256"):
+        for key in ("candidate", "review", "review_sha256", "review_inputs", "security_review", "security_review_sha256", "security_review_inputs", "security_required", "security_paths", "attestations", "gate_sha256", "mirror_untracked"):
             record.pop(key, None)
         directory = self.directory / "attempts" / task.id / str(record["attempts"])
         record["directory"] = str(directory)
@@ -433,6 +454,7 @@ class Runner:
                 record.update(status="blocked", reason=result["summary"])
                 return
             paths = validate_patch(repo, task, record["base"])
+            note_mirror(repo, record)
             if self.state["spec_path"] in paths:
                 raise LoopError("worker changed the task contract")
             record["candidate"] = commit(repo, paths, task.commit, f"{task.description}\n\nTask: {task.id}")
@@ -452,7 +474,7 @@ class Runner:
             if not gates["passed"]:
                 record.update(status="failed", reason="required gate failed; inspect checks/gates.json")
                 return
-            if head(repo) != record["candidate"] or not clean(repo):
+            if head(repo) != record["candidate"] or not checkout_clean(repo, record):
                 raise LoopError("gate changed candidate source or HEAD")
             record["status"] = "awaiting_evidence"
             if self.missing_evidence(record):
@@ -548,7 +570,7 @@ class Runner:
                 candidate=candidate, context=context,
             )
             verdict = general_validator(value)
-            if head(repo) != candidate or not clean(repo):
+            if head(repo) != candidate or not checkout_clean(repo, record):
                 raise LoopError("verifier changed candidate source or HEAD")
             self.validate_candidate(record)
             self.store_review(record, "review", review_dir, value)
@@ -573,7 +595,7 @@ class Runner:
                     + "\nGeneral review evidence (not authoritative): " + record["review"],
                 )
                 verdict = security_validator(value)
-                if head(repo) != candidate or not clean(repo):
+                if head(repo) != candidate or not checkout_clean(repo, record):
                     raise LoopError("security reviewer changed candidate source or HEAD")
                 self.validate_candidate(record)
                 # Security review cannot invalidate and silently replace the
@@ -606,7 +628,7 @@ class Runner:
         self.save()
 
     def finish_acceptance(self, task_id: str, record: dict) -> None:
-        if head(self.repo) != record["candidate"] or not clean(self.repo):
+        if head(self.repo) != record["candidate"] or not checkout_clean(self.repo):
             raise LoopError("accepted checkout changed during acceptance")
         self.validate_candidate(record)
         task = next(task for task in self.tasks if task.id == task_id)
@@ -631,7 +653,7 @@ class Runner:
     def validate_candidate(self, record: dict) -> None:
         directory = Path(record["directory"])
         repo = directory / "repo"
-        if head(repo) != record["candidate"] or not clean(repo):
+        if head(repo) != record["candidate"] or not checkout_clean(repo, record):
             raise LoopError("candidate source or HEAD changed")
         report_path = directory / "checks/gates.json"
         if digest(report_path) != record["gate_sha256"]:

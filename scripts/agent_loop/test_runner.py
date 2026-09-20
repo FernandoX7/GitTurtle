@@ -401,6 +401,75 @@ class RunnerTests(unittest.TestCase):
         }
         self.assertIn("native", profiles_for(feature, sorted(sources), sources.__getitem__))
 
+    def test_a_mirror_sweep_is_left_out_of_the_candidate_and_recorded(self):
+        # An IDE sweep copies .claude/ into .codex/ and .agents/skills/ in every
+        # checkout a session ran in, so the themes run needed a janitor deleting
+        # those files before validate_patch counted them as a protected change.
+        sweep = [".codex/config.toml", ".codex/hooks.json", ".codex/hooks/stop.py",
+                 ".codex/agents/verifier.toml", ".agents/skills/gitturtle-gates/SKILL.md"]
+
+        class SweptCodex(FakeCodex):
+            def run(self, role, feature, repo, directory, timeout, stop, **options):
+                result = super().run(role, feature, repo, directory, timeout, stop, **options)
+                for path in sweep:
+                    (repo / path).parent.mkdir(parents=True, exist_ok=True)
+                    (repo / path).write_text("mirror\n")
+                return result
+
+        directory = self.create()
+        state = self.execute(directory, SweptCodex())
+        record = state["tasks"]["one"]
+        self.assertEqual(record["status"], "accepted")
+        self.assertEqual(record["mirror_untracked"], sorted(sweep))
+        patch_text = (Path(record["directory"]) / "candidate.patch").read_text()
+        self.assertIn("docs/one.md", patch_text)
+        self.assertNotIn(".codex", patch_text)
+        self.assertNotIn(".agents", patch_text)
+        self.assertEqual(git(directory / "accepted", "ls-tree", "-r", "--name-only", record["candidate"], "--", ".codex", ".agents"), "")
+
+    def test_a_mirror_sweep_after_the_build_passes_the_clean_checks(self):
+        def sweeping_gates(repo, profiles, directory):
+            (repo / ".codex").mkdir(exist_ok=True)
+            (repo / ".codex/config.toml").write_text("mirror\n")
+            return {"passed": True, "checks": []}
+
+        directory = self.create()
+        state = self.execute(directory, FakeCodex(), sweeping_gates)
+        record = state["tasks"]["one"]
+        self.assertEqual(record["status"], "accepted")
+        self.assertEqual(record["mirror_untracked"], [".codex/config.toml"])
+
+    def test_tracked_files_under_the_mirror_roots_stay_protected(self):
+        self.prepare()
+        tracked = self.root / ".codex/agents/verifier.toml"
+        tracked.parent.mkdir(parents=True)
+        tracked.write_text('model = "one"\n')
+        git(self.root, "add", "--", ".codex/agents/verifier.toml")
+        git(self.root, "commit", "--quiet", "-m", "chore: track a codex agent")
+        self.original_head = head(self.root)
+        feature = parse_spec({"version": 1, "tasks": [task()]})[0]
+        (self.root / "docs/one.md").write_text("allowed\n")
+        (self.root / ".codex/config.toml").write_text("mirror\n")
+        tracked.write_text('model = "two"\n')
+        with self.assertRaisesRegex(LoopError, "protected or out-of-scope path: .codex/agents/verifier.toml"):
+            validate_patch(self.root, feature, self.original_head)
+        tracked.write_text('model = "one"\n')
+        self.assertEqual(validate_patch(self.root, feature, self.original_head), ["docs/one.md"])
+
+    def test_untracked_files_outside_the_mirror_roots_keep_the_scope_check(self):
+        self.prepare()
+        feature = parse_spec({"version": 1, "tasks": [task()]})[0]
+        (self.root / "docs/one.md").write_text("allowed\n")
+        stray = self.root / ".agents/other/AGENT.md"
+        stray.parent.mkdir(parents=True)
+        stray.write_text("mirror\n")
+        with self.assertRaisesRegex(LoopError, "protected or out-of-scope path: .agents/other/AGENT.md"):
+            validate_patch(self.root, feature, self.original_head)
+        stray.unlink()
+        (self.root / "docs/two.md").write_text("stray\n")
+        with self.assertRaisesRegex(LoopError, "out-of-scope path: docs/two.md"):
+            validate_patch(self.root, feature, self.original_head)
+
 
 if __name__ == "__main__":
     unittest.main()
