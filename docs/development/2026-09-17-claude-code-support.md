@@ -140,6 +140,13 @@ A saved run pins `.claude/**` and `scripts/**` by digest and refuses to resume o
 changes, so these four wait for the run to finish and then land in their own commits, with tests where the
 change is in the harness.
 
+Landed on 2026-09-20 after run `20260919T143547Z-8e458d6a` ended: rows 1 and 2 (plus the empty-run-directory
+rule, the 32 MiB attest-evidence constraint and the trace-boundary rule) as `21749e1`, #23 as `cdc54ad`
+(untracked files under `.codex/` and `.agents/skills/` are left out of the candidate and recorded as
+`mirror_untracked`; the janitor is retired, though `run` still refuses a sweep in the *source* checkout, so
+clean it with `git clean -fd -- .codex .agents/skills` first) and #24 as `7af6e8c` (an empty coverage list is
+accepted; misshapen paths are a structural retry). The table below records the pre-fix state.
+
 | Edit | Exact change |
 | --- | --- |
 | `.claude/agents/native-qa.md` and the shared [native-QA skill](../../.agents/skills/gitturtle-native-qa/SKILL.md) | State that `XDG_CONFIG_HOME` must be absolute and seeded before **every** launch, not once per session: the app ignores a relative value and falls back to the operator's real `~/.config/gitturtle`, which is how the 2026-09-18 incident wrote it |
