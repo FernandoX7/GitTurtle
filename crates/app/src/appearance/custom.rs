@@ -508,8 +508,8 @@ fn fragment_within(text: &str, allowance: usize) -> std::borrow::Cow<'_, str> {
 /// Measured on the narrower of the two evidence windows: at 1440x900 the
 /// settings column is 732 px, and a notice whose two 64-character names were
 /// runs of "a" was cut at the end of its second line after 248 characters
-/// (`.local/themes-evidence/…/recheck-9554495/run-longnames-1440x900`, capture
-/// `03-both.png`). 238 keeps ten characters under that, and is also the
+/// (the long-name re-check recorded under "September 19 Theme export and
+/// import" in `docs/validation.md`). 238 keeps ten characters under that, and is also the
 /// smallest budget at which no notice of one or two clauses is clamped below
 /// `MAX_MESSAGE_FRAGMENT_CHARS`: only the three-clause notice, a renamed
 /// import whose base was also replaced, shortens its fragments further. The
@@ -529,8 +529,7 @@ pub const MIN_MESSAGE_FRAGMENT_CHARS: usize = 8;
 /// and the second line then has to hold it and its fixed 78-character tail
 /// ("” is not available in this version of GitTurtle; Midnight is used as
 /// the base."). Measured at 1440x900 the second line of this notice holds
-/// about 144 characters (`.local/themes-evidence/…/recheck-b84aaa6/
-/// run-longnames-1440x900/messages/02-longbase.png`): a 64-character base
+/// about 144 characters (the same re-check's unknown-base capture): a 64-character base
 /// with its ellipsis and quotes is 64 + 2 + 78 = 144, exactly at the edge,
 /// where the capture ends the line mid-word at "Midnight is used a"; 48 + 3 +
 /// 78 = 129 leaves a margin. The longest legitimate base key is 16 characters

@@ -93,6 +93,16 @@ what establishes that, and it is a precondition of the attestation. The
 measurements behind the defects are retained outside the repository with the rest
 of the bundle.
 
+Confirmed on September 20: the revision that shipped (`5637cec`) fixed both
+defects. Every interpolated fragment is clamped at the source (64 characters for
+a key, value or name, 48 for a quoted base) and the message to two lines that end
+in an ellipsis when cut, and the row's **Export…** tooltip appears at 2.2 s and
+5.2 s at both window sizes. The pixel re-check of that build reproduced all 26
+committed artifacts byte-identically with 64 PASS / 0 FAIL, and the long-name
+cases (a 64-character collision, an unknown base, and both in one import) read to
+their end at both sizes. The two `docs/user-guide.md` corrections landed in the
+same revision.
+
 ## September 19 Custom theme editor
 
 Native QA for `themes-editor`, which adds Settings › Your themes (New theme…,
