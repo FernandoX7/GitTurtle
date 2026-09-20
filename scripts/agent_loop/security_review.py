@@ -40,7 +40,8 @@ SECURITY_REVIEW_SCHEMA = {
                 "boundary": {**STRING, "description": "The trust boundary this entry covers."},
                 "paths": {
                     **STRINGS,
-                    "description": "The changed paths from reviewed_paths this boundary covers, each once. "
+                    "description": "The changed paths from reviewed_paths this boundary covers, each once; "
+                                   "empty when no changed path crosses it. "
                                    "Only those: name any unchanged file you consulted in evidence instead. "
                                    "Together the entries must cover every reviewed path.",
                 },
@@ -113,11 +114,9 @@ def candidate_requires_security(repo: Path, base: str, candidate: str, paths: li
     return seen != set(paths)
 
 
-def _strings(value: object, label: str, *, nonempty: bool = False) -> list[str]:
-    if not isinstance(value, list) or (nonempty and not value) or not all(
-        isinstance(item, str) and item.strip() for item in value
-    ):
-        raise LoopError(f"invalid security review {label}")
+def _strings(value: object, label: str, *, error: type[LoopError] = LoopError) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
+        raise error(f"invalid security review {label}")
     return value
 
 
@@ -141,9 +140,12 @@ def validate_security_review(value: dict, task: Task, base: str, candidate: str,
             raise MalformedResponse("invalid security review coverage entry")
         if not all(isinstance(item[key], str) and item[key].strip() for key in ("boundary", "evidence")):
             raise MalformedResponse("security review coverage needs a boundary and evidence")
-        item_paths = _strings(item["paths"], "coverage paths", nonempty=True)
+        # The schema allows an entry for a boundary no changed path crosses, and
+        # reviewed_paths already pinned the review to this candidate, so a path
+        # outside them here is a shaping mistake to retry, not a verdict to keep.
+        item_paths = _strings(item["paths"], "coverage paths", error=MalformedResponse)
         if not set(item_paths) <= expected or len(item_paths) != len(set(item_paths)):
-            raise LoopError("security review coverage contains unknown or duplicate paths")
+            raise MalformedResponse("security review coverage contains unknown or duplicate paths")
         covered.update(item_paths)
     findings = value["findings"]
     if not isinstance(findings, list):

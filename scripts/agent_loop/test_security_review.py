@@ -80,8 +80,35 @@ class SecurityReviewTests(unittest.TestCase):
     def test_context_files_beside_the_changed_paths_are_still_refused(self):
         value = passing_security()
         value["coverage"][0]["paths"] = value["reviewed_paths"] + ["docs/licenses/assets/sources.json"]
-        with self.assertRaisesRegex(LoopError, "unknown or duplicate paths"):
+        with self.assertRaisesRegex(MalformedResponse, "unknown or duplicate paths"):
             self.validate(value)
+
+    def test_a_boundary_no_changed_path_crosses_is_accepted(self):
+        # The editor's security review passed and then ended the run, because
+        # one entry named a boundary with no paths and the validator demanded
+        # at least one: a rule the schema the session received never stated.
+        value = passing_security()
+        value["coverage"].append({"boundary": "Network", "paths": [],
+                                  "evidence": "No changed path opens a socket; scripts/one.py imports nothing."})
+        self.assertEqual(self.validate(value), "pass")
+        paths = SECURITY_REVIEW_SCHEMA["properties"]["coverage"]["items"]["properties"]["paths"]
+        self.assertIn("empty when no changed path crosses it", paths["description"])
+
+    def test_misshapen_coverage_paths_retry_the_review_instead_of_ending_the_run(self):
+        # reviewed_paths already bound the review to this candidate; a coverage
+        # entry that lists a consulted file, a duplicate or the wrong type is a
+        # shaping mistake, and the gated candidate is intact for a retried review.
+        for mutate in (
+            lambda v: v["coverage"][0].update(paths="scripts/one.py"),
+            lambda v: v["coverage"][0].update(paths=[""]),
+            lambda v: v["coverage"][0].update(paths=["scripts/one.py", "scripts/one.py"]),
+            lambda v: v["coverage"].append({"boundary": "Context", "paths": ["docs/context.md"],
+                                            "evidence": "Consulted for reference."}),
+        ):
+            value = passing_security()
+            mutate(value)
+            with self.subTest(value=value), self.assertRaises(MalformedResponse):
+                self.validate(value)
 
     def test_routes_security_bearing_and_unknown_paths_even_in_mixed_patches(self):
         for path in (
@@ -290,6 +317,23 @@ class SecurityControllerTests(unittest.TestCase):
         recovered = SecurityCodex()
         final = self.execute(directory, recovered, lambda *_: self.fail("successful gates reran"))
         self.assertEqual(recovered.calls, [("security-reviewer", "one")])
+        self.assertEqual(final["tasks"]["one"]["candidate"], candidate)
+        self.assertEqual(final["tasks"]["one"]["review"], review)
+        self.assertEqual(final["tasks"]["one"]["attempts"], 1)
+
+    def test_misshapen_security_coverage_retains_the_candidate_for_a_retried_review(self):
+        directory = self.create_security()
+        misshapen = SecurityCodex(security_result=lambda v: v["coverage"].append(
+            {"boundary": "Context", "paths": ["docs/context.md"], "evidence": "Consulted for reference."}))
+        state = self.execute(directory, misshapen)
+        record = state["tasks"]["one"]
+        self.assertEqual(record["status"], "review_blocked")
+        self.assertIn("unknown or duplicate paths", record["reason"])
+        candidate, review = record["candidate"], record["review"]
+        recovered = SecurityCodex()
+        final = self.execute(directory, recovered, lambda *_: self.fail("successful gates reran"))
+        self.assertEqual(recovered.calls, [("security-reviewer", "one")])
+        self.assertEqual(final["tasks"]["one"]["status"], "accepted")
         self.assertEqual(final["tasks"]["one"]["candidate"], candidate)
         self.assertEqual(final["tasks"]["one"]["review"], review)
         self.assertEqual(final["tasks"]["one"]["attempts"], 1)
