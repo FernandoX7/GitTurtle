@@ -690,11 +690,15 @@ impl GitTurtle {
             .into_any_element()
     }
 
-    /// Your themes: the saved custom themes with Edit… and Delete…, and New theme….
+    /// Your themes: the saved custom themes with Edit…, Export… and Delete…,
+    /// and New theme… and Import… for the card itself.
     fn render_custom_themes(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
-        let pending = self.theme_editor.save_pending();
+        // A save, a native theme dialog or a theme file job owns the card's
+        // actions until it reports, so one outcome has one visible owner.
+        let pending = self.theme_editor.save_pending() || self.theme_editor.transfer_pending();
         let full = self.custom_themes.len() >= preferences::MAX_CUSTOM_THEMES;
+        let imported = self.theme_editor.imported();
         let active = (!self.settings.follow_system)
             .then(|| self.settings.theme.resolve(&self.custom_themes).selection);
         let warning_counts = self.theme_editor.warning_counts(&self.custom_themes);
@@ -723,20 +727,44 @@ impl GitTurtle {
                         cx,
                     ))
                     .child(
-                        button("custom-themes-new", "New theme…", "plus", false)
-                            .debug_selector(|| "custom-themes-new".into())
-                            .disabled(pending || full)
-                            .tooltip(if full {
-                                format!(
-                                    "Up to {} custom themes can be saved",
-                                    preferences::MAX_CUSTOM_THEMES
-                                )
-                            } else {
-                                "Create a theme from a built-in base".into()
-                            })
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_theme_editor(None, window, cx)
-                            })),
+                        div()
+                            .flex()
+                            .flex_shrink_0()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                button("custom-themes-new", "New theme…", "plus", false)
+                                    .debug_selector(|| "custom-themes-new".into())
+                                    .disabled(pending || full)
+                                    .tooltip(if full {
+                                        format!(
+                                            "Up to {} custom themes can be saved",
+                                            preferences::MAX_CUSTOM_THEMES
+                                        )
+                                    } else {
+                                        "Create a theme from a built-in base".into()
+                                    })
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_theme_editor(None, window, cx)
+                                    })),
+                            )
+                            .child(
+                                button("custom-themes-import", "Import…", "", false)
+                                    .debug_selector(|| "custom-themes-import".into())
+                                    .accessibility_label("Import a theme file")
+                                    .disabled(pending || full)
+                                    .tooltip(if full {
+                                        format!(
+                                            "Up to {} custom themes can be saved",
+                                            preferences::MAX_CUSTOM_THEMES
+                                        )
+                                    } else {
+                                        "Add a theme from an exported JSON file".into()
+                                    })
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.import_custom_theme(window, cx)
+                                    })),
+                            ),
                     ),
             )
             .when(self.custom_themes.is_empty(), |card| {
@@ -760,7 +788,13 @@ impl GitTurtle {
                     .px(appearance::ui_size(8.))
                     .mx(appearance::ui_size(-8.))
                     .rounded(px(6.))
-                    .hover(|row| row.bg(rgb(p.hover)))
+                    // A just-imported theme is highlighted on the selected
+                    // surface. It is added, not applied: the checkmark still
+                    // marks the theme the window uses. Hovering the row is not
+                    // a card action, so it keeps the highlight rather than
+                    // replacing it with the plain hover surface.
+                    .when(imported == Some(id), |row| row.bg(rgb(p.selected)))
+                    .hover(|row| row.bg(rgb(p.row_hover(imported == Some(id)))))
                     .flex()
                     .items_center()
                     .gap_2()
@@ -829,6 +863,46 @@ impl GitTurtle {
                             })),
                     )
                     .child(
+                        // The kit's own button tooltip carries the only
+                        // statement of what Export… writes, and it never
+                        // opened here: the same declaration opens on the
+                        // card header, and the row's hover style is the one
+                        // structural difference. GPUI's element tooltip is
+                        // driven from prepaint and absolute bounds instead of
+                        // the kit's hover listener, so it opens inside the
+                        // row. The holder is a shrink-wrapped flex box around
+                        // the button and takes no space of its own.
+                        div()
+                            .id(("export-custom-theme-hover", id as usize))
+                            .flex()
+                            .flex_shrink_0()
+                            .tooltip(|window, cx| {
+                                Tooltip::element(|_, _| {
+                                    div()
+                                        .id("export-custom-theme-tooltip")
+                                        .debug_selector(|| {
+                                            "export-custom-theme-tooltip".into()
+                                        })
+                                        .child("Save this theme as a JSON file")
+                                })
+                                .build(window, cx)
+                            })
+                            .child(
+                                button(
+                                    ("export-custom-theme", id as usize),
+                                    "Export…",
+                                    "",
+                                    false,
+                                )
+                                .debug_selector(move || format!("export-custom-theme-{id}"))
+                                .accessibility_label(format!("Export {} theme", theme.name))
+                                .disabled(pending)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.export_custom_theme(id, window, cx)
+                                })),
+                            ),
+                    )
+                    .child(
                         button(("delete-custom-theme", id as usize), "Delete…", "", false)
                             .debug_selector(move || format!("delete-custom-theme-{id}"))
                             .accessibility_label(format!("Delete {} theme", theme.name))
@@ -838,6 +912,32 @@ impl GitTurtle {
                             })),
                     )
             }))
+            // The message quotes a path the user chose and, on a refusal, text
+            // from the document. Both are clamped where they are built; this
+            // second bound keeps the card's own height stable so the settings
+            // below it never move, whatever a message turns out to say. The
+            // source clamps count characters, not pixels, so a run of wide
+            // glyphs or an unbreakable quoted token that wraps whole can still
+            // overrun the second line: the ellipsis marks that cut at the
+            // render site, and text that fits its two lines is left untouched.
+            // Only a single-paragraph message gets that mark, and every import
+            // and export notice and every document refusal is one: GPUI's
+            // line-clamp truncation cuts a multi-paragraph text at the
+            // paragraph break on its last allowed line, and the folder picker's
+            // Linux portal guidance is two paragraphs whose second one, the
+            // only actionable sentence, the committed no-portal frames show
+            // whole at three lines.
+            .children(self.theme_editor.notice().map(|notice| {
+                div()
+                    .id("custom-themes-notice")
+                    .role(Role::Label)
+                    .aria_label(notice.to_owned())
+                    .text_size(appearance::ui_text(12.))
+                    .text_color(rgb(p.muted))
+                    .line_clamp(2)
+                    .when(!notice.contains('\n'), |el| el.text_ellipsis())
+                    .child(notice.to_owned())
+            }))
             .children(self.theme_editor.error().map(|error| {
                 div()
                     .id("custom-themes-error")
@@ -845,6 +945,8 @@ impl GitTurtle {
                     .aria_label(error.to_owned())
                     .text_size(appearance::ui_text(12.))
                     .text_color(rgb(p.warning))
+                    .line_clamp(2)
+                    .when(!error.contains('\n'), |el| el.text_ellipsis())
                     .child(error.to_owned())
             }))
             .into_any_element()

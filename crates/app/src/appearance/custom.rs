@@ -9,7 +9,7 @@
 //! bounded JSON format from the specification's "Import and export" section.
 
 use super::{Palette, ThemeChoice};
-use crate::preferences::MAX_PROJECT_NAME_BYTES;
+use crate::preferences::{MAX_CUSTOM_THEMES, MAX_PROJECT_NAME_BYTES};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt;
@@ -473,6 +473,146 @@ pub const MAX_THEME_DOCUMENT_BYTES: usize = 64 * 1024;
 pub const THEME_DOCUMENT_FORMAT: &str = "gitturtle-theme";
 pub const THEME_DOCUMENT_VERSION: u64 = 1;
 
+/// The longest run of document-derived text a refusal or notice may quote.
+///
+/// A theme document is supplied bytes: a key, a token value or a base name can
+/// be as long as the 64 KiB the reader accepts. Quoting one unclamped would put
+/// tens of thousands of characters in the Your themes card and push everything
+/// below it off screen, so every fragment taken from a document is clamped here
+/// rather than where it is rendered. 64 characters is several times the longest
+/// legitimate fragment (`removed_background` is 18 characters, the longest base
+/// key 16, a quoted token value 9).
+pub const MAX_MESSAGE_FRAGMENT_CHARS: usize = 64;
+
+/// One document-derived fragment, clamped for a message on a character
+/// boundary and marked with an ellipsis when anything was dropped. Theme
+/// names are bounded at 128 bytes, not 64 characters, so the import notice
+/// clamps the two it interpolates through this as well: two full-length names
+/// make that sentence about 316 characters, past the card's two lines.
+pub fn fragment(text: &str) -> std::borrow::Cow<'_, str> {
+    fragment_within(text, MAX_MESSAGE_FRAGMENT_CHARS)
+}
+
+/// `fragment` with an explicit allowance: `allowance` characters, then an
+/// ellipsis when anything was dropped.
+fn fragment_within(text: &str, allowance: usize) -> std::borrow::Cow<'_, str> {
+    match text.char_indices().nth(allowance) {
+        Some((end, _)) => std::borrow::Cow::Owned(format!("{}…", &text[..end])),
+        None => std::borrow::Cow::Borrowed(text),
+    }
+}
+
+/// The most characters an import notice may hold, so it fits the two lines
+/// the Your themes card clamps it to.
+///
+/// Measured on the narrower of the two evidence windows: at 1440x900 the
+/// settings column is 732 px, and a notice whose two 64-character names were
+/// runs of "a" was cut at the end of its second line after 248 characters
+/// (`.local/themes-evidence/…/recheck-9554495/run-longnames-1440x900`, capture
+/// `03-both.png`). 238 keeps ten characters under that, and is also the
+/// smallest budget at which no notice of one or two clauses is clamped below
+/// `MAX_MESSAGE_FRAGMENT_CHARS`: only the three-clause notice, a renamed
+/// import whose base was also replaced, shortens its fragments further. The
+/// budget is characters, not pixels, so a name of nothing but wide glyphs can
+/// still run a little past it; the clamp on the card is the backstop for that.
+pub const MAX_NOTICE_CHARS: usize = 238;
+
+/// The fewest characters a notice fragment keeps, however many clauses share
+/// the budget, so a quoted name is still recognisable.
+pub const MIN_MESSAGE_FRAGMENT_CHARS: usize = 8;
+
+/// The most characters the import notice quotes of an unknown base, below the
+/// `MAX_MESSAGE_FRAGMENT_CHARS` its names keep.
+///
+/// A base key has no spaces, so the quoted base is one unbreakable token: when
+/// it does not fit after "The base theme" on the first line it wraps whole,
+/// and the second line then has to hold it and its fixed 78-character tail
+/// ("” is not available in this version of GitTurtle; Midnight is used as
+/// the base."). Measured at 1440x900 the second line of this notice holds
+/// about 144 characters (`.local/themes-evidence/…/recheck-b84aaa6/
+/// run-longnames-1440x900/messages/02-longbase.png`): a 64-character base
+/// with its ellipsis and quotes is 64 + 2 + 78 = 144, exactly at the edge,
+/// where the capture ends the line mid-word at "Midnight is used a"; 48 + 3 +
+/// 78 = 129 leaves a margin. The longest legitimate base key is 16 characters
+/// (`future_theme` is 12), so a real base is always quoted whole.
+pub const MAX_BASE_FRAGMENT_CHARS: usize = 48;
+const _: () = assert!(
+    MIN_MESSAGE_FRAGMENT_CHARS <= MAX_BASE_FRAGMENT_CHARS
+        && MAX_BASE_FRAGMENT_CHARS < MAX_MESSAGE_FRAGMENT_CHARS
+);
+
+/// The sentence the Your themes card shows after an import: the stored name,
+/// then why it differs from the document's when it does, then which built-in
+/// replaced an unknown base when one did. The quoted strings share what
+/// `MAX_NOTICE_CHARS` leaves after the fixed text, so the notice fits its two
+/// lines whichever clauses it carries and a base substitution is always told.
+/// The share is dealt shortest first: a string within its share is quoted
+/// whole and hands the rest on, and only a string past its share is cut, to
+/// at most `MAX_MESSAGE_FRAGMENT_CHARS` for a name and
+/// `MAX_BASE_FRAGMENT_CHARS` for the base, and never below
+/// `MIN_MESSAGE_FRAGMENT_CHARS`, with an ellipsis in the reserved last place.
+pub fn import_notice(
+    name: &str,
+    document_name: &str,
+    unknown_base: Option<&str>,
+    base: ThemeChoice,
+) -> String {
+    // Each clause: the text before the quoted string, the string, the text
+    // after it, and the most characters the string may keep.
+    let mut clauses: Vec<(&str, &str, String, usize)> =
+        vec![("Imported “", name, "”.".into(), MAX_MESSAGE_FRAGMENT_CHARS)];
+    if name != document_name {
+        clauses.push((
+            " A theme named “",
+            document_name,
+            "” already exists, so the imported one was renamed.".into(),
+            MAX_MESSAGE_FRAGMENT_CHARS,
+        ));
+    }
+    if let Some(unknown_base) = unknown_base {
+        clauses.push((
+            " The base theme “",
+            unknown_base,
+            format!(
+                "” is not available in this version of GitTurtle; {} is used as the base.",
+                base.label()
+            ),
+            MAX_BASE_FRAGMENT_CHARS,
+        ));
+    }
+    let fixed: usize = clauses
+        .iter()
+        .map(|(before, _, after, _)| before.chars().count() + after.chars().count())
+        .sum();
+
+    let mut order: Vec<usize> = (0..clauses.len()).collect();
+    order.sort_by_key(|&index| clauses[index].1.chars().count());
+    let mut allowances = vec![0; clauses.len()];
+    let mut remaining = MAX_NOTICE_CHARS.saturating_sub(fixed);
+    for (dealt, &index) in order.iter().enumerate() {
+        let share = remaining / (clauses.len() - dealt);
+        let characters = clauses[index].1.chars().count();
+        let most = clauses[index].3;
+        allowances[index] = if characters <= share.min(most) {
+            characters
+        } else {
+            // The ellipsis takes the share's last place.
+            share
+                .saturating_sub(1)
+                .clamp(MIN_MESSAGE_FRAGMENT_CHARS, most)
+        };
+        remaining = remaining
+            .saturating_sub(allowances[index] + usize::from(characters > allowances[index]));
+    }
+    clauses
+        .iter()
+        .zip(allowances)
+        .map(|((before, quoted, after, _), allowance)| {
+            format!("{before}{}{after}", fragment_within(quoted, allowance))
+        })
+        .collect()
+}
+
 /// A user-authored palette derived from a built-in base.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CustomTheme {
@@ -633,6 +773,35 @@ pub fn validate_theme_name(
     Ok(())
 }
 
+/// The name an imported theme takes in a store that already holds `customs`: its own when the
+/// store accepts it, then "<name> (imported)", "<name> (imported) (2)", … as the specification's
+/// "Import and export" section describes. A stem that would pass the name's byte limit with its
+/// suffix is shortened on a character boundary first.
+pub fn import_name(name: &str, customs: &[CustomTheme]) -> Result<String, String> {
+    let name = validate_name_text(name)?;
+    let candidate = |suffix: &str| {
+        let budget = MAX_PROJECT_NAME_BYTES.saturating_sub(suffix.len());
+        let mut end = budget.min(name.len());
+        while !name.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}{suffix}", name[..end].trim_end())
+    };
+    std::iter::once(String::new())
+        .chain((1..=MAX_CUSTOM_THEMES + 1).map(|attempt| {
+            if attempt == 1 {
+                " (imported)".to_owned()
+            } else {
+                format!(" (imported) ({attempt})")
+            }
+        }))
+        .map(|suffix| candidate(&suffix))
+        .find(|candidate| validate_theme_name(candidate, customs, None).is_ok())
+        .ok_or_else(|| {
+            format!("No free name is left for “{name}”. Rename or delete a theme and import again.")
+        })
+}
+
 /// The storage key of a built-in theme, as in the preference store and theme documents.
 fn built_in_key(choice: ThemeChoice) -> String {
     match serde_json::to_value(choice) {
@@ -666,8 +835,9 @@ pub struct ImportedTheme {
     pub name: String,
     pub base: ThemeChoice,
     pub palette: Palette,
-    /// Set when the document's base is unknown here and was replaced by Midnight or Braden.
-    pub notice: Option<String>,
+    /// The document's base key when this build does not know it; `base` then holds the
+    /// Midnight or Braden fallback, and `import_notice` says so.
+    pub unknown_base: Option<String>,
 }
 
 impl ImportedTheme {
@@ -749,10 +919,16 @@ fn check_keys<V>(
     let mut seen = std::collections::HashSet::new();
     for (key, _) in members {
         if !seen.insert(key.as_str()) {
-            return Err(format!("The theme file repeats the {what} “{key}”."));
+            return Err(format!(
+                "The theme file repeats the {what} “{}”.",
+                fragment(key)
+            ));
         }
         if !expected.clone().any(|known| known == key) {
-            return Err(format!("The theme file has an unknown {what} “{key}”."));
+            return Err(format!(
+                "The theme file has an unknown {what} “{}”.",
+                fragment(key)
+            ));
         }
     }
     if let Some(missing) = expected.into_iter().find(|key| !seen.contains(key)) {
@@ -774,6 +950,22 @@ impl CustomTheme {
 
     pub fn is_light(&self) -> bool {
         self.palette.is_light()
+    }
+
+    /// The file name the export dialog suggests: the theme's name as a lowercase ASCII slug with
+    /// the document's double extension, and `theme` when the name has no usable characters.
+    pub fn suggested_file_name(&self) -> String {
+        let mut slug = String::new();
+        for character in self.name.chars() {
+            if character.is_ascii_alphanumeric() {
+                slug.push(character.to_ascii_lowercase());
+            } else if !slug.ends_with('-') {
+                slug.push('-');
+            }
+        }
+        let slug = slug.trim_matches('-');
+        let slug = if slug.is_empty() { "theme" } else { slug };
+        format!("{slug}.{THEME_DOCUMENT_FORMAT}.json")
     }
 
     /// The export document: exactly `format`, `version`, `name`, `base` and the 21 `tokens` as
@@ -801,8 +993,13 @@ impl CustomTheme {
                 "This theme file is larger than {LIMIT_KIB} KiB, the most GitTurtle imports."
             ));
         }
-        let Members(members) = serde_json::from_slice::<Members<Member>>(bytes)
-            .map_err(|error| format!("This file is not a GitTurtle theme: {error}."))?;
+        let Members(members) =
+            serde_json::from_slice::<Members<Member>>(bytes).map_err(|error| {
+                format!(
+                    "This file is not a GitTurtle theme: {}.",
+                    fragment(&error.to_string())
+                )
+            })?;
         let value = |key: &str| {
             members
                 .iter()
@@ -861,28 +1058,25 @@ impl CustomTheme {
                 .filter(|text| text.starts_with('#'))
                 .and_then(parse_hex)
                 .ok_or_else(|| {
-                    format!("The token “{key}” must be a #rrggbb color, not {value}.")
+                    format!(
+                        "The token “{}” must be a #rrggbb color, not {}.",
+                        fragment(key),
+                        fragment(&value.to_string())
+                    )
                 })?;
             let kind = TokenKind::from_key(key).expect("token keys were checked");
             palette.set(kind, color);
         }
 
-        let (base, notice) = match built_in_from_key(base) {
+        let (base, unknown_base) = match built_in_from_key(base) {
             Some(choice) => (choice, None),
-            None => {
-                let fallback = fallback_base(palette);
-                let notice = format!(
-                    "The base theme “{base}” is not available in this version of GitTurtle; {} is used as the base.",
-                    fallback.label()
-                );
-                (fallback, Some(notice))
-            }
+            None => (fallback_base(palette), Some(base.to_owned())),
         };
         Ok(ImportedTheme {
             name,
             base,
             palette,
-            notice,
+            unknown_base,
         })
     }
 }
@@ -1248,7 +1442,7 @@ mod tests {
         assert!(positions.is_sorted());
 
         let imported = CustomTheme::from_document(&bytes).unwrap();
-        assert_eq!(imported.notice, None);
+        assert_eq!(imported.unknown_base, None);
         assert_eq!(imported.into_theme(7), theme);
     }
 
@@ -1427,11 +1621,10 @@ mod tests {
         let imported = CustomTheme::from_document(&dark).unwrap();
         assert_eq!(imported.base, ThemeChoice::Midnight);
         assert_eq!(imported.palette, sunset().palette, "tokens are kept");
+        assert_eq!(imported.unknown_base.as_deref(), Some("future_theme"));
         assert_eq!(
-            imported.notice.as_deref(),
-            Some(
-                "The base theme “future_theme” is not available in this version of GitTurtle; Midnight is used as the base."
-            )
+            import_notice("Sunset", "Sunset", Some("future_theme"), imported.base),
+            "Imported “Sunset”. The base theme “future_theme” is not available in this version of GitTurtle; Midnight is used as the base."
         );
 
         let mut light = CustomTheme::from_base(1, "Paper", ThemeChoice::Porcelain).to_document();
@@ -1441,10 +1634,9 @@ mod tests {
             .into_bytes();
         let imported = CustomTheme::from_document(&light).unwrap();
         assert_eq!(imported.base, ThemeChoice::Daylight);
+        assert_eq!(imported.unknown_base.as_deref(), Some("parchment"));
         assert!(
-            imported
-                .notice
-                .unwrap()
+            import_notice("Paper", "Paper", Some("parchment"), imported.base)
                 .contains("Braden is used as the base")
         );
 
@@ -1452,8 +1644,293 @@ mod tests {
             let theme = CustomTheme::from_base(1, "Copy", choice);
             let imported = CustomTheme::from_document(&theme.to_document()).unwrap();
             assert_eq!(imported.base, choice);
-            assert_eq!(imported.notice, None);
+            assert_eq!(imported.unknown_base, None);
         }
+    }
+
+    /// A document is supplied bytes, so a key, a value or a base name in it can
+    /// be as long as the reader accepts. Every message that quotes one clamps
+    /// it, so nothing downstream — the card's text or its aria_label — carries
+    /// an unbounded string.
+    #[test]
+    fn messages_clamp_the_text_they_quote_from_a_document() {
+        const LONG: usize = 4096;
+        let clamped = |text: &str| {
+            format!(
+                "{}\u{2026}",
+                text.chars()
+                    .take(MAX_MESSAGE_FRAGMENT_CHARS)
+                    .collect::<String>()
+            )
+        };
+        let long_key = "k".repeat(LONG);
+        let long_value = "v".repeat(LONG);
+        let long_base = "b".repeat(LONG);
+
+        let cases: Vec<(&str, Vec<u8>, String)> = vec![
+            (
+                "an unknown key",
+                document_with(|document| {
+                    document.insert(long_key.clone(), Value::String("x".into()));
+                }),
+                format!(
+                    "The theme file has an unknown key “{}”.",
+                    clamped(&long_key)
+                ),
+            ),
+            (
+                "an unknown token",
+                document_with(|document| {
+                    tokens(document).insert(long_key.clone(), Value::String("#ffffff".into()));
+                }),
+                format!(
+                    "The theme file has an unknown token “{}”.",
+                    clamped(&long_key)
+                ),
+            ),
+            (
+                "a token value",
+                document_with(|document| {
+                    tokens(document).insert("canvas".into(), Value::String(long_value.clone()));
+                }),
+                format!(
+                    "The token “canvas” must be a #rrggbb color, not {}.",
+                    clamped(&format!("\"{long_value}\""))
+                ),
+            ),
+        ];
+        for (what, bytes, expected) in cases {
+            assert_eq!(
+                CustomTheme::from_document(&bytes).unwrap_err(),
+                expected,
+                "{what}"
+            );
+        }
+
+        // A repeat keeps its own message, which a `serde_json::Value`
+        // object cannot express. An unknown name is reported before a
+        // repeat, so this repeats a known key; the clamp there guards the
+        // same way.
+        let repeated =
+            "{\"format\":\"gitturtle-theme\",\"version\":1,\"name\":\"S\",\"name\":\"S\"}";
+        assert_eq!(
+            CustomTheme::from_document(repeated.as_bytes()).unwrap_err(),
+            "The theme file repeats the key “name”."
+        );
+
+        // A parser refusal quotes the JSON parser's own message, which is
+        // free to name the input it choked on; clamped, it stays a sentence.
+        let refusal = CustomTheme::from_document(
+            &b"\""
+                .iter()
+                .copied()
+                .chain(long_value.bytes())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_err();
+        assert!(
+            refusal.chars().count() <= MAX_MESSAGE_FRAGMENT_CHARS + 40,
+            "{refusal}"
+        );
+
+        // The unknown base reaches a notice rather than a refusal. It is
+        // carried whole and clamped where the notice is built, to the base's
+        // own `MAX_BASE_FRAGMENT_CHARS`; the theme still imports.
+        let imported = CustomTheme::from_document(&document_with(|document| {
+            document.insert("base".into(), Value::String(long_base.clone()));
+        }))
+        .unwrap();
+        assert_eq!(imported.base, ThemeChoice::Midnight);
+        assert_eq!(imported.palette, sunset().palette);
+        assert_eq!(imported.unknown_base.as_deref(), Some(long_base.as_str()));
+        assert_eq!(
+            import_notice("Sunset", "Sunset", Some(&long_base), imported.base),
+            format!(
+                "Imported “Sunset”. The base theme “{}…” is not available in this version of GitTurtle; Midnight is used as the base.",
+                long_base
+                    .chars()
+                    .take(MAX_BASE_FRAGMENT_CHARS)
+                    .collect::<String>()
+            )
+        );
+
+        // A fragment at the bound is quoted whole, with no ellipsis.
+        let exact = "e".repeat(MAX_MESSAGE_FRAGMENT_CHARS);
+        assert_eq!(
+            CustomTheme::from_document(&document_with(|document| {
+                document.insert(exact.clone(), Value::String("x".into()));
+            }))
+            .unwrap_err(),
+            format!("The theme file has an unknown key “{exact}”.")
+        );
+    }
+
+    /// The card clamps the notice to two lines and marks a cut only at the
+    /// render site, so the sentence has to fit `MAX_NOTICE_CHARS` whichever
+    /// clauses it carries. A renamed import whose base was also replaced quotes three
+    /// document strings; with names at the 128-byte bound and a long unknown
+    /// base each is shortened so the base clause, the one that tells the
+    /// user a substitution happened and which built-in stood in, is reached.
+    #[test]
+    fn a_three_clause_notice_fits_its_budget_and_still_names_the_base() {
+        let name = format!("{} (imported)", "n".repeat(117));
+        let document_name = "n".repeat(128);
+        let unknown_base = "u".repeat(128);
+        let quoted = |notice: &str| {
+            notice
+                .split('“')
+                .skip(1)
+                .map(|rest| rest.split('”').next().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+
+        for base in [ThemeChoice::Midnight, ThemeChoice::Daylight] {
+            let notice = import_notice(&name, &document_name, Some(&unknown_base), base);
+            assert!(
+                notice.chars().count() <= MAX_NOTICE_CHARS,
+                "{} characters: {notice}",
+                notice.chars().count()
+            );
+            assert!(
+                notice.ends_with(&format!(
+                    "” is not available in this version of GitTurtle; {} is used as the base.",
+                    base.label()
+                )),
+                "{notice}"
+            );
+            assert!(notice.contains("already exists, so the imported one was renamed."));
+            let fragments = quoted(&notice);
+            assert_eq!(fragments.len(), 3, "{notice}");
+            for fragment in &fragments {
+                let kept = fragment
+                    .strip_suffix('…')
+                    .expect("every long fragment is cut");
+                let characters = kept.chars().count();
+                assert!(
+                    (MIN_MESSAGE_FRAGMENT_CHARS..=MAX_MESSAGE_FRAGMENT_CHARS).contains(&characters),
+                    "{fragment}"
+                );
+            }
+            assert!(name.starts_with(&fragments[0][..fragments[0].len() - '…'.len_utf8()]));
+        }
+
+        // The budget is only felt with three clauses: alone, or with one
+        // other, a name keeps the full `MAX_MESSAGE_FRAGMENT_CHARS` and the
+        // base its own `MAX_BASE_FRAGMENT_CHARS`, so every notice the
+        // evidence captures renders as before.
+        let clamped_to =
+            |text: &str, most: usize| format!("{}…", text.chars().take(most).collect::<String>());
+        let clamped = |text: &str| clamped_to(text, MAX_MESSAGE_FRAGMENT_CHARS);
+        assert_eq!(
+            import_notice(&document_name, &document_name, None, ThemeChoice::Nord),
+            format!("Imported “{}”.", clamped(&document_name))
+        );
+        assert_eq!(
+            import_notice(&name, &document_name, None, ThemeChoice::Nord),
+            format!(
+                "Imported “{}”. A theme named “{}” already exists, so the imported one was renamed.",
+                clamped(&name),
+                clamped(&document_name)
+            )
+        );
+        assert_eq!(
+            import_notice(
+                &document_name,
+                &document_name,
+                Some(&unknown_base),
+                ThemeChoice::Midnight
+            ),
+            format!(
+                "Imported “{}”. The base theme “{}” is not available in this version of GitTurtle; Midnight is used as the base.",
+                clamped(&document_name),
+                clamped_to(&unknown_base, MAX_BASE_FRAGMENT_CHARS)
+            )
+        );
+        // A short string is quoted whole however many clauses there are, and
+        // hands its unused share to a long one beside it.
+        let notice = import_notice(
+            "Aurora Light (imported)",
+            "Aurora Light",
+            Some(&unknown_base),
+            ThemeChoice::Daylight,
+        );
+        assert!(
+            notice.starts_with(
+                "Imported “Aurora Light (imported)”. A theme named “Aurora Light” already exists, so the imported one was renamed. The base theme “uuuuuuuuuuuuuuuuuuuu"
+            ),
+            "{notice}"
+        );
+        assert!(
+            notice.ends_with(
+                "u…” is not available in this version of GitTurtle; Braden is used as the base."
+            ),
+            "{notice}"
+        );
+        assert_eq!(
+            notice.chars().count(),
+            MAX_NOTICE_CHARS,
+            "the long base takes every character the short names left: {notice}"
+        );
+        assert_eq!(
+            import_notice(
+                "Aurora Light (imported)",
+                "Aurora Light",
+                Some("aurora-9"),
+                ThemeChoice::Daylight
+            ),
+            "Imported “Aurora Light (imported)”. A theme named “Aurora Light” already exists, so the imported one was renamed. The base theme “aurora-9” is not available in this version of GitTurtle; Braden is used as the base."
+        );
+    }
+
+    /// The quoted base is one unbreakable token that wraps whole, so it is
+    /// capped below the names to fit one line with its fixed tail; the
+    /// budget alone cannot see where the lines break.
+    #[test]
+    fn a_two_clause_notice_keeps_its_base_fragment_on_one_line() {
+        let name = "n".repeat(128);
+        let unknown_base = "u".repeat(128);
+        let notice = import_notice(&name, &name, Some(&unknown_base), ThemeChoice::Midnight);
+        assert!(
+            notice.chars().count() <= MAX_NOTICE_CHARS,
+            "{} characters: {notice}",
+            notice.chars().count()
+        );
+        assert!(
+            notice.ends_with("; Midnight is used as the base."),
+            "{notice}"
+        );
+        let base_fragment = notice
+            .split(" The base theme “")
+            .nth(1)
+            .and_then(|rest| rest.split('”').next())
+            .expect("the notice quotes the base");
+        let kept = base_fragment
+            .strip_suffix('…')
+            .expect("a 128-byte base is cut");
+        assert!(
+            kept.chars().count() <= MAX_BASE_FRAGMENT_CHARS,
+            "{} characters: {base_fragment}",
+            kept.chars().count()
+        );
+        assert!(unknown_base.starts_with(kept));
+        // The name beside it still keeps the full name allowance.
+        assert!(
+            notice.starts_with(&format!(
+                "Imported “{}…”.",
+                "n".repeat(MAX_MESSAGE_FRAGMENT_CHARS)
+            )),
+            "{notice}"
+        );
+        // A real base key is far shorter than the cap and is quoted whole.
+        assert_eq!(
+            import_notice(
+                "Aurora",
+                "Aurora",
+                Some("future_theme"),
+                ThemeChoice::Midnight
+            ),
+            "Imported “Aurora”. The base theme “future_theme” is not available in this version of GitTurtle; Midnight is used as the base."
+        );
     }
 
     #[test]
@@ -1591,5 +2068,67 @@ mod tests {
         }
         // The storage key of Braden is not its label.
         assert_eq!(validate_theme_name("Daylight", &[], None), Ok(()));
+    }
+
+    #[test]
+    fn imported_names_keep_their_own_name_or_take_the_imported_suffix() {
+        // A free name is kept, whatever the store already holds.
+        assert_eq!(import_name("Sunset", &[]), Ok("Sunset".into()));
+        assert_eq!(import_name("  Sunset  ", &[]), Ok("Sunset".into()));
+
+        let mut customs = vec![sunset()];
+        assert_eq!(
+            import_name("SUNSET", &customs),
+            Ok("SUNSET (imported)".into())
+        );
+        // A built-in label is taken, as the store never accepts one.
+        assert_eq!(import_name("Nord", &customs), Ok("Nord (imported)".into()));
+
+        // Repeated imports number the suffix.
+        customs.push(CustomTheme::from_base(
+            8,
+            "Sunset (imported)",
+            ThemeChoice::Nord,
+        ));
+        assert_eq!(
+            import_name("Sunset", &customs),
+            Ok("Sunset (imported) (2)".into())
+        );
+        customs.push(CustomTheme::from_base(
+            9,
+            "Sunset (imported) (2)",
+            ThemeChoice::Nord,
+        ));
+        assert_eq!(
+            import_name("Sunset", &customs),
+            Ok("Sunset (imported) (3)".into())
+        );
+
+        // A name at the byte bound is shortened on a character boundary so the suffix fits.
+        let long = format!("{}é", "a".repeat(126));
+        assert_eq!(long.len(), MAX_PROJECT_NAME_BYTES);
+        customs.push(CustomTheme::from_base(10, long.clone(), ThemeChoice::Nord));
+        let taken = import_name(&long, &customs).unwrap();
+        assert_eq!(taken, format!("{} (imported)", "a".repeat(117)));
+        assert!(taken.len() <= MAX_PROJECT_NAME_BYTES);
+        assert_eq!(validate_theme_name(&taken, &customs, None), Ok(()));
+
+        // A document name the store could never accept is refused, not repaired.
+        assert_eq!(
+            import_name(" \t ", &customs),
+            Err("Enter a name for this theme.".into())
+        );
+    }
+
+    #[test]
+    fn suggested_file_names_slug_the_theme_name() {
+        let named =
+            |name: &str| CustomTheme::from_base(1, name, ThemeChoice::Nord).suggested_file_name();
+        assert_eq!(named("Sunset"), "sunset.gitturtle-theme.json");
+        assert_eq!(named("Deep Sea 2"), "deep-sea-2.gitturtle-theme.json");
+        assert_eq!(named("  Rosé //Pine  "), "ros-pine.gitturtle-theme.json");
+        // A name with nothing usable still has a file name, and no path separator survives.
+        assert_eq!(named("…"), "theme.gitturtle-theme.json");
+        assert_eq!(named("../etc"), "etc.gitturtle-theme.json");
     }
 }

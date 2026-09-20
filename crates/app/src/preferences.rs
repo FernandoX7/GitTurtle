@@ -792,11 +792,23 @@ pub fn validate_project_name(name: &str) -> std::result::Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(test))]
 fn absolute_environment_path(name: &str) -> Option<PathBuf> {
     std::env::var_os(name)
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
+}
+
+/// Where a save dialog starts before the user navigates: their home folder,
+/// or the working directory when the environment names none. An exported
+/// document is the user's file, so this is only the dialog's starting point.
+pub(super) fn home_directory() -> PathBuf {
+    #[cfg(unix)]
+    let home = absolute_environment_path("HOME");
+    #[cfg(not(unix))]
+    let home = absolute_environment_path("USERPROFILE");
+    home.filter(|home| home.is_dir())
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 #[cfg(not(test))]
@@ -916,23 +928,54 @@ pub(super) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         builder.mode(0o700);
     }
     builder.create(directory)?;
+    write_through_temporary(directory, path, bytes, ".preferences", Some(0o600))
+}
 
+/// Write a document the user chose a location for, such as an exported theme,
+/// through the same temporary-file-and-rename path as application data. Unlike
+/// [`atomic_write`] this never creates the folder — the save dialog returns one
+/// that exists — and leaves the platform's default permissions, because the
+/// user may share what they exported. A refused destination fails before any
+/// bytes are written, and a failure after that removes the temporary file, so
+/// no partial or truncated document is left behind.
+pub(super) fn write_exported_document(path: &Path, bytes: &[u8]) -> Result<()> {
+    let directory = path
+        .parent()
+        .filter(|directory| !directory.as_os_str().is_empty())
+        .context("The chosen location has no parent folder")?;
+    ensure!(
+        directory.is_absolute(),
+        "Choose a destination folder with an absolute path"
+    );
+    write_through_temporary(directory, path, bytes, ".gitturtle-export", None)
+        .with_context(|| format!("Could not write to {}", directory.display()))
+}
+
+/// Write `bytes` into `directory` under a temporary name and rename it onto
+/// `path`, so a reader sees either the previous file or the whole new one.
+/// `mode` sets the temporary file's Unix permissions where the data is private.
+fn write_through_temporary(
+    directory: &Path,
+    path: &Path,
+    bytes: &[u8],
+    prefix: &str,
+    mode: Option<u32>,
+) -> Result<()> {
+    #[cfg(not(unix))]
+    let _ = mode;
     // create_new prevents following an existing temporary-file symlink. The
     // final rename occurs on the same filesystem, so readers see a whole file.
     let (pending, mut file) = (0..32)
         .find_map(|_| {
             let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let temporary = directory.join(format!(
-                ".preferences.{}.{}.tmp",
-                std::process::id(),
-                sequence
-            ));
+            let temporary =
+                directory.join(format!("{prefix}.{}.{}.tmp", std::process::id(), sequence));
             let mut options = OpenOptions::new();
             options.write(true).create_new(true);
             #[cfg(unix)]
-            {
+            if let Some(mode) = mode {
                 use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
+                options.mode(mode);
             }
             match options.open(&temporary) {
                 Ok(file) => Some(Ok((PendingFile(temporary), file))),
@@ -940,7 +983,7 @@ pub(super) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
                 Err(error) => Some(Err(error)),
             }
         })
-        .context("Could not reserve an atomic settings file")??;
+        .context("Could not reserve a temporary file beside the destination")??;
     file.write_all(bytes)?;
     file.sync_all()?;
     drop(file);
@@ -1018,6 +1061,44 @@ mod tests {
                 .is_symlink()
         );
         assert_eq!(fs::read(target).unwrap(), original);
+    }
+
+    #[test]
+    fn exported_documents_replace_whole_files_and_leave_nothing_behind_on_failure() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("sunset.gitturtle-theme.json");
+        write_exported_document(&path, b"first\n").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"first\n");
+        // A second export replaces the whole file rather than truncating it.
+        write_exported_document(&path, b"second document\n").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"second document\n");
+        assert_eq!(fs::read_dir(fixture.path()).unwrap().count(), 1);
+
+        // A relative or parentless destination is refused before any write.
+        assert!(write_exported_document(Path::new("sunset.json"), b"x").is_err());
+        // A destination folder that does not exist is refused; the export
+        // dialog returns an existing one, and nothing is created here.
+        let missing = fixture.path().join("absent").join("theme.json");
+        assert!(write_exported_document(&missing, b"x").is_err());
+        assert!(!missing.parent().unwrap().exists());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let locked = fixture.path().join("locked");
+            fs::create_dir(&locked).unwrap();
+            let destination = locked.join("theme.json");
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).unwrap();
+            let refused = write_exported_document(&destination, b"x").unwrap_err();
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(
+                format!("{refused:#}")
+                    .contains(&format!("Could not write to {}", locked.display())),
+                "an unwritable folder reports the refused write: {refused:#}"
+            );
+            // Temp-and-rename: no partial or temporary file is left behind.
+            assert_eq!(fs::read_dir(&locked).unwrap().count(), 0);
+        }
     }
 
     #[test]

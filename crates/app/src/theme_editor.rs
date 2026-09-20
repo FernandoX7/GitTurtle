@@ -12,13 +12,19 @@
 //! own Confirm never saves from Cancel. Cancel, Escape and a closed dialog drop
 //! the draft and re-apply the saved selection. Nothing reaches the store until
 //! Save, which goes through `Preferences::save_custom_themes` on the serialized
-//! preference executor. The contract is `docs/development/themes/spec.md`
-//! §Editor and §Failure and recovery, and `DESIGN.md` §Custom theme editor.
+//! preference executor. Export and import use the native save and open
+//! dialogs and do every file operation on that same executor: an export writes
+//! the specification's document through temp-and-rename, an import reads it
+//! with the bounded store reader and parses it there, and only the name, the
+//! bound and the save are decided on the UI thread. An imported theme is added
+//! and highlighted, never applied. The contract is
+//! `docs/development/themes/spec.md` §Editor, §Import and export and §Failure
+//! and recovery, and `DESIGN.md` §Custom theme editor.
 
 use crate::*;
 use appearance::custom::{
-    self, CustomTheme, ReadabilityBackground, ReadabilityForeground, ReadabilityIssue,
-    ThemeSelection, TokenGroup, TokenKind,
+    self, CustomTheme, ImportedTheme, ReadabilityBackground, ReadabilityForeground,
+    ReadabilityIssue, ThemeSelection, TokenGroup, TokenKind,
 };
 use appearance::{Palette, ThemeChoice};
 use gpui_kit::base::{FocusableExt, Scrollbar, ScrollbarMode};
@@ -50,8 +56,16 @@ pub(super) struct State {
     /// Custom-theme saves submitted from this window and not yet answered.
     /// Only their replies replace `GitTurtle::custom_themes`.
     pending_saves: usize,
-    /// A failed delete, shown in the Your themes card.
+    /// A failed delete, export or import, shown in the Your themes card.
     error: Option<String>,
+    /// A finished export or import, shown in the Your themes card.
+    notice: Option<String>,
+    /// A native theme dialog or a theme file job is in flight. The card's
+    /// actions wait for it, so one transfer has one visible owner.
+    transfer_pending: bool,
+    /// The theme the last import added. The card highlights that row; the
+    /// window's own theme is untouched.
+    imported: Option<u32>,
     /// The Your themes card's warning counts, by theme id and palette, so a
     /// Settings frame does not rerun the readability rules for every theme.
     warning_counts: std::cell::RefCell<Vec<(u32, Palette, usize)>>,
@@ -70,6 +84,20 @@ impl State {
 
     pub(super) fn error(&self) -> Option<&str> {
         self.error.as_deref()
+    }
+
+    pub(super) fn notice(&self) -> Option<&str> {
+        self.notice.as_deref()
+    }
+
+    /// An export or import is waiting for its dialog, the file or the store.
+    pub(super) fn transfer_pending(&self) -> bool {
+        self.transfer_pending
+    }
+
+    /// The row the last import added, highlighted until the next card action.
+    pub(super) fn imported(&self) -> Option<u32> {
+        self.imported
     }
 
     /// `readability_issues().len()` for each theme, in order; a theme is
@@ -109,6 +137,9 @@ enum SaveOutcome {
         id: u32,
         form: WeakEntity<ThemeForm>,
     },
+    /// A theme read from a document, which is added and highlighted but never
+    /// applied: importing a theme does not change the window's appearance.
+    Imported { id: u32, notice: String },
     Deleted {
         id: u32,
         base: ThemeChoice,
@@ -197,6 +228,54 @@ fn default_theme_name(base: ThemeChoice, customs: &[CustomTheme]) -> String {
         .unwrap_or(stem)
 }
 
+/// The written path for an export notice. A destination can be arbitrarily
+/// deep, and the card's message is one line of prose, so this clamps the path
+/// from the front: the file name the user just chose is what they are looking
+/// for, and the leading ellipsis says the folders above it were dropped.
+fn written_path_text(path: &std::path::Path) -> String {
+    let text = path.display().to_string();
+    let characters = text.chars().count();
+    if characters <= custom::MAX_MESSAGE_FRAGMENT_CHARS {
+        return text;
+    }
+    let start = text
+        .char_indices()
+        .nth(characters - custom::MAX_MESSAGE_FRAGMENT_CHARS)
+        .map_or(0, |(index, _)| index);
+    format!("…{}", &text[start..])
+}
+
+/// Read a chosen theme document with the preference store's bounded reader: a
+/// regular file, no symbolic link as the final component, at most 64 KiB, and
+/// one descriptor for the check and the read. Its refusals are translated here
+/// so the card names the problem in the terms the user chose the file in.
+fn read_theme_document(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    const LIMIT_KIB: usize = custom::MAX_THEME_DOCUMENT_BYTES / 1024;
+    preferences::read_store(path, custom::MAX_THEME_DOCUMENT_BYTES as u64).map_err(|error| {
+        // Only for the message: the bytes never came through this second look.
+        let metadata = std::fs::symlink_metadata(path).ok();
+        let kind = metadata.as_ref().map(|metadata| metadata.file_type());
+        let oversized = metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.len() > custom::MAX_THEME_DOCUMENT_BYTES as u64);
+        match kind {
+            Some(kind) if kind.is_symlink() => {
+                "A theme file must be a regular file; this one is a symbolic link.".into()
+            }
+            Some(kind) if kind.is_dir() => {
+                "A theme file must be a regular file; this one is a folder.".into()
+            }
+            Some(_) if oversized => {
+                format!(
+                    "This theme file is larger than {LIMIT_KIB} KiB, the most GitTurtle imports."
+                )
+            }
+            Some(kind) if !kind.is_file() => "A theme file must be a regular file.".into(),
+            _ => format!("Could not read the theme file: {error}."),
+        }
+    })
+}
+
 impl GitTurtle {
     /// The built-in the active theme derives from: itself, or a custom theme's base.
     fn active_base(&self, cx: &App) -> ThemeChoice {
@@ -248,7 +327,7 @@ impl GitTurtle {
         let form =
             cx.new(|cx| ThemeForm::new(owner, editing, name, base, palette, customs, window, cx));
         self.theme_editor.form = Some(form.clone());
-        self.theme_editor.error = None;
+        self.clear_theme_transfer_result();
         self.preview_theme_draft(palette, window, cx);
         let focus = form.read(cx).name.read(cx).focus_handle(cx);
         let focus_form = form.downgrade();
@@ -559,6 +638,7 @@ impl GitTurtle {
         else {
             return;
         };
+        self.clear_theme_transfer_result();
         let themes = self
             .custom_themes
             .iter()
@@ -571,6 +651,186 @@ impl GitTurtle {
             window,
             cx,
         );
+    }
+
+    /// A finished export or import stops being current as soon as the user
+    /// acts on the card again.
+    fn clear_theme_transfer_result(&mut self) {
+        self.theme_editor.error = None;
+        self.theme_editor.notice = None;
+        self.theme_editor.imported = None;
+    }
+
+    /// Whether the card's actions are available: one dialog, file job or store
+    /// save at a time, so every outcome has a visible owner.
+    fn theme_transfer_busy(&self) -> bool {
+        self.theme_editor.transfer_pending || self.theme_editor.save_pending()
+    }
+
+    /// Export a saved theme to a JSON document the user places with the native
+    /// save dialog. The document is built here, but the write runs on the
+    /// preference executor through temp-and-rename, so the UI thread never
+    /// touches the file system and a refused destination leaves nothing
+    /// behind. Cancelling the dialog is quiet.
+    pub(super) fn export_custom_theme(
+        &mut self,
+        id: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.theme_transfer_busy() {
+            return;
+        }
+        let Some(theme) = self.custom_themes.iter().find(|theme| theme.id == id) else {
+            return;
+        };
+        let name = theme.name.clone();
+        let bytes = theme.to_document();
+        let suggested = theme.suggested_file_name();
+        let response = cx.prompt_for_new_path(&preferences::home_directory(), Some(&suggested));
+        self.theme_editor.transfer_pending = true;
+        self.clear_theme_transfer_result();
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let outcome: Result<Option<String>, String> = async {
+                let Some(destination) = folder_picker::new_path(response).await? else {
+                    return Ok(None);
+                };
+                let document = destination.clone();
+                let Ok(job) = this.update(cx, |this, _| {
+                    this.preferences_writer
+                        .submit(move || preferences::write_exported_document(&document, &bytes))
+                }) else {
+                    return Ok(None);
+                };
+                match job.await {
+                    Ok(Ok(())) => Ok(Some(format!(
+                        "Exported “{name}” to {}.",
+                        written_path_text(&destination)
+                    ))),
+                    Ok(Err(error)) => Err(format!("Could not export “{name}”: {error:#}")),
+                    Err(_) => Err(format!(
+                        "Could not export “{name}”: the settings writer stopped before reporting a result."
+                    )),
+                }
+            }
+            .await;
+            let _ = this.update(cx, |this, cx| {
+                this.theme_editor.transfer_pending = false;
+                match outcome {
+                    Ok(Some(notice)) => this.theme_editor.notice = Some(notice),
+                    Ok(None) => {}
+                    Err(error) => this.theme_editor.error = Some(error),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Import a theme document the user chooses with the native open dialog.
+    /// The bounded read, the parse and the document's own validation run on the
+    /// preference executor; the UI thread only resolves the name against the
+    /// saved themes, checks the bound and submits the save. Cancelling the
+    /// dialog is quiet, and a refused document changes nothing.
+    pub(super) fn import_custom_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.theme_transfer_busy() {
+            return;
+        }
+        let response = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Import theme".into()),
+        });
+        self.theme_editor.transfer_pending = true;
+        self.clear_theme_transfer_result();
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let outcome: Result<Option<ImportedTheme>, String> = async {
+                let chosen =
+                    folder_picker::selected_path_for(folder_picker::Picker::File, response).await?;
+                let Some(path) = chosen else {
+                    return Ok(None);
+                };
+                let Ok(job) = this.update(cx, |this, _| {
+                    this.preferences_writer.submit(move || {
+                        Ok(read_theme_document(&path)
+                            .and_then(|bytes| CustomTheme::from_document(&bytes)))
+                    })
+                }) else {
+                    return Ok(None);
+                };
+                match job.await {
+                    Ok(Ok(Ok(imported))) => Ok(Some(imported)),
+                    // The document's own refusal already names the problem.
+                    Ok(Ok(Err(refusal))) => Err(refusal),
+                    Ok(Err(error)) => Err(format!("Could not read the theme file: {error:#}")),
+                    Err(_) => Err(
+                        "Could not read the theme file: the settings writer stopped before reporting a result."
+                            .into(),
+                    ),
+                }
+            }
+            .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.theme_editor.transfer_pending = false;
+                match outcome {
+                    Ok(Some(imported)) => this.add_imported_theme(imported, window, cx),
+                    Ok(None) => {}
+                    Err(error) => this.theme_editor.error = Some(error),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Give a parsed document a free name and an id and save it. A collision
+    /// with a saved theme or a built-in label becomes "<name> (imported)", the
+    /// 32-theme bound refuses the import with the bound, and the saved theme is
+    /// highlighted rather than applied.
+    fn add_imported_theme(
+        &mut self,
+        imported: ImportedTheme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.custom_themes.len() >= MAX_CUSTOM_THEMES {
+            self.theme_editor.error = Some(format!(
+                "Up to {MAX_CUSTOM_THEMES} custom themes can be saved. Delete one before importing another."
+            ));
+            return;
+        }
+        let name = match custom::import_name(&imported.name, &self.custom_themes) {
+            Ok(name) => name,
+            Err(error) => {
+                self.theme_editor.error = Some(error);
+                return;
+            }
+        };
+        let Some(id) = custom::next_custom_theme_id(&self.custom_themes) else {
+            self.theme_editor.error =
+                Some("No theme id is available. Delete a theme and import again.".into());
+            return;
+        };
+        // The notice quotes up to three document strings — both names and an
+        // unknown base — each clamped like a document fragment and sharing
+        // the card's two-line budget, so at 128 bytes a name the base
+        // substitution after it is still told. The row above carries the
+        // imported theme's full name and its resolved base.
+        let notice = custom::import_notice(
+            &name,
+            &imported.name,
+            imported.unknown_base.as_deref(),
+            imported.base,
+        );
+        let mut themes = self.custom_themes.clone();
+        themes.push(CustomTheme {
+            name,
+            ..imported.into_theme(id)
+        });
+        self.submit_custom_themes(themes, SaveOutcome::Imported { id, notice }, window, cx);
     }
 
     fn submit_custom_themes(
@@ -642,6 +902,17 @@ impl GitTurtle {
                     form.error = Some(format!("Could not save the theme: {error:#}"));
                     cx.notify();
                 });
+            }
+            (Ok(themes), SaveOutcome::Imported { id, notice }) => {
+                // Added and highlighted, not applied: the window keeps its theme.
+                self.custom_themes = themes;
+                self.theme_editor.error = None;
+                self.theme_editor.notice = Some(notice);
+                self.theme_editor.imported = Some(id);
+            }
+            (Err(error), SaveOutcome::Imported { .. }) => {
+                self.theme_editor.error =
+                    Some(format!("Could not save the imported theme: {error:#}"));
             }
             (Ok(themes), SaveOutcome::Deleted { id, base, previous }) => {
                 self.custom_themes = themes;
@@ -2624,20 +2895,21 @@ mod tests {
         theme
     }
 
-    /// Keyboard-only: from the card, Tab past New theme… and Edit… reaches
-    /// Delete…, and Space opens the alert as a native input. The frame after
-    /// the key draws the alert; the next frame runs its callbacks, then draws.
+    /// Keyboard-only: from the card, Tab past New theme…, Import…, Edit… and
+    /// Export… reaches Delete…, and Space opens the alert as a native input.
+    /// The frame after the key draws the alert; the next frame runs its
+    /// callbacks, then draws.
     fn open_delete_alert(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) {
         let card = cx.update(|_, cx| app.read(cx).theme_editor.card_focus(cx));
         cx.update(|window, cx| {
             card.focus(window, cx);
             window.focus_next(cx);
         });
-        cx.simulate_keystrokes("tab tab");
+        cx.simulate_keystrokes("tab tab tab tab");
         settle(cx);
         assert!(
             cx.update(|window, cx| card.contains_focused(window, cx)),
-            "Delete… is the third tab stop in the card"
+            "Delete… is the fifth tab stop in the card"
         );
         assert!(key_frame(cx, "space", |window, cx| window.has_active_dialog(cx)));
         native_frame(cx);
@@ -2759,5 +3031,527 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         delete_then_space_opens_new_theme(cx, true);
+    }
+
+    /// The card's current export or import result.
+    fn transfer_result(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+    ) -> (Option<String>, Option<String>, bool) {
+        cx.read(|cx| {
+            let state = &app.read(cx).theme_editor;
+            (
+                state.notice.clone(),
+                state.error.clone(),
+                state.transfer_pending,
+            )
+        })
+    }
+
+    /// Occupy the preference executor until the returned sender is dropped.
+    /// A transfer whose file work is on that executor can make no progress
+    /// meanwhile; one that read or wrote on the UI thread would finish anyway.
+    fn hold_preference_executor(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+    ) -> std::sync::mpsc::Sender<()> {
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let _reply = cx.read(|cx| {
+            app.read(cx).preferences_writer.submit(move || {
+                let _ = wait.recv();
+                Ok(())
+            })
+        });
+        settle(cx);
+        release
+    }
+
+    /// While `hold` occupies the preference executor, the transfer reports
+    /// nothing and keeps the card.
+    fn assert_waits_for_the_executor(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        hold: std::sync::mpsc::Sender<()>,
+    ) {
+        for _ in 0..3 {
+            settle(cx);
+        }
+        let (notice, error, pending) = transfer_result(cx, app);
+        assert_eq!(
+            (notice, error),
+            (None, None),
+            "the file work waits for the preference executor"
+        );
+        assert!(pending, "the card keeps the transfer until it reports");
+        drop(hold);
+    }
+
+    /// Answer the export dialog with `destination` and wait for the card to
+    /// report. The preference executor answers from its own thread.
+    fn export_to(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        id: u32,
+        destination: Option<PathBuf>,
+        hold: Option<std::sync::mpsc::Sender<()>>,
+    ) -> (Option<String>, Option<String>) {
+        click(cx, format!("export-custom-theme-{id}").leak());
+        cx.simulate_new_path_selection(|_| destination);
+        if let Some(hold) = hold {
+            assert_waits_for_the_executor(cx, app, hold);
+        }
+        wait_for(cx, |cx| {
+            let (notice, error, pending) = transfer_result(cx, app);
+            !pending && (notice.is_some() || error.is_some() || !cx.did_prompt_for_paths())
+        });
+        let (notice, error, pending) = transfer_result(cx, app);
+        assert!(!pending, "the export released the card");
+        (notice, error)
+    }
+
+    /// Answer the import dialog with `chosen` and wait for the card to report.
+    fn import_file(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        chosen: Option<PathBuf>,
+        hold: Option<std::sync::mpsc::Sender<()>>,
+    ) -> (Option<String>, Option<String>) {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| app.import_custom_theme(window, cx));
+        });
+        settle(cx);
+        cx.simulate_path_prompt_response(|options| {
+            assert!(
+                options.files && !options.directories && !options.multiple,
+                "the theme picker chooses one existing file"
+            );
+            chosen.map(|path| vec![path])
+        });
+        if let Some(hold) = hold {
+            assert_waits_for_the_executor(cx, app, hold);
+        }
+        wait_for(cx, |cx| {
+            let (notice, error, pending) = transfer_result(cx, app);
+            !pending && (notice.is_some() || error.is_some() || !cx.did_prompt_for_paths())
+        });
+        let (notice, error, pending) = transfer_result(cx, app);
+        assert!(!pending, "the import released the card");
+        (notice, error)
+    }
+
+    /// Export writes the specification's document byte for byte on the
+    /// preference executor, and importing it back into the store that still
+    /// holds the original adds "<name> (imported)" with the same tokens,
+    /// highlighted but not applied.
+    #[gpui::test]
+    fn exporting_and_importing_round_trips_a_theme_without_applying_it(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        let theme = with_active_harbor(cx, &app);
+        let fixture = tempfile::tempdir().unwrap();
+        let destination = fixture.path().join("harbor.gitturtle-theme.json");
+
+        let hold = hold_preference_executor(cx, &app);
+        let (notice, error) = export_to(cx, &app, 7, Some(destination.clone()), Some(hold));
+        assert_eq!(error, None);
+        let notice = notice.expect("the card reports the written path");
+        assert!(notice.contains("Harbor"), "{notice}");
+        // The written path, clamped from the front so the file name survives.
+        assert!(
+            notice.contains(&written_path_text(&destination)),
+            "{notice}"
+        );
+        assert!(
+            notice.contains("harbor.gitturtle-theme.json"),
+            "the file name survives the clamp: {notice}"
+        );
+        // Byte for byte the document from the specification.
+        assert_eq!(std::fs::read(&destination).unwrap(), theme.to_document());
+        // Temp-and-rename leaves nothing beside it.
+        assert_eq!(std::fs::read_dir(fixture.path()).unwrap().count(), 1);
+
+        let applied_before = applied(cx);
+        let hold = hold_preference_executor(cx, &app);
+        let (notice, error) = import_file(cx, &app, Some(destination), Some(hold));
+        assert_eq!(error, None);
+        let notice = notice.expect("the card reports the import");
+        assert!(notice.contains("Harbor (imported)"), "{notice}");
+        let (themes, selection, highlighted) = cx.read(|cx| {
+            let app = app.read(cx);
+            (
+                app.custom_themes.clone(),
+                app.settings.theme,
+                app.theme_editor.imported,
+            )
+        });
+        assert_eq!(themes.len(), 2);
+        assert_eq!(themes[0], theme);
+        assert_eq!(themes[1].name, "Harbor (imported)");
+        assert_eq!(themes[1].palette, theme.palette);
+        assert_eq!(themes[1].base, theme.base);
+        assert_eq!(
+            highlighted,
+            Some(themes[1].id),
+            "the new row is highlighted"
+        );
+        // Added, not applied: the window keeps the theme it had.
+        assert_eq!(selection, ThemeSelection::Custom(7));
+        assert_eq!(applied(cx), applied_before);
+        settle(cx);
+        assert!(cx.debug_bounds("export-custom-theme-8").is_some());
+    }
+
+    /// Cancelling either dialog is quiet, and an unwritable destination
+    /// reports the failure without leaving a partial file behind.
+    #[gpui::test]
+    fn cancelling_is_quiet_and_an_unwritable_destination_reports_its_failure(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, cx) = open_app(cx);
+        let theme = with_active_harbor(cx, &app);
+
+        assert_eq!(export_to(cx, &app, 7, None, None), (None, None));
+        assert_eq!(import_file(cx, &app, None, None), (None, None));
+        assert_eq!(
+            cx.read(|cx| app.read(cx).custom_themes.clone()),
+            vec![theme]
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let fixture = tempfile::tempdir().unwrap();
+            let locked = fixture.path().join("locked");
+            std::fs::create_dir(&locked).unwrap();
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
+            let (notice, error) = export_to(cx, &app, 7, Some(locked.join("harbor.json")), None);
+            let entries = std::fs::read_dir(&locked).unwrap().count();
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+            assert_eq!(notice, None);
+            let error = error.expect("the card reports the refused destination");
+            assert!(error.starts_with("Could not export “Harbor”:"), "{error}");
+            assert_eq!(entries, 0, "no partial or temporary file is left behind");
+        }
+    }
+
+    /// Every refusal in the specification's "Import and export" rules reaches
+    /// the card with its own message, and none of them touches the store.
+    #[gpui::test]
+    fn refused_documents_name_their_problem_and_change_nothing(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        let theme = with_active_harbor(cx, &app);
+        let fixture = tempfile::tempdir().unwrap();
+        let sunset = CustomTheme::from_base(1, "Sunset", ThemeChoice::Nord);
+        let document = |edit: fn(&mut serde_json::Value)| {
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&sunset.to_document()).unwrap();
+            edit(&mut value);
+            serde_json::to_vec(&value).unwrap()
+        };
+        let write = |name: &str, bytes: Vec<u8>| {
+            let path = fixture.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            path
+        };
+
+        let mut cases: Vec<(&str, PathBuf, String)> = vec![
+            (
+                "65 KiB file",
+                write("large.json", vec![b' '; 65 * 1024]),
+                "This theme file is larger than 64 KiB, the most GitTurtle imports.".into(),
+            ),
+            (
+                "a folder",
+                fixture.path().to_path_buf(),
+                "A theme file must be a regular file; this one is a folder.".into(),
+            ),
+            (
+                "not JSON",
+                write("prose.json", b"this is not a theme".to_vec()),
+                "This file is not a GitTurtle theme: expected ident at line 1 column 2.".into(),
+            ),
+            (
+                "a newer format version",
+                write(
+                    "newer.json",
+                    document(|value| value["version"] = serde_json::json!(2)),
+                ),
+                "This theme was exported by a newer GitTurtle (format version 2). Update GitTurtle to import it.".into(),
+            ),
+            (
+                "a missing token",
+                write(
+                    "missing.json",
+                    document(|value| {
+                        value["tokens"].as_object_mut().unwrap().remove("hunk");
+                    }),
+                ),
+                "The theme file is missing the token “hunk”.".into(),
+            ),
+            (
+                "an unknown key",
+                write(
+                    "unknown.json",
+                    document(|value| value["sparkle"] = serde_json::json!("#ffffff")),
+                ),
+                "The theme file has an unknown key “sparkle”.".into(),
+            ),
+        ];
+        #[cfg(unix)]
+        {
+            let target = write("target.json", sunset.to_document());
+            let link = fixture.path().join("linked.json");
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            cases.push((
+                "a symbolic link",
+                link,
+                "A theme file must be a regular file; this one is a symbolic link.".into(),
+            ));
+        }
+
+        for (what, path, expected) in cases {
+            let (notice, error) = import_file(cx, &app, Some(path), None);
+            assert_eq!(notice, None, "{what}");
+            assert_eq!(error, Some(expected), "{what}");
+            let (themes, highlighted) = cx.read(|cx| {
+                let app = app.read(cx);
+                (app.custom_themes.clone(), app.theme_editor.imported)
+            });
+            assert_eq!(themes, vec![theme.clone()], "{what} leaves the store alone");
+            assert_eq!(highlighted, None, "{what}");
+        }
+
+        // The 32-theme bound. Import… is disabled at the bound, so only a
+        // store that filled up while the dialog was open reaches this.
+        let valid = write("sunset.json", sunset.to_document());
+        let full: Vec<CustomTheme> = (1..=MAX_CUSTOM_THEMES as u32)
+            .map(|id| CustomTheme::from_base(id, format!("Theme {id}"), ThemeChoice::Nord))
+            .collect();
+        cx.update(|_, cx| {
+            app.update(cx, |app, _| app.custom_themes = full.clone());
+        });
+        settle(cx);
+        let (notice, error) = import_file(cx, &app, Some(valid), None);
+        assert_eq!(notice, None);
+        assert_eq!(
+            error,
+            Some(format!(
+                "Up to {MAX_CUSTOM_THEMES} custom themes can be saved. Delete one before importing another."
+            ))
+        );
+        assert_eq!(cx.read(|cx| app.read(cx).custom_themes.clone()), full);
+    }
+
+    /// A document may be valid apart from a 64 KiB run of its own text. That
+    /// import still succeeds against the fallback base, and the notice it
+    /// leaves in the card stays short enough for the card to keep its shape.
+    #[gpui::test]
+    fn a_document_with_an_enormous_base_imports_with_a_bounded_notice(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        let theme = with_active_harbor(cx, &app);
+        let fixture = tempfile::tempdir().unwrap();
+        let sunset = CustomTheme::from_base(1, "Sunset", ThemeChoice::Nord);
+        let mut value: serde_json::Value = serde_json::from_slice(&sunset.to_document()).unwrap();
+        // Just under the reader's bound, so the document is read and parsed.
+        let enormous = "b".repeat(63 * 1024);
+        value["base"] = serde_json::json!(enormous);
+        let path = fixture.path().join("enormous-base.json");
+        let bytes = serde_json::to_vec(&value).unwrap();
+        assert!(
+            bytes.len() < custom::MAX_THEME_DOCUMENT_BYTES,
+            "{}",
+            bytes.len()
+        );
+        std::fs::write(&path, bytes).unwrap();
+
+        let (notice, error) = import_file(cx, &app, Some(path), None);
+        assert_eq!(error, None);
+        // A 64 KiB document takes longer to read and parse than the card
+        // releases the transfer for, so the notice lands with the save.
+        let notice = notice.unwrap_or_else(|| {
+            wait_for(cx, |cx| {
+                let (notice, error, _) = transfer_result(cx, &app);
+                notice.is_some() || error.is_some()
+            });
+            let (notice, error, _) = transfer_result(cx, &app);
+            assert_eq!(error, None);
+            notice.expect("the card reports the import")
+        });
+        assert!(notice.contains("Imported “Sunset”."), "{notice}");
+        // The quoted base is clamped where the message is built, to the
+        // base's own cap so the unbreakable token fits one line with its
+        // tail, and nothing downstream — the card's text or its aria_label —
+        // is unbounded.
+        assert!(
+            notice.len() < 400,
+            "the notice stays a sentence, not a document: {} characters",
+            notice.chars().count()
+        );
+        assert!(
+            notice.contains(&format!(
+                "The base theme “{}…” is not available",
+                "b".repeat(custom::MAX_BASE_FRAGMENT_CHARS)
+            )),
+            "{notice}"
+        );
+        let themes = cx.read(|cx| app.read(cx).custom_themes.clone());
+        assert_eq!(themes.len(), 2);
+        assert_eq!(themes[0], theme);
+        assert_eq!(themes[1].name, "Sunset");
+        // Stored against the fallback base for its lightness, with its tokens.
+        assert_eq!(themes[1].base, ThemeChoice::Midnight);
+        assert_eq!(themes[1].palette, sunset.palette);
+    }
+
+    /// A collision between two names at the 128-byte bound is a legitimate
+    /// import, and the notice about it still has to read: each quoted string
+    /// is clamped to a fragment with an ellipsis, and when the document's
+    /// base is unknown as well the three fragments share the card's two-line
+    /// budget so the sentence fits `MAX_NOTICE_CHARS`, ends with the base
+    /// that was used instead, and never stops mid-word without an ellipsis.
+    #[gpui::test]
+    fn a_long_name_collision_keeps_the_notice_within_the_card(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        let fixture = tempfile::tempdir().unwrap();
+        let long = "a".repeat(128);
+        let existing = CustomTheme::from_base(7, long.clone(), ThemeChoice::Nord);
+        let clamped = format!("{}…", "a".repeat(custom::MAX_MESSAGE_FRAGMENT_CHARS));
+        let long_base = "aurora-nine-unknown-base-".repeat(5);
+        assert_eq!(long_base.len(), 125);
+
+        for unknown_base in [false, true] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.custom_themes = vec![existing.clone()];
+                    app.settings.theme = ThemeSelection::Custom(7);
+                    app.apply_appearance(window, cx);
+                })
+            });
+            settle(cx);
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&existing.to_document()).unwrap();
+            if unknown_base {
+                value["base"] = serde_json::json!(long_base);
+            }
+            let path = fixture
+                .path()
+                .join(format!("collision-{unknown_base}.json"));
+            std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+
+            let (notice, error) = import_file(cx, &app, Some(path), None);
+            assert_eq!(error, None);
+            let notice = notice.unwrap_or_else(|| {
+                wait_for(cx, |cx| {
+                    let (notice, error, _) = transfer_result(cx, &app);
+                    notice.is_some() || error.is_some()
+                });
+                let (notice, error, _) = transfer_result(cx, &app);
+                assert_eq!(error, None);
+                notice.expect("the card reports the import")
+            });
+            if unknown_base {
+                // Three clauses share the budget, so each fragment is shorter
+                // than the single-clause clamp; the sentence still reaches the
+                // base that was used instead.
+                assert!(
+                    notice.chars().count() <= custom::MAX_NOTICE_CHARS,
+                    "{} characters: {notice}",
+                    notice.chars().count()
+                );
+                assert!(notice.starts_with("Imported “aaaaaaaa"), "{notice}");
+                assert!(notice.contains("…”. A theme named “aaaaaaaa"), "{notice}");
+                assert!(
+                    notice.contains("…” already exists, so the imported one was renamed. The base theme “aurora-nine-"),
+                    "{notice}"
+                );
+                assert!(
+                    notice.ends_with("…” is not available in this version of GitTurtle; Midnight is used as the base."),
+                    "{notice}"
+                );
+            } else {
+                assert_eq!(
+                    notice,
+                    format!(
+                        "Imported “{clamped}”. A theme named “{clamped}” already exists, so the imported one was renamed."
+                    )
+                );
+            }
+            // Every quoted fragment is at most 64 characters plus its ellipsis,
+            // and nothing that was cut ends without one: a cut fragment is a
+            // strict prefix of the string it quotes followed by the ellipsis.
+            let resolved = format!("{} (imported)", "a".repeat(117));
+            let quoted_sources = [resolved.as_str(), existing.name.as_str(), &long_base];
+            let fragments = notice
+                .split('“')
+                .skip(1)
+                .map(|rest| rest.split('”').next().unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(fragments.len(), if unknown_base { 3 } else { 2 });
+            for (fragment, source) in fragments.iter().zip(quoted_sources) {
+                let kept = fragment
+                    .strip_suffix('…')
+                    .expect("a 125-byte string is cut");
+                assert!(
+                    kept.chars().count() >= custom::MIN_MESSAGE_FRAGMENT_CHARS
+                        && kept.chars().count() <= custom::MAX_MESSAGE_FRAGMENT_CHARS
+                        && kept.len() < source.len()
+                        && source.starts_with(kept),
+                    "{fragment}"
+                );
+            }
+            // The store holds the full resolved name; only the notice is clamped.
+            let themes = cx.read(|cx| app.read(cx).custom_themes.clone());
+            assert_eq!(themes.len(), 2);
+            assert_eq!(themes[0], existing);
+            assert_eq!(themes[1].name, format!("{} (imported)", "a".repeat(117)));
+            assert_eq!(
+                themes[1].base,
+                if unknown_base {
+                    ThemeChoice::Midnight
+                } else {
+                    ThemeChoice::Nord
+                }
+            );
+            assert_eq!(themes[1].palette, existing.palette);
+        }
+    }
+
+    /// Export… is the only statement of what the row writes, so its tooltip
+    /// has to open over the row the same way the card header's does.
+    #[gpui::test]
+    fn hovering_export_opens_its_tooltip_without_moving_the_row(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        with_active_harbor(cx, &app);
+        // The tooltip's holder is laid out as the button itself was, at the
+        // card widths the evidence captures use: the same height as its
+        // neighbours and the same gap on either side.
+        let mut export = Bounds::default();
+        for width in [px(1000.), px(1440.)] {
+            cx.simulate_resize(size(width, px(2400.)));
+            settle(cx);
+            let edit = bounds(cx, "edit-custom-theme-7".into());
+            export = bounds(cx, "export-custom-theme-7".into());
+            let delete = bounds(cx, "delete-custom-theme-7".into());
+            assert_eq!(
+                export.size.height, edit.size.height,
+                "{width:?}: {export:?} {edit:?}"
+            );
+            assert_eq!(
+                delete.origin.x - export.right(),
+                export.origin.x - edit.right(),
+                "{width:?}: {edit:?} {export:?} {delete:?}"
+            );
+        }
+
+        assert!(cx.debug_bounds("export-custom-theme-tooltip").is_none());
+        cx.simulate_mouse_move(export.center(), None, Modifiers::default());
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(2));
+        settle(cx);
+        let tooltip = cx
+            .debug_bounds("export-custom-theme-tooltip")
+            .expect("the export tooltip opens over the row");
+        assert!(tooltip.size.width > px(0.), "{tooltip:?}");
+        // The row keeps its place while the tooltip is open.
+        assert_eq!(bounds(cx, "export-custom-theme-7".into()), export);
     }
 }
