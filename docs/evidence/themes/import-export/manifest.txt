@@ -1,6 +1,6 @@
 transfer-1000x680-06-app-while-save-dialog.png  ed5090ce897139c4292833970a0c3de8ae9c783998cd8bb72133520c0aff2a2e  run-1000x680/captures/06-app-while-save-dialog.png
     the app while the native Save File dialog is up: every Your themes action is disabled and the focus ring stays on Export…
-transfer-1000x680-07-exported.png  3cbaa0fbffaddff5018c21a79ac65b35ae175f8598ce9f9f712f557d46d3e216  run-1000x680/captures/07-exported.png
+transfer-1000x680-07-exported.png  958479cb66c3ffbbd2250a5e06bf26a6160db83a443ea5142d3bd9320296d50a  run-1000x680/captures/07-exported.png
     the inline report of the written path after accepting the suggested file name
 transfer-1000x680-08-export-cancelled.png  e28c7e695c4bbdc719fe6af9f536ef473d19a6469f15844bfcbdb447a70a4d3c  run-1000x680/captures/08-export-cancelled.png
     Escape in the save dialog: no message, nothing written
@@ -32,7 +32,7 @@ transfer-1000x680-24-refuse-folder-not-selectable.png  8c6ddc4214fd1436ceff1f0d3
     a folder: the portal's files-only dialog navigates into it instead of returning it, so nothing reaches the app
 transfer-1000x680-25-unknown-base.png  206dc16e4e744cb21e19017b976745b9317828266473b2e29995693282ecea3f  run-1000x680/captures/25-unknown-base.png
     an unknown base is replaced by Braden with a notice
-transfer-1440x900-07-exported.png  27b552bd35dfa20483ce83acbb5435725158845042864bbceb0097b5f0a06bda  run-1440x900/captures/07-exported.png
+transfer-1440x900-07-exported.png  b7e8fef57e398c21015f5d2585d3630c08af3bea77bbfd386de82f53dfe00356  run-1440x900/captures/07-exported.png
     the same export at 1440x900: the written path wraps inside the card
 transfer-1440x900-13-imported.png  f9e18e9b4a784a609fee96459f9d9ae7e51807bcc5a1ddf5aa85e4b57fbfccb2  run-1440x900/captures/13-imported.png
     the same import at 1440x900

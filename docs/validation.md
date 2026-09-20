@@ -27,7 +27,12 @@ ships export and import reuses these captures only when it renders them
 identically, which the evidence driver re-checks pixel for pixel. Two captures,
 `transfer-1000x680-07-exported.png` and `transfer-1440x900-07-exported.png`,
 quote the absolute path they wrote, so that re-check has to pass the same output
-directories it used here.
+directories it used here, and in fact they did not: the shipping revision clamps that
+path, so the notice became one line instead of two and the card 134 px instead of
+153. **Those two frames were therefore re-taken from the shipping revision
+`ea70c6a169882433c3b9659db5b391187c1488a1` and are the only two here not from the
+revision named above**; the other 24 artifacts are byte-identical between the two
+builds, which is what the re-check established.
 
 Five launches, 52 checks passed and none failed. Export, an Escape-cancelled
 export, a delete, an import of that document, two name collisions, an
