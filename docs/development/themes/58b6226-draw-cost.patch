@@ -1,0 +1,981 @@
+diff --git a/crates/app/docs/content-and-layout.md b/crates/app/docs/content-and-layout.md
+index 213012b..2fa5e1e 100644
+--- a/crates/app/docs/content-and-layout.md
++++ b/crates/app/docs/content-and-layout.md
+@@ -6,6 +6,8 @@ Read this when changing or reviewing themes, geometry, content preparation, edit
+ 
+ Use semantic appearance colors for native controls and custom content together. GPUI Kit 0.6 reads component backgrounds from resolved `ThemeTokens` and foregrounds from `ThemeColor`; after overriding colors, rebuild `theme.tokens` before `Theme::sync_base`. Updating only the app palette leaves native controls stale. Theme changes invalidate concrete editor decorations without rereading immutable content or eagerly rebuilding hidden editors. A theme switch submits no worker job and keeps the retained patch and split editors and the patch editor's Find query and matches (`settings::theme_apply_tests`, which clicks real Settings theme cards). Under `GITTURTLE_TRACE` it prints [`gitturtle.theme_apply_frame_ms`](../../../docs/benchmarks/metrics.md), from `choose_theme` entry to the next frame callback; the [first release baseline](../../../docs/benchmarks/2026-09-18-theme-apply.md) is the reference the theme editor and picker work measures against. The theme editor's live preview uses the same path: `theme_editor::State::preview` holds the open draft, `apply_appearance` applies it in place of the saved selection, and the first edit of a frame applies in its handler while later edits in the same frame coalesce to one application at the next frame callback; the metric is stamped at the first edit and prints at the frame callback after the one that follows the application, so it includes the draw of the draft frame. It submits no worker job (`theme_editor::tests`); closing the editor drops the draft and re-applies the saved selection.
+ 
++A palette application costs one whole-window layout, paint and present, so the path is built to ask for exactly one and to make it cheap. `apply_appearance` invalidates through its own `cx.notify()` and calls `appearance::sync_text_sizes`; it must not call `Window::refresh`, which marks the same window dirty but additionally bars GPUI's cached-view reuse for that frame. `appearance::apply_text_sizes` keeps that refresh for callers that own no entity to notify, where it is right: a text-size change moves every measured box. Reuse is what makes the Settings picker affordable. Each of the twenty cards embeds a `settings::ThemePreviewBody` entity with `Entity::cached`, because a miniature draws its own built-in palette and a palette change does not alter a pixel of it; the wrapper pins `text_color` to the previewed palette so the reuse key's inherited text style stays stable, and the caption stays outside the cached subtree because its selected badge follows the active accent and its background follows the card's hover state. The theme editor holds the same body beside its draft and pushes the draft in only when the palette really changed, so a frame that only renames, warns or moves focus reuses it too. A completed preference save asks for a frame only when it changed the status line or the error the page shows; otherwise every switch after the first would pay a second whole-window frame for nothing. `theme_editor::tests::an_edit_and_a_switch_each_draw_the_window_once` records the palette of every draw and asserts one draw per edit and per switch, none of them in the old palette, no draw from the save completion, and no rebuilt miniature. Because the miniatures are retained, a card is paired with its body by lookup: each body is stored beside the `ThemeChoice` it draws and found with `GitTurtle::theme_preview_body`, never by position, since `ThemeChoice::ALL` is in display order and `choice as usize` is declaration order (`every_picker_card_draws_its_own_miniature` checks, from the rendered tree, that the body laid out inside each card draws that card's palette). The guarded save notification and the missing refresh must not cost a result its frame either: `a_finished_transfer_and_a_confirmed_delete_draw_their_result` answers the native dialog across a window deactivation and reactivation, forces no draw afterwards, and asserts that the finished export, the finished import and the confirmed delete each draw the window with the notice or the updated list in it.
++
+ `Palette::readability_issues` (`src/appearance/custom.rs`) is the single readability rule set: the palette tests assert it is empty for every built-in, and the theme editor (`src/theme_editor.rs`) shows the same issues as warnings for custom palettes instead of adding its own checks. Each issue names the foreground token or graph lane, the background token or selected-row hover blend, the measured ratio and the minimum; the rows and thresholds are the [themes specification's rules table](../../../docs/development/themes/spec.md#readability-rules). `Palette::is_light` (canvas brighter than text) selects the graph lane set, so the lanes judged by the rules are the lanes painted.
+ 
+ Headers and rows share one `ColumnLayout` and horizontal offset. Align header/text/reference insets and graph node margins within allocated widths. Preserve chosen columns at narrow widths and keep the commit-message column visible. Keep `content_panels` and `history_panels` as app-owned `Entity<ResizableState>` values passed through `with_state`; stable element IDs alone do not retain sizes when page/mode changes remove a group. Observe the retained entities without constructing hidden repository views.
+diff --git a/crates/app/src/appearance.rs b/crates/app/src/appearance.rs
+index 5f94ae9..71b53c8 100644
+--- a/crates/app/src/appearance.rs
++++ b/crates/app/src/appearance.rs
+@@ -130,7 +130,16 @@ pub fn code_scale() -> f32 {
+     f32::from(code_text()) / f32::from(DEFAULT_CODE_TEXT_SIZE)
+ }
+ 
+-pub fn apply_text_sizes(interface: u8, code: u8, window: &mut Window, cx: &mut App) {
++/// Store the text sizes and project them onto the toolkit theme and the
++/// window's rem geometry, leaving invalidation to the caller.
++///
++/// The one appearance application path ([`GitTurtle::apply_appearance`]) calls
++/// this and invalidates with the root's `cx.notify()` instead of
++/// [`Window::refresh`]. Both mark the window dirty, but `refresh` also bars
++/// GPUI's view reuse for that frame, which would rebuild the twenty
++/// palette-independent theme miniatures ([`crate::settings::ThemePreviewBody`])
++/// that a palette change does not alter.
++pub fn sync_text_sizes(interface: u8, code: u8, window: &mut Window, cx: &mut App) {
+     with_text_sizes(|interface_size, code_size, _| {
+         interface_size.store(
+             interface.clamp(*INTERFACE_TEXT_RANGE.start(), *INTERFACE_TEXT_RANGE.end()),
+@@ -148,6 +157,13 @@ pub fn apply_text_sizes(interface: u8, code: u8, window: &mut Window, cx: &mut A
+     // Root uses font_size for rem geometry, so native control padding and
+     // heights grow together with explicit app text and custom canvas rows.
+     window.set_rem_size(ui_text(13.));
++}
++
++/// [`sync_text_sizes`] for callers that own no entity to notify: a text-size
++/// change moves every measured box, so refreshing the whole window is right
++/// here.
++pub fn apply_text_sizes(interface: u8, code: u8, window: &mut Window, cx: &mut App) {
++    sync_text_sizes(interface, code, window, cx);
+     window.refresh();
+ }
+ 
+@@ -880,6 +896,12 @@ impl Palette {
+     /// Apply native controls and editor defaults together. Built-in and custom themes both use
+     /// this path. Call after GPUI Kit initialization; callers invalidate/rebuild existing custom
+     /// decorations.
++    ///
++    /// `window` is only the invalidation: passing `Some` refreshes it, which
++    /// also bars view reuse for that frame. The app path passes `None` and
++    /// notifies its root instead, so the frame that shows the new palette
++    /// keeps the subtrees the palette does not change (see
++    /// [`sync_text_sizes`]).
+     pub fn apply(self, is_light: bool, window: Option<&mut Window>, cx: &mut App) {
+         Theme::change(
+             if is_light {
+diff --git a/crates/app/src/main.rs b/crates/app/src/main.rs
+index 1033193..db627b2 100644
+--- a/crates/app/src/main.rs
++++ b/crates/app/src/main.rs
+@@ -274,6 +274,18 @@ struct GitTurtle {
+     project_library: project_library::ProjectLibrary,
+     /// Saved custom themes, which a custom `settings.theme` selection resolves against.
+     custom_themes: Vec<appearance::custom::CustomTheme>,
++    /// One miniature per built-in, so the Settings picker can reuse the twenty
++    /// preview bodies that a palette change does not alter
++    /// (`settings::ThemePreviewBody`). Each is stored with the choice it draws
++    /// and found through `GitTurtle::theme_preview_body`, never by position:
++    /// `ThemeChoice::ALL` is in display order, not discriminant order.
++    theme_previews: Vec<(appearance::ThemeChoice, Entity<settings::ThemePreviewBody>)>,
++    /// Test-only: the palette every draw of this view saw. A Settings theme
++    /// switch and a live-preview edit each cost exactly one draw, which
++    /// already shows the new palette; see
++    /// `theme_editor::tests::an_edit_and_a_switch_each_draw_the_window_once`.
++    #[cfg(test)]
++    draws: Vec<appearance::Palette>,
+     project_pane: project_pane::State,
+     draft_saver: commit_drafts::DraftSaver,
+     recovery_drafts: recovery_drafts::State,
+@@ -450,6 +462,18 @@ impl GitTurtle {
+                 .default_value(settings.external_editor.clone())
+                 .placeholder("Visual Studio Code")
+         });
++        // The picker's twenty miniatures never change: each draws one built-in
++        // palette. Their entities outlive a palette change so its frame can
++        // reuse them.
++        let theme_previews = appearance::ThemeChoice::ALL
++            .into_iter()
++            .map(|choice| {
++                (
++                    choice,
++                    cx.new(|_| settings::ThemePreviewBody::new(choice.palette())),
++                )
++            })
++            .collect();
+         let file_filter =
+             cx.new(|cx| InputState::new(window, cx).placeholder("Filter changed paths…"));
+         let working_filter =
+@@ -496,6 +520,9 @@ impl GitTurtle {
+             project_names: preferences.project_names.clone(),
+             project_library: preferences.project_library.clone(),
+             custom_themes: preferences.custom_themes.clone(),
++            theme_previews,
++            #[cfg(test)]
++            draws: Vec::new(),
+             project_pane: project_pane::State::new(cx),
+             rename_project: None,
+             draft_saver: commit_drafts::DraftSaver::default(),
+diff --git a/crates/app/src/platform_polish.rs b/crates/app/src/platform_polish.rs
+index 709e1e3..558b7de 100644
+--- a/crates/app/src/platform_polish.rs
++++ b/crates/app/src/platform_polish.rs
+@@ -276,13 +276,23 @@ impl GitTurtle {
+         self.settings
+             .resolved_theme(cx.window_appearance(), &self.custom_themes)
+     }
++    /// The one appearance application path: a Settings switch, a system
++    /// appearance change and every theme-editor live-preview edit end here.
++    ///
++    /// Invalidation is this view's `cx.notify()` below, not
++    /// `Window::refresh`. Both draw the window once, but a refresh also bars
++    /// GPUI's cached-view reuse for that frame, and the twenty theme
++    /// miniatures in Settings ([`settings::ThemePreviewBody`]) show their own
++    /// built-in palette: a palette change recolors the window around them
++    /// without altering a pixel they draw. Reusing them is most of the
++    /// difference between the frame budget and a full rebuild of the picker.
+     pub(super) fn apply_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+         // An open theme editor shows its draft through the same path.
+         match self.theme_editor.preview() {
+-            Some(draft) => draft.apply(draft.is_light(), Some(window), cx),
+-            None => self.effective_theme(cx).apply(Some(window), cx),
++            Some(draft) => draft.apply(draft.is_light(), None, cx),
++            None => self.effective_theme(cx).apply(None, cx),
+         }
+-        appearance::apply_text_sizes(
++        appearance::sync_text_sizes(
+             self.settings.interface_text_size,
+             self.settings.code_text_size,
+             window,
+diff --git a/crates/app/src/settings.rs b/crates/app/src/settings.rs
+index cf576d4..260b492 100644
+--- a/crates/app/src/settings.rs
++++ b/crates/app/src/settings.rs
+@@ -247,6 +247,8 @@ impl GitTurtle {
+                 if this.settings != submitted {
+                     return;
+                 }
++                let error_before = this.operation_error.clone();
++                let status_before = this.status.clone();
+                 match result {
+                     Ok(_) => {
+                         if this
+@@ -262,7 +264,12 @@ impl GitTurtle {
+                         this.operation_error = Some(format!("Could not save settings: {error:#}"));
+                     }
+                 }
+-                cx.notify();
++                // A completed save costs a whole-window frame, so it only asks
++                // for one when it changed something the window shows. Every
++                // theme switch after the first leaves both of these alone.
++                if this.status != status_before || this.operation_error != error_before {
++                    cx.notify();
++                }
+             });
+         })
+         .detach();
+@@ -465,10 +472,26 @@ impl GitTurtle {
+             .into_any_element()
+     }
+ 
++    /// The retained miniature that draws `choice`'s own palette. The lookup is
++    /// by the choice stored beside each body, so neither the order of
++    /// [`ThemeChoice::ALL`] nor the enum's discriminants can pair a card with
++    /// another theme's miniature.
++    pub(super) fn theme_preview_body(&self, choice: ThemeChoice) -> &Entity<ThemePreviewBody> {
++        self.theme_previews
++            .iter()
++            .find_map(|(drawn, body)| (*drawn == choice).then_some(body))
++            .expect("every built-in theme has a retained miniature")
++    }
++
+     /// Theme switches restyle retained editors in place: no worker job, no
+     /// content re-preparation. `gitturtle.theme_apply_frame_ms` measures this
+     /// handler through the next frame callback under `GITTURTLE_TRACE`.
+-    fn choose_theme(&mut self, theme: ThemeChoice, window: &mut Window, cx: &mut Context<Self>) {
++    pub(super) fn choose_theme(
++        &mut self,
++        theme: ThemeChoice,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
+         let started = trace_enabled().then(std::time::Instant::now);
+         let theme = appearance::custom::ThemeSelection::BuiltIn(theme);
+         if self.settings.theme == theme && !self.settings.follow_system {
+@@ -673,6 +696,7 @@ impl GitTurtle {
+                                     .rounded(px(10.))
+                                     .overflow_hidden()
+                                     .child(theme_preview(
++                                        self.theme_preview_body(choice),
+                                         choice.palette(),
+                                         choice.label(),
+                                         choice.description(),
+@@ -930,6 +954,7 @@ impl GitTurtle {
+             .children(self.theme_editor.notice().map(|notice| {
+                 div()
+                     .id("custom-themes-notice")
++                    .debug_selector(|| "custom-themes-notice".into())
+                     .role(Role::Label)
+                     .aria_label(notice.to_owned())
+                     .text_size(appearance::ui_text(12.))
+@@ -1352,10 +1377,178 @@ impl GitTurtle {
+     }
+ }
+ 
++/// The miniature workspace inside a theme preview: everything a preview draws
++/// from the previewed palette alone.
++///
++/// It has its own entity so the picker can embed it with [`Entity::cached`].
++/// Applying a palette recolors the window around these twenty miniatures
++/// without altering one of their pixels, and
++/// [`GitTurtle::apply_appearance`](crate::GitTurtle::apply_appearance) notifies
++/// its root instead of refreshing the window, so the frame that shows the new
++/// palette reuses their layout and paint instead of building them again. The
++/// caption stays outside: it follows the active accent and the card's hover
++/// state, which a reused subtree cannot see.
++pub(super) struct ThemePreviewBody {
++    palette: appearance::Palette,
++    /// Test-only: builds of this miniature, so a test can assert that a
++    /// palette change reuses it instead of laying it out and painting it
++    /// again.
++    #[cfg(test)]
++    renders: usize,
++}
++
++impl ThemePreviewBody {
++    pub(super) fn new(palette: appearance::Palette) -> Self {
++        Self {
++            palette,
++            #[cfg(test)]
++            renders: 0,
++        }
++    }
++
++    #[cfg(test)]
++    pub(super) fn renders(&self) -> usize {
++        self.renders
++    }
++
++    /// Test-only: the palette this miniature draws.
++    #[cfg(test)]
++    pub(super) fn palette(&self) -> appearance::Palette {
++        self.palette
++    }
++
++    /// Show `palette`. Only a real change notifies, so an editor edit that
++    /// leaves the miniature's tokens alone keeps the reused frame.
++    pub(super) fn set_palette(&mut self, palette: appearance::Palette, cx: &mut Context<Self>) {
++        if self.palette != palette {
++            self.palette = palette;
++            cx.notify();
++        }
++    }
++}
++
++impl Render for ThemePreviewBody {
++    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
++        #[cfg(test)]
++        {
++            self.renders += 1;
++        }
++        let p = self.palette;
++        div()
++            .size_full()
++            .flex()
++            .flex_col()
++            .child(
++                div()
++                    .h(crate::appearance::ui_size(25.))
++                    .flex_shrink_0()
++                    .px_2()
++                    .flex()
++                    .items_center()
++                    .gap_1()
++                    .bg(rgb(p.panel))
++                    .border_b_1()
++                    .border_color(rgb(p.border))
++                    .children(
++                        [p.removed, p.modified, p.added]
++                            .map(|color| div().size(px(4.)).rounded_full().bg(rgb(color))),
++                    )
++                    .child(div().flex_1())
++                    .child(div().w(px(21.)).h(px(6.)).rounded(px(2.)).bg(rgb(p.hover)))
++                    .child(div().w(px(24.)).h(px(8.)).rounded(px(2.)).bg(rgb(p.accent))),
++            )
++            .child(
++                div()
++                    .flex_1()
++                    .min_h_0()
++                    .flex()
++                    .child(
++                        div()
++                            .w(px(30.))
++                            .flex_shrink_0()
++                            .h_full()
++                            .p(px(6.))
++                            .flex()
++                            .flex_col()
++                            .gap(px(7.))
++                            .bg(rgb(p.subtle))
++                            .border_r_1()
++                            .border_color(rgb(p.border))
++                            .children((0..4).map(|row| {
++                                div().h(px(3.)).w_full().rounded_full().bg(rgb(if row == 1 {
++                                    p.accent
++                                } else {
++                                    p.border
++                                }))
++                            })),
++                    )
++                    .child(
++                        div()
++                            .flex_1()
++                            .min_w_0()
++                            .py_2()
++                            .flex()
++                            .flex_col()
++                            .children((0..4).map(|row| {
++                                let color = [p.added, p.accent, p.renamed, p.modified][row];
++                                div()
++                                    .h(px(14.))
++                                    .px_2()
++                                    .flex()
++                                    .items_center()
++                                    .gap(px(7.))
++                                    .when(row == 1, |element| element.bg(rgb(p.selected)))
++                                    .child(
++                                        div()
++                                            .relative()
++                                            .w(px(9.))
++                                            .h_full()
++                                            .flex_shrink_0()
++                                            .flex()
++                                            .items_center()
++                                            .justify_center()
++                                            .child(div().w(px(2.)).h_full().bg(rgb(color)))
++                                            .child(
++                                                div()
++                                                    .absolute()
++                                                    .size(px(5.))
++                                                    .rounded_full()
++                                                    .bg(rgb(color)),
++                                            ),
++                                    )
++                                    .child(
++                                        div()
++                                            .flex_1()
++                                            .min_w_0()
++                                            .flex()
++                                            .items_center()
++                                            .gap_2()
++                                            .child(
++                                                div()
++                                                    .h(px(3.))
++                                                    .w(relative([0.68, 0.84, 0.55, 0.74][row]))
++                                                    .rounded_full()
++                                                    .bg(rgb(if row == 1 {
++                                                        p.muted
++                                                    } else {
++                                                        p.border
++                                                    })),
++                                            ),
++                                    )
++                            })),
++                    ),
++            )
++    }
++}
++
+ /// A tiny workspace built from native elements stays crisp at any display scale
+ /// and previews the same tokens the real controls and diff viewer will use.
+ /// The theme editor previews its draft with the same miniature.
++///
++/// `body` supplies [`ThemePreviewBody`]; the caller keeps it and its palette,
++/// so a frame that changes neither reuses the miniature.
+ pub(super) fn theme_preview(
++    body: &Entity<ThemePreviewBody>,
+     p: appearance::Palette,
+     label: impl Into<SharedString>,
+     description: impl Into<SharedString>,
+@@ -1378,100 +1571,22 @@ pub(super) fn theme_preview(
+         .flex_col()
+         .bg(rgb(p.canvas))
+         .child(
+-            div()
+-                .h(crate::appearance::ui_size(25.))
+-                .flex_shrink_0()
+-                .px_2()
+-                .flex()
+-                .items_center()
+-                .gap_1()
+-                .bg(rgb(p.panel))
+-                .border_b_1()
+-                .border_color(rgb(p.border))
+-                .children(
+-                    [p.removed, p.modified, p.added]
+-                        .map(|color| div().size(px(4.)).rounded_full().bg(rgb(color))),
+-                )
+-                .child(div().flex_1())
+-                .child(div().w(px(21.)).h(px(6.)).rounded(px(2.)).bg(rgb(p.hover)))
+-                .child(div().w(px(24.)).h(px(8.)).rounded(px(2.)).bg(rgb(p.accent))),
+-        )
+-        .child(
++            // The miniature, in the box its strip and rows filled before.
++            // Pinning the inherited text color keeps GPUI's reuse key stable:
++            // it compares the ambient text style, which the page and the
++            // toolkit button both color from the active palette. Nothing
++            // inside draws text.
+             div()
+                 .flex_1()
+                 .min_h_0()
+-                .flex()
+-                .child(
+-                    div()
+-                        .w(px(30.))
+-                        .flex_shrink_0()
+-                        .h_full()
+-                        .p(px(6.))
+-                        .flex()
+-                        .flex_col()
+-                        .gap(px(7.))
+-                        .bg(rgb(p.subtle))
+-                        .border_r_1()
+-                        .border_color(rgb(p.border))
+-                        .children((0..4).map(|row| {
+-                            div().h(px(3.)).w_full().rounded_full().bg(rgb(if row == 1 {
+-                                p.accent
+-                            } else {
+-                                p.border
+-                            }))
+-                        })),
+-                )
+-                .child(
+-                    div()
+-                        .flex_1()
+-                        .min_w_0()
+-                        .py_2()
+-                        .flex()
+-                        .flex_col()
+-                        .children((0..4).map(|row| {
+-                            let color = [p.added, p.accent, p.renamed, p.modified][row];
+-                            div()
+-                                .h(px(14.))
+-                                .px_2()
+-                                .flex()
+-                                .items_center()
+-                                .gap(px(7.))
+-                                .when(row == 1, |element| element.bg(rgb(p.selected)))
+-                                .child(
+-                                    div()
+-                                        .relative()
+-                                        .w(px(9.))
+-                                        .h_full()
+-                                        .flex_shrink_0()
+-                                        .flex()
+-                                        .items_center()
+-                                        .justify_center()
+-                                        .child(div().w(px(2.)).h_full().bg(rgb(color)))
+-                                        .child(
+-                                            div()
+-                                                .absolute()
+-                                                .size(px(5.))
+-                                                .rounded_full()
+-                                                .bg(rgb(color)),
+-                                        ),
+-                                )
+-                                .child(
+-                                    div()
+-                                        .flex_1()
+-                                        .min_w_0()
+-                                        .flex()
+-                                        .items_center()
+-                                        .gap_2()
+-                                        .child(
+-                                            div()
+-                                                .h(px(3.))
+-                                                .w(relative([0.68, 0.84, 0.55, 0.74][row]))
+-                                                .rounded_full()
+-                                                .bg(rgb(if row == 1 { p.muted } else { p.border })),
+-                                        ),
+-                                )
+-                        })),
+-                ),
++                .text_color(rgb(p.text))
++                // Names the embedded body, so a test can find which miniature
++                // a card holds in the rendered tree.
++                .debug_selector({
++                    let miniature = body.entity_id();
++                    move || format!("theme-miniature-{miniature}")
++                })
++                .child(body.clone().cached(StyleRefinement::default().size_full())),
+         )
+         .child(
+             div()
+diff --git a/crates/app/src/theme_editor.rs b/crates/app/src/theme_editor.rs
+index e0cf6ea..f8fadec 100644
+--- a/crates/app/src/theme_editor.rs
++++ b/crates/app/src/theme_editor.rs
+@@ -960,6 +960,10 @@ pub(super) struct ThemeForm {
+     /// A base chosen after edits, waiting for Replace colors or Keep colors.
+     pending_base: Option<ThemeChoice>,
+     draft: Palette,
++    /// The draft's miniature, kept beside the draft so a frame that changes
++    /// only the name, the warnings or the focus reuses it
++    /// (`settings::ThemePreviewBody`).
++    preview_body: Entity<settings::ThemePreviewBody>,
+     rows: Vec<TokenRow>,
+     warnings: Vec<ReadabilityIssue>,
+     pending: bool,
+@@ -1063,6 +1067,7 @@ impl ThemeForm {
+             base,
+             pending_base: None,
+             draft: palette,
++            preview_body: cx.new(|_| settings::ThemePreviewBody::new(palette)),
+             rows,
+             warnings: palette.readability_issues(),
+             pending: false,
+@@ -1309,6 +1314,8 @@ impl ThemeForm {
+     fn draft_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+         self.warnings = self.draft.readability_issues();
+         let draft = self.draft;
++        self.preview_body
++            .update(cx, |body, cx| body.set_palette(draft, cx));
+         let _ = self
+             .owner
+             .update(cx, |this, cx| this.preview_theme_draft(draft, window, cx));
+@@ -1908,6 +1915,7 @@ impl Render for ThemeForm {
+             .border_color(rgb(p.border))
+             .overflow_hidden()
+             .child(settings::theme_preview(
++                &self.preview_body,
+                 self.draft,
+                 if name.is_empty() {
+                     "Untitled theme".to_owned()
+@@ -2014,7 +2022,14 @@ impl Render for ThemeForm {
+ mod tests {
+     use super::*;
+     use core::prelude::v1::test;
+-    use std::{cell::RefCell, rc::Rc};
++    use std::{
++        cell::RefCell,
++        rc::Rc,
++        sync::{
++            Arc,
++            atomic::{AtomicBool, Ordering},
++        },
++    };
+ 
+     fn open_app(cx: &mut TestAppContext) -> (Entity<GitTurtle>, &mut VisualTestContext) {
+         // GitTurtle::new starts a real preferences worker; saves reply from it.
+@@ -2206,6 +2221,44 @@ mod tests {
+         cx.read(|cx| *cx.global::<Palette>())
+     }
+ 
++    /// Wait until the preference writer has answered everything submitted so
++    /// far, without drawing. The executor is serialized, so a job queued now
++    /// runs after the pending save, and parking then delivers that save's
++    /// reply to the window.
++    fn drain_preference_writer(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) {
++        let answered = Arc::new(AtomicBool::new(false));
++        let flag = answered.clone();
++        let _response = cx.read(|cx| {
++            app.read(cx).preferences_writer.submit(move || {
++                flag.store(true, Ordering::SeqCst);
++                Ok(())
++            })
++        });
++        wait_without_drawing(cx, |_| answered.load(Ordering::SeqCst));
++        cx.run_until_parked();
++    }
++
++    /// The palette of every draw since the last call, and clear the record.
++    fn drawn(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) -> Vec<Palette> {
++        cx.update(|_, cx| app.update(cx, |app, _| std::mem::take(&mut app.draws)))
++    }
++
++    /// Builds of the Settings picker's twenty miniatures so far.
++    fn preview_renders(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) -> usize {
++        cx.read(|cx| {
++            app.read(cx)
++                .theme_previews
++                .iter()
++                .map(|(_, body)| body.read(cx).renders())
++                .sum()
++        })
++    }
++
++    /// Palette applications through `apply_appearance` so far.
++    fn applications(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) -> usize {
++        cx.read(|cx| app.read(cx).theme_editor.preview_applications)
++    }
++
+     fn submissions(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) -> (u64, bool, bool) {
+         cx.read(|cx| {
+             let app = app.read(cx);
+@@ -3554,4 +3607,357 @@ mod tests {
+         // The row keeps its place while the tooltip is open.
+         assert_eq!(bounds(cx, "export-custom-theme-7".into()), export);
+     }
++
++    /// Every live-preview edit and every Settings theme switch costs exactly
++    /// one whole-window draw, and that draw already shows the new palette.
++    ///
++    /// The frame, not the palette work, is what this path is measured by
++    /// (`docs/development/themes/spec.md` §Performance): one whole-window
++    /// layout, paint and present of Settings with the dialog over it. Three
++    /// ways to spend a second one are asserted absent here: a frame that still
++    /// shows the old palette because the draft was applied later, a redundant
++    /// frame after the coalesced application of a same-frame burst, and the
++    /// frame a completed preference save asks for when its result changed
++    /// nothing the window shows.
++    ///
++    /// `draws` records the palette of every draw. In a test build GPUI draws
++    /// each dirty window as effects flush, exactly as the platform draws it
++    /// when a frame is requested, so these are the window's own draws and not
++    /// the harness's: nothing below forces one.
++    #[gpui::test]
++    fn an_edit_and_a_switch_each_draw_the_window_once(cx: &mut TestAppContext) {
++        let (app, cx) = open_app(cx);
++
++        // A Settings theme switch. The trace starts at this handler, so the
++        // test enters it as the card's click does. The first save also writes
++        // the status line, a visible change that rightly costs its frame;
++        // every switch after it is the steady state.
++        cx.update(|window, cx| {
++            app.update(cx, |app, cx| {
++                app.choose_theme(ThemeChoice::TokyoNight, window, cx)
++            })
++        });
++        drain_preference_writer(cx, &app);
++        assert_eq!(
++            cx.read(|cx| app.read(cx).status.clone()),
++            "Settings saved",
++            "the first save reports itself"
++        );
++
++        let before = drawn(cx, &app);
++        let previews_before = preview_renders(cx, &app);
++        assert_eq!(
++            previews_before,
++            ThemeChoice::ALL.len(),
++            "every miniature is on screen, and the frames so far built each of \
++             them once"
++        );
++        cx.update(|window, cx| {
++            app.update(cx, |app, cx| {
++                app.choose_theme(ThemeChoice::Nord, window, cx)
++            })
++        });
++        assert_eq!(
++            drawn(cx, &app),
++            [ThemeChoice::Nord.palette()],
++            "a switch draws the window once, in the new palette"
++        );
++        // Each miniature draws one built-in palette, so the new palette does
++        // not alter a pixel of it: that frame reuses all twenty instead of
++        // laying them out and painting them again.
++        assert_eq!(
++            preview_renders(cx, &app),
++            previews_before,
++            "a palette change does not rebuild the picker's miniatures"
++        );
++        drain_preference_writer(cx, &app);
++        assert_eq!(
++            drawn(cx, &app),
++            [],
++            "the completed save changed nothing visible, so it draws nothing"
++        );
++        drop(before);
++
++        // Live-preview edits. Opening the editor is its own frame; measure
++        // from the first edit after it. While the dialog is open the focused
++        // name field blinks its caret, which asks for frames of its own; those
++        // are not this path's, so the edits below assert the applications they
++        // cost and that no frame ever shows a stale palette.
++        click(cx, "custom-themes-new");
++        let form = form(cx, &app);
++        next_frame(cx);
++        let inputs = cx.read(|cx| {
++            [TokenKind::Canvas, TokenKind::Panel, TokenKind::Accent]
++                .map(|kind| form.read(cx).row(kind).hex.clone())
++        });
++        let _ = drawn(cx, &app);
++
++        for value in ["#101a26", "#0c1119", "#161c2a"] {
++            let applied_before = applications(cx, &app);
++            // `replace_all` emits Change as typing the seventh character does.
++            cx.update(|window, cx| {
++                inputs[0].update(cx, |input, cx| input.replace_all(value, window, cx))
++            });
++            let draft = cx.read(|cx| form.read(cx).draft);
++            assert_eq!(
++                drawn(cx, &app),
++                [draft],
++                "{value} draws the window once, showing the draft and not the old palette"
++            );
++            assert_eq!(
++                applications(cx, &app),
++                applied_before + 1,
++                "{value} applies its palette once"
++            );
++            // The coalescing callback has nothing left to apply, so it costs
++            // no application and can only repeat the draft already on screen.
++            let ran = cx.update(|window, cx| window.simulate_next_frame(cx));
++            assert!(ran > 0, "{value} registered its coalescing callback");
++            assert_eq!(
++                applications(cx, &app),
++                applied_before + 1,
++                "the coalescing frame after {value} applies nothing"
++            );
++            for palette in drawn(cx, &app) {
++                assert_eq!(
++                    palette, draft,
++                    "no frame after {value} draws a stale palette"
++                );
++            }
++        }
++
++        // A burst inside one frame: the first edit applies in its handler, so
++        // its frame already shows it, and the rest apply once at the next
++        // frame callback. Two applications for three edits, never an old
++        // palette.
++        let applied_before = applications(cx, &app);
++        cx.update(|window, cx| {
++            for (index, input) in inputs.iter().enumerate() {
++                let text = format!("#10{index:02}20");
++                input.update(cx, |input, cx| input.replace_all(text, window, cx));
++            }
++        });
++        let in_handler = drawn(cx, &app);
++        assert_eq!(in_handler.len(), 1, "the burst draws once in its handler");
++        assert_eq!(
++            in_handler[0].canvas, 0x100020,
++            "and that frame already shows the burst's first edit"
++        );
++        assert_eq!(
++            applications(cx, &app),
++            applied_before + 1,
++            "the burst's first edit applies in its handler"
++        );
++        cx.update(|window, cx| {
++            window.simulate_next_frame(cx);
++        });
++        let draft = cx.read(|cx| form.read(cx).draft);
++        let coalesced = drawn(cx, &app);
++        assert!(
++            !coalesced.is_empty(),
++            "the coalescing frame draws the rest of the burst"
++        );
++        for palette in coalesced {
++            assert_eq!(palette, draft, "and every frame of it draws that draft");
++        }
++        assert_eq!(
++            applications(cx, &app),
++            applied_before + 2,
++            "the rest of the burst applies once, at the frame"
++        );
++    }
++
++    /// Every picker card draws its own theme's miniature.
++    ///
++    /// The miniatures are retained entities, so a card is paired with its body
++    /// by a lookup and not by construction. `ThemeChoice::ALL` is in display
++    /// order while `choice as usize` is the declaration order, and the two
++    /// differ from the first card on: a lookup by one into a list built in the
++    /// other drew nineteen of the twenty cards with another theme's body on
++    /// their own canvas. Both halves are asserted from the rendered tree: the
++    /// body a card embeds draws that card's palette, and that body is laid out
++    /// inside that card.
++    #[gpui::test]
++    fn every_picker_card_draws_its_own_miniature(cx: &mut TestAppContext) {
++        let (app, cx) = open_app(cx);
++        let inside = |outer: Bounds<Pixels>, inner: Bounds<Pixels>| {
++            inner.left() >= outer.left()
++                && inner.right() <= outer.right()
++                && inner.top() >= outer.top()
++                && inner.bottom() <= outer.bottom()
++        };
++        for choice in ThemeChoice::ALL {
++            let card = bounds(cx, format!("settings-theme-{}", choice as usize));
++            // Exactly one retained body is laid out inside this card.
++            let embedded: Vec<(Palette, usize)> = cx
++                .read(|cx| {
++                    app.read(cx)
++                        .theme_previews
++                        .iter()
++                        .map(|(_, body)| {
++                            let drawn = body.read(cx);
++                            (body.entity_id(), drawn.palette(), drawn.renders())
++                        })
++                        .collect::<Vec<_>>()
++                })
++                .into_iter()
++                .filter(|(id, ..)| {
++                    let selector: &'static str = format!("theme-miniature-{id}").leak();
++                    cx.debug_bounds(selector)
++                        .is_some_and(|miniature| inside(card, miniature))
++                })
++                .map(|(_, palette, renders)| (palette, renders))
++                .collect();
++            assert_eq!(embedded.len(), 1, "{} holds one miniature", choice.label());
++            let (palette, renders) = embedded[0];
++            assert!(renders > 0, "{}'s miniature was drawn", choice.label());
++            assert_eq!(
++                palette.canvas,
++                choice.palette().canvas,
++                "{}'s miniature is drawn on its own canvas",
++                choice.label()
++            );
++            assert_eq!(
++                palette,
++                choice.palette(),
++                "{}'s miniature draws its own palette",
++                choice.label()
++            );
++            // The lookup the picker uses agrees with what it rendered.
++            assert_eq!(
++                cx.read(|cx| app.read(cx).theme_preview_body(choice).read(cx).palette()),
++                choice.palette()
++            );
++        }
++    }
++
++    /// A finished export, a finished import and a confirmed delete each reach
++    /// the window by themselves, after the round trip through a native file
++    /// dialog that deactivates and reactivates the window.
++    ///
++    /// Nothing here forces a draw once the dialog is answered: the preference
++    /// executor is held until the window is active again and its activation
++    /// frames are drawn, so the only thing left that can ask for a frame is the
++    /// completion's own `cx.notify()`. The one-render work removed
++    /// `Window::refresh` from `apply_appearance`, guards the preference-save
++    /// notification and embeds cached miniatures; none of that may leave a
++    /// completion without its frame, or the card stays busy on screen and its
++    /// disabled actions swallow whatever the user does next.
++    #[gpui::test]
++    fn a_finished_transfer_and_a_confirmed_delete_draw_their_result(cx: &mut TestAppContext) {
++        let (app, cx) = open_app(cx);
++        cx.update(|window, _| window.activate_window());
++        let theme = with_active_harbor(cx, &app);
++        let fixture = tempfile::tempdir().unwrap();
++        let destination = fixture.path().join("harbor.gitturtle-theme.json");
++        // The native dialog takes the window's activation and gives it back.
++        let answer_dialog = |cx: &mut VisualTestContext,
++                             answer: &dyn Fn(&mut VisualTestContext)| {
++            cx.deactivate_window();
++            answer(cx);
++            cx.update(|window, _| window.activate_window());
++            cx.run_until_parked();
++        };
++
++        // Export.
++        let hold = hold_preference_executor(cx, &app);
++        click(cx, "export-custom-theme-7");
++        assert!(cx.debug_bounds("custom-themes-notice").is_none());
++        answer_dialog(cx, &|cx| {
++            let destination = destination.clone();
++            cx.simulate_new_path_selection(move |_| Some(destination));
++        });
++        assert!(
++            transfer_result(cx, &app).2,
++            "the write waits for the executor"
++        );
++        let _ = drawn(cx, &app);
++        drop(hold);
++        wait_without_drawing(cx, |cx| !transfer_result(cx, &app).2);
++        let (notice, error, _) = transfer_result(cx, &app);
++        assert_eq!(error, None);
++        assert!(notice.is_some_and(|notice| notice.contains("Harbor")));
++        assert!(
++            !drawn(cx, &app).is_empty(),
++            "the finished export draws the window"
++        );
++        assert!(
++            cx.debug_bounds("custom-themes-notice").is_some(),
++            "and that frame shows the export notice"
++        );
++        assert_eq!(std::fs::read(&destination).unwrap(), theme.to_document());
++
++        // Import.
++        let hold = hold_preference_executor(cx, &app);
++        cx.update(|window, cx| {
++            app.update(cx, |app, cx| app.import_custom_theme(window, cx));
++        });
++        cx.run_until_parked();
++        assert!(
++            cx.debug_bounds("custom-themes-notice").is_none(),
++            "acting on the card again clears the finished export"
++        );
++        answer_dialog(cx, &|cx| {
++            let chosen = destination.clone();
++            cx.simulate_path_prompt_response(move |_| Some(vec![chosen]));
++        });
++        assert!(
++            transfer_result(cx, &app).2,
++            "the read waits for the executor"
++        );
++        let _ = drawn(cx, &app);
++        drop(hold);
++        wait_without_drawing(cx, |cx| {
++            let (notice, error, pending) = transfer_result(cx, &app);
++            !pending
++                && (notice.is_some() || error.is_some())
++                && !cx.read(|cx| app.read(cx).theme_editor.save_pending())
++        });
++        let (notice, error, _) = transfer_result(cx, &app);
++        assert_eq!(error, None);
++        assert!(notice.is_some_and(|notice| notice.contains("Harbor (imported)")));
++        assert!(
++            !drawn(cx, &app).is_empty(),
++            "the finished import draws the window"
++        );
++        assert!(
++            cx.debug_bounds("export-custom-theme-8").is_some(),
++            "and that frame lists the imported theme"
++        );
++        assert!(cx.debug_bounds("custom-themes-notice").is_some());
++
++        // Delete, confirmed in the alert. Harbor is the selection, so the
++        // confirmed removal also applies its base.
++        let hold = hold_preference_executor(cx, &app);
++        open_delete_alert(cx, &app);
++        assert!(key_frame(cx, "tab", |window, cx| window.has_active_dialog(cx)));
++        assert!(
++            !key_frame(cx, "enter", |window, cx| window.has_active_dialog(cx)),
++            "Return on Delete theme closes the alert"
++        );
++        assert!(
++            cx.read(|cx| app.read(cx).theme_editor.save_pending()),
++            "the removal waits for the store"
++        );
++        let _ = drawn(cx, &app);
++        drop(hold);
++        wait_without_drawing(cx, |cx| {
++            cx.read(|cx| {
++                let app = app.read(cx);
++                !app.theme_editor.save_pending() && app.custom_themes.len() == 1
++            })
++        });
++        let draws = drawn(cx, &app);
++        assert!(!draws.is_empty(), "the confirmed delete draws the window");
++        assert_eq!(
++            draws.last().copied(),
++            Some(theme.base.palette()),
++            "in the deleted theme's base palette"
++        );
++        assert!(
++            cx.debug_bounds("export-custom-theme-7").is_none(),
++            "and that frame no longer lists the deleted theme"
++        );
++        assert!(cx.debug_bounds("export-custom-theme-8").is_some());
++    }
+ }
+diff --git a/crates/app/src/views.rs b/crates/app/src/views.rs
+index fed085e..ab1109b 100644
+--- a/crates/app/src/views.rs
++++ b/crates/app/src/views.rs
+@@ -1916,6 +1916,8 @@ impl GitTurtle {
+ 
+ impl Render for GitTurtle {
+     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
++        #[cfg(test)]
++        self.draws.push(appearance::palette(cx));
+         static TRACE_LAYOUT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+         if *TRACE_LAYOUT.get_or_init(|| std::env::var_os("GITTURTLE_TRACE").is_some()) {
+             let layout = (
