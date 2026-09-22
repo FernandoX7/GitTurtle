@@ -276,13 +276,23 @@ impl GitTurtle {
         self.settings
             .resolved_theme(cx.window_appearance(), &self.custom_themes)
     }
+    /// The one appearance application path: a Settings switch, a system
+    /// appearance change and every theme-editor live-preview edit end here.
+    ///
+    /// Invalidation is this view's `cx.notify()` below, not
+    /// `Window::refresh`. Both draw the window once, but a refresh also bars
+    /// GPUI's cached-view reuse for that frame, and the twenty theme
+    /// miniatures in Settings ([`settings::ThemePreviewBody`]) show their own
+    /// built-in palette: a palette change recolors the window around them
+    /// without altering a pixel they draw. Reusing them is most of the
+    /// difference between the frame budget and a full rebuild of the picker.
     pub(super) fn apply_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // An open theme editor shows its draft through the same path.
         match self.theme_editor.preview() {
-            Some(draft) => draft.apply(draft.is_light(), Some(window), cx),
-            None => self.effective_theme(cx).apply(Some(window), cx),
+            Some(draft) => draft.apply(draft.is_light(), None, cx),
+            None => self.effective_theme(cx).apply(None, cx),
         }
-        appearance::apply_text_sizes(
+        appearance::sync_text_sizes(
             self.settings.interface_text_size,
             self.settings.code_text_size,
             window,

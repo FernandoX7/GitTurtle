@@ -274,6 +274,18 @@ struct GitTurtle {
     project_library: project_library::ProjectLibrary,
     /// Saved custom themes, which a custom `settings.theme` selection resolves against.
     custom_themes: Vec<appearance::custom::CustomTheme>,
+    /// One miniature per built-in, so the Settings picker can reuse the twenty
+    /// preview bodies that a palette change does not alter
+    /// (`settings::ThemePreviewBody`). Each is stored with the choice it draws
+    /// and found through `GitTurtle::theme_preview_body`, never by position:
+    /// `ThemeChoice::ALL` is in display order, not discriminant order.
+    theme_previews: Vec<(appearance::ThemeChoice, Entity<settings::ThemePreviewBody>)>,
+    /// Test-only: the palette every draw of this view saw. A Settings theme
+    /// switch and a live-preview edit each cost exactly one draw, which
+    /// already shows the new palette; see
+    /// `theme_editor::tests::an_edit_and_a_switch_each_draw_the_window_once`.
+    #[cfg(test)]
+    draws: Vec<appearance::Palette>,
     project_pane: project_pane::State,
     draft_saver: commit_drafts::DraftSaver,
     recovery_drafts: recovery_drafts::State,
@@ -450,6 +462,18 @@ impl GitTurtle {
                 .default_value(settings.external_editor.clone())
                 .placeholder("Visual Studio Code")
         });
+        // The picker's twenty miniatures never change: each draws one built-in
+        // palette. Their entities outlive a palette change so its frame can
+        // reuse them.
+        let theme_previews = appearance::ThemeChoice::ALL
+            .into_iter()
+            .map(|choice| {
+                (
+                    choice,
+                    cx.new(|_| settings::ThemePreviewBody::new(choice.palette())),
+                )
+            })
+            .collect();
         let file_filter =
             cx.new(|cx| InputState::new(window, cx).placeholder("Filter changed paths…"));
         let working_filter =
@@ -496,6 +520,9 @@ impl GitTurtle {
             project_names: preferences.project_names.clone(),
             project_library: preferences.project_library.clone(),
             custom_themes: preferences.custom_themes.clone(),
+            theme_previews,
+            #[cfg(test)]
+            draws: Vec::new(),
             project_pane: project_pane::State::new(cx),
             rename_project: None,
             draft_saver: commit_drafts::DraftSaver::default(),
@@ -1858,6 +1885,7 @@ fn main() {
         native_accessibility::bind_keys(cx);
         image_lifetime::init(cx);
         interactive_rebase::init(cx);
+        theme_editor::init(cx);
         preferences
             .settings
             .resolved_theme(cx.window_appearance(), &preferences.custom_themes)

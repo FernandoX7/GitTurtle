@@ -69,6 +69,35 @@ pub(super) struct State {
     /// The Your themes card's warning counts, by theme id and palette, so a
     /// Settings frame does not rerun the readability rules for every theme.
     warning_counts: std::cell::RefCell<Vec<(u32, Palette, usize)>>,
+    /// The Your themes rows' viewport (`settings.rs`): `min(rows, 8)` rows
+    /// tall and virtualized with `uniform_list`, so a Settings frame lays out
+    /// at most eight rows however many themes are saved.
+    rows_scroll: UniformListScrollHandle,
+    /// One focus handle per saved theme, tracked on its Your themes row and
+    /// never a tab stop itself. The rows are virtualized, so a row's Edit…,
+    /// Export… and Delete… (the kit's own tab stops, in that order) exist
+    /// only while the row is drawn; the row's handle lets a render find the
+    /// row holding focus and scroll it into view (`focused_row`), and lets
+    /// Tab reach a row's actions once the row is drawn (`focus_row_action`).
+    row_focus: std::cell::RefCell<Vec<(u32, FocusHandle)>>,
+    /// A row action (0 Edit…, 1 Export…, 2 Delete…) to focus once its row is
+    /// drawn: Tab across the viewport boundary scrolls the row in and the
+    /// list's next render focuses it (`GitTurtle::tab_theme_rows`,
+    /// `take_row_focus_request`).
+    row_focus_request: std::cell::Cell<Option<(usize, usize)>>,
+    /// The row last scrolled into view because one of its actions held focus,
+    /// so a wheel scroll away from a focused row is not undone by the next
+    /// render.
+    revealed_row: std::cell::Cell<Option<usize>>,
+    /// The first live-preview edit, or the open, since the last traced frame,
+    /// stamped at its handler's entry. The root render takes it into the
+    /// probe that ends `gitturtle.theme_edit_frame_ms`
+    /// (`GitTurtle::edit_trace_probe`); later edits before that frame join
+    /// the same burst.
+    edit_started: Option<Instant>,
+    /// Test-only: every probe paint, with the draw it belonged to.
+    #[cfg(test)]
+    edit_traces: Vec<EditTrace>,
     #[cfg(test)]
     preview_applications: usize,
 }
@@ -129,7 +158,168 @@ impl State {
     pub(super) fn card_focus(&self, cx: &App) -> FocusHandle {
         self.card_focus.get_or_init(|| cx.focus_handle()).clone()
     }
+
+    /// Take the pending edit stamp for the frame being drawn.
+    pub(super) fn take_edit_trace(&mut self) -> Option<Instant> {
+        self.edit_started.take()
+    }
+
+    /// The Your themes rows' scroll handle.
+    pub(super) fn rows_scroll(&self) -> &UniformListScrollHandle {
+        &self.rows_scroll
+    }
+
+    /// Theme `id`'s row handle, created on first use and kept while the
+    /// theme is saved.
+    pub(super) fn row_focus(&self, id: u32, cx: &App) -> FocusHandle {
+        let mut rows = self.row_focus.borrow_mut();
+        if let Some((_, handle)) = rows.iter().find(|(row, _)| *row == id) {
+            return handle.clone();
+        }
+        let handle = cx.focus_handle();
+        rows.push((id, handle.clone()));
+        handle
+    }
+
+    /// Drop the handles of themes no longer saved.
+    pub(super) fn retain_row_focus(&self, themes: &[CustomTheme]) {
+        self.row_focus
+            .borrow_mut()
+            .retain(|(id, _)| themes.iter().any(|theme| theme.id == *id));
+    }
+
+    /// The drawn row holding focus, itself or through one of its actions.
+    pub(super) fn focused_row(
+        &self,
+        themes: &[CustomTheme],
+        window: &Window,
+        cx: &App,
+    ) -> Option<usize> {
+        let rows = self.row_focus.borrow();
+        themes.iter().position(|theme| {
+            rows.iter()
+                .any(|(id, handle)| *id == theme.id && handle.contains_focused(window, cx))
+        })
+    }
+
+    /// Ask the list's next render to focus `action` of `row` once drawn.
+    pub(super) fn request_row_focus(&self, row: usize, action: usize) {
+        self.row_focus_request.set(Some((row, action)));
+    }
+
+    /// The request whose row this render draws, if any; a request for a row
+    /// no longer saved is dropped.
+    pub(super) fn take_row_focus_request(
+        &self,
+        drawn: &std::ops::Range<usize>,
+        count: usize,
+    ) -> Option<(usize, usize)> {
+        let (row, action) = self.row_focus_request.get()?;
+        if row >= count {
+            self.row_focus_request.set(None);
+            return None;
+        }
+        drawn.contains(&row).then(|| {
+            self.row_focus_request.set(None);
+            (row, action)
+        })
+    }
+
+    /// Focus `action` of the row drawn with `handle`: the row's handle is in
+    /// the tab order ahead of its actions and is not a stop itself, so the
+    /// first stop after it is Edit…, then Export…, then Delete….
+    pub(super) fn focus_row_action(
+        handle: &FocusHandle,
+        action: usize,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        handle.focus(window, cx);
+        for _ in 0..=action {
+            window.focus_next(cx);
+        }
+    }
+
+    /// Test-only: the drawn row and action (0 Edit…, 1 Export…, 2 Delete…)
+    /// holding focus. The actions' handles are the kit's, so the action is
+    /// found by stepping from the row's handle until the focused one is
+    /// reached; focus ends where it started.
+    #[cfg(test)]
+    pub(super) fn focused_row_action(
+        &self,
+        themes: &[CustomTheme],
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<(usize, usize)> {
+        let focused = window.focused(cx)?;
+        let row = self.focused_row(themes, window, cx)?;
+        let handle = self.row_focus(themes[row].id, cx);
+        handle.focus(window, cx);
+        let mut action = None;
+        for step in 0..3 {
+            window.focus_next(cx);
+            if window.focused(cx) == Some(focused.clone()) {
+                action = Some(step);
+                break;
+            }
+        }
+        focused.focus(window, cx);
+        Some((row, action?))
+    }
+
+    /// Scroll the row holding focus into view once per focus change
+    /// (`ScrollStrategy::Nearest`); a wheel scroll away from it afterwards is
+    /// left alone.
+    pub(super) fn reveal_focused_row(&self, focused: Option<usize>) {
+        if self.revealed_row.get() == focused {
+            return;
+        }
+        self.revealed_row.set(focused);
+        if let Some(row) = focused {
+            self.rows_scroll
+                .scroll_to_item(row, ScrollStrategy::Nearest);
+        }
+    }
 }
+
+/// Test-only: one paint of the edit-frame trace probe.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(super) struct EditTrace {
+    /// The handler's entry.
+    pub(super) started: Instant,
+    /// The probe's paint: the end of `gitturtle.theme_edit_frame_ms`.
+    pub(super) ended: Instant,
+    /// The root draw that painted it (`GitTurtle::draws.len()` at the time).
+    pub(super) draw: usize,
+}
+
+gpui::actions!(theme_editor, [NextThemeAction, PreviousThemeAction]);
+
+/// The Settings page's key context, deeper than the toolkit root's, so the
+/// bindings of [`init`] are tried first and fall through when they do not
+/// apply.
+pub(super) const SETTINGS_CONTEXT: &str = "GitTurtleSettings";
+
+/// Tab and Shift-Tab inside Settings walk the Your themes rows through
+/// [`GitTurtle::tab_theme_rows`] before the toolkit's own tab order, which
+/// knows only the rows drawn.
+pub(super) fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("tab", NextThemeAction, Some(SETTINGS_CONTEXT)),
+        KeyBinding::new("shift-tab", PreviousThemeAction, Some(SETTINGS_CONTEXT)),
+    ]);
+}
+
+/// `Instant::now()` when the edit-frame trace runs: under `GITTURTLE_TRACE`,
+/// and in tests, where the probe records instead of printing.
+fn trace_stamp() -> Option<Instant> {
+    (cfg!(test) || trace_enabled()).then(Instant::now)
+}
+
+/// Above every dialog (`10 + layer`), popup (100) and tooltip (200) the
+/// toolkit defers, so the probe sorts last among a frame's deferred draws.
+const EDIT_TRACE_PRIORITY: usize = usize::MAX;
 
 /// What a finished custom-theme save means for the window.
 enum SaveOutcome {
@@ -296,6 +486,8 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The open's trace starts here, before the form is built.
+        let started = trace_stamp();
         if self.theme_editor.form.is_some() || self.theme_editor.save_pending() {
             return;
         }
@@ -328,7 +520,7 @@ impl GitTurtle {
             cx.new(|cx| ThemeForm::new(owner, editing, name, base, palette, customs, window, cx));
         self.theme_editor.form = Some(form.clone());
         self.clear_theme_transfer_result();
-        self.preview_theme_draft(palette, window, cx);
+        self.preview_theme_draft(palette, started, window, cx);
         let focus = form.read(cx).name.read(cx).focus_handle(cx);
         let focus_form = form.downgrade();
         window.open_alert_dialog(cx, move |dialog, window, cx| {
@@ -372,19 +564,32 @@ impl GitTurtle {
     /// here, as a Settings switch does, so the render the keystroke itself
     /// triggers already shows it instead of the old theme; later drafts in the
     /// same frame (a picker drag, a burst of edits) replace it and apply once
-    /// from the next frame callback. No worker job is involved. The trace keeps
-    /// attempt 3's boundary: stamped here, printed at the frame callback after
-    /// the one that follows the application.
-    fn preview_theme_draft(&mut self, draft: Palette, window: &mut Window, cx: &mut Context<Self>) {
+    /// from the next frame callback. No worker job is involved.
+    ///
+    /// `started` is the edit's or the open's handler entry. The first of a
+    /// burst is kept for the root render, whose probe ends
+    /// `gitturtle.theme_edit_frame_ms` in the paint of the next draw
+    /// ([`GitTurtle::edit_trace_probe`]). The switch metric's callback
+    /// boundary is not used here: a callback runs only on the platform's frame
+    /// tick and never sees the draw itself.
+    fn preview_theme_draft(
+        &mut self,
+        draft: Palette,
+        started: Option<Instant>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.theme_editor.form.is_none() {
             return;
+        }
+        if let Some(started) = started {
+            self.theme_editor.edit_started.get_or_insert(started);
         }
         self.theme_editor.preview = Some(draft);
         if self.theme_editor.preview_scheduled {
             self.theme_editor.preview_dirty = true;
             return;
         }
-        let started = trace_enabled().then(Instant::now);
         self.apply_appearance(window, cx);
         #[cfg(test)]
         {
@@ -404,11 +609,114 @@ impl GitTurtle {
                         this.theme_editor.preview_applications += 1;
                     }
                 }
-                if let Some(start) = started {
-                    Self::trace_next_frame("theme_apply_frame_ms", start, window);
-                }
             });
         });
+    }
+
+    /// The end of `gitturtle.theme_edit_frame_ms`: a zero-size element the
+    /// root render defers above the dialog layer (and every popup and
+    /// tooltip), so its paint is the last thing `Window::draw` paints in the
+    /// first frame drawn after the handler applied the draft, whether the
+    /// platform's frame tick draws it or `Window::dispatch_key_event` draws
+    /// the dirty window before the next key. The value therefore holds the
+    /// parse, the readability recompute, `apply_appearance` and the whole
+    /// window's request_layout, layout, prepaint and paint, and none of a
+    /// callback wait, frame-finish bookkeeping, present or input delivery.
+    pub(super) fn edit_trace_probe(&self, started: Instant, cx: &Context<Self>) -> AnyElement {
+        #[cfg(test)]
+        let owner = cx.entity().downgrade();
+        #[cfg(not(test))]
+        let _ = cx;
+        gpui::deferred(
+            canvas(
+                |_, _, _| (),
+                move |_, _, _window, _cx| {
+                    let ended = Instant::now();
+                    if trace_enabled() {
+                        eprintln!(
+                            "gitturtle.theme_edit_frame_ms={:.3}",
+                            (ended - started).as_secs_f64() * 1000.
+                        );
+                    }
+                    #[cfg(test)]
+                    {
+                        let _ = owner.update(_cx, |this, _| {
+                            let draw = this.draws.len();
+                            this.theme_editor.edit_traces.push(EditTrace {
+                                started,
+                                ended,
+                                draw,
+                            });
+                        });
+                    }
+                },
+            )
+            .w(px(0.))
+            .h(px(0.)),
+        )
+        .with_priority(EDIT_TRACE_PRIORITY)
+        .into_any_element()
+    }
+
+    /// Tab (`forward`) and Shift-Tab in Settings, tried before the toolkit's
+    /// tab order. Inside the Your themes rows they move to the next or
+    /// previous action, row by row, scrolling that row into view, since a row
+    /// not drawn has no tab stop of its own; from the last action of the last
+    /// row and the first of the first they fall through to the page. From
+    /// outside, the frame's own order moves focus, and a move that enters the
+    /// rows is redirected to the first row's Edit… or the last row's Delete…,
+    /// which the rows drawn at that moment need not include.
+    pub(super) fn tab_theme_rows(
+        &mut self,
+        forward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let count = self.custom_themes.len();
+        // A dialog or menu owns Tab while it is open.
+        if count == 0 || gpui_kit::base::active_focus_trap(window, cx).is_some() {
+            cx.propagate();
+            return;
+        }
+        let focused = window.focused(cx);
+        let from = self
+            .theme_editor
+            .focused_row(&self.custom_themes, window, cx);
+        // GPUI's own step is right whenever the row it should reach is
+        // drawn: within a row, onto the neighbouring drawn row, or out of the
+        // rows at their end. It is corrected only where the row it should
+        // reach is not drawn.
+        if forward {
+            window.focus_next(cx);
+        } else {
+            window.focus_prev(cx);
+        }
+        let to = self
+            .theme_editor
+            .focused_row(&self.custom_themes, window, cx);
+        let target = match (from, to) {
+            (Some(from), Some(to))
+                if from == to || (forward && to == from + 1) || (!forward && from == to + 1) =>
+            {
+                return;
+            }
+            (Some(from), _) if forward && from + 1 < count => (from + 1, 0),
+            (Some(from), _) if !forward && from > 0 => (from - 1, 2),
+            (Some(_), _) => return,
+            (None, Some(to)) if forward && to != 0 => (0, 0),
+            (None, Some(to)) if !forward && to + 1 != count => (count - 1, 2),
+            (None, _) => return,
+        };
+        // Focus stays put for the frame that draws the target row; that
+        // render focuses the action (`settings.rs`).
+        if let Some(focused) = focused {
+            focused.focus(window, cx);
+        }
+        self.theme_editor
+            .rows_scroll()
+            .scroll_to_item(target.0, ScrollStrategy::Nearest);
+        self.theme_editor.request_row_focus(target.0, target.1);
+        cx.notify();
     }
 
     /// Drop the draft and re-apply the saved selection.
@@ -960,6 +1268,14 @@ pub(super) struct ThemeForm {
     /// A base chosen after edits, waiting for Replace colors or Keep colors.
     pending_base: Option<ThemeChoice>,
     draft: Palette,
+    /// The draft's miniature, kept beside the draft so a frame that changes
+    /// only the name, the warnings or the focus reuses it
+    /// (`settings::ThemePreviewBody`).
+    preview_body: Entity<settings::ThemePreviewBody>,
+    /// Test-only: when this form last painted, so a test can place the
+    /// edit-frame probe's paint after the dialog layer's.
+    #[cfg(test)]
+    painted: Option<Instant>,
     rows: Vec<TokenRow>,
     warnings: Vec<ReadabilityIssue>,
     pending: bool,
@@ -1063,6 +1379,9 @@ impl ThemeForm {
             base,
             pending_base: None,
             draft: palette,
+            preview_body: cx.new(|_| settings::ThemePreviewBody::new(palette)),
+            #[cfg(test)]
+            painted: None,
             rows,
             warnings: palette.readability_issues(),
             pending: false,
@@ -1246,6 +1565,8 @@ impl ThemeForm {
     /// Typing in a hex field: a valid value updates the draft; anything else
     /// marks the field and keeps the last valid draft.
     fn hex_changed(&mut self, kind: TokenKind, window: &mut Window, cx: &mut Context<Self>) {
+        // `gitturtle.theme_edit_frame_ms` starts here, before the parse.
+        let started = trace_stamp();
         let value = self.row(kind).hex.read(cx).value().to_string();
         match custom::parse_hex(value.trim()) {
             Some(color) => {
@@ -1253,7 +1574,7 @@ impl ThemeForm {
                 if self.draft.get(kind) != color {
                     self.draft.set(kind, color);
                     self.sync_picker(kind, color, window, cx);
-                    self.draft_changed(window, cx);
+                    self.draft_changed(started, window, cx);
                 }
             }
             None => self.row_mut(kind).invalid = true,
@@ -1282,6 +1603,7 @@ impl ThemeForm {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let started = trace_stamp();
         let color = hsla_rgb(color);
         if self.draft.get(kind) == color && !self.row(kind).invalid {
             return;
@@ -1292,7 +1614,7 @@ impl ThemeForm {
         hex.update(cx, |input, cx| {
             input.set_value(custom::format_hex(color), window, cx)
         });
-        self.draft_changed(window, cx);
+        self.draft_changed(started, window, cx);
         cx.notify();
     }
 
@@ -1305,17 +1627,26 @@ impl ThemeForm {
         }
     }
 
-    /// Recompute the warnings and hand the draft to the window's coalesced preview.
-    fn draft_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Recompute the warnings and hand the draft to the window's coalesced
+    /// preview; `started` is the edit's handler entry for the frame trace.
+    fn draft_changed(
+        &mut self,
+        started: Option<Instant>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.warnings = self.draft.readability_issues();
         let draft = self.draft;
-        let _ = self
-            .owner
-            .update(cx, |this, cx| this.preview_theme_draft(draft, window, cx));
+        self.preview_body
+            .update(cx, |body, cx| body.set_palette(draft, cx));
+        let _ = self.owner.update(cx, |this, cx| {
+            this.preview_theme_draft(draft, started, window, cx)
+        });
     }
 
     /// Replace every token, as Reset to base and a base change do.
     fn set_palette(&mut self, palette: Palette, window: &mut Window, cx: &mut Context<Self>) {
+        let started = trace_stamp();
         self.draft = palette;
         for index in 0..self.rows.len() {
             let kind = self.rows[index].kind;
@@ -1327,7 +1658,7 @@ impl ThemeForm {
             });
             self.sync_picker(kind, color, window, cx);
         }
-        self.draft_changed(window, cx);
+        self.draft_changed(started, window, cx);
         cx.notify();
     }
 
@@ -1685,27 +2016,33 @@ impl ThemeForm {
                     .text_color(rgb(p.muted))
                     .child(kind.description()),
             )
-            .child(if row.invalid {
-                invalid_glyph(p)
-                    .id(("theme-token-invalid", kind as usize))
-                    .debug_selector(move || format!("theme-token-invalid-{}", kind.key()))
-                    .role(Role::Label)
-                    .aria_label(format!("{label} value is not #rrggbb"))
-                    .into_any_element()
+            .children(if row.invalid {
+                Some(
+                    invalid_glyph(p)
+                        .id(("theme-token-invalid", kind as usize))
+                        .debug_selector(move || format!("theme-token-invalid-{}", kind.key()))
+                        .role(Role::Label)
+                        .aria_label(format!("{label} value is not #rrggbb")),
+                )
             } else if flagged {
-                warning_glyph(p)
-                    .id(("theme-token-warning", kind as usize))
-                    .role(Role::Label)
-                    .aria_label(format!("{label} has a readability warning"))
-                    .into_any_element()
+                Some(
+                    warning_glyph(p)
+                        .id(("theme-token-warning", kind as usize))
+                        .role(Role::Label)
+                        .aria_label(format!("{label} has a readability warning")),
+                )
             } else {
-                div()
-                    .size(appearance::ui_size(14.))
-                    .flex_shrink_0()
-                    .into_any_element()
+                None
             })
             .child(
                 div()
+                    // Without a glyph the swatch keeps the glyph's 14 px slot
+                    // and the row gap before it as its own margin, so nothing
+                    // moves when a glyph appears and the row lays out one node
+                    // less.
+                    .when(!row.invalid && !flagged, |swatch| {
+                        swatch.ml(appearance::ui_size(14.) + window.rem_size() * 0.5)
+                    })
                     .size(appearance::ui_size(16.))
                     .flex_shrink_0()
                     .rounded(px(4.))
@@ -1714,26 +2051,25 @@ impl ThemeForm {
                     .bg(rgb(color)),
             )
             .child(
-                div()
-                    .debug_selector(move || format!("theme-hex-{}", kind.key()))
+                // The field takes its authored width, its shrink and the mono
+                // face through the kit Input's own style refinement, so the
+                // row lays out no wrapper around it.
+                Input::new(&row.hex)
+                    .small()
                     .w(Self::hex_width())
                     .flex_shrink_0()
                     .font_family(mono())
-                    .child(
-                        Input::new(&row.hex)
-                            .small()
-                            .disabled(self.pending)
-                            .aria_label(if row.invalid {
-                                format!("{label} color, invalid: use #rrggbb")
-                            } else {
-                                format!("{label} color")
-                            })
-                            // The toolkit's focus border would hide the
-                            // removed outline while the field is edited.
-                            .when(row.invalid, |input| {
-                                input.focus_ring(false).border_color(rgb(p.removed))
-                            }),
-                    ),
+                    .disabled(self.pending)
+                    .aria_label(if row.invalid {
+                        format!("{label} color, invalid: use #rrggbb")
+                    } else {
+                        format!("{label} color")
+                    })
+                    // The toolkit's focus border would hide the removed
+                    // outline while the field is edited.
+                    .when(row.invalid, |input| {
+                        input.focus_ring(false).border_color(rgb(p.removed))
+                    }),
             )
             .child(
                 // The toolkit trigger paints no focus indicator of its own, and
@@ -1908,6 +2244,7 @@ impl Render for ThemeForm {
             .border_color(rgb(p.border))
             .overflow_hidden()
             .child(settings::theme_preview(
+                &self.preview_body,
                 self.draft,
                 if name.is_empty() {
                     "Untitled theme".to_owned()
@@ -1994,6 +2331,23 @@ impl Render for ThemeForm {
                 .child(self.render_scrollbar())
                 .into_any_element()
         };
+        #[cfg(test)]
+        let paint_stamp = {
+            let form = cx.entity().downgrade();
+            Some(
+                canvas(
+                    |_, _, _| (),
+                    move |_, _, _, cx| {
+                        let _ = form.update(cx, |form, _| form.painted = Some(Instant::now()));
+                    },
+                )
+                .w(px(0.))
+                .h(px(0.))
+                .into_any_element(),
+            )
+        };
+        #[cfg(not(test))]
+        let paint_stamp: Option<AnyElement> = None;
         div()
             .id("theme-editor")
             .debug_selector(|| "theme-editor".into())
@@ -2007,6 +2361,7 @@ impl Render for ThemeForm {
             .child(self.render_header(p, cx))
             .children(self.render_base_question(p, cx))
             .child(body)
+            .children(paint_stamp)
     }
 }
 
@@ -2014,7 +2369,14 @@ impl Render for ThemeForm {
 mod tests {
     use super::*;
     use core::prelude::v1::test;
-    use std::{cell::RefCell, rc::Rc};
+    use std::{
+        cell::RefCell,
+        rc::Rc,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+    };
 
     fn open_app(cx: &mut TestAppContext) -> (Entity<GitTurtle>, &mut VisualTestContext) {
         // GitTurtle::new starts a real preferences worker; saves reply from it.
@@ -2022,6 +2384,7 @@ mod tests {
         cx.update(|cx| {
             gpui_kit::init(cx);
             image_lifetime::init(cx);
+            init(cx);
         });
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let output = captured.clone();
@@ -2204,6 +2567,44 @@ mod tests {
 
     fn applied(cx: &mut VisualTestContext) -> Palette {
         cx.read(|cx| *cx.global::<Palette>())
+    }
+
+    /// Wait until the preference writer has answered everything submitted so
+    /// far, without drawing. The executor is serialized, so a job queued now
+    /// runs after the pending save, and parking then delivers that save's
+    /// reply to the window.
+    fn drain_preference_writer(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) {
+        let answered = Arc::new(AtomicBool::new(false));
+        let flag = answered.clone();
+        let _response = cx.read(|cx| {
+            app.read(cx).preferences_writer.submit(move || {
+                flag.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+        });
+        wait_without_drawing(cx, |_| answered.load(Ordering::SeqCst));
+        cx.run_until_parked();
+    }
+
+    /// The palette of every draw since the last call, and clear the record.
+    fn drawn(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) -> Vec<Palette> {
+        cx.update(|_, cx| app.update(cx, |app, _| std::mem::take(&mut app.draws)))
+    }
+
+    /// Builds of the Settings picker's twenty miniatures so far.
+    fn preview_renders(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) -> usize {
+        cx.read(|cx| {
+            app.read(cx)
+                .theme_previews
+                .iter()
+                .map(|(_, body)| body.read(cx).renders())
+                .sum()
+        })
+    }
+
+    /// Palette applications through `apply_appearance` so far.
+    fn applications(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) -> usize {
+        cx.read(|cx| app.read(cx).theme_editor.preview_applications)
     }
 
     fn submissions(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) -> (u64, bool, bool) {
@@ -2822,13 +3223,23 @@ mod tests {
                 name.size.height, base.size.height,
                 "Name is as tall as Base"
             );
-            let hex = bounds(cx, format!("theme-hex-{}", TokenKind::ALL[0].key()));
-            assert_eq!(hex.size.width, ThemeForm::hex_width());
+            // The field is the kit Input itself, sized by its style
+            // refinement; the state reports its text area, the authored width
+            // less the small input's 8 px padding and 1 px border per side.
+            let inset = px(2. * 8.) + px(2. * 1.);
+            let hex = cx.read(|cx| {
+                form.read(cx)
+                    .row(TokenKind::ALL[0])
+                    .hex
+                    .read(cx)
+                    .input_bounds()
+            });
+            assert_eq!(hex.size.width, ThemeForm::hex_width() - inset);
             let fit = cx.update(|window, _| ThemeForm::hex_fit_width(window));
             assert!(
-                hex.size.width >= fit,
+                hex.size.width + inset >= fit,
                 "seven characters and the caret fit the hex field: {:?} < {fit:?}",
-                hex.size.width
+                hex.size.width + inset
             );
 
             // The token column overflows at both sizes and shows an
@@ -3553,5 +3964,1157 @@ mod tests {
         assert!(tooltip.size.width > px(0.), "{tooltip:?}");
         // The row keeps its place while the tooltip is open.
         assert_eq!(bounds(cx, "export-custom-theme-7".into()), export);
+    }
+
+    /// Mouse down, then mouse up, on a Settings theme card: the card's real
+    /// click path. GPUI refreshes the window for the press (its pressed
+    /// state) and again for the release, so the press is dispatched on its
+    /// own and its frame drained; returned are the draws after the release
+    /// and the picker miniatures the release rebuilt.
+    fn click_card(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        choice: ThemeChoice,
+    ) -> (Vec<Palette>, usize) {
+        let position = bounds(cx, format!("settings-theme-{}", choice as usize)).center();
+        cx.simulate_event(MouseDownEvent {
+            position,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 1,
+            first_mouse: false,
+        });
+        let _ = drawn(cx, app);
+        let previews_before = preview_renders(cx, app);
+        cx.simulate_event(MouseUpEvent {
+            position,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 1,
+        });
+        let draws = drawn(cx, app);
+        (draws, preview_renders(cx, app) - previews_before)
+    }
+
+    /// Builds of the open editor's own miniature so far.
+    fn draft_renders(cx: &mut VisualTestContext, form: &Entity<ThemeForm>) -> usize {
+        cx.read(|cx| form.read(cx).preview_body.read(cx).renders())
+    }
+
+    /// Every live-preview edit and every Settings theme switch costs exactly
+    /// one whole-window draw, and that draw already shows the new palette.
+    ///
+    /// The frame, not the palette work, is what this path is measured by
+    /// (`docs/development/themes/spec.md` §Performance): one whole-window
+    /// layout, paint and present of Settings with the dialog over it. Three
+    /// ways to spend a second one are asserted absent here: a frame that still
+    /// shows the old palette because the draft was applied later, a redundant
+    /// frame after the coalesced application of a same-frame burst, and the
+    /// frame a completed preference save asks for when its result changed
+    /// nothing the window shows.
+    ///
+    /// `draws` records the palette of every draw. In a test build GPUI draws
+    /// each dirty window as effects flush, exactly as the platform draws it
+    /// when a frame is requested, so these are the window's own draws and not
+    /// the harness's: nothing below forces one. The switch is a real click on
+    /// the card; GPUI's click machinery calls `Window::refresh` on that mouse
+    /// up, which bars cached-view reuse for the frame, so the miniature reuse
+    /// is asserted on the edit frames and the click's rebuild is recorded.
+    #[gpui::test]
+    fn an_edit_and_a_switch_each_draw_the_window_once(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|window, _| window.activate_window());
+        settle(cx);
+
+        // A Settings theme switch. The first save also writes the status line,
+        // a visible change that rightly costs its frame; every switch after it
+        // is the steady state.
+        let _ = drawn(cx, &app);
+        let (first, _) = click_card(cx, &app, ThemeChoice::TokyoNight);
+        assert!(
+            !first.is_empty()
+                && first
+                    .iter()
+                    .all(|p| *p == ThemeChoice::TokyoNight.palette()),
+            "the click draws the new palette and never the old one: {first:?}"
+        );
+        drain_preference_writer(cx, &app);
+        assert_eq!(
+            cx.read(|cx| app.read(cx).status.clone()),
+            "Settings saved",
+            "the first save reports itself"
+        );
+        settle(cx);
+        let _ = drawn(cx, &app);
+        cx.run_until_parked();
+        assert_eq!(
+            drawn(cx, &app),
+            [],
+            "nothing is pending before the steady-state switch"
+        );
+        let (draws, rebuilt) = click_card(cx, &app, ThemeChoice::Nord);
+        assert_eq!(
+            draws,
+            [ThemeChoice::Nord.palette()],
+            "a click switch draws the window once after its release, in the new palette"
+        );
+        // Recorded, not asserted away: GPUI's click path refreshes the window
+        // on the mouse up, and a refresh rebuilds every cached view in that
+        // frame, the twenty miniatures included. The reuse a switch could get
+        // is the edit frames' below.
+        assert_eq!(
+            rebuilt,
+            ThemeChoice::ALL.len(),
+            "the click's Window::refresh rebuilds all twenty miniatures ({rebuilt})"
+        );
+        drain_preference_writer(cx, &app);
+        assert_eq!(
+            drawn(cx, &app),
+            [],
+            "the completed save changed nothing visible, so it draws nothing"
+        );
+
+        // Live-preview edits. Opening the editor is its own frame; measure
+        // from the first edit after it. While the dialog is open the focused
+        // name field blinks its caret, which asks for frames of its own; those
+        // are not this path's, so the edits below assert the applications they
+        // cost and that no frame ever shows a stale palette.
+        click(cx, "custom-themes-new");
+        let form = form(cx, &app);
+        next_frame(cx);
+        let inputs = cx.read(|cx| {
+            [TokenKind::Canvas, TokenKind::Panel, TokenKind::Accent]
+                .map(|kind| form.read(cx).row(kind).hex.clone())
+        });
+        let _ = drawn(cx, &app);
+
+        for value in ["#101a26", "#0c1119", "#161c2a"] {
+            let applied_before = applications(cx, &app);
+            let previews_before = preview_renders(cx, &app);
+            let draft_before = draft_renders(cx, &form);
+            // `replace_all` emits Change as typing the seventh character does.
+            cx.update(|window, cx| {
+                inputs[0].update(cx, |input, cx| input.replace_all(value, window, cx))
+            });
+            let draft = cx.read(|cx| form.read(cx).draft);
+            assert_eq!(
+                drawn(cx, &app),
+                [draft],
+                "{value} draws the window once, showing the draft and not the old palette"
+            );
+            assert_eq!(
+                applications(cx, &app),
+                applied_before + 1,
+                "{value} applies its palette once"
+            );
+            // The picker's miniatures each draw one built-in palette, which
+            // the draft does not alter: the edit frame reuses all twenty and
+            // rebuilds only the draft's own.
+            assert_eq!(
+                preview_renders(cx, &app),
+                previews_before,
+                "{value} reuses every picker miniature"
+            );
+            assert_eq!(
+                draft_renders(cx, &form),
+                draft_before + 1,
+                "{value} rebuilds only the draft's miniature"
+            );
+            // The coalescing callback has nothing left to apply, so it costs
+            // no application and can only repeat the draft already on screen.
+            let ran = cx.update(|window, cx| window.simulate_next_frame(cx));
+            assert!(ran > 0, "{value} registered its coalescing callback");
+            assert_eq!(
+                applications(cx, &app),
+                applied_before + 1,
+                "the coalescing frame after {value} applies nothing"
+            );
+            for palette in drawn(cx, &app) {
+                assert_eq!(
+                    palette, draft,
+                    "no frame after {value} draws a stale palette"
+                );
+            }
+        }
+
+        // A burst inside one frame: the first edit applies in its handler, so
+        // its frame already shows it, and the rest apply once at the next
+        // frame callback. Two applications for three edits, never an old
+        // palette.
+        let applied_before = applications(cx, &app);
+        cx.update(|window, cx| {
+            for (index, input) in inputs.iter().enumerate() {
+                let text = format!("#10{index:02}20");
+                input.update(cx, |input, cx| input.replace_all(text, window, cx));
+            }
+        });
+        let in_handler = drawn(cx, &app);
+        assert_eq!(in_handler.len(), 1, "the burst draws once in its handler");
+        assert_eq!(
+            in_handler[0].canvas, 0x100020,
+            "and that frame already shows the burst's first edit"
+        );
+        assert_eq!(
+            applications(cx, &app),
+            applied_before + 1,
+            "the burst's first edit applies in its handler"
+        );
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
+        let draft = cx.read(|cx| form.read(cx).draft);
+        let coalesced = drawn(cx, &app);
+        assert!(
+            !coalesced.is_empty(),
+            "the coalescing frame draws the rest of the burst"
+        );
+        for palette in coalesced {
+            assert_eq!(palette, draft, "and every frame of it draws that draft");
+        }
+        assert_eq!(
+            applications(cx, &app),
+            applied_before + 2,
+            "the rest of the burst applies once, at the frame"
+        );
+    }
+
+    /// The probe paints of `gitturtle.theme_edit_frame_ms` since the last
+    /// call, and clear the record.
+    fn edit_traces(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) -> Vec<EditTrace> {
+        cx.update(|_, cx| {
+            app.update(cx, |app, _| {
+                std::mem::take(&mut app.theme_editor.edit_traces)
+            })
+        })
+    }
+
+    fn draw_count(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) -> usize {
+        cx.read(|cx| app.read(cx).draws.len())
+    }
+
+    /// `gitturtle.theme_edit_frame_ms` is stamped once per open and once per
+    /// burst of live-preview edits, and its end is taken in the paint of the
+    /// first draw after the handler, after the dialog layer painted, never in
+    /// a next-frame callback; an invalid value is not an edit.
+    #[gpui::test]
+    fn an_edit_trace_ends_in_that_frames_paint_after_the_dialog(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        let _ = edit_traces(cx, &app);
+        let _ = drawn(cx, &app);
+
+        // The open. `click` settles with two forced draws afterwards; the
+        // trace is still taken once, by the first draw after the handler.
+        let draws_before = draw_count(cx, &app);
+        click(cx, "custom-themes-new");
+        let opened = edit_traces(cx, &app);
+        assert_eq!(opened.len(), 1, "an open is traced once: {opened:?}");
+        assert!(
+            opened[0].draw > draws_before && opened[0].draw <= draw_count(cx, &app),
+            "the open's trace ends in a draw after its handler"
+        );
+        let form = form(cx, &app);
+        next_frame(cx);
+        assert!(
+            edit_traces(cx, &app).is_empty(),
+            "frames after the open add no trace"
+        );
+        let input = cx.read(|cx| form.read(cx).row(TokenKind::Canvas).hex.clone());
+
+        for value in ["#101a26", "#0c1119"] {
+            let draws_before = draw_count(cx, &app);
+            cx.update(|window, cx| {
+                input.update(cx, |input, cx| input.replace_all(value, window, cx))
+            });
+            let draws_after = draw_count(cx, &app);
+            assert_eq!(draws_after, draws_before + 1, "{value} draws once");
+            let traces = edit_traces(cx, &app);
+            assert_eq!(traces.len(), 1, "{value} is traced once: {traces:?}");
+            let trace = traces[0];
+            assert_eq!(
+                trace.draw, draws_after,
+                "the end stamp of {value} is taken during that draw's paint"
+            );
+            let painted = cx
+                .read(|cx| form.read(cx).painted)
+                .expect("the dialog painted");
+            assert!(
+                trace.started <= painted && painted <= trace.ended,
+                "{value}: the probe paints after the dialog layer"
+            );
+            // The frame callbacks that follow the draw, and later frames, add
+            // no line: the boundary is the paint, not a callback.
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+            });
+            assert!(
+                edit_traces(cx, &app).is_empty(),
+                "no trace from the next-frame callback after {value}"
+            );
+            settle(cx);
+            assert!(edit_traces(cx, &app).is_empty());
+        }
+
+        // An invalid value applies nothing and prints nothing.
+        cx.update(|window, cx| input.update(cx, |input, cx| input.replace_all("#12", window, cx)));
+        assert!(
+            edit_traces(cx, &app).is_empty(),
+            "an invalid value is not a live-preview edit"
+        );
+
+        // A burst before any draw is one line, from its first edit.
+        let inputs = cx.read(|cx| {
+            [TokenKind::Canvas, TokenKind::Panel, TokenKind::Accent]
+                .map(|kind| form.read(cx).row(kind).hex.clone())
+        });
+        let before = Instant::now();
+        cx.update(|window, cx| {
+            for (index, input) in inputs.iter().enumerate() {
+                let text = format!("#10{index:02}20");
+                input.update(cx, |input, cx| input.replace_all(text, window, cx));
+            }
+        });
+        let traces = edit_traces(cx, &app);
+        assert_eq!(traces.len(), 1, "a same-frame burst is traced once");
+        assert!(traces[0].started >= before);
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
+        assert!(
+            edit_traces(cx, &app).is_empty(),
+            "the coalesced application of the burst is not traced again"
+        );
+    }
+
+    fn seed_themes(cx: &mut VisualTestContext, app: &Entity<GitTurtle>, count: u32) {
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.custom_themes = (1..=count)
+                    .map(|n| {
+                        let base = ThemeChoice::ALL[(n as usize - 1) % ThemeChoice::ALL.len()];
+                        CustomTheme::from_base(n, format!("Seed {n:02}"), base)
+                    })
+                    .collect();
+                cx.notify();
+            })
+        });
+        settle(cx);
+    }
+
+    fn focused_row(
+        app: &Entity<GitTurtle>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<(usize, usize)> {
+        app.update(cx, |app, cx| {
+            app.theme_editor
+                .focused_row_action(&app.custom_themes, window, cx)
+        })
+    }
+
+    /// Whether row `row` lies wholly inside the Your themes list's viewport,
+    /// from the list's own scroll state after its prepaint (`item` is the
+    /// list's padded viewport, `contents` all rows).
+    fn row_in_view(app: &Entity<GitTurtle>, row: usize, cx: &App) -> bool {
+        let app = app.read(cx);
+        let state = app.theme_editor.rows_scroll().0.borrow();
+        let Some(size) = state.last_item_size else {
+            return false;
+        };
+        let viewport = size.item.height;
+        let height = size.contents.height / app.custom_themes.len() as f32;
+        let top = height * row as f32 + state.base_handle.offset().y;
+        top >= px(-0.5) && top + height <= viewport + px(0.5)
+    }
+
+    /// With 32 saved themes the list is eight rows tall and draws eight rows.
+    /// Tab reaches every row's Edit…, Export… and Delete… in order across the
+    /// viewport boundary, Shift-Tab walks back, entering the list from either
+    /// side lands on its edge row whatever rows are drawn, and the frame after
+    /// each key shows the focused row inside the list.
+    #[gpui::test]
+    fn tab_walks_every_row_action_and_keeps_the_focused_row_in_view(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|window, _| window.activate_window());
+        seed_themes(cx, &app, 32);
+        let list = bounds(cx, "custom-themes-rows".into());
+        let row = bounds(cx, "custom-theme-1".into());
+        assert_eq!(
+            list.size.height,
+            row.size.height * 8. + px(6.),
+            "eight rows tall, plus the focus ring's room above and below"
+        );
+        assert!(cx.debug_bounds("custom-theme-8").is_some());
+        assert!(
+            cx.debug_bounds("custom-theme-9").is_none(),
+            "the ninth row is not drawn"
+        );
+        assert!(cx.debug_bounds("custom-themes-scrollbar").is_some());
+
+        // From the card, whose New theme… and Import… are disabled at the
+        // bound, GPUI's own step reaches the first row's Edit….
+        let card = cx.update(|_, cx| app.read(cx).theme_editor.card_focus(cx));
+        cx.update(|window, cx| {
+            card.focus(window, cx);
+            window.focus_next(cx);
+        });
+        settle(cx);
+        assert_eq!(
+            cx.update(|window, cx| focused_row(&app, window, cx)),
+            Some((0, 0)),
+            "the first row's Edit… follows the card"
+        );
+        let actions = (0..32).flat_map(|row| (0..3).map(move |action| (row, action)));
+        for (row, action) in actions.skip(1) {
+            let (focused, in_view) = key_frames(
+                cx,
+                "tab",
+                |_, _| (),
+                |window, cx| (focused_row(&app, window, cx), row_in_view(&app, row, cx)),
+            )
+            .1;
+            assert_eq!(
+                focused,
+                Some((row, action)),
+                "Tab reaches row {row} action {action}"
+            );
+            assert!(
+                in_view,
+                "row {row} is in view in the frame after Tab onto action {action}"
+            );
+        }
+        // Past the last Delete…, Tab leaves the rows; Shift-Tab returns to
+        // that Delete… although the rows drawn need not include it.
+        assert_eq!(
+            key_frame(cx, "tab", |window, cx| focused_row(&app, window, cx)),
+            None,
+            "Tab from the last Delete… leaves the rows"
+        );
+        assert!(
+            cx.update(|window, cx| window.focused(cx)).is_some(),
+            "and lands on the control after the list"
+        );
+        cx.update(|_, cx| {
+            app.read(cx)
+                .theme_editor
+                .rows_scroll()
+                .scroll_to_item(0, ScrollStrategy::Top)
+        });
+        native_frame(cx);
+        assert!(cx.debug_bounds("custom-theme-32").is_none());
+        for expected in [(31, 2), (31, 1), (31, 0), (30, 2)] {
+            let (focused, in_view) = key_frames(
+                cx,
+                "shift-tab",
+                |_, _| (),
+                |window, cx| {
+                    (
+                        focused_row(&app, window, cx),
+                        row_in_view(&app, expected.0, cx),
+                    )
+                },
+            )
+            .1;
+            assert_eq!(
+                focused,
+                Some(expected),
+                "Shift-Tab walks back to {expected:?}"
+            );
+            assert!(in_view, "row {} is in view after Shift-Tab", expected.0);
+        }
+        // Entering forwards while the list shows its end lands on the first
+        // row, drawn or not.
+        cx.update(|window, cx| card.focus(window, cx));
+        settle(cx);
+        assert!(
+            cx.debug_bounds("custom-theme-1").is_none(),
+            "the list still shows its end"
+        );
+        let (focused, in_view) = key_frames(
+            cx,
+            "tab",
+            |_, _| (),
+            |window, cx| (focused_row(&app, window, cx), row_in_view(&app, 0, cx)),
+        )
+        .1;
+        assert_eq!(
+            focused,
+            Some((0, 0)),
+            "Tab from the card reaches the first row's Edit…"
+        );
+        assert!(in_view, "and the first row is in view");
+    }
+
+    /// The kit paints a focused control's 3 px ring outside the control and
+    /// the list clips to its own bounds, so the list keeps the ring's room
+    /// above its first row and below its last (`DESIGN.md`, Your themes): on
+    /// a one-theme store and in the first and last viewport slots of a
+    /// 32-theme store, at either end of the list, a focused action's ring
+    /// bounds lie inside the list's bounds, while the rows keep their 30 px
+    /// pitch from the list's first row and the scrollbar track stays on the
+    /// rows.
+    #[gpui::test]
+    fn a_focused_row_actions_ring_lies_inside_the_list_in_every_slot(cx: &mut TestAppContext) {
+        const RING: Pixels = px(3.);
+        let (app, cx) = open_app(cx);
+        cx.update(|window, _| window.activate_window());
+        fn assert_ring_inside(
+            cx: &mut VisualTestContext,
+            app: &Entity<GitTurtle>,
+            id: u32,
+            action: usize,
+        ) {
+            let handle = cx.update(|_, cx| app.read(cx).theme_editor.row_focus(id, cx));
+            cx.update(|window, cx| State::focus_row_action(&handle, action, window, cx));
+            native_frame(cx);
+            let name = ["edit", "export", "delete"][action];
+            let button = bounds(cx, format!("{name}-custom-theme-{id}"));
+            let list = bounds(cx, "custom-themes-rows".into());
+            let row = bounds(cx, format!("custom-theme-{id}"));
+            assert!(
+                button.top() - RING >= list.top()
+                    && button.bottom() + RING <= list.bottom()
+                    && button.left() - RING >= list.left()
+                    && button.right() + RING <= list.right(),
+                "{name} of theme {id}: ring {:?} inside the list {:?}",
+                Bounds::from_corners(
+                    button.origin - gpui::point(RING, RING),
+                    button.bottom_right() + gpui::point(RING, RING),
+                ),
+                list
+            );
+            assert!(
+                button.top() > row.top() && button.bottom() < row.bottom(),
+                "the button sits inside its row"
+            );
+        }
+        seed_themes(cx, &app, 1);
+        let list = bounds(cx, "custom-themes-rows".into());
+        let row = bounds(cx, "custom-theme-1".into());
+        assert_eq!(
+            row.top(),
+            list.top() + RING,
+            "the first row follows the ring's room"
+        );
+        assert_eq!(list.size.height, row.size.height + RING * 2.);
+        assert_eq!(row.size.height, appearance::ui_size(30.));
+        for action in 0..3 {
+            assert_ring_inside(cx, &app, 1, action);
+        }
+
+        seed_themes(cx, &app, 32);
+        let list = bounds(cx, "custom-themes-rows".into());
+        let first = bounds(cx, "custom-theme-1".into());
+        let second = bounds(cx, "custom-theme-2".into());
+        assert_eq!(first.top(), list.top() + RING);
+        assert_eq!(
+            second.top() - first.top(),
+            appearance::ui_size(30.),
+            "row pitch"
+        );
+        let track = bounds(cx, "custom-themes-scrollbar".into());
+        assert_eq!(
+            track.top(),
+            first.top(),
+            "the track starts on the first row"
+        );
+        assert_eq!(
+            track.size.height,
+            appearance::ui_size(30.) * 8.,
+            "and spans the eight rows"
+        );
+        assert_ring_inside(cx, &app, 1, 0);
+        assert_ring_inside(cx, &app, 8, 2);
+        cx.update(|_, cx| {
+            app.read(cx)
+                .theme_editor
+                .rows_scroll()
+                .scroll_to_item(31, ScrollStrategy::Top)
+        });
+        native_frame(cx);
+        let last = bounds(cx, "custom-theme-32".into());
+        assert_eq!(
+            last.bottom(),
+            list.bottom() - RING,
+            "the last row ends at the ring's room"
+        );
+        assert_ring_inside(cx, &app, 25, 0);
+        assert_ring_inside(cx, &app, 32, 2);
+    }
+
+    /// The card keeps the plain stack's geometry around the virtualized rows:
+    /// the rows' box is exactly `30 px × min(rows, 8)` and starts where the
+    /// stack's first row stood (the "No custom themes yet." line's place), the
+    /// list over it is 3 px taller at each end for the focus ring and nothing
+    /// else, the card grows by the rows less the empty line and the setting
+    /// below it keeps its distance, with one, two, eight and 32 saved themes.
+    /// A collapsed card or a moved row fails here even when the list's own
+    /// geometry holds. Positions are exact; the card's height and the
+    /// distances across its bottom edge allow half a device pixel, since the
+    /// test window is at 2x and layout snaps to that grid.
+    #[gpui::test]
+    fn the_card_keeps_the_plain_stacks_geometry_around_the_rows(cx: &mut TestAppContext) {
+        const RING: Pixels = px(3.);
+        fn within_half_device_pixel(actual: Pixels, expected: Pixels, what: String) {
+            assert!(
+                (actual - expected).abs() <= px(0.25),
+                "{what}: {actual:?} against {expected:?}"
+            );
+        }
+        let (app, cx) = open_app(cx);
+        let rem = cx.update(|window, _| window.rem_size());
+        let (border, padding) = (px(1.), rem);
+        let card = bounds(cx, "custom-themes-card".into());
+        let header = bounds(cx, "custom-themes-header".into());
+        let empty = bounds(cx, "custom-themes-empty".into());
+        let below = bounds(cx, "text-size-setting-interface".into());
+        assert_eq!(header.top(), card.top() + border + padding);
+        assert!(
+            empty.top() > header.bottom(),
+            "the content follows the header"
+        );
+        within_half_device_pixel(
+            card.bottom() - empty.bottom(),
+            padding + border,
+            "zero themes: the empty line ends at the card's padding".into(),
+        );
+        let stack_top = empty.top();
+        let distance_below = below.top() - card.bottom();
+        for themes in [1u32, 2, 8, 32] {
+            seed_themes(cx, &app, themes);
+            let rows = appearance::ui_size(30.) * themes.min(8) as f32;
+            let card_now = bounds(cx, "custom-themes-card".into());
+            let header_now = bounds(cx, "custom-themes-header".into());
+            let list_box = bounds(cx, "custom-themes-rows-box".into());
+            let list = bounds(cx, "custom-themes-rows".into());
+            let first = bounds(cx, "custom-theme-1".into());
+            let below_now = bounds(cx, "text-size-setting-interface".into());
+            assert_eq!(
+                card_now.top(),
+                card.top(),
+                "{themes} themes: the card does not move"
+            );
+            assert_eq!(header_now, header, "{themes} themes: nor its header");
+            assert_eq!(
+                list_box.top(),
+                stack_top,
+                "{themes} themes: the rows start where the stack's first row stood"
+            );
+            assert_eq!(
+                list_box.size.height, rows,
+                "{themes} themes: the box is the rows"
+            );
+            assert_eq!(
+                first.top(),
+                list_box.top(),
+                "{themes} themes: the first row is at its top"
+            );
+            assert_eq!(first.size.height, appearance::ui_size(30.));
+            assert_eq!(
+                list.top(),
+                list_box.top() - RING,
+                "{themes} themes: the ring's room above"
+            );
+            assert_eq!(
+                list.bottom(),
+                list_box.bottom() + RING,
+                "{themes} themes: and below"
+            );
+            assert_eq!(list.left(), list_box.left());
+            assert_eq!(list.right(), list_box.right());
+            within_half_device_pixel(
+                card_now.size.height,
+                card.size.height - empty.size.height + rows,
+                format!("{themes} themes: the card grows by the rows less the empty line"),
+            );
+            within_half_device_pixel(
+                card_now.bottom() - list_box.bottom(),
+                padding + border,
+                format!("{themes} themes: the rows end at the card's padding"),
+            );
+            within_half_device_pixel(
+                below_now.top() - card_now.bottom(),
+                distance_below,
+                format!("{themes} themes: the setting below keeps its distance"),
+            );
+            if themes > 8 {
+                let track = bounds(cx, "custom-themes-scrollbar".into());
+                assert_eq!(
+                    track.top(),
+                    list_box.top(),
+                    "the track starts on the first row"
+                );
+                assert_eq!(
+                    track.size.height, list_box.size.height,
+                    "and spans the eight rows"
+                );
+                assert_eq!(track.right(), list_box.right(), "on the rows' right edge");
+            }
+        }
+    }
+
+    /// The Your themes list sits inside the Settings page's own scroll
+    /// container. A wheel step over the rows moves the list and leaves the
+    /// page where it is while the list can still move that way; once the
+    /// list has reached its end, the same step scrolls the page, and a step
+    /// back is the list's again.
+    #[gpui::test]
+    fn a_wheel_step_over_the_rows_scrolls_the_list_before_the_page(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|window, _| window.activate_window());
+        seed_themes(cx, &app, 32);
+        // A window the page overflows, so the page can scroll at all.
+        cx.simulate_resize(size(px(1440.), px(900.)));
+        settle(cx);
+        fn wheel(cx: &mut VisualTestContext, position: Point<Pixels>, step: Pixels) {
+            cx.update(|window, cx| {
+                window.dispatch_event(
+                    PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                        position,
+                        delta: gpui::ScrollDelta::Pixels(gpui::point(Pixels::ZERO, step)),
+                        modifiers: Modifiers::default(),
+                        touch_phase: gpui::TouchPhase::Moved,
+                    }),
+                    cx,
+                );
+            });
+            settle(cx);
+        }
+        fn list_offset(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) -> Pixels {
+            cx.read(|cx| {
+                app.read(cx)
+                    .theme_editor
+                    .rows_scroll()
+                    .0
+                    .borrow()
+                    .base_handle
+                    .offset()
+                    .y
+            })
+        }
+        // Scroll the page over its right column, away from the list, until
+        // the list is in view.
+        let viewport = cx.update(|window, _| window.viewport_size());
+        let mut rows = bounds(cx, "custom-themes-rows".into());
+        for _ in 0..60 {
+            if rows.top() >= Pixels::ZERO && rows.bottom() <= viewport.height {
+                break;
+            }
+            wheel(cx, gpui::point(px(1100.), px(300.)), px(-200.));
+            rows = bounds(cx, "custom-themes-rows".into());
+        }
+        assert!(
+            rows.top() >= Pixels::ZERO && rows.bottom() <= viewport.height,
+            "the list is in view: {rows:?} in {viewport:?}"
+        );
+        assert_eq!(
+            list_offset(cx, &app),
+            Pixels::ZERO,
+            "the list starts at its top"
+        );
+        let page_before = rows.top();
+        let over_list = rows.center();
+        let reach = appearance::ui_size(30.) * 24.;
+
+        wheel(cx, over_list, px(-30.));
+        assert_eq!(list_offset(cx, &app), px(-30.), "the step moves the list");
+        assert_eq!(
+            bounds(cx, "custom-themes-rows".into()).top(),
+            page_before,
+            "and not the page"
+        );
+
+        wheel(cx, over_list, px(-10_000.));
+        assert_eq!(
+            list_offset(cx, &app),
+            -reach,
+            "a long step reaches the list's end"
+        );
+        assert_eq!(
+            bounds(cx, "custom-themes-rows".into()).top(),
+            page_before,
+            "and still not the page"
+        );
+
+        wheel(cx, over_list, px(-30.));
+        let page_after = bounds(cx, "custom-themes-rows".into()).top();
+        assert_eq!(list_offset(cx, &app), -reach, "the list stays at its end");
+        assert_eq!(
+            page_after,
+            page_before - px(30.),
+            "so the step scrolls the page"
+        );
+
+        wheel(cx, gpui::point(over_list.x, over_list.y - px(30.)), px(30.));
+        assert_eq!(
+            list_offset(cx, &app),
+            px(30.) - reach,
+            "a step back is the list's"
+        );
+        assert_eq!(
+            bounds(cx, "custom-themes-rows".into()).top(),
+            page_after,
+            "and the page stays"
+        );
+    }
+
+    /// The list clips at its own bounds, the ring's room included, so a row
+    /// partly scrolled out of the viewport paints into that room. Off a row
+    /// boundary, two strips of the card's surface cover the room at each end
+    /// of the viewport (`DESIGN.md`, Your themes: the room is the ring's); on
+    /// a boundary the rows fill the viewport exactly, the strips are absent
+    /// and a focused edge-slot action's ring shows in the room. The boundary
+    /// is judged where the list will stand after the frame's reveal: focusing
+    /// a partly hidden row snaps the list to a boundary in that same frame,
+    /// so its ring is never drawn under a strip, and a scroll away afterwards
+    /// leaves the reveal alone and brings the strips back.
+    #[gpui::test]
+    fn strips_cover_the_ring_room_while_the_rows_stand_off_a_boundary(cx: &mut TestAppContext) {
+        const RING: Pixels = px(3.);
+        let (app, cx) = open_app(cx);
+        cx.update(|window, _| window.activate_window());
+        seed_themes(cx, &app, 32);
+        fn list_offset(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) -> Pixels {
+            cx.read(|cx| {
+                app.read(cx)
+                    .theme_editor
+                    .rows_scroll()
+                    .0
+                    .borrow()
+                    .base_handle
+                    .offset()
+                    .y
+            })
+        }
+        /// Move the rows as a wheel step or a scrollbar drag does, then draw.
+        fn scroll_rows(cx: &mut VisualTestContext, app: &Entity<GitTurtle>, y: Pixels) {
+            cx.update(|_, cx| {
+                app.update(cx, |app, cx| {
+                    app.theme_editor
+                        .rows_scroll()
+                        .0
+                        .borrow()
+                        .base_handle
+                        .set_offset(gpui::point(Pixels::ZERO, y));
+                    cx.notify();
+                })
+            });
+            native_frame(cx);
+        }
+        fn strips(cx: &mut VisualTestContext) -> Option<(Bounds<Pixels>, Bounds<Pixels>)> {
+            let top = cx.debug_bounds("custom-themes-ring-room-top");
+            let bottom = cx.debug_bounds("custom-themes-ring-room-bottom");
+            assert_eq!(top.is_some(), bottom.is_some(), "the strips come as a pair");
+            top.zip(bottom)
+        }
+        /// Focus `action` of theme `id` and stop after the one frame that
+        /// reveals its row, which the test app draws as the focus change's
+        /// effects flush (or here, if it did not), so the caller inspects
+        /// that frame and not a later one drawn after the offset settled.
+        fn focus_action(
+            cx: &mut VisualTestContext,
+            app: &Entity<GitTurtle>,
+            id: u32,
+            action: usize,
+        ) {
+            let handle = cx.update(|_, cx| app.read(cx).theme_editor.row_focus(id, cx));
+            let draws = cx.read(|cx| app.read(cx).draws.len());
+            cx.update(|window, cx| State::focus_row_action(&handle, action, window, cx));
+            if cx.read(|cx| app.read(cx).draws.len()) == draws {
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+            }
+            assert_eq!(
+                cx.read(|cx| app.read(cx).draws.len()),
+                draws + 1,
+                "the frame inspected is the one the focus change drew"
+            );
+        }
+
+        let list = bounds(cx, "custom-themes-rows".into());
+        let rows_box = bounds(cx, "custom-themes-rows-box".into());
+        assert_eq!(list_offset(cx, &app), Pixels::ZERO);
+        assert!(strips(cx).is_none(), "on a boundary the room is the ring's");
+
+        // Ten pixels down, the first and the ninth row straddle the
+        // viewport's ends, and the strips are exactly the room.
+        scroll_rows(cx, &app, px(-10.));
+        let first = bounds(cx, "custom-theme-1".into());
+        let ninth = bounds(cx, "custom-theme-9".into());
+        assert!(
+            first.top() < rows_box.top() && first.bottom() > rows_box.top(),
+            "the first row straddles the viewport's top: {first:?} in {rows_box:?}"
+        );
+        assert!(
+            ninth.top() < rows_box.bottom() && ninth.bottom() > rows_box.bottom(),
+            "the ninth row straddles the viewport's bottom: {ninth:?} in {rows_box:?}"
+        );
+        let (top, bottom) = strips(cx).expect("off a boundary the strips cover the room");
+        assert_eq!(
+            top,
+            Bounds::new(list.origin, size(list.size.width, RING)),
+            "the top strip is the room above the rows"
+        );
+        assert_eq!(
+            bottom,
+            Bounds::new(
+                gpui::point(list.left(), rows_box.bottom()),
+                size(list.size.width, RING)
+            ),
+            "the bottom strip is the room below them"
+        );
+        assert_eq!(
+            top.bottom(),
+            rows_box.top(),
+            "and neither covers a row's box"
+        );
+        assert_eq!(bottom.bottom(), list.bottom());
+
+        // Focusing the first row's Edit… while the row is partly hidden
+        // reveals it: the list snaps to its top in this frame, and this
+        // frame draws no strip over the ring.
+        focus_action(cx, &app, 1, 0);
+        assert_eq!(
+            list_offset(cx, &app),
+            Pixels::ZERO,
+            "the reveal lands on a boundary"
+        );
+        assert!(
+            strips(cx).is_none(),
+            "and the revealing frame draws no strip"
+        );
+        let edit = bounds(cx, "edit-custom-theme-1".into());
+        assert!(
+            edit.top() - RING >= list.top() && edit.top() - RING < rows_box.top(),
+            "the ring reaches into the room above: {edit:?} in {list:?}"
+        );
+        settle(cx);
+
+        // A scroll away leaves the reveal alone and brings the strips back.
+        scroll_rows(cx, &app, px(-10.));
+        assert_eq!(
+            list_offset(cx, &app),
+            px(-10.),
+            "the reveal is not repeated"
+        );
+        assert!(
+            strips(cx).is_some(),
+            "off a boundary again, the strips return"
+        );
+        assert_eq!(
+            cx.update(|window, cx| focused_row(&app, window, cx)),
+            Some((0, 0)),
+            "with focus where it was"
+        );
+
+        // The ninth row's Delete… from here, the row drawn partly below the
+        // viewport: the reveal lands its bottom on the viewport's, the next
+        // boundary down, with no strip under the ring's bottom band.
+        focus_action(cx, &app, 9, 2);
+        assert_eq!(
+            list_offset(cx, &app),
+            -appearance::ui_size(30.),
+            "the reveal lands the ninth row's bottom on the viewport's"
+        );
+        assert!(strips(cx).is_none(), "which is a boundary: no strip");
+        let delete = bounds(cx, "delete-custom-theme-9".into());
+        assert!(
+            delete.bottom() + RING <= list.bottom() && delete.bottom() + RING > rows_box.bottom(),
+            "the ring reaches into the room below: {delete:?} in {list:?}"
+        );
+        settle(cx);
+        assert!(strips(cx).is_none(), "and none once the frame has settled");
+    }
+
+    /// Every picker card draws its own theme's miniature.
+    ///
+    /// The miniatures are retained entities, so a card is paired with its body
+    /// by a lookup and not by construction. `ThemeChoice::ALL` is in display
+    /// order while `choice as usize` is the declaration order, and the two
+    /// differ from the first card on: a lookup by one into a list built in the
+    /// other drew nineteen of the twenty cards with another theme's body on
+    /// their own canvas. Both halves are asserted from the rendered tree: the
+    /// body a card embeds draws that card's palette, and that body is laid out
+    /// inside that card.
+    #[gpui::test]
+    fn every_picker_card_draws_its_own_miniature(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        let inside = |outer: Bounds<Pixels>, inner: Bounds<Pixels>| {
+            inner.left() >= outer.left()
+                && inner.right() <= outer.right()
+                && inner.top() >= outer.top()
+                && inner.bottom() <= outer.bottom()
+        };
+        for choice in ThemeChoice::ALL {
+            let card = bounds(cx, format!("settings-theme-{}", choice as usize));
+            // Exactly one retained body is laid out inside this card.
+            let embedded: Vec<(Palette, usize)> = cx
+                .read(|cx| {
+                    app.read(cx)
+                        .theme_previews
+                        .iter()
+                        .map(|(_, body)| {
+                            let drawn = body.read(cx);
+                            (body.entity_id(), drawn.palette(), drawn.renders())
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .into_iter()
+                .filter(|(id, ..)| {
+                    let selector: &'static str = format!("theme-miniature-{id}").leak();
+                    cx.debug_bounds(selector)
+                        .is_some_and(|miniature| inside(card, miniature))
+                })
+                .map(|(_, palette, renders)| (palette, renders))
+                .collect();
+            assert_eq!(embedded.len(), 1, "{} holds one miniature", choice.label());
+            let (palette, renders) = embedded[0];
+            assert!(renders > 0, "{}'s miniature was drawn", choice.label());
+            assert_eq!(
+                palette.canvas,
+                choice.palette().canvas,
+                "{}'s miniature is drawn on its own canvas",
+                choice.label()
+            );
+            assert_eq!(
+                palette,
+                choice.palette(),
+                "{}'s miniature draws its own palette",
+                choice.label()
+            );
+            // The lookup the picker uses agrees with what it rendered.
+            assert_eq!(
+                cx.read(|cx| app.read(cx).theme_preview_body(choice).read(cx).palette()),
+                choice.palette()
+            );
+        }
+    }
+
+    /// A finished export, a finished import and a confirmed delete each reach
+    /// the window by themselves, after the round trip through a native file
+    /// dialog that deactivates and reactivates the window.
+    ///
+    /// Nothing here forces a draw once the dialog is answered: the preference
+    /// executor is held until the window is active again and its activation
+    /// frames are drawn, so the only thing left that can ask for a frame is the
+    /// completion's own `cx.notify()`. The one-render work removed
+    /// `Window::refresh` from `apply_appearance`, guards the preference-save
+    /// notification and embeds cached miniatures; none of that may leave a
+    /// completion without its frame, or the card stays busy on screen and its
+    /// disabled actions swallow whatever the user does next.
+    #[gpui::test]
+    fn a_finished_transfer_and_a_confirmed_delete_draw_their_result(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|window, _| window.activate_window());
+        let theme = with_active_harbor(cx, &app);
+        let fixture = tempfile::tempdir().unwrap();
+        let destination = fixture.path().join("harbor.gitturtle-theme.json");
+        // The native dialog takes the window's activation and gives it back.
+        let answer_dialog = |cx: &mut VisualTestContext,
+                             answer: &dyn Fn(&mut VisualTestContext)| {
+            cx.deactivate_window();
+            answer(cx);
+            cx.update(|window, _| window.activate_window());
+            cx.run_until_parked();
+        };
+
+        // Export.
+        let hold = hold_preference_executor(cx, &app);
+        click(cx, "export-custom-theme-7");
+        assert!(cx.debug_bounds("custom-themes-notice").is_none());
+        answer_dialog(cx, &|cx| {
+            let destination = destination.clone();
+            cx.simulate_new_path_selection(move |_| Some(destination));
+        });
+        assert!(
+            transfer_result(cx, &app).2,
+            "the write waits for the executor"
+        );
+        let _ = drawn(cx, &app);
+        drop(hold);
+        wait_without_drawing(cx, |cx| !transfer_result(cx, &app).2);
+        let (notice, error, _) = transfer_result(cx, &app);
+        assert_eq!(error, None);
+        assert!(notice.is_some_and(|notice| notice.contains("Harbor")));
+        assert!(
+            !drawn(cx, &app).is_empty(),
+            "the finished export draws the window"
+        );
+        assert!(
+            cx.debug_bounds("custom-themes-notice").is_some(),
+            "and that frame shows the export notice"
+        );
+        assert_eq!(std::fs::read(&destination).unwrap(), theme.to_document());
+
+        // Import.
+        let hold = hold_preference_executor(cx, &app);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| app.import_custom_theme(window, cx));
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("custom-themes-notice").is_none(),
+            "acting on the card again clears the finished export"
+        );
+        answer_dialog(cx, &|cx| {
+            let chosen = destination.clone();
+            cx.simulate_path_prompt_response(move |_| Some(vec![chosen]));
+        });
+        assert!(
+            transfer_result(cx, &app).2,
+            "the read waits for the executor"
+        );
+        let _ = drawn(cx, &app);
+        drop(hold);
+        wait_without_drawing(cx, |cx| {
+            let (notice, error, pending) = transfer_result(cx, &app);
+            !pending
+                && (notice.is_some() || error.is_some())
+                && !cx.read(|cx| app.read(cx).theme_editor.save_pending())
+        });
+        let (notice, error, _) = transfer_result(cx, &app);
+        assert_eq!(error, None);
+        assert!(notice.is_some_and(|notice| notice.contains("Harbor (imported)")));
+        assert!(
+            !drawn(cx, &app).is_empty(),
+            "the finished import draws the window"
+        );
+        assert!(
+            cx.debug_bounds("export-custom-theme-8").is_some(),
+            "and that frame lists the imported theme"
+        );
+        assert!(cx.debug_bounds("custom-themes-notice").is_some());
+
+        // Delete, confirmed in the alert. Harbor is the selection, so the
+        // confirmed removal also applies its base.
+        let hold = hold_preference_executor(cx, &app);
+        open_delete_alert(cx, &app);
+        assert!(key_frame(cx, "tab", |window, cx| window.has_active_dialog(cx)));
+        assert!(
+            !key_frame(cx, "enter", |window, cx| window.has_active_dialog(cx)),
+            "Return on Delete theme closes the alert"
+        );
+        assert!(
+            cx.read(|cx| app.read(cx).theme_editor.save_pending()),
+            "the removal waits for the store"
+        );
+        let _ = drawn(cx, &app);
+        drop(hold);
+        wait_without_drawing(cx, |cx| {
+            cx.read(|cx| {
+                let app = app.read(cx);
+                !app.theme_editor.save_pending() && app.custom_themes.len() == 1
+            })
+        });
+        let draws = drawn(cx, &app);
+        assert!(!draws.is_empty(), "the confirmed delete draws the window");
+        assert_eq!(
+            draws.last().copied(),
+            Some(theme.base.palette()),
+            "in the deleted theme's base palette"
+        );
+        assert!(
+            cx.debug_bounds("export-custom-theme-7").is_none(),
+            "and that frame no longer lists the deleted theme"
+        );
+        assert!(cx.debug_bounds("export-custom-theme-8").is_some());
     }
 }

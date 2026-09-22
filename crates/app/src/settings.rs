@@ -2,6 +2,7 @@ use crate::*;
 use appearance::{Density, ThemeChoice};
 use columns::{ColumnId, ColumnSettings};
 use gitturtle_core::WriteCommand;
+use gpui_kit::base::{Scrollbar, ScrollbarMode};
 use gpui_kit::component::{checkbox::Checkbox, switch::Switch};
 use gpui_kit::prelude::FluentBuilder;
 use std::path::Path;
@@ -48,6 +49,51 @@ pub(super) fn rescale_list_scroll(scroll: &UniformListScrollHandle, ratio: f32) 
     // must not mistake this intentional viewport change for a density resize
     // and reveal an offscreen selected row over the user's manual position.
     state.last_item_size = None;
+}
+
+/// Whether the Your themes rows stand off a row boundary in the frame being
+/// drawn, so that a row partly scrolled out of the viewport crosses the focus
+/// ring's room at one end of it. The list applies a pending `scroll_to_item`
+/// in its prepaint, after this render, so the answer is taken from where the
+/// list will stand and not from where it stood: `reveal_focused_row`'s
+/// Nearest scroll leaves the offset alone while the row is whole in the
+/// viewport and otherwise lands the row's top or bottom on the viewport's, a
+/// row boundary, as the list itself resolves it. Within half a device pixel
+/// of a boundary counts as on it, since no painted edge moves.
+fn rows_off_boundary(
+    scroll: &UniformListScrollHandle,
+    row: Pixels,
+    viewport: Pixels,
+    rows: usize,
+    window: &Window,
+) -> bool {
+    use gpui::ScrollStrategy::{Bottom, Center, Nearest, Top};
+    let state = scroll.0.borrow();
+    let mut top = -state.base_handle.offset().y;
+    if let Some(reveal) = &state.deferred_scroll_to_item {
+        let item_top = row * reveal.item_index as f32;
+        let lead = row * reveal.offset as f32;
+        let above = item_top < top + lead;
+        let below = item_top + row > top + viewport;
+        if reveal.scroll_strict || above || below {
+            let strategy = match reveal.strategy {
+                Nearest if above => Top,
+                Nearest if below => Bottom,
+                strategy => strategy,
+            };
+            let target = match strategy {
+                Top => item_top - lead,
+                Bottom => item_top + row - viewport,
+                Center => item_top + row / 2. - (lead + (viewport - lead) / 2.),
+                Nearest => top,
+            };
+            let reach = (row * rows as f32 - viewport).max(Pixels::ZERO);
+            top = target.max(Pixels::ZERO).min(reach);
+        }
+    }
+    let row = f32::from(row);
+    let phase = f32::from(top).rem_euclid(row);
+    phase.min(row - phase) > 0.5 / window.scale_factor()
 }
 
 /// Baselines distinguish a saved value moving externally from an unfinished edit.
@@ -247,6 +293,8 @@ impl GitTurtle {
                 if this.settings != submitted {
                     return;
                 }
+                let error_before = this.operation_error.clone();
+                let status_before = this.status.clone();
                 match result {
                     Ok(_) => {
                         if this
@@ -262,7 +310,12 @@ impl GitTurtle {
                         this.operation_error = Some(format!("Could not save settings: {error:#}"));
                     }
                 }
-                cx.notify();
+                // A completed save costs a whole-window frame, so it only asks
+                // for one when it changed something the window shows. Every
+                // theme switch after the first leaves both of these alone.
+                if this.status != status_before || this.operation_error != error_before {
+                    cx.notify();
+                }
             });
         })
         .detach();
@@ -379,6 +432,12 @@ impl GitTurtle {
         };
         let p = palette(cx);
         div()
+            .debug_selector(move || {
+                format!(
+                    "text-size-setting-{}",
+                    if code { "code" } else { "interface" }
+                )
+            })
             .flex()
             .flex_wrap()
             .items_center()
@@ -465,10 +524,26 @@ impl GitTurtle {
             .into_any_element()
     }
 
+    /// The retained miniature that draws `choice`'s own palette. The lookup is
+    /// by the choice stored beside each body, so neither the order of
+    /// [`ThemeChoice::ALL`] nor the enum's discriminants can pair a card with
+    /// another theme's miniature.
+    pub(super) fn theme_preview_body(&self, choice: ThemeChoice) -> &Entity<ThemePreviewBody> {
+        self.theme_previews
+            .iter()
+            .find_map(|(drawn, body)| (*drawn == choice).then_some(body))
+            .expect("every built-in theme has a retained miniature")
+    }
+
     /// Theme switches restyle retained editors in place: no worker job, no
     /// content re-preparation. `gitturtle.theme_apply_frame_ms` measures this
     /// handler through the next frame callback under `GITTURTLE_TRACE`.
-    fn choose_theme(&mut self, theme: ThemeChoice, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn choose_theme(
+        &mut self,
+        theme: ThemeChoice,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let started = trace_enabled().then(std::time::Instant::now);
         let theme = appearance::custom::ThemeSelection::BuiltIn(theme);
         if self.settings.theme == theme && !self.settings.follow_system {
@@ -673,6 +748,7 @@ impl GitTurtle {
                                     .rounded(px(10.))
                                     .overflow_hidden()
                                     .child(theme_preview(
+                                        self.theme_preview_body(choice),
                                         choice.palette(),
                                         choice.label(),
                                         choice.description(),
@@ -692,18 +768,15 @@ impl GitTurtle {
 
     /// Your themes: the saved custom themes with Edit…, Export… and Delete…,
     /// and New theme… and Import… for the card itself.
-    fn render_custom_themes(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_custom_themes(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         // A save, a native theme dialog or a theme file job owns the card's
         // actions until it reports, so one outcome has one visible owner.
         let pending = self.theme_editor.save_pending() || self.theme_editor.transfer_pending();
         let full = self.custom_themes.len() >= preferences::MAX_CUSTOM_THEMES;
-        let imported = self.theme_editor.imported();
-        let active = (!self.settings.follow_system)
-            .then(|| self.settings.theme.resolve(&self.custom_themes).selection);
-        let warning_counts = self.theme_editor.warning_counts(&self.custom_themes);
         div()
             .id("custom-themes-card")
+            .debug_selector(|| "custom-themes-card".into())
             // Not a tab stop; lets focus return to New theme… after a delete
             // removes the focused row (`theme_editor::State::card_focus`).
             .track_focus(&self.theme_editor.card_focus(cx))
@@ -717,6 +790,7 @@ impl GitTurtle {
             .gap_3()
             .child(
                 div()
+                    .debug_selector(|| "custom-themes-header".into())
                     .flex()
                     .items_start()
                     .justify_between()
@@ -770,148 +844,15 @@ impl GitTurtle {
             .when(self.custom_themes.is_empty(), |card| {
                 card.child(
                     div()
+                        .debug_selector(|| "custom-themes-empty".into())
                         .text_size(appearance::ui_text(11.))
                         .text_color(rgb(p.muted))
                         .child("No custom themes yet."),
                 )
             })
-            .children(self.custom_themes.iter().zip(warning_counts).map(|(theme, warnings)| {
-                let id = theme.id;
-                let t = theme.palette;
-                let is_active =
-                    active == Some(appearance::custom::ThemeSelection::Custom(id));
-                div()
-                    .id(("custom-theme", id as usize))
-                    .h(appearance::ui_size(30.))
-                    // The hover surface bleeds into the card padding so the
-                    // row content aligns with the card title.
-                    .px(appearance::ui_size(8.))
-                    .mx(appearance::ui_size(-8.))
-                    .rounded(px(6.))
-                    // A just-imported theme is highlighted on the selected
-                    // surface. It is added, not applied: the checkmark still
-                    // marks the theme the window uses. Hovering the row is not
-                    // a card action, so it keeps the highlight rather than
-                    // replacing it with the plain hover surface.
-                    .when(imported == Some(id), |row| row.bg(rgb(p.selected)))
-                    .hover(|row| row.bg(rgb(p.row_hover(imported == Some(id)))))
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_shrink_0()
-                            .rounded(px(3.))
-                            .overflow_hidden()
-                            .border_1()
-                            .border_color(rgb(p.border))
-                            .children(
-                                [t.canvas, t.panel, t.accent, t.added, t.removed].map(|color| {
-                                    div()
-                                        .w(appearance::ui_size(8.))
-                                        .h(appearance::ui_size(16.))
-                                        .bg(rgb(color))
-                                }),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(appearance::ui_text(12.))
-                            .text_color(rgb(p.text))
-                            .child(theme.name.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .text_size(appearance::ui_text(11.))
-                            .text_color(rgb(p.muted))
-                            .child(theme.base.label()),
-                    )
-                    .when(is_active, |row| {
-                        row.child(icon("check", 12., p.accent))
-                    })
-                    .child(div().flex_1())
-                    .when(warnings > 0, |row| {
-                        let text = format!(
-                            "{warnings} readability warning{}",
-                            if warnings == 1 { "" } else { "s" }
-                        );
-                        row.child(
-                            div()
-                                .id(("custom-theme-warnings", id as usize))
-                                .role(Role::Label)
-                                .aria_label(format!("{}: {text}", theme.name))
-                                .flex()
-                                .items_center()
-                                .gap_1()
-                                .text_size(appearance::ui_text(11.))
-                                .text_color(rgb(p.muted))
-                                .child(crate::theme_editor::warning_glyph(p))
-                                .child(warnings.to_string()),
-                        )
-                    })
-                    .child(
-                        button(("edit-custom-theme", id as usize), "Edit…", "", false)
-                            .debug_selector(move || format!("edit-custom-theme-{id}"))
-                            .accessibility_label(format!("Edit {} theme", theme.name))
-                            .disabled(pending)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_theme_editor(Some(id), window, cx)
-                            })),
-                    )
-                    .child(
-                        // The kit's own button tooltip carries the only
-                        // statement of what Export… writes, and it never
-                        // opened here: the same declaration opens on the
-                        // card header, and the row's hover style is the one
-                        // structural difference. GPUI's element tooltip is
-                        // driven from prepaint and absolute bounds instead of
-                        // the kit's hover listener, so it opens inside the
-                        // row. The holder is a shrink-wrapped flex box around
-                        // the button and takes no space of its own.
-                        div()
-                            .id(("export-custom-theme-hover", id as usize))
-                            .flex()
-                            .flex_shrink_0()
-                            .tooltip(|window, cx| {
-                                Tooltip::element(|_, _| {
-                                    div()
-                                        .id("export-custom-theme-tooltip")
-                                        .debug_selector(|| {
-                                            "export-custom-theme-tooltip".into()
-                                        })
-                                        .child("Save this theme as a JSON file")
-                                })
-                                .build(window, cx)
-                            })
-                            .child(
-                                button(
-                                    ("export-custom-theme", id as usize),
-                                    "Export…",
-                                    "",
-                                    false,
-                                )
-                                .debug_selector(move || format!("export-custom-theme-{id}"))
-                                .accessibility_label(format!("Export {} theme", theme.name))
-                                .disabled(pending)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.export_custom_theme(id, window, cx)
-                                })),
-                            ),
-                    )
-                    .child(
-                        button(("delete-custom-theme", id as usize), "Delete…", "", false)
-                            .debug_selector(move || format!("delete-custom-theme-{id}"))
-                            .accessibility_label(format!("Delete {} theme", theme.name))
-                            .disabled(pending)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.confirm_delete_theme(id, window, cx)
-                            })),
-                    )
-            }))
+            .when(!self.custom_themes.is_empty(), |card| {
+                card.child(self.render_custom_theme_rows(window, cx))
+            })
             // The message quotes a path the user chose and, on a refusal, text
             // from the document. Both are clamped where they are built; this
             // second bound keeps the card's own height stable so the settings
@@ -930,6 +871,7 @@ impl GitTurtle {
             .children(self.theme_editor.notice().map(|notice| {
                 div()
                     .id("custom-themes-notice")
+                    .debug_selector(|| "custom-themes-notice".into())
                     .role(Role::Label)
                     .aria_label(notice.to_owned())
                     .text_size(appearance::ui_text(12.))
@@ -950,6 +892,329 @@ impl GitTurtle {
                     .child(error.to_owned())
             }))
             .into_any_element()
+    }
+
+    /// The rows, `min(rows, 8)` × 30 px tall and virtualized with
+    /// `uniform_list` as the repository's other lists, so a Settings frame
+    /// lays out the rows on screen and not every saved theme. Past eight rows
+    /// the list scrolls inside the card with the toolkit scrollbar in a
+    /// reserved track; every row's Edit…, Export… and Delete… stay tab stops
+    /// in order (`theme_editor::State::row_focus`, `GitTurtle::tab_theme_rows`)
+    /// and the row holding focus is scrolled into view (`reveal_focused_row`).
+    fn render_custom_theme_rows(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        const VISIBLE_ROWS: usize = 8;
+        /// The kit's focus ring width, which a focused control paints outside
+        /// its own bounds.
+        const ROW_RING_ROOM: Pixels = px(3.);
+        let rows = self.custom_themes.len();
+        let scrolls = rows > VISIBLE_ROWS;
+        self.theme_editor.retain_row_focus(&self.custom_themes);
+        let focused = self
+            .theme_editor
+            .focused_row(&self.custom_themes, window, cx);
+        self.theme_editor.reveal_focused_row(focused);
+        let scroll = self.theme_editor.rows_scroll().clone();
+        // The list clips at its own bounds, the ring's room included, so a
+        // row partly scrolled out of the viewport paints into that room. Two
+        // strips of the card's surface cover the room while the rows stand
+        // off a row boundary; on a boundary the rows fill the viewport
+        // exactly and the room is the ring's alone (`rows_off_boundary`).
+        let strips = scrolls
+            && rows_off_boundary(
+                &scroll,
+                appearance::ui_size(30.),
+                appearance::ui_size(30. * VISIBLE_ROWS as f32),
+                rows,
+                window,
+            );
+        let surface = rgb(palette(cx).subtle);
+        // The box the rows occupy in the card's column: exactly the rows, so
+        // the card, the row pitch and everything below the card stay where
+        // the plain stack put them. The list itself is positioned over it 3
+        // px taller at each end (`ROW_RING_ROOM`) rather than laid out with
+        // negative margins: an absolute child does not enter taffy's sizing
+        // of the card, whereas a flow child whose margins pull its content
+        // contribution below its flex basis collapses the card's content
+        // height under max-content sizing (taffy 0.13 scales that negative
+        // difference by the item's inner flex basis).
+        div()
+            .debug_selector(|| "custom-themes-rows-box".into())
+            .relative()
+            // The rows' hover surface bleeds into the card padding so the row
+            // content aligns with the card title.
+            .mx(appearance::ui_size(-8.))
+            .h(appearance::ui_size(30. * rows.min(VISIBLE_ROWS) as f32))
+            .flex_shrink_0()
+            .child(
+                div()
+                    .debug_selector(|| "custom-themes-rows".into())
+                    // The kit's focus ring sits outside a row action and the
+                    // list clips to its own bounds, so the list keeps the
+                    // ring's room above its first row and below its last,
+                    // over the card's gaps: the rows and the card do not move
+                    // (`DESIGN.md`).
+                    .absolute()
+                    .top(-ROW_RING_ROOM)
+                    .bottom(-ROW_RING_ROOM)
+                    .left_0()
+                    .right_0()
+                    // The list sits inside the Settings page's own scroll
+                    // container, and GPUI's scroll listeners never stop a
+                    // wheel event, so a step over the rows would move the
+                    // list and the page together. Nested scrolling chains
+                    // natively: the step is the list's while the list can
+                    // still move that way, and the page's only once it
+                    // cannot. The list's listener has already added the step
+                    // when this one runs (bubble order, innermost first), so
+                    // the offset it left, less the step, is where the list
+                    // stood.
+                    .on_scroll_wheel(move |event, window, cx| {
+                        let state = scroll.0.borrow();
+                        let Some(size) = state.last_item_size else {
+                            return;
+                        };
+                        let step = event.delta.pixel_delta(window.line_height()).y;
+                        if step.is_zero() {
+                            return;
+                        }
+                        let reach = (size.contents.height - size.item.height).max(Pixels::ZERO);
+                        let before = state.base_handle.offset().y - step;
+                        let list_moves = if step < Pixels::ZERO {
+                            before > px(0.5) - reach
+                        } else {
+                            before < px(-0.5)
+                        };
+                        if list_moves {
+                            cx.stop_propagation();
+                        }
+                    })
+                    .child(
+                        uniform_list(
+                            "custom-theme-rows",
+                            rows,
+                            cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
+                                // Tab across the viewport boundary asked for a
+                                // row this render draws: its actions are tab
+                                // stops from this frame on, so the next frame
+                                // focuses one.
+                                if let Some((row, action)) = this
+                                    .theme_editor
+                                    .take_row_focus_request(&range, this.custom_themes.len())
+                                {
+                                    let handle =
+                                        this.theme_editor.row_focus(this.custom_themes[row].id, cx);
+                                    window.on_next_frame(move |window, cx| {
+                                        theme_editor::State::focus_row_action(
+                                            &handle, action, window, cx,
+                                        );
+                                    });
+                                }
+                                let warnings =
+                                    this.theme_editor.warning_counts(&this.custom_themes);
+                                range
+                                    .filter_map(|index| {
+                                        let count = warnings.get(index).copied().unwrap_or(0);
+                                        this.render_custom_theme_row(index, count, cx)
+                                    })
+                                    .collect::<Vec<_>>()
+                            }),
+                        )
+                        .size_full()
+                        // The ring's room: the list's content mask is its own
+                        // bounds, padding included, while the rows are laid
+                        // out inside it.
+                        .py(ROW_RING_ROOM)
+                        // The scrollbar paints an absolute overlay; reserve
+                        // its track so the thumb never covers Delete….
+                        .when(scrolls, |list| list.pr(Scrollbar::width()))
+                        .track_scroll(self.theme_editor.rows_scroll()),
+                    ),
+            )
+            .when(strips, |list| {
+                // Painted after the rows, over the room's 3 px at each end
+                // of the viewport and nothing of the rows' box; absolute, so
+                // the card and the rows keep their geometry.
+                let strip = |name: &'static str| {
+                    div()
+                        .debug_selector(move || name.into())
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .h(ROW_RING_ROOM)
+                        .bg(surface)
+                };
+                list.child(strip("custom-themes-ring-room-top").top(-ROW_RING_ROOM))
+                    .child(strip("custom-themes-ring-room-bottom").bottom(-ROW_RING_ROOM))
+            })
+            .when(scrolls, |list| {
+                list.child(
+                    div()
+                        .debug_selector(|| "custom-themes-scrollbar".into())
+                        .absolute()
+                        // The track is the rows' box, not the ring's room.
+                        .top_0()
+                        .bottom_0()
+                        .right_0()
+                        .w(Scrollbar::width())
+                        .child(
+                            Scrollbar::vertical(self.theme_editor.rows_scroll())
+                                .id("custom-themes-scrollbar")
+                                .mode(ScrollbarMode::Always)
+                                // The handle's bounds include the ring's
+                                // room; the thumb is sized from the rows'
+                                // viewport and their content, as before it.
+                                .viewport_from_layout()
+                                .scroll_size(size(
+                                    Pixels::ZERO,
+                                    appearance::ui_size(30. * rows as f32),
+                                )),
+                        ),
+                )
+            })
+            .into_any_element()
+    }
+
+    /// One Your themes row, built only while it is in the list's viewport.
+    fn render_custom_theme_row(
+        &self,
+        index: usize,
+        warnings: usize,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let theme = self.custom_themes.get(index)?;
+        let p = palette(cx);
+        let pending = self.theme_editor.save_pending() || self.theme_editor.transfer_pending();
+        let imported = self.theme_editor.imported();
+        let active = (!self.settings.follow_system)
+            .then(|| self.settings.theme.resolve(&self.custom_themes).selection);
+        let id = theme.id;
+        let t = theme.palette;
+        let is_active = active == Some(appearance::custom::ThemeSelection::Custom(id));
+        let row = div()
+            .id(("custom-theme", id as usize))
+            .debug_selector(move || format!("custom-theme-{id}"))
+            // Not a tab stop; lets a render find the row holding focus and
+            // lets Tab reach the row's actions once it is drawn
+            // (`theme_editor::State::row_focus`).
+            .track_focus(&self.theme_editor.row_focus(id, cx))
+            .w_full()
+            .h(appearance::ui_size(30.))
+            .px(appearance::ui_size(8.))
+            .rounded(px(6.))
+            // A just-imported theme is highlighted on the selected
+            // surface. It is added, not applied: the checkmark still
+            // marks the theme the window uses. Hovering the row is not
+            // a card action, so it keeps the highlight rather than
+            // replacing it with the plain hover surface.
+            .when(imported == Some(id), |row| row.bg(rgb(p.selected)))
+            .hover(|row| row.bg(rgb(p.row_hover(imported == Some(id)))))
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .flex_shrink_0()
+                    .rounded(px(3.))
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(rgb(p.border))
+                    .child(swatch_run(
+                        [t.canvas, t.panel, t.accent, t.added, t.removed],
+                        appearance::ui_size(8.),
+                        appearance::ui_size(16.),
+                        Pixels::ZERO,
+                        Pixels::ZERO,
+                    )),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(appearance::ui_text(12.))
+                    .text_color(rgb(p.text))
+                    .child(theme.name.clone()),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_size(appearance::ui_text(11.))
+                    .text_color(rgb(p.muted))
+                    .child(theme.base.label()),
+            )
+            .when(is_active, |row| row.child(icon("check", 12., p.accent)))
+            .child(div().flex_1())
+            .when(warnings > 0, |row| {
+                let text = format!(
+                    "{warnings} readability warning{}",
+                    if warnings == 1 { "" } else { "s" }
+                );
+                row.child(
+                    div()
+                        .id(("custom-theme-warnings", id as usize))
+                        .role(Role::Label)
+                        .aria_label(format!("{}: {text}", theme.name))
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .text_size(appearance::ui_text(11.))
+                        .text_color(rgb(p.muted))
+                        .child(crate::theme_editor::warning_glyph(p))
+                        .child(warnings.to_string()),
+                )
+            })
+            .child(
+                button(("edit-custom-theme", id as usize), "Edit…", "", false)
+                    .debug_selector(move || format!("edit-custom-theme-{id}"))
+                    .accessibility_label(format!("Edit {} theme", theme.name))
+                    .disabled(pending)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_theme_editor(Some(id), window, cx)
+                    })),
+            )
+            .child(
+                // The kit's own button tooltip carries the only
+                // statement of what Export… writes, and it never
+                // opened here: the same declaration opens on the
+                // card header, and the row's hover style is the one
+                // structural difference. GPUI's element tooltip is
+                // driven from prepaint and absolute bounds instead of
+                // the kit's hover listener, so it opens inside the
+                // row. The holder is a shrink-wrapped flex box around
+                // the button and takes no space of its own.
+                div()
+                    .id(("export-custom-theme-hover", id as usize))
+                    .flex()
+                    .flex_shrink_0()
+                    .tooltip(|window, cx| {
+                        Tooltip::element(|_, _| {
+                            div()
+                                .id("export-custom-theme-tooltip")
+                                .debug_selector(|| "export-custom-theme-tooltip".into())
+                                .child("Save this theme as a JSON file")
+                        })
+                        .build(window, cx)
+                    })
+                    .child(
+                        button(("export-custom-theme", id as usize), "Export…", "", false)
+                            .debug_selector(move || format!("export-custom-theme-{id}"))
+                            .accessibility_label(format!("Export {} theme", theme.name))
+                            .disabled(pending)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.export_custom_theme(id, window, cx)
+                            })),
+                    ),
+            )
+            .child(
+                button(("delete-custom-theme", id as usize), "Delete…", "", false)
+                    .debug_selector(move || format!("delete-custom-theme-{id}"))
+                    .accessibility_label(format!("Delete {} theme", theme.name))
+                    .disabled(pending)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.confirm_delete_theme(id, window, cx)
+                    })),
+            );
+        Some(row.into_any_element())
     }
 
     pub(super) fn render_settings(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
@@ -995,7 +1260,7 @@ impl GitTurtle {
                     ),
             )
             .child(self.render_theme_picker(theme_columns, cx))
-            .child(self.render_custom_themes(cx))
+            .child(self.render_custom_themes(window, cx))
             .child(self.render_text_size_setting(false, cx))
             .child(self.render_text_size_setting(true, cx))
             .child(
@@ -1246,6 +1511,17 @@ impl GitTurtle {
 
         div()
             .size_full()
+            // Tab and Shift-Tab walk the Your themes rows before the toolkit's
+            // frame-bound tab order (`theme_editor::init`).
+            .key_context(theme_editor::SETTINGS_CONTEXT)
+            .on_action(cx.listener(|this, _: &theme_editor::NextThemeAction, window, cx| {
+                this.tab_theme_rows(true, window, cx)
+            }))
+            .on_action(cx.listener(
+                |this, _: &theme_editor::PreviousThemeAction, window, cx| {
+                    this.tab_theme_rows(false, window, cx)
+                },
+            ))
             .flex()
             .flex_col()
             .bg(rgb(p.canvas))
@@ -1352,10 +1628,178 @@ impl GitTurtle {
     }
 }
 
+/// The miniature workspace inside a theme preview: everything a preview draws
+/// from the previewed palette alone.
+///
+/// It has its own entity so the picker can embed it with [`Entity::cached`].
+/// Applying a palette recolors the window around these twenty miniatures
+/// without altering one of their pixels, and
+/// [`GitTurtle::apply_appearance`](crate::GitTurtle::apply_appearance) notifies
+/// its root instead of refreshing the window, so the frame that shows the new
+/// palette reuses their layout and paint instead of building them again. The
+/// caption stays outside: it follows the active accent and the card's hover
+/// state, which a reused subtree cannot see.
+pub(super) struct ThemePreviewBody {
+    palette: appearance::Palette,
+    /// Test-only: builds of this miniature, so a test can assert that a
+    /// palette change reuses it instead of laying it out and painting it
+    /// again.
+    #[cfg(test)]
+    renders: usize,
+}
+
+impl ThemePreviewBody {
+    pub(super) fn new(palette: appearance::Palette) -> Self {
+        Self {
+            palette,
+            #[cfg(test)]
+            renders: 0,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn renders(&self) -> usize {
+        self.renders
+    }
+
+    /// Test-only: the palette this miniature draws.
+    #[cfg(test)]
+    pub(super) fn palette(&self) -> appearance::Palette {
+        self.palette
+    }
+
+    /// Show `palette`. Only a real change notifies, so an editor edit that
+    /// leaves the miniature's tokens alone keeps the reused frame.
+    pub(super) fn set_palette(&mut self, palette: appearance::Palette, cx: &mut Context<Self>) {
+        if self.palette != palette {
+            self.palette = palette;
+            cx.notify();
+        }
+    }
+}
+
+impl Render for ThemePreviewBody {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        {
+            self.renders += 1;
+        }
+        let p = self.palette;
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .h(crate::appearance::ui_size(25.))
+                    .flex_shrink_0()
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .bg(rgb(p.panel))
+                    .border_b_1()
+                    .border_color(rgb(p.border))
+                    .children(
+                        [p.removed, p.modified, p.added]
+                            .map(|color| div().size(px(4.)).rounded_full().bg(rgb(color))),
+                    )
+                    .child(div().flex_1())
+                    .child(div().w(px(21.)).h(px(6.)).rounded(px(2.)).bg(rgb(p.hover)))
+                    .child(div().w(px(24.)).h(px(8.)).rounded(px(2.)).bg(rgb(p.accent))),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .child(
+                        div()
+                            .w(px(30.))
+                            .flex_shrink_0()
+                            .h_full()
+                            .p(px(6.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(7.))
+                            .bg(rgb(p.subtle))
+                            .border_r_1()
+                            .border_color(rgb(p.border))
+                            .children((0..4).map(|row| {
+                                div().h(px(3.)).w_full().rounded_full().bg(rgb(if row == 1 {
+                                    p.accent
+                                } else {
+                                    p.border
+                                }))
+                            })),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .py_2()
+                            .flex()
+                            .flex_col()
+                            .children((0..4).map(|row| {
+                                let color = [p.added, p.accent, p.renamed, p.modified][row];
+                                div()
+                                    .h(px(14.))
+                                    .px_2()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(7.))
+                                    .when(row == 1, |element| element.bg(rgb(p.selected)))
+                                    .child(
+                                        div()
+                                            .relative()
+                                            .w(px(9.))
+                                            .h_full()
+                                            .flex_shrink_0()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(div().w(px(2.)).h_full().bg(rgb(color)))
+                                            .child(
+                                                div()
+                                                    .absolute()
+                                                    .size(px(5.))
+                                                    .rounded_full()
+                                                    .bg(rgb(color)),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .child(
+                                                div()
+                                                    .h(px(3.))
+                                                    .w(relative([0.68, 0.84, 0.55, 0.74][row]))
+                                                    .rounded_full()
+                                                    .bg(rgb(if row == 1 {
+                                                        p.muted
+                                                    } else {
+                                                        p.border
+                                                    })),
+                                            ),
+                                    )
+                            })),
+                    ),
+            )
+    }
+}
+
 /// A tiny workspace built from native elements stays crisp at any display scale
 /// and previews the same tokens the real controls and diff viewer will use.
 /// The theme editor previews its draft with the same miniature.
+///
+/// `body` supplies [`ThemePreviewBody`]; the caller keeps it and its palette,
+/// so a frame that changes neither reuses the miniature.
 pub(super) fn theme_preview(
+    body: &Entity<ThemePreviewBody>,
     p: appearance::Palette,
     label: impl Into<SharedString>,
     description: impl Into<SharedString>,
@@ -1378,100 +1822,22 @@ pub(super) fn theme_preview(
         .flex_col()
         .bg(rgb(p.canvas))
         .child(
-            div()
-                .h(crate::appearance::ui_size(25.))
-                .flex_shrink_0()
-                .px_2()
-                .flex()
-                .items_center()
-                .gap_1()
-                .bg(rgb(p.panel))
-                .border_b_1()
-                .border_color(rgb(p.border))
-                .children(
-                    [p.removed, p.modified, p.added]
-                        .map(|color| div().size(px(4.)).rounded_full().bg(rgb(color))),
-                )
-                .child(div().flex_1())
-                .child(div().w(px(21.)).h(px(6.)).rounded(px(2.)).bg(rgb(p.hover)))
-                .child(div().w(px(24.)).h(px(8.)).rounded(px(2.)).bg(rgb(p.accent))),
-        )
-        .child(
+            // The miniature, in the box its strip and rows filled before.
+            // Pinning the inherited text color keeps GPUI's reuse key stable:
+            // it compares the ambient text style, which the page and the
+            // toolkit button both color from the active palette. Nothing
+            // inside draws text.
             div()
                 .flex_1()
                 .min_h_0()
-                .flex()
-                .child(
-                    div()
-                        .w(px(30.))
-                        .flex_shrink_0()
-                        .h_full()
-                        .p(px(6.))
-                        .flex()
-                        .flex_col()
-                        .gap(px(7.))
-                        .bg(rgb(p.subtle))
-                        .border_r_1()
-                        .border_color(rgb(p.border))
-                        .children((0..4).map(|row| {
-                            div().h(px(3.)).w_full().rounded_full().bg(rgb(if row == 1 {
-                                p.accent
-                            } else {
-                                p.border
-                            }))
-                        })),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .py_2()
-                        .flex()
-                        .flex_col()
-                        .children((0..4).map(|row| {
-                            let color = [p.added, p.accent, p.renamed, p.modified][row];
-                            div()
-                                .h(px(14.))
-                                .px_2()
-                                .flex()
-                                .items_center()
-                                .gap(px(7.))
-                                .when(row == 1, |element| element.bg(rgb(p.selected)))
-                                .child(
-                                    div()
-                                        .relative()
-                                        .w(px(9.))
-                                        .h_full()
-                                        .flex_shrink_0()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .child(div().w(px(2.)).h_full().bg(rgb(color)))
-                                        .child(
-                                            div()
-                                                .absolute()
-                                                .size(px(5.))
-                                                .rounded_full()
-                                                .bg(rgb(color)),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .flex()
-                                        .items_center()
-                                        .gap_2()
-                                        .child(
-                                            div()
-                                                .h(px(3.))
-                                                .w(relative([0.68, 0.84, 0.55, 0.74][row]))
-                                                .rounded_full()
-                                                .bg(rgb(if row == 1 { p.muted } else { p.border })),
-                                        ),
-                                )
-                        })),
-                ),
+                .text_color(rgb(p.text))
+                // Names the embedded body, so a test can find which miniature
+                // a card holds in the rendered tree.
+                .debug_selector({
+                    let miniature = body.entity_id();
+                    move || format!("theme-miniature-{miniature}")
+                })
+                .child(body.clone().cached(StyleRefinement::default().size_full())),
         )
         .child(
             div()
@@ -1488,18 +1854,22 @@ pub(super) fn theme_preview(
                 .group_active("settings-theme-choice", |style| style.bg(rgb(p.selected)))
                 .border_t_1()
                 .border_color(rgb(p.border))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_1()
+                .child({
+                    let name = div()
+                        .min_w_0()
+                        .truncate()
                         .text_size(crate::appearance::ui_text(12.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(rgb(p.text))
-                        .child(div().min_w_0().truncate().child(label))
-                        .when(selected, |element| {
-                            element.child(
+                        .child(label);
+                    if selected {
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_1()
+                            .child(name)
+                            .child(
                                 div()
                                     .size(px(18.))
                                     .flex()
@@ -1509,8 +1879,13 @@ pub(super) fn theme_preview(
                                     .bg(rgb(active_accent))
                                     .child(icon("check", 12., active_foreground)),
                             )
-                        }),
-                )
+                    } else {
+                        // Without the badge the name is the whole line, at the
+                        // same place and width: the row that would hold both
+                        // is not laid out.
+                        name
+                    }
+                })
                 .child(
                     div()
                         .text_size(crate::appearance::ui_text(10.))
@@ -1519,14 +1894,46 @@ pub(super) fn theme_preview(
                         .truncate()
                         .child(description),
                 )
-                .child(
-                    div().flex().gap(px(4.)).children(
-                        [p.accent, p.added, p.hunk, p.renamed, p.modified, p.removed]
-                            .map(|color| div().size(px(5.)).rounded_full().bg(rgb(color))),
-                    ),
-                ),
+                .child(swatch_run(
+                    [p.accent, p.added, p.hunk, p.renamed, p.modified, p.removed],
+                    px(5.),
+                    px(5.),
+                    px(4.),
+                    px(2.5),
+                )),
         )
         .into_any_element()
+}
+
+/// `colors` as a run of `width` × `height` boxes `gap` apart with `radius`
+/// corners, painted by one element instead of one `div` per color. It paints
+/// the quads the divs painted (`paint_quad`, the same bounds and radii from the
+/// same origin), so the picker captions and the Your themes swatch strips keep
+/// their pixels while a Settings frame lays out one node per strip.
+fn swatch_run<const N: usize>(
+    colors: [u32; N],
+    width: Pixels,
+    height: Pixels,
+    gap: Pixels,
+    radius: Pixels,
+) -> AnyElement {
+    let count = N as f32;
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            for (index, color) in colors.into_iter().enumerate() {
+                let origin = bounds.origin + point((width + gap) * index as f32, Pixels::ZERO);
+                window.paint_quad(
+                    gpui::fill(Bounds::new(origin, size(width, height)), rgb(color))
+                        .corner_radii(gpui::Corners::all(radius)),
+                );
+            }
+        },
+    )
+    .w(width * count + gap * (count - 1.))
+    .h(height)
+    .flex_shrink_0()
+    .into_any_element()
 }
 
 fn setting_description(title: &'static str, description: &'static str, cx: &App) -> AnyElement {

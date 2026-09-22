@@ -1916,6 +1916,8 @@ impl GitTurtle {
 
 impl Render for GitTurtle {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        self.draws.push(appearance::palette(cx));
         static TRACE_LAYOUT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if *TRACE_LAYOUT.get_or_init(|| std::env::var_os("GITTURTLE_TRACE").is_some()) {
             let layout = (
@@ -2453,6 +2455,13 @@ impl Render for GitTurtle {
                     }),
             )
             .children(Root::render_dialog_layer(window, cx))
+            // Deferred above the dialog layer: the last paint of the frame
+            // that shows an edited draft ends `gitturtle.theme_edit_frame_ms`.
+            .children(
+                self.theme_editor
+                    .take_edit_trace()
+                    .map(|started| self.edit_trace_probe(started, cx)),
+            )
     }
 }
 

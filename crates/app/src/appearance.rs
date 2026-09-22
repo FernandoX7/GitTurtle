@@ -130,7 +130,16 @@ pub fn code_scale() -> f32 {
     f32::from(code_text()) / f32::from(DEFAULT_CODE_TEXT_SIZE)
 }
 
-pub fn apply_text_sizes(interface: u8, code: u8, window: &mut Window, cx: &mut App) {
+/// Store the text sizes and project them onto the toolkit theme and the
+/// window's rem geometry, leaving invalidation to the caller.
+///
+/// The one appearance application path ([`GitTurtle::apply_appearance`]) calls
+/// this and invalidates with the root's `cx.notify()` instead of
+/// [`Window::refresh`]. Both mark the window dirty, but `refresh` also bars
+/// GPUI's view reuse for that frame, which would rebuild the twenty
+/// palette-independent theme miniatures ([`crate::settings::ThemePreviewBody`])
+/// that a palette change does not alter.
+pub fn sync_text_sizes(interface: u8, code: u8, window: &mut Window, cx: &mut App) {
     with_text_sizes(|interface_size, code_size, _| {
         interface_size.store(
             interface.clamp(*INTERFACE_TEXT_RANGE.start(), *INTERFACE_TEXT_RANGE.end()),
@@ -148,6 +157,13 @@ pub fn apply_text_sizes(interface: u8, code: u8, window: &mut Window, cx: &mut A
     // Root uses font_size for rem geometry, so native control padding and
     // heights grow together with explicit app text and custom canvas rows.
     window.set_rem_size(ui_text(13.));
+}
+
+/// [`sync_text_sizes`] for callers that own no entity to notify: a text-size
+/// change moves every measured box, so refreshing the whole window is right
+/// here.
+pub fn apply_text_sizes(interface: u8, code: u8, window: &mut Window, cx: &mut App) {
+    sync_text_sizes(interface, code, window, cx);
     window.refresh();
 }
 
@@ -880,6 +896,12 @@ impl Palette {
     /// Apply native controls and editor defaults together. Built-in and custom themes both use
     /// this path. Call after GPUI Kit initialization; callers invalidate/rebuild existing custom
     /// decorations.
+    ///
+    /// `window` is only the invalidation: passing `Some` refreshes it, which
+    /// also bars view reuse for that frame. The app path passes `None` and
+    /// notifies its root instead, so the frame that shows the new palette
+    /// keeps the subtrees the palette does not change (see
+    /// [`sync_text_sizes`]).
     pub fn apply(self, is_light: bool, window: Option<&mut Window>, cx: &mut App) {
         Theme::change(
             if is_light {
