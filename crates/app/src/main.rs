@@ -295,7 +295,10 @@ struct GitTurtle {
     )>,
     /// The picker cards' focus handles, one per built-in and one per saved
     /// custom theme, each stored with the selection its card draws. The app
-    /// owns them, as it owns the miniatures, so they outlive a replayed page;
+    /// owns them, as it owns the miniatures, so they outlive a replayed page,
+    /// and each card's button tracks its own (the patched kit
+    /// `Button::track_focus`), so the picker finds the focused card for its
+    /// focus ring;
     /// `GitTurtle::set_custom_themes` keeps the custom entries in step.
     theme_card_focus: Vec<(appearance::custom::ThemeSelection, FocusHandle)>,
     /// The picker cards' cached bodies (`settings::ThemeCardBody`), one per

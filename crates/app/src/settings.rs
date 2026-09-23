@@ -928,9 +928,26 @@ impl GitTurtle {
         }
     }
 
-    fn render_theme_picker(&self, columns: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn render_theme_picker(
+        &self,
+        columns: usize,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let p = palette(cx);
         let selected = self.selected_theme_card();
+        // Keyboard focus, as GPUI's `focus_visible` judges it: the last input
+        // was a key. A change of focus or of input modality refreshes the
+        // window, so the page is built again whenever this changes.
+        let focused = window
+            .last_input_was_keyboard()
+            .then(|| {
+                self.theme_card_focus
+                    .iter()
+                    .find(|(_, handle)| handle.is_focused(window))
+                    .map(|(selection, _)| *selection)
+            })
+            .flatten();
         #[cfg(test)]
         self.card_names.borrow_mut().clear();
         let groups = self.theme_card_groups();
@@ -961,12 +978,17 @@ impl GitTurtle {
                                     .flex()
                                     .gap_3()
                                     .children(row.iter().map(|card| {
-                                        self.theme_card(
+                                        let button = self.theme_card(
                                             card,
                                             selected == Some(card.selection),
                                             p,
                                             cx,
-                                        )
+                                        );
+                                        if focused == Some(card.selection) {
+                                            focused_theme_card(button, p.accent)
+                                        } else {
+                                            button.into_any_element()
+                                        }
                                     }))
                                     // A partial row's fillers share the
                                     // cards' padding and border, so its
@@ -1599,7 +1621,7 @@ impl GitTurtle {
                             })),
                     ),
             )
-            .child(self.render_theme_picker(theme_columns, cx))
+            .child(self.render_theme_picker(theme_columns, window, cx))
             .child(self.render_custom_themes(window, cx))
             .child(self.render_text_size_setting(false, cx))
             .child(self.render_text_size_setting(true, cx))
@@ -3045,6 +3067,39 @@ fn paint_miniature(bounds: Bounds<Pixels>, p: appearance::Palette, window: &mut 
     }
 }
 
+/// The picker card holding keyboard focus, in a box that takes the card's
+/// place in its row and adds a 2 px accent ring 1 px outside the card's
+/// border, inside the grid's 10 px column and 6 px row gaps. The card's own
+/// focus shows only as its border, which the selected card already draws in
+/// the accent, and it clips its content, so the ring cannot be its child. Only
+/// the focused card pays for the box and the ring.
+fn focused_theme_card(card: Button, accent: u32) -> AnyElement {
+    const OUTSET: f32 = 3.;
+    div()
+        .flex()
+        .flex_1()
+        // A card's flex base is its 2 px padding and 1 px border on either
+        // side, since its basis is zero; the box starts from the same 6 px,
+        // so it takes the width the card beside it takes.
+        .flex_basis(px(6.))
+        .min_w_0()
+        .relative()
+        .child(card)
+        .child(
+            div()
+                .debug_selector(|| "theme-card-focus-ring".into())
+                .absolute()
+                .top(px(-OUTSET))
+                .left(px(-OUTSET))
+                .right(px(-OUTSET))
+                .bottom(px(-OUTSET))
+                .border_2()
+                .border_color(rgb(accent))
+                .rounded(px(10. + OUTSET)),
+        )
+        .into_any_element()
+}
+
 /// What a picker card shows: the theme it selects, the palette its miniature
 /// draws, its caption and the count of its readability findings.
 struct ThemeCard {
@@ -3845,6 +3900,111 @@ mod picker_tests {
                 );
             }
         }
+    }
+
+    /// A picker card that holds keyboard focus draws a 2 px accent ring 1 px
+    /// outside its border, clear of every other card, so focus shows on the
+    /// selected card, whose border is already accent. Only the focused card
+    /// draws it, and only while the keyboard was the last input.
+    #[gpui::test]
+    fn keyboard_focus_rings_the_picker_card_outside_its_border(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|window, _| window.activate_window());
+        let selected = cx
+            .read(|cx| app.read(cx).selected_theme_card())
+            .expect("a card is selected");
+        let selector = |selection: ThemeSelection| match selection {
+            ThemeSelection::BuiltIn(choice) => format!("settings-theme-{}", choice as usize),
+            ThemeSelection::Custom(id) => format!("settings-custom-theme-{id}"),
+        };
+        let focused = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                ThemeChoice::ALL
+                    .into_iter()
+                    .map(ThemeSelection::BuiltIn)
+                    .find(|choice| app.read(cx).theme_card_focus(*choice).is_focused(window))
+            })
+        };
+        let ring = |cx: &mut VisualTestContext| {
+            page_shows(cx, "theme-card-focus-ring");
+            cx.debug_bounds("theme-card-focus-ring")
+        };
+        let device = cx.update(|window, _| px(1. / window.scale_factor()));
+        let around = |ring: Bounds<Pixels>, card: Bounds<Pixels>| {
+            let outset = card.dilate(px(3.));
+            [
+                (ring.left(), outset.left()),
+                (ring.top(), outset.top()),
+                (ring.right(), outset.right()),
+                (ring.bottom(), outset.bottom()),
+            ]
+            .into_iter()
+            .all(|(edge, expected)| (edge - expected).abs() <= device)
+        };
+
+        // Tab away from the selected card and back: keyboard focus on it.
+        let handle = cx.read(|cx| app.read(cx).theme_card_focus(selected).clone());
+        cx.update(|window, cx| window.focus(&handle, cx));
+        settle(cx);
+        cx.simulate_keystrokes("tab");
+        cx.simulate_keystrokes("shift-tab");
+        settle(cx);
+        assert_eq!(focused(cx), Some(selected));
+        let card = drawn(cx, selector(selected)).expect("the selected card is drawn");
+        let drawn_ring = ring(cx).expect("the focused selected card draws the ring");
+        assert!(around(drawn_ring, card), "{drawn_ring:?} around {card:?}");
+        let clear = |cx: &mut VisualTestContext, ring: Bounds<Pixels>| {
+            for other in ThemeChoice::ALL.map(ThemeSelection::BuiltIn) {
+                if other != selected {
+                    let other = drawn(cx, selector(other)).expect("every card is drawn");
+                    assert!(
+                        !ring.intersects(&other),
+                        "{ring:?} stays in the gap beside {other:?}"
+                    );
+                }
+            }
+        };
+        clear(cx, drawn_ring);
+
+        // Tab on: the ring follows focus and leaves the selected card.
+        cx.simulate_keystrokes("tab");
+        settle(cx);
+        let next = focused(cx).expect("Tab reaches the next card");
+        assert_ne!(next, selected);
+        let next_card = drawn(cx, selector(next)).expect("the next card is drawn");
+        let drawn_ring = ring(cx).expect("the focused card draws the ring");
+        assert!(
+            around(drawn_ring, next_card),
+            "{drawn_ring:?} around {next_card:?}"
+        );
+        assert!(!around(drawn_ring, card));
+        assert_eq!(
+            drawn(cx, selector(selected)),
+            Some(card),
+            "the ring's box does not move the card it holds"
+        );
+
+        // A click moves no focus (the kit's buttons refuse it on mouse down),
+        // and the ring, which marks keyboard focus, goes.
+        cx.simulate_click(card.center(), Modifiers::default());
+        settle(cx);
+        assert_eq!(focused(cx), Some(next));
+        assert_eq!(ring(cx), None);
+
+        // The compact grid, three columns with the same gaps.
+        cx.simulate_resize(size(px(1000.), px(2400.)));
+        settle(cx);
+        let resting = drawn(cx, selector(selected)).expect("the selected card is drawn");
+        cx.simulate_keystrokes("shift-tab");
+        settle(cx);
+        assert_eq!(focused(cx), Some(selected));
+        assert_eq!(drawn(cx, selector(selected)), Some(resting));
+        let drawn_ring = ring(cx).expect("the focused selected card draws the ring");
+        assert!(
+            around(drawn_ring, resting),
+            "{drawn_ring:?} around {resting:?}"
+        );
+        clear(cx, drawn_ring);
     }
 
     /// At the 32-theme bound New theme… and Import… are disabled, so their
