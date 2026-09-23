@@ -394,19 +394,23 @@ pub(super) fn warning_glyph(p: Palette) -> Div {
 
 /// A row whose field does not hold `#rrggbb`: a square with a cross, so the
 /// cue differs from the round readability glyph in shape, not only in color.
+/// The cross is the stroke-drawn `close` icon at the square's own size: its
+/// strokes cross whole pixels on the diagonals, so about as much of its ink
+/// reaches the 4.5:1 floor as of the readability `!`'s stem, where a text
+/// `×` is all antialiased diagonals.
 fn invalid_glyph(p: Palette) -> Div {
     div()
         .size(appearance::ui_size(14.))
         .flex_shrink_0()
         .rounded(px(3.))
         .bg(rgb(p.removed))
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_size(appearance::ui_text(11.))
-        .font_weight(FontWeight::BOLD)
-        .text_color(rgb(p.canvas))
-        .child("×")
+        .child(
+            svg()
+                .debug_selector(|| "theme-token-invalid-cross".into())
+                .path("icons/close.svg")
+                .size(appearance::ui_size(14.))
+                .text_color(rgb(p.canvas)),
+        )
 }
 
 /// "My Nord", then "My Nord 2", … — the first name the store accepts.
@@ -3029,6 +3033,14 @@ mod tests {
             settings::page_shows(cx, "theme-token-invalid-panel"),
             "the invalid row shows its glyph"
         );
+        // The glyph keeps the slot's 14 px square, centred in the row, and its
+        // cross is the stroke-drawn icon at the square's own size.
+        let glyph = bounds(cx, "theme-token-invalid-panel".into());
+        let row = bounds(cx, "theme-token-panel".into());
+        let slot = appearance::ui_size(14.);
+        assert_eq!(glyph.size, size(slot, slot));
+        assert_eq!(glyph.center().y, row.center().y);
+        assert_eq!(bounds(cx, "theme-token-invalid-cross".into()), glyph);
         type_hex(
             cx,
             &form,
