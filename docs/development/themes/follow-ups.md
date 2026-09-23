@@ -40,7 +40,7 @@ In the order to do them. Test-only and documentation items come first, then visi
    - [`README.md`](README.md) line 3 says ten tasks were accepted and offers `tasks-2.json` as the queue for a fresh run, but its three tasks landed in run `20260920T181431Z-aa8cb78d`.
    - `HANDOFF.md:5` says "nine of twelve themes tasks", and the file is 127 lines against its own 15-line rule.
    - Source: this audit. Acceptance: every status sentence says all 13 tasks landed and links this file. Evidence changed: none. Kind: docs.
-3. **DOC-56: palette facts in DESIGN.md.** [`DESIGN.md`](../../../DESIGN.md) line 56 says "One and Dracula define no panel or border" and "at the minimum surface ratios".
+3. **DOC-56 (done): palette facts in DESIGN.md.** [`DESIGN.md`](../../../DESIGN.md) line 56 says "One and Dracula define no panel or border" and "at the minimum surface ratios".
    - Source: `HANDOFF.md` "Follow-ups after the run" (1).
    - Acceptance: it reads "One and Dracula define no panel, and One, Rosé Pine and Dracula no border" and "at or above the minimum surface ratios", checked against `crates/app/src/appearance/sources.rs`.
    - Evidence changed: none. Kind: docs.
