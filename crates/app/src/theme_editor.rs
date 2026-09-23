@@ -6559,6 +6559,37 @@ mod tests {
         );
     }
 
+    /// The Your themes card names its actions for assistive technology: New
+    /// theme… by its own label, Import… by the file it asks for, and each
+    /// row's actions by the theme they act on.
+    #[gpui::test]
+    fn your_themes_actions_carry_their_accessible_names(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        let harbor = CustomTheme::from_base(7, "Harbor", ThemeChoice::Nord);
+        cx.update(|_, cx| app.update(cx, |app, cx| app.set_custom_themes(vec![harbor], cx)));
+        settle(cx);
+        let expected = [
+            ("custom-themes-new", "New theme…"),
+            ("custom-themes-import", "Import a theme file"),
+            ("edit-custom-theme-7", "Edit Harbor theme"),
+            ("export-custom-theme-7", "Export Harbor theme"),
+            ("delete-custom-theme-7", "Delete Harbor theme"),
+        ];
+        for (selector, _) in expected {
+            assert!(settings::page_shows(cx, selector), "{selector} is drawn");
+        }
+        let names: std::collections::HashSet<(String, String)> = cx
+            .read(|cx| app.read(cx).theme_action_names.borrow().clone())
+            .into_iter()
+            .collect();
+        assert_eq!(
+            names,
+            expected
+                .map(|(selector, name)| (selector.to_owned(), name.to_owned()))
+                .into()
+        );
+    }
+
     /// Cards are 132 px tall in a four-column grid at and above 1,060 px,
     /// three columns in the compact layout and two in the narrow layout; the
     /// twenty built-ins take five rows at 1,440 × 900. The custom group starts

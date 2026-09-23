@@ -311,6 +311,12 @@ struct GitTurtle {
     /// (`theme_editor::tests::custom_themes_form_a_third_picker_group`).
     #[cfg(test)]
     card_names: std::cell::RefCell<Vec<(String, String)>>,
+    /// Test-only: the debug selector and accessible name of every Your themes
+    /// action the last Settings build drew: New theme…, Import… and each drawn
+    /// row's Edit…, Export… and Delete…
+    /// (`theme_editor::tests::your_themes_actions_carry_their_accessible_names`).
+    #[cfg(test)]
+    theme_action_names: std::cell::RefCell<Vec<(String, String)>>,
     /// Test-only: the palette every draw of this view saw. A Settings theme
     /// switch and a live-preview edit each cost exactly one draw, which
     /// already shows the new palette; see
@@ -613,6 +619,8 @@ impl GitTurtle {
             draws: Vec::new(),
             #[cfg(test)]
             card_names: Default::default(),
+            #[cfg(test)]
+            theme_action_names: Default::default(),
             project_pane: project_pane::State::new(cx),
             rename_project: None,
             draft_saver: commit_drafts::DraftSaver::default(),

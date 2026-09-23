@@ -56,7 +56,7 @@ In the order to do them. Test-only and documentation items come first, then visi
    - Source: `HANDOFF.md` "Follow-ups after the run" (2).
    - Acceptance: every refused save names the preferences file and says to repair or remove its `custom_themes` section, and the test asserts that text.
    - Evidence changed: none. Kind: test-only.
-7. **A11Y-TEST: accessible names are not asserted.** No test checks the labels at `crates/app/src/settings.rs:1136` ("Import a theme file"), `:1477`, `:1509` and `:1519` ("Edit/Export/Delete ‹name› theme"). Also, New theme… (`:1118`) keeps its visible label while Import… is renamed.
+7. **A11Y-TEST (done): accessible names are not asserted.** No test checks the labels at `crates/app/src/settings.rs:1136` ("Import a theme file"), `:1477`, `:1509` and `:1519` ("Edit/Export/Delete ‹name› theme"). Also, New theme… (`:1118`) keeps its visible label while Import… is renamed.
    - Source: `.local/themes-evidence/evidence-import-export-301d82a/design-review.md` N5, N6.
    - Acceptance: a `#[gpui::test]` asserts all five names, following the picker's `card_names` hook (`settings.rs:1003-1006`); DESIGN.md line 155 states both header names.
    - Evidence changed: none. Kind: test-only.

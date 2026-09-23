@@ -1082,6 +1082,16 @@ impl GitTurtle {
         // actions until it reports, so one outcome has one visible owner.
         let pending = self.theme_editor.save_pending() || self.theme_editor.transfer_pending();
         let full = self.custom_themes.len() >= preferences::MAX_CUSTOM_THEMES;
+        // New theme… is named by its visible label, which the kit's button
+        // exposes when no other name is given; Import… says what it opens.
+        let (new_label, import_name) = ("New theme…", "Import a theme file");
+        #[cfg(test)]
+        {
+            let mut names = self.theme_action_names.borrow_mut();
+            names.clear();
+            names.push(("custom-themes-new".into(), new_label.into()));
+            names.push(("custom-themes-import".into(), import_name.into()));
+        }
         div()
             .id("custom-themes-card")
             .debug_selector(|| "custom-themes-card".into())
@@ -1115,7 +1125,7 @@ impl GitTurtle {
                             .items_center()
                             .gap_2()
                             .child(
-                                button("custom-themes-new", "New theme…", "plus", false)
+                                button("custom-themes-new", new_label, "plus", false)
                                     .debug_selector(|| "custom-themes-new".into())
                                     .disabled(pending || full)
                                     .tooltip(if full {
@@ -1133,7 +1143,7 @@ impl GitTurtle {
                             .child(
                                 button("custom-themes-import", "Import…", "", false)
                                     .debug_selector(|| "custom-themes-import".into())
-                                    .accessibility_label("Import a theme file")
+                                    .accessibility_label(import_name)
                                     .disabled(pending || full)
                                     .tooltip(if full {
                                         format!(
@@ -1398,6 +1408,14 @@ impl GitTurtle {
         let id = theme.id;
         let t = theme.palette;
         let is_active = active == Some(appearance::custom::ThemeSelection::Custom(id));
+        let [edit_name, export_name, delete_name] =
+            ["Edit", "Export", "Delete"].map(|action| format!("{action} {} theme", theme.name));
+        #[cfg(test)]
+        self.theme_action_names.borrow_mut().extend([
+            (format!("edit-custom-theme-{id}"), edit_name.clone()),
+            (format!("export-custom-theme-{id}"), export_name.clone()),
+            (format!("delete-custom-theme-{id}"), delete_name.clone()),
+        ]);
         let row = div()
             .id(("custom-theme", id as usize))
             .debug_selector(move || format!("custom-theme-{id}"))
@@ -1474,7 +1492,7 @@ impl GitTurtle {
             .child(
                 button(("edit-custom-theme", id as usize), "Edit…", "", false)
                     .debug_selector(move || format!("edit-custom-theme-{id}"))
-                    .accessibility_label(format!("Edit {} theme", theme.name))
+                    .accessibility_label(edit_name)
                     .disabled(pending)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_theme_editor(Some(id), window, cx)
@@ -1506,7 +1524,7 @@ impl GitTurtle {
                     .child(
                         button(("export-custom-theme", id as usize), "Export…", "", false)
                             .debug_selector(move || format!("export-custom-theme-{id}"))
-                            .accessibility_label(format!("Export {} theme", theme.name))
+                            .accessibility_label(export_name)
                             .disabled(pending)
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.export_custom_theme(id, window, cx)
@@ -1516,7 +1534,7 @@ impl GitTurtle {
             .child(
                 button(("delete-custom-theme", id as usize), "Delete…", "", false)
                     .debug_selector(move || format!("delete-custom-theme-{id}"))
-                    .accessibility_label(format!("Delete {} theme", theme.name))
+                    .accessibility_label(delete_name)
                     .disabled(pending)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.confirm_delete_theme(id, window, cx)
