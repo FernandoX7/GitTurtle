@@ -1085,12 +1085,34 @@ impl GitTurtle {
         // New theme… is named by its visible label, which the kit's button
         // exposes when no other name is given; Import… says what it opens.
         let (new_label, import_name) = ("New theme…", "Import a theme file");
+        // At the bound both actions are disabled, so their tooltips are the
+        // only place that says what to do, in the words the bound's own
+        // refusals use (`open_theme_editor`, `add_imported_theme`).
+        let (new_tooltip, import_tooltip): (SharedString, SharedString) = if full {
+            let bound = format!(
+                "Up to {} custom themes can be saved.",
+                preferences::MAX_CUSTOM_THEMES
+            );
+            (
+                format!("{bound} Delete one before adding another.").into(),
+                format!("{bound} Delete one before importing another.").into(),
+            )
+        } else {
+            (
+                "Create a theme from a built-in base".into(),
+                "Add a theme from an exported JSON file".into(),
+            )
+        };
         #[cfg(test)]
         {
             let mut names = self.theme_action_names.borrow_mut();
             names.clear();
             names.push(("custom-themes-new".into(), new_label.into()));
             names.push(("custom-themes-import".into(), import_name.into()));
+            *self.theme_action_tooltips.borrow_mut() = [
+                ("custom-themes-new".into(), new_tooltip.to_string()),
+                ("custom-themes-import".into(), import_tooltip.to_string()),
+            ];
         }
         div()
             .id("custom-themes-card")
@@ -1128,14 +1150,7 @@ impl GitTurtle {
                                 button("custom-themes-new", new_label, "plus", false)
                                     .debug_selector(|| "custom-themes-new".into())
                                     .disabled(pending || full)
-                                    .tooltip(if full {
-                                        format!(
-                                            "Up to {} custom themes can be saved",
-                                            preferences::MAX_CUSTOM_THEMES
-                                        )
-                                    } else {
-                                        "Create a theme from a built-in base".into()
-                                    })
+                                    .tooltip(new_tooltip)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.open_theme_editor(None, window, cx)
                                     })),
@@ -1145,14 +1160,7 @@ impl GitTurtle {
                                     .debug_selector(|| "custom-themes-import".into())
                                     .accessibility_label(import_name)
                                     .disabled(pending || full)
-                                    .tooltip(if full {
-                                        format!(
-                                            "Up to {} custom themes can be saved",
-                                            preferences::MAX_CUSTOM_THEMES
-                                        )
-                                    } else {
-                                        "Add a theme from an exported JSON file".into()
-                                    })
+                                    .tooltip(import_tooltip)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.import_custom_theme(window, cx)
                                     })),
@@ -3671,5 +3679,119 @@ mod theme_apply_tests {
         // The count is live: any submission moves it.
         cx.read(|cx| app.read(cx).worker.release_history());
         assert_eq!(submissions(cx), idle + 1);
+    }
+}
+
+/// Your themes and picker cards as a real window draws them.
+#[cfg(test)]
+mod picker_tests {
+    use super::*;
+    use core::prelude::v1::test;
+    use std::{cell::RefCell, rc::Rc};
+
+    fn open_app(cx: &mut TestAppContext) -> (Entity<GitTurtle>, &mut VisualTestContext) {
+        // GitTurtle::new starts a real preferences worker; saves reply from it.
+        cx.executor().allow_parking();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+            theme_editor::init(cx);
+        });
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let output = captured.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let app = cx.new(|cx| {
+                GitTurtle::new(
+                    None,
+                    Preferences::default(),
+                    repository_tabs::Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                )
+            });
+            *output.borrow_mut() = Some(app.clone());
+            gpui_kit::component::Root::new(app, window, cx)
+        });
+        let app = captured.borrow().as_ref().unwrap().clone();
+        // Tall enough that the Your themes card is on screen without scrolling.
+        cx.simulate_resize(size(px(1440.), px(2400.)));
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.apply_appearance(window, cx);
+                app.show_settings(window, cx)
+            })
+        });
+        settle(cx);
+        (app, cx)
+    }
+
+    fn settle(cx: &mut VisualTestContext) {
+        for _ in 0..2 {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+        }
+    }
+
+    fn seed_themes(cx: &mut VisualTestContext, app: &Entity<GitTurtle>, count: u32) {
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                let themes = (1..=count)
+                    .map(|n| CustomTheme::from_base(n, format!("Seed {n:02}"), ThemeChoice::Nord))
+                    .collect();
+                app.set_custom_themes(themes, cx);
+                cx.notify();
+            })
+        });
+        settle(cx);
+    }
+
+    /// At the 32-theme bound New theme… and Import… are disabled, so their
+    /// tooltips are the only place that gives the reason and the remedy.
+    #[gpui::test]
+    fn bound_tooltips_say_what_to_delete(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        // A frame that builds the page, which a seeded store alone does not.
+        let tooltips = |cx: &mut VisualTestContext| {
+            assert!(page_shows(cx, "custom-themes-import"));
+            cx.read(|cx| app.read(cx).theme_action_tooltips.borrow().clone())
+        };
+        let expected = |new: &str, import: &str| {
+            [
+                ("custom-themes-new".to_owned(), new.to_owned()),
+                ("custom-themes-import".to_owned(), import.to_owned()),
+            ]
+        };
+        seed_themes(cx, &app, preferences::MAX_CUSTOM_THEMES as u32 - 1);
+        assert_eq!(
+            tooltips(cx),
+            expected(
+                "Create a theme from a built-in base",
+                "Add a theme from an exported JSON file"
+            )
+        );
+
+        seed_themes(cx, &app, preferences::MAX_CUSTOM_THEMES as u32);
+        assert_eq!(
+            tooltips(cx),
+            expected(
+                "Up to 32 custom themes can be saved. Delete one before adding another.",
+                "Up to 32 custom themes can be saved. Delete one before importing another."
+            )
+        );
+        // Both are disabled: a click reaches neither the editor, which would
+        // refuse with the bound, nor the import dialog.
+        for selector in ["custom-themes-new", "custom-themes-import"] {
+            let button = shown(cx, selector).unwrap_or_else(|| panic!("{selector} is drawn"));
+            cx.simulate_click(button.center(), Modifiers::default());
+            settle(cx);
+            cx.read(|cx| {
+                let editor = &app.read(cx).theme_editor;
+                assert_eq!(editor.error(), None, "{selector}");
+                assert_eq!(editor.preview(), None, "{selector}");
+                assert!(!editor.transfer_pending(), "{selector}");
+            });
+        }
     }
 }

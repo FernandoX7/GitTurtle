@@ -1122,6 +1122,11 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A race guard: Import… is disabled at the bound, and every card
+        // action waits while the dialog and the read run
+        // (`theme_transfer_busy`), so only a list that reached the bound
+        // between the click and this handler gets here. It keeps the import's
+        // own sentence rather than the store's refusal of a 33rd theme.
         if self.custom_themes.len() >= MAX_CUSTOM_THEMES {
             self.theme_editor.error = Some(format!(
                 "Up to {MAX_CUSTOM_THEMES} custom themes can be saved. Delete one before importing another."
