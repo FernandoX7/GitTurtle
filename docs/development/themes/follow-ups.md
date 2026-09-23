@@ -31,7 +31,7 @@ In the order to do them. Test-only and documentation items come first, then visi
    - Source: `HANDOFF.md` 2026-09-23 16:40Z bullet ("Next"); the path audit.
    - Acceptance: `git grep -nE '/(home|Users)/' -- docs/` finds only the redacted forms; each edited record keeps every measured value; the new rule has a unit test.
    - Evidence changed: the five records named above. Kind: docs.
-2. **DOC-STATUS: stale status sentences.**
+2. **DOC-STATUS (done): stale status sentences.**
    - [`spec.md`](spec.md) line 3 still says "Status: planned."
    - Its "Open questions" (lines 130-136) still list three questions that are now settled:
      - the ColorPicker keyboard question: the hex Input is the primary control;
