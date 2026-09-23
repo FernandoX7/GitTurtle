@@ -4,14 +4,16 @@ All 13 tasks in [`tasks.json`](tasks.json) are accepted and on `claude/themes`, 
 
 Sources are cited by file and section. `HANDOFF.md` means [the handoff](../HANDOFF.md) as of `5a17c4c`, which later sessions rewrite. Paths under `.local/themes-evidence/` are the coordinator's local, unversioned review bundles.
 
-## Owner decisions needed first
+## Owner decisions
 
-- **PK-D2, a fallback palette for status marks.** When the active palette fails canvas on warning, every warning glyph in the window degrades together. Recommended: decline and record it, because the count, the card tooltip and the Your themes row still carry the status, and the spec makes custom findings advisory.
-- **IE-D3, where the app-wide button fix lands.** Recommended: its own pull request from `main` after #23 merges, because it restyles the shared `button` helper for every page, not only themes.
-- **NEAR-FLOOR, where the palette nudge lands.** The owner decided on 2026-09-18 to do it as one follow-up. Recommended: this branch, as the last visual change, so #23 ships palettes that meet their floors when rendered and the three palette sets are recaptured once.
-- **PK-D1, an optional ring around the caption's status marks.** Recommended: yes, in the same change as PK-N-R2a, which touches the same badge code and frames.
-- **EVIDENCE-GAPS, whether #23 waits for macOS evidence.** Recommended: do not block the merge; keep the gaps listed as open in `docs/validation.md` and run the macOS pass when a Mac is available.
-- **Taste notes the reviewers left to the owner.** These are the picker's 52 card tab stops without an arrow-key grid (picker round-1 N5), the two adjacent "Your themes" headings (N4), the editor's short side column in the wide layout (editor N3), and the transfer message at 12 px against the card's 11 px prose (import-export N4). Recommended: no change, recorded as declined.
+Settled by the owner on 2026-09-23.
+
+- **PK-D2, a fallback palette for status marks: declined.** When the active palette fails canvas on warning, every warning glyph in the window degrades together. The count, the card tooltip and the Your themes row still carry the status, and the spec makes custom findings advisory.
+- **IE-D3, the app-wide button fix: its own pull request from `main` after #23 merges.** It restyles the shared `button` helper for every page, not only themes, so it stays off this branch.
+- **NEAR-FLOOR, the palette nudge: on this branch, as the last visual change,** so #23 ships palettes that meet their floors when rendered, and the three palette sets are recaptured once.
+- **PK-D1, a 1 px ring around the caption's status marks: accepted,** in the same change as PK-N-R2a, which touches the same badge code and frames.
+- **EVIDENCE-GAPS: do not block the merge.** The gaps stay listed as open in `docs/validation.md`, and the macOS pass runs when a Mac is available.
+- **Taste notes the reviewers left to the owner: declined, no change.** These are the picker's 52 card tab stops without an arrow-key grid (picker round-1 N5), the two adjacent "Your themes" headings (N4), the editor's short side column in the wide layout (editor N3), and the transfer message at 12 px against the card's 11 px prose (import-export N4).
 
 ## On this branch
 
@@ -115,7 +117,7 @@ In the order to do them. Test-only and documentation items come first, then visi
       - the rendered 1x peak at or above 4.5 on the named pairs;
       - one Kanagawa Lotus frame of a refused import.
     - Evidence changed: every frame in `docs/evidence/themes/solarized-one/`, `rose-pine-dracula/` and `alucard-kanagawa/`, plus any other committed frame drawn in a nudged palette (audit Nord and Daylight frames under `docs/evidence/`); recaptured once. Kind: native, design, test.
-21. **IE-D3: the shared button's hover and pressed states are wrong (placement is an owner decision).** The `button` helper (`crates/app/src/main.rs:1787-1823`) keeps the kit's ghost defaults:
+21. **IE-D3: the shared button's hover and pressed states are wrong (moved to its own pull request from `main` after #23 merges).** The `button` helper (`crates/app/src/main.rs:1787-1823`) keeps the kit's ghost defaults:
     - hover paints darker than a hovered row (1.16:1 the wrong way);
     - pressed differs from hover by 1.02:1;
     - DESIGN.md line 27 asks for the hover surface and `selected`.
