@@ -181,17 +181,20 @@ class RecordTests(unittest.TestCase):
         target = ancestor / "records"
         target.mkdir(parents=True)
         os.chmod(ancestor, 0o775)
+        # The traversal reports canonical components, so on macOS, where the
+        # temporary directory sits under the /var -> /private/var symlink, the
+        # message names the resolved path.
         for create in (False, True):
             with self.subTest(create=create):
                 with self.assertRaises(LoopError) as raised:
                     with open_directory(target, create=create):
                         self.fail("group-writable ancestor was accepted")
                 message = str(raised.exception)
-                self.assertIn(f"record directory {ancestor} is writable by other users",
+                self.assertIn(f"record directory {ancestor.resolve()} is writable by other users",
                               message)
                 self.assertIn("(mode 0775)", message)
                 self.assertIn("chmod g-w,o-w", message)
-                self.assertNotIn(str(target), message)
+                self.assertNotIn(str(target.resolve()), message)
         self.assertEqual(stat.S_IMODE(ancestor.stat().st_mode), 0o775)
 
     def test_owner_mismatch_names_the_directory_and_both_user_ids(self):
