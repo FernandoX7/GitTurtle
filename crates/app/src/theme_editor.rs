@@ -86,9 +86,10 @@ pub(super) struct State {
     /// `take_row_focus_request`).
     row_focus_request: std::cell::Cell<Option<(usize, usize)>>,
     /// The row last scrolled into view because one of its actions held focus,
-    /// so a wheel scroll away from a focused row is not undone by the next
-    /// render.
-    revealed_row: std::cell::Cell<Option<usize>>,
+    /// with that action, so a wheel scroll away from a focused row is not
+    /// undone by the next render while Tab onto another of its actions
+    /// reveals the row again.
+    revealed_row: std::cell::RefCell<Option<(usize, WeakFocusHandle)>>,
     /// The first live-preview edit, or the open, since the last traced frame,
     /// stamped at its handler's entry. The root render takes it into the
     /// probe that ends `gitturtle.theme_edit_frame_ms`
@@ -188,18 +189,20 @@ impl State {
             .retain(|(id, _)| themes.iter().any(|theme| theme.id == *id));
     }
 
-    /// The drawn row holding focus, itself or through one of its actions.
+    /// The drawn row holding focus, itself or through one of its actions,
+    /// with the focused handle.
     pub(super) fn focused_row(
         &self,
         themes: &[CustomTheme],
         window: &Window,
         cx: &App,
-    ) -> Option<usize> {
+    ) -> Option<(usize, FocusHandle)> {
         let rows = self.row_focus.borrow();
-        themes.iter().position(|theme| {
+        let row = themes.iter().position(|theme| {
             rows.iter()
                 .any(|(id, handle)| *id == theme.id && handle.contains_focused(window, cx))
-        })
+        })?;
+        Some((row, window.focused(cx)?))
     }
 
     /// Ask the list's next render to focus `action` of `row` once drawn.
@@ -252,7 +255,7 @@ impl State {
         cx: &mut App,
     ) -> Option<(usize, usize)> {
         let focused = window.focused(cx)?;
-        let row = self.focused_row(themes, window, cx)?;
+        let row = self.focused_row(themes, window, cx)?.0;
         let handle = self.row_focus(themes[row].id, cx);
         handle.focus(window, cx);
         let mut action = None;
@@ -268,14 +271,17 @@ impl State {
     }
 
     /// Scroll the row holding focus into view once per focus change
-    /// (`ScrollStrategy::Nearest`); a wheel scroll away from it afterwards is
-    /// left alone.
-    pub(super) fn reveal_focused_row(&self, focused: Option<usize>) {
-        if self.revealed_row.get() == focused {
+    /// (`ScrollStrategy::Nearest`), a move to another action of the same row
+    /// included; a wheel or scrollbar scroll away from it afterwards is left
+    /// alone.
+    pub(super) fn reveal_focused_row(&self, focused: Option<(usize, FocusHandle)>) {
+        let focused = focused.map(|(row, handle)| (row, handle.downgrade()));
+        if *self.revealed_row.borrow() == focused {
             return;
         }
-        self.revealed_row.set(focused);
-        if let Some(row) = focused {
+        let row = focused.as_ref().map(|(row, _)| *row);
+        *self.revealed_row.borrow_mut() = focused;
+        if let Some(row) = row {
             self.rows_scroll
                 .scroll_to_item(row, ScrollStrategy::Nearest);
         }
@@ -682,7 +688,8 @@ impl GitTurtle {
         let focused = window.focused(cx);
         let from = self
             .theme_editor
-            .focused_row(&self.custom_themes, window, cx);
+            .focused_row(&self.custom_themes, window, cx)
+            .map(|(row, _)| row);
         // GPUI's own step is right whenever the row it should reach is
         // drawn: within a row, onto the neighbouring drawn row, or out of the
         // rows at their end. It is corrected only where the row it should
@@ -694,7 +701,8 @@ impl GitTurtle {
         }
         let to = self
             .theme_editor
-            .focused_row(&self.custom_themes, window, cx);
+            .focused_row(&self.custom_themes, window, cx)
+            .map(|(row, _)| row);
         let target = match (from, to) {
             (Some(from), Some(to))
                 if from == to || (forward && to == from + 1) || (!forward && from == to + 1) =>
@@ -5009,6 +5017,88 @@ mod tests {
             "Tab from the card reaches the first row's Edit…"
         );
         assert!(in_view, "and the first row is in view");
+    }
+
+    /// A wheel step away from the focused row is the user's, and the next
+    /// render leaves it; Tab or Shift-Tab onto another action of that row
+    /// then scrolls the row back into view, at either end of the list. The
+    /// step leaves the row partly in the list, so its actions are drawn.
+    #[gpui::test]
+    fn tab_after_a_wheel_step_scrolls_the_focused_row_back(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|window, _| window.activate_window());
+        seed_themes(cx, &app, 32);
+        fn offset(app: &Entity<GitTurtle>, cx: &App) -> Pixels {
+            app.read(cx)
+                .theme_editor
+                .rows_scroll()
+                .0
+                .borrow()
+                .base_handle
+                .offset()
+                .y
+        }
+        let end = -appearance::ui_size(30.) * 24.;
+        for (row, stand, step, key, from, to) in [
+            (31, end, px(10.), "tab", 1, 2),
+            (31, end, px(10.), "shift-tab", 2, 1),
+            (0, Pixels::ZERO, px(-10.), "tab", 0, 1),
+        ] {
+            cx.update(|_, cx| {
+                app.update(cx, |app, cx| {
+                    app.theme_editor
+                        .rows_scroll()
+                        .scroll_to_item(row, ScrollStrategy::Nearest);
+                    app.notify_settings_page(cx);
+                })
+            });
+            native_frame(cx);
+            let id = row as u32 + 1;
+            let handle = cx.update(|_, cx| app.read(cx).theme_editor.row_focus(id, cx));
+            cx.update(|window, cx| State::focus_row_action(&handle, from, window, cx));
+            settle(cx);
+            assert_eq!(
+                cx.update(|window, cx| focused_row(&app, window, cx)),
+                Some((row, from))
+            );
+            assert_eq!(cx.read(|cx| offset(&app, cx)), stand);
+
+            let list = bounds(cx, "custom-themes-rows".into());
+            cx.update(|window, cx| {
+                window.dispatch_event(
+                    PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                        position: list.center(),
+                        delta: gpui::ScrollDelta::Pixels(gpui::point(Pixels::ZERO, step)),
+                        modifiers: Modifiers::default(),
+                        touch_phase: gpui::TouchPhase::Moved,
+                    }),
+                    cx,
+                );
+            });
+            settle(cx);
+            assert_eq!(
+                cx.read(|cx| offset(&app, cx)),
+                stand + step,
+                "the render leaves the step away from row {row}"
+            );
+            assert!(!cx.read(|cx| row_in_view(&app, row, cx)));
+            assert_eq!(
+                cx.update(|window, cx| focused_row(&app, window, cx)),
+                Some((row, from)),
+                "and focus where it was"
+            );
+
+            let (focused, in_view) = key_frames(
+                cx,
+                key,
+                |_, _| (),
+                |window, cx| (focused_row(&app, window, cx), row_in_view(&app, row, cx)),
+            )
+            .1;
+            assert_eq!(focused, Some((row, to)), "{key} reaches action {to}");
+            assert!(in_view, "and scrolls row {row} back into view");
+            assert_eq!(cx.read(|cx| offset(&app, cx)), stand);
+        }
     }
 
     /// The card keeps the plain stack's geometry around the virtualized rows:
