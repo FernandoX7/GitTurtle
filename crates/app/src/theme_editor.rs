@@ -2263,21 +2263,21 @@ impl ThemeForm {
             .into_any_element()
     }
 
-    /// The token column's always-visible scrollbar (`DESIGN.md`: a bounded
-    /// scrolling area shows one), in the track the body reserves. The wrapper
-    /// marks the track for tests; the scrollbar positions itself over the
-    /// tracked container.
-    fn render_scrollbar(&self) -> AnyElement {
+    /// A column's always-visible scrollbar (`DESIGN.md`: a bounded scrolling
+    /// area shows one), in the track the column reserves at its right edge.
+    /// The wrapper marks the track for tests; the scrollbar positions itself
+    /// over the tracked container.
+    fn render_scrollbar(scroll: &ScrollHandle, id: &'static str) -> AnyElement {
         div()
-            .debug_selector(|| "theme-editor-scrollbar".into())
+            .debug_selector(move || id.into())
             .absolute()
             .top_0()
             .bottom_0()
             .right_0()
             .w(Scrollbar::width())
             .child(
-                Scrollbar::vertical(&self.scroll)
-                    .id("theme-editor-scrollbar")
+                Scrollbar::vertical(scroll)
+                    .id(id)
                     .mode(ScrollbarMode::Always),
             )
             .into_any_element()
@@ -2434,7 +2434,23 @@ impl Render for ThemeForm {
         // The body shrinks to what the capped form leaves; the columns stretch
         // to the body and scroll within it.
         let body = if wide {
+            // The side column scrolls on its own. While it overflows (past
+            // about seventeen warnings at 1,440 × 900) it gains the scrollbar
+            // in a track added at its right edge, so its 300 px content keeps
+            // its width and a frame without overflow is unchanged. The last
+            // layout decides, and the column's prepaint asks for the next
+            // frame when this one laid it out the other way (a notify during
+            // a draw requests no frame).
+            let side_overflows = self.side_scroll.max_offset().y > Pixels::ZERO;
+            let side_track = if side_overflows {
+                Scrollbar::width()
+            } else {
+                Pixels::ZERO
+            };
+            let form = cx.entity().downgrade();
+            let side_scroll = self.side_scroll.clone();
             div()
+                .relative()
                 .flex()
                 .flex_1()
                 .min_h_0()
@@ -2463,12 +2479,25 @@ impl Render for ThemeForm {
                                 .flex_col()
                                 .children(entries),
                         )
-                        .child(self.render_scrollbar()),
+                        .child(Self::render_scrollbar(
+                            &self.scroll,
+                            "theme-editor-scrollbar",
+                        )),
                 )
                 .child(
                     div()
+                        .on_children_prepainted(move |_, window, _| {
+                            if (side_scroll.max_offset().y > Pixels::ZERO) != side_overflows {
+                                let form = form.clone();
+                                window.on_next_frame(move |_, cx| {
+                                    form.update(cx, |_, cx| cx.notify()).ok();
+                                });
+                            }
+                        })
                         .id("theme-editor-side")
-                        .w(px(300.))
+                        .debug_selector(|| "theme-editor-side".into())
+                        .w(px(300.) + side_track)
+                        .pr(side_track)
                         .flex_shrink_0()
                         .min_h_0()
                         .overflow_y_scroll()
@@ -2479,6 +2508,12 @@ impl Render for ThemeForm {
                         .child(preview)
                         .child(warnings),
                 )
+                .when(side_overflows, |body| {
+                    body.child(Self::render_scrollbar(
+                        &self.side_scroll,
+                        "theme-editor-side-scrollbar",
+                    ))
+                })
                 .into_any_element()
         } else {
             entries.push(preview.mt_5().into_any_element());
@@ -2502,7 +2537,10 @@ impl Render for ThemeForm {
                         .flex_col()
                         .children(entries),
                 )
-                .child(self.render_scrollbar())
+                .child(Self::render_scrollbar(
+                    &self.scroll,
+                    "theme-editor-scrollbar",
+                ))
                 .into_any_element()
         };
         #[cfg(test)]
@@ -3590,6 +3628,96 @@ mod tests {
             settle(cx);
             assert!(cx.read(|cx| app.read(cx).theme_editor.form.is_none()));
         }
+    }
+
+    /// The wide layout's side column draws no scrollbar and keeps its 300 px
+    /// while its content fits. Past about seventeen warnings it overflows and
+    /// gains the scrollbar in a 16 px track added at its right edge, so the
+    /// miniature and the list keep their 300 px; with the palette restored
+    /// the track goes again.
+    #[gpui::test]
+    fn the_side_column_shows_a_scrollbar_only_while_it_overflows(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.simulate_resize(size(px(1440.), px(900.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_theme_editor(None, window, cx)));
+        settle(cx);
+        let form = form(cx, &app);
+        next_frame(cx);
+        assert!(cx.read(|cx| form.read(cx).wide));
+        let side_scroll = cx.read(|cx| form.read(cx).side_scroll.clone());
+        let fits = |cx: &mut VisualTestContext| {
+            let side = bounds(cx, "theme-editor-side".into());
+            let preview = bounds(cx, "theme-editor-preview".into());
+            assert_eq!(side_scroll.max_offset().y, Pixels::ZERO);
+            assert!(cx.debug_bounds("theme-editor-side-scrollbar").is_none());
+            assert_eq!(side.size.width, px(300.));
+            assert_eq!(preview.size.width, px(300.));
+        };
+        fits(cx);
+
+        // The render cannot know the layout it asks for: the frame that
+        // first lays the overflow out draws no track, and the column's
+        // prepaint asks for the next frame, which draws it with no other
+        // input.
+        let original = cx.read(|cx| form.read(cx).draft);
+        let mut gray = original;
+        for kind in TokenKind::ALL {
+            gray.set(kind, 0x808080);
+        }
+        // The alert slides in over real time; wait until it asks for no frame.
+        for _ in 0..100 {
+            if next_frame(cx) == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(
+            next_frame(cx),
+            0,
+            "no frame is asked for while nothing changes"
+        );
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| {
+                form.warnings = gray.readability_issues();
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        cx.run_until_parked();
+        assert!(side_scroll.max_offset().y > Pixels::ZERO);
+        assert!(
+            cx.debug_bounds("theme-editor-side-scrollbar").is_none(),
+            "the frame that lays the overflow out draws no track"
+        );
+        assert_eq!(next_frame(cx), 1, "and asks for the next frame");
+        assert!(cx.debug_bounds("theme-editor-side-scrollbar").is_some());
+
+        for kind in TokenKind::ALL {
+            type_hex(cx, &form, kind, "#808080");
+        }
+        let count = cx.read(|cx| form.read(cx).warnings.len());
+        assert!(count > 17, "{count} warnings");
+        assert!(
+            side_scroll.max_offset().y > Pixels::ZERO,
+            "the column overflows"
+        );
+        let side = bounds(cx, "theme-editor-side".into());
+        let track = bounds(cx, "theme-editor-side-scrollbar".into());
+        assert_eq!(track.size.width, Scrollbar::width());
+        assert_eq!(track.right(), side.right(), "the track is at its edge");
+        assert_eq!(track.top(), side.top());
+        assert_eq!(track.size.height, side.size.height);
+        assert_eq!(side.size.width, px(300.) + Scrollbar::width());
+        let preview = bounds(cx, "theme-editor-preview".into());
+        let last = bounds(cx, format!("theme-warning-{}", count - 1));
+        assert_eq!(preview.size.width, px(300.), "the content keeps its width");
+        assert_eq!(preview.left(), side.left());
+        assert!(last.right() <= track.left());
+
+        for kind in TokenKind::ALL {
+            type_hex(cx, &form, kind, &custom::format_hex(original.get(kind)));
+        }
+        fits(cx);
     }
 
     /// Harbor (id 7, based on Nord) is saved and active.
