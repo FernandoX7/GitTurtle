@@ -1181,7 +1181,7 @@ impl GitTurtle {
         self.theme_editor.pending_saves = self.theme_editor.pending_saves.saturating_sub(1);
         match (result, outcome) {
             (Ok(themes), SaveOutcome::Edited { id, form }) => {
-                self.custom_themes = themes;
+                self.set_custom_themes(themes, cx);
                 let _ = form.update(cx, |form, cx| {
                     form.pending = false;
                     form.visible = false;
@@ -1213,7 +1213,7 @@ impl GitTurtle {
             }
             (Ok(themes), SaveOutcome::Imported { id, notice }) => {
                 // Added and highlighted, not applied: the window keeps its theme.
-                self.custom_themes = themes;
+                self.set_custom_themes(themes, cx);
                 self.theme_editor.error = None;
                 self.theme_editor.notice = Some(notice);
                 self.theme_editor.imported = Some(id);
@@ -1223,7 +1223,7 @@ impl GitTurtle {
                     Some(format!("Could not save the imported theme: {error:#}"));
             }
             (Ok(themes), SaveOutcome::Deleted { id, base, previous }) => {
-                self.custom_themes = themes;
+                self.set_custom_themes(themes, cx);
                 self.theme_editor.error = None;
                 if self.settings.theme == ThemeSelection::Custom(id) {
                     self.settings.theme = ThemeSelection::BuiltIn(base);
@@ -2235,8 +2235,11 @@ impl Render for ThemeForm {
             );
         }
         let name = self.name.read(cx).value().trim().to_owned();
+        // The settings-card miniature at the picker card's own height, so the
+        // draft previews with the picker's proportions.
         let preview = div()
-            .h(appearance::ui_size(166.))
+            .debug_selector(|| "theme-editor-preview".into())
+            .h(appearance::ui_size(132.))
             .flex_shrink_0()
             .p(px(2.))
             .rounded(px(10.))
@@ -2253,8 +2256,8 @@ impl Render for ThemeForm {
                 },
                 format!("Based on {}", self.base.label()),
                 false,
-                p.accent,
-                p.accent_foreground,
+                0,
+                p,
             ));
         let warnings = self.render_warnings(p, window);
         // The body shrinks to what the capped form leaves; the columns stretch
@@ -2591,15 +2594,72 @@ mod tests {
         cx.update(|_, cx| app.update(cx, |app, _| std::mem::take(&mut app.draws)))
     }
 
-    /// Builds of the Settings picker's twenty miniatures so far.
+    /// Builds of the Settings picker's twenty built-in miniatures so far.
     fn preview_renders(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) -> usize {
         cx.read(|cx| {
             app.read(cx)
                 .theme_previews
                 .iter()
+                .filter(|(drawn, _)| matches!(drawn, ThemeSelection::BuiltIn(_)))
                 .map(|(_, body)| body.read(cx).renders())
                 .sum()
         })
+    }
+
+    /// Builds of each custom card's miniature so far, by theme id.
+    fn custom_preview_renders(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+    ) -> Vec<(u32, usize)> {
+        cx.read(|cx| {
+            app.read(cx)
+                .theme_previews
+                .iter()
+                .filter_map(|(drawn, body)| match drawn {
+                    ThemeSelection::Custom(id) => Some((*id, body.read(cx).renders())),
+                    ThemeSelection::BuiltIn(_) => None,
+                })
+                .collect()
+        })
+    }
+
+    /// Palette changes each custom card's miniature has taken, by theme id.
+    fn custom_palette_changes(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+    ) -> Vec<(u32, usize)> {
+        cx.read(|cx| {
+            app.read(cx)
+                .theme_previews
+                .iter()
+                .filter_map(|(drawn, body)| match drawn {
+                    ThemeSelection::Custom(id) => Some((*id, body.read(cx).palette_changes())),
+                    ThemeSelection::BuiltIn(_) => None,
+                })
+                .collect()
+        })
+    }
+
+    /// Whether the picker marks `selection`'s card as the active theme.
+    fn card_checked(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        selection: ThemeSelection,
+    ) -> bool {
+        let miniature = cx.read(|cx| app.read(cx).theme_preview_body(selection).entity_id());
+        let selector: &'static str = format!("theme-check-{miniature}").leak();
+        cx.debug_bounds(selector).is_some()
+    }
+
+    /// Whether the picker shows the readability glyph on `selection`'s card.
+    fn card_warned(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        selection: ThemeSelection,
+    ) -> bool {
+        let miniature = cx.read(|cx| app.read(cx).theme_preview_body(selection).entity_id());
+        let selector: &'static str = format!("theme-warning-{miniature}").leak();
+        cx.debug_bounds(selector).is_some()
     }
 
     /// Palette applications through `apply_appearance` so far.
@@ -3297,7 +3357,7 @@ mod tests {
         let theme = CustomTheme::from_base(7, "Harbor", ThemeChoice::Nord);
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
-                app.custom_themes = vec![theme.clone()];
+                app.set_custom_themes(vec![theme.clone()], cx);
                 app.settings.theme = ThemeSelection::Custom(7);
                 app.apply_appearance(window, cx);
             })
@@ -3738,7 +3798,7 @@ mod tests {
             .map(|id| CustomTheme::from_base(id, format!("Theme {id}"), ThemeChoice::Nord))
             .collect();
         cx.update(|_, cx| {
-            app.update(cx, |app, _| app.custom_themes = full.clone());
+            app.update(cx, |app, cx| app.set_custom_themes(full.clone(), cx));
         });
         settle(cx);
         let (notice, error) = import_file(cx, &app, Some(valid), None);
@@ -3832,7 +3892,7 @@ mod tests {
         for unknown_base in [false, true] {
             cx.update(|window, cx| {
                 app.update(cx, |app, cx| {
-                    app.custom_themes = vec![existing.clone()];
+                    app.set_custom_themes(vec![existing.clone()], cx);
                     app.settings.theme = ThemeSelection::Custom(7);
                     app.apply_appearance(window, cx);
                 })
@@ -3970,12 +4030,12 @@ mod tests {
     /// click path. GPUI refreshes the window for the press (its pressed
     /// state) and again for the release, so the press is dispatched on its
     /// own and its frame drained; returned are the draws after the release
-    /// and the picker miniatures the release rebuilt.
+    /// and the built-in and custom picker miniatures the release rebuilt.
     fn click_card(
         cx: &mut VisualTestContext,
         app: &Entity<GitTurtle>,
         choice: ThemeChoice,
-    ) -> (Vec<Palette>, usize) {
+    ) -> (Vec<Palette>, usize, usize) {
         let position = bounds(cx, format!("settings-theme-{}", choice as usize)).center();
         cx.simulate_event(MouseDownEvent {
             position,
@@ -3986,6 +4046,10 @@ mod tests {
         });
         let _ = drawn(cx, app);
         let previews_before = preview_renders(cx, app);
+        let custom_before: usize = custom_preview_renders(cx, app)
+            .into_iter()
+            .map(|(_, renders)| renders)
+            .sum();
         cx.simulate_event(MouseUpEvent {
             position,
             modifiers: Modifiers::default(),
@@ -3993,7 +4057,15 @@ mod tests {
             click_count: 1,
         });
         let draws = drawn(cx, app);
-        (draws, preview_renders(cx, app) - previews_before)
+        let custom_after: usize = custom_preview_renders(cx, app)
+            .into_iter()
+            .map(|(_, renders)| renders)
+            .sum();
+        (
+            draws,
+            preview_renders(cx, app) - previews_before,
+            custom_after - custom_before,
+        )
     }
 
     /// Builds of the open editor's own miniature so far.
@@ -4020,17 +4092,23 @@ mod tests {
     /// the card; GPUI's click machinery calls `Window::refresh` on that mouse
     /// up, which bars cached-view reuse for the frame, so the miniature reuse
     /// is asserted on the edit frames and the click's rebuild is recorded.
+    ///
+    /// Two saved themes put a Your themes group in the picker, so the custom
+    /// miniatures are under the same measurement: an edit of one of them
+    /// reuses every custom miniature, the edited theme's own included, and its
+    /// save gives only that theme's miniature the new palette.
     #[gpui::test]
     fn an_edit_and_a_switch_each_draw_the_window_once(cx: &mut TestAppContext) {
         let (app, cx) = open_app(cx);
         cx.update(|window, _| window.activate_window());
         settle(cx);
+        seed_themes(cx, &app, 2);
 
         // A Settings theme switch. The first save also writes the status line,
         // a visible change that rightly costs its frame; every switch after it
         // is the steady state.
         let _ = drawn(cx, &app);
-        let (first, _) = click_card(cx, &app, ThemeChoice::TokyoNight);
+        let (first, ..) = click_card(cx, &app, ThemeChoice::TokyoNight);
         assert!(
             !first.is_empty()
                 && first
@@ -4052,7 +4130,7 @@ mod tests {
             [],
             "nothing is pending before the steady-state switch"
         );
-        let (draws, rebuilt) = click_card(cx, &app, ThemeChoice::Nord);
+        let (draws, rebuilt, custom_rebuilt) = click_card(cx, &app, ThemeChoice::Nord);
         assert_eq!(
             draws,
             [ThemeChoice::Nord.palette()],
@@ -4063,9 +4141,9 @@ mod tests {
         // frame, the twenty miniatures included. The reuse a switch could get
         // is the edit frames' below.
         assert_eq!(
-            rebuilt,
-            ThemeChoice::ALL.len(),
-            "the click's Window::refresh rebuilds all twenty miniatures ({rebuilt})"
+            (rebuilt, custom_rebuilt),
+            (ThemeChoice::ALL.len(), 2),
+            "the click's Window::refresh rebuilds all twenty built-in miniatures and both custom ones"
         );
         drain_preference_writer(cx, &app);
         assert_eq!(
@@ -4074,13 +4152,15 @@ mod tests {
             "the completed save changed nothing visible, so it draws nothing"
         );
 
-        // Live-preview edits. Opening the editor is its own frame; measure
-        // from the first edit after it. While the dialog is open the focused
-        // name field blinks its caret, which asks for frames of its own; those
-        // are not this path's, so the edits below assert the applications they
-        // cost and that no frame ever shows a stale palette.
-        click(cx, "custom-themes-new");
+        // Live-preview edits of a saved theme, Seed 01, opened with its row's
+        // Edit…. Opening the editor is its own frame; measure from the first
+        // edit after it. While the dialog is open the focused name field
+        // blinks its caret, which asks for frames of its own; those are not
+        // this path's, so the edits below assert the applications they cost
+        // and that no frame ever shows a stale palette.
+        click(cx, "edit-custom-theme-1");
         let form = form(cx, &app);
+        assert_eq!(cx.read(|cx| form.read(cx).base), ThemeChoice::ALL[0]);
         next_frame(cx);
         let inputs = cx.read(|cx| {
             [TokenKind::Canvas, TokenKind::Panel, TokenKind::Accent]
@@ -4091,6 +4171,7 @@ mod tests {
         for value in ["#101a26", "#0c1119", "#161c2a"] {
             let applied_before = applications(cx, &app);
             let previews_before = preview_renders(cx, &app);
+            let custom_before = custom_preview_renders(cx, &app);
             let draft_before = draft_renders(cx, &form);
             // `replace_all` emits Change as typing the seventh character does.
             cx.update(|window, cx| {
@@ -4114,6 +4195,13 @@ mod tests {
                 preview_renders(cx, &app),
                 previews_before,
                 "{value} reuses every picker miniature"
+            );
+            // Seed 01's picker miniature draws its saved palette, not the
+            // draft: it is reused like every other custom miniature.
+            assert_eq!(
+                custom_preview_renders(cx, &app),
+                custom_before,
+                "{value} reuses every custom miniature, the edited theme's own included"
             );
             assert_eq!(
                 draft_renders(cx, &form),
@@ -4175,6 +4263,72 @@ mod tests {
             applications(cx, &app),
             applied_before + 2,
             "the rest of the burst applies once, at the frame"
+        );
+
+        // Save the edited theme. The Save click's release refreshes the window
+        // as every click does, so the save is measured from after the click's
+        // frames have settled: the preference executor is held until then. Of
+        // the retained miniatures only Seed 01's is given the saved palette,
+        // and it draws that palette in the frame that shows the save. That
+        // frame is drawn under GPUI's refresh again, because the kit restores
+        // focus to Edit… as it closes the dialog and `Window::focus` refreshes;
+        // recorded like the click's rebuild, not asserted away. Every frame
+        // after it reuses every miniature.
+        let hold = hold_preference_executor(cx, &app);
+        click(cx, "theme-editor-save");
+        settle(cx);
+        assert!(
+            cx.read(|cx| app.read(cx).theme_editor.save_pending()),
+            "the save waits for the executor"
+        );
+        let _ = drawn(cx, &app);
+        let changes_before = custom_palette_changes(cx, &app);
+        drop(hold);
+        wait_without_drawing(cx, |cx| {
+            cx.read(|cx| {
+                let app = app.read(cx);
+                !app.theme_editor.save_pending() && app.theme_editor.form.is_none()
+            })
+        });
+        let saved = cx.read(|cx| app.read(cx).custom_themes[0].clone());
+        assert_eq!(saved.palette, draft, "Seed 01 holds the burst's draft");
+        assert_eq!(
+            cx.read(|cx| app.read(cx).settings.theme),
+            ThemeSelection::Custom(1),
+            "the saved theme is selected"
+        );
+        assert_eq!(
+            custom_palette_changes(cx, &app),
+            [(1, changes_before[0].1 + 1), (2, changes_before[1].1)],
+            "the save gives only Seed 01's miniature a new palette"
+        );
+        assert_eq!(
+            cx.read(|cx| {
+                app.read(cx)
+                    .theme_preview_body(ThemeSelection::Custom(1))
+                    .read(cx)
+                    .palette()
+            }),
+            saved.palette,
+            "and that miniature draws it"
+        );
+        let draws = drawn(cx, &app);
+        assert!(
+            !draws.is_empty() && draws.iter().all(|palette| *palette == saved.palette),
+            "the frames that show the save draw the saved palette: {draws:?}"
+        );
+        let custom_after = custom_preview_renders(cx, &app);
+        assert!(
+            custom_after[0].1 > changes_before[0].1,
+            "Seed 01's miniature was rebuilt with its new palette: {custom_after:?}"
+        );
+        let after_save = (preview_renders(cx, &app), custom_after);
+        cx.update(|_, cx| app.update(cx, |_, cx| cx.notify()));
+        settle(cx);
+        assert_eq!(
+            (preview_renders(cx, &app), custom_preview_renders(cx, &app)),
+            after_save,
+            "a frame after the save reuses every miniature"
         );
     }
 
@@ -4288,12 +4442,13 @@ mod tests {
     fn seed_themes(cx: &mut VisualTestContext, app: &Entity<GitTurtle>, count: u32) {
         cx.update(|_, cx| {
             app.update(cx, |app, cx| {
-                app.custom_themes = (1..=count)
+                let themes = (1..=count)
                     .map(|n| {
                         let base = ThemeChoice::ALL[(n as usize - 1) % ThemeChoice::ALL.len()];
                         CustomTheme::from_base(n, format!("Seed {n:02}"), base)
                     })
                     .collect();
+                app.set_custom_themes(themes, cx);
                 cx.notify();
             })
         });
@@ -4328,9 +4483,10 @@ mod tests {
 
     /// With 32 saved themes the list is eight rows tall and draws eight rows.
     /// Tab reaches every row's Edit…, Export… and Delete… in order across the
-    /// viewport boundary, Shift-Tab walks back, entering the list from either
-    /// side lands on its edge row whatever rows are drawn, and the frame after
-    /// each key shows the focused row inside the list.
+    /// viewport boundary, and the frame after each key shows the focused row
+    /// inside the list. This walks the first sixteen rows and the step onto
+    /// the seventeenth; `tab_walks_the_last_rows_and_leaves_and_reenters_the_rows`
+    /// walks the rest, so each half fits the gate's twenty-seed rerun.
     #[gpui::test]
     fn tab_walks_every_row_action_and_keeps_the_focused_row_in_view(cx: &mut TestAppContext) {
         let (app, cx) = open_app(cx);
@@ -4363,7 +4519,9 @@ mod tests {
             Some((0, 0)),
             "the first row's Edit… follows the card"
         );
-        let actions = (0..32).flat_map(|row| (0..3).map(move |action| (row, action)));
+        let actions = (0..16)
+            .flat_map(|row| (0..3).map(move |action| (row, action)))
+            .chain(std::iter::once((16, 0)));
         for (row, action) in actions.skip(1) {
             let (focused, in_view) = key_frames(
                 cx,
@@ -4382,66 +4540,6 @@ mod tests {
                 "row {row} is in view in the frame after Tab onto action {action}"
             );
         }
-        // Past the last Delete…, Tab leaves the rows; Shift-Tab returns to
-        // that Delete… although the rows drawn need not include it.
-        assert_eq!(
-            key_frame(cx, "tab", |window, cx| focused_row(&app, window, cx)),
-            None,
-            "Tab from the last Delete… leaves the rows"
-        );
-        assert!(
-            cx.update(|window, cx| window.focused(cx)).is_some(),
-            "and lands on the control after the list"
-        );
-        cx.update(|_, cx| {
-            app.read(cx)
-                .theme_editor
-                .rows_scroll()
-                .scroll_to_item(0, ScrollStrategy::Top)
-        });
-        native_frame(cx);
-        assert!(cx.debug_bounds("custom-theme-32").is_none());
-        for expected in [(31, 2), (31, 1), (31, 0), (30, 2)] {
-            let (focused, in_view) = key_frames(
-                cx,
-                "shift-tab",
-                |_, _| (),
-                |window, cx| {
-                    (
-                        focused_row(&app, window, cx),
-                        row_in_view(&app, expected.0, cx),
-                    )
-                },
-            )
-            .1;
-            assert_eq!(
-                focused,
-                Some(expected),
-                "Shift-Tab walks back to {expected:?}"
-            );
-            assert!(in_view, "row {} is in view after Shift-Tab", expected.0);
-        }
-        // Entering forwards while the list shows its end lands on the first
-        // row, drawn or not.
-        cx.update(|window, cx| card.focus(window, cx));
-        settle(cx);
-        assert!(
-            cx.debug_bounds("custom-theme-1").is_none(),
-            "the list still shows its end"
-        );
-        let (focused, in_view) = key_frames(
-            cx,
-            "tab",
-            |_, _| (),
-            |window, cx| (focused_row(&app, window, cx), row_in_view(&app, 0, cx)),
-        )
-        .1;
-        assert_eq!(
-            focused,
-            Some((0, 0)),
-            "Tab from the card reaches the first row's Edit…"
-        );
-        assert!(in_view, "and the first row is in view");
     }
 
     /// The kit paints a focused control's 3 px ring outside the control and
@@ -4541,16 +4639,132 @@ mod tests {
         assert_ring_inside(cx, &app, 32, 2);
     }
 
+    /// The rest of the walk: from the seventeenth row's Edit…, reached as
+    /// `tab_theme_rows` reaches a row that is not drawn (the row scrolled in
+    /// and `request_row_focus` for the render that draws it), Tab reaches
+    /// every remaining action in order across the viewport boundary and
+    /// leaves the rows past the last Delete…, Shift-Tab walks back, entering
+    /// the list from either side lands on its edge row whatever rows are
+    /// drawn, and the frame after each key shows the focused row inside the
+    /// list.
+    #[gpui::test]
+    fn tab_walks_the_last_rows_and_leaves_and_reenters_the_rows(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|window, _| window.activate_window());
+        seed_themes(cx, &app, 32);
+        let card = cx.update(|_, cx| app.read(cx).theme_editor.card_focus(cx));
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.theme_editor
+                    .rows_scroll()
+                    .scroll_to_item(16, ScrollStrategy::Nearest);
+                app.theme_editor.request_row_focus(16, 0);
+                cx.notify();
+            })
+        });
+        // The render that draws the row registers the focus for the next
+        // frame; native frames deliver it.
+        native_frame(cx);
+        native_frame(cx);
+        assert_eq!(
+            cx.update(|window, cx| focused_row(&app, window, cx)),
+            Some((16, 0)),
+            "the seventeenth row's Edit… is focused once drawn"
+        );
+        let actions = (16..32).flat_map(|row| (0..3).map(move |action| (row, action)));
+        for (row, action) in actions.skip(1) {
+            let (focused, in_view) = key_frames(
+                cx,
+                "tab",
+                |_, _| (),
+                |window, cx| (focused_row(&app, window, cx), row_in_view(&app, row, cx)),
+            )
+            .1;
+            assert_eq!(
+                focused,
+                Some((row, action)),
+                "Tab reaches row {row} action {action}"
+            );
+            assert!(
+                in_view,
+                "row {row} is in view in the frame after Tab onto action {action}"
+            );
+        }
+        // Past the last Delete…, Tab leaves the rows; Shift-Tab returns to
+        // that Delete… although the rows drawn need not include it.
+        assert_eq!(
+            key_frame(cx, "tab", |window, cx| focused_row(&app, window, cx)),
+            None,
+            "Tab from the last Delete… leaves the rows"
+        );
+        assert!(
+            cx.update(|window, cx| window.focused(cx)).is_some(),
+            "and lands on the control after the list"
+        );
+        cx.update(|_, cx| {
+            app.read(cx)
+                .theme_editor
+                .rows_scroll()
+                .scroll_to_item(0, ScrollStrategy::Top)
+        });
+        native_frame(cx);
+        assert!(cx.debug_bounds("custom-theme-32").is_none());
+        for expected in [(31, 2), (31, 1), (31, 0), (30, 2)] {
+            let (focused, in_view) = key_frames(
+                cx,
+                "shift-tab",
+                |_, _| (),
+                |window, cx| {
+                    (
+                        focused_row(&app, window, cx),
+                        row_in_view(&app, expected.0, cx),
+                    )
+                },
+            )
+            .1;
+            assert_eq!(
+                focused,
+                Some(expected),
+                "Shift-Tab walks back to {expected:?}"
+            );
+            assert!(in_view, "row {} is in view after Shift-Tab", expected.0);
+        }
+        // Entering forwards while the list shows its end lands on the first
+        // row, drawn or not.
+        cx.update(|window, cx| card.focus(window, cx));
+        settle(cx);
+        assert!(
+            cx.debug_bounds("custom-theme-1").is_none(),
+            "the list still shows its end"
+        );
+        let (focused, in_view) = key_frames(
+            cx,
+            "tab",
+            |_, _| (),
+            |window, cx| (focused_row(&app, window, cx), row_in_view(&app, 0, cx)),
+        )
+        .1;
+        assert_eq!(
+            focused,
+            Some((0, 0)),
+            "Tab from the card reaches the first row's Edit…"
+        );
+        assert!(in_view, "and the first row is in view");
+    }
+
     /// The card keeps the plain stack's geometry around the virtualized rows:
     /// the rows' box is exactly `30 px × min(rows, 8)` and starts where the
     /// stack's first row stood (the "No custom themes yet." line's place), the
     /// list over it is 3 px taller at each end for the focus ring and nothing
     /// else, the card grows by the rows less the empty line and the setting
     /// below it keeps its distance, with one, two, eight and 32 saved themes.
-    /// A collapsed card or a moved row fails here even when the list's own
-    /// geometry holds. Positions are exact; the card's height and the
-    /// distances across its bottom edge allow half a device pixel, since the
-    /// test window is at 2x and layout snaps to that grid.
+    /// The card itself follows the picker above it, whose Your themes group
+    /// grows with the saved themes, at a constant distance, and everything
+    /// inside the card is measured from that offset. A collapsed card or a
+    /// moved row fails here even when the list's own geometry holds.
+    /// Positions are exact; the card's height and the distances across its
+    /// bottom edge allow half a device pixel, since the test window is at 2x
+    /// and layout snaps to that grid.
     #[gpui::test]
     fn the_card_keeps_the_plain_stacks_geometry_around_the_rows(cx: &mut TestAppContext) {
         const RING: Pixels = px(3.);
@@ -4563,6 +4777,7 @@ mod tests {
         let (app, cx) = open_app(cx);
         let rem = cx.update(|window, _| window.rem_size());
         let (border, padding) = (px(1.), rem);
+        let picker = bounds(cx, "settings-theme-picker".into());
         let card = bounds(cx, "custom-themes-card".into());
         let header = bounds(cx, "custom-themes-header".into());
         let empty = bounds(cx, "custom-themes-empty".into());
@@ -4582,21 +4797,31 @@ mod tests {
         for themes in [1u32, 2, 8, 32] {
             seed_themes(cx, &app, themes);
             let rows = appearance::ui_size(30.) * themes.min(8) as f32;
+            let picker_now = bounds(cx, "settings-theme-picker".into());
             let card_now = bounds(cx, "custom-themes-card".into());
             let header_now = bounds(cx, "custom-themes-header".into());
             let list_box = bounds(cx, "custom-themes-rows-box".into());
             let list = bounds(cx, "custom-themes-rows".into());
             let first = bounds(cx, "custom-theme-1".into());
             let below_now = bounds(cx, "text-size-setting-interface".into());
-            assert_eq!(
-                card_now.top(),
-                card.top(),
-                "{themes} themes: the card does not move"
+            assert!(
+                picker_now.bottom() > picker.bottom(),
+                "{themes} themes: the picker grew by its Your themes group"
             );
-            assert_eq!(header_now, header, "{themes} themes: nor its header");
+            assert_eq!(
+                card_now.top() - picker_now.bottom(),
+                card.top() - picker.bottom(),
+                "{themes} themes: the card keeps its distance from the picker"
+            );
+            let offset = card_now.top() - card.top();
+            assert_eq!(
+                (header_now.top(), header_now.left(), header_now.size),
+                (header.top() + offset, header.left(), header.size),
+                "{themes} themes: the header moves with the card and nothing else"
+            );
             assert_eq!(
                 list_box.top(),
-                stack_top,
+                stack_top + offset,
                 "{themes} themes: the rows start where the stack's first row stood"
             );
             assert_eq!(
@@ -4982,7 +5207,12 @@ mod tests {
             );
             // The lookup the picker uses agrees with what it rendered.
             assert_eq!(
-                cx.read(|cx| app.read(cx).theme_preview_body(choice).read(cx).palette()),
+                cx.read(|cx| {
+                    app.read(cx)
+                        .theme_preview_body(ThemeSelection::BuiltIn(choice))
+                        .read(cx)
+                        .palette()
+                }),
                 choice.palette()
             );
         }
@@ -5116,5 +5346,399 @@ mod tests {
             "and that frame no longer lists the deleted theme"
         );
         assert!(cx.debug_bounds("export-custom-theme-8").is_some());
+    }
+
+    /// Saved custom themes are a third picker group of the same cards: named
+    /// "<name> theme", described by their base, marked when selected, warned
+    /// when their palette has readability findings, and chosen by a click
+    /// that applies the palette and saves the selection. Without a saved
+    /// theme there is no third group.
+    #[gpui::test]
+    fn custom_themes_form_a_third_picker_group(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        let initial = cx.read(|cx| app.read(cx).settings.theme);
+        assert!(cx.debug_bounds("settings-theme-group-light").is_some());
+        assert!(cx.debug_bounds("settings-theme-group-dark").is_some());
+        assert!(
+            cx.debug_bounds("settings-theme-group-custom").is_none(),
+            "no third group without a custom theme"
+        );
+        assert_eq!(
+            cx.read(|cx| app.read(cx).card_names.borrow().len()),
+            ThemeChoice::ALL.len()
+        );
+        assert!(card_checked(cx, &app, initial));
+
+        let harbor = CustomTheme::from_base(7, "Harbor", ThemeChoice::Nord);
+        let mut dawn = CustomTheme::from_base(9, "Dawn Chorus", ThemeChoice::RosePineDawn);
+        // Muted text on the canvas at 1:1 fails the body-text rule.
+        dawn.palette.muted = dawn.palette.canvas;
+        assert!(!dawn.palette.readability_issues().is_empty());
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.set_custom_themes(vec![harbor.clone(), dawn.clone()], cx)
+            })
+        });
+        settle(cx);
+
+        let group = bounds(cx, "settings-theme-group-custom".into());
+        let dark = bounds(cx, "settings-theme-group-dark".into());
+        assert!(
+            group.top() > dark.top(),
+            "Your themes follows the built-in groups"
+        );
+        let harbor_card = bounds(cx, "settings-custom-theme-7".into());
+        let dawn_card = bounds(cx, "settings-custom-theme-9".into());
+        assert!(harbor_card.top() > group.top());
+        assert_eq!(
+            dawn_card.top(),
+            harbor_card.top(),
+            "two cards share the group's first row"
+        );
+        assert!(dawn_card.left() > harbor_card.right());
+
+        // Every card is named "<name> theme" for assistive technology.
+        let names = cx.read(|cx| app.read(cx).card_names.borrow().clone());
+        assert_eq!(names.len(), ThemeChoice::ALL.len() + 2);
+        let nord: &'static str = format!("settings-theme-{}", ThemeChoice::Nord as usize).leak();
+        for (selector, name) in [
+            ("settings-custom-theme-7", "Harbor theme"),
+            ("settings-custom-theme-9", "Dawn Chorus theme"),
+            (nord, "Nord theme"),
+        ] {
+            assert!(
+                names.contains(&(selector.into(), name.into())),
+                "{selector} is named {name:?}: {names:?}"
+            );
+        }
+
+        // Each custom card holds its own retained miniature, drawing its palette.
+        for theme in [&harbor, &dawn] {
+            let card = bounds(cx, format!("settings-custom-theme-{}", theme.id));
+            let (miniature, palette) = cx.read(|cx| {
+                let body = app
+                    .read(cx)
+                    .theme_preview_body(ThemeSelection::Custom(theme.id));
+                (body.entity_id(), body.read(cx).palette())
+            });
+            assert_eq!(palette, theme.palette, "{}'s miniature", theme.name);
+            let inside = bounds(cx, format!("theme-miniature-{miniature}"));
+            assert!(
+                inside.top() >= card.top()
+                    && inside.bottom() <= card.bottom()
+                    && inside.left() >= card.left()
+                    && inside.right() <= card.right(),
+                "{}'s miniature is inside its card: {inside:?} in {card:?}",
+                theme.name
+            );
+        }
+        assert!(!card_warned(cx, &app, ThemeSelection::Custom(7)));
+        assert!(
+            card_warned(cx, &app, ThemeSelection::Custom(9)),
+            "Dawn Chorus shows the readability glyph"
+        );
+        assert!(card_checked(cx, &app, initial));
+        assert!(!card_checked(cx, &app, ThemeSelection::Custom(7)));
+
+        // Clicking Harbor applies its palette, marks its card and saves the
+        // selection; it submits no read.
+        let idle = submissions(cx, &app);
+        cx.simulate_click(harbor_card.center(), Modifiers::default());
+        settle(cx);
+        assert_eq!(
+            cx.read(|cx| app.read(cx).settings.theme),
+            ThemeSelection::Custom(7)
+        );
+        assert_eq!(
+            applied(cx),
+            harbor.palette,
+            "the click applied the custom palette"
+        );
+        assert!(card_checked(cx, &app, ThemeSelection::Custom(7)));
+        assert!(!card_checked(cx, &app, initial));
+        assert_eq!(
+            submissions(cx, &app),
+            idle,
+            "a custom switch submitted a read"
+        );
+        drain_preference_writer(cx, &app);
+        assert_eq!(
+            Preferences::load().settings.theme,
+            ThemeSelection::Custom(7),
+            "the selection reached the store"
+        );
+
+        // Following the system marks no card and keeps the selection.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.settings.follow_system = true;
+                app.apply_appearance(window, cx);
+            })
+        });
+        settle(cx);
+        assert!(!card_checked(cx, &app, ThemeSelection::Custom(7)));
+        assert_eq!(
+            cx.read(|cx| app.read(cx).settings.theme),
+            ThemeSelection::Custom(7)
+        );
+
+        // A deleted theme loses its card and its miniature; the group goes
+        // with the last one.
+        cx.update(|_, cx| app.update(cx, |app, cx| app.set_custom_themes(vec![dawn.clone()], cx)));
+        settle(cx);
+        assert!(cx.debug_bounds("settings-custom-theme-7").is_none());
+        assert!(cx.debug_bounds("settings-custom-theme-9").is_some());
+        assert_eq!(
+            cx.read(|cx| app.read(cx).theme_previews.len()),
+            ThemeChoice::ALL.len() + 1
+        );
+        cx.update(|_, cx| app.update(cx, |app, cx| app.set_custom_themes(Vec::new(), cx)));
+        settle(cx);
+        assert!(cx.debug_bounds("settings-theme-group-custom").is_none());
+        assert_eq!(
+            cx.read(|cx| app.read(cx).theme_previews.len()),
+            ThemeChoice::ALL.len()
+        );
+    }
+
+    /// Cards are 132 px tall in a four-column grid at and above 1,060 px,
+    /// three columns in the compact layout and two in the narrow layout; the
+    /// twenty built-ins take five rows at 1,440 × 900. The custom group starts
+    /// its rows on the same grid.
+    #[gpui::test]
+    fn picker_cards_keep_the_grid_geometry(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        seed_themes(cx, &app, 2);
+        let light = ThemeChoice::ALL
+            .iter()
+            .filter(|choice| choice.is_light())
+            .count();
+        let dark = ThemeChoice::ALL.len() - light;
+        let column = |card: &Bounds<Pixels>| f32::from(card.left()).round() as i64;
+        for (width, height, columns) in [
+            (1440., 900., 4),
+            (1060., 900., 4),
+            (1000., 680., 3),
+            (700., 680., 2),
+        ] {
+            cx.simulate_resize(size(px(width), px(height)));
+            settle(cx);
+            let built_in: Vec<Bounds<Pixels>> = ThemeChoice::ALL
+                .into_iter()
+                .map(|choice| bounds(cx, format!("settings-theme-{}", choice as usize)))
+                .collect();
+            let custom: Vec<Bounds<Pixels>> = [1, 2]
+                .into_iter()
+                .map(|id| bounds(cx, format!("settings-custom-theme-{id}")))
+                .collect();
+            for card in built_in.iter().chain(&custom) {
+                assert_eq!(card.size.height, px(132.), "at {width} px: {card:?}");
+            }
+            let lefts: std::collections::BTreeSet<i64> = built_in.iter().map(column).collect();
+            assert_eq!(
+                lefts.len(),
+                columns,
+                "at {width} px the grid has {columns} columns: {lefts:?}"
+            );
+            let tops: std::collections::BTreeSet<i64> = built_in
+                .iter()
+                .map(|card| f32::from(card.top()).round() as i64)
+                .collect();
+            assert_eq!(
+                tops.len(),
+                light.div_ceil(columns) + dark.div_ceil(columns),
+                "at {width} px the built-ins fill their rows: {tops:?}"
+            );
+            if width == 1440. {
+                assert!(
+                    tops.len() <= 5,
+                    "twenty built-ins take at most five rows at 1,440 × 900"
+                );
+            }
+            assert_eq!(column(&custom[0]), *lefts.iter().next().unwrap());
+            assert_eq!(column(&custom[1]), *lefts.iter().nth(1).unwrap());
+            let last_built_in =
+                built_in
+                    .iter()
+                    .map(|card| card.bottom())
+                    .fold(
+                        px(0.),
+                        |top, bottom| if bottom > top { bottom } else { top },
+                    );
+            assert!(custom[0].top() > last_built_in);
+        }
+    }
+
+    /// The miniature `selection`'s picker card embeds, for its selectors.
+    fn card_miniature(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        selection: ThemeSelection,
+    ) -> gpui::EntityId {
+        cx.read(|cx| app.read(cx).theme_preview_body(selection).entity_id())
+    }
+
+    /// The caption is at least 54 px, not exactly: at interface text sizes
+    /// 12 and 11 its fixed padding, gaps, badge and swatches would squeeze the
+    /// truncating name and description below their line height and cut their
+    /// glyphs. The caption grows there and the miniature gives up the
+    /// difference; at the default size the card keeps its 70 px miniature.
+    #[gpui::test]
+    fn the_caption_keeps_its_text_lines_at_small_interface_sizes(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.simulate_resize(size(px(1440.), px(900.)));
+        let mut dawn = CustomTheme::from_base(9, "Dawn Chorus", ThemeChoice::RosePineDawn);
+        dawn.palette.muted = dawn.palette.canvas;
+        assert!(!dawn.palette.readability_issues().is_empty());
+        let plain = ThemeSelection::BuiltIn(ThemeChoice::Nord);
+        let code = cx.read(|cx| app.read(cx).settings.code_text_size);
+        // Dawn Chorus is selected and warned: its name row holds the check
+        // badge and the warning glyph, the tallest caption a card draws.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.set_custom_themes(vec![dawn.clone()], cx);
+                app.settings.theme = ThemeSelection::Custom(9);
+                app.apply_appearance(window, cx);
+            })
+        });
+        settle(cx);
+        assert!(card_checked(cx, &app, ThemeSelection::Custom(9)));
+        assert!(card_warned(cx, &app, ThemeSelection::Custom(9)));
+        assert!(!card_checked(cx, &app, plain) && !card_warned(cx, &app, plain));
+        for interface in [13, 12, 11] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.interface_text_size = interface;
+                    appearance::apply_text_sizes(interface, code, window, cx);
+                    cx.notify();
+                })
+            });
+            settle(cx);
+            assert!(
+                (f32::from(appearance::ui_text(13.)) - f32::from(interface)).abs() < 0.01,
+                "interface text is {interface} px"
+            );
+            // Layout snaps each edge to a device pixel, so a whole line may
+            // lose at most one of them.
+            let device = cx.update(|window, _| px(1. / window.scale_factor()));
+            let name_line = appearance::ui_text(12.) * 1.3 - device;
+            let description_line = appearance::ui_text(10.) * 1.3 - device;
+            for selection in [ThemeSelection::Custom(9), plain] {
+                let miniature = card_miniature(cx, &app, selection);
+                let card = bounds(
+                    cx,
+                    match selection {
+                        ThemeSelection::Custom(id) => format!("settings-custom-theme-{id}"),
+                        ThemeSelection::BuiltIn(choice) => {
+                            format!("settings-theme-{}", choice as usize)
+                        }
+                    },
+                );
+                let name = bounds(cx, format!("theme-name-{miniature}"));
+                let description = bounds(cx, format!("theme-description-{miniature}"));
+                assert!(
+                    name.size.height >= name_line,
+                    "at interface size {interface} {selection:?}'s name keeps its \
+                     {name_line:?} line: {name:?}"
+                );
+                assert!(
+                    description.size.height >= description_line,
+                    "at interface size {interface} {selection:?}'s description keeps \
+                     its {description_line:?} line: {description:?}"
+                );
+                assert!(
+                    description.top() >= name.bottom() && description.bottom() < card.bottom(),
+                    "at interface size {interface} {selection:?}'s lines stack inside \
+                     the card: {name:?}, {description:?} in {card:?}"
+                );
+                let body = bounds(cx, format!("theme-miniature-{miniature}"));
+                assert!(body.bottom() <= name.top());
+                if interface == appearance::DEFAULT_INTERFACE_TEXT_SIZE {
+                    assert_eq!(card.size.height, px(132.));
+                    assert_eq!(
+                        body.size.height,
+                        px(70.),
+                        "the default caption stays 54 px under a 70 px miniature"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The warning glyph is a status mark, drawn in the active palette as the
+    /// check badge is: a saved theme whose warning color equals its own panel
+    /// would otherwise draw an invisible disc on its caption.
+    #[gpui::test]
+    fn the_picker_warning_glyph_is_drawn_in_the_active_palette(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        let mut lantern = CustomTheme::from_base(5, "Lantern", ThemeChoice::Nord);
+        lantern.palette.warning = lantern.palette.panel;
+        assert!(
+            !lantern.palette.readability_issues().is_empty(),
+            "a warning on its own panel fails the surface rule"
+        );
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.set_custom_themes(vec![lantern.clone()], cx);
+                cx.notify();
+            })
+        });
+        settle(cx);
+        let active = applied(cx);
+        assert_ne!(active, lantern.palette, "Lantern is not the applied theme");
+        assert_ne!(active.warning, lantern.palette.warning);
+        assert!(card_warned(cx, &app, ThemeSelection::Custom(5)));
+        let miniature = card_miniature(cx, &app, ThemeSelection::Custom(5));
+        let glyph = |cx: &mut VisualTestContext, p: Palette| {
+            let selector: &'static str = format!(
+                "theme-warning-glyph-{miniature}-{:06x}-{:06x}",
+                p.warning, p.canvas
+            )
+            .leak();
+            cx.debug_bounds(selector)
+        };
+        assert!(
+            glyph(cx, active).is_some(),
+            "the glyph's disc and mark are the active warning and canvas"
+        );
+        assert!(
+            glyph(cx, lantern.palette).is_none(),
+            "the glyph is not drawn in the palette it flags"
+        );
+    }
+
+    /// The editor previews its draft on the settings card: the same 132 px
+    /// card around the same 70 px miniature as a picker card.
+    #[gpui::test]
+    fn the_editor_preview_card_matches_a_picker_card(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        for viewport in [size(px(1000.), px(680.)), size(px(1440.), px(900.))] {
+            cx.simulate_resize(viewport);
+            settle(cx);
+            let choice = ThemeChoice::Nord;
+            let card = bounds(cx, format!("settings-theme-{}", choice as usize));
+            let miniature = card_miniature(cx, &app, ThemeSelection::BuiltIn(choice));
+            let card_body = bounds(cx, format!("theme-miniature-{miniature}"));
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.open_theme_editor(None, window, cx))
+            });
+            settle(cx);
+            let form = form(cx, &app);
+            next_frame(cx);
+            let preview = bounds(cx, "theme-editor-preview".into());
+            let draft = cx.read(|cx| form.read(cx).preview_body.entity_id());
+            let preview_body = bounds(cx, format!("theme-miniature-{draft}"));
+            assert_eq!(
+                preview.size.height, card.size.height,
+                "at {viewport:?} the editor's preview card is a picker card's height"
+            );
+            assert_eq!(
+                preview_body.size.height, card_body.size.height,
+                "at {viewport:?} the editor's miniature is a picker miniature's height"
+            );
+            assert_eq!(preview.size.height, px(132.));
+            cx.update(|window, cx| app.update(cx, |app, cx| app.close_theme_editor(window, cx)));
+            settle(cx);
+        }
     }
 }

@@ -274,12 +274,24 @@ struct GitTurtle {
     project_library: project_library::ProjectLibrary,
     /// Saved custom themes, which a custom `settings.theme` selection resolves against.
     custom_themes: Vec<appearance::custom::CustomTheme>,
-    /// One miniature per built-in, so the Settings picker can reuse the twenty
-    /// preview bodies that a palette change does not alter
-    /// (`settings::ThemePreviewBody`). Each is stored with the choice it draws
-    /// and found through `GitTurtle::theme_preview_body`, never by position:
-    /// `ThemeChoice::ALL` is in display order, not discriminant order.
-    theme_previews: Vec<(appearance::ThemeChoice, Entity<settings::ThemePreviewBody>)>,
+    /// One miniature per picker card, built-in and custom, so the Settings
+    /// picker can reuse the preview bodies that a palette change does not
+    /// alter (`settings::ThemePreviewBody`). Each is stored with the selection
+    /// it draws and found through `GitTurtle::theme_preview_body`, never by
+    /// position: `ThemeChoice::ALL` is in display order, not discriminant
+    /// order, and a custom id is not an index. `GitTurtle::set_custom_themes`
+    /// is the only writer of `custom_themes` and keeps the custom entries in
+    /// step: a saved palette is pushed into its existing body, which notifies
+    /// only when it changed, and a deleted theme's body is dropped.
+    theme_previews: Vec<(
+        appearance::custom::ThemeSelection,
+        Entity<settings::ThemePreviewBody>,
+    )>,
+    /// Test-only: the debug selector and accessible name of every card the
+    /// last picker render built, in order
+    /// (`theme_editor::tests::custom_themes_form_a_third_picker_group`).
+    #[cfg(test)]
+    card_names: std::cell::RefCell<Vec<(String, String)>>,
     /// Test-only: the palette every draw of this view saw. A Settings theme
     /// switch and a live-preview edit each cost exactly one draw, which
     /// already shows the new palette; see
@@ -462,15 +474,28 @@ impl GitTurtle {
                 .default_value(settings.external_editor.clone())
                 .placeholder("Visual Studio Code")
         });
-        // The picker's twenty miniatures never change: each draws one built-in
-        // palette. Their entities outlive a palette change so its frame can
-        // reuse them.
+        // A built-in's miniature never changes: it draws one built-in
+        // palette. A custom miniature draws its saved palette until that theme
+        // is saved again. Their entities outlive a palette change so its frame
+        // can reuse them.
         let theme_previews = appearance::ThemeChoice::ALL
             .into_iter()
             .map(|choice| {
                 (
-                    choice,
-                    cx.new(|_| settings::ThemePreviewBody::new(choice.palette())),
+                    appearance::custom::ThemeSelection::BuiltIn(choice),
+                    choice.palette(),
+                )
+            })
+            .chain(preferences.custom_themes.iter().map(|theme| {
+                (
+                    appearance::custom::ThemeSelection::Custom(theme.id),
+                    theme.palette,
+                )
+            }))
+            .map(|(selection, palette)| {
+                (
+                    selection,
+                    cx.new(|_| settings::ThemePreviewBody::new(palette)),
                 )
             })
             .collect();
@@ -523,6 +548,8 @@ impl GitTurtle {
             theme_previews,
             #[cfg(test)]
             draws: Vec::new(),
+            #[cfg(test)]
+            card_names: Default::default(),
             project_pane: project_pane::State::new(cx),
             rename_project: None,
             draft_saver: commit_drafts::DraftSaver::default(),

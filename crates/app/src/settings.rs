@@ -1,4 +1,5 @@
 use crate::*;
+use appearance::custom::{CustomTheme, ThemeSelection};
 use appearance::{Density, ThemeChoice};
 use columns::{ColumnId, ColumnSettings};
 use gitturtle_core::WriteCommand;
@@ -524,29 +525,68 @@ impl GitTurtle {
             .into_any_element()
     }
 
-    /// The retained miniature that draws `choice`'s own palette. The lookup is
-    /// by the choice stored beside each body, so neither the order of
-    /// [`ThemeChoice::ALL`] nor the enum's discriminants can pair a card with
-    /// another theme's miniature.
-    pub(super) fn theme_preview_body(&self, choice: ThemeChoice) -> &Entity<ThemePreviewBody> {
+    /// The retained miniature that draws `selection`'s own palette. The lookup
+    /// is by the selection stored beside each body, so neither the order of
+    /// [`ThemeChoice::ALL`], nor the enum's discriminants, nor a custom id can
+    /// pair a card with another theme's miniature. Every built-in and every
+    /// saved custom theme has one: [`Self::set_custom_themes`] keeps the custom
+    /// entries in step with `custom_themes`.
+    pub(super) fn theme_preview_body(
+        &self,
+        selection: ThemeSelection,
+    ) -> &Entity<ThemePreviewBody> {
         self.theme_previews
             .iter()
-            .find_map(|(drawn, body)| (*drawn == choice).then_some(body))
-            .expect("every built-in theme has a retained miniature")
+            .find_map(|(drawn, body)| (*drawn == selection).then_some(body))
+            .expect("every built-in and every saved custom theme has a retained miniature")
+    }
+
+    /// Replace the saved custom themes and keep their picker miniatures in
+    /// step: a theme keeps its retained body, which takes the new palette and
+    /// notifies only when it changed; a new theme gets a body; a deleted
+    /// theme's body is dropped. This is the only writer of `custom_themes`,
+    /// so a custom card is never drawn without its miniature.
+    pub(super) fn set_custom_themes(&mut self, themes: Vec<CustomTheme>, cx: &mut Context<Self>) {
+        self.theme_previews.retain(|(drawn, _)| match drawn {
+            ThemeSelection::BuiltIn(_) => true,
+            ThemeSelection::Custom(id) => themes.iter().any(|theme| theme.id == *id),
+        });
+        for theme in &themes {
+            let selection = ThemeSelection::Custom(theme.id);
+            let palette = theme.palette;
+            let retained = self
+                .theme_previews
+                .iter()
+                .find_map(|(drawn, body)| (*drawn == selection).then(|| body.clone()));
+            match retained {
+                Some(body) => body.update(cx, |body, cx| body.set_palette(palette, cx)),
+                None => self
+                    .theme_previews
+                    .push((selection, cx.new(|_| ThemePreviewBody::new(palette)))),
+            }
+        }
+        self.custom_themes = themes;
     }
 
     /// Theme switches restyle retained editors in place: no worker job, no
     /// content re-preparation. `gitturtle.theme_apply_frame_ms` measures this
-    /// handler through the next frame callback under `GITTURTLE_TRACE`.
+    /// handler through the next frame callback under `GITTURTLE_TRACE`, for a
+    /// built-in and a custom selection alike.
     pub(super) fn choose_theme(
         &mut self,
-        theme: ThemeChoice,
+        theme: ThemeSelection,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let started = trace_enabled().then(std::time::Instant::now);
-        let theme = appearance::custom::ThemeSelection::BuiltIn(theme);
         if self.settings.theme == theme && !self.settings.follow_system {
+            return;
+        }
+        if let ThemeSelection::Custom(id) = theme
+            && !self.custom_themes.iter().any(|saved| saved.id == id)
+        {
+            // A card exists only for a saved theme; a click that lands after
+            // its delete must not select what the store no longer holds.
             return;
         }
         self.settings.theme = theme;
@@ -689,81 +729,159 @@ impl GitTurtle {
             .into_any_element()
     }
 
+    /// The picker: Light palettes, Dark palettes and, when any is saved, Your
+    /// themes. Every card is the same element built from a palette, a name, a
+    /// description and a readability count; a custom card describes its base
+    /// and shows the warning glyph when its palette has findings.
     fn render_theme_picker(&self, columns: usize, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
-        // A selection naming a missing custom theme shows the default it resolves to.
-        let selected_theme = self.settings.theme.resolve(&self.custom_themes).selection;
+        // A selection naming a missing custom theme shows the default it
+        // resolves to; following the system marks no card.
+        let selected = (!self.settings.follow_system)
+            .then(|| self.settings.theme.resolve(&self.custom_themes).selection);
+        #[cfg(test)]
+        self.card_names.borrow_mut().clear();
+        let built_in = |light: bool| {
+            ThemeChoice::ALL
+                .into_iter()
+                .filter(|choice| choice.is_light() == light)
+                .map(|choice| ThemeCard {
+                    selection: ThemeSelection::BuiltIn(choice),
+                    palette: choice.palette(),
+                    name: choice.label().into(),
+                    description: choice.description().into(),
+                    warnings: 0,
+                })
+                .collect::<Vec<_>>()
+        };
+        // Cached per palette, so a frame recomputes no theme's findings.
+        let warnings = self.theme_editor.warning_counts(&self.custom_themes);
+        let custom = self
+            .custom_themes
+            .iter()
+            .zip(warnings)
+            .map(|(theme, warnings)| ThemeCard {
+                selection: ThemeSelection::Custom(theme.id),
+                palette: theme.palette,
+                name: theme.name.clone().into(),
+                description: format!("Based on {}", theme.base.label()).into(),
+                warnings,
+            })
+            .collect::<Vec<_>>();
+        let groups = [
+            ("light", "Light palettes", built_in(true)),
+            ("dark", "Dark palettes", built_in(false)),
+            ("custom", "Your themes", custom),
+        ];
         div()
+            .debug_selector(|| "settings-theme-picker".into())
             .flex()
             .flex_col()
             .gap_4()
-            .children([true, false].into_iter().map(|light| {
-                let choices: Vec<_> = ThemeChoice::ALL
+            .children(
+                groups
                     .into_iter()
-                    .filter(|choice| choice.is_light() == light)
-                    .collect();
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_size(appearance::ui_text(12.))
-                            .text_color(rgb(p.muted))
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(if light {
-                                "Light palettes"
-                            } else {
-                                "Dark palettes"
-                            }),
-                    )
-                    .children(choices.chunks(columns).map(|row| {
+                    .filter(|(_, _, cards)| !cards.is_empty())
+                    .map(|(key, title, cards)| {
                         div()
                             .flex()
-                            .gap_3()
-                            .children(row.iter().copied().map(|choice| {
-                                let selected = !self.settings.follow_system
-                                    && selected_theme
-                                        == appearance::custom::ThemeSelection::BuiltIn(choice);
-                                Button::new(("settings-theme", choice as usize))
-                                    .ghost()
-                                    .group("settings-theme-choice")
-                                    .debug_selector(move || {
-                                        format!("settings-theme-{}", choice as usize)
-                                    })
-                                    .accessibility_label(format!("{} theme", choice.label()))
-                                    .selected(selected)
-                                    .toggled(selected)
-                                    .tooltip(format!(
-                                        "{} · {}",
-                                        choice.label(),
-                                        choice.description()
-                                    ))
-                                    .flex_1()
-                                    .min_w_0()
-                                    .h(appearance::ui_size(166.))
-                                    .p(px(2.))
-                                    .border_1()
-                                    .border_color(rgb(if selected { p.accent } else { p.border }))
-                                    .rounded(px(10.))
-                                    .overflow_hidden()
-                                    .child(theme_preview(
-                                        self.theme_preview_body(choice),
-                                        choice.palette(),
-                                        choice.label(),
-                                        choice.description(),
-                                        selected,
-                                        p.accent,
-                                        p.accent_foreground,
-                                    ))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.choose_theme(choice, window, cx)
+                            .flex_col()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .debug_selector(|| format!("settings-theme-group-{key}"))
+                                    .text_size(appearance::ui_text(12.))
+                                    .text_color(rgb(p.muted))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(title),
+                            )
+                            .children(cards.chunks(columns).map(|row| {
+                                div()
+                                    .flex()
+                                    .gap_3()
+                                    .children(row.iter().map(|card| {
+                                        self.theme_card(
+                                            card,
+                                            selected == Some(card.selection),
+                                            p,
+                                            cx,
+                                        )
                                     }))
+                                    // A partial row's fillers share the
+                                    // cards' padding and border, so its
+                                    // cards stay on the full rows' columns.
+                                    .children(
+                                        (row.len()..columns)
+                                            .map(|_| div().flex_1().min_w_0().p(px(2.)).border_1()),
+                                    )
                             }))
-                            .children((row.len()..columns).map(|_| div().flex_1().min_w_0()))
-                    }))
-            }))
+                    }),
+            )
             .into_any_element()
+    }
+
+    /// One picker card: a ghost toggle button holding the retained miniature
+    /// and the caption. A built-in and a custom card differ only in their data.
+    fn theme_card(
+        &self,
+        card: &ThemeCard,
+        selected: bool,
+        p: appearance::Palette,
+        cx: &mut Context<Self>,
+    ) -> Button {
+        let selection = card.selection;
+        let id = match selection {
+            ThemeSelection::BuiltIn(choice) => ElementId::from(("settings-theme", choice as usize)),
+            ThemeSelection::Custom(id) => ElementId::from(("settings-custom-theme", id as usize)),
+        };
+        let selector = move || match selection {
+            ThemeSelection::BuiltIn(choice) => format!("settings-theme-{}", choice as usize),
+            ThemeSelection::Custom(id) => format!("settings-custom-theme-{id}"),
+        };
+        let accessible_name = format!("{} theme", card.name);
+        #[cfg(test)]
+        self.card_names
+            .borrow_mut()
+            .push((selector(), accessible_name.clone()));
+        let tooltip = if card.warnings == 0 {
+            format!("{} · {}", card.name, card.description)
+        } else {
+            format!(
+                "{} · {} · {} readability warning{}",
+                card.name,
+                card.description,
+                card.warnings,
+                if card.warnings == 1 { "" } else { "s" }
+            )
+        };
+        Button::new(id)
+            .ghost()
+            .group("settings-theme-choice")
+            .debug_selector(selector)
+            .accessibility_label(accessible_name)
+            .selected(selected)
+            .toggled(selected)
+            .tooltip(tooltip)
+            .flex_1()
+            .min_w_0()
+            .h(appearance::ui_size(132.))
+            .p(px(2.))
+            .border_1()
+            .border_color(rgb(if selected { p.accent } else { p.border }))
+            .rounded(px(10.))
+            .overflow_hidden()
+            .child(theme_preview(
+                self.theme_preview_body(selection),
+                card.palette,
+                card.name.clone(),
+                card.description.clone(),
+                selected,
+                card.warnings,
+                p,
+            ))
+            .on_click(
+                cx.listener(move |this, _, window, cx| this.choose_theme(selection, window, cx)),
+            )
     }
 
     /// Your themes: the saved custom themes with Edit…, Export… and Delete…,
@@ -1222,7 +1340,13 @@ impl GitTurtle {
         let busy = self.operation_busy.is_some();
         let compact = window.viewport_size().width < appearance::ui_size(1060.);
         let narrow = window.viewport_size().width < appearance::ui_size(720.);
-        let theme_columns = if narrow { 2 } else { 3 };
+        let theme_columns = if narrow {
+            2
+        } else if compact {
+            3
+        } else {
+            4
+        };
         let branch_edited =
             self.settings_branch.read(cx).value().as_ref() != self.settings.default_branch.as_str();
         let identity_edited = self.profile.as_ref().is_none_or(|profile| {
@@ -1632,8 +1756,9 @@ impl GitTurtle {
 /// from the previewed palette alone.
 ///
 /// It has its own entity so the picker can embed it with [`Entity::cached`].
-/// Applying a palette recolors the window around these twenty miniatures
-/// without altering one of their pixels, and
+/// Applying a palette recolors the window around these miniatures, one per
+/// built-in and one per saved custom theme, without altering one of their
+/// pixels, and
 /// [`GitTurtle::apply_appearance`](crate::GitTurtle::apply_appearance) notifies
 /// its root instead of refreshing the window, so the frame that shows the new
 /// palette reuses their layout and paint instead of building them again. The
@@ -1646,6 +1771,10 @@ pub(super) struct ThemePreviewBody {
     /// again.
     #[cfg(test)]
     renders: usize,
+    /// Test-only: real palette changes, so a test can assert which
+    /// miniatures a save invalidated.
+    #[cfg(test)]
+    palette_changes: usize,
 }
 
 impl ThemePreviewBody {
@@ -1654,12 +1783,19 @@ impl ThemePreviewBody {
             palette,
             #[cfg(test)]
             renders: 0,
+            #[cfg(test)]
+            palette_changes: 0,
         }
     }
 
     #[cfg(test)]
     pub(super) fn renders(&self) -> usize {
         self.renders
+    }
+
+    #[cfg(test)]
+    pub(super) fn palette_changes(&self) -> usize {
+        self.palette_changes
     }
 
     /// Test-only: the palette this miniature draws.
@@ -1673,6 +1809,10 @@ impl ThemePreviewBody {
     pub(super) fn set_palette(&mut self, palette: appearance::Palette, cx: &mut Context<Self>) {
         if self.palette != palette {
             self.palette = palette;
+            #[cfg(test)]
+            {
+                self.palette_changes += 1;
+            }
             cx.notify();
         }
     }
@@ -1685,111 +1825,104 @@ impl Render for ThemePreviewBody {
             self.renders += 1;
         }
         let p = self.palette;
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .h(crate::appearance::ui_size(25.))
-                    .flex_shrink_0()
-                    .px_2()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .bg(rgb(p.panel))
-                    .border_b_1()
-                    .border_color(rgb(p.border))
-                    .children(
-                        [p.removed, p.modified, p.added]
-                            .map(|color| div().size(px(4.)).rounded_full().bg(rgb(color))),
-                    )
-                    .child(div().flex_1())
-                    .child(div().w(px(21.)).h(px(6.)).rounded(px(2.)).bg(rgb(p.hover)))
-                    .child(div().w(px(24.)).h(px(8.)).rounded(px(2.)).bg(rgb(p.accent))),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .child(
-                        div()
-                            .w(px(30.))
-                            .flex_shrink_0()
-                            .h_full()
-                            .p(px(6.))
-                            .flex()
-                            .flex_col()
-                            .gap(px(7.))
-                            .bg(rgb(p.subtle))
-                            .border_r_1()
-                            .border_color(rgb(p.border))
-                            .children((0..4).map(|row| {
-                                div().h(px(3.)).w_full().rounded_full().bg(rgb(if row == 1 {
-                                    p.accent
-                                } else {
-                                    p.border
-                                }))
-                            })),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .py_2()
-                            .flex()
-                            .flex_col()
-                            .children((0..4).map(|row| {
-                                let color = [p.added, p.accent, p.renamed, p.modified][row];
-                                div()
-                                    .h(px(14.))
-                                    .px_2()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(7.))
-                                    .when(row == 1, |element| element.bg(rgb(p.selected)))
-                                    .child(
-                                        div()
-                                            .relative()
-                                            .w(px(9.))
-                                            .h_full()
-                                            .flex_shrink_0()
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .child(div().w(px(2.)).h_full().bg(rgb(color)))
-                                            .child(
-                                                div()
-                                                    .absolute()
-                                                    .size(px(5.))
-                                                    .rounded_full()
-                                                    .bg(rgb(color)),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .flex()
-                                            .items_center()
-                                            .gap_2()
-                                            .child(
-                                                div()
-                                                    .h(px(3.))
-                                                    .w(relative([0.68, 0.84, 0.55, 0.74][row]))
-                                                    .rounded_full()
-                                                    .bg(rgb(if row == 1 {
-                                                        p.muted
-                                                    } else {
-                                                        p.border
-                                                    })),
-                                            ),
-                                    )
-                            })),
-                    ),
-            )
+        // One painted element, like `swatch_run`: a frame that rebuilds every
+        // card, as a switch's click or a Tab's focus does through
+        // `Window::refresh`, lays out one node per miniature, not forty.
+        canvas(
+            |_, _, _| (),
+            move |bounds, _, window, _| paint_miniature(bounds, p, window),
+        )
+        .size_full()
     }
+}
+
+/// Paint the miniature workspace into `bounds` on palette `p`, as the boxes a
+/// div tree of this geometry would paint, through the same `paint_quad`
+/// snapping. It is not the base's div tree redrawn: the miniature is
+/// re-proportioned for the 132 px card, with a 20 px top bar where the divs
+/// had 25 px, a 26 px sidebar where they had 30 px and 10 px rows where they
+/// had 14 px (the caption's check badge went from 18 to 16 px with it). A top
+/// bar `ui_size(20.)` tall on the panel color over a 1 px border carries three
+/// 4 px status dots and two pills; below it a 26 px sidebar on the subtle
+/// color, with a 1 px right border and four 3 px stripes inside 5 px of
+/// padding, stands beside four 10 px changed-file rows after 5 px, each 8 px
+/// in from either edge with a 9 px graph column (a 2 px line under a 5 px
+/// node) and a text stripe 6 px on; the second row is selected and its stripe
+/// muted.
+fn paint_miniature(bounds: Bounds<Pixels>, p: appearance::Palette, window: &mut Window) {
+    let mut quad = |x: Pixels, y: Pixels, w: Pixels, h: Pixels, color: u32, radius: Pixels| {
+        window.paint_quad(
+            gpui::fill(
+                Bounds::new(bounds.origin + point(x, y), size(w, h)),
+                rgb(color),
+            )
+            .corner_radii(gpui::Corners::all(radius)),
+        );
+    };
+    let (width, height) = (bounds.size.width, bounds.size.height);
+    let one = px(1.);
+    let bar = appearance::ui_size(20.);
+    quad(px(0.), px(0.), width, bar, p.panel, px(0.));
+    quad(px(0.), bar - one, width, one, p.border, px(0.));
+    let middle = (bar - one) / 2.;
+    for (index, color) in [p.removed, p.modified, p.added].into_iter().enumerate() {
+        let x = px(8.) + px(8.) * index as f32;
+        quad(x, middle - px(2.), px(4.), px(4.), color, px(2.));
+    }
+    quad(
+        width - px(57.),
+        middle - px(3.),
+        px(21.),
+        px(6.),
+        p.hover,
+        px(2.),
+    );
+    quad(
+        width - px(32.),
+        middle - px(4.),
+        px(24.),
+        px(8.),
+        p.accent,
+        px(2.),
+    );
+    let body = height - bar;
+    quad(px(0.), bar, px(26.), body, p.subtle, px(0.));
+    quad(px(25.), bar, one, body, p.border, px(0.));
+    for row in 0..4 {
+        let color = if row == 1 { p.accent } else { p.border };
+        let y = bar + px(5.) + px(8.) * row as f32;
+        quad(px(5.), y, px(15.), px(3.), color, px(1.5));
+    }
+    let stripe_width = width - px(57.);
+    for row in 0..4 {
+        let top = bar + px(5.) + px(10.) * row as f32;
+        let color = [p.added, p.accent, p.renamed, p.modified][row];
+        if row == 1 {
+            quad(px(26.), top, width - px(26.), px(10.), p.selected, px(0.));
+        }
+        quad(px(37.5), top, px(2.), px(10.), color, px(0.));
+        quad(px(36.), top + px(2.5), px(5.), px(5.), color, px(2.5));
+        let share: f32 = [0.68, 0.84, 0.55, 0.74][row];
+        let stripe = if row == 1 { p.muted } else { p.border };
+        quad(
+            px(49.),
+            top + px(3.5),
+            stripe_width * share,
+            px(3.),
+            stripe,
+            px(1.5),
+        );
+    }
+}
+
+/// What a picker card shows: the theme it selects, the palette its miniature
+/// draws, its caption and the count of its readability findings.
+struct ThemeCard {
+    selection: ThemeSelection,
+    palette: appearance::Palette,
+    name: SharedString,
+    description: SharedString,
+    warnings: usize,
 }
 
 /// A tiny workspace built from native elements stays crisp at any display scale
@@ -1797,25 +1930,40 @@ impl Render for ThemePreviewBody {
 /// The theme editor previews its draft with the same miniature.
 ///
 /// `body` supplies [`ThemePreviewBody`]; the caller keeps it and its palette,
-/// so a frame that changes neither reuses the miniature.
+/// so a frame that changes neither reuses the miniature. `warnings` is the
+/// palette's readability finding count; a non-zero count shows the glyph
+/// beside the name. The card is 132 px tall: a 70 px miniature over a 54 px
+/// caption inside the button's padding and borders. 54 px is the caption's
+/// minimum: at the smallest interface text sizes its fixed padding, gaps,
+/// badge and swatches leave the text lines less than their line height, so
+/// the caption grows and the miniature gives up the difference.
+///
+/// `active` is the applied palette. The hover border, the check badge and the
+/// warning glyph are status marks, so they are drawn in it rather than in `p`,
+/// the palette the card previews and the glyph may flag: a saved theme whose
+/// warning color matches its own panel still shows the glyph's shape.
 pub(super) fn theme_preview(
     body: &Entity<ThemePreviewBody>,
     p: appearance::Palette,
     label: impl Into<SharedString>,
     description: impl Into<SharedString>,
     selected: bool,
-    active_accent: u32,
-    active_foreground: u32,
+    warnings: usize,
+    active: appearance::Palette,
 ) -> AnyElement {
     let label = label.into();
     let description = description.into();
+    // The caption's lines and marks name the embedded body, as the miniature
+    // does, so a test can read which card is checked or warned, and the
+    // height its text keeps, from the rendered tree.
+    let miniature = body.entity_id();
     div()
         .size_full()
         .rounded(px(7.))
         .border_1()
         .border_color(gpui_kit::transparent_black())
         .group_hover("settings-theme-choice", move |style| {
-            style.border_color(rgb(active_accent))
+            style.border_color(rgb(active.accent))
         })
         .overflow_hidden()
         .flex()
@@ -1833,22 +1981,19 @@ pub(super) fn theme_preview(
                 .text_color(rgb(p.text))
                 // Names the embedded body, so a test can find which miniature
                 // a card holds in the rendered tree.
-                .debug_selector({
-                    let miniature = body.entity_id();
-                    move || format!("theme-miniature-{miniature}")
-                })
+                .debug_selector(move || format!("theme-miniature-{miniature}"))
                 .child(body.clone().cached(StyleRefinement::default().size_full())),
         )
         .child(
             div()
                 .id("theme-preview-caption")
-                .h(crate::appearance::ui_size(70.))
+                .min_h(crate::appearance::ui_size(54.))
                 .flex_shrink_0()
                 .px_3()
-                .py_2()
+                .py(px(6.))
                 .flex()
                 .flex_col()
-                .gap(px(4.))
+                .gap(px(3.))
                 .bg(rgb(p.panel))
                 .group_hover("settings-theme-choice", |style| style.bg(rgb(p.hover)))
                 .group_active("settings-theme-choice", |style| style.bg(rgb(p.selected)))
@@ -1856,31 +2001,53 @@ pub(super) fn theme_preview(
                 .border_color(rgb(p.border))
                 .child({
                     let name = div()
+                        .debug_selector(move || format!("theme-name-{miniature}"))
                         .min_w_0()
                         .truncate()
                         .text_size(crate::appearance::ui_text(12.))
+                        .line_height(relative(1.3))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(rgb(p.text))
                         .child(label);
-                    if selected {
+                    if selected || warnings > 0 {
                         div()
                             .flex()
                             .items_center()
-                            .justify_between()
                             .gap_1()
-                            .child(name)
-                            .child(
-                                div()
-                                    .size(px(18.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded_full()
-                                    .bg(rgb(active_accent))
-                                    .child(icon("check", 12., active_foreground)),
-                            )
+                            .child(name.flex_1())
+                            .when(warnings > 0, |row| {
+                                row.child(
+                                    div()
+                                        .debug_selector(move || {
+                                            format!("theme-warning-{miniature}")
+                                        })
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(3.))
+                                        .text_size(crate::appearance::ui_text(10.))
+                                        .line_height(relative(1.3))
+                                        .text_color(rgb(p.muted))
+                                        .child(card_warning_glyph(active, miniature))
+                                        .child(warnings.to_string()),
+                                )
+                            })
+                            .when(selected, |row| {
+                                row.child(
+                                    div()
+                                        .debug_selector(move || format!("theme-check-{miniature}"))
+                                        .size(px(16.))
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded_full()
+                                        .bg(rgb(active.accent))
+                                        .child(icon("check", 11., active.accent_foreground)),
+                                )
+                            })
                     } else {
-                        // Without the badge the name is the whole line, at the
+                        // Without a mark the name is the whole line, at the
                         // same place and width: the row that would hold both
                         // is not laid out.
                         name
@@ -1888,7 +2055,9 @@ pub(super) fn theme_preview(
                 })
                 .child(
                     div()
+                        .debug_selector(move || format!("theme-description-{miniature}"))
                         .text_size(crate::appearance::ui_text(10.))
+                        .line_height(relative(1.3))
                         .font_weight(FontWeight::NORMAL)
                         .text_color(rgb(p.muted))
                         .truncate()
@@ -1903,6 +2072,19 @@ pub(super) fn theme_preview(
                 )),
         )
         .into_any_element()
+}
+
+/// A picker card's readability glyph, drawn in `marks`. The card passes the
+/// active palette, as it does for its check badge. The selector names the
+/// colors the glyph drew and the card's miniature, so a test reads from the
+/// rendered tree which palette the mark on that card used.
+fn card_warning_glyph(marks: appearance::Palette, miniature: gpui::EntityId) -> Div {
+    crate::theme_editor::warning_glyph(marks).debug_selector(move || {
+        format!(
+            "theme-warning-glyph-{miniature}-{:06x}-{:06x}",
+            marks.warning, marks.canvas
+        )
+    })
 }
 
 /// `colors` as a run of `width` × `height` boxes `gap` apart with `radius`
