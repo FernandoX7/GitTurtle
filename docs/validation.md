@@ -4,6 +4,127 @@ Use the [current validation guidance](#current-validation-guidance) for the affe
 
 This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native workflow evidence is primarily macOS-specific; the September 14 entries add Pop!_OS startup and clean Ubuntu/virtual-native checks. Platform execution and access limits belong to the applicable dated record and [platform runbook](linux.md); the earlier [environment report](benchmarks/2026-09-09-milestone-environment.md) describes its own session. The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Public binary release prerequisites belong in the [launch checklist](public-launch.md); the Linux runbook includes a local teammate bundle.
 
+## September 23 Theme picker with custom themes
+
+Native QA for `themes-picker`, which lists saved custom themes in the Settings
+theme picker as a **Your themes** group on the same preview cards as the
+built-ins, tightens the grid to 132 px cards (four columns at and above the
+scaled 1,060 px breakpoint, three below it), and makes the editor's preview the
+same card. Linux/XWayland (GNOME Shell 46.0 on Wayland, x86_64, `DISPLAY=:1`,
+`WAYLAND_DISPLAY` unset, `GPUI_X11_SCALE_FACTOR` 1), windows 1000x680, the app's
+`window_min_size`, and 1440x900, with absolute throwaway `XDG_CONFIG_HOME`,
+`XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME` and `HOME` per launch, each
+seeded just before that launch. The stores were a version-6 store with two custom
+themes (Harbor Dusk, based on Midnight with no readability findings, and Paper Fog,
+based on Braden with eight), the same with three (adding Lantern Grey, based on
+Tokyo Night with its warning color equal to its own panel), the empty store, and
+the 32-theme store of `themes-draw-cost` (sha256
+`9deaa6eedec8ac129a9bb64e084b265b59f42e1bd9bba430f6ba366e4f04d23a`). Fixture:
+`scripts/create-demo-repo.py` at HEAD
+`52f471a1137c617fd8e36db2e6251a18f58c23eb`, clean before every launch and
+afterwards; the picker writes only app preferences, and no network action was
+taken. Follow system was turned on and off with the app's own switch; the
+desktop color scheme (`prefer-dark`) was read, never changed.
+
+The captures were taken from build `4cdd4df2c0767429ee4c182f73b8e5f82a4312e7`
+(GitTurtle 0.1.0, `source_tree` clean, release, `x86_64-unknown-linux-gnu`,
+rustc 1.98.0 (88d9e12ae 2026-08-18), binary sha256
+`3ef3e3a0b999b00b76c64d2177f82a93814faf585de5452439bfbcd34894714e`). As with the
+entries below, evidence committed to a repository cannot describe the commit
+that contains it, so this entry names the revision under test; a later build
+that ships the picker reuses these captures only when it renders them
+identically. An earlier build of the same patch, `f826dc6`, passed the same flow
+but its design review found three defects: the card caption had a fixed 54 px
+height, so at interface text size 11 the description was cut through its glyphs
+(Paper Fog kept 4 of its 8 ink rows); the warning glyph on a card was drawn in
+that card's own palette, so a theme whose warning color equals its panel showed
+an invisible disc (1.0:1); and the editor's preview card stayed 166 px tall, which
+left 39 px of empty canvas under its miniature. In `4cdd4df` the caption grows at
+text sizes 12 and 11 and the miniature gives up the difference (every name and
+description line is drawn in full), the glyph uses the active palette as the check
+badge does, and the editor's preview is the 132 px picker card: its inner pixels
+match the picker's Harbor Dusk card exactly. Apart from Paper Fog's warning
+glyph, every picker frame is pixel-identical to the `f826dc6` frames.
+
+Compared with base `85a7d07` (binary sha256
+`418a3b425cedb14fdf734ae02d756dce642896156dd214e6b165a9239a46aec6`; `08cef56` has
+the same crates and Cargo files), History differed only in its status-bar timing
+digits and the Your themes card was pixel-identical at both sizes. In the Edit
+theme dialog the only difference was the preview card: at 1440x900 the side
+column below it moved up exactly 34 px with no other change, and at 1000x680 the
+stacked dialog differed only in its scrollbar thumb, because the dialog's content
+is now 34 px shorter. With custom themes present the picker showed three groups:
+8 light, 12 dark and 2 (or 32) custom cards. The empty store showed two. At
+1440x900 the twenty built-ins took five rows. The picker had four columns at
+1,060 and 1,440 px and three at 1,000 and 1,059 px at text size 13, and three at
+every width at text size 18. A 700 px resize request was held at 1000x680 by the
+window's minimum size, so the two-column layout, which needs a width below the
+scaled 720 px, cannot be reached natively; `picker_cards_keep_the_grid_geometry`
+covers it. Every compact-density Settings frame was pixel-identical to its
+comfortable counterpart. The density shows in History and in the List density
+control. The comfortable picker frames are byte-identical to the compact ones
+(both 1000x680 top-of-Settings captures, for example, have sha256
+`b39d5b8d…`), so apart from `compact-1000x680-01-light.png` the compact
+captures listed below show History and the List density control instead of
+repeating the picker. Accessible names could not be observed: AT-SPI does not list the app on
+this host, so the "‹name› theme" labels rest on the `#[gpui::test]` suite. macOS
+was not exercised.
+
+The captures are under
+[`docs/evidence/themes/picker/`](evidence/themes/picker/):
+
+- `comfortable-1440x900-01-light-dark.png`: Settings at the top with Follow
+  system appearance off, the Light group in two rows of four and the Dark group
+  with Midnight marked.
+- `comfortable-1440x900-02-your-themes.png`: the Your themes group at rest, with
+  Harbor Dusk and Paper Fog. Paper Fog shows the warning glyph with its count, 8.
+- `comfortable-1440x900-03-hover-custom.png`: the pointer resting on Harbor Dusk,
+  with the accent inner border and the caption hover surface. Nothing outside the
+  card changes.
+- `comfortable-1440x900-04-selected-custom.png`: Harbor Dusk chosen with a click.
+  Its card has the accent edge and the check badge, the window uses its
+  `#101a2c` canvas, and the store saved `{"custom": 1}`.
+- `comfortable-1440x900-05-focus-custom.png`: keyboard focus on Paper Fog,
+  reached with Tab (Harbor Dusk at the 28th Tab, Paper Fog at the 29th). The
+  card's 1 px outer border takes the accent color all the way round, as a
+  built-in card's does on the base build. On the selected card, which already
+  has that edge, focus changes only its 48 corner pixels.
+- `comfortable-1440x900-06-follow-system-on.png` and
+  `-07-follow-system-on-your-themes.png`: Follow system turned on with the
+  switch, with Harbor Dusk still the saved selection. No built-in or custom card
+  is marked.
+- `comfortable-1440x900-08-custom-chosen-again.png` and
+  `-09-follow-system-cleared.png`: Harbor Dusk chosen again. Its card is marked,
+  the switch is back off, and the store saved `follow_system: false`.
+- `comfortable-1000x680-01` to `-05`: the same group, selected, focus,
+  follow-system-on and chosen-again states in the three-column layout.
+- `compact-1000x680-01-light.png` and `compact-1440x900-01-history.png`: the
+  picker in compact density, and History with compact rows.
+- `store32-1440x900-01-your-themes-rows-1-3.png` and
+  `store32-compact-1440x900-01-list-density.png`: the 32-theme store's custom
+  group, and the Your themes list card above List density with Compact selected.
+- `empty-1440x900-01-no-your-themes-group.png`: with no custom theme, the picker
+  ends after the Dark group.
+- `text12-1440x900-01-selected-warned.png` and
+  `text11-1440x900-01-selected-warned.png`: at interface text sizes 12 and 11 with
+  Paper Fog selected and warned. Its name row holds the glyph and the check badge,
+  and Lantern Grey is warned. Every name and description line is drawn in full.
+- `warning-1440x900-01-glyph-active-palette.png`: Midnight active. Both warned
+  cards draw the glyph in Midnight's warning color with a Midnight-canvas "!". On
+  Lantern Grey that disc is 8.9:1 against the caption.
+- `editor-1440x900-01-preview-card.png` and
+  `editor-1000x680-01-preview-card.png`: the Edit theme dialog for Harbor Dusk.
+  Its preview is the 132 px picker card, with a 70 px miniature over a 54 px
+  caption.
+
+In the four accepted interaction runs, hover repainted the card 36–64 ms after
+the pointer arrived, and a click changed the next grabbed frame within 14–31 ms.
+These figures are non-authoritative: they are frame grabs on a shared host with a
+one-minute load average of 2.4–3.1, and they are not a performance measurement.
+A first compact 1000x680 run, at load 6.7, grabbed its hover frame after the
+card's tooltip had begun to appear. It was repeated for the captures listed
+here.
+
 ## September 19 Theme export and import
 
 Native QA for `themes-import-export`, which adds **Export…** to each custom
