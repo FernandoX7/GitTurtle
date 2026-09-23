@@ -6,6 +6,16 @@ coordinator checkpoints that the current runner cannot complete by itself.
 No implementation, unattended run, repository-setting change or release was
 started when this list was created.
 
+As of September 23, 2026, the queue is resolved on `main`. Ten tasks were
+integrated in `b5d681c` on September 15, and `ci-codeql` is superseded, not
+passed, as recorded in the [CodeQL retirement](../ci-codeql.md#initiative-scope-amendment).
+The [coordinator checkpoints](#coordinator-checkpoints) C0 to C4 remain open,
+together with the macOS evidence of two integrated tasks. They need a real Mac,
+Apple credentials and hosted samples: the `ui-commit-messages` macOS screenshot and
+interaction matrix, the `dist-macos-package` run on a Mac, C1's repeated cache
+samples for medians and tails and its hosted invalidation and corrupt-restore
+cases, C3's artifact upload after C0, and the C4 signing and release rehearsal.
+
 ## Outcomes
 
 1. A beautiful native inspector that makes the complete commit title and message
@@ -203,6 +213,15 @@ release guide after integration; do not relabel local fixtures as hosted results
 
 ### C2 — Hosted CodeQL and full merge time
 
+The maintainer retired CodeQL on September 15, 2026. That supersedes this
+checkpoint's CodeQL setup, coverage and stage-timing conditions; they are not
+passed, as recorded in the [CodeQL retirement](../ci-codeql.md#initiative-scope-amendment).
+As of September 23, 2026, `Quality gate` is the only required check on main, so
+the full merge time is Quality's creation-to-gate time. That comparison stays
+open: it needs repeated hosted samples against the dated baseline above, and it
+must identify the removed CodeQL coverage instead of counting it as faster
+scanning. The original conditions follow for the record.
+
 - Coordinate default-to-checked-in setup without an unprotected gap or permanent
   duplicate scanning. Check the effective languages, queries, threat model and
   required result on PR and main revisions.
@@ -242,19 +261,19 @@ release guide after integration; do not relabel local fixtures as hosted results
 
 ## Running with the existing controller
 
-Validate the queue with:
+Validate a queue with:
 
 ```sh
 python3 scripts/agent-loop.py validate
 ```
 
-Follow the existing [run and resume procedure](README.md#run-the-controller).
-A useful first bounded trial is the first five source-only CI tasks. Choose the
-session's model/effort explicitly and supply task, attempt and time limits when
-starting; no run or schedule is created by this feature intake. With this exact
-queue the controller's initial union-of-profiles baseline runs full Rust checks
-and a release build even with a five-task cap, because later package tasks in the
-same specification require them.
+Follow the existing [run and resume procedure](README.md#run-the-controller) for
+any future queue. As of September 23, 2026, this queue has no remaining runnable
+tasks: ten are integrated on `main` and `ci-codeql` is superseded. Its open
+checkpoints C0 to C4 need a real Mac, Apple credentials and hosted samples, which
+a controller run cannot supply. For a future run, choose the session's
+model/effort explicitly and supply task, attempt and time limits when starting;
+no run or schedule is created by this feature intake.
 
 The controller requires private record files/directories and rejects writable
 non-sticky ancestors. Use a private source clone whose ancestor permissions meet
