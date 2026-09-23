@@ -2262,10 +2262,21 @@ struct CardPointer {
     pressed: bool,
 }
 
+impl CardPointer {
+    /// The state [`CardProbe`]'s box shows in `style`, the text style it
+    /// sets for its content.
+    fn shown(style: &TextStyle) -> Self {
+        Self {
+            hovered: style.font_style == FontStyle::Italic,
+            pressed: style.font_weight == FontWeight::BLACK,
+        }
+    }
+}
+
 /// What a picker card's page elements leave for [`LayerCard`]: the pointer
-/// state [`CardProbe`] read at paint, and the content mask at the card
-/// button's content ([`CardProbe`]'s prepaint), under which the preview's
-/// hover ring was drawn.
+/// state [`CardProbe`] expected at prepaint and read at paint, and the
+/// content mask at the card button's content ([`CardProbe`]'s prepaint),
+/// under which the preview's hover ring was drawn.
 #[derive(Default)]
 struct CardShared {
     pointer: std::cell::Cell<CardPointer>,
@@ -2429,6 +2440,13 @@ impl IntoElement for CardSlot {
 /// state is read again whenever it changes. The probe stands beside the
 /// preview in the card button, so its prepaint also records the button's
 /// content mask.
+///
+/// Its prepaint also stores the state the paint is expected to read, which
+/// [`LayerCard`] prepaints the card's content under: before the paint, the
+/// box's styles fall back to the hover and press its listeners recorded at
+/// the input, and a hover is not shown after keyboard input. So the frame
+/// that shows a hover change, a press or a switch prepaints the card under
+/// its clip, and no further frame is drawn to correct it.
 struct CardProbe(std::rc::Rc<CardShared>);
 
 impl Element for CardProbe {
@@ -2465,6 +2483,11 @@ impl Element for CardProbe {
         _: &mut App,
     ) {
         self.0.outer.set(window.content_mask());
+        let expected = CardPointer::shown(&window.text_style());
+        self.0.pointer.set(CardPointer {
+            hovered: expected.hovered && !window.last_input_was_keyboard(),
+            ..expected
+        });
     }
 
     fn paint(
@@ -2477,11 +2500,7 @@ impl Element for CardProbe {
         window: &mut Window,
         _: &mut App,
     ) {
-        let style = window.text_style();
-        self.0.pointer.set(CardPointer {
-            hovered: style.font_style == FontStyle::Italic,
-            pressed: style.font_weight == FontWeight::BLACK,
-        });
+        self.0.pointer.set(CardPointer::shown(&window.text_style()));
     }
 }
 
@@ -2635,8 +2654,10 @@ fn pinned_text(style: &TextStyle, color: u32) -> TextStyleRefinement {
 /// border was visible (`Style::overflow_mask`), so a hovered card's content
 /// is prepainted and painted under that clip too; the clip is part of GPUI's
 /// reuse key, so the body and the miniature are built again under it. The
-/// state known at prepaint is the last page paint's: when this frame's paint
-/// finds it changed, the card asks for one more frame, which prepaints it
+/// state known at prepaint is the one [`CardProbe`] expected when the page
+/// was last prepainted, or the last page paint's on a frame that replays
+/// the page. When this frame's paint finds it changed, as a scroll under a
+/// resting pointer can, the card asks for one more frame, which prepaints it
 /// under the right clip.
 struct LayerCard {
     text: TextStyleRefinement,

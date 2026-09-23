@@ -6299,6 +6299,139 @@ mod tests {
         );
     }
 
+    /// A hover, a press and a switch on a picker card each draw the window
+    /// once. The card layer prepaints the card under the clip of the state
+    /// that frame shows, so its paint asks for no further frame, and no card
+    /// body or miniature is built twice for one input: the hover builds the
+    /// hovered card's body and miniature again under the ring's clip, and
+    /// the press and the release, which refresh the window, build every
+    /// card's once.
+    #[gpui::test]
+    fn pointer_input_on_a_picker_card_draws_one_frame(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|window, _| window.activate_window());
+        settle(cx);
+        let choice = ThemeChoice::TokyoNight;
+        let card = ThemeSelection::BuiltIn(choice);
+        let position = bounds(cx, format!("settings-theme-{}", choice as usize)).center();
+        let modifiers = Modifiers::default();
+        let cards = cx.read(|cx| app.read(cx).theme_card_bodies.len());
+        let each = |built: usize| vec![built; cards];
+        let only_the_card = cx.read(|cx| {
+            app.read(cx)
+                .theme_card_bodies
+                .iter()
+                .map(|(selection, _)| usize::from(*selection == card))
+                .collect::<Vec<_>>()
+        });
+
+        let hover = pointer_frames(cx, &app, |cx| {
+            cx.simulate_mouse_move(position, None, modifiers)
+        });
+        assert_eq!(hover.draws, 1, "the hover draws once");
+        assert_eq!(hover.asked, 0, "the hover's frame asks for no other");
+        assert_eq!(
+            hover.bodies, only_the_card,
+            "the hover builds its card's body"
+        );
+        assert_eq!(
+            hover.miniatures, only_the_card,
+            "and its card's miniature, under the ring's clip"
+        );
+
+        let press = pointer_frames(cx, &app, |cx| {
+            cx.simulate_event(MouseDownEvent {
+                position,
+                modifiers,
+                button: MouseButton::Left,
+                click_count: 1,
+                first_mouse: false,
+            })
+        });
+        assert_eq!(press.draws, 1, "the press draws once");
+        assert_eq!(press.asked, 0, "the press's frame asks for no other");
+        assert_eq!(press.bodies, each(1), "the press builds each body once");
+        assert_eq!(press.miniatures, each(1), "and each miniature once");
+
+        // The switch's save waits behind this, so the status line it sets
+        // comes in a frame of its own, outside the one under test.
+        let hold = hold_preference_executor(cx, &app);
+        let release = pointer_frames(cx, &app, |cx| {
+            cx.simulate_event(MouseUpEvent {
+                position,
+                modifiers,
+                button: MouseButton::Left,
+                click_count: 1,
+            })
+        });
+        assert_eq!(cx.read(|cx| app.read(cx).settings.theme), card);
+        assert_eq!(release.draws, 1, "the switch draws once");
+        assert_eq!(release.asked, 0, "the switch's frame asks for no other");
+        assert_eq!(release.bodies, each(1), "the switch builds each body once");
+        assert_eq!(release.miniatures, each(1), "and each miniature once");
+        drop(hold);
+        drain_preference_writer(cx, &app);
+    }
+
+    /// What one input on the Settings page drew: the window's draws, the
+    /// next-frame callbacks its frames asked for, and each picker card's body
+    /// and miniature builds, in `theme_card_bodies` order. The input's own
+    /// effects draw its frame; the next frame is then delivered once, so a
+    /// frame a paint asked for is drawn and counted too.
+    fn pointer_frames(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        act: impl FnOnce(&mut VisualTestContext),
+    ) -> PointerFrames {
+        let builds = |cx: &mut VisualTestContext| {
+            cx.read(|cx| {
+                let app = app.read(cx);
+                app.theme_card_bodies
+                    .iter()
+                    .map(|(selection, body)| {
+                        let miniature = app.theme_preview_body(*selection).read(cx).renders();
+                        (body.read(cx).renders(), miniature)
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        // Deliver the frames earlier draws asked for, so the ones counted
+        // below are this input's.
+        for _ in 0..8 {
+            settle(cx);
+            if cx.update(|window, cx| window.simulate_next_frame(cx)) == 0 {
+                break;
+            }
+        }
+        let before = builds(cx);
+        let draws = draw_count(cx, app);
+        act(cx);
+        cx.run_until_parked();
+        let asked = cx.update(|window, cx| window.simulate_next_frame(cx));
+        cx.run_until_parked();
+        let after = builds(cx);
+        let built = |pick: fn(&(usize, usize)) -> usize| {
+            after
+                .iter()
+                .zip(&before)
+                .map(|(after, before)| pick(after) - pick(before))
+                .collect()
+        };
+        PointerFrames {
+            draws: draw_count(cx, app) - draws,
+            asked,
+            bodies: built(|(body, _)| *body),
+            miniatures: built(|(_, miniature)| *miniature),
+        }
+    }
+
+    struct PointerFrames {
+        draws: usize,
+        asked: usize,
+        bodies: Vec<usize>,
+        miniatures: Vec<usize>,
+    }
+
     /// Builds of each picker card's cached body so far.
     fn card_body_renders(
         cx: &mut VisualTestContext,
