@@ -64,9 +64,10 @@ In the order to do them. Test-only and documentation items come first, then visi
    - Source: `HANDOFF.md` "Follow-ups after the run" (8).
    - Acceptance: the test asserts zero submissions on the worker queue.
    - Evidence changed: none. Kind: test-only.
-9. **DEAD-ARM: an unreachable import arm.** `theme_editor.rs:1082` matches `Ok(Err(error))`, which cannot occur because the submitted job always returns `Ok` (`:1073-1075`).
+9. **DEAD-ARM (done): an unreachable import arm.** `theme_editor.rs:1082` matches `Ok(Err(error))`, which cannot occur because the submitted job always returns `Ok` (`:1073-1075`).
    - Source: `HANDOFF.md` 2026-09-20 verifier notes.
    - Acceptance: the arm is removed by narrowing the job's type, and the refusal tests still pass.
+   - Resolved differently: the arm is reachable. The job always answers `Ok`, but the preference executor answers `Err` for it when its queue is full or the job panicked, so the arm stays with a comment naming both cases, and a test drives the full-queue case through it.
    - Evidence changed: none. Kind: test-only.
 10. **STORE-BOUND (optional): unbounded custom-themes parsing.** `preferences.rs:221` parses `custom_themes` into an unbounded `Vec`, so a hostile 8 MB store costs 47 ms once.
     - Source: `HANDOFF.md` "Follow-ups after the run" (4).

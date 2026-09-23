@@ -1079,6 +1079,9 @@ impl GitTurtle {
                     Ok(Ok(Ok(imported))) => Ok(Some(imported)),
                     // The document's own refusal already names the problem.
                     Ok(Ok(Err(refusal))) => Err(refusal),
+                    // The job itself always answers `Ok`; the executor answers
+                    // for it when its queue is full or the job panicked
+                    // (`SerialExecutor::submit`).
                     Ok(Err(error)) => Err(format!("Could not read the theme file: {error:#}")),
                     Err(_) => Err(
                         "Could not read the theme file: the settings writer stopped before reporting a result."
@@ -4022,6 +4025,50 @@ mod tests {
             ))
         );
         assert_eq!(cx.read(|cx| app.read(cx).custom_themes.clone()), full);
+    }
+
+    /// The import's job itself never fails, but a preference executor whose
+    /// queue is full refuses it: the card says the file could not be read
+    /// and nothing changes.
+    #[gpui::test]
+    fn an_import_the_full_preference_executor_refuses_changes_nothing(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        let theme = with_active_harbor(cx, &app);
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("sunset.json");
+        let sunset = CustomTheme::from_base(1, "Sunset", ThemeChoice::Nord);
+        std::fs::write(&path, sunset.to_document()).unwrap();
+        // One job running on the executor, then its eight queue slots taken.
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let (started, running) = std::sync::mpsc::channel::<()>();
+        let _running = cx.read(|cx| {
+            app.read(cx).preferences_writer.submit(move || {
+                started.send(()).unwrap();
+                let _ = wait.recv();
+                Ok(())
+            })
+        });
+        running.recv().unwrap();
+        let _queued: Vec<_> = cx.read(|cx| {
+            let writer = &app.read(cx).preferences_writer;
+            (0..8).map(|_| writer.submit(|| Ok(()))).collect()
+        });
+
+        let (notice, error) = import_file(cx, &app, Some(path), None);
+        drop(release);
+        assert_eq!(notice, None);
+        assert_eq!(
+            error.as_deref(),
+            Some(
+                "Could not read the theme file: Background executor is busy or unavailable. Try again after the current operation finishes."
+            )
+        );
+        let (themes, highlighted) = cx.read(|cx| {
+            let app = app.read(cx);
+            (app.custom_themes.clone(), app.theme_editor.imported)
+        });
+        assert_eq!(themes, vec![theme]);
+        assert_eq!(highlighted, None);
     }
 
     /// A document may be valid apart from a 64 KiB run of its own text. That
