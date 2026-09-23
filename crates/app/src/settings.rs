@@ -3618,17 +3618,13 @@ mod theme_apply_tests {
         assert!(before.0, "Find is open before the switch");
         assert_eq!(before.2.len(), 3, "the patch has three `row 12` lines");
         assert!(before.3 > 0, "Find advanced past the first match");
-        // `GitTurtle::request` advances the generation, retains a reply task and
-        // shows a loading label for every content read it submits; the
-        // retained content `Arc` below proves nothing re-prepared it.
-        let submissions = |cx: &mut VisualTestContext| {
-            cx.read(|cx| {
-                let app = app.read(cx);
-                (app.generation, app.task.is_some(), app.loading)
-            })
-        };
+        // Every read reaches the reader through its queue, whether or not
+        // `GitTurtle::request` submits it, so the queue's own count is the
+        // measure; the retained content `Arc` below proves nothing
+        // re-prepared it.
+        let submissions =
+            |cx: &mut VisualTestContext| cx.read(|cx| app.read(cx).worker.submissions());
         let idle = submissions(cx);
-        assert!(!idle.1 && idle.2.is_none());
         let initial = cx.read(|cx| app.read(cx).settings.theme);
         // Light palettes are the first rows of the picker, so their cards are
         // on screen without scrolling the Settings page.
@@ -3653,7 +3649,11 @@ mod theme_apply_tests {
                 choice.label()
             );
         }
-        assert_eq!(submissions(cx), idle, "a theme switch submitted a read");
+        let submitted = submissions(cx) - idle;
+        assert_eq!(
+            submitted, 0,
+            "a theme switch submitted {submitted} worker jobs"
+        );
         cx.read(|cx| {
             let app = app.read(cx);
             assert_eq!(app.page, AppPage::Settings, "Settings stays open");
@@ -3668,5 +3668,8 @@ mod theme_apply_tests {
             );
         });
         assert_eq!(find(cx), before, "Find query and matches survive");
+        // The count is live: any submission moves it.
+        cx.read(|cx| app.read(cx).worker.release_history());
+        assert_eq!(submissions(cx), idle + 1);
     }
 }

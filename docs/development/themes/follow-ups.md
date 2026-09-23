@@ -60,7 +60,7 @@ In the order to do them. Test-only and documentation items come first, then visi
    - Source: `.local/themes-evidence/evidence-import-export-301d82a/design-review.md` N5, N6.
    - Acceptance: a `#[gpui::test]` asserts all five names, following the picker's `card_names` hook (`settings.rs:1003-1006`); DESIGN.md line 155 states both header names.
    - Evidence changed: none. Kind: test-only.
-8. **TEST-NOJOB: the no-job test uses a proxy.** `settings.rs:3539` detects a job through `GitTurtle::request`'s side effects, not through a worker submission counter.
+8. **TEST-NOJOB (done): the no-job test uses a proxy.** `settings.rs:3539` detects a job through `GitTurtle::request`'s side effects, not through a worker submission counter.
    - Source: `HANDOFF.md` "Follow-ups after the run" (8).
    - Acceptance: the test asserts zero submissions on the worker queue.
    - Evidence changed: none. Kind: test-only.

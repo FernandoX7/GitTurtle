@@ -370,6 +370,10 @@ impl Cancellation {
 pub struct Worker {
     queue: Arc<(Mutex<Queue>, Condvar)>,
     latest: Arc<AtomicU64>,
+    /// Test-only: every job submitted to this worker's queue, so a test can
+    /// assert that a path submits none.
+    #[cfg(test)]
+    submissions: AtomicU64,
 }
 
 impl Default for Worker {
@@ -454,7 +458,19 @@ impl Worker {
             state.closed = true;
             state.startup_error = Some(format!("Cannot start repository worker: {error}"));
         }
-        Self { queue, latest }
+        Self {
+            queue,
+            latest,
+            #[cfg(test)]
+            submissions: AtomicU64::new(0),
+        }
+    }
+
+    /// Test-only: the jobs submitted so far, including any a closed worker
+    /// refused.
+    #[cfg(test)]
+    pub fn submissions(&self) -> u64 {
+        self.submissions.load(Ordering::Acquire)
     }
 
     /// Invalidate mutable reads even when there is no replacement file to load.
@@ -476,6 +492,8 @@ impl Worker {
     }
 
     pub fn submit(&self, job: Job) -> oneshot::Receiver<Result<Output>> {
+        #[cfg(test)]
+        self.submissions.fetch_add(1, Ordering::AcqRel);
         let (reply, receiver) = oneshot::channel();
         let (lock, ready) = &*self.queue;
         let mut state = lock.lock().unwrap_or_else(|error| error.into_inner());
