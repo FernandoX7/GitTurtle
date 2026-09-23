@@ -44,7 +44,7 @@ In the order to do them. Test-only and documentation items come first, then visi
    - Source: `HANDOFF.md` "Follow-ups after the run" (1).
    - Acceptance: it reads "One and Dracula define no panel, and One, Rosé Pine and Dracula no border" and "at or above the minimum surface ratios", checked against `crates/app/src/appearance/sources.rs`.
    - Evidence changed: none. Kind: docs.
-4. **DOC-APPLY: a record still asks for a fix that was made.** [`2026-09-18-theme-apply.md`](../../benchmarks/2026-09-18-theme-apply.md) line 104 says the catalog entry "should" end at the next-frame callback, but [`metrics.md`](../../benchmarks/metrics.md) line 7 already does.
+4. **DOC-APPLY (done): a record still asks for a fix that was made.** [`2026-09-18-theme-apply.md`](../../benchmarks/2026-09-18-theme-apply.md) line 104 says the catalog entry "should" end at the next-frame callback, but [`metrics.md`](../../benchmarks/metrics.md) line 7 already does.
    - Source: `HANDOFF.md` "Follow-ups after the run" (8).
    - Acceptance: the sentence is in the past tense and links the corrected entry.
    - Evidence changed: that record's prose only. Kind: docs.
