@@ -504,6 +504,7 @@ impl GitTurtle {
                         "Up to {MAX_CUSTOM_THEMES} custom themes can be saved. Delete one before adding another."
                     ));
                     cx.notify();
+                    self.notify_settings_page(cx);
                     return;
                 }
                 let base = self.active_base(cx);
@@ -708,7 +709,9 @@ impl GitTurtle {
             (None, _) => return,
         };
         // Focus stays put for the frame that draws the target row; that
-        // render focuses the action (`settings.rs`).
+        // render focuses the action (`settings.rs`). Every branch that
+        // reaches here moved focus, and `Window::focus` refreshed the window,
+        // so the cached Settings page is built again without its own notice.
         if let Some(focused) = focused {
             focused.focus(window, cx);
         }
@@ -999,6 +1002,7 @@ impl GitTurtle {
         self.theme_editor.transfer_pending = true;
         self.clear_theme_transfer_result();
         cx.notify();
+        self.notify_settings_page(cx);
         cx.spawn_in(window, async move |this, cx| {
             let outcome: Result<Option<String>, String> = async {
                 let Some(destination) = folder_picker::new_path(response).await? else {
@@ -1031,6 +1035,7 @@ impl GitTurtle {
                     Err(error) => this.theme_editor.error = Some(error),
                 }
                 cx.notify();
+                this.notify_settings_page(cx);
             });
         })
         .detach();
@@ -1054,6 +1059,7 @@ impl GitTurtle {
         self.theme_editor.transfer_pending = true;
         self.clear_theme_transfer_result();
         cx.notify();
+        self.notify_settings_page(cx);
         cx.spawn_in(window, async move |this, cx| {
             let outcome: Result<Option<ImportedTheme>, String> = async {
                 let chosen =
@@ -1089,6 +1095,7 @@ impl GitTurtle {
                     Err(error) => this.theme_editor.error = Some(error),
                 }
                 cx.notify();
+                this.notify_settings_page(cx);
             });
         })
         .detach();
@@ -1169,6 +1176,7 @@ impl GitTurtle {
         })
         .detach();
         cx.notify();
+        self.notify_settings_page(cx);
     }
 
     fn finish_custom_theme_save(
@@ -1238,6 +1246,7 @@ impl GitTurtle {
             }
         }
         cx.notify();
+        self.notify_settings_page(cx);
     }
 }
 
@@ -1254,6 +1263,98 @@ struct TokenRow {
     picker: Entity<ColorPickerState>,
     /// The field holds text that is not `#rrggbb`; the draft keeps the last valid value.
     invalid: bool,
+    /// The row as its own view, so a dialog frame rebuilds only the rows it
+    /// alters ([`TokenRowView`]).
+    view: Entity<TokenRowView>,
+}
+
+/// What a token row shows from its form: [`ThemeForm::render`] builds a row
+/// again exactly when this differs from what the row last showed.
+#[derive(Clone, Copy, PartialEq)]
+struct RowKey {
+    color: u32,
+    invalid: bool,
+    flagged: bool,
+    pending: bool,
+    /// The applied palette: the row's text, borders and rings follow it.
+    active: Palette,
+    rem: Pixels,
+    picker_focused: bool,
+}
+
+/// One token row of the editor, a view the form embeds with
+/// [`Entity::cached`], so a frame that alters one row, a keystroke or a caret
+/// blink in its hex field, replays the other rows instead of building them.
+///
+/// The form owns the row and its state ([`TokenRow`]); the row renders
+/// `ThemeForm::render_row` through a weak handle and keeps no state of its
+/// own. It is built again in three ways, enumerated in
+/// `crates/app/docs/content-and-layout.md`:
+/// - the form's render compares each row's [`RowKey`] with the last one the
+///   row showed and embeds a changed row uncached for that frame, so every
+///   form-side change (draft color, validity, readability flag, a pending
+///   save, a palette application, the text size, the picker's focus) builds
+///   it without a notify site;
+/// - the row observes its hex field and its color picker: the field's view
+///   node is registered outside the row (`settings::ViewNodeAnchor`, as the
+///   Settings page does), so the kit input's notify from paint on every frame
+///   dirties the field and the form but not the row, and the typing, caret,
+///   selection and popover changes the row must show reach it through these
+///   observers;
+/// - GPUI's own refresh (hover, press, focus, a window refresh) builds every
+///   cached view.
+///
+/// The failure mode of a missed rebuild is a row that keeps showing a
+/// previous frame: a hex field whose text or caret stands still, a swatch or
+/// glyph that does not follow the draft.
+pub(super) struct TokenRowView {
+    form: WeakEntity<ThemeForm>,
+    kind: TokenKind,
+    /// The key the last build showed.
+    seen: Option<RowKey>,
+    /// Test-only: builds of this row.
+    #[cfg(test)]
+    renders: usize,
+    _subscriptions: [Subscription; 2],
+}
+
+impl TokenRowView {
+    fn new(
+        form: WeakEntity<ThemeForm>,
+        kind: TokenKind,
+        hex: &Entity<InputState>,
+        picker: &Entity<ColorPickerState>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            form,
+            kind,
+            seen: None,
+            #[cfg(test)]
+            renders: 0,
+            _subscriptions: [
+                cx.observe(hex, |_, _, cx| cx.notify()),
+                cx.observe(picker, |_, _, cx| cx.notify()),
+            ],
+        }
+    }
+}
+
+impl Render for TokenRowView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        {
+            self.renders += 1;
+        }
+        let Some(form) = self.form.upgrade() else {
+            return div().into_any_element();
+        };
+        let form = form.read(cx);
+        let row = form.row(self.kind);
+        let key = form.row_key(row, window, cx);
+        self.seen = Some(key);
+        form.render_row(row, key.flagged, key.active, window, cx)
+    }
 }
 
 pub(super) struct ThemeForm {
@@ -1276,6 +1377,10 @@ pub(super) struct ThemeForm {
     /// edit-frame probe's paint after the dialog layer's.
     #[cfg(test)]
     painted: Option<Instant>,
+    /// Test-only: builds of this form, so a test can assert that a keystroke
+    /// in the dialog rebuilds the dialog and reuses the Settings page behind it.
+    #[cfg(test)]
+    renders: usize,
     rows: Vec<TokenRow>,
     warnings: Vec<ReadabilityIssue>,
     pending: bool,
@@ -1335,6 +1440,7 @@ impl ThemeForm {
                 }),
             ];
         let warnings_focus = cx.focus_handle().tab_stop(true);
+        let form = cx.entity().downgrade();
         let mut rows = Vec::with_capacity(TokenKind::ALL.len());
         for kind in TokenKind::ALL {
             let color = palette.get(kind);
@@ -1363,11 +1469,13 @@ impl ThemeForm {
                     }
                 },
             ));
+            let view = cx.new(|cx| TokenRowView::new(form.clone(), kind, &hex, &picker, cx));
             rows.push(TokenRow {
                 kind,
                 hex,
                 picker,
                 invalid: false,
+                view,
             });
         }
         Self {
@@ -1382,6 +1490,8 @@ impl ThemeForm {
             preview_body: cx.new(|_| settings::ThemePreviewBody::new(palette)),
             #[cfg(test)]
             painted: None,
+            #[cfg(test)]
+            renders: 0,
             rows,
             warnings: palette.readability_issues(),
             pending: false,
@@ -1556,6 +1666,43 @@ impl ThemeForm {
             .position(|candidate| *candidate == kind)
             .expect("every token has a row");
         &mut self.rows[index]
+    }
+
+    /// What `row` shows from this form in the current frame ([`RowKey`]).
+    fn row_key(&self, row: &TokenRow, window: &Window, cx: &App) -> RowKey {
+        RowKey {
+            color: self.draft.get(row.kind),
+            invalid: row.invalid,
+            flagged: self
+                .warnings
+                .iter()
+                .any(|issue| issue_tokens(issue).any(|kind| kind == row.kind)),
+            pending: self.pending,
+            active: palette(cx),
+            rem: window.rem_size(),
+            picker_focused: row.picker.focus_handle(cx).is_focused(window),
+        }
+    }
+
+    /// `row` for the token column: its cached view when the row already shows
+    /// the current frame's [`RowKey`], else built this frame. Assistive
+    /// technology reads accessibility nodes only from prepainted elements, so
+    /// while it is active every row is built, as the Settings page is.
+    fn row_element(&self, row: &TokenRow, window: &Window, cx: &App) -> AnyElement {
+        let key = self.row_key(row, window, cx);
+        if !window.is_a11y_active() && row.view.read(cx).seen == Some(key) {
+            row.view
+                .clone()
+                .cached(
+                    StyleRefinement::default()
+                        .w_full()
+                        .h(appearance::ui_size(30.))
+                        .flex_shrink_0(),
+                )
+                .into_any_element()
+        } else {
+            row.view.clone().into_any_element()
+        }
     }
 
     fn can_save(&self) -> bool {
@@ -1992,6 +2139,8 @@ impl ThemeForm {
         div()
             .id(("theme-token", kind as usize))
             .debug_selector(move || format!("theme-token-{}", kind.key()))
+            // As wide as the cached view's slot it is laid out in.
+            .w_full()
             .h(appearance::ui_size(30.))
             // The scroll column shrinks to the window; rows keep their height.
             .flex_shrink_0()
@@ -2199,14 +2348,16 @@ impl ThemeForm {
 
 impl Render for ThemeForm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        {
+            self.renders += 1;
+        }
         let p = palette(cx);
         let viewport = window.viewport_size();
         let wide = viewport.width >= appearance::ui_size(1060.);
         self.wide = wide;
         self.reveal_focused(window, cx);
         let max_height = Self::max_height(window);
-        let flagged: std::collections::HashSet<TokenKind> =
-            self.warnings.iter().flat_map(issue_tokens).collect();
         // Group labels and rows are direct children of the scroll container,
         // so `ScrollHandle::scroll_to_item` can reveal a focused row.
         let mut entries: Vec<AnyElement> = Vec::with_capacity(Self::TOKEN_ENTRIES + 2);
@@ -2231,7 +2382,7 @@ impl Render for ThemeForm {
                 self.rows
                     .iter()
                     .filter(|row| row.kind.group() == group)
-                    .map(|row| self.render_row(row, flagged.contains(&row.kind), p, window, cx)),
+                    .map(|row| self.row_element(row, window, cx)),
             );
         }
         let name = self.name.read(cx).value().trim().to_owned();
@@ -2365,6 +2516,13 @@ impl Render for ThemeForm {
             .children(self.render_base_question(p, cx))
             .child(body)
             .children(paint_stamp)
+            // After the rows: each hex field's view node is registered here,
+            // outside its cached row (`TokenRowView`).
+            .children(
+                self.rows
+                    .iter()
+                    .map(|row| settings::ViewNodeAnchor::new(row.hex.entity_id())),
+            )
     }
 }
 
@@ -2435,8 +2593,7 @@ mod tests {
 
     fn bounds(cx: &mut VisualTestContext, selector: String) -> Bounds<Pixels> {
         let selector: &'static str = selector.leak();
-        cx.debug_bounds(selector)
-            .unwrap_or_else(|| panic!("{selector} is rendered"))
+        settings::shown(cx, selector).unwrap_or_else(|| panic!("{selector} is rendered"))
     }
 
     /// Deliver the next frame (and its coalesced preview), then draw.
@@ -2464,9 +2621,8 @@ mod tests {
     }
 
     fn click(cx: &mut VisualTestContext, selector: &'static str) {
-        let bounds = cx
-            .debug_bounds(selector)
-            .unwrap_or_else(|| panic!("{selector} is rendered"));
+        let bounds =
+            settings::shown(cx, selector).unwrap_or_else(|| panic!("{selector} is rendered"));
         cx.simulate_click(bounds.center(), Modifiers::default());
         settle(cx);
     }
@@ -2648,7 +2804,7 @@ mod tests {
     ) -> bool {
         let miniature = cx.read(|cx| app.read(cx).theme_preview_body(selection).entity_id());
         let selector: &'static str = format!("theme-check-{miniature}").leak();
-        cx.debug_bounds(selector).is_some()
+        settings::page_shows(cx, selector)
     }
 
     /// Whether the picker shows the readability glyph on `selection`'s card.
@@ -2659,7 +2815,7 @@ mod tests {
     ) -> bool {
         let miniature = cx.read(|cx| app.read(cx).theme_preview_body(selection).entity_id());
         let selector: &'static str = format!("theme-warning-{miniature}").leak();
-        cx.debug_bounds(selector).is_some()
+        settings::page_shows(cx, selector)
     }
 
     /// Palette applications through `apply_appearance` so far.
@@ -2672,6 +2828,62 @@ mod tests {
             let app = app.read(cx);
             (app.generation, app.task.is_some(), app.loading.is_some())
         })
+    }
+
+    /// Builds of the cached Settings page so far (`settings::SettingsPage`).
+    fn page_renders(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) -> usize {
+        cx.read(|cx| app.read(cx).settings_page.read(cx).renders())
+    }
+
+    /// Builds of the open editor's form so far.
+    fn form_renders(cx: &mut VisualTestContext, form: &Entity<ThemeForm>) -> usize {
+        cx.read(|cx| form.read(cx).renders)
+    }
+
+    /// Settle, run `act`, flush its effects, and return how many times the
+    /// Settings page was built and the window drawn as a result. Nothing here
+    /// asks for a frame: the draws are the ones the input's own effects ask
+    /// for, so a page build counted here came from a notification or a
+    /// refresh that the input caused.
+    fn page_builds_after(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        act: impl FnOnce(&mut VisualTestContext),
+    ) -> (usize, usize) {
+        settle(cx);
+        let page = page_renders(cx, app);
+        let draws = draw_count(cx, app);
+        act(cx);
+        cx.run_until_parked();
+        (page_renders(cx, app) - page, draw_count(cx, app) - draws)
+    }
+
+    /// Take the pointer off the window, so no hovered control's tooltip
+    /// timer or hover state joins the frames under test.
+    fn mouse_away(cx: &mut VisualTestContext) {
+        cx.simulate_mouse_move(point(px(-8.), px(-8.)), None, Modifiers::default());
+        settle(cx);
+    }
+
+    /// An empty repository in a temporary directory.
+    fn repository_fixture() -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(directory.path())
+            .args([
+                "-c",
+                "init.templateDir=",
+                "init",
+                "-q",
+                "--initial-branch=main",
+            ])
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .status()
+            .unwrap();
+        assert!(status.success(), "git init");
+        directory
     }
 
     #[gpui::test]
@@ -2798,7 +3010,7 @@ mod tests {
         // The row's warning slot shows the invalid glyph, a cue beyond the
         // field's outline color, until the value is valid again.
         assert!(
-            cx.debug_bounds("theme-token-invalid-panel").is_some(),
+            settings::page_shows(cx, "theme-token-invalid-panel"),
             "the invalid row shows its glyph"
         );
         type_hex(
@@ -2809,7 +3021,7 @@ mod tests {
         );
         assert!(cx.read(|cx| form.read(cx).can_save()));
         assert!(
-            cx.debug_bounds("theme-token-invalid-panel").is_none(),
+            !settings::page_shows(cx, "theme-token-invalid-panel"),
             "a valid value clears the glyph"
         );
 
@@ -3434,7 +3646,7 @@ mod tests {
             "deleting the active theme selects its base"
         );
         assert_eq!(applied(cx), ThemeChoice::Nord.palette());
-        assert!(cx.debug_bounds("delete-custom-theme-7").is_none());
+        assert!(!settings::page_shows(cx, "delete-custom-theme-7"));
     }
 
     /// Delete the active Harbor with the keyboard, the store answering before
@@ -3668,7 +3880,7 @@ mod tests {
         assert_eq!(selection, ThemeSelection::Custom(7));
         assert_eq!(applied(cx), applied_before);
         settle(cx);
-        assert!(cx.debug_bounds("export-custom-theme-8").is_some());
+        assert!(settings::page_shows(cx, "export-custom-theme-8"));
     }
 
     /// Cancelling either dialog is quiet, and an unwritable destination
@@ -4499,12 +4711,12 @@ mod tests {
             row.size.height * 8. + px(6.),
             "eight rows tall, plus the focus ring's room above and below"
         );
-        assert!(cx.debug_bounds("custom-theme-8").is_some());
+        assert!(settings::page_shows(cx, "custom-theme-8"));
         assert!(
-            cx.debug_bounds("custom-theme-9").is_none(),
+            !settings::page_shows(cx, "custom-theme-9"),
             "the ninth row is not drawn"
         );
-        assert!(cx.debug_bounds("custom-themes-scrollbar").is_some());
+        assert!(settings::page_shows(cx, "custom-themes-scrollbar"));
 
         // From the card, whose New theme… and Import… are disabled at the
         // bound, GPUI's own step reaches the first row's Edit….
@@ -4708,7 +4920,7 @@ mod tests {
                 .scroll_to_item(0, ScrollStrategy::Top)
         });
         native_frame(cx);
-        assert!(cx.debug_bounds("custom-theme-32").is_none());
+        assert!(!settings::page_shows(cx, "custom-theme-32"));
         for expected in [(31, 2), (31, 1), (31, 0), (30, 2)] {
             let (focused, in_view) = key_frames(
                 cx,
@@ -4734,7 +4946,7 @@ mod tests {
         cx.update(|window, cx| card.focus(window, cx));
         settle(cx);
         assert!(
-            cx.debug_bounds("custom-theme-1").is_none(),
+            !settings::page_shows(cx, "custom-theme-1"),
             "the list still shows its end"
         );
         let (focused, in_view) = key_frames(
@@ -5011,6 +5223,7 @@ mod tests {
             })
         }
         /// Move the rows as a wheel step or a scrollbar drag does, then draw.
+        /// Both notify the view they were painted in, the Settings page.
         fn scroll_rows(cx: &mut VisualTestContext, app: &Entity<GitTurtle>, y: Pixels) {
             cx.update(|_, cx| {
                 app.update(cx, |app, cx| {
@@ -5020,7 +5233,7 @@ mod tests {
                         .borrow()
                         .base_handle
                         .set_offset(gpui::point(Pixels::ZERO, y));
-                    cx.notify();
+                    app.notify_settings_page(cx);
                 })
             });
             native_frame(cx);
@@ -5030,6 +5243,12 @@ mod tests {
             let bottom = cx.debug_bounds("custom-themes-ring-room-bottom");
             assert_eq!(top.is_some(), bottom.is_some(), "the strips come as a pair");
             top.zip(bottom)
+        }
+        /// The strips of a frame that builds the page: a replayed frame
+        /// records no page selector.
+        fn built_strips(cx: &mut VisualTestContext) -> Option<(Bounds<Pixels>, Bounds<Pixels>)> {
+            assert!(settings::page_shows(cx, "custom-themes-rows"));
+            strips(cx)
         }
         /// Focus `action` of theme `id` and stop after the one frame that
         /// reveals its row, which the test app draws as the focus change's
@@ -5043,6 +5262,7 @@ mod tests {
         ) {
             let handle = cx.update(|_, cx| app.read(cx).theme_editor.row_focus(id, cx));
             let draws = cx.read(|cx| app.read(cx).draws.len());
+            let page = page_renders(cx, app);
             cx.update(|window, cx| State::focus_row_action(&handle, action, window, cx));
             if cx.read(|cx| app.read(cx).draws.len()) == draws {
                 cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -5052,12 +5272,19 @@ mod tests {
                 draws + 1,
                 "the frame inspected is the one the focus change drew"
             );
+            assert!(
+                page_renders(cx, app) > page,
+                "and it built the page, so its selectors are recorded"
+            );
         }
 
         let list = bounds(cx, "custom-themes-rows".into());
         let rows_box = bounds(cx, "custom-themes-rows-box".into());
         assert_eq!(list_offset(cx, &app), Pixels::ZERO);
-        assert!(strips(cx).is_none(), "on a boundary the room is the ring's");
+        assert!(
+            built_strips(cx).is_none(),
+            "on a boundary the room is the ring's"
+        );
 
         // Ten pixels down, the first and the ninth row straddle the
         // viewport's ends, and the strips are exactly the room.
@@ -5072,7 +5299,7 @@ mod tests {
             ninth.top() < rows_box.bottom() && ninth.bottom() > rows_box.bottom(),
             "the ninth row straddles the viewport's bottom: {ninth:?} in {rows_box:?}"
         );
-        let (top, bottom) = strips(cx).expect("off a boundary the strips cover the room");
+        let (top, bottom) = built_strips(cx).expect("off a boundary the strips cover the room");
         assert_eq!(
             top,
             Bounds::new(list.origin, size(list.size.width, RING)),
@@ -5121,7 +5348,7 @@ mod tests {
             "the reveal is not repeated"
         );
         assert!(
-            strips(cx).is_some(),
+            built_strips(cx).is_some(),
             "off a boundary again, the strips return"
         );
         assert_eq!(
@@ -5146,7 +5373,10 @@ mod tests {
             "the ring reaches into the room below: {delete:?} in {list:?}"
         );
         settle(cx);
-        assert!(strips(cx).is_none(), "and none once the frame has settled");
+        assert!(
+            built_strips(cx).is_none(),
+            "and none once the frame has settled"
+        );
     }
 
     /// Every picker card draws its own theme's miniature.
@@ -5249,7 +5479,7 @@ mod tests {
         // Export.
         let hold = hold_preference_executor(cx, &app);
         click(cx, "export-custom-theme-7");
-        assert!(cx.debug_bounds("custom-themes-notice").is_none());
+        assert!(!settings::page_shows(cx, "custom-themes-notice"));
         answer_dialog(cx, &|cx| {
             let destination = destination.clone();
             cx.simulate_new_path_selection(move |_| Some(destination));
@@ -5269,7 +5499,7 @@ mod tests {
             "the finished export draws the window"
         );
         assert!(
-            cx.debug_bounds("custom-themes-notice").is_some(),
+            settings::page_shows(cx, "custom-themes-notice"),
             "and that frame shows the export notice"
         );
         assert_eq!(std::fs::read(&destination).unwrap(), theme.to_document());
@@ -5281,7 +5511,7 @@ mod tests {
         });
         cx.run_until_parked();
         assert!(
-            cx.debug_bounds("custom-themes-notice").is_none(),
+            !settings::page_shows(cx, "custom-themes-notice"),
             "acting on the card again clears the finished export"
         );
         answer_dialog(cx, &|cx| {
@@ -5308,10 +5538,10 @@ mod tests {
             "the finished import draws the window"
         );
         assert!(
-            cx.debug_bounds("export-custom-theme-8").is_some(),
+            settings::page_shows(cx, "export-custom-theme-8"),
             "and that frame lists the imported theme"
         );
-        assert!(cx.debug_bounds("custom-themes-notice").is_some());
+        assert!(settings::page_shows(cx, "custom-themes-notice"));
 
         // Delete, confirmed in the alert. Harbor is the selection, so the
         // confirmed removal also applies its base.
@@ -5342,10 +5572,838 @@ mod tests {
             "in the deleted theme's base palette"
         );
         assert!(
-            cx.debug_bounds("export-custom-theme-7").is_none(),
+            !settings::page_shows(cx, "export-custom-theme-7"),
             "and that frame no longer lists the deleted theme"
         );
-        assert!(cx.debug_bounds("export-custom-theme-8").is_some());
+        assert!(settings::page_shows(cx, "export-custom-theme-8"));
+    }
+
+    /// A keystroke in the theme editor's Name field and a caret blink in it
+    /// each draw the window with the dialog built again and the Settings page
+    /// behind it replayed from the previous frame: the page is a cached view
+    /// (`settings::SettingsPage`) that nothing inside the dialog notifies.
+    #[gpui::test]
+    fn dialog_keystrokes_and_caret_blinks_reuse_the_settings_page(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|window, _| window.activate_window());
+        settle(cx);
+        click(cx, "custom-themes-new");
+        let form = form(cx, &app);
+        next_frame(cx);
+        mouse_away(cx);
+        let name = cx.read(|cx| form.read(cx).name.clone());
+        assert!(
+            cx.update(|window, cx| name.read(cx).focus_handle(cx).is_focused(window)),
+            "the editor opens with Name focused"
+        );
+        assert_eq!(
+            page_builds_after(cx, &app, |_| {}),
+            (0, 0),
+            "nothing is pending before the keystroke"
+        );
+
+        let dialog = form_renders(cx, &form);
+        let before = cx.read(|cx| name.read(cx).value().to_string());
+        // The first key after pointer input switches the window's input
+        // modality, and GPUI refreshes the whole window for that
+        // (`Window::dispatch_event`); a warm-up key takes that frame.
+        cx.simulate_input("w");
+        settle(cx);
+        let (built, drew) = page_builds_after(cx, &app, |cx| cx.simulate_input("x"));
+        let after = cx.read(|cx| name.read(cx).value().to_string());
+        assert!(
+            after != before && after.contains('x'),
+            "the key reached the Name field: {before:?} -> {after:?}"
+        );
+        assert!(drew >= 1, "the keystroke draws the window");
+        assert!(
+            form_renders(cx, &form) > dialog,
+            "and builds the dialog again"
+        );
+        assert_eq!(built, 0, "while the Settings page behind it is replayed");
+
+        let dialog = form_renders(cx, &form);
+        let (built, drew) = page_builds_after(cx, &app, |cx| {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(600));
+        });
+        assert!(drew >= 1, "the caret blink draws the window");
+        assert!(
+            form_renders(cx, &form) > dialog,
+            "and builds the dialog again"
+        );
+        assert_eq!(built, 0, "while the Settings page behind it is replayed");
+    }
+
+    /// The token rows whose views were built while `act` ran.
+    fn rows_built_after(
+        cx: &mut VisualTestContext,
+        form: &Entity<ThemeForm>,
+        act: impl FnOnce(&mut VisualTestContext),
+    ) -> Vec<TokenKind> {
+        let renders = |cx: &mut VisualTestContext| -> Vec<(TokenKind, usize)> {
+            cx.read(|cx| {
+                form.read(cx)
+                    .rows
+                    .iter()
+                    .map(|row| (row.kind, row.view.read(cx).renders))
+                    .collect()
+            })
+        };
+        let before = renders(cx);
+        act(cx);
+        cx.run_until_parked();
+        renders(cx)
+            .into_iter()
+            .zip(before)
+            .filter(|((_, after), (_, before))| after > before)
+            .map(|((kind, _), _)| kind)
+            .collect()
+    }
+
+    /// A keystroke in a hex field builds that token row again and replays the
+    /// other twenty from the previous frame (`TokenRowView`): the field's
+    /// notify from paint no longer dirties its row (`ViewNodeAnchor`), a key
+    /// that leaves the row's key alone reaches the row through its observer
+    /// of the field, a caret blink too, and the row's observer of its color
+    /// picker builds only that row.
+    #[gpui::test]
+    fn a_hex_keystroke_builds_its_row_and_replays_the_others(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|window, _| window.activate_window());
+        settle(cx);
+        click(cx, "custom-themes-new");
+        let form = form(cx, &app);
+        next_frame(cx);
+        mouse_away(cx);
+        let kind = TokenKind::ALL[4];
+        let other = TokenKind::ALL[9];
+        let hex = cx.read(|cx| form.read(cx).row(kind).hex.clone());
+        let picker = cx.read(|cx| form.read(cx).row(other).picker.clone());
+        cx.update(|window, cx| hex.read(cx).focus_handle(cx).focus(window, cx));
+        settle(cx);
+        // The first key switches the input modality, which refreshes the
+        // window, and the second leaves the field's text invalid, which
+        // changes the row's key; after those, keys leave the key alone.
+        cx.simulate_input("6");
+        settle(cx);
+        cx.simulate_input("6");
+        settle(cx);
+        assert!(cx.read(|cx| form.read(cx).row(kind).invalid));
+
+        let before = cx.read(|cx| hex.read(cx).value().to_string());
+        let built = rows_built_after(cx, &form, |cx| cx.simulate_input("7"));
+        let after = cx.read(|cx| hex.read(cx).value().to_string());
+        assert!(
+            after.len() == before.len() + 1 && after.contains("67"),
+            "the key reached the field: {before:?} -> {after:?}"
+        );
+        assert_eq!(built, vec![kind], "the keystroke builds its row alone");
+
+        let built = rows_built_after(cx, &form, |cx| {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(600));
+        });
+        assert_eq!(built, vec![kind], "a caret blink builds its row alone");
+
+        let built = rows_built_after(cx, &form, |cx| {
+            cx.update(|_, cx| picker.update(cx, |_, cx| cx.notify()));
+        });
+        assert_eq!(built, vec![other], "a picker change builds its row alone");
+
+        let built = rows_built_after(cx, &form, draw_once);
+        assert!(
+            built.is_empty(),
+            "an idle frame replays every row: {built:?}"
+        );
+    }
+
+    /// Pointer hover, press and keyboard focus on a picker card, and the
+    /// switch a card makes, each build the page again through the real input;
+    /// the first save's status line builds it once more when the store
+    /// answers, through the app's reconciler.
+    #[gpui::test]
+    fn input_on_a_picker_card_builds_the_page_again(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|window, _| window.activate_window());
+        settle(cx);
+        let card = ThemeChoice::TokyoNight;
+        let position = bounds(cx, format!("settings-theme-{}", card as usize)).center();
+        let modifiers = Modifiers::default();
+
+        let (built, _) = page_builds_after(cx, &app, |cx| {
+            cx.simulate_mouse_move(position, None, modifiers)
+        });
+        assert!(
+            built >= 1,
+            "hovering a card builds the page again ({built})"
+        );
+        assert_eq!(
+            page_builds_after(cx, &app, |cx| {
+                cx.update(|_, cx| app.update(cx, |_, cx| cx.notify()))
+            }),
+            (0, 1),
+            "a frame that moves nothing on the hovered page replays it"
+        );
+
+        let (built, _) = page_builds_after(cx, &app, |cx| {
+            cx.simulate_event(MouseDownEvent {
+                position,
+                modifiers,
+                button: MouseButton::Left,
+                click_count: 1,
+                first_mouse: false,
+            })
+        });
+        assert!(
+            built >= 1,
+            "pressing a card builds the page again ({built})"
+        );
+
+        // The switch's save waits behind this, so the store's answer and the
+        // status line it sets come in a frame of their own.
+        let hold = hold_preference_executor(cx, &app);
+        let (built, _) = page_builds_after(cx, &app, |cx| {
+            cx.simulate_event(MouseUpEvent {
+                position,
+                modifiers,
+                button: MouseButton::Left,
+                click_count: 1,
+            })
+        });
+        assert!(
+            built >= 1,
+            "a picker switch builds the page again ({built})"
+        );
+        assert_eq!(
+            cx.read(|cx| app.read(cx).settings.theme),
+            ThemeSelection::BuiltIn(card)
+        );
+        let page = page_renders(cx, &app);
+        assert_ne!(cx.read(|cx| app.read(cx).status.clone()), "Settings saved");
+        drop(hold);
+        drain_preference_writer(cx, &app);
+        assert_eq!(cx.read(|cx| app.read(cx).status.clone()), "Settings saved");
+        assert_eq!(
+            page_renders(cx, &app),
+            page + 1,
+            "the first save's status line builds the page again"
+        );
+
+        // Keyboard focus on another card builds the page (its focus ring).
+        // Focus moves through `Window::focus`, where Tab and a press end.
+        let target = ThemeChoice::CatppuccinMocha;
+        assert_ne!(target, card);
+        let handle = cx.read(|cx| {
+            app.read(cx)
+                .theme_card_focus(ThemeSelection::BuiltIn(target))
+                .clone()
+        });
+        let (built, _) = page_builds_after(cx, &app, |cx| {
+            cx.update(|window, cx| window.focus(&handle, cx))
+        });
+        assert!(
+            built >= 1,
+            "moving keyboard focus onto a card builds the page again ({built})"
+        );
+        assert!(cx.update(|window, _| handle.is_focused(window)));
+    }
+
+    /// A hovered card's preview border is drawn over its miniature, as when
+    /// the miniature was inline: the card layer paints each card's miniature,
+    /// caption fill and cached body, then the hover ring last, from the
+    /// pointer state the page's probe read in the same frame. The caption's
+    /// fill follows hover and press as its group styles did. Pressing keeps
+    /// the card hovered, the card stays ringed once selected, and leaving it
+    /// drops the ring while its miniature stays in the layer.
+    #[gpui::test]
+    fn a_hovered_card_draws_its_miniature_under_its_border(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|window, _| window.activate_window());
+        settle(cx);
+        let choice = ThemeChoice::TokyoNight;
+        let card = ThemeSelection::BuiltIn(choice);
+        let p = choice.palette();
+        let (body, slots) = cx.read(|cx| {
+            let app = app.read(cx);
+            (
+                app.theme_preview_body(card).entity_id(),
+                app.picker_cards.clone(),
+            )
+        });
+        use settings::CardPart::{Body, Fill, Miniature, Ring};
+        assert!(slots.len() >= ThemeChoice::ALL.len());
+        assert_eq!(
+            slots.painted(body),
+            [Miniature, Fill(p.panel), Body],
+            "no card is hovered yet"
+        );
+        let position = bounds(cx, format!("settings-theme-{}", choice as usize)).center();
+        let modifiers = Modifiers::default();
+
+        cx.simulate_mouse_move(position, None, modifiers);
+        settle(cx);
+        assert_eq!(
+            slots.painted(body),
+            [Miniature, Fill(p.hover), Body, Ring],
+            "the hovered card's ring, over its miniature"
+        );
+
+        cx.simulate_event(MouseDownEvent {
+            position,
+            modifiers,
+            button: MouseButton::Left,
+            click_count: 1,
+            first_mouse: false,
+        });
+        settle(cx);
+        assert_eq!(
+            slots.painted(body),
+            [Miniature, Fill(p.selected), Body, Ring],
+            "a pressed card is hovered"
+        );
+
+        cx.simulate_event(MouseUpEvent {
+            position,
+            modifiers,
+            button: MouseButton::Left,
+            click_count: 1,
+        });
+        settle(cx);
+        assert!(card_checked(cx, &app, card), "the click selected the card");
+        settle(cx);
+        assert_eq!(
+            slots.painted(body),
+            [Miniature, Fill(p.hover), Body, Ring],
+            "a selected, hovered card"
+        );
+
+        mouse_away(cx);
+        assert_eq!(
+            slots.painted(body),
+            [Miniature, Fill(p.panel), Body],
+            "no card is hovered"
+        );
+    }
+
+    /// Builds of each picker card's cached body so far.
+    fn card_body_renders(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+    ) -> Vec<(ThemeSelection, usize)> {
+        cx.read(|cx| {
+            app.read(cx)
+                .theme_card_bodies
+                .iter()
+                .map(|(selection, body)| (*selection, body.read(cx).renders()))
+                .collect()
+        })
+    }
+
+    /// Draw single frames, with no work run between them, until one has
+    /// built the Settings page since `page` builds: the frame that shows a
+    /// change the page follows. The test app also draws a dirty window when
+    /// it flushes an update's effects, which may be that frame.
+    fn draw_until_page_built(cx: &mut VisualTestContext, app: &Entity<GitTurtle>, page: usize) {
+        for _ in 0..3 {
+            if page_renders(cx, app) > page {
+                return;
+            }
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
+        assert!(page_renders(cx, app) > page, "a frame builds the page");
+    }
+
+    /// The cards whose bodies were built between two counts.
+    fn bodies_built(
+        before: &[(ThemeSelection, usize)],
+        after: &[(ThemeSelection, usize)],
+    ) -> Vec<ThemeSelection> {
+        after
+            .iter()
+            .filter(|(selection, renders)| {
+                before
+                    .iter()
+                    .find(|(drawn, _)| drawn == selection)
+                    .is_none_or(|(_, was)| was != renders)
+            })
+            .map(|(selection, _)| *selection)
+            .collect()
+    }
+
+    /// A live-preview edit builds the cached page again but replays every
+    /// picker card body whose key it left alone (`settings::CardKey`, set by
+    /// the app's self-observer). An edit of the canvas changes no card's key;
+    /// an edit of the accent changes the key of the one card whose check
+    /// badge draws it, which is built again in the edit's own frame.
+    #[gpui::test]
+    fn a_live_preview_edit_replays_the_card_bodies_it_leaves_alone(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|window, _| window.activate_window());
+        settle(cx);
+        let selected = cx
+            .read(|cx| app.read(cx).selected_theme_card())
+            .expect("a card is selected");
+        click(cx, "custom-themes-new");
+        let form = form(cx, &app);
+        next_frame(cx);
+        mouse_away(cx);
+        let inputs = cx.read(|cx| {
+            [TokenKind::Canvas, TokenKind::Accent].map(|kind| form.read(cx).row(kind).hex.clone())
+        });
+        for (input, value, built) in [
+            (&inputs[0], "#101a26", vec![]),
+            (&inputs[1], "#ff8800", vec![selected]),
+        ] {
+            settle(cx);
+            let applied = applications(cx, &app);
+            let bodies = card_body_renders(cx, &app);
+            let page = page_renders(cx, &app);
+            cx.update(|window, cx| {
+                input.update(cx, |input, cx| input.replace_all(value, window, cx))
+            });
+            cx.update(|window, cx| window.simulate_next_frame(cx));
+            draw_until_page_built(cx, &app, page);
+            assert_eq!(applications(cx, &app), applied + 1, "{value} is previewed");
+            assert_eq!(
+                bodies_built(&bodies, &card_body_renders(cx, &app)),
+                built,
+                "{value}'s frame builds the card bodies whose key it changed, and no other"
+            );
+        }
+    }
+
+    /// A picker switch moves the check badge: the app's self-observer sets
+    /// the new keys before the switch's frame, which builds the two bodies
+    /// whose badge changed and replays every other card body.
+    #[gpui::test]
+    fn a_switch_builds_the_two_card_bodies_whose_badge_moved(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|window, _| window.activate_window());
+        settle(cx);
+        let from = cx
+            .read(|cx| app.read(cx).selected_theme_card())
+            .expect("a card is selected");
+        let to = ThemeChoice::ALL
+            .into_iter()
+            .map(ThemeSelection::BuiltIn)
+            .find(|choice| *choice != from)
+            .expect("another built-in theme");
+        mouse_away(cx);
+        let bodies = card_body_renders(cx, &app);
+        let page = page_renders(cx, &app);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.choose_theme(to, window, cx)));
+        draw_until_page_built(cx, &app, page);
+        let mut built = bodies_built(&bodies, &card_body_renders(cx, &app));
+        built.sort_by_key(|selection| format!("{selection:?}"));
+        let mut expected = vec![from, to];
+        expected.sort_by_key(|selection| format!("{selection:?}"));
+        assert_eq!(
+            built, expected,
+            "the switch's frame builds the two cards whose badge moved"
+        );
+        assert!(card_checked(cx, &app, to));
+        assert!(!card_checked(cx, &app, from));
+    }
+
+    /// The app's own sites, none of which refreshes the window: a settings
+    /// change and a save refused by validation (`save_preferences`) and a
+    /// palette application (`apply_appearance`, here a live-preview edit)
+    /// each build the page once in their one frame, and the edit still reuses
+    /// every picker miniature. A desktop text-scale change refreshes the
+    /// window (`appearance::apply_text_sizes`) and builds the page once too.
+    #[gpui::test]
+    fn settings_text_scale_and_palette_changes_build_the_page_once(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|window, _| window.activate_window());
+        // The first save's reply sets the status line, which builds the page
+        // in a frame of its own (`input_on_a_picker_card_builds_the_page_again`);
+        // take it before measuring.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.save_preferences(window, cx)));
+        drain_preference_writer(cx, &app);
+        let (built, drew) = page_builds_after(cx, &app, |cx| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.graph_spacing += 2;
+                    app.save_preferences(window, cx);
+                })
+            })
+        });
+        assert_eq!(
+            (built, drew),
+            (1, 1),
+            "a settings change builds the page once in its frame"
+        );
+        drain_preference_writer(cx, &app);
+
+        let (built, drew) = page_builds_after(cx, &app, |cx| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.default_branch.clear();
+                    app.save_preferences(window, cx);
+                })
+            })
+        });
+        assert_eq!(
+            (built, drew),
+            (1, 1),
+            "a save refused by validation builds the page once, with its error"
+        );
+        assert!(cx.read(|cx| {
+            app.read(cx)
+                .operation_error
+                .as_deref()
+                .is_some_and(|error| error.starts_with("Could not save settings:"))
+        }));
+        cx.update(|_, cx| app.update(cx, |app, _| app.settings.default_branch = "main".into()));
+
+        // As `appearance::set_desktop_text_scale` does: the new factor, then
+        // the text sizes re-applied to the window, which refreshes it.
+        let (built, drew) = page_builds_after(cx, &app, |cx| {
+            cx.update(|window, cx| {
+                cx.set_global(appearance::DesktopTextScale(1.25));
+                let settings = app.read(cx).settings.clone();
+                appearance::apply_text_sizes(
+                    settings.interface_text_size,
+                    settings.code_text_size,
+                    window,
+                    cx,
+                );
+            })
+        });
+        assert_eq!(
+            (built, drew),
+            (1, 1),
+            "a desktop text-scale change builds the page once"
+        );
+
+        click(cx, "custom-themes-new");
+        let form = form(cx, &app);
+        next_frame(cx);
+        mouse_away(cx);
+        let hex = cx.read(|cx| form.read(cx).row(TokenKind::Canvas).hex.clone());
+        let previews = preview_renders(cx, &app);
+        let (built, drew) = page_builds_after(cx, &app, |cx| {
+            cx.update(|window, cx| {
+                hex.update(cx, |input, cx| input.replace_all("#101a26", window, cx))
+            })
+        });
+        assert_eq!(
+            (built, drew),
+            (1, 1),
+            "a live-preview edit builds the page once in its one frame"
+        );
+        assert_eq!(
+            preview_renders(cx, &app),
+            previews,
+            "and that frame still reuses every picker miniature"
+        );
+    }
+
+    /// The Your themes card's sites, each held apart from any refresh by
+    /// occupying the preference executor: an export's start and its result,
+    /// an import's start, its parsed document and the store's answer, a save
+    /// submitted from the editor, the bound error on New theme…, and the
+    /// store's answer to a confirmed delete.
+    #[gpui::test]
+    fn the_your_themes_card_builds_the_page_once_at_each_step(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|window, _| window.activate_window());
+        with_active_harbor(cx, &app);
+        let fixture = tempfile::tempdir().unwrap();
+        let exported = fixture.path().join("harbor.gitturtle-theme.json");
+
+        // Export.
+        let hold = hold_preference_executor(cx, &app);
+        let (built, drew) = page_builds_after(cx, &app, |cx| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.export_custom_theme(7, window, cx)))
+        });
+        assert_eq!(
+            (built, drew),
+            (1, 1),
+            "starting an export builds the busy card once"
+        );
+        cx.simulate_new_path_selection({
+            let exported = exported.clone();
+            move |_| Some(exported)
+        });
+        settle(cx);
+        let page = page_renders(cx, &app);
+        drop(hold);
+        wait_without_drawing(cx, |cx| !transfer_result(cx, &app).2);
+        assert_eq!(
+            page_renders(cx, &app),
+            page + 1,
+            "the finished export builds the page once"
+        );
+        assert!(
+            settings::page_shows(cx, "custom-themes-notice"),
+            "and that frame shows its notice"
+        );
+
+        // Import: the read job queues behind `hold`, and `hold_save`, queued
+        // after it, holds the save the parsed document submits.
+        let hold = hold_preference_executor(cx, &app);
+        let (built, drew) = page_builds_after(cx, &app, |cx| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.import_custom_theme(window, cx)))
+        });
+        assert_eq!(
+            (built, drew),
+            (1, 1),
+            "starting an import builds the busy card once"
+        );
+        assert!(
+            !settings::page_shows(cx, "custom-themes-notice"),
+            "acting on the card again clears the export notice"
+        );
+        cx.simulate_path_prompt_response({
+            let chosen = exported.clone();
+            move |_| Some(vec![chosen])
+        });
+        cx.run_until_parked();
+        let hold_save = hold_preference_executor(cx, &app);
+        let page = page_renders(cx, &app);
+        drop(hold);
+        wait_without_drawing(cx, |cx| !transfer_result(cx, &app).2);
+        assert!(
+            cx.read(|cx| app.read(cx).theme_editor.save_pending()),
+            "the parsed document's save waits for the store"
+        );
+        assert_eq!(
+            page_renders(cx, &app),
+            page + 1,
+            "the parsed document builds the page once"
+        );
+        let page = page_renders(cx, &app);
+        drop(hold_save);
+        wait_without_drawing(cx, |cx| {
+            !cx.read(|cx| app.read(cx).theme_editor.save_pending())
+        });
+        assert_eq!(
+            page_renders(cx, &app),
+            page + 1,
+            "the store's answer builds the page once"
+        );
+        assert!(
+            settings::page_shows(cx, "export-custom-theme-8"),
+            "and that frame lists the imported theme"
+        );
+
+        // A save submitted from the editor.
+        click(cx, "custom-themes-new");
+        let form = form(cx, &app);
+        next_frame(cx);
+        mouse_away(cx);
+        let hold = hold_preference_executor(cx, &app);
+        let (built, drew) = page_builds_after(cx, &app, |cx| {
+            cx.update(|window, cx| form.update(cx, |form, cx| form.submit(window, cx)))
+        });
+        assert_eq!(
+            (built, drew),
+            (1, 1),
+            "a submitted save builds the busy card once"
+        );
+        assert!(cx.read(|cx| app.read(cx).theme_editor.save_pending()));
+        drop(hold);
+        wait_for(cx, |cx| {
+            !cx.read(|cx| app.read(cx).theme_editor.save_pending())
+        });
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "the saved theme closes the editor"
+        );
+
+        // A confirmed delete of the first row, Harbor. The alert's close
+        // restores focus over the next frames and a 300 ms recheck; those pass
+        // before the store answers.
+        let rows = cx.read(|cx| app.read(cx).custom_themes.len());
+        let hold = hold_preference_executor(cx, &app);
+        open_delete_alert(cx, &app);
+        assert!(key_frame(cx, "tab", |window, cx| window.has_active_dialog(cx)));
+        assert!(
+            !key_frame(cx, "enter", |window, cx| window.has_active_dialog(cx)),
+            "Return on Delete theme closes the alert"
+        );
+        assert!(cx.read(|cx| app.read(cx).theme_editor.save_pending()));
+        native_frame(cx);
+        native_frame(cx);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(400));
+        cx.run_until_parked();
+        settle(cx);
+        let page = page_renders(cx, &app);
+        drop(hold);
+        wait_without_drawing(cx, |cx| {
+            !cx.read(|cx| app.read(cx).theme_editor.save_pending())
+        });
+        assert_eq!(cx.read(|cx| app.read(cx).custom_themes.len()), rows - 1);
+        assert_eq!(
+            page_renders(cx, &app),
+            page + 1,
+            "the confirmed delete's answer builds the page once"
+        );
+        assert!(
+            !settings::page_shows(cx, "export-custom-theme-7")
+                && settings::page_shows(cx, "export-custom-theme-8"),
+            "and that frame lists the rows without the deleted one"
+        );
+
+        // New theme… at the bound.
+        seed_themes(cx, &app, MAX_CUSTOM_THEMES as u32);
+        let (built, drew) = page_builds_after(cx, &app, |cx| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.open_theme_editor(None, window, cx))
+            })
+        });
+        assert_eq!(
+            (built, drew),
+            (1, 1),
+            "the bound error builds the page once"
+        );
+        assert!(cx.read(|cx| app.read(cx).theme_editor.error.is_some()));
+    }
+
+    /// An import the user cancels in the file prompt builds the page at its
+    /// start and again at its end, which re-enables the card. The end has
+    /// no other notify of the page: a cancelled import adds no theme and saves
+    /// nothing, so only `import_custom_theme`'s completion can build it.
+    #[gpui::test]
+    fn a_cancelled_import_builds_the_page_when_it_ends(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|window, _| window.activate_window());
+        let (built, drew) = page_builds_after(cx, &app, |cx| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.import_custom_theme(window, cx)))
+        });
+        assert_eq!(
+            (built, drew),
+            (1, 1),
+            "the import's start builds the page once"
+        );
+        assert!(
+            transfer_result(cx, &app).2,
+            "the card is busy while the prompt is open"
+        );
+        let (built, drew) =
+            page_builds_after(cx, &app, |cx| cx.simulate_path_prompt_response(|_| None));
+        assert!(!transfer_result(cx, &app).2, "the cancelled import ended");
+        assert_eq!(
+            (built, drew),
+            (1, 1),
+            "and its end builds the page once, so the card is enabled again"
+        );
+    }
+
+    /// The page's own text inputs reach it through its observers
+    /// (`SettingsPage::new`): typing in Default branch and a caret blink there
+    /// each build the page, since the input's view node is registered outside
+    /// the page (`ViewNodeAnchor`) and its notify dirties only the input, the
+    /// app and the root.
+    #[gpui::test]
+    fn typing_and_a_caret_blink_in_a_settings_input_build_the_page(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|window, _| window.activate_window());
+        let input = cx.read(|cx| app.read(cx).settings_branch.clone());
+        cx.update(|window, cx| input.read(cx).focus_handle(cx).focus(window, cx));
+        settle(cx);
+        // The first key after pointer input refreshes the whole window
+        // (`Window::dispatch_event`'s input-modality switch).
+        cx.simulate_input("x");
+        settle(cx);
+        let before = cx.read(|cx| input.read(cx).value().to_string());
+        let (built, drew) = page_builds_after(cx, &app, |cx| cx.simulate_input("y"));
+        let after = cx.read(|cx| input.read(cx).value().to_string());
+        assert!(
+            after != before && after.contains('y'),
+            "the key reached Default branch: {before:?} -> {after:?}"
+        );
+        assert!(drew >= 1, "the keystroke draws the window");
+        assert!(
+            built >= 1,
+            "and builds the page, which shows the value ({built})"
+        );
+
+        let (built, drew) = page_builds_after(cx, &app, |cx| {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(600));
+        });
+        assert!(drew >= 1, "the caret blink draws the window");
+        assert!(
+            built >= 1,
+            "and builds the page, which shows the caret ({built})"
+        );
+    }
+
+    /// State the page shows but other features change reaches it through the
+    /// app's self-observer (`GitTurtle::reconcile_settings_page`): the
+    /// operation error and busy state, the effective identity and the open
+    /// repository each build the page once when the app is notified, and a
+    /// notification that moved none of them replays it.
+    #[gpui::test]
+    fn state_from_other_features_builds_the_page_through_the_reconciler(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        fn notify(
+            cx: &mut VisualTestContext,
+            app: &Entity<GitTurtle>,
+            change: fn(&mut GitTurtle),
+        ) -> (usize, usize) {
+            page_builds_after(cx, app, |cx| {
+                cx.update(|_, cx| {
+                    app.update(cx, |app, cx| {
+                        change(app);
+                        cx.notify();
+                    })
+                })
+            })
+        }
+        assert_eq!(
+            notify(cx, &app, |_| {}),
+            (0, 1),
+            "a notification that moves nothing the page shows draws the window with the page replayed"
+        );
+        assert_eq!(
+            notify(cx, &app, |app| {
+                app.operation_error = Some("Default branch: refused".into())
+            }),
+            (1, 1),
+            "an operation error builds the page once"
+        );
+        assert_eq!(
+            notify(cx, &app, |app| {
+                app.operation_busy = Some("Saving repository identity…")
+            }),
+            (1, 1),
+            "a busy operation builds the page once"
+        );
+        assert_eq!(notify(cx, &app, |app| app.operation_busy = None), (1, 1));
+        assert_eq!(
+            notify(cx, &app, |app| {
+                app.profile = Some(gitturtle_core::GitProfile {
+                    signing: true,
+                    ..Default::default()
+                })
+            }),
+            (1, 1),
+            "a resolved identity builds the page once"
+        );
+        let repository = repository_fixture();
+        let opened = GitRepository::open(repository.path()).unwrap();
+        assert_eq!(
+            page_builds_after(cx, &app, |cx| {
+                cx.update(|_, cx| {
+                    app.update(cx, |app, cx| {
+                        app.repository = Some(opened);
+                        cx.notify();
+                    })
+                })
+            }),
+            (1, 1),
+            "an opened repository builds the page once"
+        );
+        assert_eq!(
+            notify(cx, &app, |_| {}),
+            (0, 1),
+            "and at rest the page is replayed again"
+        );
     }
 
     /// Saved custom themes are a third picker group of the same cards: named
@@ -5357,10 +6415,10 @@ mod tests {
     fn custom_themes_form_a_third_picker_group(cx: &mut TestAppContext) {
         let (app, cx) = open_app(cx);
         let initial = cx.read(|cx| app.read(cx).settings.theme);
-        assert!(cx.debug_bounds("settings-theme-group-light").is_some());
-        assert!(cx.debug_bounds("settings-theme-group-dark").is_some());
+        assert!(settings::page_shows(cx, "settings-theme-group-light"));
+        assert!(settings::page_shows(cx, "settings-theme-group-dark"));
         assert!(
-            cx.debug_bounds("settings-theme-group-custom").is_none(),
+            !settings::page_shows(cx, "settings-theme-group-custom"),
             "no third group without a custom theme"
         );
         assert_eq!(
@@ -5486,15 +6544,15 @@ mod tests {
         // with the last one.
         cx.update(|_, cx| app.update(cx, |app, cx| app.set_custom_themes(vec![dawn.clone()], cx)));
         settle(cx);
-        assert!(cx.debug_bounds("settings-custom-theme-7").is_none());
-        assert!(cx.debug_bounds("settings-custom-theme-9").is_some());
+        assert!(!settings::page_shows(cx, "settings-custom-theme-7"));
+        assert!(settings::page_shows(cx, "settings-custom-theme-9"));
         assert_eq!(
             cx.read(|cx| app.read(cx).theme_previews.len()),
             ThemeChoice::ALL.len() + 1
         );
         cx.update(|_, cx| app.update(cx, |app, cx| app.set_custom_themes(Vec::new(), cx)));
         settle(cx);
-        assert!(cx.debug_bounds("settings-theme-group-custom").is_none());
+        assert!(!settings::page_shows(cx, "settings-theme-group-custom"));
         assert_eq!(
             cx.read(|cx| app.read(cx).theme_previews.len()),
             ThemeChoice::ALL.len()
@@ -5695,7 +6753,7 @@ mod tests {
                 p.warning, p.canvas
             )
             .leak();
-            cx.debug_bounds(selector)
+            settings::shown(cx, selector)
         };
         assert!(
             glyph(cx, active).is_some(),

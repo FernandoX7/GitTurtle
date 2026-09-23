@@ -279,9 +279,10 @@ impl GitTurtle {
     /// The one appearance application path: a Settings switch, a system
     /// appearance change and every theme-editor live-preview edit end here.
     ///
-    /// Invalidation is this view's `cx.notify()` below, not
-    /// `Window::refresh`. Both draw the window once, but a refresh also bars
-    /// GPUI's cached-view reuse for that frame, and the twenty theme
+    /// Invalidation is this view's `cx.notify()` below and the Settings
+    /// page's ([`settings::SettingsPage`], a cached view the palette recolors
+    /// too), not `Window::refresh`. Both draw the window once, but a refresh
+    /// also bars GPUI's cached-view reuse for that frame, and the twenty theme
     /// miniatures in Settings ([`settings::ThemePreviewBody`]) show their own
     /// built-in palette: a palette change recolors the window around them
     /// without altering a pixel they draw. Reusing them is most of the
@@ -308,6 +309,7 @@ impl GitTurtle {
         }
         self.file_history.refresh_theme(cx);
         self.revision_inspection.refresh_theme(cx);
+        self.notify_settings_page(cx);
         cx.notify();
     }
     pub(super) fn open_external_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {

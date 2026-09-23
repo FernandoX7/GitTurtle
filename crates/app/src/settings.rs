@@ -169,35 +169,118 @@ impl GitTurtle {
                 ));
         }
         // Status replies can change the effective identity while Settings is
-        // visible. Reconcile after parent notifications, outside rendering.
+        // visible. Reconcile after parent notifications, outside rendering,
+        // and ask the cached page for a frame when state it shows from the
+        // rest of the app has moved (`reconcile_settings_page`).
         self.subscriptions
             .push(cx.observe_in(&cx.entity(), window, |this, _, window, cx| {
-                this.sync_settings_drafts(window, cx)
+                this.sync_settings_drafts(window, cx);
+                this.reconcile_settings_page(cx);
+                if this.page == AppPage::Settings {
+                    this.sync_theme_cards(cx);
+                }
             }));
+        // A change in one of the page's inputs reaches the page through its
+        // own observation of the input (`SettingsPage::new`); the app has
+        // nothing outside the page that shows an unsaved value.
         self.subscriptions.push(cx.subscribe_in(
             &self.settings_branch,
             window,
-            |this, _, event, window, cx| match event {
-                InputEvent::Change => cx.notify(),
-                InputEvent::PressEnter { .. } => this.save_default_branch(window, cx),
-                _ => {}
+            |this, _, event, window, cx| {
+                if let InputEvent::PressEnter { .. } = event {
+                    this.save_default_branch(window, cx)
+                }
             },
-        ));
-        self.subscriptions.push(cx.subscribe_in(
-            &self.settings_editor,
-            window,
-            |_, _, _: &InputEvent, _, cx| cx.notify(),
         ));
         for input in [&self.identity_name, &self.identity_email] {
             self.subscriptions.push(cx.subscribe_in(
                 input,
                 window,
-                |this, _, event, window, cx| match event {
-                    InputEvent::Change => cx.notify(),
-                    InputEvent::PressEnter { .. } => this.save_identity(window, cx),
-                    _ => {}
+                |this, _, event, window, cx| {
+                    if let InputEvent::PressEnter { .. } = event {
+                        this.save_identity(window, cx)
+                    }
                 },
             ));
+        }
+    }
+
+    /// The page for `GitTurtle::render`: the [`SettingsPage`] view, cached so
+    /// a frame that alters nothing on it replays its layout and paint. GPUI
+    /// collects accessibility nodes only while an element is prepainted, so
+    /// while assistive technology is reading the window the page is embedded
+    /// uncached and built every frame.
+    pub(super) fn settings_page_element(&self, window: &Window) -> AnyElement {
+        let page = if window.is_a11y_active() {
+            self.settings_page.clone().into_any_element()
+        } else {
+            self.settings_page
+                .clone()
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element()
+        };
+        div()
+            .size_full()
+            .child(page)
+            .children(
+                [
+                    &self.settings_editor,
+                    &self.settings_branch,
+                    &self.identity_name,
+                    &self.identity_email,
+                ]
+                .map(|input| ViewNodeAnchor::new(input.entity_id())),
+            )
+            .child(CardLayer {
+                slots: self.picker_cards.clone(),
+            })
+            .into_any_element()
+    }
+
+    /// Have the next frame build the Settings page again. Every site that
+    /// alters what the page shows calls this beside its own `cx.notify()`;
+    /// the page is a cached view, so a notification of the app alone would
+    /// draw the window with the page replayed from the previous frame. The
+    /// sites are enumerated in `crates/app/docs/content-and-layout.md`.
+    ///
+    /// This notifies the page's entity without leasing it, so it is safe from
+    /// any app method, including ones the page's own render calls.
+    pub(super) fn notify_settings_page(&self, cx: &mut App) {
+        App::notify(cx, self.settings_page.entity_id());
+    }
+
+    /// What the page shows that other features change: the operation error
+    /// and busy state (`workspace::write` and its completion), the status
+    /// line, the effective identity a status reply resolves and the open
+    /// repository a tab switch replaces. Those sites notify the app, not the
+    /// page; the app's self-observer compares this key with the one the page
+    /// last built from and notifies the page on a difference.
+    fn settings_page_key(&self) -> PageKey {
+        PageKey {
+            error: self.operation_error.clone(),
+            busy: self.operation_busy.is_some(),
+            status: self.status.clone(),
+            profile: self.profile.clone(),
+            repository: self.repository.as_ref().map(|repository| {
+                let path = repository.path();
+                (path.to_owned(), self.project_name(path))
+            }),
+        }
+    }
+
+    fn reconcile_settings_page(&self, cx: &mut Context<Self>) {
+        if self.page != AppPage::Settings {
+            return;
+        }
+        let key = self.settings_page_key();
+        if self
+            .settings_page
+            .read(cx)
+            .seen
+            .as_ref()
+            .is_some_and(|seen| *seen != key)
+        {
+            self.notify_settings_page(cx);
         }
     }
 
@@ -321,6 +404,7 @@ impl GitTurtle {
         })
         .detach();
         cx.notify();
+        self.notify_settings_page(cx);
     }
 
     fn choose_text_size(
@@ -544,13 +628,17 @@ impl GitTurtle {
     /// Replace the saved custom themes and keep their picker miniatures in
     /// step: a theme keeps its retained body, which takes the new palette and
     /// notifies only when it changed; a new theme gets a body; a deleted
-    /// theme's body is dropped. This is the only writer of `custom_themes`,
-    /// so a custom card is never drawn without its miniature.
+    /// theme's body is dropped. The cards' focus handles follow the same way.
+    /// This is the only writer of `custom_themes`, so a custom card is never
+    /// drawn without its miniature.
     pub(super) fn set_custom_themes(&mut self, themes: Vec<CustomTheme>, cx: &mut Context<Self>) {
-        self.theme_previews.retain(|(drawn, _)| match drawn {
+        let kept = |drawn: &ThemeSelection| match drawn {
             ThemeSelection::BuiltIn(_) => true,
             ThemeSelection::Custom(id) => themes.iter().any(|theme| theme.id == *id),
-        });
+        };
+        self.theme_previews.retain(|(drawn, _)| kept(drawn));
+        self.theme_card_focus.retain(|(drawn, _)| kept(drawn));
+        self.theme_card_bodies.retain(|(drawn, _)| kept(drawn));
         for theme in &themes {
             let selection = ThemeSelection::Custom(theme.id);
             let palette = theme.palette;
@@ -558,14 +646,53 @@ impl GitTurtle {
                 .theme_previews
                 .iter()
                 .find_map(|(drawn, body)| (*drawn == selection).then(|| body.clone()));
-            match retained {
-                Some(body) => body.update(cx, |body, cx| body.set_palette(palette, cx)),
-                None => self
-                    .theme_previews
-                    .push((selection, cx.new(|_| ThemePreviewBody::new(palette)))),
+            let miniature = match retained {
+                Some(body) => {
+                    body.update(cx, |body, cx| body.set_palette(palette, cx));
+                    body.entity_id()
+                }
+                None => {
+                    let body = cx.new(|_| ThemePreviewBody::new(palette));
+                    let miniature = body.entity_id();
+                    self.theme_previews.push((selection, body));
+                    miniature
+                }
+            };
+            if !self
+                .theme_card_bodies
+                .iter()
+                .any(|(drawn, _)| *drawn == selection)
+            {
+                self.theme_card_bodies
+                    .push((selection, cx.new(|_| ThemeCardBody::new(miniature))));
+            }
+            if !self
+                .theme_card_focus
+                .iter()
+                .any(|(drawn, _)| *drawn == selection)
+            {
+                self.theme_card_focus.push((selection, cx.focus_handle()));
             }
         }
         self.custom_themes = themes;
+    }
+
+    /// The cached body of `selection`'s picker card, found by the selection
+    /// stored beside it, as [`Self::theme_preview_body`] finds its miniature.
+    pub(super) fn theme_card_body(&self, selection: ThemeSelection) -> &Entity<ThemeCardBody> {
+        self.theme_card_bodies
+            .iter()
+            .find_map(|(drawn, body)| (*drawn == selection).then_some(body))
+            .expect("every built-in and every saved custom theme has a card body")
+    }
+
+    /// The focus handle of `selection`'s picker card, found by the selection
+    /// stored beside it, as [`Self::theme_preview_body`] finds its miniature.
+    pub(super) fn theme_card_focus(&self, selection: ThemeSelection) -> &FocusHandle {
+        self.theme_card_focus
+            .iter()
+            .find_map(|(drawn, focus)| (*drawn == selection).then_some(focus))
+            .expect("every built-in and every saved custom theme has a picker card")
     }
 
     /// Theme switches restyle retained editors in place: no worker job, no
@@ -733,14 +860,16 @@ impl GitTurtle {
     /// themes. Every card is the same element built from a palette, a name, a
     /// description and a readability count; a custom card describes its base
     /// and shows the warning glyph when its palette has findings.
-    fn render_theme_picker(&self, columns: usize, cx: &mut Context<Self>) -> AnyElement {
-        let p = palette(cx);
-        // A selection naming a missing custom theme shows the default it
-        // resolves to; following the system marks no card.
-        let selected = (!self.settings.follow_system)
-            .then(|| self.settings.theme.resolve(&self.custom_themes).selection);
-        #[cfg(test)]
-        self.card_names.borrow_mut().clear();
+    /// The picker card a selection marks: a selection naming a missing
+    /// custom theme shows the default it resolves to; following the system
+    /// marks no card.
+    pub(super) fn selected_theme_card(&self) -> Option<ThemeSelection> {
+        (!self.settings.follow_system)
+            .then(|| self.settings.theme.resolve(&self.custom_themes).selection)
+    }
+
+    /// The picker's groups and their cards, in display order.
+    fn theme_card_groups(&self) -> [(&'static str, &'static str, Vec<ThemeCard>); 3] {
         let built_in = |light: bool| {
             ThemeChoice::ALL
                 .into_iter()
@@ -768,11 +897,43 @@ impl GitTurtle {
                 warnings,
             })
             .collect::<Vec<_>>();
-        let groups = [
+        [
             ("light", "Light palettes", built_in(true)),
             ("dark", "Dark palettes", built_in(false)),
             ("custom", "Your themes", custom),
-        ];
+        ]
+    }
+
+    /// Set every picker card body's [`CardKey`] from the app's state and the
+    /// applied palette. A body notifies only when its key changed, so this
+    /// runs on every app notification while Settings is shown (the app's
+    /// self-observer) and in every build of the page, and the frame that
+    /// shows a change builds only the bodies it altered.
+    pub(super) fn sync_theme_cards(&self, cx: &mut App) {
+        let active = palette(cx);
+        let selected = self.selected_theme_card();
+        for (_, _, cards) in self.theme_card_groups() {
+            for card in cards {
+                let key = CardKey::new(
+                    card.palette,
+                    card.name,
+                    card.description,
+                    card.warnings,
+                    selected == Some(card.selection),
+                    active,
+                );
+                self.theme_card_body(card.selection)
+                    .update(cx, |body, cx| body.set_key(key, active, cx));
+            }
+        }
+    }
+
+    fn render_theme_picker(&self, columns: usize, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx);
+        let selected = self.selected_theme_card();
+        #[cfg(test)]
+        self.card_names.borrow_mut().clear();
+        let groups = self.theme_card_groups();
         div()
             .debug_selector(|| "settings-theme-picker".into())
             .flex()
@@ -856,9 +1017,10 @@ impl GitTurtle {
         };
         Button::new(id)
             .ghost()
-            .group("settings-theme-choice")
+            .group(CARD_GROUP)
             .debug_selector(selector)
             .accessibility_label(accessible_name)
+            .track_focus(self.theme_card_focus(selection))
             .selected(selected)
             .toggled(selected)
             .tooltip(tooltip)
@@ -870,18 +1032,46 @@ impl GitTurtle {
             .border_color(rgb(if selected { p.accent } else { p.border }))
             .rounded(px(10.))
             .overflow_hidden()
-            .child(theme_preview(
-                self.theme_preview_body(selection),
-                card.palette,
-                card.name.clone(),
-                card.description.clone(),
-                selected,
-                card.warnings,
-                p,
-            ))
+            .children(self.theme_card_content(card, p))
             .on_click(
                 cx.listener(move |this, _, window, cx| this.choose_theme(selection, window, cx)),
             )
+    }
+
+    /// A picker card's content on the page: the preview's rounded,
+    /// canvas-colored box holding the slot of its body, which [`CardLayer`]
+    /// draws, and the pointer probe beside it ([`CardProbe`]). The box's
+    /// border stays transparent here; the layer draws it over the body.
+    fn theme_card_content(&self, card: &ThemeCard, active: appearance::Palette) -> [AnyElement; 2] {
+        let shared = std::rc::Rc::<CardShared>::default();
+        [
+            div()
+                .size_full()
+                .rounded(px(7.))
+                .border_1()
+                .border_color(gpui_kit::transparent_black())
+                .overflow_hidden()
+                .bg(rgb(card.palette.canvas))
+                .child(CardSlot {
+                    body: self.theme_card_body(card.selection).clone(),
+                    miniature: self.theme_preview_body(card.selection).clone(),
+                    palette: card.palette,
+                    accent: active.accent,
+                    shared: std::rc::Rc::clone(&shared),
+                    slots: self.picker_cards.clone(),
+                })
+                .into_any_element(),
+            div()
+                .id("theme-card-pointer")
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .group_hover(CARD_GROUP, |style| style.italic())
+                .group_active(CARD_GROUP, |style| style.font_weight(FontWeight::BLACK))
+                .child(CardProbe(shared))
+                .into_any_element(),
+        ]
     }
 
     /// Your themes: the saved custom themes with Edit…, Export… and Delete…,
@@ -1752,6 +1942,919 @@ impl GitTurtle {
     }
 }
 
+/// The Settings page as its own view.
+///
+/// `GitTurtle::render` embeds it with [`Entity::cached`]
+/// (`GitTurtle::settings_page_element`), so a frame that alters nothing on
+/// the page, such as a keystroke in the theme editor's inputs or a caret blink
+/// in the dialog over it, replays the page's prepaint and paint instead of
+/// laying it out and painting it again. The page owns no state of its own: it
+/// renders `GitTurtle::render_settings` through a weak handle to the app,
+/// which owns the page and notifies it at every site that alters what it
+/// shows (`GitTurtle::notify_settings_page`, the reconciler in the app's
+/// self-observer, and GPUI's own hover, press, focus and refresh paths). It
+/// observes the page's four text inputs itself: each input's view node is
+/// registered outside the page ([`ViewNodeAnchor`]), so an input's
+/// notification dirties the input and the app but no longer the page, and the
+/// value it shows and its caret would otherwise stand still on the page.
+///
+/// The failure mode of a missed notification is a page that keeps showing the
+/// previous frame's controls until something else refreshes the window: a
+/// busy Your themes card that stays disabled, a list without the theme just
+/// imported, an error that never appears.
+pub(super) struct SettingsPage {
+    app: WeakEntity<GitTurtle>,
+    /// The cross-feature state the last build showed
+    /// (`GitTurtle::settings_page_key`).
+    seen: Option<PageKey>,
+    /// Test-only: builds of the page, so a test can assert that a frame
+    /// reused it or built it again.
+    #[cfg(test)]
+    renders: usize,
+    _subscriptions: Vec<Subscription>,
+}
+
+/// The state the Settings page shows that is changed outside its own sites;
+/// see `GitTurtle::settings_page_key`.
+#[derive(PartialEq)]
+struct PageKey {
+    error: Option<String>,
+    busy: bool,
+    status: String,
+    profile: Option<gitturtle_core::GitProfile>,
+    repository: Option<(PathBuf, String)>,
+}
+
+impl SettingsPage {
+    pub(super) fn new(
+        app: WeakEntity<GitTurtle>,
+        inputs: [&Entity<InputState>; 4],
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            app,
+            seen: None,
+            #[cfg(test)]
+            renders: 0,
+            _subscriptions: inputs
+                .into_iter()
+                .map(|input| cx.observe(input, |_, _, cx| cx.notify()))
+                .collect(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn renders(&self) -> usize {
+        self.renders
+    }
+}
+
+/// Where `selector` is on screen, for tests. A frame that replays a cached
+/// view records no debug bounds inside it (GPUI records them only while a
+/// div paints), so a selector on the cached Settings page is missing after a
+/// frame that reused the page; when the last frame lacks `selector`, draw one
+/// that builds every view and look again. Read page selectors before counting
+/// builds, never inside a measured window.
+#[cfg(test)]
+pub(crate) fn shown(
+    cx: &mut gpui::VisualTestContext,
+    selector: &'static str,
+) -> Option<Bounds<Pixels>> {
+    cx.debug_bounds(selector).or_else(|| {
+        page_shows(cx, selector);
+        cx.debug_bounds(selector)
+    })
+}
+
+/// Whether `selector` is on screen in a frame that builds every view, for
+/// tests: a negative check on a page selector needs that frame, since after a
+/// replayed frame every page selector is missing. Pending work runs first, so
+/// no later frame that replays a picker card body replaces that frame.
+#[cfg(test)]
+pub(crate) fn page_shows(cx: &mut gpui::VisualTestContext, selector: &'static str) -> bool {
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    let shown = cx.debug_bounds(selector).is_some();
+    cx.run_until_parked();
+    shown
+}
+
+impl Render for SettingsPage {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        {
+            self.renders += 1;
+        }
+        let Some(app) = self.app.upgrade() else {
+            return div().into_any_element();
+        };
+        let (page, key) = app.update(cx, |app, cx| {
+            // This build's placeholders record the cards again.
+            app.picker_cards.0.borrow_mut().clear();
+            app.sync_theme_cards(cx);
+            (app.render_settings(window, cx), app.settings_page_key())
+        });
+        self.seen = Some(key);
+        page
+    }
+}
+
+/// Re-homes a toolkit input's view node behind the cached Settings page.
+///
+/// `Input` renders its `InputState` as a view, and the toolkit's text element
+/// notifies that state from `paint` on every frame. A notify issued while the
+/// window draws runs no observer: GPUI parks the entity in the window's dirty
+/// set and, at the next draw, marks it and every view above its dispatch node
+/// dirty. With the input's node inside the page, that made the page rebuild on
+/// every frame, whatever caused the frame. This element, prepainted after the
+/// page, registers the input's node here instead, so the next draw marks only
+/// the input, the app view and the root. The page still follows the inputs it
+/// shows through `SettingsPage`'s observers, which fire for the notifies that
+/// change an input: typing, the caret, focus and selection.
+///
+/// This relies on the pinned GPUI's `DispatchTree::set_view_id`, where the
+/// last registration of a view's node wins and `view_path_reversed` is the
+/// only reader; GPUI marks `set_view_id` for removal. A GPUI update that
+/// changes either must keep
+/// `state_from_other_features_builds_the_page_through_the_reconciler` green:
+/// its idle notification asserts the page is replayed.
+pub(super) struct ViewNodeAnchor {
+    view: EntityId,
+}
+
+impl ViewNodeAnchor {
+    pub(super) fn new(view: EntityId) -> Self {
+        Self { view }
+    }
+}
+
+impl IntoElement for ViewNodeAnchor {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for ViewNodeAnchor {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let style = Style {
+            position: Position::Absolute,
+            ..Style::default()
+        };
+        (window.request_layout(style, None, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        _: &mut App,
+    ) {
+        window.set_view_id(self.view);
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        _: &mut Window,
+        _: &mut App,
+    ) {
+    }
+}
+
+/// Where the Settings page's last build placed each picker card's body: its
+/// retained views, its bounds, and the content mask and text style of its
+/// place. The page's render clears the list and each [`CardSlot`] records its
+/// slot while the page is prepainted; a frame that replays the page keeps the
+/// previous build's slots, which a replayed page still matches.
+#[derive(Clone, Default)]
+pub(super) struct CardSlots(std::rc::Rc<std::cell::RefCell<Vec<CardSlotState>>>);
+
+#[cfg(test)]
+impl CardSlots {
+    /// What [`CardLayer`] painted last for the card that shows `miniature`,
+    /// in paint order.
+    pub(super) fn painted(&self, miniature: EntityId) -> Vec<CardPart> {
+        self.0
+            .borrow()
+            .iter()
+            .find(|slot| slot.miniature.entity_id() == miniature)
+            .map(|slot| slot.painted.borrow().clone())
+            .unwrap_or_default()
+    }
+
+    /// The cards the last page build placed.
+    pub(super) fn len(&self) -> usize {
+        self.0.borrow().len()
+    }
+}
+
+/// Test-only: one part [`LayerCard`] painted. `Fill` names the caption color
+/// it chose from the card's own palette.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum CardPart {
+    Fill(u32),
+    Body,
+    Miniature,
+    Ring,
+}
+
+/// The picker card group whose hover and press the card body shows.
+const CARD_GROUP: &str = "settings-theme-choice";
+
+/// The pointer state of a picker card as its last page paint saw it, by the
+/// predicates GPUI evaluates for `group_hover` and `group_active`.
+#[derive(Clone, Copy, Default, PartialEq)]
+struct CardPointer {
+    hovered: bool,
+    pressed: bool,
+}
+
+/// What a picker card's page elements leave for [`LayerCard`]: the pointer
+/// state [`CardProbe`] read at paint, and the content mask at the card
+/// button's content ([`CardProbe`]'s prepaint), under which the preview's
+/// hover ring was drawn.
+#[derive(Default)]
+struct CardShared {
+    pointer: std::cell::Cell<CardPointer>,
+    outer: std::cell::Cell<ContentMask<Pixels>>,
+}
+
+pub(super) struct CardSlotState {
+    body: Entity<ThemeCardBody>,
+    miniature: Entity<ThemePreviewBody>,
+    /// The card's own palette: the caption fill and the miniature's text pin.
+    palette: appearance::Palette,
+    /// The applied accent, which draws the hover ring.
+    accent: u32,
+    bounds: Bounds<Pixels>,
+    mask: ContentMask<Pixels>,
+    text: TextStyle,
+    shared: std::rc::Rc<CardShared>,
+    #[cfg(test)]
+    painted: std::rc::Rc<std::cell::RefCell<Vec<CardPart>>>,
+}
+
+/// What a picker card's body shows, apart from pointer state: the card's
+/// theme and whether it is the applied one, and the applied palette's tokens
+/// its status marks draw in, only where it draws them. [`ThemeCardBody`] is
+/// built again only when this changes, so a live-preview edit replays every
+/// card body except the selected card's when it edits the accent or accent
+/// foreground and the warned cards' when it edits the warning or canvas
+/// color. The hover ring, also in the accent, is drawn outside the body.
+#[derive(Clone, PartialEq)]
+pub(super) struct CardKey {
+    palette: appearance::Palette,
+    name: SharedString,
+    description: SharedString,
+    warnings: usize,
+    /// The applied accent and accent foreground, which draw the check
+    /// badge; absent on a card that is not selected, which draws no badge.
+    badge: Option<(u32, u32)>,
+    /// The applied warning and canvas colors, which draw the readability
+    /// glyph; absent on a card without findings, which draws no glyph.
+    marks: Option<(u32, u32)>,
+}
+
+impl CardKey {
+    fn new(
+        palette: appearance::Palette,
+        name: SharedString,
+        description: SharedString,
+        warnings: usize,
+        selected: bool,
+        active: appearance::Palette,
+    ) -> Self {
+        Self {
+            palette,
+            name,
+            description,
+            warnings,
+            badge: selected.then_some((active.accent, active.accent_foreground)),
+            marks: (warnings > 0).then_some((active.warning, active.canvas)),
+        }
+    }
+}
+
+/// A picker card's place on the page: laid out in flow like the cached body
+/// it stands for, and recorded in [`CardSlots`] when the page is prepainted,
+/// with the text style the body would inherit there. [`CardLayer`] draws the
+/// body.
+///
+/// The page is rebuilt with `Window::refreshing` set on every palette
+/// application, which bars reuse for every cached view nested in it, so card
+/// bodies inside the page were built again on every live-preview edit. Nor
+/// can the page issue the deferred draw itself: a replayed page copies its
+/// deferred draws without prepainting them, which leaves each body's cached
+/// prepaint range pointing into an older frame.
+struct CardSlot {
+    body: Entity<ThemeCardBody>,
+    miniature: Entity<ThemePreviewBody>,
+    palette: appearance::Palette,
+    accent: u32,
+    shared: std::rc::Rc<CardShared>,
+    slots: CardSlots,
+}
+
+impl Element for CardSlot {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        // The layout a cached view requests: its root style alone.
+        let mut style = Style::default();
+        style.refine(&StyleRefinement::default().size_full());
+        (window.request_layout(style, None, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        _: &mut App,
+    ) {
+        self.slots.0.borrow_mut().push(CardSlotState {
+            body: self.body.clone(),
+            miniature: self.miniature.clone(),
+            palette: self.palette,
+            accent: self.accent,
+            bounds,
+            mask: window.content_mask(),
+            text: window.text_style(),
+            shared: std::rc::Rc::clone(&self.shared),
+            #[cfg(test)]
+            painted: std::rc::Rc::default(),
+        });
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        _: &mut Window,
+        _: &mut App,
+    ) {
+    }
+}
+
+impl IntoElement for CardSlot {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+/// Reads a picker card's pointer state while the page paints. GPUI knows
+/// which group is hovered only then: it registers group hitboxes during
+/// paint, after the frame's hit test. The probe's box turns its text style
+/// italic under the card group's hover and black under its press, the same
+/// predicates the card's `group_hover` and `group_active` styles used, and
+/// the probe stores what it reads for [`LayerCard`], which paints later in
+/// the same frame. Nothing inside draws text. The box's own listeners notify
+/// the page on a hover change and refresh the window on a press, so the
+/// state is read again whenever it changes. The probe stands beside the
+/// preview in the card button, so its prepaint also records the button's
+/// content mask.
+struct CardProbe(std::rc::Rc<CardShared>);
+
+impl Element for CardProbe {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let mut style = Style::default();
+        style.refine(&StyleRefinement::default().size_full());
+        (window.request_layout(style, None, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        _: &mut App,
+    ) {
+        self.0.outer.set(window.content_mask());
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        _: &mut App,
+    ) {
+        let style = window.text_style();
+        self.0.pointer.set(CardPointer {
+            hovered: style.font_style == FontStyle::Italic,
+            pressed: style.font_weight == FontWeight::BLACK,
+        });
+    }
+}
+
+impl IntoElement for CardProbe {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+/// Draws each picker card's body at the slot the page recorded, after the
+/// root tree as a deferred draw (`Window::defer_draw`) under the slot's
+/// content mask, so the page's scroll viewport still clips it.
+///
+/// It stands beside the cached page, outside it, so it runs every frame: each
+/// card's body and miniature are cached views prepainted with the window's
+/// own `refreshing`, reused on a notify-driven frame whether the page around
+/// them was built or replayed. At priority 0 the cards paint before dialogs,
+/// popups and tooltips, and after every part of the page that is not itself
+/// deferred.
+pub(super) struct CardLayer {
+    slots: CardSlots,
+}
+
+impl Element for CardLayer {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let style = Style {
+            position: Position::Absolute,
+            ..Style::default()
+        };
+        (window.request_layout(style, None, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        for slot in self.slots.0.borrow().iter() {
+            let size = slot.bounds.size;
+            let mut card = LayerCard {
+                // The text style the body inherits on the page, with its
+                // color pinned to the card's own: GPUI's reuse key compares
+                // the ambient text style, and the page's follows the active
+                // palette. Every text in the body sets its own color.
+                text: pinned_text(&slot.text, slot.palette.text),
+                body: div()
+                    .w(size.width)
+                    .h(size.height)
+                    .child(
+                        slot.body
+                            .clone()
+                            .cached(StyleRefinement::default().size_full()),
+                    )
+                    .into_any_element(),
+                miniature: None,
+                parts: slot.body.read(cx).parts.clone(),
+                view: slot.miniature.clone(),
+                palette: slot.palette,
+                accent: slot.accent,
+                bounds: slot.bounds,
+                mask: slot.mask,
+                hovered: slot.shared.pointer.get().hovered,
+                shared: std::rc::Rc::clone(&slot.shared),
+                #[cfg(test)]
+                painted: std::rc::Rc::clone(&slot.painted),
+            }
+            .into_any_element();
+            card.layout_as_root(size.map(AvailableSpace::Definite), window, cx);
+            // Under the button's mask, where the ring was drawn; the
+            // preview's own content paints under the slot's.
+            let outer = slot.shared.outer.get();
+            window.defer_draw(card, slot.bounds.origin, 0, Some(outer));
+        }
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        _: &mut Window,
+        _: &mut App,
+    ) {
+    }
+}
+
+impl IntoElement for CardLayer {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+/// `style` as a refinement that sets every field, with `color` in place of
+/// its color.
+fn pinned_text(style: &TextStyle, color: u32) -> TextStyleRefinement {
+    TextStyleRefinement {
+        color: Some(rgb(color).into()),
+        font_family: Some(style.font_family.clone()),
+        font_features: Some(style.font_features.clone()),
+        font_fallbacks: style.font_fallbacks.clone(),
+        font_size: Some(style.font_size),
+        line_height: Some(style.line_height),
+        font_weight: Some(style.font_weight),
+        font_style: Some(style.font_style),
+        background_color: style.background_color,
+        underline: style.underline,
+        strikethrough: style.strikethrough,
+        white_space: Some(style.white_space),
+        text_overflow: style.text_overflow.clone(),
+        text_align: Some(style.text_align),
+        line_clamp: style.line_clamp,
+    }
+}
+
+/// One card of [`CardLayer`], painted in the order the card's own div tree
+/// painted it: the cached miniature, the caption's fill, the cached body (the
+/// caption's text, marks, swatches and top border), and last the preview's
+/// 1 px hover ring, over the miniature's top corners and anti-aliased edge.
+/// The fill and the ring follow the pointer state this frame's page paint
+/// read ([`CardProbe`]), so the cached body holds nothing that changes with
+/// hover or press and a replayed body is never stale.
+///
+/// The preview clipped its content to the inside of its border while the
+/// border was visible (`Style::overflow_mask`), so a hovered card's content
+/// is prepainted and painted under that clip too; the clip is part of GPUI's
+/// reuse key, so the body and the miniature are built again under it. The
+/// state known at prepaint is the last page paint's: when this frame's paint
+/// finds it changed, the card asks for one more frame, which prepaints it
+/// under the right clip.
+struct LayerCard {
+    text: TextStyleRefinement,
+    body: AnyElement,
+    miniature: Option<AnyElement>,
+    /// The miniature box and the caption, as the body last laid them out.
+    parts: std::rc::Rc<std::cell::Cell<(Bounds<Pixels>, Bounds<Pixels>)>>,
+    view: Entity<ThemePreviewBody>,
+    palette: appearance::Palette,
+    accent: u32,
+    bounds: Bounds<Pixels>,
+    /// The content mask of the card's slot, inside the preview.
+    mask: ContentMask<Pixels>,
+    /// Whether the card was hovered when this was prepainted.
+    hovered: bool,
+    shared: std::rc::Rc<CardShared>,
+    #[cfg(test)]
+    painted: std::rc::Rc<std::cell::RefCell<Vec<CardPart>>>,
+}
+
+impl LayerCard {
+    /// The clip of the preview's content: its slot's, and inside the
+    /// preview's border while that border is drawn.
+    fn content_mask(&self) -> ContentMask<Pixels> {
+        if self.hovered {
+            self.mask.intersect(&ContentMask {
+                bounds: self.bounds,
+            })
+        } else {
+            self.mask
+        }
+    }
+}
+
+impl Element for LayerCard {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let body = &mut self.body;
+        let layout = window.with_text_style(Some(self.text.clone()), |window| {
+            body.request_layout(window, cx)
+        });
+        (layout, ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let text = self.text.clone();
+        let mask = self.content_mask();
+        window.with_content_mask(Some(mask), |window| {
+            window.with_text_style(Some(text), |window| {
+                self.body.prepaint(window, cx);
+                // The body has laid its miniature box out by now, this frame or
+                // in the frame it replays, which had the same bounds.
+                let (place, _) = self.parts.get();
+                let mut miniature = div()
+                    .w(place.size.width)
+                    .h(place.size.height)
+                    // Pinned as in the body: nothing inside draws text.
+                    .text_color(rgb(self.palette.text))
+                    .child(
+                        self.view
+                            .clone()
+                            .cached(StyleRefinement::default().size_full()),
+                    )
+                    .into_any_element();
+                miniature.layout_as_root(place.size.map(AvailableSpace::Definite), window, cx);
+                miniature.prepaint_at(place.origin, window, cx);
+                self.miniature = Some(miniature);
+            });
+        });
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let pointer = self.shared.pointer.get();
+        if pointer.hovered != self.hovered {
+            window.request_animation_frame();
+        }
+        let p = self.palette;
+        #[cfg(test)]
+        let mut painted = Vec::new();
+        // The caption's background: `group_active` over `group_hover` over
+        // its own color, as its styles refined.
+        let fill = if pointer.pressed {
+            p.selected
+        } else if pointer.hovered {
+            p.hover
+        } else {
+            p.panel
+        };
+        let (_, caption) = self.parts.get();
+        let text = self.text.clone();
+        let mask = self.content_mask();
+        window.with_content_mask(Some(mask), |window| {
+            window.with_text_style(Some(text), |window| {
+                if let Some(miniature) = self.miniature.as_mut() {
+                    miniature.paint(window, cx);
+                    #[cfg(test)]
+                    painted.push(CardPart::Miniature);
+                }
+                window.paint_quad(background_quad(caption, Corners::default(), fill));
+                #[cfg(test)]
+                painted.push(CardPart::Fill(fill));
+                self.body.paint(window, cx);
+                #[cfg(test)]
+                painted.push(CardPart::Body);
+            });
+        });
+        if pointer.hovered {
+            // The preview's `rounded(7.)`, `border_1()` accent border, which
+            // wraps the body 1 px outside it, drawn as its style drew it.
+            let ring = self.bounds.dilate(px(1.));
+            let mut color: Hsla = rgb(self.accent).into();
+            let border = color;
+            color.a = 0.;
+            window.paint_quad(quad(
+                ring,
+                Corners::all(px(7.)).clamp_radii_for_quad_size(ring.size),
+                color,
+                Edges::all(px(1.)),
+                border,
+                BorderStyle::default(),
+            ));
+            #[cfg(test)]
+            painted.push(CardPart::Ring);
+        }
+        #[cfg(test)]
+        {
+            *self.painted.borrow_mut() = painted;
+        }
+    }
+}
+
+impl IntoElement for LayerCard {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+/// A background quad as `Style::paint` draws a div's `bg`.
+fn background_quad(bounds: Bounds<Pixels>, radii: Corners<Pixels>, color: u32) -> PaintQuad {
+    let background: Hsla = rgb(color).into();
+    let mut border = background;
+    border.a = 0.;
+    quad(
+        bounds,
+        radii,
+        background,
+        Edges::default(),
+        border,
+        BorderStyle::default(),
+    )
+}
+
+/// A picker card's body: the preview's miniature box and caption, drawn by
+/// [`CardLayer`] outside the cached Settings page.
+///
+/// The app owns one per built-in and per saved custom theme, beside the
+/// card's miniature (`GitTurtle::theme_card_body`), and sets its
+/// [`CardKey`] from the app's state (`GitTurtle::sync_theme_cards`): only a
+/// change of the key notifies it, so a frame that rebuilds the page for a
+/// live-preview edit replays every body whose key the edit left alone. It
+/// renders from its own state and reads no other entity. The miniature box
+/// is empty: the layer draws the miniature, a separate cached view, at the
+/// box's bounds, so a switch that rebuilds the bodies still replays the
+/// miniatures. The caption's background and the hover ring follow the
+/// pointer and are drawn by the layer, not here.
+///
+/// The failure mode of a missed key change is a card that keeps its previous
+/// caption: the old name, check badge or glyph, or a badge in the previous
+/// accent.
+pub(super) struct ThemeCardBody {
+    key: Option<CardKey>,
+    /// The applied palette its status marks draw in; only the tokens in the
+    /// key are read.
+    active: appearance::Palette,
+    /// The card's miniature, which names the body's selectors.
+    miniature: EntityId,
+    parts: std::rc::Rc<std::cell::Cell<(Bounds<Pixels>, Bounds<Pixels>)>>,
+    /// Test-only: builds of this body.
+    #[cfg(test)]
+    renders: usize,
+}
+
+impl ThemeCardBody {
+    pub(super) fn new(miniature: EntityId) -> Self {
+        Self {
+            key: None,
+            active: ThemeChoice::default().palette(),
+            miniature,
+            parts: std::rc::Rc::default(),
+            #[cfg(test)]
+            renders: 0,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn renders(&self) -> usize {
+        self.renders
+    }
+
+    fn set_key(&mut self, key: CardKey, active: appearance::Palette, cx: &mut Context<Self>) {
+        self.active = active;
+        if self.key.as_ref() != Some(&key) {
+            self.key = Some(key);
+            cx.notify();
+        }
+    }
+}
+
+impl Render for ThemeCardBody {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        {
+            self.renders += 1;
+        }
+        let Some(key) = self.key.clone() else {
+            return div().into_any_element();
+        };
+        let parts = std::rc::Rc::clone(&self.parts);
+        let miniature = self.miniature;
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .on_children_prepainted(move |bounds, _, _| {
+                if let [place, caption] = bounds[..] {
+                    parts.set((place, caption));
+                }
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .debug_selector(move || format!("theme-miniature-{miniature}")),
+            )
+            .child(preview_caption(
+                key.palette,
+                key.name,
+                key.description,
+                key.badge.is_some(),
+                key.warnings,
+                self.active,
+                miniature,
+            ))
+            .into_any_element()
+    }
+}
+
 /// The miniature workspace inside a theme preview: everything a preview draws
 /// from the previewed palette alone.
 ///
@@ -1951,8 +3054,6 @@ pub(super) fn theme_preview(
     warnings: usize,
     active: appearance::Palette,
 ) -> AnyElement {
-    let label = label.into();
-    let description = description.into();
     // The caption's lines and marks name the embedded body, as the miniature
     // does, so a test can read which card is checked or warned, and the
     // height its text keeps, from the rendered tree.
@@ -1962,7 +3063,7 @@ pub(super) fn theme_preview(
         .rounded(px(7.))
         .border_1()
         .border_color(gpui_kit::transparent_black())
-        .group_hover("settings-theme-choice", move |style| {
+        .group_hover(CARD_GROUP, move |style| {
             style.border_color(rgb(active.accent))
         })
         .overflow_hidden()
@@ -1985,93 +3086,114 @@ pub(super) fn theme_preview(
                 .child(body.clone().cached(StyleRefinement::default().size_full())),
         )
         .child(
-            div()
-                .id("theme-preview-caption")
-                .min_h(crate::appearance::ui_size(54.))
-                .flex_shrink_0()
-                .px_3()
-                .py(px(6.))
-                .flex()
-                .flex_col()
-                .gap(px(3.))
-                .bg(rgb(p.panel))
-                .group_hover("settings-theme-choice", |style| style.bg(rgb(p.hover)))
-                .group_active("settings-theme-choice", |style| style.bg(rgb(p.selected)))
-                .border_t_1()
-                .border_color(rgb(p.border))
-                .child({
-                    let name = div()
-                        .debug_selector(move || format!("theme-name-{miniature}"))
-                        .min_w_0()
-                        .truncate()
-                        .text_size(crate::appearance::ui_text(12.))
-                        .line_height(relative(1.3))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(rgb(p.text))
-                        .child(label);
-                    if selected || warnings > 0 {
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .child(name.flex_1())
-                            .when(warnings > 0, |row| {
-                                row.child(
-                                    div()
-                                        .debug_selector(move || {
-                                            format!("theme-warning-{miniature}")
-                                        })
-                                        .flex_shrink_0()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(3.))
-                                        .text_size(crate::appearance::ui_text(10.))
-                                        .line_height(relative(1.3))
-                                        .text_color(rgb(p.muted))
-                                        .child(card_warning_glyph(active, miniature))
-                                        .child(warnings.to_string()),
-                                )
-                            })
-                            .when(selected, |row| {
-                                row.child(
-                                    div()
-                                        .debug_selector(move || format!("theme-check-{miniature}"))
-                                        .size(px(16.))
-                                        .flex_shrink_0()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .rounded_full()
-                                        .bg(rgb(active.accent))
-                                        .child(icon("check", 11., active.accent_foreground)),
-                                )
-                            })
-                    } else {
-                        // Without a mark the name is the whole line, at the
-                        // same place and width: the row that would hold both
-                        // is not laid out.
-                        name
-                    }
-                })
-                .child(
-                    div()
-                        .debug_selector(move || format!("theme-description-{miniature}"))
-                        .text_size(crate::appearance::ui_text(10.))
-                        .line_height(relative(1.3))
-                        .font_weight(FontWeight::NORMAL)
-                        .text_color(rgb(p.muted))
-                        .truncate()
-                        .child(description),
-                )
-                .child(swatch_run(
-                    [p.accent, p.added, p.hunk, p.renamed, p.modified, p.removed],
-                    px(5.),
-                    px(5.),
-                    px(4.),
-                    px(2.5),
-                )),
+            preview_caption(
+                p,
+                label.into(),
+                description.into(),
+                selected,
+                warnings,
+                active,
+                miniature,
+            )
+            .bg(rgb(p.panel))
+            .group_hover(CARD_GROUP, |style| style.bg(rgb(p.hover)))
+            .group_active(CARD_GROUP, |style| style.bg(rgb(p.selected))),
         )
         .into_any_element()
+}
+
+/// A theme preview's caption, without the background that follows the
+/// pointer: [`theme_preview`] styles it, and a picker card's caption is
+/// filled by [`LayerCard`], outside its cached body.
+fn preview_caption(
+    p: appearance::Palette,
+    label: SharedString,
+    description: SharedString,
+    selected: bool,
+    warnings: usize,
+    active: appearance::Palette,
+    miniature: EntityId,
+) -> Stateful<Div> {
+    div()
+        .id("theme-preview-caption")
+        .min_h(crate::appearance::ui_size(54.))
+        .flex_shrink_0()
+        .px_3()
+        .py(px(6.))
+        .flex()
+        .flex_col()
+        .gap(px(3.))
+        .border_t_1()
+        .border_color(rgb(p.border))
+        .child({
+            let name = div()
+                .debug_selector(move || format!("theme-name-{miniature}"))
+                .min_w_0()
+                .truncate()
+                .text_size(crate::appearance::ui_text(12.))
+                .line_height(relative(1.3))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(p.text))
+                .child(label);
+            if selected || warnings > 0 {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(name.flex_1())
+                    .when(warnings > 0, |row| {
+                        row.child(
+                            div()
+                                .debug_selector(move || format!("theme-warning-{miniature}"))
+                                .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .gap(px(3.))
+                                .text_size(crate::appearance::ui_text(10.))
+                                .line_height(relative(1.3))
+                                .text_color(rgb(p.muted))
+                                .child(card_warning_glyph(active, miniature))
+                                .child(warnings.to_string()),
+                        )
+                    })
+                    .when(selected, |row| {
+                        row.child(
+                            div()
+                                .debug_selector(move || format!("theme-check-{miniature}"))
+                                .size(px(16.))
+                                .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_full()
+                                .bg(rgb(active.accent))
+                                .child(icon("check", 11., active.accent_foreground)),
+                        )
+                    })
+            } else {
+                // Without a mark the name is the whole line, at the
+                // same place and width: the row that would hold both
+                // is not laid out.
+                name
+            }
+        })
+        .child(
+            div()
+                .debug_selector(move || format!("theme-description-{miniature}"))
+                .text_size(crate::appearance::ui_text(10.))
+                .line_height(relative(1.3))
+                .font_weight(FontWeight::NORMAL)
+                .text_color(rgb(p.muted))
+                .truncate()
+                .child(description),
+        )
+        .child(swatch_run(
+            [p.accent, p.added, p.hunk, p.renamed, p.modified, p.removed],
+            px(5.),
+            px(5.),
+            px(4.),
+            px(2.5),
+        ))
 }
 
 /// A picker card's readability glyph, drawn in `marks`. The card passes the
@@ -2502,8 +3624,7 @@ mod theme_apply_tests {
         assert_eq!(choices.len(), 2);
         for choice in choices {
             let selector: &'static str = format!("settings-theme-{}", choice as usize).leak();
-            let card = cx
-                .debug_bounds(selector)
+            let card = shown(cx, selector)
                 .unwrap_or_else(|| panic!("{} theme card is rendered", choice.label()));
             cx.simulate_click(card.center(), Modifiers::default());
             settle(cx);

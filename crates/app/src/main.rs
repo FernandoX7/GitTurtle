@@ -253,6 +253,12 @@ struct GitTurtle {
     modal_return_focus: Option<FocusHandle>,
     modal_focus_generation: u64,
     settings_editor: Entity<InputState>,
+    /// The Settings page's own view, embedded cached by `render`
+    /// (`settings::SettingsPage`).
+    settings_page: Entity<settings::SettingsPage>,
+    /// Where the Settings page's last build placed the picker cards, whose
+    /// bodies `settings::CardLayer` draws after the page every frame.
+    picker_cards: settings::CardSlots,
     history_search: history_search::State,
     history_updates: history_updates::State,
     file_history: file_history::State,
@@ -286,6 +292,19 @@ struct GitTurtle {
     theme_previews: Vec<(
         appearance::custom::ThemeSelection,
         Entity<settings::ThemePreviewBody>,
+    )>,
+    /// The picker cards' focus handles, one per built-in and one per saved
+    /// custom theme, each stored with the selection its card draws. The app
+    /// owns them, as it owns the miniatures, so they outlive a replayed page;
+    /// `GitTurtle::set_custom_themes` keeps the custom entries in step.
+    theme_card_focus: Vec<(appearance::custom::ThemeSelection, FocusHandle)>,
+    /// The picker cards' cached bodies (`settings::ThemeCardBody`), one per
+    /// built-in and one per saved custom theme, each stored with the
+    /// selection its card draws and kept in step as `theme_card_focus` is.
+    /// `GitTurtle::sync_theme_cards` sets what each shows.
+    theme_card_bodies: Vec<(
+        appearance::custom::ThemeSelection,
+        Entity<settings::ThemeCardBody>,
     )>,
     /// Test-only: the debug selector and accessible name of every card the
     /// last picker render built, in order
@@ -478,31 +497,71 @@ impl GitTurtle {
         // palette. A custom miniature draws its saved palette until that theme
         // is saved again. Their entities outlive a palette change so its frame
         // can reuse them.
-        let theme_previews = appearance::ThemeChoice::ALL
+        let theme_previews: Vec<(_, Entity<settings::ThemePreviewBody>)> =
+            appearance::ThemeChoice::ALL
+                .into_iter()
+                .map(|choice| {
+                    (
+                        appearance::custom::ThemeSelection::BuiltIn(choice),
+                        choice.palette(),
+                    )
+                })
+                .chain(preferences.custom_themes.iter().map(|theme| {
+                    (
+                        appearance::custom::ThemeSelection::Custom(theme.id),
+                        theme.palette,
+                    )
+                }))
+                .map(|(selection, palette)| {
+                    (
+                        selection,
+                        cx.new(|_| settings::ThemePreviewBody::new(palette)),
+                    )
+                })
+                .collect();
+        let theme_card_bodies = theme_previews
+            .iter()
+            .map(|(selection, miniature)| {
+                let miniature = miniature.entity_id();
+                (
+                    *selection,
+                    cx.new(|_| settings::ThemeCardBody::new(miniature)),
+                )
+            })
+            .collect();
+        let theme_card_focus = appearance::ThemeChoice::ALL
             .into_iter()
-            .map(|choice| {
-                (
-                    appearance::custom::ThemeSelection::BuiltIn(choice),
-                    choice.palette(),
-                )
-            })
-            .chain(preferences.custom_themes.iter().map(|theme| {
-                (
-                    appearance::custom::ThemeSelection::Custom(theme.id),
-                    theme.palette,
-                )
-            }))
-            .map(|(selection, palette)| {
-                (
-                    selection,
-                    cx.new(|_| settings::ThemePreviewBody::new(palette)),
-                )
-            })
+            .map(appearance::custom::ThemeSelection::BuiltIn)
+            .chain(
+                preferences
+                    .custom_themes
+                    .iter()
+                    .map(|theme| appearance::custom::ThemeSelection::Custom(theme.id)),
+            )
+            .map(|selection| (selection, cx.focus_handle()))
             .collect();
         let file_filter =
             cx.new(|cx| InputState::new(window, cx).placeholder("Filter changed paths…"));
         let working_filter =
             cx.new(|cx| InputState::new(window, cx).placeholder("Filter working paths…"));
+        // The Settings page's own view; `render` embeds it cached and the app
+        // notifies it at every site that alters the page
+        // (`settings::SettingsPage`).
+        let settings_page = {
+            let owner = cx.entity().downgrade();
+            cx.new(|cx| {
+                settings::SettingsPage::new(
+                    owner,
+                    [
+                        &settings_branch,
+                        &settings_editor,
+                        &identity_name,
+                        &identity_email,
+                    ],
+                    cx,
+                )
+            })
+        };
         let mut this = Self {
             activity,
             recovery_drafts,
@@ -529,6 +588,8 @@ impl GitTurtle {
             modal_return_focus: None,
             modal_focus_generation: 0,
             settings_editor,
+            settings_page,
+            picker_cards: settings::CardSlots::default(),
             history_search: history_search::State::default(),
             history_updates: history_updates::State::default(),
             file_history: file_history::State::default(),
@@ -546,6 +607,8 @@ impl GitTurtle {
             project_library: preferences.project_library.clone(),
             custom_themes: preferences.custom_themes.clone(),
             theme_previews,
+            theme_card_focus,
+            theme_card_bodies,
             #[cfg(test)]
             draws: Vec::new(),
             #[cfg(test)]

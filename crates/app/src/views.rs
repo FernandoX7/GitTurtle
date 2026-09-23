@@ -1976,7 +1976,7 @@ impl Render for GitTurtle {
         let page = match self.page {
             AppPage::Repository => self.render_repository(window, cx),
             AppPage::Projects => self.hub.clone().into_any_element(),
-            AppPage::Settings => self.render_settings(window, cx),
+            AppPage::Settings => self.settings_page_element(window),
         };
         // The pane spans the whole body so a project stays one click away on
         // Repository and Settings. The hub already lists projects full width.
