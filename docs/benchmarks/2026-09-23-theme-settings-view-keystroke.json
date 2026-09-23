@@ -204,7 +204,6 @@
   "gnome_shell": "GNOME Shell 46.0",
   "gpus": "00:02.0 VGA compatible controller: Intel Corporation Arrow Lake-U [Intel Graphics] (rev 06)\n02:00.0 VGA compatible controller: NVIDIA Corporation Device 2c58 (rev a1)\n80:14.5 Non-VGA unclassified device: Intel Corporation Device 7f2f (rev 10)\n80:1c.0 PCI bridge: Intel Corporation Device 7f3d (rev 10)",
   "mesa": "OpenGL renderer string: Mesa Intel(R) Graphics (ARL)\nOpenGL version string: 4.6 (Compatibility Profile) Mesa 26.1.6-1pop0~1787580452~24.04~a5619ea",
-  "foreign_processes": "3575950 /usr/bin/zsh -c source /home/fernandoramirez/.claude/shell-snapshots/snapshot-zsh-1790165603490-sbjzis.sh 2>/dev/null || true && setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL 2>/dev/null || true && { \\builtin unalias -- 'unsetenv'; \\builtin unset -f -- 'unsetenv'; } >/dev/null 2>&1 || true && eval 'V=/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3; E=$(dirname $V); T=$V/tools-a3; NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ); cat > $V/runs/criterion-set-a3.txt <<EOF Graded launches and the same-session pinned base control, designated before any of them ran (plan.md section 3, written in Phase A and amended at 13:35Z before this designation), task themes-settings-view attempt 4, criterion keystroke-cpu. Every launch below except unpinned-* runs the app under taskset -c 0-7 (P-cores); a launch counts only if the UI thread'\"'\"'s Cpus_allowed_list is 0-7 and every measured window'\"'\"'s placement reads are on P-cores. - G1 recorded-32 (candidate, pinned, 32-theme store): median of all 60 ui_cpu_key6_ms windows <= 14 ms. - G2 recorded-32: gitturtle.theme_edit_frame_ms pooled p95 (57th of 60) <= 26 ms; set 1 reported as the designated set, no bound. - G3 blink-32 (candidate, pinned, --frames --bursts --idle 10): set 1'\"'\"'s 10 s idle window gives the reported caret-blink count   and median frame duration; windows 2-6 reported beside it. - G4 switches-empty (candidate, pinned, built-in cycle, empty store): switch UI-thread CPU median <= 23 ms. - G5 switch delta: PASS iff candidate delta (switches-32 minus switches-empty) <= max(+4 ms, base delta (base-switches-32   minus base-switches-empty) + base launch spread |delta of base-switches-32-b / base-switches-empty-b minus base delta|),   else FAIL (coordinator'\"'\"'s threshold of 2026-09-23); both deltas, the spread and the difference reported. - G6 theme_apply_frame_ms median <= 8 and p95 <= 16 in switches-empty and switches-32. - Base controls (gitturtle-4cdd4df, pinned, same drivers and isolation): base-recorded-32, base-blink-32, base-switches-32,   base-switches-empty, base-switches-empty-b, base-switches-32-b: relative criteria and regression lines only. - Beside, grading nothing: unpinned-recorded-32 (candidate, unpinned); optional unpinned-switches-32; not eligible:   explore-sw-32, warmup-32 (both already ran: geometry confirmed, card top 1188 at 25 steps, row 1 Edit... at 60 Tabs). Candidate gitturtle-e73be2e sha256 f7f6aa14146ee481e65d843d8645541b55060a2460604c1926cc78ec76330b73 (e73be2e6f49b27282c7edc13a250e26d26003977, clean, release); base gitturtle-4cdd4df sha256 3ef3e3a0b999b00b76c64d2177f82a93814faf585de5452439bfbcd34894714e; store sha256 9deaa6eedec8ac129a9bb64e084b265b59f42e1bd9bba430f6ba366e4f04d23a (32) / ae1731ac8307019b39aee6a216564410b55b656871ddb1b9d552e8e988e4e208 (empty). Drivers: tools-a3/drive_theme_editor.py sha256 $(sha256sum $T/drive_theme_editor.py | cut -c1-64), drive_theme_apply.py $(sha256sum $T/drive_theme_apply.py | cut -c1-64), cpu_place.py $(sha256sum $T/cpu_place.py | cut -c1-64). Designated at $NOW by the performance reviewer (perf-sv-a3); recorded-32 and base-recorded-32 had not started. EOF cat $V/runs/criterion-set-a3.txt | tail -3; cd $T && python3 -B host_state.py before-recorded --display; cat /proc/loadavg' && pwd -P >| /tmp/claude-0806-cwd",
   "cpufreq": {
    "topology": {
     "p_cpus": [
@@ -1422,7 +1421,6 @@
    ],
    "uptime": "08:37:30 up 4 days, 22:25,  1 user,  load average: 1.39, 2.76, 2.95",
    "a11y_is_enabled": "b false",
-   "foreign_processes": "3575950 /usr/bin/zsh -c source /home/fernandoramirez/.claude/shell-snapshots/snapshot-zsh-1790165603490-sbjzis.sh 2>/dev/null || true && setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL 2>/dev/null || true && { \\builtin unalias -- 'unsetenv'; \\builtin unset -f -- 'unsetenv'; } >/dev/null 2>&1 || true && eval 'V=/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3; E=$(dirname $V); T=$V/tools-a3; NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ); cat > $V/runs/criterion-set-a3.txt <<EOF Graded launches and the same-session pinned base control, designated before any of them ran (plan.md section 3, written in Phase A and amended at 13:35Z before this designation), task themes-settings-view attempt 4, criterion keystroke-cpu. Every launch below except unpinned-* runs the app under taskset -c 0-7 (P-cores); a launch counts only if the UI thread'\"'\"'s Cpus_allowed_list is 0-7 and every measured window'\"'\"'s placement reads are on P-cores. - G1 recorded-32 (candidate, pinned, 32-theme store): median of all 60 ui_cpu_key6_ms windows <= 14 ms. - G2 recorded-32: gitturtle.theme_edit_frame_ms pooled p95 (57th of 60) <= 26 ms; set 1 reported as the designated set, no bound. - G3 blink-32 (candidate, pinned, --frames --bursts --idle 10): set 1'\"'\"'s 10 s idle window gives the reported caret-blink count   and median frame duration; windows 2-6 reported beside it. - G4 switches-empty (candidate, pinned, built-in cycle, empty store): switch UI-thread CPU median <= 23 ms. - G5 switch delta: PASS iff candidate delta (switches-32 minus switches-empty) <= max(+4 ms, base delta (base-switches-32   minus base-switches-empty) + base launch spread |delta of base-switches-32-b / base-switches-empty-b minus base delta|),   else FAIL (coordinator'\"'\"'s threshold of 2026-09-23); both deltas, the spread and the difference reported. - G6 theme_apply_frame_ms median <= 8 and p95 <= 16 in switches-empty and switches-32. - Base controls (gitturtle-4cdd4df, pinned, same drivers and isolation): base-recorded-32, base-blink-32, base-switches-32,   base-switches-empty, base-switches-empty-b, base-switches-32-b: relative criteria and regression lines only. - Beside, grading nothing: unpinned-recorded-32 (candidate, unpinned); optional unpinned-switches-32; not eligible:   explore-sw-32, warmup-32 (both already ran: geometry confirmed, card top 1188 at 25 steps, row 1 Edit... at 60 Tabs). Candidate gitturtle-e73be2e sha256 f7f6aa14146ee481e65d843d8645541b55060a2460604c1926cc78ec76330b73 (e73be2e6f49b27282c7edc13a250e26d26003977, clean, release); base gitturtle-4cdd4df sha256 3ef3e3a0b999b00b76c64d2177f82a93814faf585de5452439bfbcd34894714e; store sha256 9deaa6eedec8ac129a9bb64e084b265b59f42e1bd9bba430f6ba366e4f04d23a (32) / ae1731ac8307019b39aee6a216564410b55b656871ddb1b9d552e8e988e4e208 (empty). Drivers: tools-a3/drive_theme_editor.py sha256 $(sha256sum $T/drive_theme_editor.py | cut -c1-64), drive_theme_apply.py $(sha256sum $T/drive_theme_apply.py | cut -c1-64), cpu_place.py $(sha256sum $T/cpu_place.py | cut -c1-64). Designated at $NOW by the performance reviewer (perf-sv-a3); recorded-32 and base-recorded-32 had not started. EOF cat $V/runs/criterion-set-a3.txt | tail -3; cd $T && python3 -B host_state.py before-recorded --display; cat /proc/loadavg' && pwd -P >| /tmp/claude-0806-cwd",
    "governor": "powersave",
    "epp": "balance_performance",
    "ac_online": "1",
@@ -1507,9 +1505,9 @@
   ],
   "env": {
    "DISPLAY": ":1",
-   "XDG_CONFIG_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/recorded-32/config",
-   "XDG_DATA_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/recorded-32/data",
-   "HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/recorded-32/home",
+   "XDG_CONFIG_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/recorded-32/config",
+   "XDG_DATA_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/recorded-32/data",
+   "HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/recorded-32/home",
    "GPUI_X11_SCALE_FACTOR": "2",
    "GITTURTLE_TRACE": "1",
    "ZED_MEASUREMENTS": null,
@@ -1708,7 +1706,7 @@
  },
  "boundary": {
   "lines_candidate": {
-   "source": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/src-e73be2e",
+   "source": "<worktree>/.local/themes-evidence/src-e73be2e",
    "theme_editor.rs": {
     "hex_changed": 1714,
     "trace_stamp": 1716,
@@ -1734,7 +1732,7 @@
    }
   },
   "lines_base": {
-   "source": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/src-4cdd4df",
+   "source": "<worktree>/.local/themes-evidence/src-4cdd4df",
    "theme_editor.rs": {
     "hex_changed": 1567,
     "trace_stamp": 1569,
@@ -2884,9 +2882,9 @@
   },
   "env": {
    "DISPLAY": ":1",
-   "XDG_CONFIG_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/blink-32/config",
-   "XDG_DATA_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/blink-32/data",
-   "HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/blink-32/home",
+   "XDG_CONFIG_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/blink-32/config",
+   "XDG_DATA_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/blink-32/data",
+   "HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/blink-32/home",
    "GPUI_X11_SCALE_FACTOR": "2",
    "GITTURTLE_TRACE": "1",
    "ZED_MEASUREMENTS": "1",
@@ -8822,9 +8820,9 @@
    },
    "env": {
     "DISPLAY": ":1",
-    "XDG_CONFIG_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/switches-empty/config",
-    "XDG_DATA_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/switches-empty/data",
-    "HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/switches-empty/home",
+    "XDG_CONFIG_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/switches-empty/config",
+    "XDG_DATA_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/switches-empty/data",
+    "HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/switches-empty/home",
     "GPUI_X11_SCALE_FACTOR": "2",
     "GITTURTLE_TRACE": "1",
     "XAUTHORITY": "/run/user/1000/.mutter-Xwaylandauth.Y0DWV3",
@@ -9328,9 +9326,9 @@
    },
    "env": {
     "DISPLAY": ":1",
-    "XDG_CONFIG_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/switches-32/config",
-    "XDG_DATA_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/switches-32/data",
-    "HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/switches-32/home",
+    "XDG_CONFIG_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/switches-32/config",
+    "XDG_DATA_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/switches-32/data",
+    "HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/switches-32/home",
     "GPUI_X11_SCALE_FACTOR": "2",
     "GITTURTLE_TRACE": "1",
     "XAUTHORITY": "/run/user/1000/.mutter-Xwaylandauth.Y0DWV3",
@@ -9833,9 +9831,9 @@
     },
     "env": {
      "DISPLAY": ":1",
-     "XDG_CONFIG_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-empty/config",
-     "XDG_DATA_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-empty/data",
-     "HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-empty/home",
+     "XDG_CONFIG_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-empty/config",
+     "XDG_DATA_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-empty/data",
+     "HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-empty/home",
      "GPUI_X11_SCALE_FACTOR": "2",
      "GITTURTLE_TRACE": "1",
      "XAUTHORITY": "/run/user/1000/.mutter-Xwaylandauth.Y0DWV3",
@@ -10339,9 +10337,9 @@
     },
     "env": {
      "DISPLAY": ":1",
-     "XDG_CONFIG_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-32/config",
-     "XDG_DATA_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-32/data",
-     "HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-32/home",
+     "XDG_CONFIG_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-32/config",
+     "XDG_DATA_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-32/data",
+     "HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-32/home",
      "GPUI_X11_SCALE_FACTOR": "2",
      "GITTURTLE_TRACE": "1",
      "XAUTHORITY": "/run/user/1000/.mutter-Xwaylandauth.Y0DWV3",
@@ -24940,7 +24938,7 @@
  },
  "launches": {
   "warmup-32": {
-   "binary": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/gitturtle-e73be2e",
+   "binary": "<worktree>/.local/themes-evidence/gitturtle-e73be2e",
    "binary_sha256": "f7f6aa14146ee481e65d843d8645541b55060a2460604c1926cc78ec76330b73",
    "started": "2026-09-23T08:34:07-0500",
    "finished": "2026-09-23T08:37:08-0500",
@@ -24962,9 +24960,9 @@
    "exit": -15,
    "env": {
     "DISPLAY": ":1",
-    "XDG_CONFIG_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/warmup-32/config",
-    "XDG_DATA_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/warmup-32/data",
-    "HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/warmup-32/home",
+    "XDG_CONFIG_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/warmup-32/config",
+    "XDG_DATA_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/warmup-32/data",
+    "HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/warmup-32/home",
     "GPUI_X11_SCALE_FACTOR": "2",
     "GITTURTLE_TRACE": "1",
     "ZED_MEASUREMENTS": null,
@@ -24977,8 +24975,8 @@
     "/usr/bin/taskset",
     "-c",
     "0-7",
-    "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/gitturtle-e73be2e",
-    "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-theme-apply/repo"
+    "<worktree>/.local/themes-evidence/gitturtle-e73be2e",
+    "<worktree>/.local/themes-evidence/perf-theme-apply/repo"
    ],
    "affinity_at_window": {
     "main": "0-7",
@@ -25028,7 +25026,7 @@
    "source_revision": "e73be2e6f49b27282c7edc13a250e26d26003977"
   },
   "recorded-32": {
-   "binary": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/gitturtle-e73be2e",
+   "binary": "<worktree>/.local/themes-evidence/gitturtle-e73be2e",
    "binary_sha256": "f7f6aa14146ee481e65d843d8645541b55060a2460604c1926cc78ec76330b73",
    "started": "2026-09-23T08:37:41-0500",
    "finished": "2026-09-23T08:40:38-0500",
@@ -25050,9 +25048,9 @@
    "exit": -15,
    "env": {
     "DISPLAY": ":1",
-    "XDG_CONFIG_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/recorded-32/config",
-    "XDG_DATA_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/recorded-32/data",
-    "HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/recorded-32/home",
+    "XDG_CONFIG_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/recorded-32/config",
+    "XDG_DATA_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/recorded-32/data",
+    "HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/recorded-32/home",
     "GPUI_X11_SCALE_FACTOR": "2",
     "GITTURTLE_TRACE": "1",
     "ZED_MEASUREMENTS": null,
@@ -25065,8 +25063,8 @@
     "/usr/bin/taskset",
     "-c",
     "0-7",
-    "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/gitturtle-e73be2e",
-    "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-theme-apply/repo"
+    "<worktree>/.local/themes-evidence/gitturtle-e73be2e",
+    "<worktree>/.local/themes-evidence/perf-theme-apply/repo"
    ],
    "affinity_at_window": {
     "main": "0-7",
@@ -25116,7 +25114,7 @@
    "source_revision": "e73be2e6f49b27282c7edc13a250e26d26003977"
   },
   "blink-32": {
-   "binary": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/gitturtle-e73be2e",
+   "binary": "<worktree>/.local/themes-evidence/gitturtle-e73be2e",
    "binary_sha256": "f7f6aa14146ee481e65d843d8645541b55060a2460604c1926cc78ec76330b73",
    "started": "2026-09-23T08:47:59-0500",
    "finished": "2026-09-23T08:51:59-0500",
@@ -25138,9 +25136,9 @@
    "exit": -15,
    "env": {
     "DISPLAY": ":1",
-    "XDG_CONFIG_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/blink-32/config",
-    "XDG_DATA_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/blink-32/data",
-    "HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/blink-32/home",
+    "XDG_CONFIG_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/blink-32/config",
+    "XDG_DATA_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/blink-32/data",
+    "HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/blink-32/home",
     "GPUI_X11_SCALE_FACTOR": "2",
     "GITTURTLE_TRACE": "1",
     "ZED_MEASUREMENTS": "1",
@@ -25153,8 +25151,8 @@
     "/usr/bin/taskset",
     "-c",
     "0-7",
-    "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/gitturtle-e73be2e",
-    "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-theme-apply/repo"
+    "<worktree>/.local/themes-evidence/gitturtle-e73be2e",
+    "<worktree>/.local/themes-evidence/perf-theme-apply/repo"
    ],
    "affinity_at_window": {
     "main": "0-7",
@@ -25204,7 +25202,7 @@
    "source_revision": "e73be2e6f49b27282c7edc13a250e26d26003977"
   },
   "switches-empty": {
-   "binary": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/gitturtle-e73be2e",
+   "binary": "<worktree>/.local/themes-evidence/gitturtle-e73be2e",
    "binary_sha256": "f7f6aa14146ee481e65d843d8645541b55060a2460604c1926cc78ec76330b73",
    "started": "2026-09-23T08:52:07-0500",
    "finished": "2026-09-23T08:55:29-0500",
@@ -25226,9 +25224,9 @@
    "exit": -15,
    "env": {
     "DISPLAY": ":1",
-    "XDG_CONFIG_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/switches-empty/config",
-    "XDG_DATA_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/switches-empty/data",
-    "HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/switches-empty/home",
+    "XDG_CONFIG_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/switches-empty/config",
+    "XDG_DATA_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/switches-empty/data",
+    "HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/switches-empty/home",
     "GPUI_X11_SCALE_FACTOR": "2",
     "GITTURTLE_TRACE": "1",
     "XAUTHORITY": "/run/user/1000/.mutter-Xwaylandauth.Y0DWV3",
@@ -25240,8 +25238,8 @@
     "/usr/bin/taskset",
     "-c",
     "0-7",
-    "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/gitturtle-e73be2e",
-    "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-theme-apply/repo"
+    "<worktree>/.local/themes-evidence/gitturtle-e73be2e",
+    "<worktree>/.local/themes-evidence/perf-theme-apply/repo"
    ],
    "affinity_at_window": {
     "main": "0-7",
@@ -25282,7 +25280,7 @@
    "source_revision": "e73be2e6f49b27282c7edc13a250e26d26003977"
   },
   "switches-32": {
-   "binary": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/gitturtle-e73be2e",
+   "binary": "<worktree>/.local/themes-evidence/gitturtle-e73be2e",
    "binary_sha256": "f7f6aa14146ee481e65d843d8645541b55060a2460604c1926cc78ec76330b73",
    "started": "2026-09-23T08:55:34-0500",
    "finished": "2026-09-23T08:58:56-0500",
@@ -25304,9 +25302,9 @@
    "exit": -15,
    "env": {
     "DISPLAY": ":1",
-    "XDG_CONFIG_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/switches-32/config",
-    "XDG_DATA_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/switches-32/data",
-    "HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/switches-32/home",
+    "XDG_CONFIG_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/switches-32/config",
+    "XDG_DATA_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/switches-32/data",
+    "HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/switches-32/home",
     "GPUI_X11_SCALE_FACTOR": "2",
     "GITTURTLE_TRACE": "1",
     "XAUTHORITY": "/run/user/1000/.mutter-Xwaylandauth.Y0DWV3",
@@ -25318,8 +25316,8 @@
     "/usr/bin/taskset",
     "-c",
     "0-7",
-    "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/gitturtle-e73be2e",
-    "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-theme-apply/repo"
+    "<worktree>/.local/themes-evidence/gitturtle-e73be2e",
+    "<worktree>/.local/themes-evidence/perf-theme-apply/repo"
    ],
    "affinity_at_window": {
     "main": "0-7",
@@ -25360,7 +25358,7 @@
    "source_revision": "e73be2e6f49b27282c7edc13a250e26d26003977"
   },
   "explore-sw-32": {
-   "binary": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/gitturtle-e73be2e",
+   "binary": "<worktree>/.local/themes-evidence/gitturtle-e73be2e",
    "binary_sha256": "f7f6aa14146ee481e65d843d8645541b55060a2460604c1926cc78ec76330b73",
    "started": "2026-09-23T08:32:42-0500",
    "finished": "2026-09-23T08:33:33-0500",
@@ -25382,9 +25380,9 @@
    "exit": -15,
    "env": {
     "DISPLAY": ":1",
-    "XDG_CONFIG_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/explore-sw-32/config",
-    "XDG_DATA_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/explore-sw-32/data",
-    "HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/explore-sw-32/home",
+    "XDG_CONFIG_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/explore-sw-32/config",
+    "XDG_DATA_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/explore-sw-32/data",
+    "HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/explore-sw-32/home",
     "GPUI_X11_SCALE_FACTOR": "2",
     "GITTURTLE_TRACE": "1",
     "XAUTHORITY": "/run/user/1000/.mutter-Xwaylandauth.Y0DWV3",
@@ -25396,8 +25394,8 @@
     "/usr/bin/taskset",
     "-c",
     "0-7",
-    "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/gitturtle-e73be2e",
-    "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-theme-apply/repo"
+    "<worktree>/.local/themes-evidence/gitturtle-e73be2e",
+    "<worktree>/.local/themes-evidence/perf-theme-apply/repo"
    ],
    "affinity_at_window": {
     "main": "0-7",
@@ -25422,7 +25420,7 @@
    "source_revision": "e73be2e6f49b27282c7edc13a250e26d26003977"
   },
   "unpinned-recorded-32": {
-   "binary": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/gitturtle-e73be2e",
+   "binary": "<worktree>/.local/themes-evidence/gitturtle-e73be2e",
    "binary_sha256": "f7f6aa14146ee481e65d843d8645541b55060a2460604c1926cc78ec76330b73",
    "started": "2026-09-23T09:05:57-0500",
    "finished": "2026-09-23T09:08:54-0500",
@@ -25444,9 +25442,9 @@
    "exit": -15,
    "env": {
     "DISPLAY": ":1",
-    "XDG_CONFIG_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/unpinned-recorded-32/config",
-    "XDG_DATA_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/unpinned-recorded-32/data",
-    "HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/unpinned-recorded-32/home",
+    "XDG_CONFIG_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/unpinned-recorded-32/config",
+    "XDG_DATA_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/unpinned-recorded-32/data",
+    "HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/unpinned-recorded-32/home",
     "GPUI_X11_SCALE_FACTOR": "2",
     "GITTURTLE_TRACE": "1",
     "ZED_MEASUREMENTS": null,
@@ -25456,8 +25454,8 @@
    },
    "pin": null,
    "command": [
-    "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/gitturtle-e73be2e",
-    "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-theme-apply/repo"
+    "<worktree>/.local/themes-evidence/gitturtle-e73be2e",
+    "<worktree>/.local/themes-evidence/perf-theme-apply/repo"
    ],
    "affinity_at_window": {
     "main": "0-23",
@@ -25491,7 +25489,7 @@
    "source_revision": "e73be2e6f49b27282c7edc13a250e26d26003977"
   },
   "base-recorded-32": {
-   "binary": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/gitturtle-4cdd4df",
+   "binary": "<worktree>/.local/themes-evidence/gitturtle-4cdd4df",
    "binary_sha256": "3ef3e3a0b999b00b76c64d2177f82a93814faf585de5452439bfbcd34894714e",
    "started": "2026-09-23T08:40:50-0500",
    "finished": "2026-09-23T08:43:47-0500",
@@ -25513,9 +25511,9 @@
    "exit": -15,
    "env": {
     "DISPLAY": ":1",
-    "XDG_CONFIG_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/base-recorded-32/config",
-    "XDG_DATA_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/base-recorded-32/data",
-    "HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/base-recorded-32/home",
+    "XDG_CONFIG_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/base-recorded-32/config",
+    "XDG_DATA_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/base-recorded-32/data",
+    "HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/base-recorded-32/home",
     "GPUI_X11_SCALE_FACTOR": "2",
     "GITTURTLE_TRACE": "1",
     "ZED_MEASUREMENTS": null,
@@ -25528,8 +25526,8 @@
     "/usr/bin/taskset",
     "-c",
     "0-7",
-    "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/gitturtle-4cdd4df",
-    "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-theme-apply/repo"
+    "<worktree>/.local/themes-evidence/gitturtle-4cdd4df",
+    "<worktree>/.local/themes-evidence/perf-theme-apply/repo"
    ],
    "affinity_at_window": {
     "main": "0-7",
@@ -25579,7 +25577,7 @@
    "source_revision": "4cdd4df2c0767429ee4c182f73b8e5f82a4312e7"
   },
   "base-blink-32": {
-   "binary": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/gitturtle-4cdd4df",
+   "binary": "<worktree>/.local/themes-evidence/gitturtle-4cdd4df",
    "binary_sha256": "3ef3e3a0b999b00b76c64d2177f82a93814faf585de5452439bfbcd34894714e",
    "started": "2026-09-23T08:43:51-0500",
    "finished": "2026-09-23T08:47:51-0500",
@@ -25601,9 +25599,9 @@
    "exit": -15,
    "env": {
     "DISPLAY": ":1",
-    "XDG_CONFIG_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/base-blink-32/config",
-    "XDG_DATA_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/base-blink-32/data",
-    "HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/base-blink-32/home",
+    "XDG_CONFIG_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/base-blink-32/config",
+    "XDG_DATA_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/base-blink-32/data",
+    "HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/base-blink-32/home",
     "GPUI_X11_SCALE_FACTOR": "2",
     "GITTURTLE_TRACE": "1",
     "ZED_MEASUREMENTS": "1",
@@ -25616,8 +25614,8 @@
     "/usr/bin/taskset",
     "-c",
     "0-7",
-    "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/gitturtle-4cdd4df",
-    "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-theme-apply/repo"
+    "<worktree>/.local/themes-evidence/gitturtle-4cdd4df",
+    "<worktree>/.local/themes-evidence/perf-theme-apply/repo"
    ],
    "affinity_at_window": {
     "main": "0-7",
@@ -25667,7 +25665,7 @@
    "source_revision": "4cdd4df2c0767429ee4c182f73b8e5f82a4312e7"
   },
   "base-switches-32": {
-   "binary": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/gitturtle-4cdd4df",
+   "binary": "<worktree>/.local/themes-evidence/gitturtle-4cdd4df",
    "binary_sha256": "3ef3e3a0b999b00b76c64d2177f82a93814faf585de5452439bfbcd34894714e",
    "started": "2026-09-23T08:59:03-0500",
    "finished": "2026-09-23T09:02:25-0500",
@@ -25689,9 +25687,9 @@
    "exit": -15,
    "env": {
     "DISPLAY": ":1",
-    "XDG_CONFIG_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-32/config",
-    "XDG_DATA_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-32/data",
-    "HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-32/home",
+    "XDG_CONFIG_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-32/config",
+    "XDG_DATA_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-32/data",
+    "HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-32/home",
     "GPUI_X11_SCALE_FACTOR": "2",
     "GITTURTLE_TRACE": "1",
     "XAUTHORITY": "/run/user/1000/.mutter-Xwaylandauth.Y0DWV3",
@@ -25703,8 +25701,8 @@
     "/usr/bin/taskset",
     "-c",
     "0-7",
-    "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/gitturtle-4cdd4df",
-    "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-theme-apply/repo"
+    "<worktree>/.local/themes-evidence/gitturtle-4cdd4df",
+    "<worktree>/.local/themes-evidence/perf-theme-apply/repo"
    ],
    "affinity_at_window": {
     "main": "0-7",
@@ -25745,7 +25743,7 @@
    "source_revision": "4cdd4df2c0767429ee4c182f73b8e5f82a4312e7"
   },
   "base-switches-empty": {
-   "binary": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/gitturtle-4cdd4df",
+   "binary": "<worktree>/.local/themes-evidence/gitturtle-4cdd4df",
    "binary_sha256": "3ef3e3a0b999b00b76c64d2177f82a93814faf585de5452439bfbcd34894714e",
    "started": "2026-09-23T09:02:28-0500",
    "finished": "2026-09-23T09:05:50-0500",
@@ -25767,9 +25765,9 @@
    "exit": -15,
    "env": {
     "DISPLAY": ":1",
-    "XDG_CONFIG_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-empty/config",
-    "XDG_DATA_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-empty/data",
-    "HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-empty/home",
+    "XDG_CONFIG_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-empty/config",
+    "XDG_DATA_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-empty/data",
+    "HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-empty/home",
     "GPUI_X11_SCALE_FACTOR": "2",
     "GITTURTLE_TRACE": "1",
     "XAUTHORITY": "/run/user/1000/.mutter-Xwaylandauth.Y0DWV3",
@@ -25781,8 +25779,8 @@
     "/usr/bin/taskset",
     "-c",
     "0-7",
-    "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/gitturtle-4cdd4df",
-    "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-theme-apply/repo"
+    "<worktree>/.local/themes-evidence/gitturtle-4cdd4df",
+    "<worktree>/.local/themes-evidence/perf-theme-apply/repo"
    ],
    "affinity_at_window": {
     "main": "0-7",
@@ -25823,7 +25821,7 @@
    "source_revision": "4cdd4df2c0767429ee4c182f73b8e5f82a4312e7"
   },
   "base-switches-32-b": {
-   "binary": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/gitturtle-4cdd4df",
+   "binary": "<worktree>/.local/themes-evidence/gitturtle-4cdd4df",
    "binary_sha256": "3ef3e3a0b999b00b76c64d2177f82a93814faf585de5452439bfbcd34894714e",
    "started": "2026-09-23T09:12:26-0500",
    "finished": "2026-09-23T09:15:48-0500",
@@ -25845,9 +25843,9 @@
    "exit": -15,
    "env": {
     "DISPLAY": ":1",
-    "XDG_CONFIG_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-32-b/config",
-    "XDG_DATA_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-32-b/data",
-    "HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-32-b/home",
+    "XDG_CONFIG_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-32-b/config",
+    "XDG_DATA_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-32-b/data",
+    "HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-32-b/home",
     "GPUI_X11_SCALE_FACTOR": "2",
     "GITTURTLE_TRACE": "1",
     "XAUTHORITY": "/run/user/1000/.mutter-Xwaylandauth.Y0DWV3",
@@ -25859,8 +25857,8 @@
     "/usr/bin/taskset",
     "-c",
     "0-7",
-    "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/gitturtle-4cdd4df",
-    "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-theme-apply/repo"
+    "<worktree>/.local/themes-evidence/gitturtle-4cdd4df",
+    "<worktree>/.local/themes-evidence/perf-theme-apply/repo"
    ],
    "affinity_at_window": {
     "main": "0-7",
@@ -25901,7 +25899,7 @@
    "source_revision": "4cdd4df2c0767429ee4c182f73b8e5f82a4312e7"
   },
   "base-switches-empty-b": {
-   "binary": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/gitturtle-4cdd4df",
+   "binary": "<worktree>/.local/themes-evidence/gitturtle-4cdd4df",
    "binary_sha256": "3ef3e3a0b999b00b76c64d2177f82a93814faf585de5452439bfbcd34894714e",
    "started": "2026-09-23T09:08:59-0500",
    "finished": "2026-09-23T09:12:22-0500",
@@ -25923,9 +25921,9 @@
    "exit": -15,
    "env": {
     "DISPLAY": ":1",
-    "XDG_CONFIG_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-empty-b/config",
-    "XDG_DATA_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-empty-b/data",
-    "HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-empty-b/home",
+    "XDG_CONFIG_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-empty-b/config",
+    "XDG_DATA_HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-empty-b/data",
+    "HOME": "<worktree>/.local/themes-evidence/perf-settings-view-a3/runs/base-switches-empty-b/home",
     "GPUI_X11_SCALE_FACTOR": "2",
     "GITTURTLE_TRACE": "1",
     "XAUTHORITY": "/run/user/1000/.mutter-Xwaylandauth.Y0DWV3",
@@ -25937,8 +25935,8 @@
     "/usr/bin/taskset",
     "-c",
     "0-7",
-    "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/gitturtle-4cdd4df",
-    "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-theme-apply/repo"
+    "<worktree>/.local/themes-evidence/gitturtle-4cdd4df",
+    "<worktree>/.local/themes-evidence/perf-theme-apply/repo"
    ],
    "affinity_at_window": {
     "main": "0-7",

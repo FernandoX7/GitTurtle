@@ -38,7 +38,7 @@ Power: AC online = 1, governor `powersave`, EPP `balance_performance`. Load at `
 
 Cache state: warm: explore-32 (4 switches) and warmup-32 (60 switches, not eligible) of the same executable, store and procedure preceded the recorded launch; OS page cache not dropped. Every launch used a fresh process with fresh absolute XDG_CONFIG_HOME, XDG_DATA_HOME and HOME under its run directory (XDG_CACHE_HOME unset), so user-level caches such as the Mesa shader cache started empty in every launch, including the base control. No cold-cache run.
 
-Isolation: every launch had absolute, freshly created `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `HOME` under its run directory (recorded launch: `HOME=/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-picker/runs/recorded-32/home`), `XDG_CACHE_HOME` unset, X authority through `XAUTHORITY`, and `GITTURTLE_TRACE=1`.
+Isolation: every launch had absolute, freshly created `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `HOME` under its run directory (recorded launch: `HOME=<worktree>/.local/themes-evidence/perf-picker/runs/recorded-32/home`), `XDG_CACHE_HOME` unset, X authority through `XAUTHORITY`, and `GITTURTLE_TRACE=1`.
 
 ## Store
 

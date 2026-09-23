@@ -19,7 +19,7 @@ Settled by the owner on 2026-09-23.
 
 In the order to do them. Test-only and documentation items come first, then visible fixes, then the two changes that recapture whole sets.
 
-1. **HYG-PATHS: absolute home paths in new benchmark records.**
+1. **HYG-PATHS (done): absolute home paths in new benchmark records.**
    - Defect: five records new on this branch contain `/home/<user>/…` paths:
      - `docs/benchmarks/2026-09-23-theme-settings-view-keystroke.json`, 100 lines. Two of them are `foreign_processes` fields (lines 207 and 1425), each holding a 3.4 KB agent shell command with `~/.claude/shell-snapshots`, `/tmp/claude-1000` and grading-plan text.
      - `2026-09-23-theme-picker-switching.json`, 15 lines.

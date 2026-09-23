@@ -76,7 +76,7 @@
   ],
   "env": {
    "DISPLAY": ":1",
-   "XDG_CONFIG_HOME": "/home/fernandoramirez/Documents/GitTurtle/.local/worktrees/claude-code-support/.local/themes-evidence/perf-draw-cost/runs/recorded-32/config",
+   "XDG_CONFIG_HOME": "<worktree>/.local/themes-evidence/perf-draw-cost/runs/recorded-32/config",
    "GPUI_X11_SCALE_FACTOR": "2",
    "GITTURTLE_TRACE": "1",
    "ZED_MEASUREMENTS": null,

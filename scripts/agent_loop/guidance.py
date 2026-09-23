@@ -1,7 +1,8 @@
 """Check guidance links and discovery metadata using only the standard library.
 
 This is a structural check, not an evaluation of an agent's instructions. It
-does not infer paths from prose or execute commands found in documentation.
+does not infer paths from prose or execute commands found in documentation. It
+does reject absolute home paths anywhere in the text files under docs/.
 """
 
 from __future__ import annotations
@@ -202,6 +203,37 @@ def _link_issues(root: Path, source: Path, text: str,
                     continue
             if unquote(url.fragment) not in anchors[target]:
                 issues.append(Issue(source, line, f"missing Markdown anchor: {destination}"))
+    return issues
+
+
+# The lookbehind leaves relative text such as "Checkout/home/..." alone, and the
+# name class leaves placeholders such as "/home/<user>/" alone.
+_HOME_PATH = re.compile(r"(?<![\w.-])/(?:home|Users)/([\w.-]+)")
+_REDACTED_HOMES = {"", "REDACTED"}
+
+
+def home_path_issues(root: Path) -> list[Issue]:
+    """Report absolute home paths in text files under docs/; binary evidence is skipped."""
+    issues = []
+    for directory, children, files in os.walk(root / "docs", followlinks=False):
+        children.sort()
+        for name in sorted(files):
+            path = Path(directory) / name
+            if path.is_symlink():
+                continue
+            try:
+                text = path.read_bytes().decode("utf-8")
+            except UnicodeError:
+                continue
+            except OSError as error:
+                issues.append(Issue(path, 1, f"cannot read documentation: {error}"))
+                continue
+            for match in _HOME_PATH.finditer(text):
+                if match.group(1).rstrip(".") in _REDACTED_HOMES:
+                    continue
+                line = text.count("\n", 0, match.start()) + 1
+                issues.append(Issue(path, line, f"absolute home path {match.group(0)}: write "
+                                    "<worktree>/ or a prefix the record defines once"))
     return issues
 
 
@@ -476,6 +508,7 @@ def validate(root: Path) -> list[Issue]:
             if path.name == "SKILL.md":
                 issues.extend(_skill_issues(path, text))
             issues.extend(_link_issues(root, path, text, anchors))
+    issues.extend(home_path_issues(root))
     return issues
 
 
@@ -491,5 +524,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Guidance validation failed: {len(issues)} issue(s).", file=sys.stderr)
         return 1
     print(f"Guidance validation passed: {len(guidance_files(args.root.resolve()))} files; "
-          "local links, Markdown anchors, skill metadata, agent TOML, and Claude Code configuration.")
+          "local links, Markdown anchors, skill metadata, agent TOML, Claude Code configuration, "
+          "and home paths under docs/.")
     return 0

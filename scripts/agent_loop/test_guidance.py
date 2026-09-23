@@ -147,6 +147,23 @@ Read [rules](../../absent.md).
         self.write("AGENTS.md", "# Project\n[Outside](../outside.md)\n")
         self.assertIn("local link escapes repository", self.messages())
 
+    def test_home_paths_under_docs_are_rejected(self):
+        self.write("docs/benchmarks/run.json", '{\n "HOME": "/home/alice/src/run/home",\n'
+                   ' "cwd": "/Users/bob.smith/GitTurtle"\n}\n')
+        message = self.messages()
+        self.assertIn("run.json:2: absolute home path /home/alice", message)
+        self.assertIn("run.json:3: absolute home path /Users/bob.smith", message)
+
+    def test_redacted_relative_and_placeholder_home_paths_pass(self):
+        self.write("docs/benchmarks/record.json", '{"log": "Compiling (/Users/REDACTED/GitTurtle)",'
+                   ' "note": "referenced /Users/REDACTED.",'
+                   ' "sanitized": "Checkout/home/icon-temporary paths replaced",'
+                   ' "run": "<worktree>/.local/themes-evidence/run/home"}\n')
+        self.write("docs/notes.md", "Paths such as `/home/<user>/…`, /home/<name>/ and /Users/<name>/ "
+                   "are placeholders; files under /home/ belong to users.\n")
+        self.write("docs/evidence/frame.png", "").write_bytes(b"\x89PNG\r\n/home/alice/")
+        self.assertEqual(validate(self.root), [])
+
     def test_anchor_slug_formatting_unicode_and_duplicates(self):
         anchors = markdown_anchors("# A `code` & **thing**!\n# Café\n# Café\n"
                                    '<a id="custom"></a>\n`<a id="example"></a>`\n')
