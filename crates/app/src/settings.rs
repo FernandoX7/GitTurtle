@@ -1260,6 +1260,17 @@ impl GitTurtle {
         let focused = self
             .theme_editor
             .focused_row(&self.custom_themes, window, cx);
+        // An action that keeps focus while a scroll has taken its row out of
+        // the list has no node of its own; the list tracks its handle
+        // meanwhile, so Tab still reaches `tab_theme_rows` in the Settings
+        // key context rather than the window root's order.
+        let scrolled_out = focused
+            .as_ref()
+            .filter(|focused| {
+                self.theme_editor
+                    .focus_scrolled_out(&self.custom_themes, focused, window, cx)
+            })
+            .map(|(_, handle)| handle.clone());
         self.theme_editor.reveal_focused_row(focused);
         let scroll = self.theme_editor.rows_scroll().clone();
         // The list clips at its own bounds, the ring's room included, so a
@@ -1306,6 +1317,7 @@ impl GitTurtle {
                     .bottom(-ROW_RING_ROOM)
                     .left_0()
                     .right_0()
+                    .when_some(scrolled_out, |list, handle| list.track_focus(&handle))
                     // The list sits inside the Settings page's own scroll
                     // container, and GPUI's scroll listeners never stop a
                     // wheel event, so a step over the rows would move the
@@ -1344,7 +1356,7 @@ impl GitTurtle {
                                 // Tab across the viewport boundary asked for a
                                 // row this render draws: its actions are tab
                                 // stops from this frame on, so the next frame
-                                // focuses one.
+                                // focuses one or takes the key's step.
                                 if let Some((row, action)) = this
                                     .theme_editor
                                     .take_row_focus_request(&range, this.custom_themes.len())
@@ -1521,6 +1533,7 @@ impl GitTurtle {
             })
             .child(
                 button(("edit-custom-theme", id as usize), "Edit…", "", false)
+                    .track_focus(&self.theme_editor.action_focus(id, 0, cx))
                     .debug_selector(move || format!("edit-custom-theme-{id}"))
                     .accessibility_label(edit_name)
                     .disabled(pending)
@@ -1553,6 +1566,7 @@ impl GitTurtle {
                     })
                     .child(
                         button(("export-custom-theme", id as usize), "Export…", "", false)
+                            .track_focus(&self.theme_editor.action_focus(id, 1, cx))
                             .debug_selector(move || format!("export-custom-theme-{id}"))
                             .accessibility_label(export_name)
                             .disabled(pending)
@@ -1563,6 +1577,7 @@ impl GitTurtle {
             )
             .child(
                 button(("delete-custom-theme", id as usize), "Delete…", "", false)
+                    .track_focus(&self.theme_editor.action_focus(id, 2, cx))
                     .debug_selector(move || format!("delete-custom-theme-{id}"))
                     .accessibility_label(delete_name)
                     .disabled(pending)

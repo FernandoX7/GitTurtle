@@ -73,18 +73,21 @@ pub(super) struct State {
     /// tall and virtualized with `uniform_list`, so a Settings frame lays out
     /// at most eight rows however many themes are saved.
     rows_scroll: UniformListScrollHandle,
-    /// One focus handle per saved theme, tracked on its Your themes row and
-    /// never a tab stop itself. The rows are virtualized, so a row's Edit…,
-    /// Export… and Delete… (the kit's own tab stops, in that order) exist
-    /// only while the row is drawn; the row's handle lets a render find the
-    /// row holding focus and scroll it into view (`focused_row`), and lets
-    /// Tab reach a row's actions once the row is drawn (`focus_row_action`).
-    row_focus: std::cell::RefCell<Vec<(u32, FocusHandle)>>,
-    /// A row action (0 Edit…, 1 Export…, 2 Delete…) to focus once its row is
-    /// drawn: Tab across the viewport boundary scrolls the row in and the
-    /// list's next render focuses it (`GitTurtle::tab_theme_rows`,
-    /// `take_row_focus_request`).
-    row_focus_request: std::cell::Cell<Option<(usize, usize)>>,
+    /// Per saved theme, one focus handle tracked on its Your themes row and
+    /// never a tab stop itself, and one tab stop per row action (0 Edit…,
+    /// 1 Export…, 2 Delete…) that the action's kit button tracks. The rows are
+    /// virtualized, so a row's actions exist only while the row is drawn;
+    /// owning their handles keeps an action focused while a scroll takes its
+    /// row out of the list, and the row comes back with that focus. The
+    /// handles let a render find the row holding focus and scroll it into
+    /// view (`focused_row`), and the row's handle lets Tab reach a row's
+    /// actions once the row is drawn (`focus_row_action`).
+    row_focus: std::cell::RefCell<Vec<(u32, FocusHandle, [FocusHandle; 3])>>,
+    /// What to do with a row once it is drawn: Tab across the viewport
+    /// boundary scrolls the row in and the list's next render focuses one of
+    /// its actions, or takes the key's step from the action holding focus
+    /// (`GitTurtle::tab_theme_rows`, `take_row_focus_request`).
+    row_focus_request: std::cell::Cell<Option<(usize, RowFocus)>>,
     /// The row last scrolled into view because one of its actions held focus,
     /// with that action, so a wheel scroll away from a focused row is not
     /// undone by the next render while Tab onto another of its actions
@@ -170,44 +173,74 @@ impl State {
         &self.rows_scroll
     }
 
-    /// Theme `id`'s row handle, created on first use and kept while the
-    /// theme is saved.
-    pub(super) fn row_focus(&self, id: u32, cx: &App) -> FocusHandle {
+    /// Theme `id`'s row handle and action handles, created on first use and
+    /// kept while the theme is saved.
+    fn row_handles(&self, id: u32, cx: &App) -> (FocusHandle, [FocusHandle; 3]) {
         let mut rows = self.row_focus.borrow_mut();
-        if let Some((_, handle)) = rows.iter().find(|(row, _)| *row == id) {
-            return handle.clone();
+        if let Some((_, row, actions)) = rows.iter().find(|(row, ..)| *row == id) {
+            return (row.clone(), actions.clone());
         }
-        let handle = cx.focus_handle();
-        rows.push((id, handle.clone()));
-        handle
+        let row = cx.focus_handle();
+        let actions = std::array::from_fn(|_| cx.focus_handle().tab_stop(true));
+        rows.push((id, row.clone(), actions.clone()));
+        (row, actions)
+    }
+
+    /// Theme `id`'s row handle.
+    pub(super) fn row_focus(&self, id: u32, cx: &App) -> FocusHandle {
+        self.row_handles(id, cx).0
+    }
+
+    /// The handle of theme `id`'s Edit… (0), Export… (1) or Delete… (2).
+    pub(super) fn action_focus(&self, id: u32, action: usize, cx: &App) -> FocusHandle {
+        self.row_handles(id, cx).1[action].clone()
     }
 
     /// Drop the handles of themes no longer saved.
     pub(super) fn retain_row_focus(&self, themes: &[CustomTheme]) {
         self.row_focus
             .borrow_mut()
-            .retain(|(id, _)| themes.iter().any(|theme| theme.id == *id));
+            .retain(|(id, ..)| themes.iter().any(|theme| theme.id == *id));
     }
 
-    /// The drawn row holding focus, itself or through one of its actions,
-    /// with the focused handle.
+    /// The row holding focus, itself or through one of its actions, with the
+    /// focused handle, whether or not the row is drawn.
     pub(super) fn focused_row(
         &self,
         themes: &[CustomTheme],
         window: &Window,
         cx: &App,
     ) -> Option<(usize, FocusHandle)> {
+        let focused = window.focused(cx)?;
         let rows = self.row_focus.borrow();
         let row = themes.iter().position(|theme| {
-            rows.iter()
-                .any(|(id, handle)| *id == theme.id && handle.contains_focused(window, cx))
+            rows.iter().any(|(id, row, actions)| {
+                *id == theme.id && (actions.contains(&focused) || row.contains_focused(window, cx))
+            })
         })?;
-        Some((row, window.focused(cx)?))
+        Some((row, focused))
     }
 
-    /// Ask the list's next render to focus `action` of `row` once drawn.
-    pub(super) fn request_row_focus(&self, row: usize, action: usize) {
-        self.row_focus_request.set(Some((row, action)));
+    /// Whether `focused` (from `focused_row`) is an action whose row is not
+    /// drawn: a wheel or scrollbar scroll took the row out of the list while
+    /// the action kept focus. The action has no node of its own then, so the
+    /// list tracks its handle (`settings.rs`) to keep Tab in the Settings key
+    /// context.
+    pub(super) fn focus_scrolled_out(
+        &self,
+        themes: &[CustomTheme],
+        focused: &(usize, FocusHandle),
+        window: &Window,
+        cx: &App,
+    ) -> bool {
+        !self
+            .row_focus(themes[focused.0].id, cx)
+            .contains_focused(window, cx)
+    }
+
+    /// Ask the list's next render to act on `row` once drawn.
+    pub(super) fn request_row_focus(&self, row: usize, focus: RowFocus) {
+        self.row_focus_request.set(Some((row, focus)));
     }
 
     /// The request whose row this render draws, if any; a request for a row
@@ -216,58 +249,56 @@ impl State {
         &self,
         drawn: &std::ops::Range<usize>,
         count: usize,
-    ) -> Option<(usize, usize)> {
-        let (row, action) = self.row_focus_request.get()?;
+    ) -> Option<(usize, RowFocus)> {
+        let (row, focus) = self.row_focus_request.get()?;
         if row >= count {
             self.row_focus_request.set(None);
             return None;
         }
         drawn.contains(&row).then(|| {
             self.row_focus_request.set(None);
-            (row, action)
+            (row, focus)
         })
     }
 
-    /// Focus `action` of the row drawn with `handle`: the row's handle is in
-    /// the tab order ahead of its actions and is not a stop itself, so the
-    /// first stop after it is Edit…, then Export…, then Delete….
+    /// Act on the row drawn with `handle`. The row's handle is in the tab
+    /// order ahead of its actions and is not a stop itself, so the first stop
+    /// after it is Edit…, then Export…, then Delete…. A step is the Tab or
+    /// Shift-Tab again, dispatched from the row to `GitTurtle::tab_theme_rows`
+    /// now that the action holding focus is a stop.
     pub(super) fn focus_row_action(
         handle: &FocusHandle,
-        action: usize,
+        focus: RowFocus,
         window: &mut Window,
         cx: &mut App,
     ) {
-        handle.focus(window, cx);
-        for _ in 0..=action {
-            window.focus_next(cx);
+        match focus {
+            RowFocus::Action(action) => {
+                handle.focus(window, cx);
+                for _ in 0..=action {
+                    window.focus_next(cx);
+                }
+            }
+            RowFocus::Step(true) => handle.dispatch_action(&NextThemeAction, window, cx),
+            RowFocus::Step(false) => handle.dispatch_action(&PreviousThemeAction, window, cx),
         }
     }
 
-    /// Test-only: the drawn row and action (0 Edit…, 1 Export…, 2 Delete…)
-    /// holding focus. The actions' handles are the kit's, so the action is
-    /// found by stepping from the row's handle until the focused one is
-    /// reached; focus ends where it started.
+    /// Test-only: the row and action (0 Edit…, 1 Export…, 2 Delete…) holding
+    /// focus, whether or not the row is drawn.
     #[cfg(test)]
     pub(super) fn focused_row_action(
         &self,
         themes: &[CustomTheme],
-        window: &mut Window,
-        cx: &mut App,
+        window: &Window,
+        cx: &App,
     ) -> Option<(usize, usize)> {
         let focused = window.focused(cx)?;
-        let row = self.focused_row(themes, window, cx)?.0;
-        let handle = self.row_focus(themes[row].id, cx);
-        handle.focus(window, cx);
-        let mut action = None;
-        for step in 0..3 {
-            window.focus_next(cx);
-            if window.focused(cx) == Some(focused.clone()) {
-                action = Some(step);
-                break;
-            }
-        }
-        focused.focus(window, cx);
-        Some((row, action?))
+        let rows = self.row_focus.borrow();
+        themes.iter().enumerate().find_map(|(index, theme)| {
+            let (.., actions) = rows.iter().find(|(id, ..)| *id == theme.id)?;
+            Some((index, actions.iter().position(|action| *action == focused)?))
+        })
     }
 
     /// Scroll the row holding focus into view once per focus change
@@ -286,6 +317,16 @@ impl State {
                 .scroll_to_item(row, ScrollStrategy::Nearest);
         }
     }
+}
+
+/// What the Your themes list does with a requested row once it draws it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RowFocus {
+    /// Focus Edit… (0), Export… (1) or Delete… (2).
+    Action(usize),
+    /// Tab (`true`) or Shift-Tab from the action holding focus, which had no
+    /// tab stop when the key arrived because its row was not drawn.
+    Step(bool),
 }
 
 /// Test-only: one paint of the edit-frame trace probe.
@@ -698,8 +739,26 @@ impl GitTurtle {
         let focused = window.focused(cx);
         let from = self
             .theme_editor
-            .focused_row(&self.custom_themes, window, cx)
-            .map(|(row, _)| row);
+            .focused_row(&self.custom_themes, window, cx);
+        // A wheel or scrollbar scroll took the row of the action holding
+        // focus out of the list, so GPUI has no stop to step from: the row
+        // scrolls back in, focus stays put, and the list's next render takes
+        // the step once the row's stops exist.
+        if let Some(from) = &from
+            && self
+                .theme_editor
+                .focus_scrolled_out(&self.custom_themes, from, window, cx)
+        {
+            self.theme_editor
+                .rows_scroll()
+                .scroll_to_item(from.0, ScrollStrategy::Nearest);
+            self.theme_editor
+                .request_row_focus(from.0, RowFocus::Step(forward));
+            self.notify_settings_page(cx);
+            cx.notify();
+            return;
+        }
+        let from = from.map(|(row, _)| row);
         // GPUI's own step is right whenever the row it should reach is
         // drawn: within a row, onto the neighbouring drawn row, or out of the
         // rows at their end. It is corrected only where the row it should
@@ -736,7 +795,8 @@ impl GitTurtle {
         self.theme_editor
             .rows_scroll()
             .scroll_to_item(target.0, ScrollStrategy::Nearest);
-        self.theme_editor.request_row_focus(target.0, target.1);
+        self.theme_editor
+            .request_row_focus(target.0, RowFocus::Action(target.1));
         cx.notify();
     }
 
@@ -5029,7 +5089,9 @@ mod tests {
             action: usize,
         ) {
             let handle = cx.update(|_, cx| app.read(cx).theme_editor.row_focus(id, cx));
-            cx.update(|window, cx| State::focus_row_action(&handle, action, window, cx));
+            cx.update(|window, cx| {
+                State::focus_row_action(&handle, RowFocus::Action(action), window, cx)
+            });
             native_frame(cx);
             let name = ["edit", "export", "delete"][action];
             let button = bounds(cx, format!("{name}-custom-theme-{id}"));
@@ -5125,7 +5187,7 @@ mod tests {
                 app.theme_editor
                     .rows_scroll()
                     .scroll_to_item(16, ScrollStrategy::Nearest);
-                app.theme_editor.request_row_focus(16, 0);
+                app.theme_editor.request_row_focus(16, RowFocus::Action(0));
                 cx.notify();
             })
         });
@@ -5221,8 +5283,11 @@ mod tests {
 
     /// A wheel step away from the focused row is the user's, and the next
     /// render leaves it; Tab or Shift-Tab onto another action of that row
-    /// then scrolls the row back into view, at either end of the list. The
-    /// step leaves the row partly in the list, so its actions are drawn.
+    /// then scrolls the row back into view, at either end of the list. A
+    /// 10 px step leaves the row partly in the list, its actions drawn; the
+    /// native frame 11 state's 63 px step takes the last row out of the list,
+    /// and its action keeps focus undrawn, so the key scrolls the row back
+    /// and takes its step once the row is drawn.
     #[gpui::test]
     fn tab_after_a_wheel_step_scrolls_the_focused_row_back(cx: &mut TestAppContext) {
         let (app, cx) = open_app(cx);
@@ -5243,6 +5308,8 @@ mod tests {
             (31, end, px(10.), "tab", 1, 2),
             (31, end, px(10.), "shift-tab", 2, 1),
             (0, Pixels::ZERO, px(-10.), "tab", 0, 1),
+            (31, end, px(63.), "tab", 1, 2),
+            (31, end, px(63.), "shift-tab", 2, 1),
         ] {
             cx.update(|_, cx| {
                 app.update(cx, |app, cx| {
@@ -5255,7 +5322,9 @@ mod tests {
             native_frame(cx);
             let id = row as u32 + 1;
             let handle = cx.update(|_, cx| app.read(cx).theme_editor.row_focus(id, cx));
-            cx.update(|window, cx| State::focus_row_action(&handle, from, window, cx));
+            cx.update(|window, cx| {
+                State::focus_row_action(&handle, RowFocus::Action(from), window, cx)
+            });
             settle(cx);
             assert_eq!(
                 cx.update(|window, cx| focused_row(&app, window, cx)),
@@ -5282,6 +5351,11 @@ mod tests {
                 "the render leaves the step away from row {row}"
             );
             assert!(!cx.read(|cx| row_in_view(&app, row, cx)));
+            assert_eq!(
+                settings::page_shows(cx, format!("custom-theme-{id}").leak()),
+                step.abs() < appearance::ui_size(30.),
+                "the {step:?} step leaves the row drawn or takes it out"
+            );
             assert_eq!(
                 cx.update(|window, cx| focused_row(&app, window, cx)),
                 Some((row, from)),
@@ -5600,7 +5674,9 @@ mod tests {
             let handle = cx.update(|_, cx| app.read(cx).theme_editor.row_focus(id, cx));
             let draws = cx.read(|cx| app.read(cx).draws.len());
             let page = page_renders(cx, app);
-            cx.update(|window, cx| State::focus_row_action(&handle, action, window, cx));
+            cx.update(|window, cx| {
+                State::focus_row_action(&handle, RowFocus::Action(action), window, cx)
+            });
             if cx.read(|cx| app.read(cx).draws.len()) == draws {
                 cx.update(|window, cx| window.draw(cx).clear(cx));
             }
