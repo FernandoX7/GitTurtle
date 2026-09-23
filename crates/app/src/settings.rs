@@ -1212,10 +1212,10 @@ impl GitTurtle {
             // Only a single-paragraph message gets that mark, and every import
             // and export notice and every document refusal is one: GPUI's
             // line-clamp truncation cuts a multi-paragraph text at the
-            // paragraph break on its last allowed line, and the folder picker's
-            // Linux portal guidance is two paragraphs whose second one, the
-            // only actionable sentence, the committed no-portal frames show
-            // whole at three lines.
+            // paragraph break on its last allowed line. The folder picker's
+            // failure is two lines, its guidance and then the service's error,
+            // shortened where it is built (`folder_picker::failure`), so a cut
+            // there drops the quoted error, not the guidance.
             .children(self.theme_editor.notice().map(|notice| {
                 div()
                     .id("custom-themes-notice")

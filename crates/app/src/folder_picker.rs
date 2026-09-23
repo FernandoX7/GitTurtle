@@ -3,9 +3,14 @@
 //! Every native file dialog answers the same three ways: a path, a quiet
 //! cancellation, and a service failure that needs the Linux portal guidance.
 //! The wording names what was being chosen, and only the repository picker can
-//! suggest the command line as the way around a broken portal.
+//! suggest the command line as the way around a broken portal. A failure's
+//! first line is what the user can do; the service's own error follows on a
+//! line of its own, shortened, since it names D-Bus internals.
 use futures::channel::oneshot;
 use std::path::PathBuf;
+
+/// The most characters of a service error a failure quotes.
+const MAX_DETAIL_CHARS: usize = 160;
 
 /// What a native dialog was opened for, so its failure names that.
 #[derive(Clone, Copy)]
@@ -21,9 +26,9 @@ pub(super) enum Picker {
 impl Picker {
     fn failure(self) -> &'static str {
         match self {
-            Self::Folder => "Could not choose a folder",
-            Self::File => "Could not choose a file",
-            Self::Destination => "Could not choose where to save",
+            Self::Folder => "Could not choose a folder.",
+            Self::File => "Could not choose a file.",
+            Self::Destination => "Could not choose where to save.",
         }
     }
 
@@ -50,8 +55,8 @@ pub(super) async fn selected_path_for(
 ) -> Result<Option<PathBuf>, String> {
     match response.await {
         Ok(Ok(paths)) => Ok(paths.and_then(|paths| paths.into_iter().next())),
-        Ok(Err(error)) => Err(guidance(format!("{}: {error:#}", picker.failure()), picker)),
-        Err(_) => Err(guidance(picker.closed().into(), picker)),
+        Ok(Err(error)) => Err(failure(picker, &error)),
+        Err(_) => Err(guidance(picker.closed(), picker)),
     }
 }
 
@@ -63,18 +68,32 @@ pub(super) async fn new_path(
     let picker = Picker::Destination;
     match response.await {
         Ok(Ok(path)) => Ok(path),
-        Ok(Err(error)) => Err(guidance(format!("{}: {error:#}", picker.failure()), picker)),
-        Err(_) => Err(guidance(picker.closed().into(), picker)),
+        Ok(Err(error)) => Err(failure(picker, &error)),
+        Err(_) => Err(guidance(picker.closed(), picker)),
     }
+}
+
+/// A service failure: the guidance line, then the error chain on one line
+/// of its own, at most [`MAX_DETAIL_CHARS`] characters.
+fn failure(picker: Picker, error: &anyhow::Error) -> String {
+    let detail = format!("{error:#}")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let detail = match detail.char_indices().nth(MAX_DETAIL_CHARS) {
+        Some((end, _)) => format!("{}…", detail[..end].trim_end()),
+        None => detail,
+    };
+    format!("{}\nDetails: {detail}", guidance(picker.failure(), picker))
 }
 
 /// A picker service failure is actionable on Linux, where a missing portal is
 /// the usual cause.
-fn guidance(message: String, picker: Picker) -> String {
+fn guidance(message: &str, picker: Picker) -> String {
     #[cfg(not(target_os = "linux"))]
     {
         let _ = picker;
-        message
+        message.to_owned()
     }
     #[cfg(target_os = "linux")]
     {
@@ -83,7 +102,7 @@ fn guidance(message: String, picker: Picker) -> String {
             Picker::File | Picker::Destination => "",
         };
         format!(
-            "{message}\n\nCheck that xdg-desktop-portal and a FileChooser backend are running in your desktop session.{repository}"
+            "{message} Check that xdg-desktop-portal and a FileChooser backend are running in your desktop session.{repository}"
         )
     }
 }
@@ -109,9 +128,19 @@ mod tests {
             ))
             .unwrap();
         let error = futures::executor::block_on(selected_path(receiver)).unwrap_err();
-        assert!(error.contains("D-Bus request failed: FileChooser service unavailable"));
+        // The first line is what the user can do; the chain follows it.
+        let (first, detail) = error.split_once('\n').expect("the detail has its own line");
+        assert!(first.starts_with("Could not choose a folder."), "{first}");
+        assert!(!first.contains("D-Bus"), "{first}");
+        assert_eq!(
+            detail,
+            "Details: D-Bus request failed: FileChooser service unavailable"
+        );
         #[cfg(target_os = "linux")]
-        assert!(error.contains("xdg-desktop-portal"));
+        assert!(
+            first.contains("xdg-desktop-portal") && first.contains("passing its path to GitTurtle"),
+            "{first}"
+        );
 
         let (sender, receiver) = oneshot::channel();
         drop(sender);
@@ -141,7 +170,7 @@ mod tests {
             .send(Err(anyhow::anyhow!("FileChooser service unavailable")))
             .unwrap();
         let error = futures::executor::block_on(new_path(receiver)).unwrap_err();
-        assert!(error.starts_with("Could not choose where to save: "));
+        assert!(error.starts_with("Could not choose where to save. "));
 
         let (sender, receiver) = oneshot::channel();
         sender
@@ -149,7 +178,7 @@ mod tests {
             .unwrap();
         let file_error =
             futures::executor::block_on(selected_path_for(Picker::File, receiver)).unwrap_err();
-        assert!(file_error.starts_with("Could not choose a file: "));
+        assert!(file_error.starts_with("Could not choose a file. "));
 
         let (sender, receiver) = oneshot::channel();
         drop(sender);
@@ -158,12 +187,41 @@ mod tests {
 
         #[cfg(target_os = "linux")]
         for message in [&error, &file_error, &closed] {
-            assert!(message.contains("xdg-desktop-portal"), "{message}");
+            let first = message.lines().next().unwrap_or_default();
+            assert!(first.contains("xdg-desktop-portal"), "{message}");
             assert!(
                 !message.contains("passing its path to GitTurtle"),
                 "only the repository picker suggests the command line: {message}"
             );
         }
+    }
+
+    /// A service error is quoted after the guidance as one line, however
+    /// many lines the chain has, and shortened with an ellipsis.
+    #[test]
+    fn a_long_service_error_is_one_shortened_line_after_the_guidance() {
+        let (sender, receiver) = oneshot::channel();
+        let name = "org.freedesktop.portal.Desktop ".repeat(12);
+        sender
+            .send(Err(anyhow::anyhow!(
+                "The name {name}\nwas not provided by any .service files"
+            )
+            .context("Portal request failed")))
+            .unwrap();
+        let error =
+            futures::executor::block_on(selected_path_for(Picker::File, receiver)).unwrap_err();
+        let lines = error.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 2, "{error}");
+        assert!(lines[0].starts_with("Could not choose a file."), "{error}");
+        let detail = lines[1]
+            .strip_prefix("Details: ")
+            .expect("the detail is marked as such");
+        assert!(
+            detail.starts_with("Portal request failed: The name org.freedesktop.portal.Desktop "),
+            "{detail}"
+        );
+        assert!(detail.ends_with('…'), "{detail}");
+        assert!(detail.chars().count() <= MAX_DETAIL_CHARS + 1, "{detail}");
     }
 
     #[cfg(unix)]
