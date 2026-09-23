@@ -48,7 +48,7 @@ In the order to do them. Test-only and documentation items come first, then visi
    - Source: `HANDOFF.md` "Follow-ups after the run" (8).
    - Acceptance: the sentence is in the past tense and links the corrected entry.
    - Evidence changed: that record's prose only. Kind: docs.
-5. **ED-N8: the editor's warning count is not in the contract.** `crates/app/src/theme_editor.rs:2276` and `:2302` render "{count} warning(s)" beside the Readability heading. DESIGN.md lines 160 and 163 describe the list but not the count.
+5. **ED-N8 (done): the editor's warning count is not in the contract.** `crates/app/src/theme_editor.rs:2276` and `:2302` render "{count} warning(s)" beside the Readability heading. DESIGN.md lines 160 and 163 describe the list but not the count.
    - Source: `.local/themes-evidence/evidence-editor-3927b57/design-review.md` N8.
    - Acceptance: DESIGN.md line 163 describes the count and its accessible name.
    - Evidence changed: none. Kind: docs.
