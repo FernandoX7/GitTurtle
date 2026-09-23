@@ -2254,18 +2254,19 @@ pub(super) struct CardSlotState {
 /// theme and whether it is the applied one, and the applied palette's tokens
 /// its status marks draw in, only where it draws them. [`ThemeCardBody`] is
 /// built again only when this changes, so a live-preview edit replays every
-/// card body except the selected card's when it edits the accent or accent
-/// foreground and the warned cards' when it edits the warning or canvas
-/// color. The hover ring, also in the accent, is drawn outside the body.
+/// card body except the selected card's when it edits the accent, accent
+/// foreground or canvas color and the warned cards' when it edits the warning
+/// or canvas color. The hover ring, also in the accent, is drawn outside the body.
 #[derive(Clone, PartialEq)]
 pub(super) struct CardKey {
     palette: appearance::Palette,
     name: SharedString,
     description: SharedString,
     warnings: usize,
-    /// The applied accent and accent foreground, which draw the check
-    /// badge; absent on a card that is not selected, which draws no badge.
-    badge: Option<(u32, u32)>,
+    /// The applied accent, accent foreground and canvas, which draw the
+    /// check badge and its ring; absent on a card that is not selected,
+    /// which draws no badge.
+    badge: Option<(u32, u32, u32)>,
     /// The applied warning and canvas colors, which draw the readability
     /// glyph; absent on a card without findings, which draws no glyph.
     marks: Option<(u32, u32)>,
@@ -2285,7 +2286,7 @@ impl CardKey {
             name,
             description,
             warnings,
-            badge: selected.then_some((active.accent, active.accent_foreground)),
+            badge: selected.then_some((active.accent, active.accent_foreground, active.canvas)),
             marks: (warnings > 0).then_some((active.warning, active.canvas)),
         }
     }
@@ -3142,6 +3143,7 @@ fn preview_caption(
 ) -> Stateful<Div> {
     div()
         .id("theme-preview-caption")
+        .debug_selector(move || format!("theme-caption-{miniature}"))
         .min_h(crate::appearance::ui_size(54.))
         .flex_shrink_0()
         .px_3()
@@ -3183,17 +3185,29 @@ fn preview_caption(
                         )
                     })
                     .when(selected, |row| {
+                        // The name's line, 15.6 px at the default size: a
+                        // taller badge, even `ui_size(16.)` at 11 pt, grows
+                        // the selected caption above its neighbours'.
+                        // The active canvas rings it, as it
+                        // does the glyph, so the mark stays whole on a
+                        // caption near the active accent.
                         row.child(
                             div()
                                 .debug_selector(move || format!("theme-check-{miniature}"))
-                                .size(px(16.))
+                                .size(crate::appearance::ui_text(12.) * 1.3)
                                 .flex_shrink_0()
                                 .flex()
                                 .items_center()
                                 .justify_center()
                                 .rounded_full()
+                                .border_1()
+                                .border_color(rgb(active.canvas))
                                 .bg(rgb(active.accent))
-                                .child(icon("check", 11., active.accent_foreground)),
+                                .child(icon(
+                                    "check",
+                                    f32::from(crate::appearance::ui_size(11.)),
+                                    active.accent_foreground,
+                                )),
                         )
                     })
             } else {
@@ -3222,17 +3236,21 @@ fn preview_caption(
         ))
 }
 
-/// A picker card's readability glyph, drawn in `marks`. The card passes the
-/// active palette, as it does for its check badge. The selector names the
+/// A picker card's readability glyph, drawn in `marks` and ringed by 1 px of
+/// its canvas inside the glyph's box. The card passes the active palette, as
+/// it does for its check badge. The selector names the
 /// colors the glyph drew and the card's miniature, so a test reads from the
 /// rendered tree which palette the mark on that card used.
 fn card_warning_glyph(marks: appearance::Palette, miniature: gpui::EntityId) -> Div {
-    crate::theme_editor::warning_glyph(marks).debug_selector(move || {
-        format!(
-            "theme-warning-glyph-{miniature}-{:06x}-{:06x}",
-            marks.warning, marks.canvas
-        )
-    })
+    crate::theme_editor::warning_glyph(marks)
+        .border_1()
+        .border_color(rgb(marks.canvas))
+        .debug_selector(move || {
+            format!(
+                "theme-warning-glyph-{miniature}-{:06x}-{:06x}",
+                marks.warning, marks.canvas
+            )
+        })
 }
 
 /// `colors` as a run of `width` × `height` boxes `gap` apart with `radius`
@@ -3745,6 +3763,88 @@ mod picker_tests {
             })
         });
         settle(cx);
+    }
+
+    /// The miniature `selection`'s picker card embeds, which names the
+    /// selectors of its caption.
+    fn miniature(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        selection: ThemeSelection,
+    ) -> EntityId {
+        cx.read(|cx| app.read(cx).theme_preview_body(selection).entity_id())
+    }
+
+    fn drawn(cx: &mut VisualTestContext, selector: String) -> Option<Bounds<Pixels>> {
+        shown(cx, selector.leak())
+    }
+
+    /// The check badge is the name's line tall at every interface text size:
+    /// the selected card's caption, which here
+    /// also holds the warning glyph, starts level with its row neighbours'
+    /// at the smallest, the default and the largest sizes.
+    #[gpui::test]
+    fn a_selected_caption_starts_level_with_its_row(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        let mut dawn = CustomTheme::from_base(1, "Dawn Chorus", ThemeChoice::RosePineDawn);
+        dawn.palette.muted = dawn.palette.canvas;
+        assert!(!dawn.palette.readability_issues().is_empty());
+        let themes = std::iter::once(dawn)
+            .chain(
+                (2..=4)
+                    .map(|id| CustomTheme::from_base(id, format!("Seed {id}"), ThemeChoice::Nord)),
+            )
+            .collect();
+        let code = cx.read(|cx| app.read(cx).settings.code_text_size);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.set_custom_themes(themes, cx);
+                app.settings.theme = ThemeSelection::Custom(1);
+                app.apply_appearance(window, cx);
+            })
+        });
+        settle(cx);
+        let selected = miniature(cx, &app, ThemeSelection::Custom(1));
+        for interface in [11, 12, 13, 18] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.interface_text_size = interface;
+                    appearance::apply_text_sizes(interface, code, window, cx);
+                    cx.notify();
+                })
+            });
+            settle(cx);
+            let badge = drawn(cx, format!("theme-check-{selected}"))
+                .unwrap_or_else(|| panic!("at {interface} pt the selected card has its badge"));
+            let name = drawn(cx, format!("theme-name-{selected}")).expect("a name");
+            assert_eq!(
+                badge.size.height, name.size.height,
+                "at {interface} pt the badge is the name's line"
+            );
+            assert!(drawn(cx, format!("theme-warning-{selected}")).is_some());
+            let card = |cx: &mut VisualTestContext, id: u32| {
+                drawn(cx, format!("settings-custom-theme-{id}")).expect("the card is drawn")
+            };
+            let caption = drawn(cx, format!("theme-caption-{selected}")).expect("a caption");
+            // Four columns fit at 1,440 px up to the scaled breakpoint and
+            // three at 18 pt, so Seed 4 may start the next row.
+            let row = card(cx, 1).top();
+            let beside = (2..=4)
+                .filter(|id| card(cx, *id).top() == row)
+                .collect::<Vec<_>>();
+            assert!(beside.len() >= 2, "at {interface} pt: {beside:?}");
+            for id in beside {
+                let neighbour = miniature(cx, &app, ThemeSelection::Custom(id));
+                assert!(drawn(cx, format!("theme-check-{neighbour}")).is_none());
+                let beside = drawn(cx, format!("theme-caption-{neighbour}")).expect("a caption");
+                assert_eq!(
+                    caption.top(),
+                    beside.top(),
+                    "at {interface} pt the selected caption {caption:?} starts level with \
+                     Seed {id}'s {beside:?}"
+                );
+            }
+        }
     }
 
     /// At the 32-theme bound New theme… and Import… are disabled, so their

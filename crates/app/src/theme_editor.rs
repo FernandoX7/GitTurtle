@@ -6075,9 +6075,9 @@ mod tests {
 
     /// A live-preview edit builds the cached page again but replays every
     /// picker card body whose key it left alone (`settings::CardKey`, set by
-    /// the app's self-observer). An edit of the canvas changes no card's key;
-    /// an edit of the accent changes the key of the one card whose check
-    /// badge draws it, which is built again in the edit's own frame.
+    /// the app's self-observer). An edit of the canvas or the accent changes
+    /// the key of the one card whose check badge draws it (the canvas rings
+    /// the badge), which is built again in the edit's own frame.
     #[gpui::test]
     fn a_live_preview_edit_replays_the_card_bodies_it_leaves_alone(cx: &mut TestAppContext) {
         let (app, cx) = open_app(cx);
@@ -6094,7 +6094,7 @@ mod tests {
             [TokenKind::Canvas, TokenKind::Accent].map(|kind| form.read(cx).row(kind).hex.clone())
         });
         for (input, value, built) in [
-            (&inputs[0], "#101a26", vec![]),
+            (&inputs[0], "#101a26", vec![selected]),
             (&inputs[1], "#ff8800", vec![selected]),
         ] {
             settle(cx);
