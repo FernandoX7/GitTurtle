@@ -52,7 +52,7 @@ In the order to do them. Test-only and documentation items come first, then visi
    - Source: `.local/themes-evidence/evidence-editor-3927b57/design-review.md` N8.
    - Acceptance: DESIGN.md line 163 describes the count and its accessible name.
    - Evidence changed: none. Kind: docs.
-6. **STORE-MSG: a refused custom-themes section does not say what to do.** The error chain is `crates/app/src/preferences.rs:631` ("Invalid saved custom themes") then `:666` ("Read current preferences before saving"). It neither names the store nor asks the user to repair or remove the section, which `spec.md` line 103 requires. The test at `:1946` checks only `is_err`.
+6. **STORE-MSG (done): a refused custom-themes section does not say what to do.** The error chain is `crates/app/src/preferences.rs:631` ("Invalid saved custom themes") then `:666` ("Read current preferences before saving"). It neither names the store nor asks the user to repair or remove the section, which `spec.md` line 103 requires. The test at `:1946` checks only `is_err`.
    - Source: `HANDOFF.md` "Follow-ups after the run" (2).
    - Acceptance: every refused save names the preferences file and says to repair or remove its `custom_themes` section, and the test asserts that text.
    - Evidence changed: none. Kind: test-only.

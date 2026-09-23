@@ -14,7 +14,7 @@ use crate::{
     project_library::{ProjectGroup, ProjectLibrary, ProjectNode},
 };
 use anyhow::{Context, Result, ensure};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::IgnoredAny};
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions},
@@ -204,8 +204,11 @@ pub struct Preferences {
     pub custom_themes: Vec<CustomTheme>,
 }
 
+/// `Themes` is the saved section's type. Only a failed load reads the store
+/// again with `IgnoredAny` there, to tell a refused `custom_themes` section
+/// from a failure elsewhere in the file.
 #[derive(Serialize, Deserialize)]
-struct StoredPreferences {
+struct StoredPreferences<Themes = Vec<StoredCustomTheme>> {
     version: u32,
     #[serde(default)]
     recent_repositories: Vec<StoredPath>,
@@ -218,7 +221,7 @@ struct StoredPreferences {
     #[serde(default)]
     project_library: Vec<StoredNode>,
     #[serde(default)]
-    custom_themes: Vec<StoredCustomTheme>,
+    custom_themes: Themes,
 }
 
 /// One saved custom theme. The 21 tokens are lowercase `#rrggbb` strings keyed
@@ -342,6 +345,16 @@ pub fn validate_custom_themes(themes: &[CustomTheme]) -> std::result::Result<(),
         validate_theme_name(&theme.name, &themes[..index], None)?;
     }
     Ok(())
+}
+
+/// The context of a load refused by the saved `custom_themes` section. Every
+/// save rereads the store first, so each one reports it; the section can only
+/// be repaired outside the app, so the message names the file and the section.
+fn custom_themes_refusal(path: &Path) -> String {
+    format!(
+        "Invalid saved custom themes. Repair or remove the custom_themes section of {}",
+        path.display()
+    )
 }
 
 /// The saved project list. An externally tagged enum keeps each line of the
@@ -562,7 +575,16 @@ impl Preferences {
 
     fn load_from(path: &Path) -> Result<Self> {
         let bytes = read_store(path, MAX_SETTINGS_BYTES)?;
-        let stored: StoredPreferences = serde_json::from_slice(&bytes)?;
+        let stored: StoredPreferences = match serde_json::from_slice(&bytes) {
+            Ok(stored) => stored,
+            // The rest of the store parses, so the custom themes refused it.
+            Err(error)
+                if serde_json::from_slice::<StoredPreferences<IgnoredAny>>(&bytes).is_ok() =>
+            {
+                return Err(error).with_context(|| custom_themes_refusal(path));
+            }
+            Err(error) => return Err(error.into()),
+        };
         ensure!(
             (1..=STORE_VERSION).contains(&stored.version),
             "Unsupported settings version"
@@ -615,8 +637,9 @@ impl Preferences {
             .context("Invalid saved project list")?;
         // Custom themes are user-authored as well: a malformed token, repeated id
         // or name, or more than the bound fails the load so later saves refuse
-        // instead of rewriting the file without them. Stores before version 6
-        // have no section and load with none.
+        // instead of rewriting the file without them, each with the same
+        // `custom_themes_refusal`. Stores before version 6 have no section and
+        // load with none.
         let custom_themes: Vec<CustomTheme> = stored
             .custom_themes
             .into_iter()
@@ -628,7 +651,7 @@ impl Preferences {
             .collect();
         validate_custom_themes(&custom_themes)
             .map_err(anyhow::Error::msg)
-            .context("Invalid saved custom themes")?;
+            .with_context(|| custom_themes_refusal(path))?;
         // A store written before the project list starts from the recents, so
         // the pane is useful at once. An emptied list stays empty afterwards.
         if stored.version < 5 {
@@ -709,7 +732,7 @@ impl Preferences {
     }
 
     fn save_to(&self, path: &Path) -> Result<()> {
-        let stored = StoredPreferences {
+        let stored: StoredPreferences = StoredPreferences {
             version: STORE_VERSION,
             recent_repositories: self
                 .recent_repositories
@@ -2011,33 +2034,39 @@ mod tests {
             .map(|id| custom_theme(id, &format!("Theme {id}"), ThemeChoice::Nord, 0x123456))
             .collect();
         validate_custom_themes(&bounded).unwrap();
+        // Every refusal names the file and the section to repair, and a save
+        // adds only its own context in front of it.
+        let refusal = format!(
+            "Invalid saved custom themes. Repair or remove the custom_themes section of {}: ",
+            path.display()
+        );
+        let refused = |case: &str| {
+            let error = format!(
+                "{:#}",
+                Preferences::load_from(&path).map(drop).expect_err(case)
+            );
+            assert!(error.starts_with(&refusal), "{case}: {error}");
+            let saves = [
+                Preferences::save_settings_at(&AppSettings::default(), &path).map(drop),
+                Preferences::save_custom_themes_at(&two_custom_themes(), &path).map(drop),
+                Preferences::save_commit_drafts_at(&HashMap::new(), &path),
+                Preferences::save_project_name_at(&project, Some("Turtle"), &path).map(drop),
+                Preferences::save_project_library_at(&ProjectLibrary::default(), &path).map(drop),
+                Preferences::default().remember_at(&project, &path),
+            ];
+            for save in saves {
+                let error = format!("{:#}", save.expect_err(case));
+                assert!(
+                    error.starts_with(&format!(
+                        "Read current preferences before saving: {refusal}"
+                    )),
+                    "{case}: {error}"
+                );
+            }
+        };
         for (case, original) in cases {
             fs::write(&path, &original).unwrap();
-            assert!(Preferences::load_from(&path).is_err(), "{case}");
-            assert!(
-                Preferences::save_settings_at(&AppSettings::default(), &path).is_err(),
-                "{case}"
-            );
-            assert!(
-                Preferences::save_custom_themes_at(&two_custom_themes(), &path).is_err(),
-                "{case}"
-            );
-            assert!(
-                Preferences::save_commit_drafts_at(&HashMap::new(), &path).is_err(),
-                "{case}"
-            );
-            assert!(
-                Preferences::save_project_name_at(&project, Some("Turtle"), &path).is_err(),
-                "{case}"
-            );
-            assert!(
-                Preferences::save_project_library_at(&ProjectLibrary::default(), &path).is_err(),
-                "{case}"
-            );
-            assert!(
-                Preferences::default().remember_at(&project, &path).is_err(),
-                "{case}"
-            );
+            refused(case);
             assert_eq!(fs::read(&path).unwrap(), original, "{case}");
         }
 
@@ -2053,9 +2082,15 @@ mod tests {
             .into_bytes();
         assert_ne!(original, text.as_bytes());
         fs::write(&path, &original).unwrap();
-        assert!(Preferences::load_from(&path).is_err());
-        assert!(Preferences::save_settings_at(&AppSettings::default(), &path).is_err());
+        refused("repeated token");
         assert_eq!(fs::read(&path).unwrap(), original);
+
+        // A failure elsewhere in the file keeps its own message.
+        let mut elsewhere = valid.clone();
+        elsewhere["project_names"] = 7.into();
+        fs::write(&path, serde_json::to_vec_pretty(&elsewhere).unwrap()).unwrap();
+        let error = format!("{:#}", Preferences::load_from(&path).map(drop).unwrap_err());
+        assert!(!error.contains("custom_themes"), "{error}");
     }
 
     #[test]
