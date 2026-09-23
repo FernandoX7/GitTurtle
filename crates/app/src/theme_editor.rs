@@ -537,7 +537,13 @@ impl GitTurtle {
         window.open_alert_dialog(cx, move |dialog, window, cx| {
             let viewport = window.viewport_size();
             let wide = viewport.width >= appearance::ui_size(1060.);
-            let width = if wide { px(1000.) } else { px(640.) }
+            // The rows scale with the interface text size and the panel's
+            // padding and the token column's track do not, so the content
+            // width scales and the chrome stays: the longest description then
+            // keeps its clearance from the warning slot at every size, like
+            // the scaled breakpoint above (1,000 and 648 px at 13 pt).
+            let content = appearance::ui_size(if wide { 952. } else { 600. });
+            let width = (px(2. * 16.) + Scrollbar::width() + content)
                 .min(viewport.width - px(32.))
                 .max(px(320.));
             let submit = form.clone();
@@ -2183,6 +2189,7 @@ impl ThemeForm {
                     .truncate()
                     .text_size(appearance::ui_text(11.))
                     .text_color(rgb(p.muted))
+                    .debug_selector(move || format!("theme-token-description-{}", kind.key()))
                     .child(kind.description()),
             )
             .children(if row.invalid {
@@ -3718,6 +3725,54 @@ mod tests {
             type_hex(cx, &form, kind, &custom::format_hex(original.get(kind)));
         }
         fits(cx);
+    }
+
+    /// The Accent row carries the longest description. In the QA host's UI
+    /// font (Ubuntu, GPUI's Linux fallback for `.SystemUIFont`, shaped by
+    /// `gpui::TextSystem` over the Linux platform text system) it is 301.53 px
+    /// wide at 11 px; the test harness shapes text with fixed-advance glyphs,
+    /// so that width is recorded here and the layout is measured. At 1,000 ×
+    /// 680 its end stays at least 12 px clear of the warning slot at 13 pt
+    /// and at 18 pt, where the stacked dialog's content width has scaled
+    /// with the rows, so the description is never truncated.
+    #[gpui::test]
+    fn the_longest_description_clears_the_warning_slot(cx: &mut TestAppContext) {
+        const LONGEST: &str = "Primary buttons, focus rings, the caret and active list borders.";
+        const WIDTH_AT_11_PX: f32 = 301.53;
+        assert_eq!(
+            TokenKind::Accent.description(),
+            LONGEST,
+            "re-measure WIDTH_AT_11_PX after a copy change"
+        );
+        assert!(
+            TokenKind::ALL
+                .iter()
+                .all(|kind| kind.description().len() <= LONGEST.len()),
+            "a longer description needs its own measurement"
+        );
+        let (app, cx) = open_app(cx);
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        for size in [13, 18] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, _| app.settings.interface_text_size = size);
+                appearance::apply_text_sizes(size, 12, window, cx);
+                app.update(cx, |app, cx| app.open_theme_editor(None, window, cx));
+            });
+            settle(cx);
+            let form = form(cx, &app);
+            assert!(!cx.read(|cx| form.read(cx).wide), "stacked");
+            let description = bounds(cx, "theme-token-description-accent".into());
+            let gap = cx.update(|window, _| window.rem_size() * 0.5);
+            let slot = description.right() + gap;
+            let end = description.left() + appearance::ui_text(11.) * (WIDTH_AT_11_PX / 11.);
+            assert!(
+                slot - end >= px(12.),
+                "at {size} pt the description ends {:?} before the slot",
+                slot - end
+            );
+            cx.simulate_keystrokes("escape");
+            settle(cx);
+        }
     }
 
     /// Harbor (id 7, based on Nord) is saved and active.
