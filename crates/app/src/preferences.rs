@@ -208,7 +208,7 @@ pub struct Preferences {
 /// again with `IgnoredAny` there, to tell a refused `custom_themes` section
 /// from a failure elsewhere in the file.
 #[derive(Serialize, Deserialize)]
-struct StoredPreferences<Themes = Vec<StoredCustomTheme>> {
+struct StoredPreferences<Themes = StoredCustomThemes> {
     version: u32,
     #[serde(default)]
     recent_repositories: Vec<StoredPath>,
@@ -222,6 +222,42 @@ struct StoredPreferences<Themes = Vec<StoredCustomTheme>> {
     project_library: Vec<StoredNode>,
     #[serde(default)]
     custom_themes: Themes,
+}
+
+/// The saved `custom_themes` section. Reading keeps at most one entry past
+/// [`MAX_CUSTOM_THEMES`] and skips the rest without parsing them as themes, so
+/// an oversized section costs no more memory than a full one and
+/// `validate_custom_themes` refuses it with the bound, exactly as it refuses a
+/// section one entry over it.
+#[derive(Default, Serialize)]
+#[serde(transparent)]
+struct StoredCustomThemes(Vec<StoredCustomTheme>);
+
+impl<'de> Deserialize<'de> for StoredCustomThemes {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = StoredCustomThemes;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a list of custom themes")
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut access: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut themes = Vec::new();
+                while themes.len() <= MAX_CUSTOM_THEMES {
+                    let Some(theme) = access.next_element()? else {
+                        return Ok(StoredCustomThemes(themes));
+                    };
+                    themes.push(theme);
+                }
+                while access.next_element::<IgnoredAny>()?.is_some() {}
+                Ok(StoredCustomThemes(themes))
+            }
+        }
+        deserializer.deserialize_seq(Visitor)
+    }
 }
 
 /// One saved custom theme. The 21 tokens are lowercase `#rrggbb` strings keyed
@@ -642,6 +678,7 @@ impl Preferences {
         // load with none.
         let custom_themes: Vec<CustomTheme> = stored
             .custom_themes
+            .0
             .into_iter()
             .map(|stored| {
                 let mut theme = stored.into_theme();
@@ -757,11 +794,12 @@ impl Preferences {
                 .iter()
                 .map(StoredNode::from_node)
                 .collect(),
-            custom_themes: self
-                .custom_themes
-                .iter()
-                .map(StoredCustomTheme::from_theme)
-                .collect(),
+            custom_themes: StoredCustomThemes(
+                self.custom_themes
+                    .iter()
+                    .map(StoredCustomTheme::from_theme)
+                    .collect(),
+            ),
             commit_drafts: {
                 let mut entries: Vec<_> = self.commit_drafts.iter().collect();
                 entries.sort_by_key(|(path, _)| *path);
@@ -2091,6 +2129,49 @@ mod tests {
         fs::write(&path, serde_json::to_vec_pretty(&elsewhere).unwrap()).unwrap();
         let error = format!("{:#}", Preferences::load_from(&path).map(drop).unwrap_err());
         assert!(!error.contains("custom_themes"), "{error}");
+    }
+
+    #[test]
+    fn an_oversized_custom_themes_section_is_read_one_entry_past_the_bound_and_refused_by_it() {
+        let fixture = TestDirectory::new();
+        let path = fixture.0.join("preferences.json");
+        Preferences::save_custom_themes_at(&two_custom_themes(), &path).unwrap();
+        let valid: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        // One theme over the bound, then `extra` entries that are not themes at
+        // all: nothing past the bound is read as a theme, so they cannot change
+        // the refusal.
+        let store = |extra: usize| {
+            let mut store = valid.clone();
+            let themes = store["custom_themes"].as_array_mut().unwrap();
+            let template = themes[0].clone();
+            themes.clear();
+            for id in 1..=MAX_CUSTOM_THEMES as u32 + 1 {
+                let mut theme = template.clone();
+                theme["id"] = id.into();
+                theme["name"] = format!("Theme {id}").into();
+                themes.push(theme);
+            }
+            themes.extend((0..extra).map(|_| serde_json::Value::from(0)));
+            serde_json::to_vec(&store).unwrap()
+        };
+        let refusal = |original: &[u8]| {
+            fs::write(&path, original).unwrap();
+            let error = format!("{:#}", Preferences::load_from(&path).map(drop).unwrap_err());
+            assert!(Preferences::save_settings_at(&AppSettings::default(), &path).is_err());
+            assert_eq!(fs::read(&path).unwrap(), original);
+            error
+        };
+        let over_bound = refusal(&store(0));
+        assert!(
+            over_bound.ends_with(
+                "Up to 32 custom themes can be saved. Delete one before adding another."
+            ),
+            "{over_bound}"
+        );
+        let oversized = store(100_000);
+        assert_eq!(refusal(&oversized), over_bound);
+        let stored: StoredPreferences = serde_json::from_slice(&oversized).unwrap();
+        assert_eq!(stored.custom_themes.0.len(), MAX_CUSTOM_THEMES + 1);
     }
 
     #[test]

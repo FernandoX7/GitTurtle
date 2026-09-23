@@ -69,7 +69,7 @@ In the order to do them. Test-only and documentation items come first, then visi
    - Acceptance: the arm is removed by narrowing the job's type, and the refusal tests still pass.
    - Resolved differently: the arm is reachable. The job always answers `Ok`, but the preference executor answers `Err` for it when its queue is full or the job panicked, so the arm stays with a comment naming both cases, and a test drives the full-queue case through it.
    - Evidence changed: none. Kind: test-only.
-10. **STORE-BOUND (optional): unbounded custom-themes parsing.** `preferences.rs:221` parses `custom_themes` into an unbounded `Vec`, so a hostile 8 MB store costs 47 ms once.
+10. **STORE-BOUND (optional) (done): unbounded custom-themes parsing.** `preferences.rs:221` parses `custom_themes` into an unbounded `Vec`, so a hostile 8 MB store costs 47 ms once.
     - Source: `HANDOFF.md` "Follow-ups after the run" (4).
     - Acceptance: deserialization stops after 33 entries with the same refusal, and a test covers it.
     - Evidence changed: none. Kind: test-only.
