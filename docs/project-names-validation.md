@@ -12,6 +12,8 @@ Rust 1.98.0, Linux x86-64 debug, SHA-256
 records the exact build, fixture and limits. Subsequent documentation commits
 do not change the exercised application source.
 
+**Redacted 2026-09-24.** `dark-rename.png`, `light-large-long-name.png` and `light-large-rename.png` showed the maintainer's name in the profile button. It is filled with the surrounding background and no other pixel changed. Hashes in `validation.json` describe the original captures, which remain in Git history.
+
 ## Automated checks
 
 - `cargo test --locked --workspace` passed at `6e4f872`: **816 passed, zero failed,

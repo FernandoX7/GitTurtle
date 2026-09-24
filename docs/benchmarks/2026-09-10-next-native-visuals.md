@@ -14,6 +14,8 @@ commit summaries outside the usable viewport.
 
 ![User-provided graph bug](2026-09-10-next-native-images/user-graph-before.png)
 
+**Redacted 2026-09-24.** `user-graph-before.png`, `original-graph-ed9aa21.jpeg` and `history-deep-188ec47.jpeg` showed the maintainer's name (account label, commit details, initials avatar and author column), `/Users/…` home path and account-named branch folder. Those regions are filled with the surrounding background; the PNG has no other changed pixel, and the two JPEGs were re-encoded at quality 95 with no other edit. The originals remain in Git history.
+
 The corrected graph keeps fixed lane spacing and a bounded width. Deep history
 also preserves merge edges after the retained window advances to rows5001–6000,
 while the original selected commit remains in the inspector.

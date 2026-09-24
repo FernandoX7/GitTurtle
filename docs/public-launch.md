@@ -189,6 +189,8 @@ unreachable Git objects, external artifacts, private services, and untracked fil
 were outside this publication scan. New launch screenshots have their own
 fixture/build validation record.
 
+**Update 2026-09-24:** the owner asked for the remaining personal details to be removed from the current tree. Every committed image outside `docs/evidence/themes/` (184 files) was viewed at full resolution by reviewers, because this host has no OCR. 99 regions in 38 images showed the maintainer's name, home paths, the GitHub noreply identity or an account-named branch folder, including the retained images listed above. They are now filled with the surrounding background, and each citing record carries a dated note. Two benchmark JSONs and the research PDF under `output/pdf/` replace only the name with `REDACTED`. No image showed a hostname, a `*.ts.net` name or any other email address. History was not rewritten: the originals remain in earlier commits until the owner authorizes a purge.
+
 The existing Quality workflow uses `pull_request`, read-only `contents`
 permission, a full-commit-pinned checkout with persisted credentials disabled,
 hosted runners, and timeouts. It references no secrets and uses no
