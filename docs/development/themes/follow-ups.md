@@ -141,13 +141,14 @@ The "Landed" lines of items 11-18 and 20 cite two native passes on Linux X11 at 
       - no frame differs from `fc2a355` beyond changed tokens, timing text, the run's own path and the new rule's one extra warning on saved custom themes, whose stored values are not rewritten.
 
       The dates in the same row stay at 4.22-4.35, which `contrast-margins.md` records. Audit: the Nord and Braden frames outside `docs/evidence/themes/` are the `consistency-milestone/` records `braden-comfortable`, `nord-compact`, `theme-grid`, `system-light-braden`, `installed-braden` and `final-braden-settings`, dated macOS captures of earlier builds hashed in its `screenshots.json`. They stay as the record of those builds. The same Braden comfortable state on Linux differs between `fc2a355` and `5899e2a` only in the gutter numbers (`#5B6C84` for `#61728A`).
-21. **IE-D3: the shared button's hover and pressed states are wrong (moved to its own pull request from `main` after #23 merges).** The `button` helper (`crates/app/src/main.rs:1787-1823`) keeps the kit's ghost defaults:
+21. **IE-D3 (done): the shared button's hover and pressed states are wrong (moved to its own pull request from `main` after #23 merges).** The `button` helper (`crates/app/src/main.rs:1787-1823`) keeps the kit's ghost defaults:
     - hover paints darker than a hovered row (1.16:1 the wrong way);
     - pressed differs from hover by 1.02:1;
     - DESIGN.md line 27 asks for the hover surface and `selected`.
     - Source: import-export design review D3; `HANDOFF.md` "Queued follow-ups from these lenses".
     - Acceptance: hover is `p.hover` composited over the surface beneath, and pressed is `p.selected`, measured distinct on rows and headers.
     - Evidence changed: resting frames are unchanged if only hover and pressed change. No committed themes frame is known to show a hovered or pressed helper button, because the drivers park the pointer, but audit `docs/evidence/` before claiming none. It adds new hover and pressed frames. Kind: native, design.
+    - Landed: `ec341d6` (translucent hover and pressed layers from `Palette::control_fill`), `79d5c65` (`Palette::control_label` keeps the label at 4.5:1 on every fill) and `1625b2f` (selected helpers share that label). The design reviewer accepted pressed as a `selected` layer rather than an opaque fill, because an opaque fill is not distinct in Rosé Pine. Evidence is in the [September 24 entry](../../validation.md#september-24-shared-button-hover-and-pressed-states).
 22. **EVIDENCE-GAPS: what no capture attests yet.**
     - macOS at 2x, and any scale factor other than 1.
     - The accessibility tree: GPUI does not register with AT-SPI on the Linux host, and VoiceOver is unchecked.
@@ -168,6 +169,7 @@ The "Landed" lines of items 11-18 and 20 cite two native passes on Linux X11 at 
     - Proposed spec rule: `selected` differs from `hover` by at least 8 in one channel, and sits at least as far from `panel` as `hover` in the lift direction. No rule checks this pair today, and the button test's floor (`CONTROL_PRESS_DISTANCE`, 3) is Sandstone's value.
     - Margin limit: Solarized Dark's button label is 4.575:1 on the pressed fill over the hovered selected row. That clears the 4.5 rule but not its 0.25 margin, and reaching the margin would move its label off `text`.
     - Non-blocking, from the same review: in a custom theme whose `hover` moves a channel toward 0 or 255 from a panel already near that end, the fill's opacity approaches 1 and the hover disappears on hovered rows. The same holds for `selected` and pressed.
+    - Taste, from the final IE-D3 ruling: in Kanagawa Lotus and One Dark a disabled selected helper is transparent over its surface, while the other 18 themes keep a subtle chip. Its label still dims. It shows at one site, the command palette's disabled "Open command" (`command_palette.rs:588`).
     - Acceptance: the rule in `spec.md` and `readability_issues`, the listed palettes tuned or explicitly exempted, and the test floor raised to the rule. Evidence changed: pressed frames in the tuned themes. Kind: design, palette.
 
 ## Outside this branch
