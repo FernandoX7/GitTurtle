@@ -1,7 +1,8 @@
 # Adapted palettes render below their contrast floors at 1x — September 18, 2026
 
-Status: fixed in the palettes on 2026-09-23 (follow-up item 20, NEAR-FLOOR); the
-1x recapture is the remaining step. Decided by the repository owner on 2026-09-18:
+Status: fixed in the palettes on 2026-09-23 (follow-up item 20, NEAR-FLOOR) and
+recaptured at 1x on 2026-09-24, with the peaks measured in "Checking the rendered
+result" below. Decided by the repository owner on 2026-09-18:
 ship the batches as their contracts specify and correct every near-floor palette
 in one follow-up rather than re-opening accepted work. The sections up to "What
 the follow-up should do" are the record that follow-up started from; "What
@@ -162,11 +163,17 @@ thinner declared margin as a decision, not an oversight:
 | Kanagawa Lotus primary-button label | 4.59 | both upstream (`lotusWhite3` on `lotusBlue4`) |
 | Kanagawa Wave removed lines in their tile | 4.58 | both upstream (`peachRed` on `winterRed`) |
 | Kanagawa Wave renamed icons on the hovered selected row | 3.15 | upstream icon and accent; the tuned selected row is held by its panel rule |
+| One Dark secondary text against body text | muted 0.07% darker in luminance | muted needs its margin on the hovered selected row and may not read above text; only a darker derived selected row would let it drop below text with margin |
 
 Secondary text never reads above body text: a test holds it on every surface of
 every built-in. One Dark's shipped `muted` was a hair brighter than its upstream
 text, and its named pair needs more than that text's 4.62, so One Dark's `text`
-(mono-1) is tuned as well, the one upstream text this follow-up moves. Clearing
+(mono-1) is tuned as well, the one upstream text this follow-up moves. The two
+now sit at parity: muted `#B0B5BC` is 0.07% darker in luminance than text
+`#AEB5C2` and differs from it only in hue and chroma (ΔE00 2.7), so One Dark's
+secondary text is not subordinate by lightness. It was brighter than text
+before; "not above" is what the rule requires, and the table records the parity
+as a decision. Clearing
 the rows above would mean tuning more upstream text or accent colors, which the
 coordinator decided against on 2026-09-23: they are not named pairs.
 
@@ -185,3 +192,34 @@ predicts 4.51 to 4.56 for muted text on the hovered selected row in the seven
 themes and 4.52 to 4.55 for warning text on `subtle` in the five, and it predicts
 the original values lower than they measured. These are predictions: the native
 recapture measures the peaks, and a pair still below 4.5 needs a further step.
+
+Measured on 2026-09-24 from `5899e2a` at 1x (1480x980, the September 18 method,
+`.local/themes-evidence/evidence-followups-5899e2a/`): muted text on the hovered
+selected row peaks at 4.57-4.68 in the Author column in all seven themes, the
+named pairs; the dates in the same row peak at 4.22-4.35, and the monospaced SHA
+reaches the declared ratio. Warning text on subtle reaches its declared
+4.84-4.92. The named pairs are read from the Author column, as the September 18
+table was. All three columns of the hovered selected row:
+
+| theme | declared | Author (named pair) | Date | SHA |
+| --- | --- | --- | --- | --- |
+| Solarized Dark | 4.809 | 4.580 | 4.318 | 4.809 |
+| Solarized Light | 4.931 | 4.634 | 4.229 | 4.931 |
+| One Dark | 4.774 | 4.568 | 4.305 | 4.774 |
+| One Light | 4.981 | 4.681 | 4.291 | 4.981 |
+| Rosé Pine | 4.789 | 4.621 | 4.350 | 4.789 |
+| Rosé Pine Dawn | 4.905 | 4.618 | 4.220 | 4.905 |
+| Dracula | 4.778 | 4.580 | 4.304 | 4.778 |
+
+In each theme 2 of the Author column's 258 ink pixels reach 4.5; the "Sep 01"
+dates have none. The 1x loss is 0.17-0.30 in the Author column but 0.44-0.70 in
+the dates, more than the "about 0.2" of `DESIGN.md`'s tuning sentence. No named
+pair is below 4.5, so no further step is due. Whether dates and other thin glyphs
+should also reach 4.5 at 1x is an owner decision: it would take about 0.5 more
+declared margin, which One Dark (text at parity) and Kanagawa Lotus (upstream
+limits) cannot give without tuning more upstream colors, and the coordinator
+declined that on 2026-09-23.
+
+The failure line of a refused import reaches full coverage, so warning text on
+`subtle` peaks at its declared ratio: Kanagawa Lotus 4.886, Rosé Pine Dawn
+4.894, One Light 4.916, Solarized Dark 4.844 and Solarized Light 4.908.
