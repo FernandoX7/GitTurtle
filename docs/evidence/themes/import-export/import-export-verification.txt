@@ -1,3 +1,7 @@
+Note (2026-09-24): this file records the September 19 run of 301d82a. The images beside it were re-taken
+from 5899e2a on 2026-09-24 and are described in docs/validation.md, "September 19 Theme export and import";
+this record was not regenerated for them.
+
 Theme export and import — native verification (Linux/XWayland, 2026-09-19)
 
 Build under test: gitturtle-301d82a, GitTurtle 0.1.0, release, x86_64-unknown-linux-gnu,

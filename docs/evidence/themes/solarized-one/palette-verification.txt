@@ -1,3 +1,7 @@
+Note (2026-09-24): this file records the September 18 captures of d4ac46b. The images beside it were re-taken
+from 5899e2a on 2026-09-24 and are described in docs/validation.md, "September 18 Solarized and One built-in themes";
+this record was not regenerated for them.
+
 file                                         surface        drawn     declared   share result
 solarized_dark-history-selected.png          canvas         #002b36   #002b36    100% ok
 solarized_dark-history-selected.png          sidebar panel  #073642   #073642    100% ok

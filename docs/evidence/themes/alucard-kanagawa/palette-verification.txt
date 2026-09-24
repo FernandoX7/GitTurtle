@@ -1,3 +1,7 @@
+Note (2026-09-24): this file records the September 18 captures of e00e864. The images beside it were re-taken
+from 5899e2a on 2026-09-24 and are described in docs/validation.md, "September 18 Alucard and Kanagawa built-in themes";
+this record was not regenerated for them.
+
 resolved 20 palettes from appearance.rs and sources.rs
 theme                  scale  surface     drawn     declared  result
 alucard                  1.0  canvas      #fffbeb   #fffbeb   ok

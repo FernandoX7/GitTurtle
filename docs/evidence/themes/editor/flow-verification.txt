@@ -1,3 +1,7 @@
+Note (2026-09-24): this file records the September 19 run of 3927b57. The images beside it were re-taken
+from 5899e2a on 2026-09-24 and are described in docs/validation.md, "September 19 Custom theme editor";
+this record was not regenerated for them.
+
 Custom theme editor (themes-editor): native flow verification
 ================================================================
 Build under test: 3927b57bbb913e35ee4a8b48f12b5c7eaa19f686 (GitTurtle 0.1.0, source_tree clean, release, x86_64-unknown-linux-gnu, rustc 1.98.0 (88d9e12ae 2026-08-18))

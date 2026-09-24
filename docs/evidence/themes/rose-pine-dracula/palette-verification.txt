@@ -1,3 +1,7 @@
+Note (2026-09-24): this file records the September 18 captures of 83eaf81. The images beside it were re-taken
+from 5899e2a on 2026-09-24 and are described in docs/validation.md, "September 18 Rosé Pine and Dracula built-in themes";
+this record was not regenerated for them.
+
 file                                         surface        drawn     declared   share result
 rose_pine-history-selected.png               canvas         #191724   #191724    100% ok
 rose_pine-history-selected.png               sidebar panel  #1f1d2e   #1f1d2e    100% ok
