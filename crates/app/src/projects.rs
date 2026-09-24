@@ -999,7 +999,7 @@ impl ProjectHub {
                         .line_height(relative(1.5))
                         .text_size(crate::appearance::ui_text(12.))
                         .text_color(colors.danger)
-                        .child(error.clone()),
+                        .child(crate::folder_picker::styled_message(error, palette.muted)),
                 )
             })
             .into_any_element()

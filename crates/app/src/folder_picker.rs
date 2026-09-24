@@ -5,12 +5,16 @@
 //! The wording names what was being chosen, and only the repository picker can
 //! suggest the command line as the way around a broken portal. A failure's
 //! first line is what the user can do; the service's own error follows on a
-//! line of its own, shortened, since it names D-Bus internals.
+//! line of its own, shortened and drawn muted, since it names D-Bus internals.
+use crate::{HighlightStyle, StyledText, rgb};
 use futures::channel::oneshot;
 use std::path::PathBuf;
 
 /// The most characters of a service error a failure quotes.
 const MAX_DETAIL_CHARS: usize = 160;
+
+/// What introduces the service's own error in a failure.
+const DETAIL: &str = "\nDetails: ";
 
 /// What a native dialog was opened for, so its failure names that.
 #[derive(Clone, Copy)]
@@ -84,7 +88,27 @@ fn failure(picker: Picker, error: &anyhow::Error) -> String {
         Some((end, _)) => format!("{}…", detail[..end].trim_end()),
         None => detail,
     };
-    format!("{}\nDetails: {detail}", guidance(picker.failure(), picker))
+    format!("{}{DETAIL}{detail}", guidance(picker.failure(), picker))
+}
+
+/// Where a failure's quoted service error starts: the line after the
+/// guidance. Any other message has none.
+pub(super) fn detail_start(message: &str) -> Option<usize> {
+    message.find(DETAIL).map(|line_break| line_break + 1)
+}
+
+/// `message` as one text in its element's color, except a failure's quoted
+/// service error, which is `muted`: secondary to the guidance above it. One
+/// text keeps a line clamp and the accessible name on the whole message.
+pub(super) fn styled_message(message: &str, muted: u32) -> StyledText {
+    let color = Some(rgb(muted).into());
+    StyledText::new(message.to_owned()).with_highlights(detail_start(message).map(|start| {
+        let style = HighlightStyle {
+            color,
+            ..Default::default()
+        };
+        (start..message.len(), style)
+    }))
 }
 
 /// A picker service failure is actionable on Linux, where a missing portal is

@@ -119,6 +119,13 @@ impl State {
         self.error.as_deref()
     }
 
+    /// Test-only: a failure at the foot of the Your themes card, for a message
+    /// no test platform dialog can produce.
+    #[cfg(test)]
+    pub(super) fn set_error(&mut self, error: String) {
+        self.error = Some(error);
+    }
+
     pub(super) fn notice(&self) -> Option<&str> {
         self.notice.as_deref()
     }

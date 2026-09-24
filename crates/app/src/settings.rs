@@ -1229,15 +1229,27 @@ impl GitTurtle {
                     .child(notice.to_owned())
             }))
             .children(self.theme_editor.error().map(|error| {
+                // One text, so the bound and the accessible name cover the
+                // whole message; a dialog failure's quoted service error is
+                // muted (`folder_picker::styled_message`). The selector names
+                // the colors and where the muted run starts, for tests.
+                let detail = folder_picker::detail_start(error);
                 div()
                     .id("custom-themes-error")
+                    .debug_selector(move || match detail {
+                        Some(start) => format!(
+                            "custom-themes-error-{:06x}-{start}-{:06x}",
+                            p.warning, p.muted
+                        ),
+                        None => format!("custom-themes-error-{:06x}", p.warning),
+                    })
                     .role(Role::Label)
                     .aria_label(error.to_owned())
                     .text_size(appearance::ui_text(12.))
                     .text_color(rgb(p.warning))
                     .line_clamp(2)
                     .when(!error.contains('\n'), |el| el.text_ellipsis())
-                    .child(error.to_owned())
+                    .child(folder_picker::styled_message(error, p.muted))
             }))
             .into_any_element()
     }
@@ -4041,6 +4053,55 @@ mod picker_tests {
             "{drawn_ring:?} around {resting:?}"
         );
         clear(cx, drawn_ring);
+    }
+
+    /// A native dialog's failure on the Your themes card is one text: the
+    /// guidance in the warning color and the service error it quotes on its
+    /// second line in muted text, secondary to it. Any other failure is one
+    /// warning run.
+    #[gpui::test]
+    fn a_dialog_failure_mutes_the_service_error_it_quotes(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        let (sender, receiver) = futures::channel::oneshot::channel();
+        sender
+            .send(Err(anyhow::anyhow!(
+                "org.freedesktop.zbus.Error: The name org.freedesktop.portal.Desktop \
+                 was not provided by any .service files"
+            )
+            .context("Portal request failed")))
+            .unwrap();
+        let failure = futures::executor::block_on(folder_picker::selected_path_for(
+            folder_picker::Picker::File,
+            receiver,
+        ))
+        .unwrap_err();
+        let start = failure
+            .find('\n')
+            .expect("the quoted error has its own line")
+            + 1;
+        assert!(failure[start..].starts_with("Details: Portal request failed"));
+        assert_eq!(folder_picker::detail_start(&failure), Some(start));
+        let p = cx.read(palette);
+        assert_ne!(p.warning, p.muted);
+        for (error, selector) in [
+            (
+                failure.clone(),
+                format!(
+                    "custom-themes-error-{:06x}-{start}-{:06x}",
+                    p.warning, p.muted
+                ),
+            ),
+            (
+                "Could not read the theme file: not JSON\nat line 1".to_owned(),
+                format!("custom-themes-error-{:06x}", p.warning),
+            ),
+        ] {
+            cx.update(|_, cx| app.update(cx, |app, _| app.theme_editor.set_error(error.clone())));
+            assert!(
+                page_shows(cx, selector.clone().leak()),
+                "{selector} for {error:?}"
+            );
+        }
     }
 
     /// At the 32-theme bound New theme… and Import… are disabled, so their

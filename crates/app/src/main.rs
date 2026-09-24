@@ -1671,13 +1671,13 @@ impl GitTurtle {
                     this.open_repository_tab(path, window, cx);
                 }
                 Ok(None) => {}
-                Err(error) => window.open_alert_dialog(cx, move |dialog, _, _| {
+                Err(error) => window.open_alert_dialog(cx, move |dialog, _, cx| {
                     dialog.title("Could not open repository picker").child(
                         div()
                             .id("repository-picker-error")
                             .role(Role::Label)
                             .aria_label(error.clone())
-                            .child(error.clone()),
+                            .child(folder_picker::styled_message(&error, palette(cx).muted)),
                     )
                 }),
             });
