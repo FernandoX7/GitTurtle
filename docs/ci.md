@@ -99,12 +99,13 @@ The readback at main `b5d681c1c6db21bfb74b3e07da461c3f8de588dc` preserved all
 unrelated protections and the retired CodeQL state. This dated migration result
 does not establish completion of the remaining C1 cache, fork or runtime evidence.
 
-This source cleanup removes only the two transitional mirrors. Integrate it only
-after the planned cache measurements are complete, the then-current main and live
-protection are freshly bound, and independent general and security reviews cover
-the exact cleanup candidate. The classifier, aggregate and every underlying
-validation phase remain unchanged. Source preparation does not establish those
-remaining requirements.
+The cleanup that removed only the two transitional mirrors landed on main as
+`bfd6e24` on September 16, 2026, after independent general and security reviews.
+The first main run on it,
+[Quality 35107317146](https://github.com/FernandoX7/GitTurtle/actions/runs/35107317146),
+passed ten jobs, including `Quality gate`, with no `Rust · <platform>` job. The
+classifier, aggregate and every underlying validation phase are unchanged. The
+cleanup does not establish the remaining C1 evidence either.
 
 Repository settings are managed separately through the
 [required-status-check endpoint](https://docs.github.com/en/rest/branches/branch-protection#update-status-check-protection).
@@ -243,7 +244,11 @@ the [measurement procedure](#reproduce-coldwarm-and-prmain-measurements), then r
    both legacy required names. Local result fixtures establish the evaluator's
    contract, not GitHub's matrix execution.
 
-No hosted improvement is established by this source patch. If cold overhead,
+The [September 16 record](benchmarks/2026-09-16-ci.md) holds the first hosted
+warm observations: one controlled PR run reached the Quality gate 7m39s after
+creation against 20m33s cold. Those are single samples, so C1 stays open until
+the record's [remaining evidence](benchmarks/2026-09-16-ci.md#remaining-evidence)
+is collected. If cold overhead,
 cache eviction or warm critical-path results miss the initiative targets, propose
 measured tuning while retaining tests, doctests, strict lint and platform coverage.
 
