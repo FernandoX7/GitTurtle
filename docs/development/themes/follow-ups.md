@@ -161,6 +161,13 @@ The "Landed" lines of items 11-18 and 20 cite two native passes on Linux X11 at 
     - Light palettes with the 32-theme list.
 
     Source: the "Requirements left open" sections of the import-export and `evidence-editor-3927b57` design reviews; "Open, not findings" in the draw-cost ruling; "Still open" in `.local/themes-evidence/evidence-settings-view-a3/design-ruling.md`. Acceptance: native frames for each, the macOS ones on a real Mac, recorded in the matching `docs/validation.md` entry. Evidence changed: new captures only. Kind: native.
+23. **PRESS-DISTINCT: some palettes keep `selected` too close to `hover` for the shared button's pressed state (found in the IE-D3 review).** The helper's pressed fill turns a panel into `selected` and its hover fill into `hover` (`Palette::control_fill`, `crates/app/src/appearance.rs`), so on every surface pressed stands only as far from hover as the palette's own `selected` stands from `hover`:
+    - Sandstone: 3 per channel apart (`eddfd0` against `eae1d3`, 1.009:1), on every surface.
+    - Porcelain: 6 per channel apart, 4 over the hovered selected row.
+    - Kanagawa Wave: `selected` (`24364e`) is darker than `hover` (`363646`), so pressed differs from hover by hue, not by a further lift.
+    - Proposed spec rule: `selected` differs from `hover` by at least 8 in one channel, and sits at least as far from `panel` as `hover` in the lift direction. No rule checks this pair today, and the button test's floor (`CONTROL_PRESS_DISTANCE`, 3) is Sandstone's value.
+    - Non-blocking, from the same review: in a custom theme whose `hover` moves a channel toward 0 or 255 from a panel already near that end, the fill's opacity approaches 1 and the hover disappears on hovered rows. The same holds for `selected` and pressed.
+    - Acceptance: the rule in `spec.md` and `readability_issues`, the listed palettes tuned or explicitly exempted, and the test floor raised to the rule. Evidence changed: pressed frames in the tuned themes. Kind: design, palette.
 
 ## Outside this branch
 

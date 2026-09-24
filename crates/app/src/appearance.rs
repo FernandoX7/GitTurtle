@@ -284,15 +284,87 @@ impl Palette {
         Rgba { r, g, b, a: alpha }
     }
 
+    /// The shared button's label: `text`, unless `text` falls below the text
+    /// rule over one of the fills the button composites. Then it moves toward
+    /// black in a light palette and white in a dark one until it clears the rule
+    /// with the rasterization margin tuned tokens keep.
+    ///
+    /// A fill that lifts a surface toward the label lowers the label's contrast
+    /// by exactly that lift, so where `text` has little room on a row band (the
+    /// hovered selected row in Kanagawa Lotus and One Dark) no opacity keeps
+    /// both the lift and the rule; the label takes the difference instead. The
+    /// kit paints one foreground for every state, so the resting label is the
+    /// same color.
+    pub fn control_label(self) -> u32 {
+        let fills = [
+            self.control_fill(self.hover),
+            self.control_fill(self.selected),
+        ];
+        let surfaces = [
+            self.panel,
+            self.subtle,
+            self.canvas,
+            self.hover,
+            self.selected,
+            self.row_hover(true),
+        ];
+        let readable = |label, minimum| {
+            fills.iter().all(|&fill| {
+                surfaces
+                    .iter()
+                    .all(|&surface| custom::contrast(label, composite(fill, surface)) >= minimum)
+            })
+        };
+        if readable(self.text, LABEL_RULE) {
+            return self.text;
+        }
+        let extreme = if custom::luminance(self.text) < custom::luminance(self.panel) {
+            0x000000
+        } else {
+            0xffffff
+        };
+        (0..=32)
+            .map(|step| {
+                [16, 8, 0].into_iter().fold(0, |color, shift| {
+                    let from = (self.text >> shift) & 0xff;
+                    let to = (extreme >> shift) & 0xff;
+                    color | (((from * (32 - step) + to * step) / 32) << shift)
+                })
+            })
+            .find(|&label| readable(label, LABEL_RULE + LABEL_MARGIN))
+            .unwrap_or(extreme)
+    }
+
     /// The shared button's colors: transparent at rest with its label in
-    /// `text`, and the [`Self::control_fill`] layers of `hover` and `selected`
-    /// while hovered and pressed.
+    /// [`Self::control_label`], and the [`Self::control_fill`] layers of `hover`
+    /// and `selected` while hovered and pressed.
     fn control_button(self, cx: &App) -> ButtonCustomVariant {
         ButtonCustomVariant::new(cx)
-            .foreground(rgb(self.text).into())
+            .foreground(rgb(self.control_label()).into())
             .hover(self.control_fill(self.hover).into())
             .active(self.control_fill(self.selected).into())
     }
+}
+
+/// The text rule, and the margin tuned tokens keep above it because small text
+/// at 1x renders about 0.2 lower (DESIGN.md, semantic palette ownership).
+const LABEL_RULE: f64 = 4.5;
+const LABEL_MARGIN: f64 = 0.25;
+
+/// Composite a translucent layer over an opaque surface as GPUI's renderers
+/// blend a quad: on the gamma-encoded values of their non-sRGB targets.
+fn composite(layer: Rgba, surface: u32) -> u32 {
+    let beneath = rgb(surface);
+    [
+        (layer.r, beneath.r, 16),
+        (layer.g, beneath.g, 8),
+        (layer.b, beneath.b, 0),
+    ]
+    .into_iter()
+    .fold(0, |color, (top, bottom, shift)| {
+        let value = (layer.a * top + (1. - layer.a) * bottom) * 255.;
+        color | ((value.round() as u32) << shift)
+    })
 }
 
 pub fn palette(cx: &App) -> Palette {
@@ -1343,22 +1415,6 @@ mod tests {
         }
     }
 
-    /// Composite a translucent layer over an opaque surface as GPUI's renderers
-    /// blend a quad: on the gamma-encoded values of their non-sRGB targets.
-    fn composite(layer: Rgba, surface: u32) -> u32 {
-        let beneath = rgb(surface);
-        [
-            (layer.r, beneath.r, 16),
-            (layer.g, beneath.g, 8),
-            (layer.b, beneath.b, 0),
-        ]
-        .into_iter()
-        .fold(0, |color, (top, bottom, shift)| {
-            let value = (layer.a * top + (1. - layer.a) * bottom) * 255.;
-            color | ((value.round() as u32) << shift)
-        })
-    }
-
     fn channel_distance(a: u32, b: u32) -> u32 {
         [16, 8, 0]
             .into_iter()
@@ -1375,17 +1431,28 @@ mod tests {
     /// Kanagawa Wave's 1.128:1 over a hovered row.
     const CONTROL_PRESS_LIFT: f64 = 1.12;
     /// The kit's ghost pressed fill differed from its hover by (1, 2, 2). The
-    /// palettes' own `selected` sits closest to `hover` in Sandstone, 3 apart.
+    /// palettes' own `selected` sits closest to `hover` in Sandstone, 3 apart;
+    /// item 23 of `docs/development/themes/follow-ups.md` records these palette
+    /// limits and proposes a spec rule for `selected` against `hover`.
     const CONTROL_PRESS_DISTANCE: u32 = 3;
 
     #[test]
-    fn shared_button_fills_lift_every_surface_beneath_and_pressed_stays_distinct() {
+    fn shared_button_fills_lift_every_surface_and_keep_the_label_readable() {
         assert_eq!(ThemeChoice::ALL.len(), 20);
         for choice in ThemeChoice::ALL {
             let palette = choice.palette();
             let (hover, pressed) = (
                 palette.control_fill(palette.hover),
                 palette.control_fill(palette.selected),
+            );
+            let label = palette.control_label();
+            // Only the two palettes whose `text` falls below the rule over a
+            // fill move their label; every other palette keeps `text`.
+            assert_eq!(
+                label == palette.text,
+                !matches!(choice, ThemeChoice::KanagawaLotus | ThemeChoice::OneDark),
+                "{choice:?} label {label:06x}, text {:06x}",
+                palette.text
             );
             for (layer, state) in [(hover, palette.hover), (pressed, palette.selected)] {
                 let over_panel = composite(layer, palette.panel);
@@ -1428,6 +1495,20 @@ mod tests {
                     ratio >= CONTROL_PRESS_LIFT,
                     "{choice:?} pressed {held:06x} over the {surface} {beneath:06x}: {ratio:.4}"
                 );
+                for (state, filled) in [("hover", hovered), ("pressed", held)] {
+                    // A moved label clears the rule with the margin as well.
+                    let ratio = contrast(label, filled);
+                    let margin = if label == palette.text {
+                        0.
+                    } else {
+                        RASTERIZATION_MARGIN
+                    };
+                    assert!(
+                        ratio >= 4.5 + margin,
+                        "{choice:?} label {label:06x} on the {state} fill {filled:06x} over \
+                         the {surface}: {ratio:.3}"
+                    );
+                }
                 let distance = channel_distance(held, hovered);
                 assert!(
                     distance >= CONTROL_PRESS_DISTANCE,
@@ -1450,7 +1531,7 @@ mod tests {
                 choice.apply(None, cx);
                 let palette = choice.palette();
                 let expected = ButtonCustomVariant::new(cx)
-                    .foreground(rgb(palette.text).into())
+                    .foreground(rgb(palette.control_label()).into())
                     .hover(palette.control_fill(palette.hover).into())
                     .active(palette.control_fill(palette.selected).into());
                 assert_eq!(
