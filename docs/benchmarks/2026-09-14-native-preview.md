@@ -62,6 +62,8 @@ The focused logs report 14 watcher, six history and four scroll tests passing. T
 
 The [evidence manifest](native-preview-20260914/manifest.json) hashes the original logs at extraction, unchanged selected trace lines, sender timestamps, instrumentation patch and check logs. [measurements.json](native-preview-20260914/measurements.json) contains every interval and observed offset. Recompute without launching the app:
 
+**Redacted 2026-09-24.** The profile button in `corrected-cards-code-crop.png`, `corrected-long-horizontal-verified.png` and `corrected-selection-rest.png` showed the maintainer's name; it is filled with the surrounding background and no other pixel changed. `corrected-show-latest.json` and `final-compare-update.json` replace only that name with `REDACTED` (the profile label and one fixture commit's author). `manifest.json` hashes the original files, which remain in Git history.
+
 ```sh
 python3 docs/benchmarks/native-preview-20260914/analyze-scroll.py \
   docs/benchmarks/native-preview-20260914/split-before.log \

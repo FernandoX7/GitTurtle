@@ -61,6 +61,8 @@ These are captured native JPEGs. Screenshots establish the visible state; the mu
 | [Minimum-size Quick Open](evidence/review-milestone/quick-open-minimum.jpg) | `B003…`, 1,000 × 712. Bounded results with Cancel/Open controls visible at UI18. |
 | [Keyboard rebase plan](evidence/review-milestone/rebase-keyboard.jpg) | `B003…`, 1,000 × 712. Option-Up reordered the selected row; the body scrolled to shared-history warning, review and Close controls. No rewrite was started in this focused check. |
 
+**Redacted 2026-09-24.** `rebase-keyboard.jpg` showed the maintainer's name in the account label. It is filled with the surrounding background, and the image was re-encoded as JPEG at quality 95 with no other edit; the original remains in Git history.
+
 ## Accessibility and system settings
 
 Increase Contrast was changed from off to on in macOS, enabling Reduce Transparency with it. The opaque History surface at interface size 18 remained stable and readable during inspection. Turning Increase Contrast off restored both original off values. This is an observed system-setting interaction, not a specialized high-contrast palette or a complete contrast audit.

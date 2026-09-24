@@ -102,6 +102,8 @@ three clean debug builds, screenshot identities and executable SHA-256 digests.
 The final build used Rust 1.98.0 and has SHA-256
 `9952233d067d36df20f14e80d996485684c67c574d577753b9344c5ae575dd3b`.
 
+**Redacted 2026-09-24.** Eight captures (`accepted-confirmation`, `accepted-restored`, `accepted-tree-refusal`, `final-light-clear-menu`, `final-light-long-confirmation`, `dark-confirmation`, `dark-rename-confirmation` and `dark-stale-refusal`) showed the fixture's absolute `/home/…` path under the project name or in the dialog's Repository row. Those regions are filled with the surrounding background and no other pixel changed. Hashes in `validation.json` describe the original captures, which remain in Git history.
+
 At `a1e6d77`, Midnight/Comfortable, 13-point text and 1480 × 980:
 
 - Staged/unstaged review showed scope, full repository/path, loss warning and

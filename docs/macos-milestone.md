@@ -43,6 +43,8 @@ Baseline package UUID `C81E4C94-08EB-3283-860E-BE6F84E69616`, matching the previ
 | P2 | New attribution/tag/ignore capabilities need consistent entry points, result/empty/error states and retained context. | Integrate into comparison, branch menu and Working Changes context, then exercise actual native flows. |
 | P3 | Existing dense History and six-palette identity are coherent; preserve them while refining navigation and controls. | [Before History](evidence/macos-milestone/before-history.jpg). Minimum-window, six-theme and accessibility results are in the native record. |
 
+**Redacted 2026-09-24.** `before-history.jpg`, `before-images.jpg`, `before-settings.jpg`, `after-final-wipe.jpg` and `glass-prototype-obscured-toolbar.jpg` showed the maintainer's name, `/Users/…` home path or GitHub noreply identity in the account label, project path and identity card. Those regions are filled with the surrounding background, and each was re-encoded as JPEG at quality 95 with no other edit; the originals remain in Git history.
+
 ### First integrated native pass
 
 Debug package UUID `D01EF923-C66A-3F4A-BEFD-F9C5F291C512` exercised side-by-side, overlay and draggable wipe on the demo's modified transparent PNG. Wipe moved from 50% to about 69%; overlay showed aligned differences. This predates subsequent integration fixes and is not final release evidence.
