@@ -175,15 +175,33 @@ pub fn apply_text_sizes(interface: u8, code: u8, window: &mut Window, cx: &mut A
 // owns the application, as palette application does; each GPUI test owns its
 // application on its own thread.
 thread_local! {
-    static CONTROL_BUTTON: Cell<Option<ButtonCustomVariant>> = const { Cell::new(None) };
+    static CONTROL_BUTTON: Cell<Option<ControlButton>> = const { Cell::new(None) };
+}
+
+#[derive(Clone, Copy)]
+struct ControlButton {
+    idle: ButtonCustomVariant,
+    /// Only for a palette whose [`Palette::control_label`] is not `text`.
+    selected: Option<ButtonCustomVariant>,
 }
 
 /// The shared compact button's variant: the applied palette's control fills,
-/// or the kit's ghost before any palette is applied.
-pub fn control_button_variant() -> ButtonVariant {
-    CONTROL_BUTTON
-        .get()
-        .map_or(ButtonVariant::Ghost, ButtonVariant::Custom)
+/// or the kit's ghost before any palette is applied. A selected button keeps
+/// the kit's secondary, which paints `selected` with `text`, unless the palette
+/// moved the control label.
+pub fn control_button_variant(selected: bool) -> ButtonVariant {
+    match (selected, CONTROL_BUTTON.get()) {
+        (false, Some(control)) => ButtonVariant::Custom(control.idle),
+        (false, None) => ButtonVariant::Ghost,
+        (
+            true,
+            Some(ControlButton {
+                selected: Some(variant),
+                ..
+            }),
+        ) => ButtonVariant::Custom(variant),
+        (true, _) => ButtonVariant::Secondary,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -343,6 +361,20 @@ impl Palette {
             .foreground(rgb(self.control_label()).into())
             .hover(self.control_fill(self.hover).into())
             .active(self.control_fill(self.selected).into())
+    }
+
+    /// The selected shared button in a palette whose control label moved: the
+    /// secondary's `selected` surface with that label. The kit's secondary
+    /// paints its label in `text` for every button, and a text color on the
+    /// button itself would outlast its disabled state, because the kit replays
+    /// the caller's style over the disabled colors.
+    fn selected_control_button(self, cx: &App) -> Option<ButtonCustomVariant> {
+        let label = self.control_label();
+        (label != self.text).then(|| {
+            ButtonCustomVariant::new(cx)
+                .foreground(rgb(label).into())
+                .active(rgb(self.selected).into())
+        })
     }
 }
 
@@ -1051,7 +1083,10 @@ impl Palette {
             cx,
         );
         self.configure(is_light, Theme::global_mut(cx));
-        CONTROL_BUTTON.set(Some(self.control_button(cx)));
+        CONTROL_BUTTON.set(Some(ControlButton {
+            idle: self.control_button(cx),
+            selected: self.selected_control_button(cx),
+        }));
         cx.set_global(self);
         Theme::sync_base(cx);
         if let Some(window) = window {
@@ -1520,25 +1555,51 @@ mod tests {
     }
 
     #[gpui::test]
-    fn palette_application_hands_the_shared_button_its_fills(cx: &mut gpui::TestAppContext) {
+    fn palette_application_hands_the_shared_button_its_fills_and_label(
+        cx: &mut gpui::TestAppContext,
+    ) {
         cx.update(|cx| {
             gpui_kit::init(cx);
-            for choice in [
-                ThemeChoice::Midnight,
-                ThemeChoice::Porcelain,
-                ThemeChoice::KanagawaLotus,
-            ] {
+            for choice in ThemeChoice::ALL {
                 choice.apply(None, cx);
                 let palette = choice.palette();
+                let label: Hsla = rgb(palette.control_label()).into();
                 let expected = ButtonCustomVariant::new(cx)
-                    .foreground(rgb(palette.control_label()).into())
+                    .foreground(label)
                     .hover(palette.control_fill(palette.hover).into())
                     .active(palette.control_fill(palette.selected).into());
                 assert_eq!(
-                    control_button_variant(),
+                    control_button_variant(false),
                     ButtonVariant::Custom(expected),
                     "{choice:?}"
                 );
+                // A selected helper reads the same label on the `selected`
+                // surface, through the kit's secondary where the label is `text`.
+                match control_button_variant(true) {
+                    ButtonVariant::Secondary => {
+                        let theme = Theme::global(cx);
+                        assert_eq!(
+                            theme.colors.button_secondary_foreground, label,
+                            "{choice:?}"
+                        );
+                        assert_eq!(
+                            theme.tokens.button_secondary_active.color,
+                            rgb(palette.selected).into(),
+                            "{choice:?}"
+                        );
+                    }
+                    ButtonVariant::Custom(variant) => {
+                        assert!(
+                            matches!(choice, ThemeChoice::KanagawaLotus | ThemeChoice::OneDark),
+                            "{choice:?} leaves the kit's secondary"
+                        );
+                        let expected = ButtonCustomVariant::new(cx)
+                            .foreground(label)
+                            .active(rgb(palette.selected).into());
+                        assert_eq!(variant, expected, "{choice:?}");
+                    }
+                    variant => panic!("{choice:?} selects with {variant:?}"),
+                }
             }
         });
     }

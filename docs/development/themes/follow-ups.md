@@ -166,6 +166,7 @@ The "Landed" lines of items 11-18 and 20 cite two native passes on Linux X11 at 
     - Porcelain: 6 per channel apart, 4 over the hovered selected row.
     - Kanagawa Wave: `selected` (`24364e`) is darker than `hover` (`363646`), so pressed differs from hover by hue, not by a further lift.
     - Proposed spec rule: `selected` differs from `hover` by at least 8 in one channel, and sits at least as far from `panel` as `hover` in the lift direction. No rule checks this pair today, and the button test's floor (`CONTROL_PRESS_DISTANCE`, 3) is Sandstone's value.
+    - Margin limit: Solarized Dark's button label is 4.575:1 on the pressed fill over the hovered selected row. That clears the 4.5 rule but not its 0.25 margin, and reaching the margin would move its label off `text`.
     - Non-blocking, from the same review: in a custom theme whose `hover` moves a channel toward 0 or 255 from a panel already near that end, the fill's opacity approaches 1 and the hover disappears on hovered rows. The same holds for `selected` and pressed.
     - Acceptance: the rule in `spec.md` and `readability_issues`, the listed palettes tuned or explicitly exempted, and the test floor raised to the rule. Evidence changed: pressed frames in the tuned themes. Kind: design, palette.
 
