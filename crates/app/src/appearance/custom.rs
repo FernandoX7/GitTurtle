@@ -448,6 +448,8 @@ impl Palette {
             &[token(Added), token(Removed), token(Warning), token(Hunk)],
             TEXT,
         );
+        // Failure messages in the warning color on grouped cards.
+        rule(&[Warning], &[token(Subtle)], TEXT);
         // Status icons inside diff tiles.
         rule(&[Modified, Renamed], &diff_backgrounds, GRAPHIC);
         // Conflict and warning glyphs.
@@ -1114,7 +1116,9 @@ mod tests {
     }
 
     /// Each case changes a built-in palette so that exactly one row of the rules table fails,
-    /// and lists every pair of that row that should be reported.
+    /// and lists every pair of that row that should be reported. A warning color that fails one
+    /// of the three warning rows usually fails the others, so those cases pick the palette and
+    /// the color that separate them.
     #[test]
     fn each_rule_names_foreground_background_ratio_and_minimum() {
         use ReadabilityBackground::Token as On;
@@ -1123,6 +1127,7 @@ mod tests {
         let midnight = ThemeChoice::Midnight.palette();
         let porcelain = ThemeChoice::Porcelain.palette();
         let daylight = ThemeChoice::Daylight.palette();
+        let one_dark = ThemeChoice::OneDark.palette();
         let cases: Vec<(&str, Palette, Vec<Pair>)> = vec![
             (
                 "body and secondary text",
@@ -1240,10 +1245,18 @@ mod tests {
             (
                 "status control labels",
                 Palette {
-                    warning: 0x6b7f32,
-                    ..daylight
+                    warning: 0x909090,
+                    ..one_dark
                 },
                 vec![(Fg(Canvas), On(Warning), 4.5)],
+            ),
+            (
+                "warning messages",
+                Palette {
+                    warning: 0x707070,
+                    ..daylight
+                },
+                vec![(Fg(Warning), On(Subtle), 4.5)],
             ),
             (
                 "status icons inside diff tiles",
@@ -1257,13 +1270,10 @@ mod tests {
             (
                 "warning glyphs",
                 Palette {
-                    warning: 0xe623b1,
+                    warning: 0x828282,
                     ..midnight
                 },
-                vec![
-                    (Fg(Warning), On(Selected), 3.),
-                    (Fg(Warning), SelectedRowHover, 3.),
-                ],
+                vec![(Fg(Warning), SelectedRowHover, 3.)],
             ),
         ];
         for (rule, palette, pairs) in cases {

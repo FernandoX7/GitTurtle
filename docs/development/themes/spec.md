@@ -55,10 +55,13 @@ pub struct ResolvedTheme { pub selection: ThemeSelection, pub palette: Palette, 
 | line_number | canvas, panel | 4.5 | gutter and inspector coordinates (new) |
 | hunk | canvas, panel, subtle / hover, selected, row hover | 4.5 / 3.0 | links, info and hunk headers (new) |
 | canvas | added, removed, warning, hunk | 4.5 | `configure` uses canvas as the success/danger/warning/info foreground (new) |
+| warning | subtle | 4.5 | failure messages in the warning color on grouped cards, such as Your themes (added 2026-09-23) |
 | modified, renamed | added/removed backgrounds | 3.0 | status icons inside diff tiles (new) |
 | warning | six surfaces | 3.0 | conflict and warning glyphs (new) |
 
 All ten current palettes pass every row with margin (computed on 2026-09-17 from `appearance.rs` and `graph.rs`: lowest values are Nord hover/panel 1.10, Nord selected/panel 1.20, Daylight line_number 4.53). Built-in tests assert the list is empty for `ThemeChoice::ALL`. For custom themes the list is advisory.
+
+The warning-message row was added on 2026-09-23, when five built-ins were below it (Kanagawa Lotus 3.95, Rosé Pine Dawn 4.25, One Light 4.27, Solarized Dark 4.34, Solarized Light 4.38); their tuned warning colors now clear it by the 0.25 margin [`DESIGN.md`](../../../DESIGN.md#semantic-palette-ownership) sets for tuned tokens, and [`contrast-margins.md`](contrast-margins.md) records the values. A saved custom theme copied from one of those five before the change keeps its old warning color and now reports one more warning.
 
 ## Store migration (version 5 → 6)
 
