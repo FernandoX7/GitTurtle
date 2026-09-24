@@ -194,7 +194,7 @@ mod tests {
             .send(Err(anyhow::anyhow!("FileChooser service unavailable")))
             .unwrap();
         let error = futures::executor::block_on(new_path(receiver)).unwrap_err();
-        assert!(error.starts_with("Could not choose where to save. "));
+        assert!(error.starts_with("Could not choose where to save."));
 
         let (sender, receiver) = oneshot::channel();
         sender
@@ -202,7 +202,7 @@ mod tests {
             .unwrap();
         let file_error =
             futures::executor::block_on(selected_path_for(Picker::File, receiver)).unwrap_err();
-        assert!(file_error.starts_with("Could not choose a file. "));
+        assert!(file_error.starts_with("Could not choose a file."));
 
         let (sender, receiver) = oneshot::channel();
         drop(sender);
