@@ -272,12 +272,28 @@ pub(super) fn menus(repository: bool, busy: bool, cx: &mut App) {
 }
 
 impl GitTurtle {
-    pub(super) fn effective_theme(&self, cx: &App) -> appearance::ThemeChoice {
-        self.settings.resolved_theme(cx.window_appearance())
+    pub(super) fn effective_theme(&self, cx: &App) -> appearance::custom::ResolvedTheme {
+        self.settings
+            .resolved_theme(cx.window_appearance(), &self.custom_themes)
     }
+    /// The one appearance application path: a Settings switch, a system
+    /// appearance change and every theme-editor live-preview edit end here.
+    ///
+    /// Invalidation is this view's `cx.notify()` below and the Settings
+    /// page's ([`settings::SettingsPage`], a cached view the palette recolors
+    /// too), not `Window::refresh`. Both draw the window once, but a refresh
+    /// also bars GPUI's cached-view reuse for that frame, and the twenty theme
+    /// miniatures in Settings ([`settings::ThemePreviewBody`]) show their own
+    /// built-in palette: a palette change recolors the window around them
+    /// without altering a pixel they draw. Reusing them is most of the
+    /// difference between the frame budget and a full rebuild of the picker.
     pub(super) fn apply_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.effective_theme(cx).apply(Some(window), cx);
-        appearance::apply_text_sizes(
+        // An open theme editor shows its draft through the same path.
+        match self.theme_editor.preview() {
+            Some(draft) => draft.apply(draft.is_light(), None, cx),
+            None => self.effective_theme(cx).apply(None, cx),
+        }
+        appearance::sync_text_sizes(
             self.settings.interface_text_size,
             self.settings.code_text_size,
             window,
@@ -293,6 +309,7 @@ impl GitTurtle {
         }
         self.file_history.refresh_theme(cx);
         self.revision_inspection.refresh_theme(cx);
+        self.notify_settings_page(cx);
         cx.notify();
     }
     pub(super) fn open_external_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -350,9 +367,19 @@ impl GitTurtle {
         shortcuts::open_help(window, cx);
     }
     pub(super) fn about(&self, window: &mut Window, cx: &mut Context<Self>) {
+        // Diagnostics report built-in keys only: a custom theme reports its base,
+        // so a user-chosen theme name never enters a copied bug report.
+        let theme = match self.effective_theme(cx).selection {
+            appearance::custom::ThemeSelection::BuiltIn(choice) => choice,
+            appearance::custom::ThemeSelection::Custom(id) => self
+                .custom_themes
+                .iter()
+                .find(|theme| theme.id == id)
+                .map_or_else(appearance::ThemeChoice::default, |theme| theme.base),
+        };
         let report = build_info::diagnostics(
             window.scale_factor(),
-            self.effective_theme(cx),
+            theme,
             self.settings.density,
             self.settings.interface_text_size,
             self.settings.code_text_size,

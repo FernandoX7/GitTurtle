@@ -240,7 +240,8 @@ instances sharing one configuration directory during testing.
 
 The repository picker uses the session D-Bus service `xdg-desktop-portal` and
 its FileChooser backend. Cancel leaves the current context intact. A failed
-request now shows the underlying error and recovery guidance; a command-line
+request shows the recovery guidance first and the underlying error, shortened,
+on a line after it; a command-line
 repository path remains available when the picker cannot run. After installing
 portal packages, log out and back in if the session has stale service state.
 

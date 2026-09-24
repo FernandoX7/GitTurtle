@@ -1,0 +1,29 @@
+{
+  "format": "gitturtle-theme",
+  "version": 1,
+  "name": "Harbor Dusk",
+  "base": "midnight",
+  "tokens": {
+    "canvas": "#101a2c",
+    "panel": "#171e2b",
+    "subtle": "#131a25",
+    "hover": "#222c3c",
+    "border": "#2b3749",
+    "selected": "#223b3b",
+    "text": "#e8eef7",
+    "muted": "#a4b1c5",
+    "line_number": "#899bb5",
+    "accent": "#75e0bb",
+    "accent_foreground": "#0a241d",
+    "accent_hover": "#99edcf",
+    "accent_active": "#5ccca6",
+    "added": "#75e0bb",
+    "removed": "#ff95a8",
+    "modified": "#e8bc79",
+    "renamed": "#c1a5f5",
+    "warning": "#e8bc79",
+    "added_background": "#19322d",
+    "removed_background": "#382531",
+    "hunk": "#95baff"
+  }
+}

@@ -8,6 +8,17 @@ use std::sync::{
     atomic::{AtomicU8, AtomicU32, Ordering},
 };
 
+// Upstream values for the adapted built-in themes. Families whose themes have
+// not landed yet are referenced only by the source tests.
+#[cfg_attr(not(test), allow(dead_code))]
+mod sources;
+
+// The preference store reads the custom theme model; the theme editor and picker
+// will consume the readability rules, token names and document format. Until
+// they land, the tests are the only readers of most of them.
+#[cfg_attr(not(test), allow(dead_code))]
+pub mod custom;
+
 pub const DEFAULT_INTERFACE_TEXT_SIZE: u8 = 13;
 pub const DEFAULT_CODE_TEXT_SIZE: u8 = 12;
 pub const INTERFACE_TEXT_RANGE: std::ops::RangeInclusive<u8> = 11..=18;
@@ -119,7 +130,16 @@ pub fn code_scale() -> f32 {
     f32::from(code_text()) / f32::from(DEFAULT_CODE_TEXT_SIZE)
 }
 
-pub fn apply_text_sizes(interface: u8, code: u8, window: &mut Window, cx: &mut App) {
+/// Store the text sizes and project them onto the toolkit theme and the
+/// window's rem geometry, leaving invalidation to the caller.
+///
+/// The one appearance application path ([`GitTurtle::apply_appearance`]) calls
+/// this and invalidates with the root's `cx.notify()` instead of
+/// [`Window::refresh`]. Both mark the window dirty, but `refresh` also bars
+/// GPUI's view reuse for that frame, which would rebuild the twenty
+/// palette-independent theme miniatures ([`crate::settings::ThemePreviewBody`])
+/// that a palette change does not alter.
+pub fn sync_text_sizes(interface: u8, code: u8, window: &mut Window, cx: &mut App) {
     with_text_sizes(|interface_size, code_size, _| {
         interface_size.store(
             interface.clamp(*INTERFACE_TEXT_RANGE.start(), *INTERFACE_TEXT_RANGE.end()),
@@ -137,6 +157,13 @@ pub fn apply_text_sizes(interface: u8, code: u8, window: &mut Window, cx: &mut A
     // Root uses font_size for rem geometry, so native control padding and
     // heights grow together with explicit app text and custom canvas rows.
     window.set_rem_size(ui_text(13.));
+}
+
+/// [`sync_text_sizes`] for callers that own no entity to notify: a text-size
+/// change moves every measured box, so refreshing the whole window is right
+/// here.
+pub fn apply_text_sizes(interface: u8, code: u8, window: &mut Window, cx: &mut App) {
+    sync_text_sizes(interface, code, window, cx);
     window.refresh();
 }
 
@@ -152,6 +179,16 @@ pub enum ThemeChoice {
     Sandstone,
     DeepSea,
     Ember,
+    SolarizedDark,
+    SolarizedLight,
+    OneDark,
+    OneLight,
+    RosePine,
+    RosePineDawn,
+    Dracula,
+    Alucard,
+    KanagawaWave,
+    KanagawaLotus,
     #[default]
     #[serde(other)]
     Midnight,
@@ -207,7 +244,7 @@ pub fn palette(cx: &App) -> Palette {
 }
 
 impl ThemeChoice {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 20] = [
         Self::Midnight,
         Self::Daylight,
         Self::Graphite,
@@ -218,6 +255,16 @@ impl ThemeChoice {
         Self::Sandstone,
         Self::DeepSea,
         Self::Ember,
+        Self::SolarizedDark,
+        Self::SolarizedLight,
+        Self::OneDark,
+        Self::OneLight,
+        Self::RosePine,
+        Self::RosePineDawn,
+        Self::Dracula,
+        Self::Alucard,
+        Self::KanagawaWave,
+        Self::KanagawaLotus,
     ];
 
     pub fn label(self) -> &'static str {
@@ -232,6 +279,16 @@ impl ThemeChoice {
             Self::Sandstone => "Sandstone",
             Self::DeepSea => "Deep Sea",
             Self::Ember => "Ember",
+            Self::SolarizedDark => "Solarized Dark",
+            Self::SolarizedLight => "Solarized Light",
+            Self::OneDark => "One Dark",
+            Self::OneLight => "One Light",
+            Self::RosePine => "Rosé Pine",
+            Self::RosePineDawn => "Rosé Pine Dawn",
+            Self::Dracula => "Dracula",
+            Self::Alucard => "Alucard",
+            Self::KanagawaWave => "Kanagawa Wave",
+            Self::KanagawaLotus => "Kanagawa Lotus",
         }
     }
 
@@ -247,11 +304,31 @@ impl ThemeChoice {
             Self::Sandstone => "Warm paper · terracotta",
             Self::DeepSea => "Ocean ink · turquoise",
             Self::Ember => "Smoked plum · apricot",
+            Self::SolarizedDark => "Deep teal · azure",
+            Self::SolarizedLight => "Warm cream · azure",
+            Self::OneDark => "Soft charcoal · sky",
+            Self::OneLight => "Clean paper · cobalt",
+            Self::RosePine => "Dusky violet · rose",
+            Self::RosePineDawn => "Blush paper · pine",
+            Self::Dracula => "Night charcoal · purple",
+            Self::Alucard => "Pale parchment · violet",
+            Self::KanagawaWave => "Inky dusk · cornflower",
+            Self::KanagawaLotus => "Rice paper · denim",
         }
     }
 
     pub fn is_light(self) -> bool {
-        matches!(self, Self::Daylight | Self::Porcelain | Self::Sandstone)
+        matches!(
+            self,
+            Self::Daylight
+                | Self::Porcelain
+                | Self::Sandstone
+                | Self::SolarizedLight
+                | Self::OneLight
+                | Self::RosePineDawn
+                | Self::Alucard
+                | Self::KanagawaLotus
+        )
     }
 
     pub fn palette(self) -> Palette {
@@ -416,7 +493,7 @@ impl ThemeChoice {
                 added_background: 0xe2f1e9,
                 removed_background: 0xf9e5eb,
                 hunk: 0x3764ae,
-                line_number: 0x61728a,
+                line_number: 0x5b6c84,
             },
             // Base hues follow the original palette; secondary text and status
             // surfaces are tuned for readable, small native UI labels.
@@ -473,7 +550,7 @@ impl ThemeChoice {
                 canvas: 0x2e3440,
                 panel: 0x343c4b,
                 subtle: 0x292f3b,
-                hover: 0x3b4252,
+                hover: 0x3e4555,
                 border: 0x4c566a,
                 text: 0xeceff4,
                 muted: 0xc0c9d8,
@@ -492,15 +569,350 @@ impl ThemeChoice {
                 hunk: 0x88c0d0,
                 line_number: 0xa7b4c9,
             },
+            // Families adapted from `sources`. Named constants are upstream
+            // values used unchanged; hex literals marked "tuned" depart from
+            // the upstream value for a readability rule, with the margin 1x
+            // rasterization needs, and are listed in DESIGN.md. Unmarked
+            // literals are derived surfaces the upstream palette does not
+            // define (subtle, hover, selected, diff tiles, accent states).
+            Self::SolarizedDark => {
+                use sources::solarized::{self as s, dark};
+                Palette {
+                    canvas: dark::CANVAS,
+                    panel: dark::PANEL,
+                    subtle: 0x01313d,
+                    hover: 0x103c48,
+                    selected: 0x0b4154,
+                    border: s::BASE01,
+                    // Tuned: base0 and base1 lightened for 4.5:1 on selected rows.
+                    text: 0xb2bdbe,
+                    muted: 0xaab5b5,
+                    // Tuned: blue lightened for 3:1 on selected and hovered rows.
+                    accent: 0x3499df,
+                    accent_foreground: 0x001e26,
+                    accent_hover: 0x48a0de,
+                    accent_active: 0x278ed6,
+                    // Tuned: green, red and violet lightened for 3:1 on row
+                    // surfaces, 4.5:1 in diff tiles and the canvas label; yellow
+                    // for 4.5:1 as warning text on subtle surfaces, and modified
+                    // keeps warning's value.
+                    added: 0x92a802,
+                    removed: 0xea706e,
+                    modified: 0xbe9209,
+                    renamed: 0x898dd2,
+                    warning: 0xbe9209,
+                    added_background: 0x103830,
+                    removed_background: 0x1a2c35,
+                    // Tuned: cyan lightened for 4.5:1 on panels.
+                    hunk: 0x30aea5,
+                    // Tuned: base01 lightened for 4.5:1 in the gutter.
+                    line_number: 0x8aa0a8,
+                }
+            }
+            Self::SolarizedLight => {
+                use sources::solarized::{self as s, light};
+                Palette {
+                    canvas: light::CANVAS,
+                    panel: light::PANEL,
+                    subtle: 0xf6efdc,
+                    hover: 0xe3dfcf,
+                    selected: 0xd0dad5,
+                    border: s::BASE1,
+                    // Tuned: base00 and base01 darkened for 4.5:1 on selected rows.
+                    text: 0x394549,
+                    muted: 0x44565c,
+                    // Tuned: blue darkened for a 4.5:1 white label and 3:1 on rows.
+                    accent: 0x1c73b1,
+                    accent_foreground: 0xffffff,
+                    accent_hover: 0x1d6aa0,
+                    accent_active: 0x1a5e8f,
+                    // Tuned: every accent darkened for 3:1 on row surfaces,
+                    // 4.5:1 in diff tiles, the canvas label on fills and warning
+                    // text on subtle surfaces.
+                    added: 0x5b6900,
+                    removed: 0xc2201e,
+                    modified: 0x846200,
+                    renamed: 0x6166bd,
+                    warning: 0x846200,
+                    added_background: 0xece9c3,
+                    removed_background: 0xfae2d1,
+                    // Tuned: blue darkened for 4.5:1 on resting surfaces and 3:1 on rows.
+                    hunk: 0x19689e,
+                    // Tuned: base01 darkened for 4.5:1 on panels.
+                    line_number: 0x51666d,
+                }
+            }
+            Self::OneDark => {
+                use sources::one::dark as o;
+                Palette {
+                    canvas: o::BG,
+                    panel: 0x2e333d,
+                    subtle: 0x21252b,
+                    hover: 0x333943,
+                    selected: 0x323d52,
+                    border: 0x4b5263,
+                    // Tuned: mono-1 and mono-2 lightened for 4.5:1 on the hovered selected
+                    // row at 1x; text is kept above secondary text.
+                    text: 0xaeb5c2,
+                    muted: 0xb0b5bc,
+                    accent: o::BLUE,
+                    accent_foreground: 0x1b2533,
+                    accent_hover: 0x7dbdf2,
+                    accent_active: 0x53a8ee,
+                    added: o::GREEN,
+                    // Tuned: red-1 lightened for 4.5:1 in its diff tile and under the canvas label.
+                    removed: 0xe98991,
+                    modified: o::ORANGE_2,
+                    renamed: o::PURPLE,
+                    warning: o::ORANGE_2,
+                    added_background: 0x353e3c,
+                    removed_background: 0x3e343c,
+                    hunk: o::CYAN,
+                    // Tuned: mono-2 lightened for 4.5:1 in the gutter.
+                    line_number: 0x9aa0ab,
+                }
+            }
+            Self::OneLight => {
+                use sources::one::light as o;
+                Palette {
+                    canvas: o::BG,
+                    panel: 0xffffff,
+                    subtle: 0xf0f0f1,
+                    hover: 0xf1f1f3,
+                    selected: 0xe9edff,
+                    border: 0xd3d3d6,
+                    text: o::MONO_1,
+                    // Tuned: mono-2 darkened for 4.5:1 on selected rows.
+                    muted: 0x5c5f69,
+                    // Tuned: blue darkened for a 4.5:1 white label.
+                    accent: 0x2d6aef,
+                    accent_foreground: 0xffffff,
+                    accent_hover: 0x175bef,
+                    accent_active: 0x0f52e3,
+                    // Tuned: green darkened for 3:1 on rows and 4.5:1 in diff tiles.
+                    added: 0x377236,
+                    removed: o::RED_2,
+                    // Tuned: orange-1 darkened for 4.5:1 as warning text on subtle
+                    // surfaces; modified keeps warning's value.
+                    modified: 0x8e5e00,
+                    renamed: o::PURPLE,
+                    warning: 0x8e5e00,
+                    added_background: 0xe6efe5,
+                    removed_background: 0xf6e7eb,
+                    // Tuned: cyan darkened for 4.5:1 on subtle surfaces.
+                    hunk: 0x0070a1,
+                    line_number: o::MONO_2,
+                }
+            }
+            Self::RosePine => {
+                use sources::rose_pine::main as r;
+                Palette {
+                    canvas: r::BASE,
+                    panel: r::SURFACE,
+                    subtle: 0x16141f,
+                    hover: r::OVERLAY,
+                    selected: 0x2d2a45,
+                    border: 0x403d52,
+                    text: r::TEXT,
+                    // Tuned: subtle lightened for 4.5:1 on selected rows and diff tiles.
+                    muted: 0xa6a2bc,
+                    accent: r::ROSE,
+                    accent_foreground: 0x2a1d25,
+                    accent_hover: 0xf3cfcd,
+                    accent_active: 0xe2aeac,
+                    added: r::FOAM,
+                    removed: r::LOVE,
+                    modified: r::GOLD,
+                    renamed: r::IRIS,
+                    warning: r::GOLD,
+                    added_background: 0x1f2e36,
+                    removed_background: 0x351f30,
+                    hunk: r::IRIS,
+                    line_number: r::SUBTLE,
+                }
+            }
+            Self::RosePineDawn => {
+                use sources::rose_pine::dawn as r;
+                Palette {
+                    canvas: r::BASE,
+                    panel: r::SURFACE,
+                    subtle: 0xf4ede4,
+                    hover: r::OVERLAY,
+                    selected: 0xe8dfe2,
+                    border: 0xdfdad9,
+                    text: r::TEXT,
+                    // Tuned: subtle darkened for 4.5:1 on every row surface and diff tile.
+                    muted: 0x59566e,
+                    accent: r::PINE,
+                    accent_foreground: 0xffffff,
+                    accent_hover: 0x225a70,
+                    accent_active: 0x1d4d60,
+                    // Tuned: foam, love, gold and iris darkened for 3:1 on row
+                    // surfaces, 4.5:1 in diff tiles, the canvas label on fills and
+                    // warning text on subtle surfaces.
+                    added: 0x3c6b74,
+                    removed: 0x934e62,
+                    modified: 0x8e5c18,
+                    renamed: 0x806b97,
+                    warning: 0x8e5c18,
+                    added_background: 0xe4ecea,
+                    removed_background: 0xf6e3e3,
+                    hunk: r::PINE,
+                    // Tuned: subtle darkened for 4.5:1 on canvas.
+                    line_number: 0x6b6783,
+                }
+            }
+            Self::Dracula => {
+                use sources::dracula::dark as d;
+                Palette {
+                    canvas: d::BACKGROUND,
+                    panel: 0x2e303e,
+                    subtle: 0x21222c,
+                    hover: 0x383a4a,
+                    selected: d::SELECTION,
+                    border: 0x4a4d62,
+                    text: d::FOREGROUND,
+                    // Tuned: comment lightened for 4.5:1 on every row surface and diff tile.
+                    muted: 0xbdc4db,
+                    accent: d::PURPLE,
+                    accent_foreground: d::BACKGROUND,
+                    accent_hover: 0xcfaefb,
+                    accent_active: 0xb083f7,
+                    added: d::GREEN,
+                    // Tuned: red lightened for 3:1 on selected rows and 4.5:1 in its diff tile.
+                    removed: 0xff7979,
+                    modified: d::ORANGE,
+                    renamed: d::PURPLE,
+                    warning: d::ORANGE,
+                    added_background: 0x2b4136,
+                    removed_background: 0x472e3a,
+                    hunk: d::CYAN,
+                    // Tuned: comment lightened for 4.5:1 in the gutter.
+                    line_number: 0x909cc1,
+                }
+            }
+            Self::Alucard => {
+                use sources::dracula::alucard as a;
+                Palette {
+                    canvas: a::BACKGROUND,
+                    panel: 0xfffdf5,
+                    subtle: 0xf5f1e1,
+                    hover: 0xefebdb,
+                    selected: a::SELECTION,
+                    border: 0xd9d4bf,
+                    text: a::FOREGROUND,
+                    // Tuned: comment darkened for 4.5:1 on selected and hovered selected rows.
+                    muted: 0x534e38,
+                    accent: a::PURPLE,
+                    accent_foreground: 0xffffff,
+                    accent_hover: 0x563cb8,
+                    accent_active: 0x4a32a2,
+                    added: a::GREEN,
+                    // Tuned: red darkened for 3:1 on hovered selected rows and 4.5:1 in its diff tile.
+                    removed: 0xba3223,
+                    modified: a::ORANGE,
+                    renamed: a::PURPLE,
+                    warning: a::ORANGE,
+                    added_background: 0xe3f0da,
+                    removed_background: 0xfbe3dc,
+                    hunk: a::CYAN,
+                    line_number: a::COMMENT,
+                }
+            }
+            Self::KanagawaWave => {
+                use sources::kanagawa::wave as k;
+                Palette {
+                    canvas: k::SUMI_INK_3,
+                    panel: k::SUMI_INK_4,
+                    subtle: k::SUMI_INK_2,
+                    hover: k::SUMI_INK_5,
+                    // Tuned: waveBlue1 lightened to stay 1.15:1 apart from the panel.
+                    selected: 0x24364e,
+                    border: k::SUMI_INK_6,
+                    text: k::FUJI_WHITE,
+                    muted: k::OLD_WHITE,
+                    accent: k::CRYSTAL_BLUE,
+                    accent_foreground: k::SUMI_INK_3,
+                    accent_hover: 0x94aee0,
+                    accent_active: 0x6d8dce,
+                    // Tuned: autumnGreen lightened for 4.5:1 in its diff tile.
+                    added: 0x89a47e,
+                    removed: k::PEACH_RED,
+                    modified: k::AUTUMN_YELLOW,
+                    renamed: k::ONI_VIOLET,
+                    warning: k::RONIN_YELLOW,
+                    added_background: k::WINTER_GREEN,
+                    removed_background: k::WINTER_RED,
+                    hunk: k::SPRING_BLUE,
+                    // Tuned: sumiInk6 lightened for 4.5:1 in the gutter.
+                    line_number: 0x9494ad,
+                }
+            }
+            Self::KanagawaLotus => {
+                use sources::kanagawa::lotus as k;
+                Palette {
+                    canvas: k::LOTUS_WHITE_3,
+                    panel: 0xf7f3d1,
+                    subtle: k::LOTUS_WHITE_2,
+                    hover: k::LOTUS_WHITE_1,
+                    selected: k::LOTUS_BLUE_1,
+                    border: k::LOTUS_WHITE_0,
+                    text: k::LOTUS_INK_1,
+                    // Tuned: lotusGray2 darkened for 4.5:1 on every row surface and diff tile.
+                    muted: 0x5a574d,
+                    accent: k::LOTUS_BLUE_4,
+                    accent_foreground: k::LOTUS_WHITE_3,
+                    accent_hover: 0x435c89,
+                    accent_active: 0x3a5077,
+                    // Tuned: lotusGreen2, lotusRed2, lotusYellow3 and lotusOrange2 darkened for
+                    // 3:1 on row surfaces, 4.5:1 in diff tiles, the canvas label on fills and
+                    // warning text on subtle surfaces.
+                    added: 0x49613e,
+                    removed: 0xa72428,
+                    modified: 0x936300,
+                    renamed: k::LOTUS_VIOLET_4,
+                    warning: 0x8b4c00,
+                    // Tuned: lotusGreen3 blended halfway to the canvas and lotusRed4 a little
+                    // past halfway, so text keeps 4.5:1 inside diff tiles.
+                    added_background: 0xd4deb5,
+                    removed_background: 0xeed0b0,
+                    // Tuned: lotusBlue4 darkened for 4.5:1 on subtle surfaces.
+                    hunk: 0x425c8b,
+                    // Tuned: lotusGray2 darkened for 4.5:1 on the canvas.
+                    line_number: 0x676458,
+                }
+            }
         }
     }
 
-    /// Apply native controls and editor defaults together. Call after GPUI Kit
-    /// initialization; callers invalidate/rebuild existing custom decorations.
+    /// Apply this built-in theme through the one palette application path. The app
+    /// applies a `ResolvedTheme`; test fixtures apply a built-in directly.
+    #[cfg(test)]
     pub fn apply(self, window: Option<&mut Window>, cx: &mut App) {
-        let palette = self.palette();
+        custom::ResolvedTheme::built_in(self).apply(window, cx);
+    }
+}
+
+impl custom::ResolvedTheme {
+    /// Apply the resolved built-in or custom palette through the one application path.
+    pub fn apply(self, window: Option<&mut Window>, cx: &mut App) {
+        self.palette.apply(self.is_light, window, cx);
+    }
+}
+
+impl Palette {
+    /// Apply native controls and editor defaults together. Built-in and custom themes both use
+    /// this path. Call after GPUI Kit initialization; callers invalidate/rebuild existing custom
+    /// decorations.
+    ///
+    /// `window` is only the invalidation: passing `Some` refreshes it, which
+    /// also bars view reuse for that frame. The app path passes `None` and
+    /// notifies its root instead, so the frame that shows the new palette
+    /// keeps the subtrees the palette does not change (see
+    /// [`sync_text_sizes`]).
+    pub fn apply(self, is_light: bool, window: Option<&mut Window>, cx: &mut App) {
         Theme::change(
-            if self.is_light() {
+            if is_light {
                 ThemeMode::Light
             } else {
                 ThemeMode::Dark
@@ -508,16 +920,16 @@ impl ThemeChoice {
             None,
             cx,
         );
-        self.configure(Theme::global_mut(cx));
-        cx.set_global(palette);
+        self.configure(is_light, Theme::global_mut(cx));
+        cx.set_global(self);
         Theme::sync_base(cx);
         if let Some(window) = window {
             window.refresh();
         }
     }
 
-    fn configure(self, theme: &mut Theme) {
-        let palette = self.palette();
+    fn configure(self, is_light: bool, theme: &mut Theme) {
+        let palette = self;
         theme.colors.background = rgb(palette.canvas).into();
         theme.colors.foreground = rgb(palette.text).into();
         theme.colors.muted = rgb(palette.hover).into();
@@ -544,12 +956,12 @@ impl ThemeChoice {
         let danger: gpui_kit::Hsla = rgb(palette.removed).into();
         theme.colors.button_danger = danger;
         theme.colors.button_danger_foreground = rgb(palette.canvas).into();
-        theme.colors.button_danger_hover = if self.is_light() {
+        theme.colors.button_danger_hover = if is_light {
             danger.darken(0.05)
         } else {
             danger.lighten(0.05)
         };
-        theme.colors.button_danger_active = if self.is_light() {
+        theme.colors.button_danger_active = if is_light {
             danger.darken(0.1)
         } else {
             danger.lighten(0.1)
@@ -677,28 +1089,9 @@ impl Density {
 
 #[cfg(test)]
 mod tests {
+    use super::custom::contrast;
     use super::*;
     use gpui_kit::{Background, Hsla};
-
-    fn luminance(rgb: u32) -> f64 {
-        let linear = |channel: u32| {
-            let value = f64::from(channel) / 255.;
-            if value <= 0.04045 {
-                value / 12.92
-            } else {
-                ((value + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        0.2126 * linear((rgb >> 16) & 255)
-            + 0.7152 * linear((rgb >> 8) & 255)
-            + 0.0722 * linear(rgb & 255)
-    }
-
-    fn contrast(a: u32, b: u32) -> f64 {
-        let a = luminance(a);
-        let b = luminance(b);
-        (a.max(b) + 0.05) / (a.min(b) + 0.05)
-    }
 
     #[test]
     fn parallel_test_applications_keep_their_own_text_geometry() {
@@ -739,50 +1132,95 @@ mod tests {
     #[test]
     fn palettes_keep_text_and_diff_content_readable_in_each_theme() {
         for choice in ThemeChoice::ALL {
+            let issues = choice.palette().readability_issues();
+            assert!(
+                issues.is_empty(),
+                "{choice:?} breaks readability rules: {}",
+                issues
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            );
+        }
+    }
+
+    /// Tuned tokens clear their rule by this much: the rules are computed on declared colors,
+    /// and small text at 1x renders about 0.2 lower (DESIGN.md, semantic palette ownership).
+    const RASTERIZATION_MARGIN: f64 = 0.25;
+
+    #[test]
+    fn warning_messages_stay_readable_on_the_subtle_surface() {
+        for choice in ThemeChoice::ALL {
             let palette = choice.palette();
-            for background in [
-                palette.canvas,
-                palette.panel,
-                palette.subtle,
-                palette.hover,
-                palette.selected,
-                palette.row_hover(true),
+            let ratio = contrast(palette.warning, palette.subtle);
+            assert!(ratio >= 4.5, "{choice:?} warning on subtle {ratio:.3}:1");
+        }
+        // The five built-ins that were below 4.5:1 before the rule existed.
+        for choice in [
+            ThemeChoice::KanagawaLotus,
+            ThemeChoice::RosePineDawn,
+            ThemeChoice::OneLight,
+            ThemeChoice::SolarizedDark,
+            ThemeChoice::SolarizedLight,
+        ] {
+            let palette = choice.palette();
+            let ratio = contrast(palette.warning, palette.subtle);
+            assert!(
+                ratio >= 4.5 + RASTERIZATION_MARGIN,
+                "{choice:?} warning on subtle {ratio:.3}:1"
+            );
+        }
+    }
+
+    #[test]
+    fn tuned_secondary_text_keeps_its_margin_on_hovered_selected_rows() {
+        for choice in [
+            ThemeChoice::SolarizedDark,
+            ThemeChoice::SolarizedLight,
+            ThemeChoice::OneDark,
+            ThemeChoice::OneLight,
+            ThemeChoice::RosePine,
+            ThemeChoice::RosePineDawn,
+            ThemeChoice::Dracula,
+        ] {
+            let palette = choice.palette();
+            let ratio = contrast(palette.muted, palette.row_hover(true));
+            assert!(
+                ratio >= 4.5 + RASTERIZATION_MARGIN,
+                "{choice:?} muted on the hovered selected row {ratio:.3}:1"
+            );
+        }
+    }
+
+    #[test]
+    fn secondary_text_never_reads_above_body_text() {
+        for choice in ThemeChoice::ALL {
+            let palette = choice.palette();
+            for (surface, color) in [
+                ("canvas", palette.canvas),
+                ("panel", palette.panel),
+                ("subtle", palette.subtle),
+                ("hover", palette.hover),
+                ("selected", palette.selected),
+                ("hovered selected row", palette.row_hover(true)),
+                ("added tile", palette.added_background),
+                ("removed tile", palette.removed_background),
             ] {
+                let text = contrast(palette.text, color);
+                let muted = contrast(palette.muted, color);
                 assert!(
-                    contrast(palette.text, background) >= 4.5,
-                    "{choice:?} primary text"
-                );
-                assert!(
-                    contrast(palette.muted, background) >= 4.5,
-                    "{choice:?} secondary text"
-                );
-                for status in [
-                    palette.added,
-                    palette.removed,
-                    palette.modified,
-                    palette.renamed,
-                ] {
-                    assert!(contrast(status, background) >= 3., "{choice:?} status icon");
-                }
-            }
-            // Provider patch content and its line coordinates share the diff
-            // surfaces; their ordinary-size text needs the text threshold too.
-            for background in [palette.added_background, palette.removed_background] {
-                for foreground in [palette.text, palette.muted] {
-                    assert!(
-                        contrast(foreground, background) >= 4.5,
-                        "{choice:?} diff content and line coordinates"
-                    );
-                }
-            }
-            assert!(contrast(palette.added, palette.added_background) >= 4.5);
-            assert!(contrast(palette.removed, palette.removed_background) >= 4.5);
-            for background in [palette.accent, palette.accent_hover, palette.accent_active] {
-                assert!(
-                    contrast(palette.accent_foreground, background) >= 4.5,
-                    "{choice:?} action button label"
+                    muted <= text,
+                    "{choice:?} muted {muted:.3}:1 above text {text:.3}:1 on {surface}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn palette_lightness_matches_each_built_in_choice() {
+        for choice in ThemeChoice::ALL {
+            assert_eq!(choice.is_light(), choice.palette().is_light(), "{choice:?}");
         }
     }
 
@@ -791,10 +1229,23 @@ mod tests {
         // Reuse one theme to cover dark/light and dark/dark switches. Component
         // buttons read token backgrounds but legacy foreground colors, so a
         // palette-only assertion cannot catch a stale white primary button.
+        // A custom palette, built from a base with two edited tokens, takes the same path.
+        let mut edited = ThemeChoice::Nord.palette();
+        edited.set(custom::TokenKind::Accent, 0x1f6f5c);
+        edited.set(custom::TokenKind::Removed, 0xff9aa2);
+        let custom = custom::CustomTheme {
+            id: 1,
+            name: "Edited Nord".into(),
+            base: ThemeChoice::Nord,
+            palette: edited,
+        };
+        let cases = ThemeChoice::ALL
+            .into_iter()
+            .map(|choice| (format!("{choice:?}"), choice.palette(), choice.is_light()))
+            .chain([(custom.name.clone(), custom.palette, custom.is_light())]);
         let mut theme = Theme::default();
-        for choice in ThemeChoice::ALL {
-            choice.configure(&mut theme);
-            let palette = choice.palette();
+        for (choice, palette, is_light) in cases {
+            palette.configure(is_light, &mut theme);
             let foreground: Hsla = rgb(palette.accent_foreground).into();
             assert_eq!(theme.colors.button_primary_foreground, foreground);
             for token in [
@@ -806,7 +1257,7 @@ mod tests {
                 let background = u32::from(token.color.to_rgb()) >> 8;
                 assert!(
                     contrast(foreground, background) >= 4.5,
-                    "{choice:?} destructive action label must remain readable"
+                    "{choice} destructive action label must remain readable"
                 );
                 assert_eq!(token.background, Background::from(token.color));
             }
@@ -822,11 +1273,11 @@ mod tests {
                 (theme.tokens.scrollbar_thumb, palette.border),
             ] {
                 let color: Hsla = rgb(expected).into();
-                assert_eq!(token.color, color, "{choice:?} resolved color");
+                assert_eq!(token.color, color, "{choice} resolved color");
                 assert_eq!(
                     token.background,
                     Background::from(color),
-                    "{choice:?} renderable background"
+                    "{choice} renderable background"
                 );
             }
         }
@@ -854,35 +1305,103 @@ mod tests {
     }
 
     #[test]
+    fn adapted_family_themes_keep_their_storage_names_labels_and_lightness() {
+        assert_eq!(ThemeChoice::ALL.len(), 20);
+        for (choice, stored, label, light) in [
+            (
+                ThemeChoice::SolarizedDark,
+                "solarized_dark",
+                "Solarized Dark",
+                false,
+            ),
+            (
+                ThemeChoice::SolarizedLight,
+                "solarized_light",
+                "Solarized Light",
+                true,
+            ),
+            (ThemeChoice::OneDark, "one_dark", "One Dark", false),
+            (ThemeChoice::OneLight, "one_light", "One Light", true),
+            (ThemeChoice::RosePine, "rose_pine", "Rosé Pine", false),
+            (
+                ThemeChoice::RosePineDawn,
+                "rose_pine_dawn",
+                "Rosé Pine Dawn",
+                true,
+            ),
+            (ThemeChoice::Dracula, "dracula", "Dracula", false),
+            (ThemeChoice::Alucard, "alucard", "Alucard", true),
+            (
+                ThemeChoice::KanagawaWave,
+                "kanagawa_wave",
+                "Kanagawa Wave",
+                false,
+            ),
+            (
+                ThemeChoice::KanagawaLotus,
+                "kanagawa_lotus",
+                "Kanagawa Lotus",
+                true,
+            ),
+        ] {
+            assert!(ThemeChoice::ALL.contains(&choice));
+            assert_eq!(serde_json::to_value(choice).unwrap(), stored);
+            assert_eq!(
+                serde_json::from_value::<ThemeChoice>(stored.into()).unwrap(),
+                choice
+            );
+            assert_eq!(choice.label(), label);
+            assert_eq!(choice.is_light(), light);
+            // Two words around a middle dot, like "Deep slate · mint".
+            let (surface, accent) = choice.description().split_once(" · ").unwrap();
+            assert_eq!(surface.split(' ').count(), 2, "{choice:?}");
+            assert_eq!(accent.split(' ').count(), 1, "{choice:?}");
+        }
+    }
+
+    #[test]
     fn saved_daylight_remains_braden_without_changing_its_storage_or_light_mapping() {
         let saved =
             r#"{"theme":"daylight","follow_system":false,"density":"compact","code_text_size":19}"#;
         let mut settings: crate::preferences::AppSettings = serde_json::from_str(saved).unwrap();
-        assert_eq!(settings.theme.label(), "Braden");
+        assert_eq!(
+            settings.theme,
+            custom::ThemeSelection::BuiltIn(ThemeChoice::Daylight)
+        );
+        assert_eq!(ThemeChoice::Daylight.label(), "Braden");
         assert_eq!(
             serde_json::to_value(&settings).unwrap()["theme"],
             "daylight"
         );
         assert_eq!(settings.density, Density::Compact);
         assert_eq!(settings.code_text_size, 19);
+        let resolved = |settings: &crate::preferences::AppSettings, appearance| {
+            settings.resolved_theme(appearance, &[]).selection
+        };
+        let built_in = custom::ThemeSelection::BuiltIn;
         assert_eq!(
-            settings.resolved_theme(gpui_kit::WindowAppearance::Dark),
-            ThemeChoice::Daylight
+            resolved(&settings, gpui_kit::WindowAppearance::Dark),
+            built_in(ThemeChoice::Daylight)
         );
         settings.follow_system = true;
         for light in [
             ThemeChoice::Daylight,
             ThemeChoice::Porcelain,
             ThemeChoice::Sandstone,
+            ThemeChoice::SolarizedLight,
+            ThemeChoice::OneLight,
+            ThemeChoice::RosePineDawn,
+            ThemeChoice::Alucard,
+            ThemeChoice::KanagawaLotus,
         ] {
-            settings.theme = light;
+            settings.theme = built_in(light);
             assert_eq!(
-                settings.resolved_theme(gpui_kit::WindowAppearance::Light),
-                ThemeChoice::Daylight
+                resolved(&settings, gpui_kit::WindowAppearance::Light),
+                built_in(ThemeChoice::Daylight)
             );
             assert_eq!(
-                settings.resolved_theme(gpui_kit::WindowAppearance::Dark),
-                ThemeChoice::Midnight
+                resolved(&settings, gpui_kit::WindowAppearance::Dark),
+                built_in(ThemeChoice::Midnight)
             );
         }
     }

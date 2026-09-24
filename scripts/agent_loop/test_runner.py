@@ -12,9 +12,11 @@ import unittest
 from unittest.mock import patch
 
 from agent_loop.git import clean, git, head
-from agent_loop.process import LoopError, atomic_json, read_json
-from agent_loop.runner import Runner, attest, create_run, locked, profiles_for, validate_patch
+from agent_loop.process import LoopError, MalformedResponse, atomic_json, read_json
+from agent_loop.runner import Runner, attest, create_run, gate_context, locked, main, profiles_for, validate_patch
 from agent_loop.task_spec import parse_spec
+# Records and run state stay private even when the host umask is permissive.
+from agent_loop.test_support import setUpModule, tearDownModule
 
 
 CONTROLLER = Path(__file__).resolve().parents[2]
@@ -37,13 +39,15 @@ class FakeCodex:
         self.mutate = mutate
         self.blocked = blocked
         self.calls = []
+        self.sessions = []
         self.output_tokens = 0
 
     def preflight(self):
         return "fixture Codex"
 
-    def run(self, role, feature, repo, directory, timeout, stop, *, candidate=None, context=""):
+    def run(self, role, feature, repo, directory, timeout, stop, *, candidate=None, context="", **options):
         self.calls.append((role, feature.id))
+        self.sessions.append((role, options))
         self.output_tokens += 10
         if role == "implementer":
             (repo / "docs").mkdir(exist_ok=True)
@@ -57,6 +61,7 @@ class FakeCodex:
             "task_id": feature.id, "candidate": candidate, "verdict": verdict,
             "criteria": [{"id": "content", "status": "fail" if verdict == "fail" else "unverified" if verdict == "blocked" else "pass", "evidence": "Inspected the actual guide."}],
             "findings": [] if verdict == "pass" else ["The required explanation is incomplete."],
+            "notes": [],
         }
 
 
@@ -109,9 +114,51 @@ class RunnerTests(unittest.TestCase):
         state = self.execute(directory, adapter)
         self.assertEqual(state["phase"], "complete")
         self.assertEqual(adapter.calls, [("implementer", "one"), ("verifier", "one"), ("implementer", "two"), ("verifier", "two")])
+        # Implementer sessions name the run's own queue so the edit hook can protect it.
+        self.assertEqual([options.get("spec_path") for role, options in adapter.sessions if role == "implementer"],
+                         ["tasks.json", "tasks.json"])
+        self.assertEqual([options.get("spec_path") for role, options in adapter.sessions if role == "verifier"],
+                         [None, None])
         self.assertEqual(git(directory / "accepted", "log", "-2", "--format=%s").splitlines(), ["docs: explain two workflow", "docs: explain one workflow"])
         self.assertEqual(git(directory / "accepted", "remote").strip(), "")
         self.assertEqual(state["output_tokens"], 40)
+
+    def land(self, paths, subject):
+        for path in paths:
+            (self.root / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / path).write_text(f"{subject}\n")
+        git(self.root, "add", "--", *paths)
+        git(self.root, "commit", "--quiet", "-m", subject)
+        self.original_head = head(self.root)
+        return self.original_head
+
+    def test_fresh_run_continues_a_queue_whose_tasks_already_landed(self):
+        specification = self.prepare([task("two", ["one"]), task("one")])
+        landed = self.land(["docs/one.md"], "docs: explain one workflow")
+        # A later unrelated commit leaves the match intact.
+        self.land(["docs/three.md"], "docs: explain three workflow")
+        with patch("agent_loop.runner.Codex.preflight", return_value="fixture Codex"):
+            directory = create_run(self.root, specification, CONTROLLER, self.options | {"max_tasks": 1})
+        record = read_json(directory / "state.json")["tasks"]["one"]
+        self.assertEqual((record["status"], record["landed"], record["attempts"]), ("accepted", landed, 0))
+        adapter = FakeCodex()
+        state = self.execute(directory, adapter)
+        # The landed task is not redone and does not count against --max-tasks.
+        self.assertEqual(adapter.calls, [("implementer", "two"), ("verifier", "two")])
+        self.assertEqual(state["phase"], "complete")
+
+    def test_landed_detection_requires_scope_and_landed_dependencies(self):
+        specification = self.prepare([task("one"), task("two", ["one"]), task("three")])
+        # Right subject, wrong paths: not this task's commit.
+        self.land(["docs/one.md", "protected.txt"], "docs: explain one workflow")
+        # In scope, but its dependency never landed.
+        self.land(["docs/two.md"], "docs: explain two workflow")
+        self.land(["docs/three.md"], "docs: explain three workflow")
+        with patch("agent_loop.runner.Codex.preflight", return_value="fixture Codex"):
+            directory = create_run(self.root, specification, CONTROLLER, self.options)
+        tasks = read_json(directory / "state.json")["tasks"]
+        self.assertEqual({key: value["status"] for key, value in tasks.items()},
+                         {"one": "pending", "two": "pending", "three": "accepted"})
 
     def test_red_review_retries_with_failed_commit_preserved(self):
         directory = self.create()
@@ -133,6 +180,22 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(git(self.root, "diff", "--cached", "--binary"), before)
         self.assertEqual(head(self.root), self.original_head)
         self.assertFalse((self.root / ".local").exists())
+
+    def test_cli_run_keeps_run_state_private_under_a_permissive_umask(self):
+        specification = self.prepare()
+        previous = os.umask(0o002)
+        self.addCleanup(os.umask, previous)
+        output = io.StringIO()
+        with patch("agent_loop.runner.Codex.preflight", return_value="fixture Codex"), \
+                patch.object(Runner, "execute", lambda runner: runner.state | {"phase": "complete"}), \
+                redirect_stdout(output):
+            code = main(["run", "--repo", str(self.root), "--tasks", str(specification), "--model", "gpt-6-astra",
+                         "--effort", "high", "--max-tasks", "1", "--max-attempts", "1", "--max-minutes", "1"])
+        self.assertEqual(code, 0, output.getvalue())
+        directory = Path(output.getvalue().splitlines()[0].removeprefix("run: "))
+        for path in (directory.parent, directory, directory / "controller", directory / "accepted",
+                     directory / "tasks.json", directory / "state.json"):
+            self.assertEqual(path.stat().st_mode & 0o077, 0, path)
 
     def test_hidden_index_change_is_rejected_before_commit(self):
         self.prepare()
@@ -279,6 +342,133 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("tooling", profiles_for(feature, ["scripts/example.py"]))
         self.assertIn("vendor", profiles_for(feature, ["vendor/example/Cargo.toml"]))
         self.assertIn("package", profiles_for(feature, ["assets/app-icon.png"]))
+
+    def test_review_sessions_receive_the_gate_result_not_only_its_path(self):
+        # A review session cannot read a path outside its checkout, so pointing
+        # at the evidence left every gate-backed criterion unverified.
+        report = self.root / "gates.json"
+        atomic_json(report, {"passed": True, "checks": [
+            {"name": "clippy", "returncode": 0, "elapsed": 4.4, "stopped": None,
+             "argv": ["cargo", "clippy"], "log": "/elsewhere/clippy.log"},
+        ]})
+        context = gate_context(report)
+        self.assertIn(str(report), context)
+        self.assertIn('"passed": true', context)
+        self.assertIn('"name": "clippy"', context)
+        # Only the outcome travels; log paths and argv stay out of the prompt.
+        self.assertNotIn("/elsewhere/clippy.log", context)
+        self.assertIn("unreadable", gate_context(self.root / "absent.json"))
+
+    def test_an_unreadable_verdict_retains_the_candidate_instead_of_rebuilding(self):
+        class UnreadableVerdict(FakeCodex):
+            def run(self, role, feature, repo, directory, timeout, stop, **options):
+                if role != "implementer":
+                    self.calls.append((role, feature.id))
+                    raise MalformedResponse("verifier session returned no structured output")
+                return super().run(role, feature, repo, directory, timeout, stop, **options)
+
+        directory = self.create()
+        adapter = UnreadableVerdict()
+        state = self.execute(directory, adapter)
+        record = state["tasks"]["one"]
+        self.assertEqual(record["status"], "review_blocked")
+        self.assertIn("no structured output", record["reason"])
+        # One implementation, kept whole with its gate evidence for the retry.
+        self.assertEqual([role for role, _ in adapter.calls], ["implementer", "verifier"])
+        self.assertEqual(record["attempts"], 1)
+        self.assertTrue(record["candidate"])
+        self.assertTrue(record["gate_sha256"])
+
+    def test_app_rust_requires_native_evidence_without_the_two_revisions(self):
+        feature = parse_spec({"version": 1, "tasks": [task()]})[0]
+        self.assertIn("native", profiles_for(feature, ["crates/app/src/views.rs"]))
+        self.assertIn("native", profiles_for(feature, ["vendor/gpui/src/window.rs"]))
+
+    def test_app_rust_that_adds_no_rendering_code_skips_native_evidence(self):
+        feature = parse_spec({"version": 1, "tasks": [task()]})[0]
+        table = "pub mod solarized {\n    pub const BASE03: u32 = 0x002b36;\n}\n"
+        sources = {"crates/app/src/appearance/sources.rs": ("", table)}
+        profiles = profiles_for(feature, list(sources), sources.__getitem__)
+        self.assertIn("rust", profiles)
+        self.assertNotIn("native", profiles)
+
+    def test_a_rendering_change_beside_an_inert_one_still_requires_native_evidence(self):
+        feature = parse_spec({"version": 1, "tasks": [task()]})[0]
+        sources = {
+            "crates/app/src/appearance/sources.rs": ("", "pub const BASE03: u32 = 0x002b36;\n"),
+            "crates/app/src/views.rs": ('fn header() { div().child("History"); }\n',
+                                        'fn header() { div().child("Commits"); }\n'),
+        }
+        self.assertIn("native", profiles_for(feature, sorted(sources), sources.__getitem__))
+
+    def test_a_mirror_sweep_is_left_out_of_the_candidate_and_recorded(self):
+        # An IDE sweep copies .claude/ into .codex/ and .agents/skills/ in every
+        # checkout a session ran in, so the themes run needed a janitor deleting
+        # those files before validate_patch counted them as a protected change.
+        sweep = [".codex/config.toml", ".codex/hooks.json", ".codex/hooks/stop.py",
+                 ".codex/agents/verifier.toml", ".agents/skills/gitturtle-gates/SKILL.md"]
+
+        class SweptCodex(FakeCodex):
+            def run(self, role, feature, repo, directory, timeout, stop, **options):
+                result = super().run(role, feature, repo, directory, timeout, stop, **options)
+                for path in sweep:
+                    (repo / path).parent.mkdir(parents=True, exist_ok=True)
+                    (repo / path).write_text("mirror\n")
+                return result
+
+        directory = self.create()
+        state = self.execute(directory, SweptCodex())
+        record = state["tasks"]["one"]
+        self.assertEqual(record["status"], "accepted")
+        self.assertEqual(record["mirror_untracked"], sorted(sweep))
+        patch_text = (Path(record["directory"]) / "candidate.patch").read_text()
+        self.assertIn("docs/one.md", patch_text)
+        self.assertNotIn(".codex", patch_text)
+        self.assertNotIn(".agents", patch_text)
+        self.assertEqual(git(directory / "accepted", "ls-tree", "-r", "--name-only", record["candidate"], "--", ".codex", ".agents"), "")
+
+    def test_a_mirror_sweep_after_the_build_passes_the_clean_checks(self):
+        def sweeping_gates(repo, profiles, directory):
+            (repo / ".codex").mkdir(exist_ok=True)
+            (repo / ".codex/config.toml").write_text("mirror\n")
+            return {"passed": True, "checks": []}
+
+        directory = self.create()
+        state = self.execute(directory, FakeCodex(), sweeping_gates)
+        record = state["tasks"]["one"]
+        self.assertEqual(record["status"], "accepted")
+        self.assertEqual(record["mirror_untracked"], [".codex/config.toml"])
+
+    def test_tracked_files_under_the_mirror_roots_stay_protected(self):
+        self.prepare()
+        tracked = self.root / ".codex/agents/verifier.toml"
+        tracked.parent.mkdir(parents=True)
+        tracked.write_text('model = "one"\n')
+        git(self.root, "add", "--", ".codex/agents/verifier.toml")
+        git(self.root, "commit", "--quiet", "-m", "chore: track a codex agent")
+        self.original_head = head(self.root)
+        feature = parse_spec({"version": 1, "tasks": [task()]})[0]
+        (self.root / "docs/one.md").write_text("allowed\n")
+        (self.root / ".codex/config.toml").write_text("mirror\n")
+        tracked.write_text('model = "two"\n')
+        with self.assertRaisesRegex(LoopError, "protected or out-of-scope path: .codex/agents/verifier.toml"):
+            validate_patch(self.root, feature, self.original_head)
+        tracked.write_text('model = "one"\n')
+        self.assertEqual(validate_patch(self.root, feature, self.original_head), ["docs/one.md"])
+
+    def test_untracked_files_outside_the_mirror_roots_keep_the_scope_check(self):
+        self.prepare()
+        feature = parse_spec({"version": 1, "tasks": [task()]})[0]
+        (self.root / "docs/one.md").write_text("allowed\n")
+        stray = self.root / ".agents/other/AGENT.md"
+        stray.parent.mkdir(parents=True)
+        stray.write_text("mirror\n")
+        with self.assertRaisesRegex(LoopError, "protected or out-of-scope path: .agents/other/AGENT.md"):
+            validate_patch(self.root, feature, self.original_head)
+        stray.unlink()
+        (self.root / "docs/two.md").write_text("stray\n")
+        with self.assertRaisesRegex(LoopError, "out-of-scope path: docs/two.md"):
+            validate_patch(self.root, feature, self.original_head)
 
 
 if __name__ == "__main__":

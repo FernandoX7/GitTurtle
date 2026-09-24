@@ -1,0 +1,61 @@
+# file  sha256  capture it was copied from. The PNGs were re-taken on 2026-09-24 from 5899e2a; their captures
+# are relative to <worktree>/.local/themes-evidence/evidence-followups-5899e2a/. The exported document is
+# from the 2026-09-19 run of 301d82a.
+transfer-1000x680-06-app-while-save-dialog.png  009b20461fe5599519e0cc7c8c91df98aff7b983b97f717093bf6be4931f9bee  b2/runs/cand/ie/transfer1000/captures/06-app-while-save-dialog.png
+    the app while the native Save File dialog is up: every Your themes action is disabled and the focus ring stays on Export…
+transfer-1000x680-07-exported.png  feaadbcb0f7888419f3024f27987d9e6c26bf812005904b9f93fef23b0f5ef35  b2/runs/cand/ie/transfer1000/captures/07-exported.png
+    the inline report of the written path after accepting the suggested file name
+transfer-1000x680-08-export-cancelled.png  2c7541b7eed9e76e83ab2359df5f243b547e737bba22ad10ad0b59d86279cf48  b2/runs/cand/ie/transfer1000/captures/08-export-cancelled.png
+    Escape in the save dialog: no message, nothing written
+transfer-1000x680-11-deleted.png  0a6409490b26ddad08be6dec7b0b980b959831cf486e49a025fe60b9102bfb68  b2/runs/cand/ie/transfer1000/captures/11-deleted.png
+    the theme deleted, the base palette applied
+transfer-1000x680-13-imported.png  aade5d870bdfad405550c6586d7b3f1122778b1157973053672b9a6d8cfea360  b2/runs/cand/ie/transfer1000/captures/13-imported.png
+    the exported document imported: added and highlighted, not applied (no checkmark)
+transfer-1000x680-14-collision.png  87fcc9c981a28327a1fb704c81c9783216769d023e4de3c565af5afdfa7f3d38  b2/runs/cand/ie/transfer1000/captures/14-collision.png
+    importing the same document again: “Harbor Dusk (imported)”
+transfer-1000x680-15-import-cancelled.png  0c6e0093be62ad08d35eafbf569431ba6f7ae012aae5764b25585c02d6ba673f  b2/runs/cand/ie/transfer1000/captures/15-import-cancelled.png
+    Escape in the open dialog: no message, no change
+transfer-1000x680-16-refuse-notjson.png  29bb7a8f8a15a20647b83471f8bade59b40793c2f5403d8c4b770ddbb9ddcd65  b2/runs/cand/ie/transfer1000/captures/16-refuse-notjson.png
+    refused: bytes that are not JSON
+transfer-1000x680-17-refuse-badformat.png  b5dc2f07a3bb5765a768ba72cb1314a2787e7deb916d4005dd8db83b0496e22f  b2/runs/cand/ie/transfer1000/captures/17-refuse-badformat.png
+    refused: a wrong “format”
+transfer-1000x680-18-refuse-version2.png  e387ce411e2d6c97a69d5fb4f24e380c9b51f8a43eb0c8e0259b75875d39aa22  b2/runs/cand/ie/transfer1000/captures/18-refuse-version2.png
+    refused: format version 2
+transfer-1000x680-19-refuse-missingtoken.png  13a401aa1ef7fdda76295cb5796f70b04623f75261e907db23cea9cee4b01230  b2/runs/cand/ie/transfer1000/captures/19-refuse-missingtoken.png
+    refused: a missing token
+transfer-1000x680-20-refuse-unknownkey.png  26972990f6384679580db0f5ff01c5abe5aaa67874ae8504800e560e5bb58d24  b2/runs/cand/ie/transfer1000/captures/20-refuse-unknownkey.png
+    refused: an unknown top-level key
+transfer-1000x680-21-refuse-nonhex.png  dd16bc967afb1d68784caa826699abff86d404f1d220d391d3e84c289941465b  b2/runs/cand/ie/transfer1000/captures/21-refuse-nonhex.png
+    refused: a token that is not #rrggbb
+transfer-1000x680-22-refuse-oversize.png  cdc05d1967d32a631652128ab69c8a5c1b2d209b8ea5f5251d1c300a4dff6862  b2/runs/cand/ie/transfer1000/captures/22-refuse-oversize.png
+    refused: a document over 64 KiB
+transfer-1000x680-23-refuse-symlink.png  ed7add703b7a642b1ff3d51bd69c23a206e69652362479b7bd51cbf4ee7b2009  b2/runs/cand/ie/transfer1000/captures/23-refuse-symlink.png
+    refused: a symbolic link
+transfer-1000x680-24-refuse-folder-not-selectable.png  0c6e0093be62ad08d35eafbf569431ba6f7ae012aae5764b25585c02d6ba673f  b2/runs/cand/ie/transfer1000/captures/24-refuse-folder-not-selectable.png
+    a folder: the portal's files-only dialog navigates into it instead of returning it, so nothing reaches the app
+transfer-1000x680-25-unknown-base.png  235e760439398ce02928121ae5e84315075cb33b79cd892bf3777a5bcdcf9f28  b2/runs/cand/ie/transfer1000/captures/25-unknown-base.png
+    an unknown base is replaced by Braden with a notice
+transfer-1440x900-07-exported.png  ad15d9b371d88dcbd35e3b1e65d841b8fad97bd68200905db20d57907c3957c1  b2/runs/cand/ie/transfer1440/captures/07-exported.png
+    the same export at 1440x900: the written path wraps inside the card
+transfer-1440x900-13-imported.png  4992463a875e0a6f1b15a988277cd20d445d6d18690f4a040ac57c5e9767cd8c  b2/runs/cand/ie/transfer1440/captures/13-imported.png
+    the same import at 1440x900
+transfer-1440x900-21-refuse-nonhex.png  8ed043d3155a773a298739ca9fb947f683f41679f720f4cb67fdf2896e5ff936  b2/runs/cand/ie/transfer1440/captures/21-refuse-nonhex.png
+    the same refusal at 1440x900
+transfer-1440x900-25-unknown-base.png  b32b045697a6b8b7e5d7f7832dc5c7104278962f6dcc4d536aca055705350929  b2/runs/cand/ie/transfer1440/captures/25-unknown-base.png
+    the same notice at 1440x900
+noportal-1000x680-01-export-guidance.png  577720bfc3bf995ec72150e7200c860597f670f5f4168f6e6a5ff5e3f53b5faf  b2/runs/cand/ie/noportal/captures/01-export-guidance.png
+    no FileChooser portal on the bus: Export… reports the picker guidance
+noportal-1000x680-03-import-guidance.png  3510d2cd8a884bb9f14f4c80289805676d1ebcd61bd2b8cd635e46f26b48cb13  b2/runs/cand/ie/noportal/captures/03-import-guidance.png
+    no FileChooser portal on the bus: Import… reports the picker guidance
+bound-1000x680-00-bound-card.png  2be2c1bea0125de679f12872ca73ab9b11fd5850a591942a64a4abed07ef3ba0  b2/runs/cand/ie/bound/captures/00-bound-card.png
+    32 saved themes: New theme… and Import… are disabled
+transfer-1000x680-exported-document.json  c4c8271ed6eca156074fea6eb8b65f7b22ef6a078b247a3b6e4fe0fbd32b9ad8  run-1000x680/exported-document.json
+    the 690-byte document the export wrote, as the app wrote it
+collision2-1000x680-02-collision-2.png  011c4d2de542a4a13f3fe8549f0d444ecb9be7e13ed232c488d6d937a1e6be12  b2/runs/cand/ie/collision2/captures/02-collision-2.png
+    a third import with “<name>” and “<name> (imported)” already saved: “<name> (imported) (2)”
+list32-1000x680-12-tab-reveals-row32-delete.png  efa681bdd57f421f1b22f92a9a4508ee408a27fa1be56eb6f1711ec9e897b82b  b2/runs/cand/list32/1000x680/captures/12-tab-snap-boundary.png
+    32 saved themes, the list at its end: Tab to row 32's Delete… draws its whole focus ring, clear of the scrollbar
+bound-1000x680-01-hover-import-disabled.png  2fad29ca46039e658c9614510d45b3d7ccc7ed467212b92b66bca5a027fcd807  b2/runs/cand/ie/bound/captures/01-bound-hover-import.png
+    32 saved themes: the disabled Import… tooltip gives the reason and the remedy
+lotus-1000x680-01-refuse-notjson.png  db8ae99d6b46e697540251edf42e52a4576da97c7933363ba879ebaa66b56cd5  b2/runs/cand/warn/kanagawa_lotus/captures/01-refuse-notjson.png
+    Kanagawa Lotus: a refused import's failure line in its warning color on the subtle surface

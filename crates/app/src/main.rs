@@ -61,6 +61,7 @@ mod split_diff;
 mod tags;
 mod text;
 mod text_review;
+mod theme_editor;
 mod views;
 #[cfg(target_os = "linux")]
 mod window_chrome;
@@ -252,6 +253,12 @@ struct GitTurtle {
     modal_return_focus: Option<FocusHandle>,
     modal_focus_generation: u64,
     settings_editor: Entity<InputState>,
+    /// The Settings page's own view, embedded cached by `render`
+    /// (`settings::SettingsPage`).
+    settings_page: Entity<settings::SettingsPage>,
+    /// Where the Settings page's last build placed the picker cards, whose
+    /// bodies `settings::CardLayer` draws after the page every frame.
+    picker_cards: settings::CardSlots,
     history_search: history_search::State,
     history_updates: history_updates::State,
     file_history: file_history::State,
@@ -271,6 +278,59 @@ struct GitTurtle {
     rename_project: Option<Entity<projects::RenameProjectForm>>,
     /// Known projects and their user-defined groups, shown by the left pane.
     project_library: project_library::ProjectLibrary,
+    /// Saved custom themes, which a custom `settings.theme` selection resolves against.
+    custom_themes: Vec<appearance::custom::CustomTheme>,
+    /// One miniature per picker card, built-in and custom, so the Settings
+    /// picker can reuse the preview bodies that a palette change does not
+    /// alter (`settings::ThemePreviewBody`). Each is stored with the selection
+    /// it draws and found through `GitTurtle::theme_preview_body`, never by
+    /// position: `ThemeChoice::ALL` is in display order, not discriminant
+    /// order, and a custom id is not an index. `GitTurtle::set_custom_themes`
+    /// is the only writer of `custom_themes` and keeps the custom entries in
+    /// step: a saved palette is pushed into its existing body, which notifies
+    /// only when it changed, and a deleted theme's body is dropped.
+    theme_previews: Vec<(
+        appearance::custom::ThemeSelection,
+        Entity<settings::ThemePreviewBody>,
+    )>,
+    /// The picker cards' focus handles, one per built-in and one per saved
+    /// custom theme, each stored with the selection its card draws. The app
+    /// owns them, as it owns the miniatures, so they outlive a replayed page,
+    /// and each card's button tracks its own (the patched kit
+    /// `Button::track_focus`), so the picker finds the focused card for its
+    /// focus ring;
+    /// `GitTurtle::set_custom_themes` keeps the custom entries in step.
+    theme_card_focus: Vec<(appearance::custom::ThemeSelection, FocusHandle)>,
+    /// The picker cards' cached bodies (`settings::ThemeCardBody`), one per
+    /// built-in and one per saved custom theme, each stored with the
+    /// selection its card draws and kept in step as `theme_card_focus` is.
+    /// `GitTurtle::sync_theme_cards` sets what each shows.
+    theme_card_bodies: Vec<(
+        appearance::custom::ThemeSelection,
+        Entity<settings::ThemeCardBody>,
+    )>,
+    /// Test-only: the debug selector and accessible name of every card the
+    /// last picker render built, in order
+    /// (`theme_editor::tests::custom_themes_form_a_third_picker_group`).
+    #[cfg(test)]
+    card_names: std::cell::RefCell<Vec<(String, String)>>,
+    /// Test-only: the debug selector and accessible name of every Your themes
+    /// action the last Settings build drew: New theme…, Import… and each drawn
+    /// row's Edit…, Export… and Delete…
+    /// (`theme_editor::tests::your_themes_actions_carry_their_accessible_names`).
+    #[cfg(test)]
+    theme_action_names: std::cell::RefCell<Vec<(String, String)>>,
+    /// Test-only: the debug selector and tooltip of New theme… and Import…
+    /// as the last Settings build drew them
+    /// (`settings::picker_tests::bound_tooltips_say_what_to_delete`).
+    #[cfg(test)]
+    theme_action_tooltips: std::cell::RefCell<[(String, String); 2]>,
+    /// Test-only: the palette every draw of this view saw. A Settings theme
+    /// switch and a live-preview edit each cost exactly one draw, which
+    /// already shows the new palette; see
+    /// `theme_editor::tests::an_edit_and_a_switch_each_draw_the_window_once`.
+    #[cfg(test)]
+    draws: Vec<appearance::Palette>,
     project_pane: project_pane::State,
     draft_saver: commit_drafts::DraftSaver,
     recovery_drafts: recovery_drafts::State,
@@ -293,6 +353,7 @@ struct GitTurtle {
     integration_task: Option<Task<()>>,
     profile: Option<gitturtle_core::GitProfile>,
     profiles: profiles::State,
+    theme_editor: theme_editor::State,
     remotes: Vec<gitturtle_core::Remote>,
     working_rows: Vec<workspace::WorkingRow>,
     working_selected: Option<(usize, gitturtle_core::ChangeArea)>,
@@ -314,7 +375,7 @@ struct GitTurtle {
     git_actions_open: bool,
     layout_trace: Option<(
         Size<Pixels>,
-        appearance::ThemeChoice,
+        appearance::custom::ThemeSelection,
         appearance::Density,
         u8,
         u8,
@@ -446,10 +507,75 @@ impl GitTurtle {
                 .default_value(settings.external_editor.clone())
                 .placeholder("Visual Studio Code")
         });
+        // A built-in's miniature never changes: it draws one built-in
+        // palette. A custom miniature draws its saved palette until that theme
+        // is saved again. Their entities outlive a palette change so its frame
+        // can reuse them.
+        let theme_previews: Vec<(_, Entity<settings::ThemePreviewBody>)> =
+            appearance::ThemeChoice::ALL
+                .into_iter()
+                .map(|choice| {
+                    (
+                        appearance::custom::ThemeSelection::BuiltIn(choice),
+                        choice.palette(),
+                    )
+                })
+                .chain(preferences.custom_themes.iter().map(|theme| {
+                    (
+                        appearance::custom::ThemeSelection::Custom(theme.id),
+                        theme.palette,
+                    )
+                }))
+                .map(|(selection, palette)| {
+                    (
+                        selection,
+                        cx.new(|_| settings::ThemePreviewBody::new(palette)),
+                    )
+                })
+                .collect();
+        let theme_card_bodies = theme_previews
+            .iter()
+            .map(|(selection, miniature)| {
+                let miniature = miniature.entity_id();
+                (
+                    *selection,
+                    cx.new(|_| settings::ThemeCardBody::new(miniature)),
+                )
+            })
+            .collect();
+        let theme_card_focus = appearance::ThemeChoice::ALL
+            .into_iter()
+            .map(appearance::custom::ThemeSelection::BuiltIn)
+            .chain(
+                preferences
+                    .custom_themes
+                    .iter()
+                    .map(|theme| appearance::custom::ThemeSelection::Custom(theme.id)),
+            )
+            .map(|selection| (selection, cx.focus_handle()))
+            .collect();
         let file_filter =
             cx.new(|cx| InputState::new(window, cx).placeholder("Filter changed paths…"));
         let working_filter =
             cx.new(|cx| InputState::new(window, cx).placeholder("Filter working paths…"));
+        // The Settings page's own view; `render` embeds it cached and the app
+        // notifies it at every site that alters the page
+        // (`settings::SettingsPage`).
+        let settings_page = {
+            let owner = cx.entity().downgrade();
+            cx.new(|cx| {
+                settings::SettingsPage::new(
+                    owner,
+                    [
+                        &settings_branch,
+                        &settings_editor,
+                        &identity_name,
+                        &identity_email,
+                    ],
+                    cx,
+                )
+            })
+        };
         let mut this = Self {
             activity,
             recovery_drafts,
@@ -476,6 +602,8 @@ impl GitTurtle {
             modal_return_focus: None,
             modal_focus_generation: 0,
             settings_editor,
+            settings_page,
+            picker_cards: settings::CardSlots::default(),
             history_search: history_search::State::default(),
             history_updates: history_updates::State::default(),
             file_history: file_history::State::default(),
@@ -491,6 +619,18 @@ impl GitTurtle {
             commit_drafts: preferences.commit_drafts,
             project_names: preferences.project_names.clone(),
             project_library: preferences.project_library.clone(),
+            custom_themes: preferences.custom_themes.clone(),
+            theme_previews,
+            theme_card_focus,
+            theme_card_bodies,
+            #[cfg(test)]
+            draws: Vec::new(),
+            #[cfg(test)]
+            card_names: Default::default(),
+            #[cfg(test)]
+            theme_action_names: Default::default(),
+            #[cfg(test)]
+            theme_action_tooltips: Default::default(),
             project_pane: project_pane::State::new(cx),
             rename_project: None,
             draft_saver: commit_drafts::DraftSaver::default(),
@@ -513,6 +653,7 @@ impl GitTurtle {
             integration_task: None,
             profile: None,
             profiles: profiles::State::default(),
+            theme_editor: theme_editor::State::default(),
             remotes: Vec::new(),
             working_rows: Vec::new(),
             working_selected: None,
@@ -1295,7 +1436,7 @@ impl GitTurtle {
         let Some(start) = self.interaction_started.take() else {
             return;
         };
-        if std::env::var_os("GITTURTLE_TRACE").is_none() {
+        if !trace_enabled() {
             return;
         }
         let generation = self.generation;
@@ -1310,6 +1451,19 @@ impl GitTurtle {
                     );
                 }
             });
+        });
+    }
+
+    /// Print `gitturtle.<metric>` from a handler-captured `start` at the
+    /// window's next frame callback. Unlike `trace_frame`, the traced work
+    /// changes neither content generation nor mode, so no staleness guard or
+    /// shared `interaction_started` slot applies; each call prints once.
+    fn trace_next_frame(metric: &'static str, start: Instant, window: &mut Window) {
+        window.on_next_frame(move |_, _| {
+            eprintln!(
+                "gitturtle.{metric}={:.3}",
+                start.elapsed().as_secs_f64() * 1000.
+            );
         });
     }
 
@@ -1517,13 +1671,13 @@ impl GitTurtle {
                     this.open_repository_tab(path, window, cx);
                 }
                 Ok(None) => {}
-                Err(error) => window.open_alert_dialog(cx, move |dialog, _, _| {
+                Err(error) => window.open_alert_dialog(cx, move |dialog, _, cx| {
                     dialog.title("Could not open repository picker").child(
                         div()
                             .id("repository-picker-error")
                             .role(Role::Label)
                             .aria_label(error.clone())
-                            .child(error.clone()),
+                            .child(folder_picker::styled_message(&error, palette(cx).muted)),
                     )
                 }),
             });
@@ -1839,9 +1993,10 @@ fn main() {
         native_accessibility::bind_keys(cx);
         image_lifetime::init(cx);
         interactive_rebase::init(cx);
+        theme_editor::init(cx);
         preferences
             .settings
-            .resolved_theme(cx.window_appearance())
+            .resolved_theme(cx.window_appearance(), &preferences.custom_themes)
             .apply(None, cx);
         shortcuts::bind_keys(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());
@@ -1897,6 +2052,12 @@ fn main() {
         })
         .detach();
     });
+}
+
+/// Opt-in `gitturtle.*_frame_ms` interaction traces; see
+/// `docs/benchmarks/metrics.md` for each metric's boundary.
+fn trace_enabled() -> bool {
+    std::env::var_os("GITTURTLE_TRACE").is_some()
 }
 
 #[cfg(test)]

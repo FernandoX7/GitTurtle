@@ -1,0 +1,4869 @@
+{
+ "record": "2026-09-22-theme-draw-cost",
+ "candidate": "85a7d07e4adb792f7ec5aca775e7487522f16d24",
+ "tools_dir": "tools-85a7d07",
+ "task": "themes-draw-cost",
+ "criteria": [
+  "edit-budget",
+  "switch-no-regression"
+ ],
+ "criterion_text": {
+  "edit-frame-trace": "With GITTURTLE_TRACE=1 the editor prints gitturtle.theme_edit_frame_ms=<ms> exactly once per burst of live-preview edits and once per open, and nothing without the variable. The value starts at entry to the token row's change handler (the hex Input's InputEvent::Change or the ColorPicker's change, before the value is parsed) and ends inside the paint closure of a zero-size trace element that the root render defers at a priority above the dialog layer (Root::render_dialog_layer), so it is the last element Window::draw paints in the first frame drawn after the handler applied the draft, whether that draw runs in the frame tick or synchronously in Window::dispatch_key_event. It therefore contains the parse, the readability recompute, apply_appearance and the request_layout, layout, prepaint and paint of the whole window, and excludes next-frame callback waits, frame-finish bookkeeping, present and input delivery. Editor opens and edits no longer print theme_apply_frame_ms, whose switch boundary is unchanged. A #[gpui::test] asserts one line per edit whose end stamp is taken during that frame's paint after the dialog layer and never from a next-frame callback; docs/benchmarks/metrics.md defines the new metric with this boundary and its exclusions and removes the editor sentences from the switch metric's entry.",
+  "edit-budget": "In release mode at 2x on the themes-apply-trace fixture with History at 1 to 1000 and the 2,000-line Split comparison retained (the state of docs/benchmarks/2026-09-19-theme-editor.md), on a fresh version-6 store seeded with 32 custom themes (the bound: Seed 01 to Seed 32, bases cycling ThemeChoice::ALL, one token differing from the base, theme midnight, follow-system off), with the editor opened by Edit\u2026 on the first row (New theme\u2026 is disabled at the bound) and 60 valid Canvas hex edits in six dialogs of ten (the procedure of the 2026-09-19 record), each edit at least 1.2 s apart, cycling dark canvases that keep the Readability list empty, in one recorded launch designated in writing before it runs: gitturtle.theme_edit_frame_ms p95 \u2264 26 ms over the 60 pooled edits, the p95 being the 57th of the 60 sorted samples (owner decision of 2026-09-20, re-cut from 24 to 26 ms by owner decision of 2026-09-21 after candidates ea31261, 2030b3d and 23ee777 measured 26.348, 24.440 and 25.191 ms on this boundary with about 3 ms of launch-to-launch spread and the remaining elements reported as the editor dialog's kit Input and ColorPicker internals); the first dialog's ten edits are reported as the designated set and carry no bound. The bound sits at this boundary's draw plus about 2 ms of handler and apply: the diagnosis measured the draw at 19.5 ms on the empty store and 26.4 ms with 32 themes on the unvirtualized candidate, and puts the realistic floor after the row virtualization and layout wins at 15 to 19 ms. docs/benchmarks/ gains a dated record with the build identity (--build-info and executable SHA-256), host, cache state, the seed store's digest, raw samples for the 60 edits with the designated ten identified, the same procedure on an empty store, UI-thread CPU per edit, elements per frame before and after, and the dominant remaining cost; the performance-reviewer attests it with `python3 scripts/agent-loop.py attest --kind performance`.",
+  "switch-no-regression": "The same record shows 60 Settings theme switches by real pointer clicks cycling ThemeChoice::ALL on the empty store and on the 32-theme store, measured as in docs/benchmarks/2026-09-18-theme-apply.md: UI-thread CPU per switch (main-thread schedstat delta from the release to 150 ms after it) median \u2264 23 ms on the empty store (base 5637cec measured 26.4 ms with the save completion's second render, 58b6226 without it 21.0 ms) and no more than 4 ms higher on the 32-theme store, which shows the rows no longer cost every Settings frame (3 ms until 2026-09-22; widened to 4 ms by the coordinator under the owner's 2026-09-21 instruction that a few ms off is acceptable, after 85a7d07 measured +3.402 with switch-frame element counts identical to 23ee777, whose delta was +1.565, on a pass whose every UI-thread CPU figure ran 2 to 4 ms above the previous one because the IDE renderer held the load near 2.8); and gitturtle.theme_apply_frame_ms, unchanged at its next-frame-callback boundary and blind to draw cost, stays at median \u2264 8 ms and p95 \u2264 16 ms on both stores as a non-regression."
+ },
+ "metrics": {
+  "gitturtle.theme_edit_frame_ms": "editor open and live-preview edit bursts; handler entry to the paint of the deferred probe, the last element Window::draw paints in the first frame drawn after the draft (excludes callback waits, present, input delivery)",
+  "gitturtle.theme_apply_frame_ms": "Settings theme switch; choose_theme entry to the next-frame callback, before that frame is drawn (blind to draw cost)"
+ },
+ "metric_definition": "docs/benchmarks/metrics.md of the candidate (theme_edit_frame_ms added, editor sentences removed from the switch entry)",
+ "baseline_for_format_and_method": "2026-09-19-theme-editor.md (edits) and 2026-09-18-theme-apply.md (switches)",
+ "spec": "../development/themes/spec.md#performance",
+ "date": "2026-09-22",
+ "status": "Measured on candidate 85a7d07e4adb792f7ec5aca775e7487522f16d24 (attempt 4 of themes-draw-cost in run 20260920T181431Z-aa8cb78d, base 6baf288, docs-only over 5637cec), by the performance-reviewer role, as the task's performance evidence.",
+ "build": {
+  "build_info": {
+   "application": "GitTurtle",
+   "version": "0.1.0",
+   "source_revision": "85a7d07e4adb792f7ec5aca775e7487522f16d24",
+   "source_tree": "clean",
+   "target": "x86_64-unknown-linux-gnu",
+   "profile": "release",
+   "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+   "build_unix_seconds": "1790037117"
+  },
+  "executable_sha256": "418a3b425cedb14fdf734ae02d756dce642896156dd214e6b165a9239a46aec6",
+  "note": "Identity from the exercised executable's --build-info, read by the driver at the start of every launch; every launch below ran this executable.",
+  "switch_launches_same_executable": true,
+  "difference_from_editor_record_build": "Against 3927b57 (the committed editor record, empty store, callback boundary) the candidate carries the import-export feature of 5637cec and this task's changes as verified in src-85a7d07: the edit trace re-cut to gitturtle.theme_edit_frame_ms ending in a zero-size probe deferred above the dialog layer (theme_editor.rs edit_trace_probe, views.rs root render), the Your themes rows virtualized with uniform_list at min(rows, 8) x 30 px with the toolkit scrollbar (settings.rs render_custom_theme_rows), and, per the task contract's items 2 and 4 (not re-verified line by line here), 58b6226's cached ThemePreviewBody per miniature, save_preferences notifying only on a visible change, and the layout wins. Attempt 2 (2030b3d) keeps the whole ea31261 tree and changes settings.rs and theme_editor.rs only (plus DESIGN.md and content-and-layout.md): ring room for the row list (ROW_RING_ROOM 3 px list padding, the rows container 6 px taller with negative margins, the scrollbar pinned with viewport_from_layout and scroll_size), wheel chaining (on_scroll_wheel with stop_propagation) and element cuts (one canvas per swatch strip and per caption-dot run; the token row's 14 px spacer dropped), as seen in its diff against ea31261; not re-verified line by line here. Attempt 3 (23ee777) keeps the whole 2030b3d tree and changes settings.rs, theme_editor.rs and crates/app/docs/content-and-layout.md only (diff -ru src-2030b3d src-23ee777): the Your themes list is an absolute child (top and bottom -ROW_RING_ROOM) of a flow box exactly 30 px x min(rows, 8) tall with no negative margins (custom-themes-rows-box), so the card no longer collapses under taffy's max-content sizing, and the scrollbar track is that box (the_card_keeps_the_plain_stacks_geometry_around_the_rows pins the geometry for 0, 1, 2, 8 and 32 themes); the token row's hex wrapper div is gone (the kit Input takes the width, shrink and mono face itself); the picker caption lays out its name row only on the selected card that shows the badge; debug selectors on the card, its header, the empty line and the text-size settings. Not re-verified line by line here. Attempt 4 (85a7d07) keeps the whole 23ee777 tree and changes settings.rs, theme_editor.rs and crates/app/docs/content-and-layout.md only (diff -ru src-23ee777 src-85a7d07): settings.rs gains rows_off_boundary (45 lines above choose_theme) and render_custom_theme_rows adds two absolute 3 px strips of the card's surface over the list's ring room (custom-themes-ring-room-top/-bottom), present only while the list stands off a row boundary, so a row partly scrolled out of the viewport does not paint into the room; at offset 0, where the measured procedure keeps the list (focus in the dialog), the strips are absent and no element is added to an edit frame, the per-frame cost being one RefCell borrow, arithmetic and one palette read; theme_editor.rs gains the test strips_cover_the_ring_room_while_the_rows_stand_off_a_boundary; the doc gains one sentence. Not re-verified line by line here."
+ },
+ "host": {
+  "label": "before-recorded",
+  "date_utc": "2026-09-22T14:51:14Z",
+  "date_local": "2026-09-22T09:51:14-0500",
+  "loadavg": [
+   2.7509765625,
+   2.91552734375,
+   2.80224609375
+  ],
+  "uptime": "09:51:14 up 3 days, 23:38,  1 user,  load average: 2.75, 2.92, 2.80",
+  "cpu": "Intel(R) Core(TM) Ultra 9 275HX",
+  "threads": 24,
+  "ram_gib": 188.1,
+  "kernel": "7.1.5-76070105-generic",
+  "os": "Pop!_OS 24.04 LTS",
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)\nbinary: rustc\ncommit-hash: 88d9e12ae178fab0fb5cc050a94da85685d449ea\ncommit-date: 2026-08-18\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.0\nLLVM version: 22.1.8",
+  "git": "git version 2.43.0",
+  "governor": "powersave",
+  "epp": "balance_performance",
+  "ac_online": "1",
+  "session_type": "wayland",
+  "gnome_shell": "GNOME Shell 46.0",
+  "gpus": "00:02.0 VGA compatible controller: Intel Corporation Arrow Lake-U [Intel Graphics] (rev 06)\n02:00.0 VGA compatible controller: NVIDIA Corporation Device 2c58 (rev a1)\n80:14.5 Non-VGA unclassified device: Intel Corporation Device 7f2f (rev 10)\n80:1c.0 PCI bridge: Intel Corporation Device 7f3d (rev 10)",
+  "mesa": "OpenGL renderer string: Mesa Intel(R) Graphics (ARL)\nOpenGL version string: 4.6 (Compatibility Profile) Mesa 26.1.6-1pop0~1787580452~24.04~a5619ea",
+  "foreign_processes": "",
+  "xrandr_current": "eDP-1 connected primary 3840x2400+0+0 (normal left inverted right x axis y axis) 390mm x 240mm\n   3840x2400    119.98*+"
+ },
+ "window": {
+  "scale_factor": 2,
+  "logical": [
+   1480,
+   980
+  ],
+  "physical": [
+   2960,
+   1960
+  ],
+  "env": {
+   "DISPLAY": ":1",
+   "XDG_CONFIG_HOME": "<worktree>/.local/themes-evidence/perf-draw-cost/runs/recorded-32/config",
+   "GPUI_X11_SCALE_FACTOR": "2",
+   "GITTURTLE_TRACE": "1",
+   "ZED_MEASUREMENTS": null,
+   "WAYLAND_DISPLAY": "unset"
+  }
+ },
+ "cache_state": "warm: a warm-up launch (60 edits, summarised in launches[] but not eligible to supply the criterion samples) of the same executable on the same fixture preceded the recorded launch; caches not dropped. Every launch used a fresh process and a fresh absolute scratch store written by seed.py. No cold-cache run.",
+ "store": {
+  "custom_themes": 32,
+  "shape": "version 6, theme midnight, follow_system false, custom_themes 'Seed 01'..'Seed 32' with bases cycling ThemeChoice::ALL (Seed 01 Midnight, Seed 02 Daylight, ..., Seed 21 Midnight, ...) and exactly one token (border, blue channel +1) differing from the base: the edit-budget bound. No row carries a readability warning or the check mark; New theme... and Import... are disabled at 32.",
+  "sha256_recorded_launch": "9deaa6eedec8ac129a9bb64e084b265b59f42e1bd9bba430f6ba366e4f04d23a",
+  "sha256_seed_py_32": "9deaa6eedec8ac129a9bb64e084b265b59f42e1bd9bba430f6ba366e4f04d23a",
+  "sha256_seed_py_0": "ae1731ac8307019b39aee6a216564410b55b656871ddb1b9d552e8e988e4e208",
+  "empty_store_launches_sha256": {
+   "edits-empty": "ae1731ac8307019b39aee6a216564410b55b656871ddb1b9d552e8e988e4e208",
+   "switches-empty": "ae1731ac8307019b39aee6a216564410b55b656871ddb1b9d552e8e988e4e208"
+  },
+  "first_200_bytes": "{\"version\": 6, \"settings\": {\"theme\": \"midnight\", \"follow_system\": false}, \"custom_themes\": [{\"id\": 1, \"name\": \"Seed 01\", \"base\": \"midnight\", \"tokens\": {\"canvas\": \"#10151f\", \"panel\": \"#171e2b\", \"subtle",
+  "why": "The committed editor record was measured with an empty store; the bound puts eight virtualized rows on screen in every Settings and dialog frame, and the empty-store launches are the like-for-like comparison with the earlier records."
+ },
+ "fixture": {
+  "path_role": "themes-evidence/perf-theme-apply/repo (the themes-apply-trace fixture, unmodified)",
+  "head": "c8f20cfeb3f846168abbdcde270983c42bb27e71",
+  "branch": "main",
+  "commits": 1207,
+  "clean_after_all_launches": true,
+  "history_state": "Older appended page 2 (header 'All history 1-1000'); row 1 c8f20cf selected",
+  "comparison": "src/generated/large-module.ts (2,000 lines, 23 changed) in Compare, Split, retained behind Settings",
+  "precondition_traces_recorded_launch": {
+   "gitturtle.history_page_frame_ms": "1.989",
+   "gitturtle.file_preview_frame_ms": "4.795"
+  },
+  "after_edits": "Back showed the retained Split with 0 new file_preview_frame_ms lines; a second Back showed History 1-1000"
+ },
+ "procedure": {
+  "driver_change_for_this_build": "tools-85a7d07/drive_theme_editor.py is the committed record's driver (tools/drive_theme_editor.py, sha256 457cc79a...) with the 58b6226 adaptation (--custom-themes N seeds the store through seed.py; at the 32-theme bound the dialog is opened through row 1's Edit...: Tab x28, then Tab one at a time until the kit's focus ring lies in row 1's band as its leftmost button, then Space), the ea31261 adaptation (adapt_ea31261.py), the 2030b3d re-pointing (adapt_2030b3d.py), the 23ee777 re-pointing (adapt_23ee777.py) and the 85a7d07 re-pointing (adapt_85a7d07.py: identifiers, the settings.rs switch-boundary line numbers, the fourth before build and the edit-budget bound re-cut to 26 ms): the traced line is gitturtle.theme_edit_frame_ms, the seed is the contract's bound (Seed 01..32, bases cycling, border differing) and its digest is recorded. The pixel boxes, the typed colours, the timing, the per-edit checks and summary() are unchanged; the pooled statistic was added to analyze_editor.py.",
+  "open": {
+   "tabs_to_row1_edit": 28,
+   "row1_edit_ring": {
+    "count": 1106,
+    "bbox": [
+     1378,
+     1321,
+     1497,
+     1380
+    ]
+   },
+   "card": {
+    "top": 1197,
+    "left": 373,
+    "right": 1834,
+    "row1_band": [
+     1321,
+     1381
+    ],
+    "row1_swatch_right": 470
+   },
+   "refocus_tabs_before_each_open": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  "dialog": "Ctrl+comma opens Settings over the comparison; 15 wheel steps bring Your themes on screen; Tab to row 1's Edit... (count above); Space opens Edit theme for 'Seed 01' with base Midnight and Midnight's palette (border +1) as the draft; Tab x2 reaches the Canvas hex field.",
+  "edit": "Ctrl+A, then '#rrggbb' typed with 60 ms between keys and 150 ms before the 7th key; the value is invalid through the 6th key and valid at the 7th: one preview per edit, asserted on every edit. >= 1.2 s without input before every edit.",
+  "colours": "12 dark canvases cycled (#141a26 ... #111b28), each with Midnight's empty Readability list so every edit renders the same rows",
+  "sets": "6 dialogs x 10 edits in one launch; Escape closes each dialog (draft dropped, Midnight re-applied without a trace line); focus returns to Edit... and Space reopens",
+  "verification_per_edit": [
+   "no trace line from keys 1-6",
+   "exactly one new gitturtle.theme_edit_frame_ms line after key 7",
+   "dialog title strip (physical 1200-2000 x 204-236) 100% the typed colour",
+   "page margin (physical 16-200 x 700-1300) 100% one colour equal to the typed colour under the modal's 20% black overlay (+-1)"
+  ],
+  "verification_per_set": [
+   "the open printed exactly one line (recorded as an open sample, not an edit)",
+   "store still names midnight with 32 custom themes",
+   "Escape restored the Midnight canvas and printed no line"
+  ],
+  "verification_per_launch": [
+   "theme_apply_frame_ms lines in the editor launch: 0 (edit-frame-trace expects 0)"
+  ],
+  "switches": "tools-85a7d07/drive_theme_apply.py: the baseline's driver with the launch inlined (binary, seeded store, identity recording) and a final store check; 60 real XTest clicks on the picker cards, same geometry, timing and per-switch verification as the baseline; once on the empty store and once on the 32-theme store.",
+  "percentile_method": "statistics.median; nearest rank for p90/p95: the ceil(p/100*n)-th smallest (p95 of 60 = the 57th smallest; p95 of 10 = the maximum)",
+  "designated_set": "set 1 of the recorded launch, designated in writing before the launch ran (runs/criterion-set-85a7d07.txt); reported, no bound",
+  "script_sha256": {
+   "tools-85a7d07/adapt_2030b3d.py": "eec9d171f712e801aec49032d287adac621974c844872ac5384fec56f86b558b",
+   "tools-85a7d07/adapt_23ee777.py": "1eb22780994e8e311c1f2f5c507befebf4cb51e8d1ca574466ae85dbe286379f",
+   "tools-85a7d07/adapt_85a7d07.py": "d9467e56c36599d412f0d708c4fd3c68415966de6b9608ea3ca3b56e472619cc",
+   "tools-85a7d07/adapt_85a7d07_allowance.py": "4b63a419d30a7c8bd372cbc0d06083f0eab5b115b56b914720882729ed01f1cf",
+   "tools-85a7d07/adapt_apply_driver.py": "b1105b38a021c8736cd298389a2bfe507830991d7a0cb01e16808db56986a74d",
+   "tools-85a7d07/adapt_ea31261.py": "de62947aa574e836dda392eac9f8b53cb9512c4ee4d92dcee11657f0fb3b4e4b",
+   "tools-85a7d07/adapt_editor_driver.py": "53fb5df328f72bd745ffa80359f04eef3998df6cdb34720eac368ba257b2d6b2",
+   "tools-85a7d07/analyze_diag_85a7d07.py": "6473f8ac432815352e84f53e1df447bf5a07feeb824bf055adb66b2fd95a0ad4",
+   "tools-85a7d07/analyze_editor.py": "1c51f55731aa4343939c3c76f9315c82c78c8236f8c09ce65c182e39e5be947c",
+   "tools-85a7d07/analyze_switches.py": "625b985115fc6c6d92ca5f61eaa44b897d1cbc0f9a678dc54bba1af6254fc4fa",
+   "tools-85a7d07/build_record.py": "2abd8baacea285b863ffadac5f3338823f2c7c3edbfb5818e43f9a5f7960b509",
+   "tools-85a7d07/drive_theme_apply.py": "8b9aec228c141e341dbeaf0a68e909f6a2bf1570d85340011de66bc6f7cedb2b",
+   "tools-85a7d07/drive_theme_editor.py": "9b74287e2782cee010d134ac364b2ead03b0408b59914ddf96ddaf2f6deced6b",
+   "tools-85a7d07/host_state.py": "f24655611f423687a5438c772daf87a1ab7bb4a40834495bf52088a393354ecf",
+   "tools-85a7d07/render_record_md.py": "43f6712f9869cd7f66a730abd4b564db048d54bc9df2178ac448995156de934f",
+   "tools-85a7d07/resolve_palettes.py": "d9aecf81c13324251aa03b9fdb366c45d5cf1dfc2c5d1df61c79710926e001a3",
+   "tools-85a7d07/seed.py": "89763487296fcbc0a67e23eb6a2f590d1086526e4bd00ca6f4b026e6f0c1f349"
+  },
+  "driver_that_ran": {
+   "edits": {
+    "path": "perf-draw-cost/tools-85a7d07/drive_theme_editor.py",
+    "sha256": "9b74287e2782cee010d134ac364b2ead03b0408b59914ddf96ddaf2f6deced6b"
+   },
+   "switches": {
+    "path": "perf-draw-cost/tools-85a7d07/drive_theme_apply.py",
+    "sha256": "8b9aec228c141e341dbeaf0a68e909f6a2bf1570d85340011de66bc6f7cedb2b"
+   },
+   "seed": "89763487296fcbc0a67e23eb6a2f590d1086526e4bd00ca6f4b026e6f0c1f349",
+   "recorded_by": "each driver itself, into its run's samples.json"
+  },
+  "committed_record_driver_sha256": "457cc79a0f078e01e4e76288e945b663ff85175567093973729c3b28ab5e12e4",
+  "xhelper_sha256": "2fac1d5fe3bd5edeaa4aada30a7885b401f46fa4b7112aea3965ed72b089182e"
+ },
+ "designated_set": {
+  "launch": "recorded-32",
+  "set": 1,
+  "samples_ms": [
+   17.836,
+   20.481,
+   22.499,
+   19.967,
+   22.577,
+   25.197,
+   17.95,
+   21.815,
+   24.529,
+   25.176
+  ],
+  "summary": {
+   "n": 10,
+   "min": 17.836,
+   "median": 22.157,
+   "mean": 21.803,
+   "p90": 25.176,
+   "p95": 25.197,
+   "max": 25.197,
+   "stdev": 2.731
+  },
+  "bound": null,
+  "note": "the first dialog's ten edits, reported, no bound (edit-budget)"
+ },
+ "budget": {
+  "metric": "gitturtle.theme_edit_frame_ms",
+  "pooled_p95_le_ms": 26,
+  "n": 60,
+  "p95_rank": 57,
+  "pooled_p95_ms": 25.372,
+  "pooled_p95_le_26": true,
+  "pooled_median_ms": 21.778,
+  "pooled_max_ms": 26.719,
+  "pooled_min_ms": 17.238,
+  "edits_over_26ms": 2,
+  "edits_over_16ms": 60,
+  "designated_set_p95_ms": 25.197,
+  "designated_set_median_ms": 22.157,
+  "owner": "themes-draw-cost edit-budget (owner decision of 2026-09-20: p95 = the 57th of the 60 sorted samples; owner decision of 2026-09-21: the bound re-cut from 24 to 26 ms after ea31261, 2030b3d and 23ee777 measured 26.348, 24.440 and 25.191 ms on this boundary with about 3 ms of launch-to-launch spread)",
+  "bound_history": {
+   "24 ms": "tasks-2.json edit-budget until 2026-09-21; attempts 1 to 3 (ea31261, 2030b3d, 23ee777) were graded against it",
+   "26 ms": "tasks-2.json edit-budget from the owner decision of 2026-09-21; this record is graded against it"
+  },
+  "earlier_candidates_pooled_p95_ms": {
+   "ea31261 (attempt 1)": {
+    "record": "record-ea31261/2026-09-21-theme-draw-cost.json",
+    "candidate": "ea31261f78c0931801a9f9733981acd8141a54e8",
+    "pooled_p95_ms": 26.348,
+    "pooled_median_ms": 23.211,
+    "pooled_max_ms": 26.726,
+    "graded_against_ms": 24,
+    "passed": false,
+    "empty_store_pooled_p95_ms": 26.07
+   },
+   "2030b3d (attempt 2, indicative, collapsed card)": {
+    "record": "record-2030b3d/2026-09-21-theme-draw-cost.json",
+    "candidate": "2030b3d4a78a8855bc4c1bbc1159e385f1584058",
+    "pooled_p95_ms": 24.44,
+    "pooled_median_ms": 19.206,
+    "pooled_max_ms": 25.329,
+    "graded_against_ms": 24,
+    "passed": false,
+    "empty_store_pooled_p95_ms": 23.572
+   },
+   "23ee777 (attempt 3)": {
+    "record": "record-23ee777/2026-09-21-theme-draw-cost.json",
+    "candidate": "23ee77700daf06b5f5398ca7ae57cb5f99859612",
+    "pooled_p95_ms": 25.191,
+    "pooled_median_ms": 20.354,
+    "pooled_max_ms": 26.074,
+    "graded_against_ms": 24,
+    "passed": false,
+    "empty_store_pooled_p95_ms": 23.307
+   }
+  }
+ },
+ "samples": [
+  {
+   "index": 1,
+   "set": 1,
+   "edit": 1,
+   "colour": "#141a26",
+   "ms": 17.836,
+   "key7_to_line_ms": 25.683,
+   "ui_cpu_edit_ms": 23.938,
+   "ui_cpu_key6_ms": 22.444,
+   "ui_cpu_idle_ms": 0.735,
+   "process_cpu_edit_ms": 24.321,
+   "quiet_before_edit_s": 1.201
+  },
+  {
+   "index": 2,
+   "set": 1,
+   "edit": 2,
+   "colour": "#0c1119",
+   "ms": 20.481,
+   "key7_to_line_ms": 26.009,
+   "ui_cpu_edit_ms": 23.568,
+   "ui_cpu_key6_ms": 30.149,
+   "ui_cpu_idle_ms": 0.847,
+   "process_cpu_edit_ms": 23.905,
+   "quiet_before_edit_s": 1.201
+  },
+  {
+   "index": 3,
+   "set": 1,
+   "edit": 3,
+   "colour": "#161c2a",
+   "ms": 22.499,
+   "key7_to_line_ms": 27.575,
+   "ui_cpu_edit_ms": 27.693,
+   "ui_cpu_key6_ms": 29.272,
+   "ui_cpu_idle_ms": 0.944,
+   "process_cpu_edit_ms": 27.977,
+   "quiet_before_edit_s": 1.203
+  },
+  {
+   "index": 4,
+   "set": 1,
+   "edit": 4,
+   "colour": "#0e1320",
+   "ms": 19.967,
+   "key7_to_line_ms": 24.313,
+   "ui_cpu_edit_ms": 25.997,
+   "ui_cpu_key6_ms": 27.526,
+   "ui_cpu_idle_ms": 1.095,
+   "process_cpu_edit_ms": 26.236,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 5,
+   "set": 1,
+   "edit": 5,
+   "colour": "#121824",
+   "ms": 22.577,
+   "key7_to_line_ms": 27.536,
+   "ui_cpu_edit_ms": 29.086,
+   "ui_cpu_key6_ms": 27.032,
+   "ui_cpu_idle_ms": 0.52,
+   "process_cpu_edit_ms": 29.395,
+   "quiet_before_edit_s": 1.203
+  },
+  {
+   "index": 6,
+   "set": 1,
+   "edit": 6,
+   "colour": "#0a0f16",
+   "ms": 25.197,
+   "key7_to_line_ms": 31.859,
+   "ui_cpu_edit_ms": 31.494,
+   "ui_cpu_key6_ms": 28.279,
+   "ui_cpu_idle_ms": 1.294,
+   "process_cpu_edit_ms": 31.814,
+   "quiet_before_edit_s": 1.204
+  },
+  {
+   "index": 7,
+   "set": 1,
+   "edit": 7,
+   "colour": "#181e2c",
+   "ms": 17.95,
+   "key7_to_line_ms": 24.919,
+   "ui_cpu_edit_ms": 22.953,
+   "ui_cpu_key6_ms": 28.884,
+   "ui_cpu_idle_ms": 1.086,
+   "process_cpu_edit_ms": 23.354,
+   "quiet_before_edit_s": 1.203
+  },
+  {
+   "index": 8,
+   "set": 1,
+   "edit": 8,
+   "colour": "#10161d",
+   "ms": 21.815,
+   "key7_to_line_ms": 27.22,
+   "ui_cpu_edit_ms": 27.834,
+   "ui_cpu_key6_ms": 30.424,
+   "ui_cpu_idle_ms": 1.339,
+   "process_cpu_edit_ms": 28.094,
+   "quiet_before_edit_s": 1.201
+  },
+  {
+   "index": 9,
+   "set": 1,
+   "edit": 9,
+   "colour": "#131627",
+   "ms": 24.529,
+   "key7_to_line_ms": 31.059,
+   "ui_cpu_edit_ms": 30.93,
+   "ui_cpu_key6_ms": 28.921,
+   "ui_cpu_idle_ms": 1.087,
+   "process_cpu_edit_ms": 31.197,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 10,
+   "set": 1,
+   "edit": 10,
+   "colour": "#0d151b",
+   "ms": 25.176,
+   "key7_to_line_ms": 31.661,
+   "ui_cpu_edit_ms": 29.658,
+   "ui_cpu_key6_ms": 29.877,
+   "ui_cpu_idle_ms": 1.148,
+   "process_cpu_edit_ms": 29.982,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 11,
+   "set": 2,
+   "edit": 1,
+   "colour": "#151921",
+   "ms": 17.576,
+   "key7_to_line_ms": 22.382,
+   "ui_cpu_edit_ms": 22.59,
+   "ui_cpu_key6_ms": 22.468,
+   "ui_cpu_idle_ms": 0.319,
+   "process_cpu_edit_ms": 22.935,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 12,
+   "set": 2,
+   "edit": 2,
+   "colour": "#111b28",
+   "ms": 17.242,
+   "key7_to_line_ms": 22.148,
+   "ui_cpu_edit_ms": 23.49,
+   "ui_cpu_key6_ms": 28.802,
+   "ui_cpu_idle_ms": 0.996,
+   "process_cpu_edit_ms": 23.88,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 13,
+   "set": 2,
+   "edit": 3,
+   "colour": "#141a26",
+   "ms": 22.377,
+   "key7_to_line_ms": 27.446,
+   "ui_cpu_edit_ms": 28.925,
+   "ui_cpu_key6_ms": 27.196,
+   "ui_cpu_idle_ms": 1.065,
+   "process_cpu_edit_ms": 29.215,
+   "quiet_before_edit_s": 1.201
+  },
+  {
+   "index": 14,
+   "set": 2,
+   "edit": 4,
+   "colour": "#0c1119",
+   "ms": 25.751,
+   "key7_to_line_ms": 31.988,
+   "ui_cpu_edit_ms": 30.99,
+   "ui_cpu_key6_ms": 28.572,
+   "ui_cpu_idle_ms": 0.863,
+   "process_cpu_edit_ms": 31.304,
+   "quiet_before_edit_s": 1.203
+  },
+  {
+   "index": 15,
+   "set": 2,
+   "edit": 5,
+   "colour": "#161c2a",
+   "ms": 19.991,
+   "key7_to_line_ms": 27.772,
+   "ui_cpu_edit_ms": 24.028,
+   "ui_cpu_key6_ms": 30.944,
+   "ui_cpu_idle_ms": 1.527,
+   "process_cpu_edit_ms": 24.492,
+   "quiet_before_edit_s": 1.203
+  },
+  {
+   "index": 16,
+   "set": 2,
+   "edit": 6,
+   "colour": "#0e1320",
+   "ms": 26.333,
+   "key7_to_line_ms": 33.236,
+   "ui_cpu_edit_ms": 31.574,
+   "ui_cpu_key6_ms": 32.569,
+   "ui_cpu_idle_ms": 1.404,
+   "process_cpu_edit_ms": 32.038,
+   "quiet_before_edit_s": 1.201
+  },
+  {
+   "index": 17,
+   "set": 2,
+   "edit": 7,
+   "colour": "#121824",
+   "ms": 22.13,
+   "key7_to_line_ms": 27.743,
+   "ui_cpu_edit_ms": 27.564,
+   "ui_cpu_key6_ms": 30.254,
+   "ui_cpu_idle_ms": 1.362,
+   "process_cpu_edit_ms": 27.853,
+   "quiet_before_edit_s": 1.201
+  },
+  {
+   "index": 18,
+   "set": 2,
+   "edit": 8,
+   "colour": "#0a0f16",
+   "ms": 19.988,
+   "key7_to_line_ms": 28.283,
+   "ui_cpu_edit_ms": 24.911,
+   "ui_cpu_key6_ms": 23.845,
+   "ui_cpu_idle_ms": 0.953,
+   "process_cpu_edit_ms": 25.215,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 19,
+   "set": 2,
+   "edit": 9,
+   "colour": "#181e2c",
+   "ms": 19.508,
+   "key7_to_line_ms": 27.075,
+   "ui_cpu_edit_ms": 22.989,
+   "ui_cpu_key6_ms": 23.029,
+   "ui_cpu_idle_ms": 0.978,
+   "process_cpu_edit_ms": 23.191,
+   "quiet_before_edit_s": 1.201
+  },
+  {
+   "index": 20,
+   "set": 2,
+   "edit": 10,
+   "colour": "#10161d",
+   "ms": 21.066,
+   "key7_to_line_ms": 28.205,
+   "ui_cpu_edit_ms": 24.936,
+   "ui_cpu_key6_ms": 23.255,
+   "ui_cpu_idle_ms": 0.339,
+   "process_cpu_edit_ms": 25.195,
+   "quiet_before_edit_s": 1.201
+  },
+  {
+   "index": 21,
+   "set": 3,
+   "edit": 1,
+   "colour": "#131627",
+   "ms": 22.352,
+   "key7_to_line_ms": 26.832,
+   "ui_cpu_edit_ms": 28.368,
+   "ui_cpu_key6_ms": 29.435,
+   "ui_cpu_idle_ms": 1.204,
+   "process_cpu_edit_ms": 28.726,
+   "quiet_before_edit_s": 1.201
+  },
+  {
+   "index": 22,
+   "set": 3,
+   "edit": 2,
+   "colour": "#0d151b",
+   "ms": 18.713,
+   "key7_to_line_ms": 25.105,
+   "ui_cpu_edit_ms": 23.097,
+   "ui_cpu_key6_ms": 29.874,
+   "ui_cpu_idle_ms": 0.887,
+   "process_cpu_edit_ms": 23.428,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 23,
+   "set": 3,
+   "edit": 3,
+   "colour": "#151921",
+   "ms": 18.067,
+   "key7_to_line_ms": 24.218,
+   "ui_cpu_edit_ms": 23.343,
+   "ui_cpu_key6_ms": 30.185,
+   "ui_cpu_idle_ms": 1.186,
+   "process_cpu_edit_ms": 23.689,
+   "quiet_before_edit_s": 1.201
+  },
+  {
+   "index": 24,
+   "set": 3,
+   "edit": 4,
+   "colour": "#111b28",
+   "ms": 20.13,
+   "key7_to_line_ms": 24.573,
+   "ui_cpu_edit_ms": 24.09,
+   "ui_cpu_key6_ms": 28.937,
+   "ui_cpu_idle_ms": 0.954,
+   "process_cpu_edit_ms": 24.377,
+   "quiet_before_edit_s": 1.201
+  },
+  {
+   "index": 25,
+   "set": 3,
+   "edit": 5,
+   "colour": "#141a26",
+   "ms": 18.203,
+   "key7_to_line_ms": 25.264,
+   "ui_cpu_edit_ms": 23.318,
+   "ui_cpu_key6_ms": 22.932,
+   "ui_cpu_idle_ms": 1.418,
+   "process_cpu_edit_ms": 23.662,
+   "quiet_before_edit_s": 1.201
+  },
+  {
+   "index": 26,
+   "set": 3,
+   "edit": 6,
+   "colour": "#0c1119",
+   "ms": 19.125,
+   "key7_to_line_ms": 24.606,
+   "ui_cpu_edit_ms": 23.741,
+   "ui_cpu_key6_ms": 23.703,
+   "ui_cpu_idle_ms": 0.655,
+   "process_cpu_edit_ms": 24.04,
+   "quiet_before_edit_s": 1.201
+  },
+  {
+   "index": 27,
+   "set": 3,
+   "edit": 7,
+   "colour": "#161c2a",
+   "ms": 26.719,
+   "key7_to_line_ms": 34.127,
+   "ui_cpu_edit_ms": 31.452,
+   "ui_cpu_key6_ms": 30.211,
+   "ui_cpu_idle_ms": 1.498,
+   "process_cpu_edit_ms": 31.919,
+   "quiet_before_edit_s": 1.201
+  },
+  {
+   "index": 28,
+   "set": 3,
+   "edit": 8,
+   "colour": "#0e1320",
+   "ms": 24.816,
+   "key7_to_line_ms": 29.934,
+   "ui_cpu_edit_ms": 29.298,
+   "ui_cpu_key6_ms": 30.062,
+   "ui_cpu_idle_ms": 0.578,
+   "process_cpu_edit_ms": 29.565,
+   "quiet_before_edit_s": 1.201
+  },
+  {
+   "index": 29,
+   "set": 3,
+   "edit": 9,
+   "colour": "#121824",
+   "ms": 25.004,
+   "key7_to_line_ms": 29.892,
+   "ui_cpu_edit_ms": 29.999,
+   "ui_cpu_key6_ms": 28.039,
+   "ui_cpu_idle_ms": 0.418,
+   "process_cpu_edit_ms": 30.361,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 30,
+   "set": 3,
+   "edit": 10,
+   "colour": "#0a0f16",
+   "ms": 24.953,
+   "key7_to_line_ms": 31.083,
+   "ui_cpu_edit_ms": 30.315,
+   "ui_cpu_key6_ms": 23.084,
+   "ui_cpu_idle_ms": 1.278,
+   "process_cpu_edit_ms": 30.56,
+   "quiet_before_edit_s": 1.203
+  },
+  {
+   "index": 31,
+   "set": 4,
+   "edit": 1,
+   "colour": "#181e2c",
+   "ms": 20.91,
+   "key7_to_line_ms": 26.596,
+   "ui_cpu_edit_ms": 29.875,
+   "ui_cpu_key6_ms": 22.973,
+   "ui_cpu_idle_ms": 1.361,
+   "process_cpu_edit_ms": 30.166,
+   "quiet_before_edit_s": 1.204
+  },
+  {
+   "index": 32,
+   "set": 4,
+   "edit": 2,
+   "colour": "#10161d",
+   "ms": 21.675,
+   "key7_to_line_ms": 27.624,
+   "ui_cpu_edit_ms": 28.918,
+   "ui_cpu_key6_ms": 26.594,
+   "ui_cpu_idle_ms": 1.077,
+   "process_cpu_edit_ms": 29.166,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 33,
+   "set": 4,
+   "edit": 3,
+   "colour": "#131627",
+   "ms": 19.439,
+   "key7_to_line_ms": 25.648,
+   "ui_cpu_edit_ms": 24.756,
+   "ui_cpu_key6_ms": 22.399,
+   "ui_cpu_idle_ms": 0.424,
+   "process_cpu_edit_ms": 25.035,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 34,
+   "set": 4,
+   "edit": 4,
+   "colour": "#0d151b",
+   "ms": 21.316,
+   "key7_to_line_ms": 25.998,
+   "ui_cpu_edit_ms": 26.844,
+   "ui_cpu_key6_ms": 27.395,
+   "ui_cpu_idle_ms": 1.061,
+   "process_cpu_edit_ms": 27.134,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 35,
+   "set": 4,
+   "edit": 5,
+   "colour": "#151921",
+   "ms": 23.571,
+   "key7_to_line_ms": 27.686,
+   "ui_cpu_edit_ms": 30.218,
+   "ui_cpu_key6_ms": 21.73,
+   "ui_cpu_idle_ms": 1.085,
+   "process_cpu_edit_ms": 30.522,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 36,
+   "set": 4,
+   "edit": 6,
+   "colour": "#111b28",
+   "ms": 23.94,
+   "key7_to_line_ms": 28.87,
+   "ui_cpu_edit_ms": 29.082,
+   "ui_cpu_key6_ms": 28.421,
+   "ui_cpu_idle_ms": 1.222,
+   "process_cpu_edit_ms": 29.459,
+   "quiet_before_edit_s": 1.201
+  },
+  {
+   "index": 37,
+   "set": 4,
+   "edit": 7,
+   "colour": "#141a26",
+   "ms": 17.238,
+   "key7_to_line_ms": 24.552,
+   "ui_cpu_edit_ms": 23.076,
+   "ui_cpu_key6_ms": 22.561,
+   "ui_cpu_idle_ms": 1.389,
+   "process_cpu_edit_ms": 23.476,
+   "quiet_before_edit_s": 1.204
+  },
+  {
+   "index": 38,
+   "set": 4,
+   "edit": 8,
+   "colour": "#0c1119",
+   "ms": 21.867,
+   "key7_to_line_ms": 27.166,
+   "ui_cpu_edit_ms": 28.973,
+   "ui_cpu_key6_ms": 27.233,
+   "ui_cpu_idle_ms": 1.196,
+   "process_cpu_edit_ms": 29.193,
+   "quiet_before_edit_s": 1.204
+  },
+  {
+   "index": 39,
+   "set": 4,
+   "edit": 9,
+   "colour": "#161c2a",
+   "ms": 20.667,
+   "key7_to_line_ms": 27.619,
+   "ui_cpu_edit_ms": 24.344,
+   "ui_cpu_key6_ms": 23.577,
+   "ui_cpu_idle_ms": 0.257,
+   "process_cpu_edit_ms": 24.518,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 40,
+   "set": 4,
+   "edit": 10,
+   "colour": "#0e1320",
+   "ms": 19.424,
+   "key7_to_line_ms": 25.195,
+   "ui_cpu_edit_ms": 22.972,
+   "ui_cpu_key6_ms": 23.149,
+   "ui_cpu_idle_ms": 0.976,
+   "process_cpu_edit_ms": 23.24,
+   "quiet_before_edit_s": 1.201
+  },
+  {
+   "index": 41,
+   "set": 5,
+   "edit": 1,
+   "colour": "#121824",
+   "ms": 20.474,
+   "key7_to_line_ms": 27.011,
+   "ui_cpu_edit_ms": 23.731,
+   "ui_cpu_key6_ms": 23.464,
+   "ui_cpu_idle_ms": 1.212,
+   "process_cpu_edit_ms": 24.077,
+   "quiet_before_edit_s": 1.203
+  },
+  {
+   "index": 42,
+   "set": 5,
+   "edit": 2,
+   "colour": "#0a0f16",
+   "ms": 25.372,
+   "key7_to_line_ms": 30.792,
+   "ui_cpu_edit_ms": 30.15,
+   "ui_cpu_key6_ms": 28.085,
+   "ui_cpu_idle_ms": 1.135,
+   "process_cpu_edit_ms": 30.458,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 43,
+   "set": 5,
+   "edit": 3,
+   "colour": "#181e2c",
+   "ms": 24.765,
+   "key7_to_line_ms": 30.255,
+   "ui_cpu_edit_ms": 30.434,
+   "ui_cpu_key6_ms": 27.928,
+   "ui_cpu_idle_ms": 1.065,
+   "process_cpu_edit_ms": 30.731,
+   "quiet_before_edit_s": 1.204
+  },
+  {
+   "index": 44,
+   "set": 5,
+   "edit": 4,
+   "colour": "#10161d",
+   "ms": 22.231,
+   "key7_to_line_ms": 28.542,
+   "ui_cpu_edit_ms": 29.278,
+   "ui_cpu_key6_ms": 27.904,
+   "ui_cpu_idle_ms": 1.302,
+   "process_cpu_edit_ms": 29.615,
+   "quiet_before_edit_s": 1.203
+  },
+  {
+   "index": 45,
+   "set": 5,
+   "edit": 5,
+   "colour": "#131627",
+   "ms": 24.757,
+   "key7_to_line_ms": 32.678,
+   "ui_cpu_edit_ms": 31.28,
+   "ui_cpu_key6_ms": 28.455,
+   "ui_cpu_idle_ms": 1.3,
+   "process_cpu_edit_ms": 31.644,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 46,
+   "set": 5,
+   "edit": 6,
+   "colour": "#0d151b",
+   "ms": 25.239,
+   "key7_to_line_ms": 31.573,
+   "ui_cpu_edit_ms": 31.959,
+   "ui_cpu_key6_ms": 28.483,
+   "ui_cpu_idle_ms": 1.382,
+   "process_cpu_edit_ms": 32.373,
+   "quiet_before_edit_s": 1.204
+  },
+  {
+   "index": 47,
+   "set": 5,
+   "edit": 7,
+   "colour": "#151921",
+   "ms": 22.301,
+   "key7_to_line_ms": 28.331,
+   "ui_cpu_edit_ms": 29.635,
+   "ui_cpu_key6_ms": 28.778,
+   "ui_cpu_idle_ms": 1.463,
+   "process_cpu_edit_ms": 29.934,
+   "quiet_before_edit_s": 1.204
+  },
+  {
+   "index": 48,
+   "set": 5,
+   "edit": 8,
+   "colour": "#111b28",
+   "ms": 24.279,
+   "key7_to_line_ms": 32.445,
+   "ui_cpu_edit_ms": 31.572,
+   "ui_cpu_key6_ms": 23.272,
+   "ui_cpu_idle_ms": 1.085,
+   "process_cpu_edit_ms": 31.854,
+   "quiet_before_edit_s": 1.203
+  },
+  {
+   "index": 49,
+   "set": 5,
+   "edit": 9,
+   "colour": "#141a26",
+   "ms": 19.845,
+   "key7_to_line_ms": 26.505,
+   "ui_cpu_edit_ms": 24.027,
+   "ui_cpu_key6_ms": 29.141,
+   "ui_cpu_idle_ms": 1.135,
+   "process_cpu_edit_ms": 24.371,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 50,
+   "set": 5,
+   "edit": 10,
+   "colour": "#0c1119",
+   "ms": 20.813,
+   "key7_to_line_ms": 28.178,
+   "ui_cpu_edit_ms": 27.782,
+   "ui_cpu_key6_ms": 21.701,
+   "ui_cpu_idle_ms": 1.0,
+   "process_cpu_edit_ms": 28.101,
+   "quiet_before_edit_s": 1.203
+  },
+  {
+   "index": 51,
+   "set": 6,
+   "edit": 1,
+   "colour": "#161c2a",
+   "ms": 24.339,
+   "key7_to_line_ms": 30.511,
+   "ui_cpu_edit_ms": 28.254,
+   "ui_cpu_key6_ms": 30.248,
+   "ui_cpu_idle_ms": 1.102,
+   "process_cpu_edit_ms": 28.522,
+   "quiet_before_edit_s": 1.204
+  },
+  {
+   "index": 52,
+   "set": 6,
+   "edit": 2,
+   "colour": "#0e1320",
+   "ms": 20.626,
+   "key7_to_line_ms": 27.445,
+   "ui_cpu_edit_ms": 23.308,
+   "ui_cpu_key6_ms": 27.731,
+   "ui_cpu_idle_ms": 0.634,
+   "process_cpu_edit_ms": 23.596,
+   "quiet_before_edit_s": 1.203
+  },
+  {
+   "index": 53,
+   "set": 6,
+   "edit": 3,
+   "colour": "#121824",
+   "ms": 22.661,
+   "key7_to_line_ms": 27.401,
+   "ui_cpu_edit_ms": 28.45,
+   "ui_cpu_key6_ms": 29.965,
+   "ui_cpu_idle_ms": 1.24,
+   "process_cpu_edit_ms": 28.705,
+   "quiet_before_edit_s": 1.201
+  },
+  {
+   "index": 54,
+   "set": 6,
+   "edit": 4,
+   "colour": "#0a0f16",
+   "ms": 23.773,
+   "key7_to_line_ms": 29.722,
+   "ui_cpu_edit_ms": 27.093,
+   "ui_cpu_key6_ms": 27.441,
+   "ui_cpu_idle_ms": 0.993,
+   "process_cpu_edit_ms": 27.362,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 55,
+   "set": 6,
+   "edit": 5,
+   "colour": "#181e2c",
+   "ms": 23.759,
+   "key7_to_line_ms": 30.232,
+   "ui_cpu_edit_ms": 30.237,
+   "ui_cpu_key6_ms": 28.352,
+   "ui_cpu_idle_ms": 1.17,
+   "process_cpu_edit_ms": 30.538,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 56,
+   "set": 6,
+   "edit": 6,
+   "colour": "#10161d",
+   "ms": 20.8,
+   "key7_to_line_ms": 24.844,
+   "ui_cpu_edit_ms": 26.626,
+   "ui_cpu_key6_ms": 27.446,
+   "ui_cpu_idle_ms": 1.203,
+   "process_cpu_edit_ms": 26.908,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 57,
+   "set": 6,
+   "edit": 7,
+   "colour": "#131627",
+   "ms": 23.961,
+   "key7_to_line_ms": 30.973,
+   "ui_cpu_edit_ms": 29.863,
+   "ui_cpu_key6_ms": 32.093,
+   "ui_cpu_idle_ms": 0.926,
+   "process_cpu_edit_ms": 30.198,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 58,
+   "set": 6,
+   "edit": 8,
+   "colour": "#0d151b",
+   "ms": 21.741,
+   "key7_to_line_ms": 25.633,
+   "ui_cpu_edit_ms": 28.473,
+   "ui_cpu_key6_ms": 30.18,
+   "ui_cpu_idle_ms": 1.021,
+   "process_cpu_edit_ms": 28.725,
+   "quiet_before_edit_s": 1.201
+  },
+  {
+   "index": 59,
+   "set": 6,
+   "edit": 9,
+   "colour": "#151921",
+   "ms": 18.035,
+   "key7_to_line_ms": 23.784,
+   "ui_cpu_edit_ms": 23.377,
+   "ui_cpu_key6_ms": 22.939,
+   "ui_cpu_idle_ms": 1.035,
+   "process_cpu_edit_ms": 23.724,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 60,
+   "set": 6,
+   "edit": 10,
+   "colour": "#111b28",
+   "ms": 21.675,
+   "key7_to_line_ms": 27.424,
+   "ui_cpu_edit_ms": 24.344,
+   "ui_cpu_key6_ms": 22.908,
+   "ui_cpu_idle_ms": 1.135,
+   "process_cpu_edit_ms": 24.67,
+   "quiet_before_edit_s": 1.202
+  }
+ ],
+ "samples_sorted_ms": [
+  17.238,
+  17.242,
+  17.576,
+  17.836,
+  17.95,
+  18.035,
+  18.067,
+  18.203,
+  18.713,
+  19.125,
+  19.424,
+  19.439,
+  19.508,
+  19.845,
+  19.967,
+  19.988,
+  19.991,
+  20.13,
+  20.474,
+  20.481,
+  20.626,
+  20.667,
+  20.8,
+  20.813,
+  20.91,
+  21.066,
+  21.316,
+  21.675,
+  21.675,
+  21.741,
+  21.815,
+  21.867,
+  22.13,
+  22.231,
+  22.301,
+  22.352,
+  22.377,
+  22.499,
+  22.577,
+  22.661,
+  23.571,
+  23.759,
+  23.773,
+  23.94,
+  23.961,
+  24.279,
+  24.339,
+  24.529,
+  24.757,
+  24.765,
+  24.816,
+  24.953,
+  25.004,
+  25.176,
+  25.197,
+  25.239,
+  25.372,
+  25.751,
+  26.333,
+  26.719
+ ],
+ "sample_fields": {
+  "ms": "gitturtle.theme_edit_frame_ms as printed (handler entry to the probe's paint)",
+  "key7_to_line_ms": "7th key (after XSync) to the line's arrival on the stderr pipe",
+  "ui_cpu_edit_ms": "UI thread schedstat delta, just before key 7 to 150 ms after it",
+  "ui_cpu_key6_ms": "same, 150 ms after the 6th key (text change, invalid value, no preview)",
+  "ui_cpu_idle_ms": "same, 150 ms idle window before Ctrl+A"
+ },
+ "summary_pooled": {
+  "n": 60,
+  "min": 17.238,
+  "median": 21.778,
+  "mean": 21.826,
+  "p90": 25.176,
+  "p95": 25.372,
+  "max": 26.719,
+  "stdev": 2.565
+ },
+ "pooled_60": {
+  "n": 60,
+  "sorted_ms": [
+   17.238,
+   17.242,
+   17.576,
+   17.836,
+   17.95,
+   18.035,
+   18.067,
+   18.203,
+   18.713,
+   19.125,
+   19.424,
+   19.439,
+   19.508,
+   19.845,
+   19.967,
+   19.988,
+   19.991,
+   20.13,
+   20.474,
+   20.481,
+   20.626,
+   20.667,
+   20.8,
+   20.813,
+   20.91,
+   21.066,
+   21.316,
+   21.675,
+   21.675,
+   21.741,
+   21.815,
+   21.867,
+   22.13,
+   22.231,
+   22.301,
+   22.352,
+   22.377,
+   22.499,
+   22.577,
+   22.661,
+   23.571,
+   23.759,
+   23.773,
+   23.94,
+   23.961,
+   24.279,
+   24.339,
+   24.529,
+   24.757,
+   24.765,
+   24.816,
+   24.953,
+   25.004,
+   25.176,
+   25.197,
+   25.239,
+   25.372,
+   25.751,
+   26.333,
+   26.719
+  ],
+  "p95_rank": 57,
+  "p95_ms": 25.372,
+  "median_ms": 21.778,
+  "max_ms": 26.719,
+  "min_ms": 17.238,
+  "bound_ms": 26,
+  "p95_le_bound": true,
+  "over_bound": 2,
+  "sets": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6
+  ],
+  "edits_per_set": {
+   "1": 10,
+   "2": 10,
+   "3": 10,
+   "4": 10,
+   "5": 10,
+   "6": 10
+  }
+ },
+ "per_set": {
+  "1": {
+   "ms": [
+    17.836,
+    20.481,
+    22.499,
+    19.967,
+    22.577,
+    25.197,
+    17.95,
+    21.815,
+    24.529,
+    25.176
+   ],
+   "summary": {
+    "n": 10,
+    "min": 17.836,
+    "median": 22.157,
+    "mean": 21.803,
+    "p90": 25.176,
+    "p95": 25.197,
+    "max": 25.197,
+    "stdev": 2.731
+   }
+  },
+  "2": {
+   "ms": [
+    17.576,
+    17.242,
+    22.377,
+    25.751,
+    19.991,
+    26.333,
+    22.13,
+    19.988,
+    19.508,
+    21.066
+   ],
+   "summary": {
+    "n": 10,
+    "min": 17.242,
+    "median": 20.529,
+    "mean": 21.196,
+    "p90": 25.751,
+    "p95": 26.333,
+    "max": 26.333,
+    "stdev": 3.054
+   }
+  },
+  "3": {
+   "ms": [
+    22.352,
+    18.713,
+    18.067,
+    20.13,
+    18.203,
+    19.125,
+    26.719,
+    24.816,
+    25.004,
+    24.953
+   ],
+   "summary": {
+    "n": 10,
+    "min": 18.067,
+    "median": 21.241,
+    "mean": 21.808,
+    "p90": 25.004,
+    "p95": 26.719,
+    "max": 26.719,
+    "stdev": 3.336
+   }
+  },
+  "4": {
+   "ms": [
+    20.91,
+    21.675,
+    19.439,
+    21.316,
+    23.571,
+    23.94,
+    17.238,
+    21.867,
+    20.667,
+    19.424
+   ],
+   "summary": {
+    "n": 10,
+    "min": 17.238,
+    "median": 21.113,
+    "mean": 21.005,
+    "p90": 23.571,
+    "p95": 23.94,
+    "max": 23.94,
+    "stdev": 1.993
+   }
+  },
+  "5": {
+   "ms": [
+    20.474,
+    25.372,
+    24.765,
+    22.231,
+    24.757,
+    25.239,
+    22.301,
+    24.279,
+    19.845,
+    20.813
+   ],
+   "summary": {
+    "n": 10,
+    "min": 19.845,
+    "median": 23.29,
+    "mean": 23.008,
+    "p90": 25.239,
+    "p95": 25.372,
+    "max": 25.372,
+    "stdev": 2.126
+   }
+  },
+  "6": {
+   "ms": [
+    24.339,
+    20.626,
+    22.661,
+    23.773,
+    23.759,
+    20.8,
+    23.961,
+    21.741,
+    18.035,
+    21.675
+   ],
+   "summary": {
+    "n": 10,
+    "min": 18.035,
+    "median": 22.201,
+    "mean": 22.137,
+    "p90": 23.961,
+    "p95": 24.339,
+    "max": 24.339,
+    "stdev": 1.973
+   }
+  }
+ },
+ "opens": {
+  "note": "open_theme_editor stamps at its entry (theme_editor.rs:483) and applies the saved theme's palette through preview_theme_draft (line 523), so each dialog open also prints one theme_edit_frame_ms line; not an edit",
+  "samples_ms": [
+   34.206,
+   25.321,
+   20.594,
+   25.411,
+   25.216,
+   26.726
+  ],
+  "summary": {
+   "n": 6,
+   "min": 20.594,
+   "median": 25.366,
+   "mean": 26.246,
+   "p90": 34.206,
+   "p95": 34.206,
+   "max": 34.206,
+   "stdev": 4.431
+  }
+ },
+ "boundary": {
+  "gitturtle.theme_edit_frame_ms": {
+   "what_the_value_spans": "Stamped at entry to ThemeForm::hex_changed (theme_editor.rs:1568-1569, trace_stamp before the parse) inside the 7th key's InputEvent::Change; a valid value reaches draft_changed (line 1632) and preview_theme_draft (line 575), which keeps the first stamp of the burst in State::edit_started (line 586) and calls apply_appearance (line 593). The root render (views.rs:2459-2464) takes the stamp after Root::render_dialog_layer and appends edit_trace_probe (theme_editor.rs:625-659): a zero-size canvas deferred at priority usize::MAX (EDIT_TRACE_PRIORITY, line 322), whose paint closure prints the line (line 637). It is the last element Window::draw paints in the first frame drawn after the draft, whether the platform tick or Window::dispatch_key_event draws it. The value holds the parse, the readability recompute, apply_appearance and the whole window's request_layout, layout, prepaint and paint with the dialog over it; it excludes next-frame callback waits, frame-finish bookkeeping, present, pre-handler input delivery and GPU execution. The frame-tick grid does not enter the value.",
+   "lower_bound_by_construction": "none from the frame grid: the end stamp is taken inside the draw, not at a tick",
+   "key7_to_stamp_ms": {
+    "n": 60,
+    "min": 3.892,
+    "median": 6.08,
+    "mean": 6.024,
+    "p90": 7.408,
+    "p95": 7.847,
+    "max": 8.295,
+    "stdev": 1.097
+   },
+   "line_phase_on_8.334ms_grid_ms": {
+    "n": 60,
+    "min": -4.059,
+    "median": -0.05,
+    "mean": -0.162,
+    "p90": 3.36,
+    "p95": 3.765,
+    "max": 3.861,
+    "stdev": 2.535
+   },
+   "edits_over_two_periods": 60
+  },
+  "gitturtle.theme_apply_frame_ms": {
+   "what_the_value_spans": "Unchanged in kind, 45 lines lower in settings.rs than on 23ee777 (rows_off_boundary was added above choose_theme): stamped at choose_theme entry (settings.rs:547); apply_appearance (line 554), save_preferences (line 555), then trace_next_frame (line 557, main.rs:1353) registers a next-frame callback that prints. Next-frame callbacks run only on the platform frame tick, before that frame is laid out and painted, so the value is the handler plus the wait to the next tick of the 8.334 ms X11 grid and is blind to the draw. It cannot fall below the handler's own cost, and its spread is the keystroke's phase on the grid; UI-thread CPU per switch is the instrument for the frame's cost.",
+   "lower_bound_by_construction": "handler cost + phase on the 8.334 ms grid (0 to one period)"
+  }
+ },
+ "switches": {
+  "criterion": "switch-no-regression",
+  "budget": {
+   "ui_cpu_median_empty_le_ms": 23.0,
+   "ui_cpu_median_empty_ms": 13.793,
+   "ui_cpu_median_empty_holds": true,
+   "ui_cpu_median_32_ms": 17.195,
+   "ui_cpu_median_32_minus_empty_ms": 3.402,
+   "ui_cpu_delta_le_ms": 4.0,
+   "ui_cpu_delta_holds": true,
+   "apply_frame_empty": {
+    "median_le_ms": 8,
+    "p95_le_ms": 16,
+    "median_ms": 4.598,
+    "p95_ms": 7.807,
+    "median_holds": true,
+    "p95_holds": true
+   },
+   "apply_frame_32": {
+    "median_le_ms": 8,
+    "p95_le_ms": 16,
+    "median_ms": 3.699,
+    "p95_ms": 7.921,
+    "median_holds": true,
+    "p95_holds": true
+   },
+   "apply_frame_holds_both": true,
+   "ui_cpu_delta_against_former_3ms": {
+    "allowance_ms": 3.0,
+    "holds": false,
+    "excess_ms": 0.402
+   },
+   "allowance_history": {
+    "3 ms": "tasks-2.json switch-no-regression until 2026-09-22; attempts 1 to 3 (ea31261 +2.009, 2030b3d +1.376, 23ee777 +1.565) were graded against it, and this candidate's runs measured +3.402 against it on 2026-09-22",
+    "4 ms": "tasks-2.json switch-no-regression from 2026-09-22: widened by the coordinator under the owner's 2026-09-21 instruction that a few ms off is acceptable, after 85a7d07 measured +3.402 with switch-frame element counts identical to 23ee777 (1946 / 1662), whose delta was +1.565, on a pass whose every UI-thread CPU figure ran 2 to 4 ms above the previous one because the IDE renderer held the load near 2.8; this record is graded against it from the same runs, no launch repeated"
+   },
+   "holds": true,
+   "reference": "base 5637cec measured 26.4 ms UI-thread CPU per switch with the save completion's second render, 58b6226 without it 21.0 ms (tasks-2.json switch-no-regression); the 7924244 baseline comparison is kept in each launch block"
+  },
+  "empty_store": {
+   "launch": "switches-empty",
+   "store": "empty (the baseline's store byte-for-byte)",
+   "custom_themes": 0,
+   "n": 60,
+   "order": "ThemeChoice::ALL from Midnight: ALL[1] ... ALL[19], ALL[0], three full cycles (as the baseline)",
+   "samples": [
+    {
+     "index": 1,
+     "from": "midnight",
+     "to": "daylight",
+     "ms": 3.342,
+     "release_to_line_ms": 3.402,
+     "ui_thread_cpu_ms": 28.497,
+     "process_cpu_ms": 29.621,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 2,
+     "from": "daylight",
+     "to": "graphite",
+     "ms": 2.402,
+     "release_to_line_ms": 2.527,
+     "ui_thread_cpu_ms": 12.096,
+     "process_cpu_ms": 13.004,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 3,
+     "from": "graphite",
+     "to": "tokyo_night",
+     "ms": 2.413,
+     "release_to_line_ms": 2.738,
+     "ui_thread_cpu_ms": 21.639,
+     "process_cpu_ms": 22.537,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 4,
+     "from": "tokyo_night",
+     "to": "catppuccin_mocha",
+     "ms": 6.757,
+     "release_to_line_ms": 7.003,
+     "ui_thread_cpu_ms": 12.103,
+     "process_cpu_ms": 12.776,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 5,
+     "from": "catppuccin_mocha",
+     "to": "nord",
+     "ms": 5.756,
+     "release_to_line_ms": 5.949,
+     "ui_thread_cpu_ms": 12.68,
+     "process_cpu_ms": 13.429,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 6,
+     "from": "nord",
+     "to": "porcelain",
+     "ms": 3.316,
+     "release_to_line_ms": 3.617,
+     "ui_thread_cpu_ms": 20.112,
+     "process_cpu_ms": 20.748,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 7,
+     "from": "porcelain",
+     "to": "sandstone",
+     "ms": 2.907,
+     "release_to_line_ms": 3.176,
+     "ui_thread_cpu_ms": 17.519,
+     "process_cpu_ms": 18.303,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 8,
+     "from": "sandstone",
+     "to": "deep_sea",
+     "ms": 1.324,
+     "release_to_line_ms": 1.517,
+     "ui_thread_cpu_ms": 18.138,
+     "process_cpu_ms": 18.841,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 9,
+     "from": "deep_sea",
+     "to": "ember",
+     "ms": 4.618,
+     "release_to_line_ms": 4.797,
+     "ui_thread_cpu_ms": 20.648,
+     "process_cpu_ms": 21.298,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 10,
+     "from": "ember",
+     "to": "solarized_dark",
+     "ms": 7.623,
+     "release_to_line_ms": 7.572,
+     "ui_thread_cpu_ms": 18.588,
+     "process_cpu_ms": 19.293,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 11,
+     "from": "solarized_dark",
+     "to": "solarized_light",
+     "ms": 2.398,
+     "release_to_line_ms": 2.465,
+     "ui_thread_cpu_ms": 22.063,
+     "process_cpu_ms": 22.85,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 12,
+     "from": "solarized_light",
+     "to": "one_dark",
+     "ms": 3.08,
+     "release_to_line_ms": 3.245,
+     "ui_thread_cpu_ms": 20.23,
+     "process_cpu_ms": 20.946,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 13,
+     "from": "one_dark",
+     "to": "one_light",
+     "ms": 5.583,
+     "release_to_line_ms": 5.793,
+     "ui_thread_cpu_ms": 17.605,
+     "process_cpu_ms": 18.366,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 14,
+     "from": "one_light",
+     "to": "rose_pine",
+     "ms": 6.45,
+     "release_to_line_ms": 6.761,
+     "ui_thread_cpu_ms": 12.338,
+     "process_cpu_ms": 12.889,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 15,
+     "from": "rose_pine",
+     "to": "rose_pine_dawn",
+     "ms": 1.396,
+     "release_to_line_ms": 1.847,
+     "ui_thread_cpu_ms": 16.353,
+     "process_cpu_ms": 17.062,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 16,
+     "from": "rose_pine_dawn",
+     "to": "dracula",
+     "ms": 6.796,
+     "release_to_line_ms": 6.996,
+     "ui_thread_cpu_ms": 12.487,
+     "process_cpu_ms": 13.102,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 17,
+     "from": "dracula",
+     "to": "alucard",
+     "ms": 6.742,
+     "release_to_line_ms": 6.968,
+     "ui_thread_cpu_ms": 12.436,
+     "process_cpu_ms": 12.964,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 18,
+     "from": "alucard",
+     "to": "kanagawa_wave",
+     "ms": 6.359,
+     "release_to_line_ms": 6.546,
+     "ui_thread_cpu_ms": 11.486,
+     "process_cpu_ms": 12.14,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 19,
+     "from": "kanagawa_wave",
+     "to": "kanagawa_lotus",
+     "ms": 5.12,
+     "release_to_line_ms": 5.333,
+     "ui_thread_cpu_ms": 12.304,
+     "process_cpu_ms": 13.133,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 20,
+     "from": "kanagawa_lotus",
+     "to": "midnight",
+     "ms": 3.738,
+     "release_to_line_ms": 3.96,
+     "ui_thread_cpu_ms": 16.682,
+     "process_cpu_ms": 17.406,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 21,
+     "from": "midnight",
+     "to": "daylight",
+     "ms": 5.99,
+     "release_to_line_ms": 6.107,
+     "ui_thread_cpu_ms": 17.006,
+     "process_cpu_ms": 17.631,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 22,
+     "from": "daylight",
+     "to": "graphite",
+     "ms": 6.573,
+     "release_to_line_ms": 6.682,
+     "ui_thread_cpu_ms": 11.97,
+     "process_cpu_ms": 12.586,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 23,
+     "from": "graphite",
+     "to": "tokyo_night",
+     "ms": 7.203,
+     "release_to_line_ms": 7.497,
+     "ui_thread_cpu_ms": 16.523,
+     "process_cpu_ms": 17.111,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 24,
+     "from": "tokyo_night",
+     "to": "catppuccin_mocha",
+     "ms": 5.24,
+     "release_to_line_ms": 5.521,
+     "ui_thread_cpu_ms": 11.584,
+     "process_cpu_ms": 12.229,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 25,
+     "from": "catppuccin_mocha",
+     "to": "nord",
+     "ms": 5.034,
+     "release_to_line_ms": 5.201,
+     "ui_thread_cpu_ms": 12.163,
+     "process_cpu_ms": 13.084,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 26,
+     "from": "nord",
+     "to": "porcelain",
+     "ms": 1.636,
+     "release_to_line_ms": 1.817,
+     "ui_thread_cpu_ms": 15.168,
+     "process_cpu_ms": 15.736,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 27,
+     "from": "porcelain",
+     "to": "sandstone",
+     "ms": 0.668,
+     "release_to_line_ms": 0.798,
+     "ui_thread_cpu_ms": 20.942,
+     "process_cpu_ms": 21.641,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 28,
+     "from": "sandstone",
+     "to": "deep_sea",
+     "ms": 7.807,
+     "release_to_line_ms": 7.978,
+     "ui_thread_cpu_ms": 17.298,
+     "process_cpu_ms": 18.108,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 29,
+     "from": "deep_sea",
+     "to": "ember",
+     "ms": 7.269,
+     "release_to_line_ms": 7.55,
+     "ui_thread_cpu_ms": 12.493,
+     "process_cpu_ms": 13.513,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 30,
+     "from": "ember",
+     "to": "solarized_dark",
+     "ms": 6.381,
+     "release_to_line_ms": 6.656,
+     "ui_thread_cpu_ms": 13.023,
+     "process_cpu_ms": 14.04,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 31,
+     "from": "solarized_dark",
+     "to": "solarized_light",
+     "ms": 7.076,
+     "release_to_line_ms": 7.189,
+     "ui_thread_cpu_ms": 20.559,
+     "process_cpu_ms": 21.352,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 32,
+     "from": "solarized_light",
+     "to": "one_dark",
+     "ms": 6.52,
+     "release_to_line_ms": 6.635,
+     "ui_thread_cpu_ms": 18.099,
+     "process_cpu_ms": 18.802,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 33,
+     "from": "one_dark",
+     "to": "one_light",
+     "ms": 4.363,
+     "release_to_line_ms": 4.534,
+     "ui_thread_cpu_ms": 12.364,
+     "process_cpu_ms": 13.347,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 34,
+     "from": "one_light",
+     "to": "rose_pine",
+     "ms": 8.066,
+     "release_to_line_ms": 8.288,
+     "ui_thread_cpu_ms": 12.088,
+     "process_cpu_ms": 12.791,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 35,
+     "from": "rose_pine",
+     "to": "rose_pine_dawn",
+     "ms": 0.466,
+     "release_to_line_ms": 0.688,
+     "ui_thread_cpu_ms": 12.647,
+     "process_cpu_ms": 13.455,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 36,
+     "from": "rose_pine_dawn",
+     "to": "dracula",
+     "ms": 7.12,
+     "release_to_line_ms": 7.309,
+     "ui_thread_cpu_ms": 12.696,
+     "process_cpu_ms": 13.627,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 37,
+     "from": "dracula",
+     "to": "alucard",
+     "ms": 3.917,
+     "release_to_line_ms": 3.97,
+     "ui_thread_cpu_ms": 12.388,
+     "process_cpu_ms": 12.988,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 38,
+     "from": "alucard",
+     "to": "kanagawa_wave",
+     "ms": 2.289,
+     "release_to_line_ms": 2.504,
+     "ui_thread_cpu_ms": 11.485,
+     "process_cpu_ms": 12.199,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 39,
+     "from": "kanagawa_wave",
+     "to": "kanagawa_lotus",
+     "ms": 0.531,
+     "release_to_line_ms": 0.624,
+     "ui_thread_cpu_ms": 14.508,
+     "process_cpu_ms": 15.123,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 40,
+     "from": "kanagawa_lotus",
+     "to": "midnight",
+     "ms": 1.1,
+     "release_to_line_ms": 1.238,
+     "ui_thread_cpu_ms": 15.197,
+     "process_cpu_ms": 15.838,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 41,
+     "from": "midnight",
+     "to": "daylight",
+     "ms": 5.58,
+     "release_to_line_ms": 5.718,
+     "ui_thread_cpu_ms": 12.431,
+     "process_cpu_ms": 13.179,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 42,
+     "from": "daylight",
+     "to": "graphite",
+     "ms": 4.896,
+     "release_to_line_ms": 5.098,
+     "ui_thread_cpu_ms": 11.6,
+     "process_cpu_ms": 12.307,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 43,
+     "from": "graphite",
+     "to": "tokyo_night",
+     "ms": 3.802,
+     "release_to_line_ms": 3.87,
+     "ui_thread_cpu_ms": 15.056,
+     "process_cpu_ms": 15.679,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 44,
+     "from": "tokyo_night",
+     "to": "catppuccin_mocha",
+     "ms": 2.713,
+     "release_to_line_ms": 2.877,
+     "ui_thread_cpu_ms": 15.493,
+     "process_cpu_ms": 16.166,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 45,
+     "from": "catppuccin_mocha",
+     "to": "nord",
+     "ms": 7.598,
+     "release_to_line_ms": 7.903,
+     "ui_thread_cpu_ms": 13.079,
+     "process_cpu_ms": 13.774,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 46,
+     "from": "nord",
+     "to": "porcelain",
+     "ms": 1.332,
+     "release_to_line_ms": 1.491,
+     "ui_thread_cpu_ms": 15.243,
+     "process_cpu_ms": 15.862,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 47,
+     "from": "porcelain",
+     "to": "sandstone",
+     "ms": 0.877,
+     "release_to_line_ms": 0.998,
+     "ui_thread_cpu_ms": 10.983,
+     "process_cpu_ms": 11.513,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 48,
+     "from": "sandstone",
+     "to": "deep_sea",
+     "ms": 6.861,
+     "release_to_line_ms": 7.099,
+     "ui_thread_cpu_ms": 12.31,
+     "process_cpu_ms": 13.171,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 49,
+     "from": "deep_sea",
+     "to": "ember",
+     "ms": 4.578,
+     "release_to_line_ms": 4.817,
+     "ui_thread_cpu_ms": 12.472,
+     "process_cpu_ms": 13.175,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 50,
+     "from": "ember",
+     "to": "solarized_dark",
+     "ms": 1.513,
+     "release_to_line_ms": 1.772,
+     "ui_thread_cpu_ms": 12.937,
+     "process_cpu_ms": 13.755,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 51,
+     "from": "solarized_dark",
+     "to": "solarized_light",
+     "ms": 0.639,
+     "release_to_line_ms": 0.936,
+     "ui_thread_cpu_ms": 22.514,
+     "process_cpu_ms": 23.315,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 52,
+     "from": "solarized_light",
+     "to": "one_dark",
+     "ms": 2.515,
+     "release_to_line_ms": 2.662,
+     "ui_thread_cpu_ms": 21.534,
+     "process_cpu_ms": 22.153,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 53,
+     "from": "one_dark",
+     "to": "one_light",
+     "ms": 0.651,
+     "release_to_line_ms": 0.951,
+     "ui_thread_cpu_ms": 17.969,
+     "process_cpu_ms": 18.636,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 54,
+     "from": "one_light",
+     "to": "rose_pine",
+     "ms": 6.011,
+     "release_to_line_ms": 6.154,
+     "ui_thread_cpu_ms": 21.186,
+     "process_cpu_ms": 21.741,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 55,
+     "from": "rose_pine",
+     "to": "rose_pine_dawn",
+     "ms": 0.672,
+     "release_to_line_ms": 0.918,
+     "ui_thread_cpu_ms": 19.898,
+     "process_cpu_ms": 20.655,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 56,
+     "from": "rose_pine_dawn",
+     "to": "dracula",
+     "ms": 0.546,
+     "release_to_line_ms": 0.721,
+     "ui_thread_cpu_ms": 12.219,
+     "process_cpu_ms": 12.905,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 57,
+     "from": "dracula",
+     "to": "alucard",
+     "ms": 8.003,
+     "release_to_line_ms": 8.153,
+     "ui_thread_cpu_ms": 12.436,
+     "process_cpu_ms": 13.03,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 58,
+     "from": "alucard",
+     "to": "kanagawa_wave",
+     "ms": 6.619,
+     "release_to_line_ms": 6.657,
+     "ui_thread_cpu_ms": 16.246,
+     "process_cpu_ms": 16.9,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 59,
+     "from": "kanagawa_wave",
+     "to": "kanagawa_lotus",
+     "ms": 2.991,
+     "release_to_line_ms": 3.192,
+     "ui_thread_cpu_ms": 11.843,
+     "process_cpu_ms": 12.64,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 60,
+     "from": "kanagawa_lotus",
+     "to": "midnight",
+     "ms": 7.881,
+     "release_to_line_ms": 8.0,
+     "ui_thread_cpu_ms": 12.498,
+     "process_cpu_ms": 13.203,
+     "quiet_before_click_s": 1.2
+    }
+   ],
+   "summary": {
+    "n": 60,
+    "min": 0.466,
+    "median": 4.598,
+    "mean": 4.327,
+    "p90": 7.269,
+    "p95": 7.807,
+    "max": 8.066,
+    "stdev": 2.478
+   },
+   "budget": {
+    "median_le_ms": 8,
+    "p95_le_ms": 16,
+    "median_ms": 4.598,
+    "p95_ms": 7.807,
+    "median_holds": true,
+    "p95_holds": true
+   },
+   "over_8ms": 2,
+   "over_16ms": 0,
+   "ui_thread_cpu_ms": {
+    "n": 60,
+    "min": 10.983,
+    "median": 13.793,
+    "mean": 15.436,
+    "p90": 20.942,
+    "p95": 21.639,
+    "max": 28.497,
+    "stdev": 3.869
+   },
+   "process_cpu_ms": {
+    "n": 60,
+    "min": 11.513,
+    "median": 14.581,
+    "mean": 16.161,
+    "p90": 21.641,
+    "p95": 22.537,
+    "max": 29.621,
+    "stdev": 3.888
+   },
+   "controls_150ms_ui_cpu": {
+    "control_idle_ui_cpu_ms": {
+     "n": 60,
+     "min": 0.197,
+     "median": 1.127,
+     "mean": 1.066,
+     "p90": 1.505,
+     "p95": 1.545,
+     "max": 1.641,
+     "stdev": 0.365
+    },
+    "control_hover_ui_cpu_ms": {
+     "n": 60,
+     "min": 8.964,
+     "median": 11.502,
+     "mean": 12.808,
+     "p90": 17.757,
+     "p95": 17.923,
+     "max": 18.833,
+     "stdev": 3.353
+    },
+    "control_press_ui_cpu_ms": {
+     "n": 60,
+     "min": 11.163,
+     "median": 12.613,
+     "mean": 14.613,
+     "p90": 20.027,
+     "p95": 20.296,
+     "max": 21.123,
+     "stdev": 3.411
+    }
+   },
+   "release_to_line_ms": {
+    "n": 60,
+    "min": 0.624,
+    "median": 4.807,
+    "mean": 4.516,
+    "p90": 7.55,
+    "p95": 7.978,
+    "max": 8.288,
+    "stdev": 2.471
+   },
+   "line_phase_on_8.334ms_grid_ms": {
+    "n": 60,
+    "min": 0.0,
+    "median": 0.165,
+    "mean": 0.233,
+    "p90": 0.362,
+    "p95": 0.58,
+    "max": 1.125,
+    "stdev": 0.206
+   },
+   "verification": {
+    "every_store_write_matched": true,
+    "accent": {
+     "target_min_share": 1.0,
+     "previous_max_share": 0.0
+    },
+    "custom_themes_after": 0,
+    "file_preview_lines_after_settings": 0
+   },
+   "binary_sha256": "418a3b425cedb14fdf734ae02d756dce642896156dd214e6b165a9239a46aec6",
+   "store_sha256": "ae1731ac8307019b39aee6a216564410b55b656871ddb1b9d552e8e988e4e208",
+   "vs_baseline_7924244": {
+    "median_ms": {
+     "baseline": 3.827,
+     "this": 4.598,
+     "delta_ms": 0.771
+    },
+    "p95_ms": {
+     "baseline": 7.669,
+     "this": 7.807,
+     "delta_ms": 0.138
+    },
+    "max_ms": {
+     "baseline": 8.065,
+     "this": 8.066,
+     "delta_ms": 0.001
+    },
+    "ui_thread_cpu_median_ms": {
+     "baseline": 26.425,
+     "this": 13.793,
+     "delta_ms": -12.632,
+     "change_pct": -47.8,
+     "no_higher": true
+    },
+    "ui_thread_cpu_p95_ms": {
+     "baseline": 28.901,
+     "this": 21.639,
+     "delta_ms": -7.262,
+     "no_higher": true
+    },
+    "ui_thread_cpu_max_ms": {
+     "baseline": 30.904,
+     "this": 28.497,
+     "delta_ms": -2.407
+    }
+   },
+   "load_before": [
+    3.0458984375,
+    2.9619140625,
+    2.8486328125
+   ],
+   "load_after": [
+    2.5087890625,
+    2.78662109375,
+    2.81787109375
+   ]
+  },
+  "store_32": {
+   "launch": "switches-32",
+   "store": "32 custom themes (the bound)",
+   "custom_themes": 32,
+   "n": 60,
+   "order": "ThemeChoice::ALL from Midnight: ALL[1] ... ALL[19], ALL[0], three full cycles (as the baseline)",
+   "samples": [
+    {
+     "index": 1,
+     "from": "midnight",
+     "to": "daylight",
+     "ms": 0.764,
+     "release_to_line_ms": 0.927,
+     "ui_thread_cpu_ms": 22.808,
+     "process_cpu_ms": 23.684,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 2,
+     "from": "daylight",
+     "to": "graphite",
+     "ms": 3.68,
+     "release_to_line_ms": 3.916,
+     "ui_thread_cpu_ms": 16.723,
+     "process_cpu_ms": 17.912,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 3,
+     "from": "graphite",
+     "to": "tokyo_night",
+     "ms": 7.487,
+     "release_to_line_ms": 7.69,
+     "ui_thread_cpu_ms": 19.776,
+     "process_cpu_ms": 20.899,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 4,
+     "from": "tokyo_night",
+     "to": "catppuccin_mocha",
+     "ms": 0.737,
+     "release_to_line_ms": 0.883,
+     "ui_thread_cpu_ms": 21.361,
+     "process_cpu_ms": 22.78,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 5,
+     "from": "catppuccin_mocha",
+     "to": "nord",
+     "ms": 2.929,
+     "release_to_line_ms": 3.009,
+     "ui_thread_cpu_ms": 16.695,
+     "process_cpu_ms": 17.595,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 6,
+     "from": "nord",
+     "to": "porcelain",
+     "ms": 4.347,
+     "release_to_line_ms": 4.54,
+     "ui_thread_cpu_ms": 23.411,
+     "process_cpu_ms": 24.943,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 7,
+     "from": "porcelain",
+     "to": "sandstone",
+     "ms": 1.758,
+     "release_to_line_ms": 1.978,
+     "ui_thread_cpu_ms": 13.709,
+     "process_cpu_ms": 14.69,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 8,
+     "from": "sandstone",
+     "to": "deep_sea",
+     "ms": 1.017,
+     "release_to_line_ms": 1.051,
+     "ui_thread_cpu_ms": 18.187,
+     "process_cpu_ms": 18.99,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 9,
+     "from": "deep_sea",
+     "to": "ember",
+     "ms": 5.298,
+     "release_to_line_ms": 5.376,
+     "ui_thread_cpu_ms": 18.728,
+     "process_cpu_ms": 20.023,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 10,
+     "from": "ember",
+     "to": "solarized_dark",
+     "ms": 4.797,
+     "release_to_line_ms": 4.933,
+     "ui_thread_cpu_ms": 13.914,
+     "process_cpu_ms": 15.302,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 11,
+     "from": "solarized_dark",
+     "to": "solarized_light",
+     "ms": 1.155,
+     "release_to_line_ms": 1.378,
+     "ui_thread_cpu_ms": 13.339,
+     "process_cpu_ms": 14.145,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 12,
+     "from": "solarized_light",
+     "to": "one_dark",
+     "ms": 0.731,
+     "release_to_line_ms": 0.953,
+     "ui_thread_cpu_ms": 13.08,
+     "process_cpu_ms": 13.928,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 13,
+     "from": "one_dark",
+     "to": "one_light",
+     "ms": 1.04,
+     "release_to_line_ms": 1.132,
+     "ui_thread_cpu_ms": 23.831,
+     "process_cpu_ms": 25.318,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 14,
+     "from": "one_light",
+     "to": "rose_pine",
+     "ms": 0.445,
+     "release_to_line_ms": 0.64,
+     "ui_thread_cpu_ms": 13.257,
+     "process_cpu_ms": 14.152,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 15,
+     "from": "rose_pine",
+     "to": "rose_pine_dawn",
+     "ms": 0.454,
+     "release_to_line_ms": 0.758,
+     "ui_thread_cpu_ms": 13.02,
+     "process_cpu_ms": 13.807,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 16,
+     "from": "rose_pine_dawn",
+     "to": "dracula",
+     "ms": 7.477,
+     "release_to_line_ms": 7.724,
+     "ui_thread_cpu_ms": 14.294,
+     "process_cpu_ms": 15.848,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 17,
+     "from": "dracula",
+     "to": "alucard",
+     "ms": 7.044,
+     "release_to_line_ms": 7.239,
+     "ui_thread_cpu_ms": 18.271,
+     "process_cpu_ms": 19.176,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 18,
+     "from": "alucard",
+     "to": "kanagawa_wave",
+     "ms": 1.502,
+     "release_to_line_ms": 1.791,
+     "ui_thread_cpu_ms": 13.975,
+     "process_cpu_ms": 15.696,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 19,
+     "from": "kanagawa_wave",
+     "to": "kanagawa_lotus",
+     "ms": 4.378,
+     "release_to_line_ms": 4.475,
+     "ui_thread_cpu_ms": 19.126,
+     "process_cpu_ms": 20.305,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 20,
+     "from": "kanagawa_lotus",
+     "to": "midnight",
+     "ms": 4.458,
+     "release_to_line_ms": 4.664,
+     "ui_thread_cpu_ms": 23.277,
+     "process_cpu_ms": 24.662,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 21,
+     "from": "midnight",
+     "to": "daylight",
+     "ms": 4.043,
+     "release_to_line_ms": 4.293,
+     "ui_thread_cpu_ms": 13.116,
+     "process_cpu_ms": 13.965,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 22,
+     "from": "daylight",
+     "to": "graphite",
+     "ms": 1.749,
+     "release_to_line_ms": 1.969,
+     "ui_thread_cpu_ms": 19.124,
+     "process_cpu_ms": 20.187,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 23,
+     "from": "graphite",
+     "to": "tokyo_night",
+     "ms": 3.132,
+     "release_to_line_ms": 3.296,
+     "ui_thread_cpu_ms": 22.138,
+     "process_cpu_ms": 23.618,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 24,
+     "from": "tokyo_night",
+     "to": "catppuccin_mocha",
+     "ms": 7.951,
+     "release_to_line_ms": 7.951,
+     "ui_thread_cpu_ms": 16.682,
+     "process_cpu_ms": 17.484,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 25,
+     "from": "catppuccin_mocha",
+     "to": "nord",
+     "ms": 8.049,
+     "release_to_line_ms": 8.174,
+     "ui_thread_cpu_ms": 23.447,
+     "process_cpu_ms": 24.666,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 26,
+     "from": "nord",
+     "to": "porcelain",
+     "ms": 7.992,
+     "release_to_line_ms": 8.129,
+     "ui_thread_cpu_ms": 18.097,
+     "process_cpu_ms": 18.984,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 27,
+     "from": "porcelain",
+     "to": "sandstone",
+     "ms": 7.51,
+     "release_to_line_ms": 7.555,
+     "ui_thread_cpu_ms": 17.182,
+     "process_cpu_ms": 17.925,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 28,
+     "from": "sandstone",
+     "to": "deep_sea",
+     "ms": 4.314,
+     "release_to_line_ms": 4.289,
+     "ui_thread_cpu_ms": 16.724,
+     "process_cpu_ms": 17.495,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 29,
+     "from": "deep_sea",
+     "to": "ember",
+     "ms": 3.989,
+     "release_to_line_ms": 4.137,
+     "ui_thread_cpu_ms": 13.196,
+     "process_cpu_ms": 13.986,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 30,
+     "from": "ember",
+     "to": "solarized_dark",
+     "ms": 2.793,
+     "release_to_line_ms": 3.045,
+     "ui_thread_cpu_ms": 14.212,
+     "process_cpu_ms": 15.069,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 31,
+     "from": "solarized_dark",
+     "to": "solarized_light",
+     "ms": 0.46,
+     "release_to_line_ms": 0.865,
+     "ui_thread_cpu_ms": 13.492,
+     "process_cpu_ms": 14.392,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 32,
+     "from": "solarized_light",
+     "to": "one_dark",
+     "ms": 0.729,
+     "release_to_line_ms": 0.9,
+     "ui_thread_cpu_ms": 13.762,
+     "process_cpu_ms": 14.56,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 33,
+     "from": "one_dark",
+     "to": "one_light",
+     "ms": 1.889,
+     "release_to_line_ms": 2.256,
+     "ui_thread_cpu_ms": 13.992,
+     "process_cpu_ms": 14.912,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 34,
+     "from": "one_light",
+     "to": "rose_pine",
+     "ms": 1.038,
+     "release_to_line_ms": 1.21,
+     "ui_thread_cpu_ms": 19.705,
+     "process_cpu_ms": 20.489,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 35,
+     "from": "rose_pine",
+     "to": "rose_pine_dawn",
+     "ms": 6.198,
+     "release_to_line_ms": 6.392,
+     "ui_thread_cpu_ms": 16.662,
+     "process_cpu_ms": 17.449,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 36,
+     "from": "rose_pine_dawn",
+     "to": "dracula",
+     "ms": 6.17,
+     "release_to_line_ms": 6.355,
+     "ui_thread_cpu_ms": 14.013,
+     "process_cpu_ms": 15.191,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 37,
+     "from": "dracula",
+     "to": "alucard",
+     "ms": 7.713,
+     "release_to_line_ms": 7.869,
+     "ui_thread_cpu_ms": 17.693,
+     "process_cpu_ms": 18.493,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 38,
+     "from": "alucard",
+     "to": "kanagawa_wave",
+     "ms": 3.691,
+     "release_to_line_ms": 3.879,
+     "ui_thread_cpu_ms": 14.205,
+     "process_cpu_ms": 15.949,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 39,
+     "from": "kanagawa_wave",
+     "to": "kanagawa_lotus",
+     "ms": 3.844,
+     "release_to_line_ms": 4.033,
+     "ui_thread_cpu_ms": 13.58,
+     "process_cpu_ms": 14.571,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 40,
+     "from": "kanagawa_lotus",
+     "to": "midnight",
+     "ms": 3.707,
+     "release_to_line_ms": 3.97,
+     "ui_thread_cpu_ms": 13.286,
+     "process_cpu_ms": 14.941,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 41,
+     "from": "midnight",
+     "to": "daylight",
+     "ms": 2.392,
+     "release_to_line_ms": 2.676,
+     "ui_thread_cpu_ms": 12.427,
+     "process_cpu_ms": 13.335,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 42,
+     "from": "daylight",
+     "to": "graphite",
+     "ms": 7.549,
+     "release_to_line_ms": 7.715,
+     "ui_thread_cpu_ms": 14.454,
+     "process_cpu_ms": 16.164,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 43,
+     "from": "graphite",
+     "to": "tokyo_night",
+     "ms": 7.452,
+     "release_to_line_ms": 7.701,
+     "ui_thread_cpu_ms": 13.513,
+     "process_cpu_ms": 14.487,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 44,
+     "from": "tokyo_night",
+     "to": "catppuccin_mocha",
+     "ms": 5.477,
+     "release_to_line_ms": 5.644,
+     "ui_thread_cpu_ms": 17.161,
+     "process_cpu_ms": 18.019,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 45,
+     "from": "catppuccin_mocha",
+     "to": "nord",
+     "ms": 5.629,
+     "release_to_line_ms": 5.753,
+     "ui_thread_cpu_ms": 17.974,
+     "process_cpu_ms": 18.874,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 46,
+     "from": "nord",
+     "to": "porcelain",
+     "ms": 5.234,
+     "release_to_line_ms": 5.364,
+     "ui_thread_cpu_ms": 23.165,
+     "process_cpu_ms": 24.47,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 47,
+     "from": "porcelain",
+     "to": "sandstone",
+     "ms": 2.698,
+     "release_to_line_ms": 2.874,
+     "ui_thread_cpu_ms": 16.184,
+     "process_cpu_ms": 17.078,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 48,
+     "from": "sandstone",
+     "to": "deep_sea",
+     "ms": 4.901,
+     "release_to_line_ms": 5.111,
+     "ui_thread_cpu_ms": 21.968,
+     "process_cpu_ms": 23.268,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 49,
+     "from": "deep_sea",
+     "to": "ember",
+     "ms": 7.787,
+     "release_to_line_ms": 7.953,
+     "ui_thread_cpu_ms": 17.351,
+     "process_cpu_ms": 17.979,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 50,
+     "from": "ember",
+     "to": "solarized_dark",
+     "ms": 7.921,
+     "release_to_line_ms": 8.313,
+     "ui_thread_cpu_ms": 22.81,
+     "process_cpu_ms": 24.345,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 51,
+     "from": "solarized_dark",
+     "to": "solarized_light",
+     "ms": 0.732,
+     "release_to_line_ms": 0.903,
+     "ui_thread_cpu_ms": 21.935,
+     "process_cpu_ms": 23.432,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 52,
+     "from": "solarized_light",
+     "to": "one_dark",
+     "ms": 7.794,
+     "release_to_line_ms": 7.944,
+     "ui_thread_cpu_ms": 23.635,
+     "process_cpu_ms": 25.33,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 53,
+     "from": "one_dark",
+     "to": "one_light",
+     "ms": 3.836,
+     "release_to_line_ms": 3.907,
+     "ui_thread_cpu_ms": 20.112,
+     "process_cpu_ms": 21.213,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 54,
+     "from": "one_light",
+     "to": "rose_pine",
+     "ms": 1.124,
+     "release_to_line_ms": 1.283,
+     "ui_thread_cpu_ms": 19.522,
+     "process_cpu_ms": 20.856,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 55,
+     "from": "rose_pine",
+     "to": "rose_pine_dawn",
+     "ms": 0.466,
+     "release_to_line_ms": 0.549,
+     "ui_thread_cpu_ms": 13.605,
+     "process_cpu_ms": 14.459,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 56,
+     "from": "rose_pine_dawn",
+     "to": "dracula",
+     "ms": 2.12,
+     "release_to_line_ms": 2.321,
+     "ui_thread_cpu_ms": 21.376,
+     "process_cpu_ms": 22.949,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 57,
+     "from": "dracula",
+     "to": "alucard",
+     "ms": 1.552,
+     "release_to_line_ms": 1.685,
+     "ui_thread_cpu_ms": 17.79,
+     "process_cpu_ms": 18.506,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 58,
+     "from": "alucard",
+     "to": "kanagawa_wave",
+     "ms": 1.022,
+     "release_to_line_ms": 1.142,
+     "ui_thread_cpu_ms": 17.247,
+     "process_cpu_ms": 18.215,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 59,
+     "from": "kanagawa_wave",
+     "to": "kanagawa_lotus",
+     "ms": 0.532,
+     "release_to_line_ms": 0.709,
+     "ui_thread_cpu_ms": 19.61,
+     "process_cpu_ms": 20.521,
+     "quiet_before_click_s": 1.2
+    },
+    {
+     "index": 60,
+     "from": "kanagawa_lotus",
+     "to": "midnight",
+     "ms": 3.687,
+     "release_to_line_ms": 3.708,
+     "ui_thread_cpu_ms": 17.209,
+     "process_cpu_ms": 18.133,
+     "quiet_before_click_s": 1.2
+    }
+   ],
+   "summary": {
+    "n": 60,
+    "min": 0.445,
+    "median": 3.699,
+    "mean": 3.806,
+    "p90": 7.713,
+    "p95": 7.921,
+    "max": 8.049,
+    "stdev": 2.601
+   },
+   "budget": {
+    "median_le_ms": 8,
+    "p95_le_ms": 16,
+    "median_ms": 3.699,
+    "p95_ms": 7.921,
+    "median_holds": true,
+    "p95_holds": true
+   },
+   "over_8ms": 1,
+   "over_16ms": 0,
+   "ui_thread_cpu_ms": {
+    "n": 60,
+    "min": 12.427,
+    "median": 17.195,
+    "mean": 17.402,
+    "p90": 22.81,
+    "p95": 23.411,
+    "max": 23.831,
+    "stdev": 3.536
+   },
+   "process_cpu_ms": {
+    "n": 60,
+    "min": 13.335,
+    "median": 17.999,
+    "mean": 18.497,
+    "p90": 24.345,
+    "p95": 24.666,
+    "max": 25.33,
+    "stdev": 3.661
+   },
+   "controls_150ms_ui_cpu": {
+    "control_idle_ui_cpu_ms": {
+     "n": 60,
+     "min": 0.248,
+     "median": 0.994,
+     "mean": 0.935,
+     "p90": 1.33,
+     "p95": 1.54,
+     "max": 1.644,
+     "stdev": 0.348
+    },
+    "control_hover_ui_cpu_ms": {
+     "n": 60,
+     "min": 10.271,
+     "median": 14.108,
+     "mean": 14.071,
+     "p90": 18.547,
+     "p95": 19.281,
+     "max": 19.884,
+     "stdev": 2.942
+    },
+    "control_press_ui_cpu_ms": {
+     "n": 60,
+     "min": 12.666,
+     "median": 17.157,
+     "mean": 16.732,
+     "p90": 21.199,
+     "p95": 21.474,
+     "max": 22.919,
+     "stdev": 3.4
+    }
+   },
+   "release_to_line_ms": {
+    "n": 60,
+    "min": 0.549,
+    "median": 3.912,
+    "mean": 3.981,
+    "p90": 7.869,
+    "p95": 7.953,
+    "max": 8.313,
+    "stdev": 2.591
+   },
+   "line_phase_on_8.334ms_grid_ms": {
+    "n": 60,
+    "min": -0.103,
+    "median": 0.066,
+    "mean": 0.108,
+    "p90": 0.271,
+    "p95": 0.485,
+    "max": 0.929,
+    "stdev": 0.204
+   },
+   "verification": {
+    "every_store_write_matched": true,
+    "accent": {
+     "target_min_share": 1.0,
+     "previous_max_share": 0.0
+    },
+    "custom_themes_after": 32,
+    "file_preview_lines_after_settings": 0
+   },
+   "binary_sha256": "418a3b425cedb14fdf734ae02d756dce642896156dd214e6b165a9239a46aec6",
+   "store_sha256": "9deaa6eedec8ac129a9bb64e084b265b59f42e1bd9bba430f6ba366e4f04d23a",
+   "vs_baseline_7924244": {
+    "median_ms": {
+     "baseline": 3.827,
+     "this": 3.699,
+     "delta_ms": -0.128
+    },
+    "p95_ms": {
+     "baseline": 7.669,
+     "this": 7.921,
+     "delta_ms": 0.252
+    },
+    "max_ms": {
+     "baseline": 8.065,
+     "this": 8.049,
+     "delta_ms": -0.016
+    },
+    "ui_thread_cpu_median_ms": {
+     "baseline": 26.425,
+     "this": 17.195,
+     "delta_ms": -9.23,
+     "change_pct": -34.9,
+     "no_higher": true
+    },
+    "ui_thread_cpu_p95_ms": {
+     "baseline": 28.901,
+     "this": 23.411,
+     "delta_ms": -5.49,
+     "no_higher": true
+    },
+    "ui_thread_cpu_max_ms": {
+     "baseline": 30.904,
+     "this": 23.831,
+     "delta_ms": -7.073
+    }
+   },
+   "load_before": [
+    2.85986328125,
+    2.97900390625,
+    2.892578125
+   ],
+   "load_after": [
+    2.68701171875,
+    2.76513671875,
+    2.81787109375
+   ]
+  },
+  "sample_fields": {
+   "ms": "the printed gitturtle.theme_apply_frame_ms value",
+   "release_to_line_ms": "XTest release (after XSync) to the trace line's arrival on the stderr pipe, both CLOCK_MONOTONIC",
+   "ui_thread_cpu_ms": "UI (main) thread run time from /proc/<pid>/task/<pid>/schedstat, from just before the release to 150 ms after it"
+  }
+ },
+ "comparison_edits": {
+  "against": "docs/benchmarks/2026-09-19-theme-editor.json (build 3927b57, empty store) measured theme_apply_frame_ms at the callback boundary, which ended at a second next-frame callback and so carried at least one 8.334 ms period plus the keystroke's phase (diagnosis-58b6226 F1). The boundaries differ: these deltas are history, not a like-for-like speed comparison",
+  "boundary_note": "not comparable: callback boundary (before) vs draw-end boundary (this record)",
+  "pooled_60": {
+   "median_ms": {
+    "3927b57": 29.51,
+    "85a7d07": 21.778,
+    "delta_ms": -7.732,
+    "change_pct": -26.2
+   },
+   "p95_ms": {
+    "3927b57": 36.51,
+    "85a7d07": 25.372,
+    "delta_ms": -11.138,
+    "change_pct": -30.5
+   }
+  },
+  "ui_cpu_edit_median_ms": {
+   "3927b57": 23.37,
+   "85a7d07": 27.808,
+   "delta_ms": 4.438,
+   "change_pct": 19.0
+  },
+  "ui_cpu_edit_median_ms_note": "UI-thread CPU per edit (150 ms window from the 7th key) does not depend on the trace boundary; this row is comparable",
+  "launch_spread": {
+   "85a7d07": {
+    "medians": [
+     21.778,
+     22.322
+    ],
+    "p95s": [
+     25.372,
+     25.981
+    ]
+   }
+  }
+ },
+ "before_draw_cost_58b6226_instrumented": {
+  "source": "perf-draw-cost/diagnosis-58b6226/analysis-diag.json (instrumented scratch build of 58b6226, the original candidate, probes add about 1.8 ms; draw_ms = request_layout + layout/prepaint + paint, without the handler; medians)",
+  "classes": {
+   "diag-edits-32": [
+    {
+     "class": "edit_or_open_frame (dialog, traced, one draw)",
+     "frames": 66,
+     "elements": 2774.0,
+     "draw_ms": 26.438,
+     "draw_p95_ms": 30.661,
+     "present_ms": 0.952,
+     "drawn_in_key_event_path_share": 0.439,
+     "subtree_elements": {
+      "settings_page": 1891.0,
+      "picker": 457.0,
+      "themes_card": 1019.0,
+      "dialog_layer": 743.0
+     }
+    },
+    {
+     "class": "plain_keystroke_frame (dialog, keydown, untraced, one draw, no miniature rebuilt)",
+     "frames": 419,
+     "elements": 2735,
+     "draw_ms": 22.875,
+     "draw_p95_ms": 30.379,
+     "present_ms": 0.97,
+     "drawn_in_key_event_path_share": 0.427,
+     "subtree_elements": {
+      "settings_page": 1891,
+      "picker": 457,
+      "themes_card": 1019,
+      "dialog_layer": 743
+     }
+    },
+    {
+     "class": "dialog_frame_without_input (caret blink etc., one draw)",
+     "frames": 201,
+     "elements": 2735,
+     "draw_ms": 22.773,
+     "draw_p95_ms": 30.755,
+     "present_ms": 0.816,
+     "drawn_in_key_event_path_share": 0.015,
+     "subtree_elements": {
+      "settings_page": 1891,
+      "picker": 457,
+      "themes_card": 1019,
+      "dialog_layer": 743
+     }
+    },
+    {
+     "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+     "frames": 3,
+     "elements": 2772,
+     "draw_ms": 17.841,
+     "draw_p95_ms": 22.861,
+     "present_ms": 0.801,
+     "drawn_in_key_event_path_share": 0.0,
+     "subtree_elements": {
+      "settings_page": 1892,
+      "picker": 457,
+      "themes_card": 1020
+     }
+    }
+   ],
+   "diag-edits-empty": [
+    {
+     "class": "edit_or_open_frame (dialog, traced, one draw)",
+     "frames": 66,
+     "elements": 1784.0,
+     "draw_ms": 19.457,
+     "draw_p95_ms": 21.269,
+     "present_ms": 0.964,
+     "drawn_in_key_event_path_share": 0.53,
+     "subtree_elements": {
+      "settings_page": 901.0,
+      "picker": 457.0,
+      "themes_card": 29.0,
+      "dialog_layer": 743.0
+     }
+    },
+    {
+     "class": "plain_keystroke_frame (dialog, keydown, untraced, one draw, no miniature rebuilt)",
+     "frames": 420,
+     "elements": 1745.0,
+     "draw_ms": 17.791,
+     "draw_p95_ms": 21.886,
+     "present_ms": 0.99,
+     "drawn_in_key_event_path_share": 0.424,
+     "subtree_elements": {
+      "settings_page": 901.0,
+      "picker": 457.0,
+      "themes_card": 29.0,
+      "dialog_layer": 743.0
+     }
+    },
+    {
+     "class": "dialog_frame_without_input (caret blink etc., one draw)",
+     "frames": 212,
+     "elements": 1745.0,
+     "draw_ms": 16.383,
+     "draw_p95_ms": 22.241,
+     "present_ms": 0.813,
+     "drawn_in_key_event_path_share": 0.0,
+     "subtree_elements": {
+      "settings_page": 901.0,
+      "picker": 457.0,
+      "themes_card": 29.0,
+      "dialog_layer": 743.0
+     }
+    },
+    {
+     "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+     "frames": 3,
+     "elements": 1782,
+     "draw_ms": 8.906,
+     "draw_p95_ms": 9.306,
+     "present_ms": 0.836,
+     "drawn_in_key_event_path_share": 0.0,
+     "subtree_elements": {
+      "settings_page": 902,
+      "picker": 457,
+      "themes_card": 30
+     }
+    }
+   ],
+   "diag-switches-32": [
+    {
+     "class": "switch_frame (settings, no dialog, traced, one draw)",
+     "frames": 60,
+     "elements": 2771.0,
+     "draw_ms": 18.188,
+     "draw_p95_ms": 24.069,
+     "present_ms": 0.788,
+     "drawn_in_key_event_path_share": 0.0,
+     "subtree_elements": {
+      "settings_page": 1891.0,
+      "picker": 457.0,
+      "themes_card": 1019.0
+     }
+    },
+    {
+     "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+     "frames": 224,
+     "elements": 1991.0,
+     "draw_ms": 17.722,
+     "draw_p95_ms": 23.761,
+     "present_ms": 0.8,
+     "drawn_in_key_event_path_share": 0.0,
+     "subtree_elements": {
+      "settings_page": 1891.0,
+      "picker": 457.0,
+      "themes_card": 1019.0
+     }
+    }
+   ],
+   "diag-switches-empty": [
+    {
+     "class": "switch_frame (settings, no dialog, traced, one draw)",
+     "frames": 60,
+     "elements": 1781.0,
+     "draw_ms": 11.816,
+     "draw_p95_ms": 16.038,
+     "present_ms": 0.776,
+     "drawn_in_key_event_path_share": 0.0,
+     "subtree_elements": {
+      "settings_page": 901.0,
+      "picker": 457.0,
+      "themes_card": 29.0
+     }
+    },
+    {
+     "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+     "frames": 224,
+     "elements": 1001.0,
+     "draw_ms": 10.66,
+     "draw_p95_ms": 15.566,
+     "present_ms": 0.782,
+     "drawn_in_key_event_path_share": 0.0,
+     "subtree_elements": {
+      "settings_page": 901.0,
+      "picker": 457.0,
+      "themes_card": 29.0
+     }
+    }
+   ]
+  }
+ },
+ "before_draw_cost_ea31261_instrumented": {
+  "source": "perf-draw-cost/runs-ea31261/analysis-diag.json (instrumented scratch build of ea31261, attempt 1, measured 2026-09-21 with the same drivers; its build lacked the dialog-layer probe, so every dialog frame is classed as an edit or open frame and no dialog subtree is attributed; draw_ms as above; medians)",
+  "classes": {
+   "diag-edits-32": [
+    {
+     "class": "edit_or_open_frame (dialog open, traced, one draw; relabelled, dialog probe absent)",
+     "frames": 66,
+     "elements": 2098.0,
+     "draw_ms": 20.008,
+     "draw_p95_ms": 23.766,
+     "present_ms": 1.04,
+     "drawn_in_key_event_path_share": 0.515,
+     "subtree_elements": {
+      "settings_page": 935.0,
+      "picker": 457.0,
+      "themes_card": 63.0
+     }
+    },
+    {
+     "class": "settings_pointer_frame (before the first open: no dialog, mouse input, one draw)",
+     "frames": 3,
+     "elements": 2097,
+     "draw_ms": 10.754,
+     "draw_p95_ms": 10.867,
+     "present_ms": 0.822,
+     "drawn_in_key_event_path_share": 0.0,
+     "subtree_elements": {
+      "settings_page": 936,
+      "picker": 457,
+      "themes_card": 64
+     }
+    }
+   ],
+   "diag-edits-empty": [
+    {
+     "class": "edit_or_open_frame (dialog open, traced, one draw; relabelled, dialog probe absent)",
+     "frames": 66,
+     "elements": 1785.0,
+     "draw_ms": 18.236,
+     "draw_p95_ms": 21.326,
+     "present_ms": 1.054,
+     "drawn_in_key_event_path_share": 0.576,
+     "subtree_elements": {
+      "settings_page": 901.0,
+      "picker": 457.0,
+      "themes_card": 29.0
+     }
+    },
+    {
+     "class": "settings_pointer_frame (before the first open: no dialog, mouse input, one draw)",
+     "frames": 3,
+     "elements": 1782,
+     "draw_ms": 15.742,
+     "draw_p95_ms": 16.717,
+     "present_ms": 0.938,
+     "drawn_in_key_event_path_share": 0.0,
+     "subtree_elements": {
+      "settings_page": 902,
+      "picker": 457,
+      "themes_card": 30
+     }
+    }
+   ],
+   "diag-switches-32": [
+    {
+     "class": "switch_frame (settings, no dialog, traced, one draw)",
+     "frames": 60,
+     "elements": 2094.0,
+     "draw_ms": 10.879,
+     "draw_p95_ms": 18.26,
+     "present_ms": 0.819,
+     "drawn_in_key_event_path_share": 0.0,
+     "subtree_elements": {
+      "settings_page": 935.0,
+      "picker": 457.0,
+      "themes_card": 63.0
+     }
+    },
+    {
+     "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+     "frames": 224,
+     "elements": 1314.0,
+     "draw_ms": 10.642,
+     "draw_p95_ms": 18.517,
+     "present_ms": 0.811,
+     "drawn_in_key_event_path_share": 0.0,
+     "subtree_elements": {
+      "settings_page": 935.0,
+      "picker": 457.0,
+      "themes_card": 63.0
+     }
+    }
+   ],
+   "diag-switches-empty": [
+    {
+     "class": "switch_frame (settings, no dialog, traced, one draw)",
+     "frames": 60,
+     "elements": 1781.0,
+     "draw_ms": 9.495,
+     "draw_p95_ms": 16.418,
+     "present_ms": 0.811,
+     "drawn_in_key_event_path_share": 0.0,
+     "subtree_elements": {
+      "settings_page": 901.0,
+      "picker": 457.0,
+      "themes_card": 29.0
+     }
+    },
+    {
+     "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+     "frames": 224,
+     "elements": 1001.0,
+     "draw_ms": 9.35,
+     "draw_p95_ms": 16.044,
+     "present_ms": 0.817,
+     "drawn_in_key_event_path_share": 0.0,
+     "subtree_elements": {
+      "settings_page": 901.0,
+      "picker": 457.0,
+      "themes_card": 29.0
+     }
+    }
+   ]
+  }
+ },
+ "before_draw_cost_2030b3d_instrumented": {
+  "source": "perf-draw-cost/runs-2030b3d/analysis-diag.json (instrumented scratch build of 2030b3d, attempt 2, measured 2026-09-21 with the same drivers and with the dialog-layer probe; INDICATIVE: that candidate was rejected on visual-unchanged (card collapse), so the Settings page under its dialog is the collapsed layout; draw_ms as above; medians)",
+  "classes": {
+   "diag-edits-32": [
+    {
+     "class": "edit_or_open_frame (dialog, traced, one draw)",
+     "frames": 66,
+     "elements": 1922.0,
+     "draw_ms": 20.614,
+     "draw_p95_ms": 22.612,
+     "present_ms": 1.102,
+     "drawn_in_key_event_path_share": 0.545,
+     "subtree_elements": {
+      "settings_page": 832.0,
+      "picker": 357.0,
+      "themes_card": 60.0,
+      "dialog_layer": 696.0
+     }
+    },
+    {
+     "class": "plain_keystroke_frame (dialog, keydown, untraced, one draw, no miniature rebuilt)",
+     "frames": 420,
+     "elements": 1882.0,
+     "draw_ms": 19.202,
+     "draw_p95_ms": 22.707,
+     "present_ms": 1.078,
+     "drawn_in_key_event_path_share": 0.46,
+     "subtree_elements": {
+      "settings_page": 832.0,
+      "picker": 357.0,
+      "themes_card": 60.0,
+      "dialog_layer": 697.0
+     }
+    },
+    {
+     "class": "dialog_frame_without_input (caret blink etc., one draw)",
+     "frames": 205,
+     "elements": 1881,
+     "draw_ms": 16.184,
+     "draw_p95_ms": 23.277,
+     "present_ms": 1.025,
+     "drawn_in_key_event_path_share": 0.02,
+     "subtree_elements": {
+      "settings_page": 832,
+      "picker": 357,
+      "themes_card": 60,
+      "dialog_layer": 696
+     }
+    },
+    {
+     "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+     "frames": 3,
+     "elements": 1967,
+     "draw_ms": 10.536,
+     "draw_p95_ms": 16.261,
+     "present_ms": 0.821,
+     "drawn_in_key_event_path_share": 0.0,
+     "subtree_elements": {
+      "settings_page": 833,
+      "picker": 357,
+      "themes_card": 61
+     }
+    }
+   ],
+   "diag-edits-empty": [
+    {
+     "class": "edit_or_open_frame (dialog, traced, one draw)",
+     "frames": 66,
+     "elements": 1639.0,
+     "draw_ms": 17.853,
+     "draw_p95_ms": 21.28,
+     "present_ms": 0.974,
+     "drawn_in_key_event_path_share": 0.53,
+     "subtree_elements": {
+      "settings_page": 801.0,
+      "picker": 357.0,
+      "themes_card": 29.0,
+      "dialog_layer": 696.0
+     }
+    },
+    {
+     "class": "plain_keystroke_frame (dialog, keydown, untraced, one draw, no miniature rebuilt)",
+     "frames": 420,
+     "elements": 1599.0,
+     "draw_ms": 17.23,
+     "draw_p95_ms": 21.049,
+     "present_ms": 0.98,
+     "drawn_in_key_event_path_share": 0.388,
+     "subtree_elements": {
+      "settings_page": 801.0,
+      "picker": 357.0,
+      "themes_card": 29.0,
+      "dialog_layer": 697.0
+     }
+    },
+    {
+     "class": "dialog_frame_without_input (caret blink etc., one draw)",
+     "frames": 210,
+     "elements": 1598.0,
+     "draw_ms": 15.869,
+     "draw_p95_ms": 21.546,
+     "present_ms": 0.837,
+     "drawn_in_key_event_path_share": 0.024,
+     "subtree_elements": {
+      "settings_page": 801.0,
+      "picker": 357.0,
+      "themes_card": 29.0,
+      "dialog_layer": 696.0
+     }
+    },
+    {
+     "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+     "frames": 3,
+     "elements": 1682,
+     "draw_ms": 9.005,
+     "draw_p95_ms": 9.375,
+     "present_ms": 0.811,
+     "drawn_in_key_event_path_share": 0.0,
+     "subtree_elements": {
+      "settings_page": 802,
+      "picker": 357,
+      "themes_card": 30
+     }
+    }
+   ],
+   "diag-switches-32": [
+    {
+     "class": "switch_frame (settings, no dialog, traced, one draw)",
+     "frames": 60,
+     "elements": 1964.0,
+     "draw_ms": 12.228,
+     "draw_p95_ms": 16.902,
+     "present_ms": 0.833,
+     "drawn_in_key_event_path_share": 0.0,
+     "subtree_elements": {
+      "settings_page": 832.0,
+      "picker": 357.0,
+      "themes_card": 60.0
+     }
+    },
+    {
+     "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+     "frames": 224,
+     "elements": 1184.0,
+     "draw_ms": 10.279,
+     "draw_p95_ms": 16.483,
+     "present_ms": 0.821,
+     "drawn_in_key_event_path_share": 0.0,
+     "subtree_elements": {
+      "settings_page": 832.0,
+      "picker": 357.0,
+      "themes_card": 60.0
+     }
+    }
+   ],
+   "diag-switches-empty": [
+    {
+     "class": "switch_frame (settings, no dialog, traced, one draw)",
+     "frames": 60,
+     "elements": 1681.0,
+     "draw_ms": 8.736,
+     "draw_p95_ms": 14.846,
+     "present_ms": 0.792,
+     "drawn_in_key_event_path_share": 0.0,
+     "subtree_elements": {
+      "settings_page": 801.0,
+      "picker": 357.0,
+      "themes_card": 29.0
+     }
+    },
+    {
+     "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+     "frames": 224,
+     "elements": 901.0,
+     "draw_ms": 8.553,
+     "draw_p95_ms": 14.404,
+     "present_ms": 0.8,
+     "drawn_in_key_event_path_share": 0.0,
+     "subtree_elements": {
+      "settings_page": 801.0,
+      "picker": 357.0,
+      "themes_card": 29.0
+     }
+    }
+   ]
+  }
+ },
+ "before_draw_cost_23ee777_instrumented": {
+  "source": "perf-draw-cost/runs-23ee777/analysis-diag.json (instrumented scratch build of 23ee777, attempt 3, measured 2026-09-21 with the same drivers and with the dialog-layer probe; the whole card, no collapse; draw_ms as above; medians)",
+  "classes": {
+   "diag-edits-32": [
+    {
+     "class": "edit_or_open_frame (dialog, traced, one draw)",
+     "frames": 66,
+     "elements": 1882.0,
+     "draw_ms": 19.869,
+     "draw_p95_ms": 22.43,
+     "present_ms": 0.99,
+     "drawn_in_key_event_path_share": 0.485,
+     "subtree_elements": {
+      "settings_page": 814.0,
+      "picker": 338.0,
+      "themes_card": 61.0,
+      "dialog_layer": 674.0
+     }
+    },
+    {
+     "class": "plain_keystroke_frame (dialog, keydown, untraced, one draw, no miniature rebuilt)",
+     "frames": 420,
+     "elements": 1842.0,
+     "draw_ms": 18.708,
+     "draw_p95_ms": 22.506,
+     "present_ms": 0.996,
+     "drawn_in_key_event_path_share": 0.395,
+     "subtree_elements": {
+      "settings_page": 814.0,
+      "picker": 338.0,
+      "themes_card": 61.0,
+      "dialog_layer": 675.0
+     }
+    },
+    {
+     "class": "dialog_frame_without_input (caret blink etc., one draw)",
+     "frames": 201,
+     "elements": 1841,
+     "draw_ms": 18.829,
+     "draw_p95_ms": 23.206,
+     "present_ms": 0.954,
+     "drawn_in_key_event_path_share": 0.02,
+     "subtree_elements": {
+      "settings_page": 814,
+      "picker": 338,
+      "themes_card": 61,
+      "dialog_layer": 674
+     }
+    },
+    {
+     "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+     "frames": 3,
+     "elements": 1949,
+     "draw_ms": 10.938,
+     "draw_p95_ms": 15.728,
+     "present_ms": 0.844,
+     "drawn_in_key_event_path_share": 0.0,
+     "subtree_elements": {
+      "settings_page": 815,
+      "picker": 338,
+      "themes_card": 62
+     }
+    }
+   ],
+   "diag-edits-empty": [
+    {
+     "class": "edit_or_open_frame (dialog, traced, one draw)",
+     "frames": 66,
+     "elements": 1598.0,
+     "draw_ms": 17.265,
+     "draw_p95_ms": 20.346,
+     "present_ms": 1.146,
+     "drawn_in_key_event_path_share": 0.576,
+     "subtree_elements": {
+      "settings_page": 782.0,
+      "picker": 338.0,
+      "themes_card": 29.0,
+      "dialog_layer": 674.0
+     }
+    },
+    {
+     "class": "plain_keystroke_frame (dialog, keydown, untraced, one draw, no miniature rebuilt)",
+     "frames": 420,
+     "elements": 1558.0,
+     "draw_ms": 15.07,
+     "draw_p95_ms": 20.541,
+     "present_ms": 0.966,
+     "drawn_in_key_event_path_share": 0.393,
+     "subtree_elements": {
+      "settings_page": 782.0,
+      "picker": 338.0,
+      "themes_card": 29.0,
+      "dialog_layer": 675.0
+     }
+    },
+    {
+     "class": "dialog_frame_without_input (caret blink etc., one draw)",
+     "frames": 214,
+     "elements": 1557.0,
+     "draw_ms": 14.549,
+     "draw_p95_ms": 20.784,
+     "present_ms": 0.843,
+     "drawn_in_key_event_path_share": 0.019,
+     "subtree_elements": {
+      "settings_page": 782.0,
+      "picker": 338.0,
+      "themes_card": 29.0,
+      "dialog_layer": 674.0
+     }
+    },
+    {
+     "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+     "frames": 3,
+     "elements": 1663,
+     "draw_ms": 8.639,
+     "draw_p95_ms": 9.013,
+     "present_ms": 0.851,
+     "drawn_in_key_event_path_share": 0.0,
+     "subtree_elements": {
+      "settings_page": 783,
+      "picker": 338,
+      "themes_card": 30
+     }
+    }
+   ],
+   "diag-switches-32": [
+    {
+     "class": "switch_frame (settings, no dialog, traced, one draw)",
+     "frames": 60,
+     "elements": 1946.0,
+     "draw_ms": 9.896,
+     "draw_p95_ms": 16.56,
+     "present_ms": 0.81,
+     "drawn_in_key_event_path_share": 0.0,
+     "subtree_elements": {
+      "settings_page": 814.0,
+      "picker": 338.0,
+      "themes_card": 61.0
+     }
+    },
+    {
+     "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+     "frames": 224,
+     "elements": 1166.0,
+     "draw_ms": 9.653,
+     "draw_p95_ms": 16.368,
+     "present_ms": 0.812,
+     "drawn_in_key_event_path_share": 0.0,
+     "subtree_elements": {
+      "settings_page": 814.0,
+      "picker": 338.0,
+      "themes_card": 61.0
+     }
+    }
+   ],
+   "diag-switches-empty": [
+    {
+     "class": "switch_frame (settings, no dialog, traced, one draw)",
+     "frames": 60,
+     "elements": 1662.0,
+     "draw_ms": 8.788,
+     "draw_p95_ms": 15.451,
+     "present_ms": 0.81,
+     "drawn_in_key_event_path_share": 0.0,
+     "subtree_elements": {
+      "settings_page": 782.0,
+      "picker": 338.0,
+      "themes_card": 29.0
+     }
+    },
+    {
+     "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+     "frames": 224,
+     "elements": 882.0,
+     "draw_ms": 8.652,
+     "draw_p95_ms": 15.064,
+     "present_ms": 0.81,
+     "drawn_in_key_event_path_share": 0.0,
+     "subtree_elements": {
+      "settings_page": 782.0,
+      "picker": 338.0,
+      "themes_card": 29.0
+     }
+    }
+   ]
+  }
+ },
+ "elements_per_frame": {
+  "before": {
+   "58b6226 (original)": {
+    "diag-edits-32": [
+     {
+      "class": "edit_or_open_frame (dialog, traced, one draw)",
+      "frames": 66,
+      "elements": 2774.0,
+      "subtree_elements": {
+       "settings_page": 1891.0,
+       "picker": 457.0,
+       "themes_card": 1019.0,
+       "dialog_layer": 743.0
+      }
+     },
+     {
+      "class": "plain_keystroke_frame (dialog, keydown, untraced, one draw, no miniature rebuilt)",
+      "frames": 419,
+      "elements": 2735,
+      "subtree_elements": {
+       "settings_page": 1891,
+       "picker": 457,
+       "themes_card": 1019,
+       "dialog_layer": 743
+      }
+     },
+     {
+      "class": "dialog_frame_without_input (caret blink etc., one draw)",
+      "frames": 201,
+      "elements": 2735,
+      "subtree_elements": {
+       "settings_page": 1891,
+       "picker": 457,
+       "themes_card": 1019,
+       "dialog_layer": 743
+      }
+     },
+     {
+      "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+      "frames": 3,
+      "elements": 2772,
+      "subtree_elements": {
+       "settings_page": 1892,
+       "picker": 457,
+       "themes_card": 1020
+      }
+     }
+    ],
+    "diag-edits-empty": [
+     {
+      "class": "edit_or_open_frame (dialog, traced, one draw)",
+      "frames": 66,
+      "elements": 1784.0,
+      "subtree_elements": {
+       "settings_page": 901.0,
+       "picker": 457.0,
+       "themes_card": 29.0,
+       "dialog_layer": 743.0
+      }
+     },
+     {
+      "class": "plain_keystroke_frame (dialog, keydown, untraced, one draw, no miniature rebuilt)",
+      "frames": 420,
+      "elements": 1745.0,
+      "subtree_elements": {
+       "settings_page": 901.0,
+       "picker": 457.0,
+       "themes_card": 29.0,
+       "dialog_layer": 743.0
+      }
+     },
+     {
+      "class": "dialog_frame_without_input (caret blink etc., one draw)",
+      "frames": 212,
+      "elements": 1745.0,
+      "subtree_elements": {
+       "settings_page": 901.0,
+       "picker": 457.0,
+       "themes_card": 29.0,
+       "dialog_layer": 743.0
+      }
+     },
+     {
+      "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+      "frames": 3,
+      "elements": 1782,
+      "subtree_elements": {
+       "settings_page": 902,
+       "picker": 457,
+       "themes_card": 30
+      }
+     }
+    ],
+    "diag-switches-32": [
+     {
+      "class": "switch_frame (settings, no dialog, traced, one draw)",
+      "frames": 60,
+      "elements": 2771.0,
+      "subtree_elements": {
+       "settings_page": 1891.0,
+       "picker": 457.0,
+       "themes_card": 1019.0
+      }
+     },
+     {
+      "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+      "frames": 224,
+      "elements": 1991.0,
+      "subtree_elements": {
+       "settings_page": 1891.0,
+       "picker": 457.0,
+       "themes_card": 1019.0
+      }
+     }
+    ],
+    "diag-switches-empty": [
+     {
+      "class": "switch_frame (settings, no dialog, traced, one draw)",
+      "frames": 60,
+      "elements": 1781.0,
+      "subtree_elements": {
+       "settings_page": 901.0,
+       "picker": 457.0,
+       "themes_card": 29.0
+      }
+     },
+     {
+      "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+      "frames": 224,
+      "elements": 1001.0,
+      "subtree_elements": {
+       "settings_page": 901.0,
+       "picker": 457.0,
+       "themes_card": 29.0
+      }
+     }
+    ]
+   },
+   "ea31261 (attempt 1)": {
+    "diag-edits-32": [
+     {
+      "class": "edit_or_open_frame (dialog open, traced, one draw; relabelled, dialog probe absent)",
+      "frames": 66,
+      "elements": 2098.0,
+      "subtree_elements": {
+       "settings_page": 935.0,
+       "picker": 457.0,
+       "themes_card": 63.0
+      }
+     },
+     {
+      "class": "settings_pointer_frame (before the first open: no dialog, mouse input, one draw)",
+      "frames": 3,
+      "elements": 2097,
+      "subtree_elements": {
+       "settings_page": 936,
+       "picker": 457,
+       "themes_card": 64
+      }
+     }
+    ],
+    "diag-edits-empty": [
+     {
+      "class": "edit_or_open_frame (dialog open, traced, one draw; relabelled, dialog probe absent)",
+      "frames": 66,
+      "elements": 1785.0,
+      "subtree_elements": {
+       "settings_page": 901.0,
+       "picker": 457.0,
+       "themes_card": 29.0
+      }
+     },
+     {
+      "class": "settings_pointer_frame (before the first open: no dialog, mouse input, one draw)",
+      "frames": 3,
+      "elements": 1782,
+      "subtree_elements": {
+       "settings_page": 902,
+       "picker": 457,
+       "themes_card": 30
+      }
+     }
+    ],
+    "diag-switches-32": [
+     {
+      "class": "switch_frame (settings, no dialog, traced, one draw)",
+      "frames": 60,
+      "elements": 2094.0,
+      "subtree_elements": {
+       "settings_page": 935.0,
+       "picker": 457.0,
+       "themes_card": 63.0
+      }
+     },
+     {
+      "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+      "frames": 224,
+      "elements": 1314.0,
+      "subtree_elements": {
+       "settings_page": 935.0,
+       "picker": 457.0,
+       "themes_card": 63.0
+      }
+     }
+    ],
+    "diag-switches-empty": [
+     {
+      "class": "switch_frame (settings, no dialog, traced, one draw)",
+      "frames": 60,
+      "elements": 1781.0,
+      "subtree_elements": {
+       "settings_page": 901.0,
+       "picker": 457.0,
+       "themes_card": 29.0
+      }
+     },
+     {
+      "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+      "frames": 224,
+      "elements": 1001.0,
+      "subtree_elements": {
+       "settings_page": 901.0,
+       "picker": 457.0,
+       "themes_card": 29.0
+      }
+     }
+    ]
+   },
+   "2030b3d (attempt 2, indicative)": {
+    "diag-edits-32": [
+     {
+      "class": "edit_or_open_frame (dialog, traced, one draw)",
+      "frames": 66,
+      "elements": 1922.0,
+      "subtree_elements": {
+       "settings_page": 832.0,
+       "picker": 357.0,
+       "themes_card": 60.0,
+       "dialog_layer": 696.0
+      }
+     },
+     {
+      "class": "plain_keystroke_frame (dialog, keydown, untraced, one draw, no miniature rebuilt)",
+      "frames": 420,
+      "elements": 1882.0,
+      "subtree_elements": {
+       "settings_page": 832.0,
+       "picker": 357.0,
+       "themes_card": 60.0,
+       "dialog_layer": 697.0
+      }
+     },
+     {
+      "class": "dialog_frame_without_input (caret blink etc., one draw)",
+      "frames": 205,
+      "elements": 1881,
+      "subtree_elements": {
+       "settings_page": 832,
+       "picker": 357,
+       "themes_card": 60,
+       "dialog_layer": 696
+      }
+     },
+     {
+      "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+      "frames": 3,
+      "elements": 1967,
+      "subtree_elements": {
+       "settings_page": 833,
+       "picker": 357,
+       "themes_card": 61
+      }
+     }
+    ],
+    "diag-edits-empty": [
+     {
+      "class": "edit_or_open_frame (dialog, traced, one draw)",
+      "frames": 66,
+      "elements": 1639.0,
+      "subtree_elements": {
+       "settings_page": 801.0,
+       "picker": 357.0,
+       "themes_card": 29.0,
+       "dialog_layer": 696.0
+      }
+     },
+     {
+      "class": "plain_keystroke_frame (dialog, keydown, untraced, one draw, no miniature rebuilt)",
+      "frames": 420,
+      "elements": 1599.0,
+      "subtree_elements": {
+       "settings_page": 801.0,
+       "picker": 357.0,
+       "themes_card": 29.0,
+       "dialog_layer": 697.0
+      }
+     },
+     {
+      "class": "dialog_frame_without_input (caret blink etc., one draw)",
+      "frames": 210,
+      "elements": 1598.0,
+      "subtree_elements": {
+       "settings_page": 801.0,
+       "picker": 357.0,
+       "themes_card": 29.0,
+       "dialog_layer": 696.0
+      }
+     },
+     {
+      "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+      "frames": 3,
+      "elements": 1682,
+      "subtree_elements": {
+       "settings_page": 802,
+       "picker": 357,
+       "themes_card": 30
+      }
+     }
+    ],
+    "diag-switches-32": [
+     {
+      "class": "switch_frame (settings, no dialog, traced, one draw)",
+      "frames": 60,
+      "elements": 1964.0,
+      "subtree_elements": {
+       "settings_page": 832.0,
+       "picker": 357.0,
+       "themes_card": 60.0
+      }
+     },
+     {
+      "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+      "frames": 224,
+      "elements": 1184.0,
+      "subtree_elements": {
+       "settings_page": 832.0,
+       "picker": 357.0,
+       "themes_card": 60.0
+      }
+     }
+    ],
+    "diag-switches-empty": [
+     {
+      "class": "switch_frame (settings, no dialog, traced, one draw)",
+      "frames": 60,
+      "elements": 1681.0,
+      "subtree_elements": {
+       "settings_page": 801.0,
+       "picker": 357.0,
+       "themes_card": 29.0
+      }
+     },
+     {
+      "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+      "frames": 224,
+      "elements": 901.0,
+      "subtree_elements": {
+       "settings_page": 801.0,
+       "picker": 357.0,
+       "themes_card": 29.0
+      }
+     }
+    ]
+   },
+   "23ee777 (attempt 3)": {
+    "diag-edits-32": [
+     {
+      "class": "edit_or_open_frame (dialog, traced, one draw)",
+      "frames": 66,
+      "elements": 1882.0,
+      "subtree_elements": {
+       "settings_page": 814.0,
+       "picker": 338.0,
+       "themes_card": 61.0,
+       "dialog_layer": 674.0
+      }
+     },
+     {
+      "class": "plain_keystroke_frame (dialog, keydown, untraced, one draw, no miniature rebuilt)",
+      "frames": 420,
+      "elements": 1842.0,
+      "subtree_elements": {
+       "settings_page": 814.0,
+       "picker": 338.0,
+       "themes_card": 61.0,
+       "dialog_layer": 675.0
+      }
+     },
+     {
+      "class": "dialog_frame_without_input (caret blink etc., one draw)",
+      "frames": 201,
+      "elements": 1841,
+      "subtree_elements": {
+       "settings_page": 814,
+       "picker": 338,
+       "themes_card": 61,
+       "dialog_layer": 674
+      }
+     },
+     {
+      "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+      "frames": 3,
+      "elements": 1949,
+      "subtree_elements": {
+       "settings_page": 815,
+       "picker": 338,
+       "themes_card": 62
+      }
+     }
+    ],
+    "diag-edits-empty": [
+     {
+      "class": "edit_or_open_frame (dialog, traced, one draw)",
+      "frames": 66,
+      "elements": 1598.0,
+      "subtree_elements": {
+       "settings_page": 782.0,
+       "picker": 338.0,
+       "themes_card": 29.0,
+       "dialog_layer": 674.0
+      }
+     },
+     {
+      "class": "plain_keystroke_frame (dialog, keydown, untraced, one draw, no miniature rebuilt)",
+      "frames": 420,
+      "elements": 1558.0,
+      "subtree_elements": {
+       "settings_page": 782.0,
+       "picker": 338.0,
+       "themes_card": 29.0,
+       "dialog_layer": 675.0
+      }
+     },
+     {
+      "class": "dialog_frame_without_input (caret blink etc., one draw)",
+      "frames": 214,
+      "elements": 1557.0,
+      "subtree_elements": {
+       "settings_page": 782.0,
+       "picker": 338.0,
+       "themes_card": 29.0,
+       "dialog_layer": 674.0
+      }
+     },
+     {
+      "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+      "frames": 3,
+      "elements": 1663,
+      "subtree_elements": {
+       "settings_page": 783,
+       "picker": 338,
+       "themes_card": 30
+      }
+     }
+    ],
+    "diag-switches-32": [
+     {
+      "class": "switch_frame (settings, no dialog, traced, one draw)",
+      "frames": 60,
+      "elements": 1946.0,
+      "subtree_elements": {
+       "settings_page": 814.0,
+       "picker": 338.0,
+       "themes_card": 61.0
+      }
+     },
+     {
+      "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+      "frames": 224,
+      "elements": 1166.0,
+      "subtree_elements": {
+       "settings_page": 814.0,
+       "picker": 338.0,
+       "themes_card": 61.0
+      }
+     }
+    ],
+    "diag-switches-empty": [
+     {
+      "class": "switch_frame (settings, no dialog, traced, one draw)",
+      "frames": 60,
+      "elements": 1662.0,
+      "subtree_elements": {
+       "settings_page": 782.0,
+       "picker": 338.0,
+       "themes_card": 29.0
+      }
+     },
+     {
+      "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+      "frames": 224,
+      "elements": 882.0,
+      "subtree_elements": {
+       "settings_page": 782.0,
+       "picker": 338.0,
+       "themes_card": 29.0
+      }
+     }
+    ]
+   }
+  },
+  "after": {
+   "diag-edits-32": [
+    {
+     "class": "edit_or_open_frame (dialog, traced, one draw)",
+     "frames": 66,
+     "elements": 1882.0,
+     "draw_ms": 20.588,
+     "draw_p95_ms": 24.075,
+     "subtree_elements": {
+      "settings_page": 814.0,
+      "picker": 338.0,
+      "themes_card": 61.0,
+      "dialog_layer": 674.0
+     }
+    },
+    {
+     "class": "plain_keystroke_frame (dialog, keydown, untraced, one draw, no miniature rebuilt)",
+     "frames": 420,
+     "elements": 1842.0,
+     "draw_ms": 20.342,
+     "draw_p95_ms": 23.051,
+     "subtree_elements": {
+      "settings_page": 814.0,
+      "picker": 338.0,
+      "themes_card": 61.0,
+      "dialog_layer": 675.0
+     }
+    },
+    {
+     "class": "dialog_frame_without_input (caret blink etc., one draw)",
+     "frames": 211,
+     "elements": 1841,
+     "draw_ms": 19.735,
+     "draw_p95_ms": 23.92,
+     "subtree_elements": {
+      "settings_page": 814,
+      "picker": 338,
+      "themes_card": 61,
+      "dialog_layer": 674
+     }
+    },
+    {
+     "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+     "frames": 3,
+     "elements": 1949,
+     "draw_ms": 14.504,
+     "draw_p95_ms": 16.062,
+     "subtree_elements": {
+      "settings_page": 815,
+      "picker": 338,
+      "themes_card": 62
+     }
+    }
+   ],
+   "diag-edits-empty": [
+    {
+     "class": "edit_or_open_frame (dialog, traced, one draw)",
+     "frames": 66,
+     "elements": 1598.0,
+     "draw_ms": 18.522,
+     "draw_p95_ms": 21.173,
+     "subtree_elements": {
+      "settings_page": 782.0,
+      "picker": 338.0,
+      "themes_card": 29.0,
+      "dialog_layer": 674.0
+     }
+    },
+    {
+     "class": "plain_keystroke_frame (dialog, keydown, untraced, one draw, no miniature rebuilt)",
+     "frames": 420,
+     "elements": 1558.0,
+     "draw_ms": 18.086,
+     "draw_p95_ms": 20.18,
+     "subtree_elements": {
+      "settings_page": 782.0,
+      "picker": 338.0,
+      "themes_card": 29.0,
+      "dialog_layer": 675.0
+     }
+    },
+    {
+     "class": "dialog_frame_without_input (caret blink etc., one draw)",
+     "frames": 213,
+     "elements": 1557,
+     "draw_ms": 16.636,
+     "draw_p95_ms": 21.389,
+     "subtree_elements": {
+      "settings_page": 782,
+      "picker": 338,
+      "themes_card": 29,
+      "dialog_layer": 674
+     }
+    },
+    {
+     "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+     "frames": 3,
+     "elements": 1663,
+     "draw_ms": 9.365,
+     "draw_p95_ms": 11.887,
+     "subtree_elements": {
+      "settings_page": 783,
+      "picker": 338,
+      "themes_card": 30
+     }
+    }
+   ],
+   "diag-switches-32": [
+    {
+     "class": "switch_frame (settings, no dialog, traced, one draw)",
+     "frames": 60,
+     "elements": 1946.0,
+     "draw_ms": 11.06,
+     "draw_p95_ms": 17.326,
+     "subtree_elements": {
+      "settings_page": 814.0,
+      "picker": 338.0,
+      "themes_card": 61.0
+     }
+    },
+    {
+     "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+     "frames": 224,
+     "elements": 1166.0,
+     "draw_ms": 10.771,
+     "draw_p95_ms": 16.463,
+     "subtree_elements": {
+      "settings_page": 814.0,
+      "picker": 338.0,
+      "themes_card": 61.0
+     }
+    }
+   ],
+   "diag-switches-empty": [
+    {
+     "class": "switch_frame (settings, no dialog, traced, one draw)",
+     "frames": 60,
+     "elements": 1662.0,
+     "draw_ms": 9.312,
+     "draw_p95_ms": 15.559,
+     "subtree_elements": {
+      "settings_page": 782.0,
+      "picker": 338.0,
+      "themes_card": 29.0
+     }
+    },
+    {
+     "class": "settings_pointer_frame (settings, no dialog, untraced, mouse input, one draw)",
+     "frames": 224,
+     "elements": 882.0,
+     "draw_ms": 9.292,
+     "draw_p95_ms": 14.255,
+     "subtree_elements": {
+      "settings_page": 782.0,
+      "picker": 338.0,
+      "themes_card": 29.0
+     }
+    }
+   ]
+  },
+  "how": "GPUI has no element counter in the release candidate and GITTURTLE_TRACE prints none; counts come from the instrumented scratch build (diagnosis-58b6226/diag-gpui.patch applied to a copy of the candidate's clean checkout, README-next.md section 6; since 2030b3d the dialog-layer probe of diag.patch is ported too, so the dialog's share is attributed) run with GITTURTLE_DIAG=1 under the same drivers; those runs are never criterion samples. before: the 58b6226 original, the ea31261 attempt 1, the 2030b3d attempt 2 (indicative, collapsed card) and the 23ee777 attempt 3; after: this candidate."
+ },
+ "launches": {
+  "warmup-32": {
+   "custom_themes": 32,
+   "store_sha256": "9deaa6eedec8ac129a9bb64e084b265b59f42e1bd9bba430f6ba366e4f04d23a",
+   "edits": {
+    "n": 60,
+    "min": 17.331,
+    "median": 22.322,
+    "mean": 21.881,
+    "p90": 24.784,
+    "p95": 25.981,
+    "max": 26.731,
+    "stdev": 2.588
+   },
+   "pooled_60": {
+    "n": 60,
+    "p95_rank": 57,
+    "p95_ms": 25.981,
+    "median_ms": 22.322,
+    "max_ms": 26.731,
+    "p95_le_bound": true,
+    "over_bound": 3
+   },
+   "designated_set_summary": {
+    "n": 10,
+    "min": 17.331,
+    "median": 19.73,
+    "mean": 20.589,
+    "p90": 23.698,
+    "p95": 24.212,
+    "max": 24.212,
+    "stdev": 2.882
+   },
+   "opens": {
+    "n": 6,
+    "min": 21.029,
+    "median": 25.712,
+    "mean": 26.181,
+    "p90": 31.734,
+    "p95": 31.734,
+    "max": 31.734,
+    "stdev": 4.743
+   },
+   "ui_cpu_edit_ms": {
+    "n": 60,
+    "min": 22.35,
+    "median": 28.178,
+    "mean": 27.238,
+    "p90": 30.962,
+    "p95": 31.78,
+    "max": 33.023,
+    "stdev": 3.259
+   },
+   "ui_cpu_key6_ms": {
+    "n": 60,
+    "min": 19.774,
+    "median": 27.294,
+    "mean": 26.397,
+    "p90": 30.831,
+    "p95": 31.848,
+    "max": 32.794,
+    "stdev": 3.514
+   },
+   "ui_cpu_idle_ms": {
+    "n": 60,
+    "min": 0.237,
+    "median": 1.107,
+    "mean": 1.058,
+    "p90": 1.306,
+    "p95": 1.35,
+    "max": 1.493,
+    "stdev": 0.261
+   },
+   "ui_cpu_edit_minus_key6_ms": {
+    "n": 60,
+    "min": -9.261,
+    "median": 0.614,
+    "mean": 0.841,
+    "p90": 3.911,
+    "p95": 6.6,
+    "max": 8.517,
+    "stdev": 2.854
+   },
+   "process_cpu_edit_ms": {
+    "n": 60,
+    "min": 22.622,
+    "median": 28.412,
+    "mean": 27.539,
+    "p90": 31.355,
+    "p95": 32.107,
+    "max": 33.314,
+    "stdev": 3.26
+   },
+   "over_16ms": 60,
+   "over_26ms": 3,
+   "theme_apply_frame_ms_lines": 0,
+   "load_before": [
+    3.1552734375,
+    2.96728515625,
+    2.7705078125
+   ],
+   "load_after": [
+    3.0654296875,
+    3.00390625,
+    2.8134765625
+   ],
+   "frames_mode": false,
+   "bursts_mode": false,
+   "no_compare": false
+  },
+  "recorded-32": {
+   "custom_themes": 32,
+   "store_sha256": "9deaa6eedec8ac129a9bb64e084b265b59f42e1bd9bba430f6ba366e4f04d23a",
+   "edits": {
+    "n": 60,
+    "min": 17.238,
+    "median": 21.778,
+    "mean": 21.826,
+    "p90": 25.176,
+    "p95": 25.372,
+    "max": 26.719,
+    "stdev": 2.565
+   },
+   "pooled_60": {
+    "n": 60,
+    "p95_rank": 57,
+    "p95_ms": 25.372,
+    "median_ms": 21.778,
+    "max_ms": 26.719,
+    "p95_le_bound": true,
+    "over_bound": 2
+   },
+   "designated_set_summary": {
+    "n": 10,
+    "min": 17.836,
+    "median": 22.157,
+    "mean": 21.803,
+    "p90": 25.176,
+    "p95": 25.197,
+    "max": 25.197,
+    "stdev": 2.731
+   },
+   "opens": {
+    "n": 6,
+    "min": 20.594,
+    "median": 25.366,
+    "mean": 26.246,
+    "p90": 34.206,
+    "p95": 34.206,
+    "max": 34.206,
+    "stdev": 4.431
+   },
+   "ui_cpu_edit_ms": {
+    "n": 60,
+    "min": 22.59,
+    "median": 27.808,
+    "mean": 27.185,
+    "p90": 30.99,
+    "p95": 31.494,
+    "max": 31.959,
+    "stdev": 3.052
+   },
+   "ui_cpu_key6_ms": {
+    "n": 60,
+    "min": 21.701,
+    "median": 27.983,
+    "mean": 27.046,
+    "p90": 30.211,
+    "p95": 30.424,
+    "max": 32.569,
+    "stdev": 3.065
+   },
+   "ui_cpu_idle_ms": {
+    "n": 60,
+    "min": 0.257,
+    "median": 1.086,
+    "mean": 1.043,
+    "p90": 1.382,
+    "p95": 1.418,
+    "max": 1.527,
+    "stdev": 0.302
+   },
+   "ui_cpu_edit_minus_key6_ms": {
+    "n": 60,
+    "min": -6.916,
+    "median": 0.412,
+    "mean": 0.139,
+    "p90": 3.215,
+    "p95": 6.902,
+    "max": 8.488,
+    "stdev": 3.502
+   },
+   "process_cpu_edit_ms": {
+    "n": 60,
+    "min": 22.935,
+    "median": 28.098,
+    "mean": 27.499,
+    "p90": 31.304,
+    "p95": 31.854,
+    "max": 32.373,
+    "stdev": 3.053
+   },
+   "over_16ms": 60,
+   "over_26ms": 2,
+   "theme_apply_frame_ms_lines": 0,
+   "load_before": [
+    2.85107421875,
+    2.93359375,
+    2.80908203125
+   ],
+   "load_after": [
+    2.67529296875,
+    2.79736328125,
+    2.7783203125
+   ],
+   "frames_mode": false,
+   "bursts_mode": false,
+   "no_compare": false
+  },
+  "edits-empty": {
+   "custom_themes": 0,
+   "store_sha256": "ae1731ac8307019b39aee6a216564410b55b656871ddb1b9d552e8e988e4e208",
+   "edits": {
+    "n": 60,
+    "min": 15.183,
+    "median": 19.508,
+    "mean": 19.472,
+    "p90": 23.172,
+    "p95": 23.929,
+    "max": 24.661,
+    "stdev": 2.817
+   },
+   "pooled_60": {
+    "n": 60,
+    "p95_rank": 57,
+    "p95_ms": 23.929,
+    "median_ms": 19.508,
+    "max_ms": 24.661,
+    "p95_le_bound": true,
+    "over_bound": 0
+   },
+   "designated_set_summary": {
+    "n": 10,
+    "min": 15.183,
+    "median": 19.976,
+    "mean": 19.461,
+    "p90": 21.501,
+    "p95": 22.886,
+    "max": 22.886,
+    "stdev": 2.436
+   },
+   "opens": {
+    "n": 6,
+    "min": 18.697,
+    "median": 23.972,
+    "mean": 23.452,
+    "p90": 28.622,
+    "p95": 28.622,
+    "max": 28.622,
+    "stdev": 3.423
+   },
+   "ui_cpu_edit_ms": {
+    "n": 60,
+    "min": 18.297,
+    "median": 24.979,
+    "mean": 24.406,
+    "p90": 28.414,
+    "p95": 28.709,
+    "max": 31.45,
+    "stdev": 3.235
+   },
+   "ui_cpu_key6_ms": {
+    "n": 60,
+    "min": 17.45,
+    "median": 24.242,
+    "mean": 23.713,
+    "p90": 27.387,
+    "p95": 28.28,
+    "max": 31.302,
+    "stdev": 3.098
+   },
+   "ui_cpu_idle_ms": {
+    "n": 60,
+    "min": 0.274,
+    "median": 1.127,
+    "mean": 0.975,
+    "p90": 1.309,
+    "p95": 1.342,
+    "max": 1.511,
+    "stdev": 0.363
+   },
+   "ui_cpu_edit_minus_key6_ms": {
+    "n": 60,
+    "min": -7.66,
+    "median": 0.784,
+    "mean": 0.693,
+    "p90": 4.403,
+    "p95": 5.92,
+    "max": 7.531,
+    "stdev": 3.05
+   },
+   "process_cpu_edit_ms": {
+    "n": 60,
+    "min": 18.593,
+    "median": 25.303,
+    "mean": 24.717,
+    "p90": 28.71,
+    "p95": 29.006,
+    "max": 31.803,
+    "stdev": 3.236
+   },
+   "over_16ms": 52,
+   "over_26ms": 0,
+   "theme_apply_frame_ms_lines": 0,
+   "load_before": [
+    2.751953125,
+    2.81005859375,
+    2.783203125
+   ],
+   "load_after": [
+    3.37646484375,
+    2.99072265625,
+    2.85107421875
+   ],
+   "frames_mode": false,
+   "bursts_mode": false,
+   "no_compare": false
+  }
+ },
+ "controls_empty_store": {
+  "launch": "edits-empty",
+  "why": "the same procedure on the empty store (edit-budget asks for it): the committed record's store bytes, Tab x28 and Space on New theme...",
+  "edits": {
+   "n": 60,
+   "min": 15.183,
+   "median": 19.508,
+   "mean": 19.472,
+   "p90": 23.172,
+   "p95": 23.929,
+   "max": 24.661,
+   "stdev": 2.817
+  },
+  "pooled_60": {
+   "n": 60,
+   "sorted_ms": [
+    15.183,
+    15.345,
+    15.407,
+    15.471,
+    15.75,
+    15.764,
+    15.766,
+    15.8,
+    16.101,
+    16.187,
+    16.308,
+    16.539,
+    16.779,
+    16.887,
+    17.077,
+    17.088,
+    17.236,
+    17.282,
+    17.31,
+    17.417,
+    17.555,
+    17.681,
+    17.693,
+    17.849,
+    17.929,
+    18.118,
+    18.617,
+    19.123,
+    19.43,
+    19.461,
+    19.555,
+    19.731,
+    19.812,
+    20.237,
+    20.498,
+    20.521,
+    20.586,
+    20.76,
+    21.032,
+    21.079,
+    21.118,
+    21.202,
+    21.277,
+    21.428,
+    21.501,
+    21.856,
+    22.509,
+    22.524,
+    22.693,
+    22.76,
+    22.839,
+    22.886,
+    22.902,
+    23.172,
+    23.353,
+    23.687,
+    23.929,
+    23.958,
+    24.098,
+    24.661
+   ],
+   "p95_rank": 57,
+   "p95_ms": 23.929,
+   "median_ms": 19.508,
+   "max_ms": 24.661,
+   "min_ms": 15.183,
+   "bound_ms": 26,
+   "p95_le_bound": true,
+   "over_bound": 0,
+   "sets": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "edits_per_set": {
+    "1": 10,
+    "2": 10,
+    "3": 10,
+    "4": 10,
+    "5": 10,
+    "6": 10
+   }
+  },
+  "designated_set_summary": {
+   "n": 10,
+   "min": 15.183,
+   "median": 19.976,
+   "mean": 19.461,
+   "p90": 21.501,
+   "p95": 22.886,
+   "max": 22.886,
+   "stdev": 2.436
+  },
+  "opens": {
+   "n": 6,
+   "min": 18.697,
+   "median": 23.972,
+   "mean": 23.452,
+   "p90": 28.622,
+   "p95": 28.622,
+   "max": 28.622,
+   "stdev": 3.423
+  },
+  "ui_cpu_edit_ms": {
+   "n": 60,
+   "min": 18.297,
+   "median": 24.979,
+   "mean": 24.406,
+   "p90": 28.414,
+   "p95": 28.709,
+   "max": 31.45,
+   "stdev": 3.235
+  },
+  "ui_cpu_key6_ms": {
+   "n": 60,
+   "min": 17.45,
+   "median": 24.242,
+   "mean": 23.713,
+   "p90": 27.387,
+   "p95": 28.28,
+   "max": 31.302,
+   "stdev": 3.098
+  },
+  "over_16ms": 52,
+  "over_26ms": 0,
+  "store_sha256": "ae1731ac8307019b39aee6a216564410b55b656871ddb1b9d552e8e988e4e208",
+  "vs_editor_record_ui_cpu_median": {
+   "3927b57": 23.37,
+   "85a7d07": 24.979,
+   "delta_ms": 1.609,
+   "change_pct": 6.9
+  },
+  "store_32_minus_empty": {
+   "pooled_p95_ms": 1.443,
+   "pooled_median_ms": 2.27,
+   "ui_cpu_edit_median_ms": 2.829
+  }
+ },
+ "attribution": null,
+ "limitations": [
+  "Linux XWayland on GNOME Wayland only (not native Wayland, not macOS); synthetic XTest keys and clicks; 120 Hz display at 2x.",
+  "One recorded launch of 60 edits per store and one of 60 switches per store; warm caches; uncontrolled desktop load on the owner's active session.",
+  "These numbers bind to executable sha256 418a3b425cedb14fdf734ae02d756dce642896156dd214e6b165a9239a46aec6 only.",
+  "No profiler on the host: draw phases and elements per frame come from the instrumented scratch build, not from the release candidate.",
+  "One token (Canvas) edited through the hex field only; picker drags and edits that change the Readability list were not measured.",
+  "The edit metric's boundary changed with this candidate, so its values are not comparable with the 2026-09-19 record's; UI-thread CPU per edit is."
+ ]
+}

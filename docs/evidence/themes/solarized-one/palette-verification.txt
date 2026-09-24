@@ -1,0 +1,55 @@
+Note (2026-09-24): this file records the September 18 captures of d4ac46b. The images beside it were re-taken
+from 5899e2a on 2026-09-24 and are described in docs/validation.md, "September 18 Solarized and One built-in themes";
+this record was not regenerated for them.
+
+file                                         surface        drawn     declared   share result
+solarized_dark-history-selected.png          canvas         #002b36   #002b36    100% ok
+solarized_dark-history-selected.png          sidebar panel  #073642   #073642    100% ok
+solarized_dark-history-selected.png          selected row   #0b4154   #0b4154     81% ok
+solarized_dark-history-hover.png             canvas         #002b36   #002b36    100% ok
+solarized_dark-history-hover.png             selected row   #0b4154   #0b4154     81% ok
+solarized_dark-history-hover.png             hovered row    #103c48   #103c48     80% ok
+solarized_dark-history-focus.png             canvas         #002b36   #002b36    100% ok
+solarized_dark-history-focus.png             sidebar panel  #073642   #073642    100% ok
+solarized_dark-diff-added-removed.png        removed tile   #1a2c35   #1a2c35     64% ok
+solarized_dark-diff-added-removed.png        added tile     #103830   #103830     64% ok
+solarized_dark-diff-added-removed.png        canvas         #002b36   #002b36    100% ok
+solarized_dark-settings-picker.png           page canvas    #002b36   #002b36     56% ok
+solarized_light-history-selected.png         canvas         #fdf6e3   #fdf6e3    100% ok
+solarized_light-history-selected.png         sidebar panel  #eee8d5   #eee8d5    100% ok
+solarized_light-history-selected.png         selected row   #d0dad5   #d0dad5     81% ok
+solarized_light-history-hover.png            canvas         #fdf6e3   #fdf6e3    100% ok
+solarized_light-history-hover.png            selected row   #d0dad5   #d0dad5     81% ok
+solarized_light-history-hover.png            hovered row    #e3dfcf   #e3dfcf     80% ok
+solarized_light-history-focus.png            canvas         #fdf6e3   #fdf6e3    100% ok
+solarized_light-history-focus.png            sidebar panel  #eee8d5   #eee8d5    100% ok
+solarized_light-diff-added-removed.png       removed tile   #fae2d1   #fae2d1     64% ok
+solarized_light-diff-added-removed.png       added tile     #ece9c3   #ece9c3     64% ok
+solarized_light-diff-added-removed.png       canvas         #fdf6e3   #fdf6e3    100% ok
+solarized_light-settings-picker.png          page canvas    #fdf6e3   #fdf6e3     56% ok
+one_dark-history-selected.png                canvas         #282c34   #282c34    100% ok
+one_dark-history-selected.png                sidebar panel  #2e333d   #2e333d    100% ok
+one_dark-history-selected.png                selected row   #323d52   #323d52     81% ok
+one_dark-history-hover.png                   canvas         #282c34   #282c34    100% ok
+one_dark-history-hover.png                   selected row   #323d52   #323d52     81% ok
+one_dark-history-hover.png                   hovered row    #333943   #333943     80% ok
+one_dark-history-focus.png                   canvas         #282c34   #282c34    100% ok
+one_dark-history-focus.png                   sidebar panel  #2e333d   #2e333d    100% ok
+one_dark-diff-added-removed.png              removed tile   #3e343c   #3e343c     64% ok
+one_dark-diff-added-removed.png              added tile     #353e3c   #353e3c     64% ok
+one_dark-diff-added-removed.png              canvas         #282c34   #282c34    100% ok
+one_dark-settings-picker.png                 page canvas    #282c34   #282c34     56% ok
+one_light-history-selected.png               canvas         #fafafa   #fafafa    100% ok
+one_light-history-selected.png               sidebar panel  #ffffff   #ffffff    100% ok
+one_light-history-selected.png               selected row   #e9edff   #e9edff     81% ok
+one_light-history-hover.png                  canvas         #fafafa   #fafafa    100% ok
+one_light-history-hover.png                  selected row   #e9edff   #e9edff     81% ok
+one_light-history-hover.png                  hovered row    #f1f1f3   #f1f1f3     80% ok
+one_light-history-focus.png                  canvas         #fafafa   #fafafa    100% ok
+one_light-history-focus.png                  sidebar panel  #ffffff   #ffffff    100% ok
+one_light-diff-added-removed.png             removed tile   #f6e7eb   #f6e7eb     64% ok
+one_light-diff-added-removed.png             added tile     #e6efe5   #e6efe5     64% ok
+one_light-diff-added-removed.png             canvas         #fafafa   #fafafa    100% ok
+one_light-settings-picker.png                page canvas    #fafafa   #fafafa     56% ok
+
+0 mismatch(es)

@@ -27,6 +27,14 @@ class EnvironmentBlocked(LoopError):
     """Execution or cleanup could not be established; do not retry blindly."""
 
 
+class MalformedResponse(LoopError):
+    """A session finished but its verdict could not be read.
+
+    The work it judged is intact, so a review that lands here is retried on the
+    same candidate instead of discarding it and re-running implementation.
+    """
+
+
 MAX_RECORD_BYTES = 8_000_000
 
 
@@ -37,15 +45,28 @@ def validate_basename(name: str) -> str:
     return name
 
 
-def _check_directory(fd: int, *, final: bool) -> None:
+def _check_directory(fd: int, *, final: bool, path: Path | None = None) -> None:
+    """Validate one open directory; `path` names the component in any failure."""
     info = os.fstat(fd)
+    # Descriptor-only callers revalidate a directory open_directory already
+    # reported on by path, so the component name is optional here; the
+    # traversal threads the canonical prefix of the component it just opened.
+    where = f"record directory {path}" if path is not None else "record directory"
     if not stat.S_ISDIR(info.st_mode):
-        raise LoopError("record directory handle is not a directory")
-    if info.st_uid not in ({os.geteuid()} if final else {0, os.geteuid()}):
-        raise LoopError("record directory has an unexpected owner")
+        raise LoopError(f"{where} handle is not a directory")
+    owner = os.geteuid()
+    if info.st_uid not in ({owner} if final else {0, owner}):
+        expected = f"uid {owner}" if final else f"uid {owner} or root"
+        raise LoopError(
+            f"{where} has an unexpected owner (uid {info.st_uid}, expected {expected}); "
+            "take ownership of it with chown or start the controller from a checkout "
+            "whose ancestors you own")
     writable = info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
     if writable and (final or not info.st_mode & stat.S_ISVTX):
-        raise LoopError("record directory is writable by other users")
+        raise LoopError(
+            f"{where} is writable by other users (mode {stat.S_IMODE(info.st_mode):04o}); "
+            "make it private with chmod g-w,o-w or start the controller from a checkout "
+            "whose ancestors are not group/other writable")
 
 
 @contextmanager
@@ -58,9 +79,10 @@ def open_directory(path: Path, *, create: bool = False) -> Iterator[int]:
     try:
         canonical = path.parent.resolve() / path.name
         flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        current_path = Path(canonical.anchor)
         current = os.open(canonical.anchor, flags)
         try:
-            _check_directory(current, final=not canonical.parts[1:])
+            _check_directory(current, final=not canonical.parts[1:], path=current_path)
             for index, component in enumerate(canonical.parts[1:]):
                 try:
                     child = os.open(component, flags, dir_fd=current)
@@ -74,7 +96,9 @@ def open_directory(path: Path, *, create: bool = False) -> Iterator[int]:
                     child = os.open(component, flags, dir_fd=current)
                 os.close(current)
                 current = child
-                _check_directory(current, final=index == len(canonical.parts) - 2)
+                current_path = current_path / component
+                _check_directory(current, final=index == len(canonical.parts) - 2,
+                                 path=current_path)
             yield current
         finally:
             os.close(current)

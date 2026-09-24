@@ -14,6 +14,8 @@ from agent_loop.git import head, write_limits
 from agent_loop.process import EnvironmentBlocked, LoopError, atomic_json, read_json
 from agent_loop.runner import Runner, attest, main, profiles_for, validate_patch
 from agent_loop.task_spec import parse_spec
+# Records and run state stay private even when the host umask is permissive.
+from agent_loop.test_support import setUpModule, tearDownModule
 
 
 class UnavailableCodex(fixtures.FakeCodex):

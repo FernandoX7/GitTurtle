@@ -1,0 +1,565 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "themes-palette-sources",
+      "title": "Add upstream palette source tables for the ten new built-in themes",
+      "description": "Add crates/app/src/appearance/sources.rs holding the upstream values recorded in docs/development/2026-09-17-theme-palettes.md for Solarized, One, Rosé Pine, Dracula/Alucard and Kanagawa as u32 constants, one module per family with a submodule per variant, each module doc naming the upstream repository, file and pinned revision from the note. No theme is added yet, so mark the module cfg_attr(not(test), allow(dead_code)) until the batches use it and keep a test that references every constant. Reconcile the attribution already committed in THIRD_PARTY_NOTICES.md and docs/licenses/assets with what you bring in; do not add other families.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/appearance.rs",
+        "crates/app/src/appearance/**",
+        "THIRD_PARTY_NOTICES.md",
+        "docs/licenses/assets/**"
+      ],
+      "acceptance": [
+        {
+          "id": "source-tables",
+          "description": "crates/app/src/appearance/sources.rs defines every value listed under 'Source values for the chosen palettes' in docs/development/2026-09-17-theme-palettes.md for the five families (ten variants) as u32 constants; a reviewer diff against the note finds no missing, extra or altered value."
+        },
+        {
+          "id": "provenance-doc",
+          "description": "Each family module's doc comment names the upstream repository, file and pinned revision from the note, and `cargo doc --locked -p gitturtle --no-deps` is warning-free."
+        },
+        {
+          "id": "attribution-verified",
+          "description": "Every entry in docs/licenses/assets/sources.json has a file whose SHA-256 matches, THIRD_PARTY_NOTICES.md names all five families, and `python3 scripts/collect-third-party-licenses.py --target <host triple> <empty dir>` completes with the supplements verified (record the command and the output excerpt)."
+        },
+        {
+          "id": "gate-green",
+          "description": "`python3 scripts/gate.py fast` is green with the new module compiled and its constant-coverage test passing."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "docs"
+      ],
+      "commit": "feat(appearance): add upstream palette source tables for new themes"
+    },
+    {
+      "id": "themes-readability-rules",
+      "title": "Extend palette readability rules to lanes, focus, selection, gutter and inspector",
+      "description": "Move the contrast math out of the appearance test module into Palette::readability_issues() returning structured issues (foreground token or lane index, background token or selected-row hover, ratio, minimum), and make the existing readability test assert the list is empty for every built-in. Add Palette::is_light() using the rule graph::palette_colors already applies and make graph.rs call it. The rules and thresholds are the table in docs/development/themes/spec.md section 'Readability rules'; all ten current palettes were computed to pass them on 2026-09-17, so a failing built-in indicates a rule implemented differently from the table, not a palette to retune. If a curated value must still change, note old and new values in DESIGN.md.",
+      "depends_on": [
+        "themes-palette-sources"
+      ],
+      "scope": [
+        "crates/app/src/appearance.rs",
+        "crates/app/src/appearance/**",
+        "crates/app/src/graph.rs",
+        "DESIGN.md",
+        "crates/app/docs/content-and-layout.md"
+      ],
+      "acceptance": [
+        {
+          "id": "rules-encoded",
+          "description": "Palette::readability_issues implements every row and threshold of the rules table in docs/development/themes/spec.md, and a unit test feeds palettes that each break exactly one row and asserts the returned issue names the foreground, the background, the ratio and the minimum."
+        },
+        {
+          "id": "built-ins-pass",
+          "description": "`cargo test --locked -p gitturtle appearance::` passes with palettes_keep_text_and_diff_content_readable_in_each_theme asserting readability_issues().is_empty() for ThemeChoice::ALL; any curated palette value changed is listed in DESIGN.md's palette section with the old and new value and the rule that required it."
+        },
+        {
+          "id": "is-light-shared",
+          "description": "Palette::is_light exists, graph::palette_colors uses it for lane set selection, and a test asserts choice.is_light() == choice.palette().is_light() for every built-in."
+        },
+        {
+          "id": "contract-doc",
+          "description": "crates/app/docs/content-and-layout.md's theme section names readability_issues as the single rule set for palette tests and future editor warnings, and DESIGN.md's palette paragraph lists the new rule groups (focus ring, lanes, surfaces, gutter, inspector) beside the existing 4.5:1 and 3:1 wording."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "docs"
+      ],
+      "commit": "feat(appearance): encode readability rules for lanes, focus, surfaces"
+    },
+    {
+      "id": "themes-batch-solarized-one",
+      "title": "Add Solarized Dark, Solarized Light, One Dark and One Light",
+      "description": "Add 4 ThemeChoice variants (Solarized Dark, Solarized Light, One Dark, One Light) mapped from appearance::sources to semantic Palette tokens, with serde names solarized_dark, solarized_light, one_dark, one_light, labels, a two-word description in the existing 'Deep slate · mint' style, and is_light. Follow the mapping guidance in docs/development/2026-09-17-theme-palettes.md and tune a token only where readability_issues requires it, the way Nord's red was tuned; record every tuned token in DESIGN.md. The picker groups by is_light automatically; do not change picker layout here.",
+      "depends_on": [
+        "themes-readability-rules"
+      ],
+      "scope": [
+        "crates/app/src/appearance.rs",
+        "crates/app/src/appearance/**",
+        "DESIGN.md",
+        "docs/validation.md",
+        "docs/evidence/themes/**"
+      ],
+      "acceptance": [
+        {
+          "id": "variants",
+          "description": "ThemeChoice::ALL has 14 entries; each new variant has a label, description, serde round trip and is_light, and `cargo test --locked -p gitturtle appearance::` passes including theme_switch_updates_resolved_component_backgrounds_with_foregrounds."
+        },
+        {
+          "id": "readable",
+          "description": "readability_issues() is empty for the 4 new palettes, and every token whose value departs from the upstream source is listed in DESIGN.md with the rule that required it."
+        },
+        {
+          "id": "design-doc",
+          "description": "DESIGN.md's palette section names each new family, its upstream link from the research note and its variants, and its palette count wording is current."
+        },
+        {
+          "id": "native-evidence",
+          "description": "A native-qa pass records the Settings picker and History (selected row, hover, focus ring, a diff with added and removed lines) in each of the 4 themes at 1,000 × 680, names the build identity, stores the screenshots under docs/evidence/themes/ and adds a dated docs/validation.md entry."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native",
+        "docs"
+      ],
+      "commit": "feat(appearance): add Solarized and One built-in themes"
+    },
+    {
+      "id": "themes-batch-rose-pine-dracula",
+      "title": "Add Rosé Pine, Rosé Pine Dawn and Dracula",
+      "description": "Add 3 ThemeChoice variants (Rosé Pine, Rosé Pine Dawn, Dracula) mapped from appearance::sources to semantic Palette tokens, with serde names rose_pine, rose_pine_dawn, dracula, labels, a two-word description in the existing 'Deep slate · mint' style, and is_light. Follow the mapping guidance in docs/development/2026-09-17-theme-palettes.md and tune a token only where readability_issues requires it, the way Nord's red was tuned; record every tuned token in DESIGN.md. The picker groups by is_light automatically; do not change picker layout here.",
+      "depends_on": [
+        "themes-batch-solarized-one"
+      ],
+      "scope": [
+        "crates/app/src/appearance.rs",
+        "crates/app/src/appearance/**",
+        "DESIGN.md",
+        "docs/validation.md",
+        "docs/evidence/themes/**"
+      ],
+      "acceptance": [
+        {
+          "id": "variants",
+          "description": "ThemeChoice::ALL has 17 entries; each new variant has a label, description, serde round trip and is_light, and `cargo test --locked -p gitturtle appearance::` passes including theme_switch_updates_resolved_component_backgrounds_with_foregrounds."
+        },
+        {
+          "id": "readable",
+          "description": "readability_issues() is empty for the 3 new palettes, and every token whose value departs from the upstream source is listed in DESIGN.md with the rule that required it."
+        },
+        {
+          "id": "design-doc",
+          "description": "DESIGN.md's palette section names each new family, its upstream link from the research note and its variants, and its palette count wording is current."
+        },
+        {
+          "id": "native-evidence",
+          "description": "A native-qa pass records the Settings picker and History (selected row, hover, focus ring, a diff with added and removed lines) in each of the 3 themes at 1,000 × 680, names the build identity, stores the screenshots under docs/evidence/themes/ and adds a dated docs/validation.md entry."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native",
+        "docs"
+      ],
+      "commit": "feat(appearance): add Rosé Pine and Dracula built-in themes"
+    },
+    {
+      "id": "themes-batch-alucard-kanagawa",
+      "title": "Add Alucard, Kanagawa Wave and Kanagawa Lotus",
+      "description": "Add 3 ThemeChoice variants (Alucard, Kanagawa Wave, Kanagawa Lotus) mapped from appearance::sources to semantic Palette tokens, with serde names alucard, kanagawa_wave, kanagawa_lotus, labels, a two-word description in the existing 'Deep slate · mint' style, and is_light. Follow the mapping guidance in docs/development/2026-09-17-theme-palettes.md and tune a token only where readability_issues requires it, the way Nord's red was tuned; record every tuned token in DESIGN.md. The picker groups by is_light automatically; do not change picker layout here. This batch completes the twenty, so it also updates the theme lists and counts in docs/user-guide.md, docs/native-accessibility.md and docs/validation.md, and rewords THIRD_PARTY_NOTICES.md from 'queued' to shipped adaptations.",
+      "depends_on": [
+        "themes-batch-rose-pine-dracula"
+      ],
+      "scope": [
+        "crates/app/src/appearance.rs",
+        "crates/app/src/appearance/**",
+        "DESIGN.md",
+        "docs/validation.md",
+        "docs/evidence/themes/**",
+        "THIRD_PARTY_NOTICES.md",
+        "docs/user-guide.md",
+        "docs/native-accessibility.md"
+      ],
+      "acceptance": [
+        {
+          "id": "variants",
+          "description": "ThemeChoice::ALL has 20 entries; each new variant has a label, description, serde round trip and is_light, and `cargo test --locked -p gitturtle appearance::` passes including theme_switch_updates_resolved_component_backgrounds_with_foregrounds."
+        },
+        {
+          "id": "readable",
+          "description": "readability_issues() is empty for the 3 new palettes, and every token whose value departs from the upstream source is listed in DESIGN.md with the rule that required it."
+        },
+        {
+          "id": "design-doc",
+          "description": "DESIGN.md's palette section names each new family, its upstream link from the research note and its variants, and its palette count wording is current."
+        },
+        {
+          "id": "native-evidence",
+          "description": "A native-qa pass records the Settings picker and History (selected row, hover, focus ring, a diff with added and removed lines) in each of the 3 themes at 1,000 × 680, names the build identity, stores the screenshots under docs/evidence/themes/ and adds a dated docs/validation.md entry."
+        },
+        {
+          "id": "twenty-shipped",
+          "description": "docs/user-guide.md lists all twenty built-in themes, docs/native-accessibility.md and docs/validation.md say twenty where they said ten, and THIRD_PARTY_NOTICES.md describes the five families as shipped adaptations."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native",
+        "docs"
+      ],
+      "commit": "feat(appearance): add Alucard and Kanagawa built-in themes"
+    },
+    {
+      "id": "themes-apply-trace",
+      "title": "Trace theme application frames and record a release baseline",
+      "description": "Add a gitturtle.theme_apply_frame_ms trace under GITTURTLE_TRACE that measures apply_appearance from the Settings choose_theme handler to the window's next frame callback, following the existing trace_frame pattern in main.rs, plus a GPUI test proving a theme switch submits no worker job and keeps the retained editor and its Find state. Then record, in release mode, switching across every built-in on the fixture named in docs/development/themes/spec.md section 'Performance'. This is the instrument the editor and picker tasks measure against; add the metric's name, boundary and exclusions to docs/benchmarks/metrics.md (the catalog tasks may extend) and cite it from the benchmark record and crates/app/docs/content-and-layout.md.",
+      "depends_on": [
+        "themes-batch-alucard-kanagawa"
+      ],
+      "scope": [
+        "crates/app/src/main.rs",
+        "crates/app/src/platform_polish.rs",
+        "crates/app/src/settings.rs",
+        "crates/app/src/views.rs",
+        "crates/app/src/appearance.rs",
+        "crates/app/docs/content-and-layout.md",
+        "docs/benchmarks/**"
+      ],
+      "acceptance": [
+        {
+          "id": "trace-metric",
+          "description": "With GITTURTLE_TRACE=1, choosing a theme in Settings prints gitturtle.theme_apply_frame_ms=<ms> exactly once per switch, measured from choose_theme entry to the next frame callback, and nothing is printed without the variable."
+        },
+        {
+          "id": "no-reprepare",
+          "description": "A #[gpui::test] opens a comparison with a Find query, switches themes twice, and asserts the worker received no new job, the editor entity identity is unchanged and the Find query and match state survive."
+        },
+        {
+          "id": "baseline-recorded",
+          "description": "docs/benchmarks/<date>-theme-apply.md and its raw JSON record the release build identity (--build-info), host, cache state, the spec's fixture, 60 switches cycling ThemeChoice::ALL, raw samples and median/p95/max; if the median exceeds 8 ms or p95 exceeds 16 ms the record names the dominant cost by function and proposes the fix."
+        },
+        {
+          "id": "performance-attestation",
+          "description": "The performance-reviewer registers the record as this task's performance evidence with `python3 scripts/agent-loop.py attest --kind performance`."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "performance"
+      ],
+      "commit": "perf(appearance): trace theme application frames and record a baseline"
+    },
+    {
+      "id": "themes-custom-model",
+      "title": "Add the custom theme model, selection, validation and document format",
+      "description": "In crates/app/src/appearance/custom.rs add TokenKind (the 21 Palette fields with label, description and group in the spec's order), Palette get/set by TokenKind and #rrggbb conversion, CustomTheme { id, name, base, palette }, ThemeSelection, ResolvedTheme, validate_theme_name, and the bounded export/import document from docs/development/themes/spec.md section 'Import and export'. Make Palette::apply(is_light, window, cx) the one application path with ThemeChoice::apply delegating to it. Pure model with unit tests; no store or UI changes in this task.",
+      "depends_on": [
+        "themes-readability-rules"
+      ],
+      "scope": [
+        "crates/app/src/appearance.rs",
+        "crates/app/src/appearance/**"
+      ],
+      "acceptance": [
+        {
+          "id": "token-kinds",
+          "description": "TokenKind::ALL lists exactly the 21 Palette fields in the spec's group order, each with a label and a one-sentence description, and a test checks Palette::get/set(TokenKind) round-trips every field."
+        },
+        {
+          "id": "document-format",
+          "description": "CustomTheme::to_document() and from_document(&[u8]) implement the spec's JSON exactly; tests cover round trip, #RRGGBB case-insensitivity, a missing token key, an extra token key, an unknown top-level key, version 2 and a 65 KiB input, each rejected with the spec's message."
+        },
+        {
+          "id": "selection-and-names",
+          "description": "ThemeSelection serializes built-ins as the bare existing string and customs as {\"custom\": id}; validate_theme_name enforces the project-name rules plus case-insensitive uniqueness among customs and rejects every built-in label; tests cover each rule."
+        },
+        {
+          "id": "apply-by-palette",
+          "description": "Palette::apply exists, ThemeChoice::apply delegates to it, and theme_switch_updates_resolved_component_backgrounds_with_foregrounds also runs over a custom palette built from a base with two edited tokens."
+        }
+      ],
+      "profiles": [
+        "rust"
+      ],
+      "commit": "feat(appearance): add custom theme model and document format"
+    },
+    {
+      "id": "themes-store-migration",
+      "title": "Persist custom themes in the preference store at version 6",
+      "description": "Hard. Bump the preference store to version 6 with a custom_themes section beside project_library, change AppSettings::theme to ThemeSelection while keeping built-in selections serialized as the existing bare string, add Preferences::save_custom_themes, and make resolved_theme return a ResolvedTheme for built-in or custom selections with the follow-system rules unchanged. The custom section is user-authored data: malformed, duplicate or over-bound content refuses later writes instead of being dropped. Read docs/development/themes/spec.md section 'Store migration' and crates/app/docs/writes-and-persistence.md first; every caller of settings.theme (picker selection state, layout trace, apply_appearance) must compile against ThemeSelection.",
+      "depends_on": [
+        "themes-custom-model"
+      ],
+      "scope": [
+        "crates/app/src/preferences.rs",
+        "crates/app/src/appearance.rs",
+        "crates/app/src/appearance/**",
+        "crates/app/src/platform_polish.rs",
+        "crates/app/src/main.rs",
+        "crates/app/src/settings.rs",
+        "crates/app/src/views.rs",
+        "crates/app/docs/writes-and-persistence.md"
+      ],
+      "acceptance": [
+        {
+          "id": "v5-loads",
+          "description": "A test loads a complete version-5 store (settings with \"theme\":\"nord\", recents, drafts, project names, project library) and asserts every section is identical, custom_themes is empty, and loading did not rewrite the file."
+        },
+        {
+          "id": "v6-round-trip",
+          "description": "Saving writes \"version\": 6; a store with two custom themes and \"theme\": {\"custom\": 2} loads, resolves to that palette, and round-trips byte-for-byte through save; the existing saved_daylight_remains_braden test still sees \"daylight\" as a bare string."
+        },
+        {
+          "id": "refusals",
+          "description": "Duplicate ids, duplicate names (case-insensitive), a 33rd theme, an invalid hex token or an invalid name make load_from fail so a later save_settings refuses and leaves the original bytes intact; a {\"custom\": 99} selection with no such theme resolves to the default theme without a write."
+        },
+        {
+          "id": "merge-and-resolve",
+          "description": "save_custom_themes rereads the disk store before merging (a test changes settings on disk between load and save and both survive), runs on the preference executor, and resolved_theme keeps the existing follow-system behavior for built-ins and applies the spec's rule to light and dark custom themes under both appearances, with tests."
+        },
+        {
+          "id": "persistence-doc",
+          "description": "crates/app/docs/writes-and-persistence.md documents the custom-theme section, its bounds, the refusal policy and the version-6 migration, and `python3 scripts/gate.py fast` is green."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "docs"
+      ],
+      "commit": "feat(preferences): persist custom themes at store version 6"
+    },
+    {
+      "id": "themes-editor",
+      "title": "Add the custom theme editor with live preview",
+      "description": "Hard. Add crates/app/src/theme_editor.rs owning the editor form state and a 'Your themes' card in Settings: New theme… (choose a base), Edit…, Delete… with confirmation. The editor edits the 21 semantic tokens grouped as the spec lists, with hex inputs and the toolkit ColorPicker, a live preview that applies the draft through Palette::apply coalesced to one application per frame, a warnings list from readability_issues, Reset to base, Cancel that restores the saved selection, and Save through save_custom_themes with errors kept beside Save. Layout, geometry, keyboard order and failure behavior follow docs/development/themes/spec.md sections 'Editor' and 'Failure and recovery' and DESIGN.md's dialog rules. Import and export come in the next task; do not add them here.",
+      "depends_on": [
+        "themes-store-migration",
+        "themes-apply-trace"
+      ],
+      "scope": [
+        "crates/app/src/theme_editor.rs",
+        "crates/app/src/settings.rs",
+        "crates/app/src/main.rs",
+        "crates/app/src/views.rs",
+        "crates/app/src/platform_polish.rs",
+        "crates/app/src/appearance.rs",
+        "crates/app/src/appearance/**",
+        "crates/app/docs/**",
+        "DESIGN.md",
+        "docs/validation.md",
+        "docs/benchmarks/**",
+        "docs/evidence/themes/**"
+      ],
+      "acceptance": [
+        {
+          "id": "form-and-flow",
+          "description": "A #[gpui::test] opens New theme from Settings with a chosen base, types a hex value into a token field, observes the global Palette equal to the draft, saves with a name, and finds the theme in the loaded preferences; Cancel after edits restores the previously applied palette; Delete removes the theme and reselects and applies its base when it was active."
+        },
+        {
+          "id": "validation-ui",
+          "description": "An invalid hex value keeps the last valid draft, marks the field and disables Save; a name collision or a built-in label shows validate_theme_name's message; each readability issue appears in the warnings list with both token names, the ratio and the minimum, and does not block Save (tests)."
+        },
+        {
+          "id": "no-reprepare-budget",
+          "description": "The live preview applies at most once per frame for a burst of edits and submits no worker job (test); gitturtle.theme_apply_frame_ms for editor edits runs from the edit handler through the frame that shows the draft, docs/benchmarks/metrics.md states that edit boundary, and ten consecutive edits are recorded in release mode on the fixture of themes-apply-trace under docs/benchmarks/ with the build identity, raw samples, statistics and the dominant cost, attested by the performance-reviewer. The 16 ms p95 edit budget is owned by themes-draw-cost, not this task."
+        },
+        {
+          "id": "design-contract",
+          "description": "DESIGN.md gains the editor's contract (card, dialog structure, groups, row geometry, warning presentation, keyboard order, Escape and Cancel behavior) (crates/app/AGENTS.md already routes theme_editor.rs; every AGENTS.md is protected from unattended patches); the design-reviewer confirms the native evidence against the contract."
+        },
+        {
+          "id": "native-evidence",
+          "description": "native-qa records the full flow (new, edit producing a warning, save, reopen, cancel, delete) in one light and one dark base at 1,000 × 680 and 1,440 × 900 with keyboard-only operation of the dialog, stores it under docs/evidence/themes/ and adds a dated docs/validation.md entry."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native",
+        "performance",
+        "docs"
+      ],
+      "commit": "feat(settings): add a custom theme editor with live preview"
+    },
+    {
+      "id": "themes-import-export",
+      "title": "Export and import custom themes as JSON files",
+      "description": "Add Export… to each custom theme row and Import… to the 'Your themes' card, using the native save and open dialogs (prompt_for_new_path, prompt_for_paths), the document format from appearance::custom, the bounded store reader for input (regular file, no final-component symlink, at most 64 KiB), temp-and-rename output, all file work off the UI thread, and the collision, notice and error rules in docs/development/themes/spec.md section 'Import and export'. Cancellation is quiet; a Linux portal failure gets the folder picker's guidance. The imported theme is added and highlighted, not applied.",
+      "depends_on": [
+        "themes-editor"
+      ],
+      "scope": [
+        "crates/app/src/theme_editor.rs",
+        "crates/app/src/settings.rs",
+        "crates/app/src/preferences.rs",
+        "crates/app/src/folder_picker.rs",
+        "crates/app/src/appearance.rs",
+        "crates/app/src/appearance/**",
+        "crates/app/docs/**",
+        "DESIGN.md",
+        "docs/validation.md",
+        "docs/user-guide.md",
+        "docs/evidence/themes/**"
+      ],
+      "acceptance": [
+        {
+          "id": "export-roundtrip",
+          "description": "A test exports a custom theme to a temporary path and imports that file into a store already holding a same-named theme, producing '<name> (imported)' with identical tokens; the written file equals the spec's document byte-for-byte for a fixed theme."
+        },
+        {
+          "id": "import-refusals",
+          "description": "Tests cover a 65 KiB file, a symlink, a directory, non-JSON bytes, version 2, a missing token, an unknown key and the 32-theme bound; each shows the spec's message in the card and leaves the store unchanged."
+        },
+        {
+          "id": "off-thread-and-atomic",
+          "description": "Reads and writes run on a background or preference executor (test), export writes through temp-and-rename, and an export into an unwritable directory reports the error with no partial file left behind."
+        },
+        {
+          "id": "native-evidence",
+          "description": "native-qa exports a theme, deletes it, imports the file, and imports a malformed file, recording the dialogs and messages on the affected platform under docs/evidence/themes/ with a dated docs/validation.md entry; docs/user-guide.md describes export and import."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native",
+        "docs"
+      ],
+      "commit": "feat(settings): export and import custom themes as JSON"
+    },
+    {
+      "id": "themes-draw-cost",
+      "title": "Trace the edit frame to its draw end and cut the Settings and theme editor frame cost",
+      "description": "Hard. Re-cut after run 20260919T143547Z-8e458d6a, where candidate 58b6226 on base 5637cec failed the old edit-budget: the old edit trace ended at a second next-frame callback, and next-frame callbacks run only on the platform frame tick (an 8.334 ms grid on the 120 Hz Linux X11 host), so the value could not fall below the keystroke's phase plus one period even for a free frame. The instrumented diagnosis of that candidate found: a 32-theme edit frame draws in 26.4 ms (request_layout 10.0 + taffy 11.0 + prepaint 2.4 + paint 3.3) and presents in 0.95 ms without blocking on vsync; the empty store draws in 19.5 ms; the Your themes card's 32 unvirtualized rows cost 6 to 8.7 ms of every Settings and dialog frame; the dialog costs about 7 ms; 43 to 53 percent of edit frames are drawn synchronously in Window::dispatch_key_event rather than by the tick; the twenty cached miniatures are reused on edit and keystroke frames but never on a real click, because GPUI's click path calls window.refresh() on the same mouse up. Do four things. (1) Replace the editor's edit trace with gitturtle.theme_edit_frame_ms at the boundary stated in edit-frame-trace; the switch metric keeps its boundary. (2) Keep the three sound pieces of 58b6226 (its diff against 5637cec is committed at docs/development/themes/58b6226-draw-cost.patch; apply it to the base with `git apply --3way` and rework it, or rebuild the pieces if it no longer applies): one retained settings::ThemePreviewBody entity per theme embedded with Entity::cached inside settings::theme_preview, whose 1 px snapping of miniature interiors the design-reviewer approved; settings::save_preferences notifying only when the completed save changed something visible, which removes the second render per switch; and its one-render test, extended as one-render says. (3) Virtualize the Your themes rows with uniform_list, as the repository's other lists: the list is min(rows, 8) times 30 px tall, scrolls inside the card with the toolkit scrollbar, keeps every row's Edit, Export and Delete actions as tab stops in order and scrolls the row holding focus into view; update DESIGN.md's Your themes paragraph and the spec's Editor section wording accordingly. (4) Take the further layout wins the app tree allows (fewer nodes per row, card and token row; no measured text where a fixed size is authored), guided by elements per frame; the bound in edit-budget decides how far. Do not patch GPUI, do not change what the live preview repaints (the whole window follows the draft), and do not change the visible design beyond the bounded row list. Making the Settings page its own cached view is themes-settings-view, not this task.",
+      "depends_on": [
+        "themes-editor"
+      ],
+      "scope": [
+        "crates/app/src/settings.rs",
+        "crates/app/src/theme_editor.rs",
+        "crates/app/src/main.rs",
+        "crates/app/src/views.rs",
+        "crates/app/src/platform_polish.rs",
+        "crates/app/src/appearance.rs",
+        "crates/app/src/appearance/**",
+        "crates/app/docs/**",
+        "docs/benchmarks/**",
+        "DESIGN.md",
+        "docs/development/themes/spec.md"
+      ],
+      "acceptance": [
+        {
+          "id": "edit-frame-trace",
+          "description": "With GITTURTLE_TRACE=1 the editor prints gitturtle.theme_edit_frame_ms=<ms> exactly once per burst of live-preview edits and once per open, and nothing without the variable. The value starts at entry to the token row's change handler (the hex Input's InputEvent::Change or the ColorPicker's change, before the value is parsed) and ends inside the paint closure of a zero-size trace element that the root render defers at a priority above the dialog layer (Root::render_dialog_layer), so it is the last element Window::draw paints in the first frame drawn after the handler applied the draft, whether that draw runs in the frame tick or synchronously in Window::dispatch_key_event. It therefore contains the parse, the readability recompute, apply_appearance and the request_layout, layout, prepaint and paint of the whole window, and excludes next-frame callback waits, frame-finish bookkeeping, present and input delivery. Editor opens and edits no longer print theme_apply_frame_ms, whose switch boundary is unchanged. A #[gpui::test] asserts one line per edit whose end stamp is taken during that frame's paint after the dialog layer and never from a next-frame callback; docs/benchmarks/metrics.md defines the new metric with this boundary and its exclusions and removes the editor sentences from the switch metric's entry."
+        },
+        {
+          "id": "edit-budget",
+          "description": "In release mode at 2x on the themes-apply-trace fixture with History at 1 to 1000 and the 2,000-line Split comparison retained (the state of docs/benchmarks/2026-09-19-theme-editor.md), on a fresh version-6 store seeded with 32 custom themes (the bound: Seed 01 to Seed 32, bases cycling ThemeChoice::ALL, one token differing from the base, theme midnight, follow-system off), with the editor opened by Edit… on the first row (New theme… is disabled at the bound) and 60 valid Canvas hex edits in six dialogs of ten (the procedure of the 2026-09-19 record), each edit at least 1.2 s apart, cycling dark canvases that keep the Readability list empty, in one recorded launch designated in writing before it runs: gitturtle.theme_edit_frame_ms p95 ≤ 26 ms over the 60 pooled edits, the p95 being the 57th of the 60 sorted samples (owner decision of 2026-09-20, re-cut from 24 to 26 ms by owner decision of 2026-09-21 after candidates ea31261, 2030b3d and 23ee777 measured 26.348, 24.440 and 25.191 ms on this boundary with about 3 ms of launch-to-launch spread and the remaining elements reported as the editor dialog's kit Input and ColorPicker internals); the first dialog's ten edits are reported as the designated set and carry no bound. The bound sits at this boundary's draw plus about 2 ms of handler and apply: the diagnosis measured the draw at 19.5 ms on the empty store and 26.4 ms with 32 themes on the unvirtualized candidate, and puts the realistic floor after the row virtualization and layout wins at 15 to 19 ms. docs/benchmarks/ gains a dated record with the build identity (--build-info and executable SHA-256), host, cache state, the seed store's digest, raw samples for the 60 edits with the designated ten identified, the same procedure on an empty store, UI-thread CPU per edit, elements per frame before and after, and the dominant remaining cost; the performance-reviewer attests it with `python3 scripts/agent-loop.py attest --kind performance`."
+        },
+        {
+          "id": "switch-no-regression",
+          "description": "The same record shows 60 Settings theme switches by real pointer clicks cycling ThemeChoice::ALL on the empty store and on the 32-theme store, measured as in docs/benchmarks/2026-09-18-theme-apply.md: UI-thread CPU per switch (main-thread schedstat delta from the release to 150 ms after it) median ≤ 23 ms on the empty store (base 5637cec measured 26.4 ms with the save completion's second render, 58b6226 without it 21.0 ms) and no more than 4 ms higher on the 32-theme store, which shows the rows no longer cost every Settings frame (3 ms until 2026-09-22; widened to 4 ms by the coordinator under the owner's 2026-09-21 instruction that a few ms off is acceptable, after 85a7d07 measured +3.402 with switch-frame element counts identical to 23ee777, whose delta was +1.565, on a pass whose every UI-thread CPU figure ran 2 to 4 ms above the previous one because the IDE renderer held the load near 2.8); and gitturtle.theme_apply_frame_ms, unchanged at its next-frame-callback boundary and blind to draw cost, stays at median ≤ 8 ms and p95 ≤ 16 ms on both stores as a non-regression."
+        },
+        {
+          "id": "one-render",
+          "description": "A #[gpui::test] shows that a burst of editor edits and a Settings theme switch each lead to exactly one window draw after the handler: no draw in the old palette before the draft is applied and no second draw from a preference-save completion that changes nothing visible. The switch is driven through the card's real click path (simulate_click on the card's bounds), not by calling choose_theme; because GPUI's click machinery calls window.refresh() on that mouse up and so rebuilds cached views, the miniature-reuse assertion is made on the edit frames (every picker miniature reused, only the draft's rebuilt) while the click switch asserts the single draw and records its rebuild count with the reason instead of asserting a reuse a click never gets."
+        },
+        {
+          "id": "visual-unchanged",
+          "description": "native-qa captures, in one session with the same driver on release builds of base 5637cec and the candidate, the Settings picker with light and dark groups, the Your themes card on the 32-theme store (top, mid-scroll, last row, and a row action focused by keyboard) and the editor flow set (new, edit producing a warning, save, reopen, cancel, delete confirm) at 1,000 × 680 and 1,440 × 900, and compares them per channel. Allowed differences: measured-timing text; the class the design-reviewer approved for 58b6226 (one interior element edge of a theme-card miniature landing exactly 1 px from the base, no new colour, nothing on the miniature's frame, caption, swatches, badge, hover border or focus ring, equal-size miniatures identical); single-pixel glyph-edge flakes shown to vary between launches of one binary; and, on stores with more than eight themes only, the bounded row list of DESIGN.md's Your themes paragraph, which the design-reviewer approves against that wording with Tab order through every row's actions preserved (a #[gpui::test] tabs across the eight-row viewport boundary on a 32-theme store and finds each focused action's row scrolled into view). Any other difference goes to the design-reviewer for approval against DESIGN.md or fails the criterion."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "performance",
+        "native",
+        "docs"
+      ],
+      "commit": "perf(settings): trace edit frames to their draw and cut frame cost"
+    },
+    {
+      "id": "themes-settings-view",
+      "title": "Make the Settings page a cached view so dialog keystrokes and caret blinks do not rebuild it",
+      "description": "Hard. The diagnosis of candidate 58b6226 found that GPUI redraws from the window root on any notify and skips only views embedded with Entity::cached; the Settings page is GitTurtle::render_settings called inside GitTurtle::render and the dialog layer is a child of the same render, so every keystroke in the theme editor's inputs and every caret blink (about 200 per launch, 16 to 23 ms each) rebuilds page plus dialog. Give the Settings page its own entity embedded with Entity::cached, rendering from the app's state through a weak handle and notified by the app only for changes that alter the page (settings, custom themes, editor card state, the status line, pointer hover, press and focus on its controls, and every palette application, since the whole window follows a theme switch or a live-preview draft), never by input inside the dialog. The live-preview edit frame keeps its cost and its themes-draw-cost bound; the win is on non-preview keystrokes and blink frames, expected from the diagnosis at 10 to 16 ms per frame. This is a state-lifetime change under docs/development/architecture-review.md: enumerate every notify site, cover a missed notify as the failure mode, and do not change the visible design.",
+      "depends_on": [
+        "themes-draw-cost"
+      ],
+      "scope": [
+        "crates/app/src/settings.rs",
+        "crates/app/src/theme_editor.rs",
+        "crates/app/src/main.rs",
+        "crates/app/src/views.rs",
+        "crates/app/src/platform_polish.rs",
+        "crates/app/docs/**",
+        "docs/benchmarks/**"
+      ],
+      "acceptance": [
+        {
+          "id": "page-reused",
+          "description": "A #[gpui::test] opens the theme editor, types into its Name field and asserts the frame reuses the cached Settings page while the dialog re-renders; and asserts the page is rebuilt by a live-preview edit, a picker switch, a save that changes the status line, a delete, an import, and hover, press and keyboard focus on a picker card, each through the real input path where one exists."
+        },
+        {
+          "id": "keystroke-cpu",
+          "description": "docs/benchmarks/ gains a dated release record, on the themes-draw-cost fixture state and 32-theme store, of UI-thread CPU per non-preview keystroke (a key that changes the hex field's text without a valid colour, the key-6 control of docs/benchmarks/2026-09-19-theme-editor.md, 150 ms window) with median ≤ 14 ms, the count and median draw cost of caret-blink frames while the dialog is idle for 10 s, and gitturtle.theme_edit_frame_ms and UI-thread CPU per switch re-measured as in the themes-draw-cost record and still within its bounds; the performance-reviewer attests it."
+        },
+        {
+          "id": "lifetime-contract",
+          "description": "crates/app/docs/content-and-layout.md records the page entity's owner, what it reads through the weak handle, every site that notifies it and the failure mode of a missed notify, and a test per notify site fails if the notify is removed."
+        },
+        {
+          "id": "visual-unchanged",
+          "description": "native-qa repeats the themes-draw-cost visual comparison (picker, Your themes card on the 32-theme store, editor flow set, both window sizes) against the accepted themes-draw-cost head with the same allowed classes, and the design-reviewer approves any other difference against DESIGN.md or the criterion fails."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "performance",
+        "native",
+        "docs"
+      ],
+      "commit": "perf(settings): cache the Settings page view across dialog keystrokes"
+    },
+    {
+      "id": "themes-picker",
+      "title": "List custom themes in the picker with the built-ins and measure switching",
+      "description": "Extend the Settings theme picker with a 'Your themes' group that uses the same preview card from a custom palette with the name and base as description and a warning glyph when readability_issues is non-empty; each custom card embeds a retained settings::ThemePreviewBody through Entity::cached as the built-ins do after themes-draw-cost, rebuilt only when that theme's palette changes; change choose_theme to take ThemeSelection; tighten the grid to the spec's geometry so twenty built-ins fit; keep follow-system behavior; update DESIGN.md, docs/user-guide.md, docs/native-accessibility.md and docs/validation.md; and measure switching across every built-in and two custom themes in release mode against the budget in docs/development/themes/spec.md section 'Performance', on the 32-theme store of themes-draw-cost so the group holds its largest card count.",
+      "depends_on": [
+        "themes-import-export",
+        "themes-draw-cost",
+        "themes-batch-alucard-kanagawa"
+      ],
+      "scope": [
+        "crates/app/src/settings.rs",
+        "crates/app/src/theme_editor.rs",
+        "crates/app/src/main.rs",
+        "crates/app/src/views.rs",
+        "crates/app/src/platform_polish.rs",
+        "crates/app/src/appearance.rs",
+        "crates/app/src/appearance/**",
+        "crates/app/docs/**",
+        "DESIGN.md",
+        "docs/validation.md",
+        "docs/user-guide.md",
+        "docs/native-accessibility.md",
+        "docs/benchmarks/**",
+        "docs/evidence/themes/**"
+      ],
+      "acceptance": [
+        {
+          "id": "picker-groups",
+          "description": "A #[gpui::test] with two custom themes finds three groups, custom cards whose accessibility_label is '<name> theme', selection state following ThemeSelection, a click that applies the custom palette and saves the selection, and no third group when no custom theme exists; the themes-draw-cost one-render test extended to a custom card shows a live-preview edit reuses every custom miniature and that saving an edited theme rebuilds only its own."
+        },
+        {
+          "id": "geometry",
+          "description": "Cards are 132 px tall in a four-column grid at ≥ 1,060 px, three columns in the compact layout and two in the narrow layout, asserted through debug_bounds; the twenty built-in cards occupy at most five rows at 1,440 × 900."
+        },
+        {
+          "id": "switching-budget",
+          "description": "docs/benchmarks/ gains a dated release record of 60 switches cycling all twenty built-ins and two custom themes with History and a retained split comparison open, on the themes-draw-cost 32-theme seeded store: gitturtle.theme_apply_frame_ms median ≤ 8 ms and p95 ≤ 16 ms, zero worker jobs, raw samples, host and cache state, and UI-thread CPU per switch measured as in the themes-draw-cost record and reported beside that record's figure; the performance-reviewer attests it."
+        },
+        {
+          "id": "docs-current",
+          "description": "DESIGN.md, docs/user-guide.md, docs/native-accessibility.md and docs/validation.md describe twenty built-in themes plus custom themes, and the validation matrix gains a 'Themes and custom themes' row naming the editor, import/export and picker checks."
+        },
+        {
+          "id": "native-evidence",
+          "description": "native-qa records the picker at 1,000 × 680 and 1,440 × 900 in both densities with custom themes present, hover, selected and focus states, and follow-system switching with a custom theme selected, under docs/evidence/themes/ with a dated docs/validation.md entry."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native",
+        "performance",
+        "docs"
+      ],
+      "commit": "feat(settings): show custom themes in the picker and measure switching"
+    }
+  ]
+}

@@ -18,6 +18,8 @@ from unittest.mock import patch
 from agent_loop.codex import Codex, validate_review
 from agent_loop.process import LoopError, run_process
 from agent_loop.task_spec import Task
+# Records and run state stay private even when the host umask is permissive.
+from agent_loop.test_support import setUpModule, tearDownModule
 
 
 def example_task() -> Task:
@@ -40,6 +42,7 @@ def passing_review() -> dict:
             {"id": "missing-object", "status": "pass", "evidence": "missing.log: explicit error"},
         ],
         "findings": [],
+        "notes": [],
     }
 
 
@@ -47,6 +50,21 @@ class ReviewTests(unittest.TestCase):
     def setUp(self):
         self.task = example_task()
         self.candidate = "a" * 40
+
+    def test_a_pass_may_carry_notes_but_never_a_blocking_finding(self):
+        # A review that passes every criterion may still record follow-up work.
+        # Conflating the two failed a sound candidate for observing that the
+        # worktree was clean.
+        review = passing_review()
+        review["notes"] = ["sources.rs:552 the guard is weaker than its name", "worktree clean at the candidate"]
+        self.assertEqual(validate_review(review, self.task, self.candidate), "pass")
+        review["findings"] = ["sources.rs:194 the doc comment contradicts the table"]
+        with self.assertRaisesRegex(LoopError, "blocking findings"):
+            validate_review(review, self.task, self.candidate)
+        broken = passing_review()
+        broken["notes"] = [{"text": "not a string"}]
+        with self.assertRaisesRegex(LoopError, "invalid review notes"):
+            validate_review(broken, self.task, self.candidate)
 
     def test_complete_review_accepts_only_its_candidate_and_task(self):
         self.assertEqual(validate_review(passing_review(), self.task, self.candidate), "pass")

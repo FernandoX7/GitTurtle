@@ -1916,6 +1916,8 @@ impl GitTurtle {
 
 impl Render for GitTurtle {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        self.draws.push(appearance::palette(cx));
         static TRACE_LAYOUT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if *TRACE_LAYOUT.get_or_init(|| std::env::var_os("GITTURTLE_TRACE").is_some()) {
             let layout = (
@@ -1928,11 +1930,16 @@ impl Render for GitTurtle {
             );
             if self.layout_trace != Some(layout) {
                 self.layout_trace = Some(layout);
+                // Built-ins keep the recorded `configured_theme=Daylight` form.
+                let configured_theme = match layout.1 {
+                    appearance::custom::ThemeSelection::BuiltIn(choice) => format!("{choice:?}"),
+                    appearance::custom::ThemeSelection::Custom(id) => format!("custom:{id}"),
+                };
                 eprintln!(
-                    "gitturtle.layout viewport={:.0}x{:.0} configured_theme={:?} density={:?} interface={} code={} targets={}",
+                    "gitturtle.layout viewport={:.0}x{:.0} configured_theme={} density={:?} interface={} code={} targets={}",
                     f32::from(layout.0.width),
                     f32::from(layout.0.height),
-                    layout.1,
+                    configured_theme,
                     layout.2,
                     layout.3,
                     layout.4,
@@ -1959,6 +1966,7 @@ impl Render for GitTurtle {
                 }));
         }
         self.update_modal_focus(window, cx);
+        self.return_focus_after_delete(window, cx);
         let colors = palette(cx);
         let menu_state = (self.repository.is_some(), self.operation_busy.is_some());
         if self.menu_state != Some(menu_state) {
@@ -1968,7 +1976,7 @@ impl Render for GitTurtle {
         let page = match self.page {
             AppPage::Repository => self.render_repository(window, cx),
             AppPage::Projects => self.hub.clone().into_any_element(),
-            AppPage::Settings => self.render_settings(window, cx),
+            AppPage::Settings => self.settings_page_element(window),
         };
         // The pane spans the whole body so a project stays one click away on
         // Repository and Settings. The hub already lists projects full width.
@@ -2447,6 +2455,13 @@ impl Render for GitTurtle {
                     }),
             )
             .children(Root::render_dialog_layer(window, cx))
+            // Deferred above the dialog layer: the last paint of the frame
+            // that shows an edited draft ends `gitturtle.theme_edit_frame_ms`.
+            .children(
+                self.theme_editor
+                    .take_edit_trace()
+                    .map(|started| self.edit_trace_probe(started, cx)),
+            )
     }
 }
 
