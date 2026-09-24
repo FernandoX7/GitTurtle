@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(python3 scripts/agent_loop/*)",
+      "Bash(python3 scripts/agent-loop.py *)",
+      "Bash(git push *)",
+      "Bash(git reset --hard *)",
+      "Bash(git clean *)",
+      "Bash(git commit --no-verify *)",
+      "Bash(cargo insta accept *)",
+      "Read(./.env)",
+      "Read(./.env.*)"
+    ]
+  },
+  "autoCompactWindow": 300000,
+  "env": {
+    "GITTURTLE_LOOP": "1",
+    "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+    "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "1",
+    "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS": "4",
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "0",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "300000",
+    "INSTA_UPDATE": "no",
+    "CARGO_TERM_COLOR": "never"
+  }
+}

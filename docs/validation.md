@@ -4,6 +4,738 @@ Use the [current validation guidance](#current-validation-guidance) for the affe
 
 This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native workflow evidence is primarily macOS-specific; the September 14 entries add Pop!_OS startup and clean Ubuntu/virtual-native checks. Platform execution and access limits belong to the applicable dated record and [platform runbook](linux.md); the earlier [environment report](benchmarks/2026-09-09-milestone-environment.md) describes its own session. The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Public binary release prerequisites belong in the [launch checklist](public-launch.md); the Linux runbook includes a local teammate bundle.
 
+## September 23 Theme picker with custom themes
+
+Native QA for `themes-picker`, which lists saved custom themes in the Settings
+theme picker as a **Your themes** group on the same preview cards as the
+built-ins, tightens the grid to 132 px cards (four columns at and above the
+scaled 1,060 px breakpoint, three below it), and makes the editor's preview the
+same card. Linux/XWayland (GNOME Shell 46.0 on Wayland, x86_64, `DISPLAY=:1`,
+`WAYLAND_DISPLAY` unset, `GPUI_X11_SCALE_FACTOR` 1), windows 1000x680, the app's
+`window_min_size`, and 1440x900, with absolute throwaway `XDG_CONFIG_HOME`,
+`XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME` and `HOME` per launch, each
+seeded just before that launch. The stores were a version-6 store with two custom
+themes (Harbor Dusk, based on Midnight with no readability findings, and Paper Fog,
+based on Braden with eight), the same with three (adding Lantern Grey, based on
+Tokyo Night with its warning color equal to its own panel), the empty store, and
+the 32-theme store of `themes-draw-cost` (sha256
+`9deaa6eedec8ac129a9bb64e084b265b59f42e1bd9bba430f6ba366e4f04d23a`). Fixture:
+`scripts/create-demo-repo.py` at HEAD
+`52f471a1137c617fd8e36db2e6251a18f58c23eb`, clean before every launch and
+afterwards; the picker writes only app preferences, and no network action was
+taken. Follow system was turned on and off with the app's own switch; the
+desktop color scheme (`prefer-dark`) was read, never changed.
+
+The captures were taken from build `4cdd4df2c0767429ee4c182f73b8e5f82a4312e7`
+(GitTurtle 0.1.0, `source_tree` clean, release, `x86_64-unknown-linux-gnu`,
+rustc 1.98.0 (88d9e12ae 2026-08-18), binary sha256
+`3ef3e3a0b999b00b76c64d2177f82a93814faf585de5452439bfbcd34894714e`). As with the
+entries below, evidence committed to a repository cannot describe the commit
+that contains it, so this entry names the revision under test; a later build
+that ships the picker reuses these captures only when it renders them
+identically. An earlier build of the same patch, `f826dc6`, passed the same flow
+but its design review found three defects: the card caption had a fixed 54 px
+height, so at interface text size 11 the description was cut through its glyphs
+(Paper Fog kept 4 of its 8 ink rows); the warning glyph on a card was drawn in
+that card's own palette, so a theme whose warning color equals its panel showed
+an invisible disc (1.0:1); and the editor's preview card stayed 166 px tall, which
+left 39 px of empty canvas under its miniature. In `4cdd4df` the caption grows at
+text sizes 12 and 11 and the miniature gives up the difference (every name and
+description line is drawn in full), the glyph uses the active palette as the check
+badge does, and the editor's preview is the 132 px picker card: its inner pixels
+match the picker's Harbor Dusk card exactly. Apart from Paper Fog's warning
+glyph, every picker frame is pixel-identical to the `f826dc6` frames.
+
+Compared with base `85a7d07` (binary sha256
+`418a3b425cedb14fdf734ae02d756dce642896156dd214e6b165a9239a46aec6`; `08cef56` has
+the same crates and Cargo files), History differed only in its status-bar timing
+digits and the Your themes card was pixel-identical at both sizes. In the Edit
+theme dialog the only difference was the preview card: at 1440x900 the side
+column below it moved up exactly 34 px with no other change, and at 1000x680 the
+stacked dialog differed only in its scrollbar thumb, because the dialog's content
+is now 34 px shorter. With custom themes present the picker showed three groups:
+8 light, 12 dark and 2 (or 32) custom cards. The empty store showed two. At
+1440x900 the twenty built-ins took five rows. The picker had four columns at
+1,060 and 1,440 px and three at 1,000 and 1,059 px at text size 13, and three at
+every width at text size 18. A 700 px resize request was held at 1000x680 by the
+window's minimum size, so the two-column layout, which needs a width below the
+scaled 720 px, cannot be reached natively; `picker_cards_keep_the_grid_geometry`
+covers it. Every compact-density Settings frame was pixel-identical to its
+comfortable counterpart. The density shows in History and in the List density
+control. The comfortable picker frames are byte-identical to the compact ones
+(both 1000x680 top-of-Settings captures, for example, have sha256
+`b39d5b8d…`), so apart from `compact-1000x680-01-light.png` the compact
+captures listed below show History and the List density control instead of
+repeating the picker. Accessible names could not be observed: AT-SPI does not list the app on
+this host, so the "‹name› theme" labels rest on the `#[gpui::test]` suite. macOS
+was not exercised.
+
+The captures are under
+[`docs/evidence/themes/picker/`](evidence/themes/picker/):
+
+- `comfortable-1440x900-01-light-dark.png`: Settings at the top with Follow
+  system appearance off, the Light group in two rows of four and the Dark group
+  with Midnight marked.
+- `comfortable-1440x900-02-your-themes.png`: the Your themes group at rest, with
+  Harbor Dusk and Paper Fog. Paper Fog shows the warning glyph with its count, 8.
+- `comfortable-1440x900-03-hover-custom.png`: the pointer resting on Harbor Dusk,
+  with the accent inner border and the caption hover surface. Nothing outside the
+  card changes.
+- `comfortable-1440x900-04-selected-custom.png`: Harbor Dusk chosen with a click.
+  Its card has the accent edge and the check badge, the window uses its
+  `#101a2c` canvas, and the store saved `{"custom": 1}`.
+- `comfortable-1440x900-05-focus-custom.png`: keyboard focus on Paper Fog,
+  reached with Tab (Harbor Dusk at the 28th Tab, Paper Fog at the 29th). The
+  card's 1 px outer border takes the accent color all the way round, as a
+  built-in card's does on the base build. On the selected card, which already
+  has that edge, focus changes only its 48 corner pixels.
+- `comfortable-1440x900-06-follow-system-on.png` and
+  `-07-follow-system-on-your-themes.png`: Follow system turned on with the
+  switch, with Harbor Dusk still the saved selection. No built-in or custom card
+  is marked.
+- `comfortable-1440x900-08-custom-chosen-again.png` and
+  `-09-follow-system-cleared.png`: Harbor Dusk chosen again. Its card is marked,
+  the switch is back off, and the store saved `follow_system: false`.
+- `comfortable-1000x680-01` to `-05`: the same group, selected, focus,
+  follow-system-on and chosen-again states in the three-column layout.
+- `compact-1000x680-01-light.png` and `compact-1440x900-01-history.png`: the
+  picker in compact density, and History with compact rows.
+- `store32-1440x900-01-your-themes-rows-1-3.png` and
+  `store32-compact-1440x900-01-list-density.png`: the 32-theme store's custom
+  group, and the Your themes list card above List density with Compact selected.
+- `empty-1440x900-01-no-your-themes-group.png`: with no custom theme, the picker
+  ends after the Dark group.
+- `text12-1440x900-01-selected-warned.png` and
+  `text11-1440x900-01-selected-warned.png`: at interface text sizes 12 and 11 with
+  Paper Fog selected and warned. Its name row holds the glyph and the check badge,
+  and Lantern Grey is warned. Every name and description line is drawn in full.
+- `warning-1440x900-01-glyph-active-palette.png`: Midnight active. Both warned
+  cards draw the glyph in Midnight's warning color with a Midnight-canvas "!". On
+  Lantern Grey that disc is 8.9:1 against the caption.
+- `editor-1440x900-01-preview-card.png` and
+  `editor-1000x680-01-preview-card.png`: the Edit theme dialog for Harbor Dusk.
+  Its preview is the 132 px picker card, with a 70 px miniature over a 54 px
+  caption.
+
+In the four accepted interaction runs, hover repainted the card 36–64 ms after
+the pointer arrived, and a click changed the next grabbed frame within 14–31 ms.
+These figures are non-authoritative: they are frame grabs on a shared host with a
+one-minute load average of 2.4–3.1, and they are not a performance measurement.
+A first compact 1000x680 run, at load 6.7, grabbed its hover frame after the
+card's tooltip had begun to appear. It was repeated for the captures listed
+here.
+
+Re-taken on September 24: 22 of the 24 captures listed above were replaced by
+captures of build `5899e2ac1744bb35bc4e70c3d4a0c8b8420c08ea` (GitTurtle 0.1.0,
+`source_tree` clean, release, `x86_64-unknown-linux-gnu`, rustc 1.98.0
+(88d9e12ae 2026-08-18), binary sha256
+`8e62cfe1f8284eb7e7e4d01bbbc77b1e14af3b36b666fcbc695ecf9e0478fcdc`), on the same
+host, windows, stores and fixture and with the same driver. Each difference was
+attributed in the same session against the build without the change: `fbc4555`
+against `e73be2e` for [follow-ups](development/themes/follow-ups.md) 11 to 17,
+and `5899e2a` against `fc2a355` for 20. Follow-up 13, which sizes the check
+badge to the name's line and rings the badge and the warning glyph in 1 px of
+the applied canvas, changed `comfortable-1440x900-01` to `-04`, `-07` and `-08`,
+`comfortable-1000x680-01`, `-02`, `-04` and `-05`, `empty-1440x900-01` and
+`warning-1440x900-01`; in `text11-` and `text12-1440x900-01` it also starts
+Paper Fog's caption level with its neighbours. Follow-ups 13 and 14 changed
+`comfortable-1440x900-05` and `comfortable-1000x680-03`, where the focused card
+now has a 2 px accent ring 1 px outside its border. Follow-up 17, which widens
+the stacked Edit theme dialog from 640 to 648 px, changed
+`editor-1000x680-01-preview-card.png`. Follow-up 20 changed each of the other
+21 re-taken captures: the built-in cards' captions and miniatures are drawn in the
+nudged palettes, and the new warning-message rule adds one readability finding
+to a saved theme whose warning is below 4.5:1 on its subtle surface, so Lantern
+Grey counts 8 instead of 7 and, in the 32-theme store, Seed 11 and Seed 12,
+saved with Solarized's earlier warning colors, show the glyph with a count of 1.
+`comfortable-1440x900-06` and `-09`, `compact-1000x680-01-light.png` and the two
+`store32-` captures changed for follow-up 20 alone.
+`compact-1440x900-01-history.png`, which differs only in its status-bar timing
+digits, and `editor-1440x900-01-preview-card.png`, which is byte-identical, were
+not changed by any follow-up. Two new captures show follow-up 14 on the selected
+card, Harbor Dusk chosen and focused with the ring outside its accent edge:
+`comfortable-1440x900-05a-focus-selected-custom.png` and
+`comfortable-1000x680-03a-focus-selected-custom.png`. The 24 picker launches, 12
+per build, passed every check. Linux/XWayland at scale 1 only; macOS was not
+exercised, and accessible names still rest on the `#[gpui::test]` suite.
+
+The captures in this entry, the new ones included, were then taken again on
+September 24 from `5899e2ac1744bb35bc4e70c3d4a0c8b8420c08ea` (binary sha256
+`8e62cfe1f8284eb7e7e4d01bbbc77b1e14af3b36b666fcbc695ecf9e0478fcdc`, the same
+binary) with the same drivers and stores, the fixture copied to
+`/tmp/gitturtle-evidence/theme-fixture` at the same HEAD, and each launch's Git
+identity set to GitTurtle QA `<qa@example.invalid>`, so that no account's path,
+name or host shows; these are the committed files. Every driver's checks matched
+the first run's, and a cross-correlation scan for the earlier path, name and
+host text finds none in them. Seventeen differ from the first run, all at
+1440x900. In `compact-1440x900-01-history.png` the path and the identity button
+in the title bar and the status-bar timing digits change. In the other sixteen,
+every 1440x900 capture but `store32-compact-1440x900-01-list-density.png`, the
+Settings page's Git identity card is shorter because the neutral path and
+identity each fit one line. The other nine are pixel-identical, and outside
+those regions `text11-` and `text12-1440x900-01` differ in eight isolated pixels
+of channel delta 1. This re-take also replaces `compact-1440x900-01-history.png`
+and `editor-1440x900-01-preview-card.png`, whose committed files showed the
+capturing account's path and name. macOS, scale factors other than 1 and the
+accessibility tree, which AT-SPI does not expose on this host, remain unchecked.
+
+## September 19 Theme export and import
+
+Native QA for `themes-import-export`, which adds **Export…** to each custom
+theme row and **Import…** to the Settings › Your themes card, writing and
+reading a `gitturtle-theme` JSON document through the platform's own save and
+open dialogs. Linux/XWayland (GNOME 46.0 on Wayland, `DISPLAY=:1`,
+`WAYLAND_DISPLAY` unset, `GPUI_X11_SCALE_FACTOR` 1), windows 1000x680, the app's
+`window_min_size`, and 1440x900, with an absolute throwaway `XDG_CONFIG_HOME`
+per launch seeded as a version-6 store. Fixture: `scripts/create-demo-repo.py`
+at HEAD `52f471a1137c617fd8e36db2e6251a18f58c23eb`, unmodified and clean
+afterwards; no network action was taken, and the only files written outside the
+throwaway stores were the theme documents the test chose itself.
+
+The captures were taken from build `301d82af8d1cd06fa8a1d7ded1892e89ffd1a4e0`
+(GitTurtle 0.1.0, `source_tree` clean, release, `x86_64-unknown-linux-gnu`,
+rustc 1.98.0 (88d9e12ae 2026-08-18), binary sha256
+`84d80a41545fe6e40318cb5cedb773f187eaa28c60756523ff4e2d858f39acd2`). As with the
+editor entry above, evidence committed to a repository cannot describe the commit
+that contains it, so this entry names the revision under test; the build that
+ships export and import reuses these captures only when it renders them
+identically, which the evidence driver re-checks pixel for pixel. Two captures,
+`transfer-1000x680-07-exported.png` and `transfer-1440x900-07-exported.png`,
+quote the absolute path they wrote, so that re-check has to pass the same output
+directories it used here, and in fact they did not: the shipping revision clamps that
+path, so the notice became one line instead of two and the card 134 px instead of
+153. **Those two frames were therefore re-taken from the shipping revision
+`ea70c6a169882433c3b9659db5b391187c1488a1` and are the only two here not from the
+revision named above**; the other 24 artifacts are byte-identical between the two
+builds, which is what the re-check established.
+
+Five launches, 52 checks passed and none failed. Export, an Escape-cancelled
+export, a delete, an import of that document, two name collisions, an
+Escape-cancelled import, nine refusals and the unknown-base notice were each
+exercised at 1000x680 and the central ones again at 1440x900. Verified from the
+preference store's own bytes rather than from the screen: the exported document
+is 690 bytes, sha256
+`c4c8271ed6eca156074fea6eb8b65f7b22ef6a078b247a3b6e4fe0fbd32b9ad8`, carrying
+exactly the keys `format`, `version`, `name`, `base`, `tokens` and exactly the 21
+snake_case token names in spec order, byte-identical from both window sizes and
+equal to the stored theme; every refusal and every cancelled dialog left the
+store byte-identical; the selection stayed `"midnight"` through all imports, with
+the page colour unchanged, which is what "added, not applied" means; the
+collisions saved `Harbor Dusk (imported)` then `Harbor Dusk (imported) (2)`; and
+a document naming a base this build does not know was stored against the
+`daylight` fallback with the notice the spec requires. Latency was dominated by
+the portal, not the app: 1.25 s from the keystroke to a visible save dialog,
+0.599 s from accepting it to the written-path report, and 1.228–1.244 s from
+accepting the open dialog to the message across ten imports and refusals,
+including a 70 KiB file refused on size.
+
+**On the dialogs themselves this record is deliberately not a screenshot.**
+`prompt_for_new_path` and `prompt_for_paths` reach a real
+`xdg-desktop-portal-gnome` dialog here, which is a Wayland window of the
+compositor: `org.gnome.Shell.Screenshot.ScreenshotArea` and
+`Introspect.GetWindows` both refuse, and XTest cannot drive it. The dialogs are
+therefore recorded as D-Bus transcripts and AT-SPI reads — `SaveFile` with
+`current_name` `harbor-dusk.gitturtle-theme.json`, `OpenFile` with
+`directory false`, `multiple false` and the app's own `Import theme` accept
+label, `Response(0, uris)` on acceptance and `Response(2)` on Escape — which
+establishes the spec's properties on the wire rather than by reading a picture,
+and leaves the dialog's *appearance* unrecorded. That appearance belongs to the
+portal backend rather than to GitTurtle. The app's own surfaces, where the
+messages live, are captured normally. Because the portal works on this host, the
+spec's guidance branch was exercised separately on a private session bus with no
+FileChooser service, where both actions reported the picker guidance and changed
+nothing.
+
+Two limits of this record, and two defects found on the revision under test.
+GPUI does not register with AT-SPI on this desktop, so the accessible names of
+the new controls rest on the `#[gpui::test]` assertions rather than on anything
+observed; and on Linux the portal navigates into a folder instead of returning
+it, so the folder refusal cannot be reached. The defects: nothing bounds the
+document text interpolated into the card's message, so a document that is valid
+except for a ~64 KiB unknown `base` imports successfully and leaves about 64,700
+characters in the notice until the next card action — the app stays responsive
+(first repaint 0.582–0.600 s, 0.12–0.13 s of CPU, one Tab repainting in
+0.030–0.065 s) but the card's lower border and the settings below it are pushed
+off screen, the page growing from 30 wheel steps to 145; and the row's
+**Export…** tooltip never appears, at either window size and after 5.2 s, while
+the header's **Import…** tooltip appears in the same launch. Both are required to
+be fixed in the revision that ships, together with two `docs/user-guide.md`
+inaccuracies found here — the suggested file name is a slug of the theme name
+rather than the name itself, and the promised folder refusal cannot occur on
+Linux. None of those fixes changes a resting frame, which is why these captures
+can still describe the shipping build; the pixel re-check against this set is
+what establishes that, and it is a precondition of the attestation. The
+measurements behind the defects are retained outside the repository with the rest
+of the bundle.
+
+Confirmed on September 20: the revision that shipped (`5637cec`) fixed both
+defects. Every interpolated fragment is clamped at the source (64 characters for
+a key, value or name, 48 for a quoted base) and the message to two lines that end
+in an ellipsis when cut, and the row's **Export…** tooltip appears at 2.2 s and
+5.2 s at both window sizes. The pixel re-check of that build reproduced all 26
+committed artifacts byte-identically with 64 PASS / 0 FAIL, and the long-name
+cases (a 64-character collision, an unknown base, and both in one import) read to
+their end at both sizes. The two `docs/user-guide.md` corrections landed in the
+same revision.
+
+Re-taken on September 24: the 25 captures were replaced by captures of build
+`5899e2ac1744bb35bc4e70c3d4a0c8b8420c08ea` (GitTurtle 0.1.0, `source_tree`
+clean, release, `x86_64-unknown-linux-gnu`, rustc 1.98.0 (88d9e12ae 2026-08-18),
+binary sha256
+`8e62cfe1f8284eb7e7e4d01bbbc77b1e14af3b36b666fcbc695ecf9e0478fcdc`), on the same
+host and fixture; `transfer-1000x680-exported-document.json` stays, because the
+exported document was byte-identical from both sizes on every build compared.
+The drivers follow the later Settings page: their wheel counts and the Tab count
+to **New theme…** changed with the picker build `4cdd4df`. Seventeen captures
+predate that build, the virtualized 30 px Your themes list and the settings-view
+build, and no follow-up before 20 changed them: `transfer-1000x680-11`, `-13` to
+`-24`, `transfer-1440x900-13` and `-21`, `collision2-1000x680-02` and
+`bound-1000x680-00`, whose list shows rows 3 to 10 because the driver's page
+wheel lands over the card on every build. Follow-up 13's rings changed
+`transfer-1000x680-06`, `-07`, `-08` and `-25` and `transfer-1440x900-07` and
+`-25`; the two `-07` captures quote a path under the run's own throwaway home,
+shortened where the message is built. Follow-up 18 changed
+`noportal-1000x680-01` and `-03`: the guidance comes first and the service's
+quoted error follows on its own line in muted text. Follow-up 20 changed every
+capture except `bound-1000x680-00`: the dark built-in cards at the top are drawn
+in the nudged palettes, and in the `-25` captures Aurora Light counts 53
+readability findings instead of 52 under the new warning-message rule. Each
+difference was attributed in the same session against the build without the
+change: `fbc4555` against `e73be2e` for
+[follow-ups](development/themes/follow-ups.md) 11 to 17, `fc2a355` against
+`fbc4555` for 18, and `5899e2a` against `fc2a355` for 20. Three captures are
+new. `list32-1000x680-12-tab-reveals-row32-delete.png` (follow-up 11): Tab to
+row 32's **Delete…** at the list's end draws its whole focus ring, clear of the
+scrollbar. `bound-1000x680-01-hover-import-disabled.png` (follow-up 12): the
+disabled **Import…** tooltip gives the reason and the remedy, "Delete one before
+importing another." `lotus-1000x680-01-refuse-notjson.png` (follow-up 20): a
+refused import's failure line in Kanagawa Lotus, `#8B4C00` on its subtle surface
+at 4.89:1, which is also its rendered peak at 1x (3.95:1 on `fc2a355`); it is
+the first committed failure line in a light theme. Each transfer run passed 23
+checks with one NOTE (the folder refusal, which this portal cannot reach);
+noportal passed 2 of 2, collision2 1 of 1 and list32 7 with 2 NOTE. The bound
+run passed 2 and failed 1 on both `5899e2a` and `fc2a355`: "the click leaves the
+page as it was" allows a 300 px change and follow-up 12's tooltip is 415 px
+wide, a harness threshold. `manifest.txt` lists the re-taken files;
+`import-export-verification.txt` still records the `301d82a` run. Linux/XWayland
+at scale 1 only.
+
+The captures in this entry, the new ones included, were then taken again on
+September 24 from `5899e2ac1744bb35bc4e70c3d4a0c8b8420c08ea` (binary sha256
+`8e62cfe1f8284eb7e7e4d01bbbc77b1e14af3b36b666fcbc695ecf9e0478fcdc`, the same
+binary) with the same drivers and stores, the fixture copied to
+`/tmp/gitturtle-evidence/theme-fixture` at the same HEAD, and each launch's Git
+identity set to GitTurtle QA `<qa@example.invalid>`, so that no account's path,
+name or host shows; these are the committed files. Every driver's checks matched
+the first run's, and a cross-correlation scan for the earlier path, name and
+host text finds none in them. Four differ from the first run, the
+`transfer-1440x900` captures, and only in the Settings page's Git identity card,
+which is shorter because the neutral path and identity each fit one line; the
+other 24 are pixel-identical. A first attempt of these runs with its output
+under `/tmp` failed its imports, for a reason not established, and was
+superseded by the reruns these captures come from. macOS, scale factors other
+than 1 and the accessibility tree, which AT-SPI does not expose on this host,
+remain unchecked.
+
+## September 19 Custom theme editor
+
+Native QA for `themes-editor`, which adds Settings › Your themes (New theme…,
+Edit…, Delete…) and the New theme / Edit theme dialog with a live preview.
+Linux/XWayland (GNOME on Wayland, `DISPLAY=:1`, `WAYLAND_DISPLAY` unset,
+`GPUI_X11_SCALE_FACTOR` 1), windows 1000x680, which is the app's
+`window_min_size` and gives the stacked 640 px dialog, and 1440x900, which gives
+the 1,000 px two-column dialog, with an absolute throwaway `XDG_CONFIG_HOME` per
+launch seeded as a version-6 store. Fixture: `scripts/create-demo-repo.py` at
+HEAD `52f471a1137c617fd8e36db2e6251a18f58c23eb`; the editor writes only app
+preferences, nothing was written to the fixture and no network action was taken.
+
+The captures were taken from build `3927b57bbb913e35ee4a8b48f12b5c7eaa19f686`
+(GitTurtle 0.1.0, `source_tree` clean, release, `x86_64-unknown-linux-gnu`,
+rustc 1.98.0 (88d9e12ae 2026-08-18), binary sha256
+`1faff02061c9f07500cbf74827ae61d425d145caef6a153682230ef239bbe593`). Evidence
+committed to a repository can never describe the commit that contains it, so
+this entry names the revision under test; a later build that ships the editor
+reuses it only when it renders the same captures, which the evidence driver
+re-captures for a pixel comparison. Earlier builds of the same patch were
+exercised first: in `a6cc84d` Return anywhere in the dialog saved, Keep colors
+lost keyboard focus and focus moved to rows out of view; `bb9f332` fixed those
+but squeezed the token rows to about 20 px, left the focused Readability list
+out of view at 1000x680 and deleted the theme on Return in the Delete
+confirmation's Cancel; `30e41b8` fixed those but opened the Delete confirmation
+with keyboard focus on the title bar's Menu button behind it, scrolled the
+focused Readability list into view at 1000x680 only on the next input event,
+and returned focus to New theme… after a delete in only four of eight runs;
+`cd563f6` fixed those and passed this flow, but its design review found three
+defects: the token column scrolled with no scrollbar and hid the Diff group at
+1440x900 and nine of twenty-one tokens at 1000x680 at rest, the 70 px hex field
+scrolled the leading `#` out of view once seven characters were typed and kept
+it hidden after blur (the driver had masked this by pressing Home before every
+read), and an invalid hex value was signalled by the removed-colour outline
+alone.
+
+The dialog was operated from the keyboard alone, in a light base (Braden,
+stored `daylight`, starting from Porcelain) and a dark base (Midnight, starting
+from Graphite) at both sizes; the pointer only wheel-scrolled Settings to the
+Your themes card and, after Delete, to the base's picker card. Token rows are
+30 px apart with the group labels intact, Name and Base are 28 px tall, Base is
+200 px with a menu wider than it and sized to the window, the picker shows a
+1 px border-color edge at rest and a 2 px accent ring focused, and the Your
+themes row aligns with the card title. The first valid edit recolored the
+dialog and the page behind it to exactly the typed canvas in the frame of its
+keystroke (no intermediate frame in 51–140 grabs). Two warnings appeared in
+each base ("Muted text on Selected 3.9:1, needs 4.5:1"), invalid hex and an
+invalid Name were outlined in the removed color while focused and disabled
+Save, Save stored the theme in `custom_themes` of a version-6 store and
+selected it, Edit… reopened it, Return in a hex field rewrote the value as
+lowercase `#rrggbb`, kept the dialog open and saved nothing, Return on Cancel
+and Escape restored a frame pixel-identical to the one before the dialog
+opened, the Delete confirmation opened with focus on Cancel with Tab contained
+and Escape closing it, the focused Readability list was in view at 1000x680 in
+the first frame that showed its focus, and Space opened New theme after every
+delete: 12 of 12 across 12 launches.
+
+The three defects of `cd563f6` do not reproduce. The token column shows a 6 px
+scrollbar thumb in the border color at rest inside a 16 px track at its right
+edge in the wide and the stacked layout and in both bases (the track is painted
+in the canvas color, like every scrollbar track in the app, so the thumb is what
+shows); the track holds nothing but its background and the thumb, and the
+focused picker's ring ends before it, 16 px left of where it ended on `cd563f6`.
+Tab to the last row scrolls the column to its end with the thumb at the bottom
+of the track and the Diff group label and rows painted at both sizes. The hex
+field is 78 px: a typed `#rrggbb` shows all seven characters with the caret
+after the last one, the value is complete after focus leaves, the typed row's
+field is pixel-identical to the same value reopened from the store, and
+Return's rewrite shows the full value, all read with no Home press. An invalid
+value shows a 14 px rounded square on the removed fill with a contrasting × in
+the row's warning slot in both bases at both sizes, replacing the readability
+glyph while the value is invalid and staying after blur; a valid value removes
+it and restores the readability glyph. The 39 screenshots are under
+[`docs/evidence/themes/editor/`](evidence/themes/editor/) with
+`flow-verification.txt`, which gives the key sequence and 221 checks, all
+passing. A second run of the same binary passed the same 221 checks and
+reproduced 133 of 134 frames pixel for pixel, including all 39 committed here;
+the one bundle-only frame that differs (the Settings picker after the delete
+at 1440x900) does so in one anti-aliased glyph-edge pixel by one level of one
+channel.
+
+Not covered: the 32-theme bound, name messages other than a built-in name, Reset
+to base, **Replace colors**, a failed or refused save, closing the window with
+the editor open, restart persistence, follow-system mode, other text sizes or
+density, 2x scale, the picker popover itself, pointer scrolling of the token
+column and dragging the thumb, the `theme_apply_frame_ms` budget (the
+performance review's), and import and export (the next task); Linux/XWayland
+only, with no macOS, native Wayland, packaging or accessibility-label coverage
+(the app does not register with AT-SPI on this desktop, so the invalid row's
+"value is not #rrggbb" label and the scrollbar's name rest on the `gpui::test`
+assertions alone).
+
+Re-taken on September 24: the 39 captures were replaced by captures of build
+`5899e2ac1744bb35bc4e70c3d4a0c8b8420c08ea` (GitTurtle 0.1.0, `source_tree`
+clean, release, `x86_64-unknown-linux-gnu`, rustc 1.98.0 (88d9e12ae 2026-08-18),
+binary sha256
+`8e62cfe1f8284eb7e7e4d01bbbc77b1e14af3b36b666fcbc695ecf9e0478fcdc`), on the same
+host and fixture, with the driver's page wheel and Tab counts moved to the
+picker build `4cdd4df`. Fifteen captures predate that build, **Import…** in the
+Your themes card header, the virtualized 30 px Your themes list and the
+settings-view build, and no follow-up before 20 changed them: the page shows the
+grouped picker's 132 px cards and, in the wide dialog, the side column's preview
+is the 132 px card with the Readability list following its shorter miniature;
+the token column is unchanged. They are `dark-1000x680-16`, `dark-1440x900-04`,
+`-05`, `-07`, `-10`, `-11` and `-16`, `fixes-1440x900-05`, `-07` and `-08b`,
+`light-1000x680-16` and `light-1440x900-04`, `-05`, `-10` and `-16`. Follow-up
+17, which widens the stacked dialog from 640 to 648 px, moved its content 4 px
+outward in `dark-1000x680-04`, `-05`, `-10` and `-11`, `fixes-1000x680-02` and
+`-04`, and `light-1000x680-04`, `-04b`, `-05`, `-06`, `-10`, `-11` and `-12`.
+Follow-up 15 draws the invalid value's mark as a stroked cross that fills its 14
+px square, in `dark-1440x900-06` and `light-1000x680-06`. Follow-up 13's rings
+changed the Settings page behind or after the dialog in `dark-1000x680-08`,
+`-13` and `-17`, `dark-1440x900-08` and `-13`, `light-1000x680-08`, `-13` and
+`-15`, and `light-1440x900-08` and `-13`. Follow-up 20 changed all 39: the
+built-in cards' captions on the page and, in the Braden-based captures that show
+it, the Line number row's value, `#5B6C84` instead of `#61728A`. Each difference
+was attributed in the same session against the build without the change:
+`fbc4555` against `e73be2e` for [follow-ups](development/themes/follow-ups.md)
+11 to 17, and `5899e2a` against `fc2a355` for 20. Three captures are new.
+`overflow-1440x900-02-side-column-scrollbar.png` and
+`overflow-1440x900-03-side-column-end.png` (follow-up 16): with 25 readability
+warnings the wide side column shows the toolkit scrollbar in its own track, and
+at its end "Warnings do not prevent saving." sits above the footer.
+`text18-1000x680-03-accent-row.png` (follow-up 17): at interface text size 18
+the Accent row's description is drawn in full, 24 px clear of its warning slot.
+`flow-verification.txt` still records the `3927b57` run. Its 221 checks read
+that build's geometry: on `5899e2a` 191 passed and 30 failed, the same list as
+on `fbc4555`. Twenty-six of the failures are on the 1000x680 dialog, which is 8
+px wider since follow-up 17, and read fixed x positions; with that geometry
+moved 4 px, the `fbc4555` run passed 83 of those scenarios' 90 checks, including
+every focus, same-frame reveal, invalid-outline and Return check. The 7 left
+there and the 4 at 1440x900 test thresholds of the replaced design: the
+`cd563f6` picker edge and the old ×'s fill count. Linux/XWayland at scale 1
+only.
+
+The captures in this entry, the new ones included, were then taken again on
+September 24 from `5899e2ac1744bb35bc4e70c3d4a0c8b8420c08ea` (binary sha256
+`8e62cfe1f8284eb7e7e4d01bbbc77b1e14af3b36b666fcbc695ecf9e0478fcdc`, the same
+binary) with the same drivers and stores, the fixture copied to
+`/tmp/gitturtle-evidence/theme-fixture` at the same HEAD, and each launch's Git
+identity set to GitTurtle QA `<qa@example.invalid>`, so that no account's path,
+name or host shows; these are the committed files. Every driver's checks matched
+the first run's, and a cross-correlation scan for the earlier path, name and
+host text finds none in them. Twenty-four differ from the first run. The twenty
+1440x900 captures differ in the Git identity card of the Settings page behind
+the dialog, which is shorter because the neutral path and identity each fit one
+line. Outside that card, ten captures differ in 19 isolated pixels of channel
+delta 1, antialiasing variance between launches; four of them,
+`dark-1000x680-05`, `-10` and `-11` and `light-1000x680-04b`, differ in nothing
+else. The other 18 are pixel-identical. macOS, scale factors other than 1 and
+the accessibility tree, which AT-SPI does not expose on this host, remain
+unchecked.
+
+## September 18 Alucard and Kanagawa built-in themes
+
+Native QA for `themes-batch-alucard-kanagawa`, which adds the Alucard, Kanagawa
+Wave and Kanagawa Lotus built-ins. Linux/XWayland (GNOME on Wayland, `DISPLAY=:1`,
+`GPUI_X11_SCALE_FACTOR` 1 and 2), window 1000x680, which is the app's
+`window_min_size`, with an absolute throwaway `XDG_CONFIG_HOME` per launch.
+Fixture: `scripts/create-demo-repo.py` at HEAD
+`52f471a1137c617fd8e36db2e6251a18f58c23eb`, plus a disposable copy with a staged
+rename, an edit, an untracked file and a deletion for the Compare and Changes
+captures; nothing was committed to either and no network action was taken.
+
+The captures were taken from build `e00e864ff8949e2e61d343feecca0561e9784173`
+(GitTurtle 0.1.0, `source_tree` clean, release, `x86_64-unknown-linux-gnu`,
+rustc 1.98.0 (88d9e12ae 2026-08-18), binary sha256
+`b97b7393e31e247d26faa1c88088d222cc9539ef59914f56db2132c04ab06cf2`). Evidence
+committed to a repository can never describe the commit that contains it, so
+this entry names the revision under test; a later build that ships these themes
+reuses it only when it renders the same captures.
+
+Each theme was recorded in the Settings picker with its own card scrolled into
+view and checkmarked, and in History with a selected row, a hovered row, a
+visible accent focus ring, and a diff showing added and removed lines. The
+fifteen screenshots are under
+[`docs/evidence/themes/alucard-kanagawa/`](evidence/themes/alucard-kanagawa/)
+with the per-capture palette check beside them. History for all twenty themes
+at 1x and 2x matches every declared token (120 readings), and the seventeen
+existing themes are unchanged against their earlier captures.
+
+No reading fell below its rule floor on full-coverage glyph cores. The narrowest
+margins are muted text on a hovered selected row at 4.51:1 (Alucard) and 4.52:1
+(Kanagawa Lotus) against 4.5, Kanagawa Wave's selected row against panel at
+1.153:1 against 1.15, and Kanagawa Lotus's added and removed text on their diff
+tiles at 4.51:1. Rendered antialiased text sits below those floors, as recorded
+in [the contrast-margins note](development/themes/contrast-margins.md). Not
+covered: warning and conflict states, the canvas-label-on-fill rule, the primary
+button's hover and pressed states, the picker at 2x, Split, Blame and image
+diffs, and follow-system mode; `accent_foreground` is exact on screen at 2x
+only; Linux/XWayland only, with no macOS, native Wayland, packaging or
+accessibility-label coverage.
+
+Re-taken on September 24: the fifteen captures were replaced by captures of
+build `5899e2ac1744bb35bc4e70c3d4a0c8b8420c08ea` (GitTurtle 0.1.0,
+`source_tree` clean, release, `x86_64-unknown-linux-gnu`, rustc 1.98.0
+(88d9e12ae 2026-08-18), binary sha256
+`8e62cfe1f8284eb7e7e4d01bbbc77b1e14af3b36b666fcbc695ecf9e0478fcdc`), with the
+same flow at 1000x680 and the same fixture, for
+[follow-up](development/themes/follow-ups.md) 20. That follow-up moves the tuned
+tokens to clear their rules by 0.25 where the family's values allow
+([`DESIGN.md`](../DESIGN.md#semantic-palette-ownership),
+[contrast margins](development/themes/contrast-margins.md#what-landed)): Alucard's
+muted and removed, Kanagawa Wave's added and line numbers, and Kanagawa Lotus's
+added, modified, warning, removed tile, hunk and line numbers. Alucard's muted
+text on a hovered selected row is now 4.95:1 declared, and Kanagawa Lotus's
+added and removed text on their tiles 4.87 and 4.88:1. Lotus's text (4.64) and
+secondary text (4.52) on the hovered selected row, its primary-button label
+(4.59), and Wave's removed lines (4.58) and renamed icons on the hovered selected
+row (3.15) keep their thinner margins as recorded decisions, since their values
+are upstream. The History and diff captures differ from the September 18 files
+only in the tuned tokens, the fixture path in the title bar and the status-bar
+timing digits. The settings-picker captures also show the grouped picker's
+132 px cards from the picker build `4cdd4df`, and follow-up 13's check badge,
+sized to the name's line with a 1 px ring. The flow's 9 checks passed for each
+theme, and each difference from `fc2a355`, taken in the same session, is a tuned
+token's value or its antialiased edge. Kanagawa Lotus's warning as text on its
+subtle surface is recorded in the export and import entry's
+`lotus-1000x680-01-refuse-notjson.png` at 4.89:1 (3.95:1 before).
+`palette-verification.txt` still records the September 18 captures of
+`e00e864`. The 1x and 2x readings described above were not repeated: this
+re-take is at scale 1 only, on Linux/XWayland.
+
+The captures in this entry were then taken again on September 24 from
+`5899e2ac1744bb35bc4e70c3d4a0c8b8420c08ea` (binary sha256
+`8e62cfe1f8284eb7e7e4d01bbbc77b1e14af3b36b666fcbc695ecf9e0478fcdc`, the same
+binary) with the same drivers and stores, the fixture copied to
+`/tmp/gitturtle-evidence/theme-fixture` at the same HEAD, and each launch's Git
+identity set to GitTurtle QA `<qa@example.invalid>`, so that no account's path,
+name or host shows; these are the committed files. Every driver's checks matched
+the first run's, and a cross-correlation scan for the earlier path, name and
+host text finds none in them. The twelve History and diff captures differ from
+the first run only in the path and the identity button in the title bar and the
+status-bar timing digits. `kanagawa_wave-settings-picker.png` differs in one
+pixel of channel delta 1, and the other two settings-picker captures are
+pixel-identical. macOS, scale factors other than 1 and the accessibility tree,
+which AT-SPI does not expose on this host, remain unchecked.
+
+## September 18 Rosé Pine and Dracula built-in themes
+
+Native QA for `themes-batch-rose-pine-dracula`, which adds the Rosé Pine, Rosé
+Pine Dawn and Dracula built-ins. Linux/XWayland (GNOME on Wayland, `DISPLAY=:1`,
+`GPUI_X11_SCALE_FACTOR` pinned per launch), window 1000x680, which is the app's
+`window_min_size`, with a throwaway `XDG_CONFIG_HOME` per launch. Fixture:
+`scripts/create-demo-repo.py` at HEAD `52f471a1137c617fd8e36db2e6251a18f58c23eb`,
+plus a disposable copy with changed paths for the Compare and Changes captures;
+nothing was committed to either and no network action was taken.
+
+The captures were taken from build `83eaf81ae71bc077abe29c26d10e8f7afa97522b`
+(GitTurtle 0.1.0, `source_tree` clean, release, `x86_64-unknown-linux-gnu`,
+rustc 1.98.0 (88d9e12ae 2026-08-18), binary sha256
+`531c6f63acd37dcc897394767a2338209a05af4e0e726de43e171a7d8031ff2a`). Evidence
+committed to a repository can never describe the commit that contains it, so
+this entry names the revision under test; a later build that ships these themes
+reuses it only when its palettes resolve identically to that revision's.
+
+Each theme was recorded in the Settings picker with its own card checkmarked, and
+in History with a selected row, a hovered row, a visible accent focus ring, and a
+diff showing added and removed lines. The fifteen screenshots are under
+[`docs/evidence/themes/rose-pine-dracula/`](evidence/themes/rose-pine-dracula/)
+with the per-capture palette check beside them; every sampled surface equals the
+token the build declares, resolved from `crates/app/src/appearance.rs` and
+`crates/app/src/appearance/sources.rs`.
+
+No reading fell below its rule floor, measured on full-coverage glyph cores, but
+these are the narrowest margins of any batch: Rosé Pine's hover against panel is
+1.087:1 against a 1.08 floor, and muted text on a hovered selected row is 4.51–4.54:1
+against 4.5 in all three themes. Rendered antialiased text sits below those
+floors, as recorded in [the contrast-margins note](development/themes/contrast-margins.md).
+Not covered: `warning` shares `modified`'s value in all three themes and no
+warning or conflict state was reached; `accent_hover` and `accent_active` were
+not exercised; `accent_foreground` is exact on screen at 2x only; the picker's
+grouping belongs to the picker task; Linux/XWayland only, with no macOS,
+packaging or accessibility-label coverage.
+
+Re-taken on September 24: the fifteen captures were replaced by captures of
+build `5899e2ac1744bb35bc4e70c3d4a0c8b8420c08ea` (GitTurtle 0.1.0,
+`source_tree` clean, release, `x86_64-unknown-linux-gnu`, rustc 1.98.0
+(88d9e12ae 2026-08-18), binary sha256
+`8e62cfe1f8284eb7e7e4d01bbbc77b1e14af3b36b666fcbc695ecf9e0478fcdc`), with the
+same flow at 1000x680 and the same fixture, for
+[follow-up](development/themes/follow-ups.md) 20. That follow-up moves the tuned
+tokens to clear their rules by 0.25
+([`DESIGN.md`](../DESIGN.md#semantic-palette-ownership),
+[contrast margins](development/themes/contrast-margins.md#what-landed)): Rosé
+Pine's muted; Rosé Pine Dawn's muted, added, removed, modified and warning,
+renamed and line numbers; and Dracula's muted, removed and line numbers. Rosé
+Pine's hover against panel stays at 1.087:1 as a recorded decision, because both
+of its values are upstream. The History and diff captures differ from the
+September 18 files only in the tuned tokens, the fixture path in the title bar
+and the status-bar timing digits. The settings-picker captures also show the
+grouped picker's 132 px cards from the picker build `4cdd4df`, and follow-up
+13's check badge, sized to the name's line with a 1 px ring. The flow's 9 checks
+passed for each theme, and each difference from `fc2a355`, taken in the same
+session, is a tuned token's value or its antialiased edge. Measured at 1x in
+separate 1480x980 launches with the September 18 method, muted text on the
+hovered selected row now peaks at 4.62 (Rosé Pine), 4.62 (Rosé Pine Dawn) and
+4.58:1 (Dracula), against 4.35, 4.28 and 4.31 on `fc2a355`. The dates in that
+row peak at 4.22 to 4.35, and the monospaced SHA reaches its declared ratio.
+Rosé Pine Dawn's warning as text on its subtle surface reaches its declared
+4.89:1 (4.25 before). `palette-verification.txt` still records the September 18
+captures of `83eaf81`. Linux/XWayland at scale 1 only.
+
+The captures in this entry were then taken again on September 24 from
+`5899e2ac1744bb35bc4e70c3d4a0c8b8420c08ea` (binary sha256
+`8e62cfe1f8284eb7e7e4d01bbbc77b1e14af3b36b666fcbc695ecf9e0478fcdc`, the same
+binary) with the same drivers and stores, the fixture copied to
+`/tmp/gitturtle-evidence/theme-fixture` at the same HEAD, and each launch's Git
+identity set to GitTurtle QA `<qa@example.invalid>`, so that no account's path,
+name or host shows; these are the committed files. Every driver's checks matched
+the first run's, and a cross-correlation scan for the earlier path, name and
+host text finds none in them. The twelve History and diff captures differ from
+the first run only in the path and the identity button in the title bar and the
+status-bar timing digits. `rose_pine-settings-picker.png` differs in one pixel
+of channel delta 1, and the other two settings-picker captures are
+pixel-identical. macOS, scale factors other than 1 and the accessibility tree,
+which AT-SPI does not expose on this host, remain unchecked.
+
+## September 18 Solarized and One built-in themes
+
+Native QA for `themes-batch-solarized-one`, which adds the Solarized Dark,
+Solarized Light, One Dark and One Light built-ins. Linux/XWayland (GNOME on
+Wayland, `DISPLAY=:1`, `GPUI_X11_SCALE_FACTOR=1`), window 1000x680, which is the
+app's `window_min_size`. Fixture: `scripts/create-demo-repo.py` at HEAD
+`52f471a1137c617fd8e36db2e6251a18f58c23eb`, plus a disposable copy with one
+renamed, modified and added path for the Compare and Changes captures; nothing
+was committed to either and no network action was taken.
+
+The captures were taken from build `d4ac46bd031d93ab83fa0e549988f1669dc9b4eb`
+(GitTurtle 0.1.0, `source_tree` clean, release, `x86_64-unknown-linux-gnu`,
+rustc 1.98.0 (88d9e12ae 2026-08-18), binary sha256
+`4de9f6fa54463ef58f8dfcbe0b754b050d260b750e8aacc5526a170b414dd332`). Evidence
+committed to a repository can never describe the commit that contains it, so
+that revision is the one under test and this entry names it; the shipped
+palettes are byte-identical to the ones photographed.
+
+Each theme was recorded in the Settings picker with its own card checkmarked, and
+in History with a selected row, a hovered row, a visible accent focus ring, and a
+diff showing added and removed lines. The twenty screenshots are under
+[`docs/evidence/themes/solarized-one/`](evidence/themes/solarized-one/) with the
+per-capture palette check beside them; every sampled surface equals the token the
+build declares, resolved from `crates/app/src/appearance.rs` and
+`crates/app/src/appearance/sources.rs`.
+
+No reading fell below its rule floor. The least headroom is the Solarized Dark
+focus ring at 3.03:1 against the field fill it is painted on, against a 3:1
+minimum. Not covered: `warning` shares `modified`'s value in all four themes and
+no warning or conflict state was reached, so it is unverified as a distinct
+token; `accent_foreground` is confirmed on screen at 2x and passes its declared
+pair at 1x, where a small button label never reaches full glyph coverage; the
+picker's grouping and breakpoints belong to the picker task; Linux/XWayland only,
+with no macOS, packaging or accessibility-label coverage.
+
+Re-taken on September 24: the twenty captures were replaced by captures of
+build `5899e2ac1744bb35bc4e70c3d4a0c8b8420c08ea` (GitTurtle 0.1.0,
+`source_tree` clean, release, `x86_64-unknown-linux-gnu`, rustc 1.98.0
+(88d9e12ae 2026-08-18), binary sha256
+`8e62cfe1f8284eb7e7e4d01bbbc77b1e14af3b36b666fcbc695ecf9e0478fcdc`), with the
+same flow at 1000x680 and the same fixture, for
+[follow-up](development/themes/follow-ups.md) 20. That follow-up moves the tuned
+tokens to clear their rules by 0.25
+([`DESIGN.md`](../DESIGN.md#semantic-palette-ownership),
+[contrast margins](development/themes/contrast-margins.md#what-landed)), and it
+tunes three upstream colors as well: Solarized Dark's yellow (`#B58900` →
+`#BE9209`, for modified and warning), One Light's orange-1 (`#986801` →
+`#8E5E00`, for modified and warning) and One Dark's mono-1 text (`#ABB2BF` →
+`#AEB5C2`), so that One Dark's secondary text stays at or below its body text.
+The History and diff captures differ from the September 18 files only in the
+tuned tokens, the fixture path in the title bar and the status-bar timing
+digits. The settings-picker captures also show the grouped picker's 132 px
+cards from the picker build `4cdd4df`, and follow-up 13's check badge, sized to
+the name's line with a 1 px ring. The flow's 9 checks passed for each theme,
+and each difference from `fc2a355`, taken in the same session, is a tuned
+token's value or its antialiased edge. Measured at 1x in separate 1480x980
+launches with the September 18 method, muted text on the hovered selected row
+now peaks at 4.58 (Solarized Dark), 4.63 (Solarized Light), 4.57 (One Dark) and
+4.68:1 (One Light), against 4.39, 4.32, 4.42 and 4.29 on `fc2a355`. The dates in
+that row peak at 4.23 to 4.32, and the monospaced SHA reaches its declared
+ratio. Warning text on the subtle surface reaches its declared 4.84 (Solarized
+Dark), 4.91 (Solarized Light) and 4.92:1 (One Light), against 4.34, 4.38 and
+4.27, so the warning and conflict states this entry left unverified now have a
+failure-line reading in three of these themes; no committed frame shows it.
+`palette-verification.txt` still records the September 18 captures of
+`d4ac46b`. Linux/XWayland at scale 1 only.
+
+The captures in this entry were then taken again on September 24 from
+`5899e2ac1744bb35bc4e70c3d4a0c8b8420c08ea` (binary sha256
+`8e62cfe1f8284eb7e7e4d01bbbc77b1e14af3b36b666fcbc695ecf9e0478fcdc`, the same
+binary) with the same drivers and stores, the fixture copied to
+`/tmp/gitturtle-evidence/theme-fixture` at the same HEAD, and each launch's Git
+identity set to GitTurtle QA `<qa@example.invalid>`, so that no account's path,
+name or host shows; these are the committed files. Every driver's checks matched
+the first run's, and a cross-correlation scan for the earlier path, name and
+host text finds none in them. The sixteen History and diff captures differ from
+the first run only in the path and the identity button in the title bar and the
+status-bar timing digits. The four settings-picker captures are pixel-identical.
+macOS, scale factors other than 1 and the accessibility tree, which AT-SPI does
+not expose on this host, remain unchecked.
+
 ## September 16 project list pane
 
 PR #22 adds an optional project list pane, a saved project library with nested
@@ -489,6 +1221,7 @@ For changes to the current workflows, use disposable repositories and local remo
 | Image comparison | Exercise side-by-side, Overlay opacity and draggable Wipe with linked pan/zoom, keyboard adjustment, checkerboards, different source sizes/downsample ratios and missing sides. Verify scale labels, gesture cancellation, retained navigation and unchanged decoder bounds. |
 | macOS conventions and accessibility | Check menu availability, standard shortcuts, Help, Hide/Minimize/Close, captured Finder/editor handoff and launcher failures. Exercise follow-system appearance and manual themes without losing editor context. Inspect ordinary keyboard focus, names and supported selected/expanded/disabled states, and record available transparency/contrast/motion settings separately from unsupported hardware or OS versions. Exercise VoiceOver names, roles, selected/expanded/disabled states, current-row announcements, editing, modal containment, restored focus and status/error announcements using the [native accessibility contract](native-accessibility.md); record actual settings and build-specific results. |
 | Linux desktop integration and text | Follow the [desktop checklist](linux.md#ubuntu-desktop-acceptance-checklist) for the affected session: visible Menu and shortcut help, Control-based shortcuts, client/server window decorations, move/maximize/restore/close, picker success/cancel/portal failure and explicit editor launch. Check live Wayland portal text-size/antialiasing changes, missing-portal/fontconfig fallback, focus-return recovery and X11 DPI without applying a second text multiplier. Retain logical source rows, split/gutter alignment, selection, Find and hidden-tab context through scaling. Record physical/nested/virtual backend, compositor, GPU and scale; semantic-tree exposure is not screen-reader or IME acceptance. |
+| Themes and custom themes | Open Settings with custom themes saved and check the picker at 1,000 × 680 and 1,440 × 900 in both densities: the Light, Dark and Your themes groups of 132 px cards in four, three and two columns by width, hover, selected and focus states, the warning glyph on a card whose palette has readability findings, a click that applies a custom theme, and follow-system switching with a custom theme selected. Exercise the editor (New theme…, Edit…, live preview, Reset to base, Cancel, Save, Delete… with its confirmation, keyboard-only operation) in a light and a dark base, and export/import through the platform dialogs, including a malformed file, a newer-version file and the 32-theme bound. When the switch path changes, record `gitturtle.theme_apply_frame_ms` and UI-thread CPU per switch in release mode on the 32-theme store against the [themes specification](development/themes/spec.md#performance). |
 | Packages, upgrades and build diagnostics | Use the [macOS](../.agents/skills/gitturtle-native-qa/references/macos-package.md) or [Linux](../.agents/skills/gitturtle-native-qa/references/linux-package.md) package procedure for the affected target. Match source/compiled identity, executable and artifact hashes, metadata, embedded/bundled assets, notices and the running path. Check About/Copy bug diagnostics and exact information flags without opening app state. On Linux, use package/installer fixtures and the actual extracted archive for identity/notice refusal, checksum verification, relocation, active-process refusal, corruption and rollback preservation. Match the archive and installed executable hashes; keep strict distribution refusal distinct from a development-bundle pass. Synthetic payload/tool tests do not establish archive or native acceptance; on macOS, distinguish local ad-hoc signing from notarization and other-machine acceptance. Package/library/headless checks do not replace real desktop interaction or clear the [public release requirements](public-launch.md#before-a-public-binary-release). |
 
 Native checks should cover relevant narrow/wide layouts, long names, large lists, themes, densities, independent interface/code text sizes, keyboard focus, hover/selection/disabled states, and empty/loading/error states for the affected controls. Changes shared across the palette or scaling system need representative light/dark and boundary-size coverage; use all supported themes when the change affects every palette. Distinguish pointer, keyboard and screen-reader results. Final combined Rust/dependency gates and package checks follow [the project validation agreement](../AGENTS.md#validation); a docs-only update requires link and diff review, without rebuilding the app.
@@ -501,7 +1234,7 @@ These rows describe checks to select for the affected feature, not completed nat
 | --- | --- |
 | 1. Revision comparison | Use [the revision workflow](user-guide.md#browse-history-then-open-a-comparison) to compare diverged branches, tags and explicit commits in both directions and modes. Check resolved IDs, rename/mode/type changes, absent text/image sides, ambiguous names, moving refs, missing objects and unrelated/multiple-base ancestry. Cancel during a read; verify no checkout/fetch and Back/focus restoration, including a late preview after leaving Compare. |
 | 2. Text review | Exercise [review variants](architecture.md#prepared-diff-presentation) in unified/split modes: intraline Unicode edits, CRLF, no final newline, long lines, whitespace suppression, context expansion through 192 lines, and Option-Up/Down. Verify literal source copy, Find, gutters and linked scrolling. Filtered/expanded variants must explain disabled partial staging; resetting must restore exact Git actions and preserve unrelated changes. |
-| 3. Text size and accessibility | Follow [typography and density](../DESIGN.md#typography-and-density): independent interface/code settings and resets, persistence, both densities and ten themes at minimum/wide sizes. Retain selection, focus, Find and viewports through scaling. Inspect names/roles/supported states and Increase Contrast, Reduce Transparency and system light/dark behavior where available. Exercise VoiceOver names, roles, selected/expanded/disabled states, current-row announcements, editing, modal containment, restored focus and status/error announcements using the [native accessibility contract](native-accessibility.md); record actual settings and build-specific results. |
+| 3. Text size and accessibility | Follow [typography and density](../DESIGN.md#typography-and-density): independent interface/code settings and resets, persistence, both densities and the twenty built-in themes plus a custom theme at minimum/wide sizes. Retain selection, focus, Find and viewports through scaling. Inspect names/roles/supported states and Increase Contrast, Reduce Transparency and system light/dark behavior where available. Exercise VoiceOver names, roles, selected/expanded/disabled states, current-row announcements, editing, modal containment, restored focus and status/error announcements using the [native accessibility contract](native-accessibility.md); record actual settings and build-specific results. |
 | 4. Quick Open and path filters | Exercise Command-P immediate typing, worktree versus pinned revision scope, keyboard selection/Return/Escape, Unicode/long/raw-byte paths, deleted/conflicted/unsupported files, no matches and visible truncation. Verify File History/Blame use the inspected target and Back restores an interrupted source preview. Check [bounded discovery](architecture.md#revision-inspection-review-and-recovery), rapid query replacement, repository switching, and changed/working file filters. |
 | 5. Multi-file staging | Exercise Command-toggle, Shift-click/arrow ranges, Command-A, selected counts, directory grouping and separate staged/unstaged identities. Compare Git index/worktree bytes before/after exact selected Stage/Unstage, including renames, binaries and mixed states. Filtering/grouping clears selection; refresh retains only visible survivors; switching repositories clears it. Check stale plans, partial failures, filtered all-files disabling and existing hunk/line staging. See [working operations](user-guide.md#open-a-project-and-work-with-git). |
 | 6. Worktree management | Follow [worktree semantics](parallel-work-recovery.md#worktrees): review and create existing/new branch destinations, inspect state and hand off to GitTurtle/Finder/editor. Refuse occupied branches, stale identities, dirty/untracked/ignored content, locked/missing/main/current worktrees and active conflicts. Exercise Force remove worktree on a dirty target: its confirmation shows the file counts, ordinary removal stays refused, force removal deletes the folder and retains the branch, the confirmation lists the deleted paths and unfinished state, and locked/main/current/missing targets, held lock files, submodules and nested repositories stay refused. Verify shared versus private configuration/drafts, branch retention after removal, and honest partial-checkout failure feedback without recursive cleanup. |

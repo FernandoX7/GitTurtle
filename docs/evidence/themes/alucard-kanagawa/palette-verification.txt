@@ -1,0 +1,35 @@
+Note (2026-09-24): this file records the September 18 captures of e00e864. The images beside it were re-taken
+from 5899e2a on 2026-09-24 and are described in docs/validation.md, "September 18 Alucard and Kanagawa built-in themes";
+this record was not regenerated for them.
+
+resolved 20 palettes from appearance.rs and sources.rs
+theme                  scale  surface     drawn     declared  result
+alucard                  1.0  canvas      #fffbeb   #fffbeb   ok
+alucard                  1.0  navigation  #fffdf5   #fffdf5   ok
+alucard                  1.0  inspector   #fffdf5   #fffdf5   ok
+kanagawa_lotus           1.0  canvas      #f2ecbc   #f2ecbc   ok
+kanagawa_lotus           1.0  navigation  #f7f3d1   #f7f3d1   ok
+kanagawa_lotus           1.0  inspector   #f7f3d1   #f7f3d1   ok
+kanagawa_wave            1.0  canvas      #1f1f28   #1f1f28   ok
+kanagawa_wave            1.0  navigation  #2a2a37   #2a2a37   ok
+kanagawa_wave            1.0  inspector   #2a2a37   #2a2a37   ok
+alucard                  1.0  canvas      #fffbeb   #fffbeb   ok
+alucard                  1.0  navigation  #fffdf5   #fffdf5   ok
+alucard                  1.0  inspector   #fffdf5   #fffdf5   ok
+kanagawa_lotus           1.0  canvas      #f2ecbc   #f2ecbc   ok
+kanagawa_lotus           1.0  navigation  #f7f3d1   #f7f3d1   ok
+kanagawa_lotus           1.0  inspector   #f7f3d1   #f7f3d1   ok
+kanagawa_wave            1.0  canvas      #1f1f28   #1f1f28   ok
+kanagawa_wave            1.0  navigation  #2a2a37   #2a2a37   ok
+kanagawa_wave            1.0  inspector   #2a2a37   #2a2a37   ok
+alucard                  1.0  canvas      #fffbeb   #fffbeb   ok
+alucard                  1.0  navigation  #fffdf5   #fffdf5   ok
+alucard                  1.0  inspector   #fffdf5   #fffdf5   ok
+kanagawa_lotus           1.0  canvas      #f2ecbc   #f2ecbc   ok
+kanagawa_lotus           1.0  navigation  #f7f3d1   #f7f3d1   ok
+kanagawa_lotus           1.0  inspector   #f7f3d1   #f7f3d1   ok
+kanagawa_wave            1.0  canvas      #1f1f28   #1f1f28   ok
+kanagawa_wave            1.0  navigation  #2a2a37   #2a2a37   ok
+kanagawa_wave            1.0  inspector   #2a2a37   #2a2a37   ok
+
+every sampled surface matches its declared token across 9 captures

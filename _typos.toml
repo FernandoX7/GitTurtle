@@ -1,0 +1,48 @@
+# typos-cli configuration for `scripts/gate.py` (stage "typos").
+# Vendored upstream code, recorded benchmark data, license texts and test
+# fixtures are not spell-checked; the tokens below are domain terms, not typos.
+
+[files]
+extend-exclude = [
+    "vendor/",
+    "docs/licenses/",
+    "docs/benchmarks/",
+    "docs/evidence/",
+    "scripts/ci/tests/fixtures/",
+    "crates/preview/tests/fixtures/",
+    "Cargo.lock",
+    "*.snap",
+]
+
+[default]
+# Whole identifiers that are domain terms.
+extend-ignore-identifiers-re = [
+    # JPEG 2000 marker segments (SIZ, COD, QCD).
+    "^SIZ$",
+    # glTF level-of-detail and mesh index names.
+    "^lod[A-Za-z_]*$",
+    "^iy$",
+    # ELF relocation sections, rustix open flags and gpg colon-format records.
+    "^RELA$",
+    "^WRONLY$",
+    "^fpr$",
+    # Git revision abbreviations cited in dated notes and evidence.
+    "^[0-9a-f]{7,40}$",
+]
+# Words inside larger identifiers or recorded tokens.
+extend-ignore-words-re = [
+    "^numer$",
+    "^PN$",
+    "^Pn$",
+    "^Iz$",
+    "^ba$",
+]
+# Lines matching these patterns are skipped entirely: deliberate substring
+# matches against diagnostic text.
+extend-ignore-re = [
+    "contains\\(\"authenticat\"\\)",
+]
+
+[default.extend-words]
+# Accepted spellings that typos would otherwise rewrite.
+unparseable = "unparseable"

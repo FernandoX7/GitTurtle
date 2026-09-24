@@ -11,7 +11,7 @@ import subprocess
 import tomllib
 from typing import Callable
 
-from .process import EnvironmentBlocked, LoopError, atomic_json, read_json, run_process
+from .process import EnvironmentBlocked, LoopError, MalformedResponse, atomic_json, read_json, run_process
 from .task_spec import Task
 from .security_review import SECURITY_REVIEW_SCHEMA
 
@@ -20,26 +20,44 @@ BUILD_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "required": ["task_id", "status", "summary"],
     "properties": {
-        "task_id": {"type": "string"},
+        "task_id": {"type": "string", "description": "The contract's id, exactly."},
         "status": {"type": "string", "enum": ["ready", "blocked"]},
-        "summary": {"type": "string"},
+        "summary": {"type": "string", "description": "What changed, which checks ran and what they said. Never empty."},
     },
 }
 REVIEW_SCHEMA = {
     "type": "object", "additionalProperties": False,
-    "required": ["task_id", "candidate", "verdict", "criteria", "findings"],
+    "required": ["task_id", "candidate", "verdict", "criteria", "findings", "notes"],
     "properties": {
-        "task_id": {"type": "string"}, "candidate": {"type": "string"},
-        "verdict": {"type": "string", "enum": ["pass", "fail", "blocked"]},
-        "findings": {"type": "array", "items": {"type": "string"}},
+        "task_id": {"type": "string", "description": "The contract's id, exactly."},
+        "candidate": {"type": "string", "description": "The candidate sha you were given, exactly."},
+        "verdict": {
+            "type": "string", "enum": ["pass", "fail", "blocked"],
+            "description": "pass requires every criterion to pass and findings to be empty.",
+        },
+        "findings": {
+            "type": "array", "items": {"type": "string"},
+            "description": "Blocking defects only, each with a file:line reference. A pass must have none; "
+                           "put anything that does not block acceptance in notes.",
+        },
+        "notes": {
+            "type": "array", "items": {"type": "string"},
+            "description": "Observations that do not block acceptance: optional improvements, weaker-than-named "
+                           "guards, follow-up work. Empty when there are none; never a reason to fail.",
+        },
         "criteria": {
+            "description": "Every acceptance criterion of the contract, each exactly once, by its id.",
             "type": "array", "items": {
                 "type": "object", "additionalProperties": False,
                 "required": ["id", "status", "evidence"],
                 "properties": {
-                    "id": {"type": "string"},
+                    "id": {"type": "string", "description": "The acceptance criterion's id from the contract."},
                     "status": {"type": "string", "enum": ["pass", "fail", "unverified"]},
-                    "evidence": {"type": "string"},
+                    "evidence": {
+                        "type": "string",
+                        "description": "What you ran or read that settles it, or the concrete gap that "
+                                       "leaves it unverified. Never empty.",
+                    },
                 },
             },
         },
@@ -49,34 +67,38 @@ REVIEW_SCHEMA = {
 
 def validate_review(value: dict, task: Task, candidate: str) -> str:
     if set(value) != set(REVIEW_SCHEMA["required"]):
-        raise LoopError("review has missing or unknown fields")
+        raise MalformedResponse("review has missing or unknown fields")
     if value["task_id"] != task.id or value["candidate"] != candidate:
         raise LoopError("review is for a different task or candidate")
     if not isinstance(value["verdict"], str) or value["verdict"] not in {"pass", "fail", "blocked"}:
-        raise LoopError("invalid review verdict")
-    if not isinstance(value["findings"], list) or not all(isinstance(x, str) for x in value["findings"]):
-        raise LoopError("invalid review findings")
+        raise MalformedResponse("invalid review verdict")
+    for field in ("findings", "notes"):
+        if not isinstance(value[field], list) or not all(isinstance(x, str) for x in value[field]):
+            raise MalformedResponse(f"invalid review {field}")
     expected = {criterion["id"] for criterion in task.acceptance}
     seen: set[str] = set()
     states: set[str] = set()
     if not isinstance(value["criteria"], list):
-        raise LoopError("invalid review criteria")
+        raise MalformedResponse("invalid review criteria")
     for criterion in value["criteria"]:
         if not isinstance(criterion, dict) or set(criterion) != {"id", "status", "evidence"}:
-            raise LoopError("invalid review criterion")
+            raise MalformedResponse("invalid review criterion")
         identifier = criterion["id"]
         if not isinstance(identifier, str) or identifier not in expected or identifier in seen:
             raise LoopError("review criteria must match the task exactly once")
         if not isinstance(criterion["status"], str) or criterion["status"] not in {"pass", "fail", "unverified"}:
-            raise LoopError("invalid criterion status")
+            raise MalformedResponse("invalid criterion status")
         if not isinstance(criterion["evidence"], str) or not criterion["evidence"].strip():
-            raise LoopError("each criterion needs evidence or a concrete verification gap")
+            raise MalformedResponse("each criterion needs evidence or a concrete verification gap")
         seen.add(identifier)
         states.add(criterion["status"])
     if seen != expected:
         raise LoopError("review omitted acceptance criteria")
+    # Notes are deliberately excluded: a review that passes every criterion may
+    # still record follow-up work, and conflating the two made a sound candidate
+    # fail for observing that the worktree was clean.
     if value["verdict"] == "pass" and (states != {"pass"} or value["findings"]):
-        raise LoopError("a passing review contains incomplete or failing criteria or findings")
+        raise LoopError("a passing review contains incomplete or failing criteria or blocking findings")
     return value["verdict"]
 
 
@@ -107,7 +129,7 @@ class Codex:
     def run(
         self, role: str, task: Task, repo: Path, directory: Path, timeout: float,
         stop: Callable[[], bool], *, candidate: str | None = None,
-        context: str = "", base: str | None = None,
+        context: str = "", base: str | None = None, spec_path: str | None = None,
     ) -> dict:
         if role not in {"implementer", "verifier", "security-reviewer"}:
             raise LoopError("unknown controller role")
@@ -177,6 +199,9 @@ class Codex:
         # A child must not mistake a parent Codex app/goal for its own session.
         for key in ("CODEX_THREAD_ID", "CODEX_TASK_ID", "CODEX_INTERNAL_ORIGINATOR_OVERRIDE"):
             environment.pop(key, None)
+        if spec_path:
+            # The hook protects the run's own queue, which may live outside docs/development/tasks.json.
+            environment["GITTURTLE_TASKS_PATH"] = spec_path
         result = run_process(args, repo, log, timeout, stdin=prompt, stop=stop, env=environment)
         failed_event = False
         completed = False

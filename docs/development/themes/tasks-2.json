@@ -1,0 +1,148 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "themes-draw-cost",
+      "title": "Trace the edit frame to its draw end and cut the Settings and theme editor frame cost",
+      "description": "Hard. Re-cut after run 20260919T143547Z-8e458d6a, where candidate 58b6226 on base 5637cec failed the old edit-budget: the old edit trace ended at a second next-frame callback, and next-frame callbacks run only on the platform frame tick (an 8.334 ms grid on the 120 Hz Linux X11 host), so the value could not fall below the keystroke's phase plus one period even for a free frame. The instrumented diagnosis of that candidate found: a 32-theme edit frame draws in 26.4 ms (request_layout 10.0 + taffy 11.0 + prepaint 2.4 + paint 3.3) and presents in 0.95 ms without blocking on vsync; the empty store draws in 19.5 ms; the Your themes card's 32 unvirtualized rows cost 6 to 8.7 ms of every Settings and dialog frame; the dialog costs about 7 ms; 43 to 53 percent of edit frames are drawn synchronously in Window::dispatch_key_event rather than by the tick; the twenty cached miniatures are reused on edit and keystroke frames but never on a real click, because GPUI's click path calls window.refresh() on the same mouse up. Do four things. (1) Replace the editor's edit trace with gitturtle.theme_edit_frame_ms at the boundary stated in edit-frame-trace; the switch metric keeps its boundary. (2) Keep the three sound pieces of 58b6226 (its diff against 5637cec is committed at docs/development/themes/58b6226-draw-cost.patch; apply it to the base with `git apply --3way` and rework it, or rebuild the pieces if it no longer applies): one retained settings::ThemePreviewBody entity per theme embedded with Entity::cached inside settings::theme_preview, whose 1 px snapping of miniature interiors the design-reviewer approved; settings::save_preferences notifying only when the completed save changed something visible, which removes the second render per switch; and its one-render test, extended as one-render says. (3) Virtualize the Your themes rows with uniform_list, as the repository's other lists: the list is min(rows, 8) times 30 px tall, scrolls inside the card with the toolkit scrollbar, keeps every row's Edit, Export and Delete actions as tab stops in order and scrolls the row holding focus into view; update DESIGN.md's Your themes paragraph and the spec's Editor section wording accordingly. (4) Take the further layout wins the app tree allows (fewer nodes per row, card and token row; no measured text where a fixed size is authored), guided by elements per frame; the bound in edit-budget decides how far. Do not patch GPUI, do not change what the live preview repaints (the whole window follows the draft), and do not change the visible design beyond the bounded row list. Making the Settings page its own cached view is themes-settings-view, not this task. themes-editor, this task's dependency, and the nine other tasks of docs/development/themes/tasks.json were accepted in run 20260919T143547Z-8e458d6a and are on the base this queue starts from, so this file lists no dependency on them.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/settings.rs",
+        "crates/app/src/theme_editor.rs",
+        "crates/app/src/main.rs",
+        "crates/app/src/views.rs",
+        "crates/app/src/platform_polish.rs",
+        "crates/app/src/appearance.rs",
+        "crates/app/src/appearance/**",
+        "crates/app/docs/**",
+        "docs/benchmarks/**",
+        "DESIGN.md",
+        "docs/development/themes/spec.md"
+      ],
+      "acceptance": [
+        {
+          "id": "edit-frame-trace",
+          "description": "With GITTURTLE_TRACE=1 the editor prints gitturtle.theme_edit_frame_ms=<ms> exactly once per burst of live-preview edits and once per open, and nothing without the variable. The value starts at entry to the token row's change handler (the hex Input's InputEvent::Change or the ColorPicker's change, before the value is parsed) and ends inside the paint closure of a zero-size trace element that the root render defers at a priority above the dialog layer (Root::render_dialog_layer), so it is the last element Window::draw paints in the first frame drawn after the handler applied the draft, whether that draw runs in the frame tick or synchronously in Window::dispatch_key_event. It therefore contains the parse, the readability recompute, apply_appearance and the request_layout, layout, prepaint and paint of the whole window, and excludes next-frame callback waits, frame-finish bookkeeping, present and input delivery. Editor opens and edits no longer print theme_apply_frame_ms, whose switch boundary is unchanged. A #[gpui::test] asserts one line per edit whose end stamp is taken during that frame's paint after the dialog layer and never from a next-frame callback; docs/benchmarks/metrics.md defines the new metric with this boundary and its exclusions and removes the editor sentences from the switch metric's entry."
+        },
+        {
+          "id": "edit-budget",
+          "description": "In release mode at 2x on the themes-apply-trace fixture with History at 1 to 1000 and the 2,000-line Split comparison retained (the state of docs/benchmarks/2026-09-19-theme-editor.md), on a fresh version-6 store seeded with 32 custom themes (the bound: Seed 01 to Seed 32, bases cycling ThemeChoice::ALL, one token differing from the base, theme midnight, follow-system off), with the editor opened by Edit… on the first row (New theme… is disabled at the bound) and 60 valid Canvas hex edits in six dialogs of ten (the procedure of the 2026-09-19 record), each edit at least 1.2 s apart, cycling dark canvases that keep the Readability list empty, in one recorded launch designated in writing before it runs: gitturtle.theme_edit_frame_ms p95 ≤ 26 ms over the 60 pooled edits, the p95 being the 57th of the 60 sorted samples (owner decision of 2026-09-20, re-cut from 24 to 26 ms by owner decision of 2026-09-21 after candidates ea31261, 2030b3d and 23ee777 measured 26.348, 24.440 and 25.191 ms on this boundary with about 3 ms of launch-to-launch spread and the remaining elements reported as the editor dialog's kit Input and ColorPicker internals); the first dialog's ten edits are reported as the designated set and carry no bound. The bound sits at this boundary's draw plus about 2 ms of handler and apply: the diagnosis measured the draw at 19.5 ms on the empty store and 26.4 ms with 32 themes on the unvirtualized candidate, and puts the realistic floor after the row virtualization and layout wins at 15 to 19 ms. docs/benchmarks/ gains a dated record with the build identity (--build-info and executable SHA-256), host, cache state, the seed store's digest, raw samples for the 60 edits with the designated ten identified, the same procedure on an empty store, UI-thread CPU per edit, elements per frame before and after, and the dominant remaining cost; the performance-reviewer attests it with `python3 scripts/agent-loop.py attest --kind performance`."
+        },
+        {
+          "id": "switch-no-regression",
+          "description": "The same record shows 60 Settings theme switches by real pointer clicks cycling ThemeChoice::ALL on the empty store and on the 32-theme store, measured as in docs/benchmarks/2026-09-18-theme-apply.md: UI-thread CPU per switch (main-thread schedstat delta from the release to 150 ms after it) median ≤ 23 ms on the empty store (base 5637cec measured 26.4 ms with the save completion's second render, 58b6226 without it 21.0 ms) and no more than 4 ms higher on the 32-theme store, which shows the rows no longer cost every Settings frame (3 ms until 2026-09-22; widened to 4 ms by the coordinator under the owner's 2026-09-21 instruction that a few ms off is acceptable, after 85a7d07 measured +3.402 with switch-frame element counts identical to 23ee777, whose delta was +1.565, on a pass whose every UI-thread CPU figure ran 2 to 4 ms above the previous one because the IDE renderer held the load near 2.8); and gitturtle.theme_apply_frame_ms, unchanged at its next-frame-callback boundary and blind to draw cost, stays at median ≤ 8 ms and p95 ≤ 16 ms on both stores as a non-regression."
+        },
+        {
+          "id": "one-render",
+          "description": "A #[gpui::test] shows that a burst of editor edits and a Settings theme switch each lead to exactly one window draw after the handler: no draw in the old palette before the draft is applied and no second draw from a preference-save completion that changes nothing visible. The switch is driven through the card's real click path (simulate_click on the card's bounds), not by calling choose_theme; because GPUI's click machinery calls window.refresh() on that mouse up and so rebuilds cached views, the miniature-reuse assertion is made on the edit frames (every picker miniature reused, only the draft's rebuilt) while the click switch asserts the single draw and records its rebuild count with the reason instead of asserting a reuse a click never gets."
+        },
+        {
+          "id": "visual-unchanged",
+          "description": "native-qa captures, in one session with the same driver on release builds of base 5637cec and the candidate, the Settings picker with light and dark groups, the Your themes card on the 32-theme store (top, mid-scroll, last row, and a row action focused by keyboard) and the editor flow set (new, edit producing a warning, save, reopen, cancel, delete confirm) at 1,000 × 680 and 1,440 × 900, and compares them per channel. Allowed differences: measured-timing text; the class the design-reviewer approved for 58b6226 (one interior element edge of a theme-card miniature landing exactly 1 px from the base, no new colour, nothing on the miniature's frame, caption, swatches, badge, hover border or focus ring, equal-size miniatures identical); single-pixel glyph-edge flakes shown to vary between launches of one binary; and, on stores with more than eight themes only, the bounded row list of DESIGN.md's Your themes paragraph, which the design-reviewer approves against that wording with Tab order through every row's actions preserved (a #[gpui::test] tabs across the eight-row viewport boundary on a 32-theme store and finds each focused action's row scrolled into view). Any other difference goes to the design-reviewer for approval against DESIGN.md or fails the criterion."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "performance",
+        "native",
+        "docs"
+      ],
+      "commit": "perf(settings): trace edit frames to their draw and cut frame cost"
+    },
+    {
+      "id": "themes-settings-view",
+      "title": "Make the Settings page a cached view so dialog keystrokes and caret blinks do not rebuild it",
+      "description": "Hard. The diagnosis of candidate 58b6226 found that GPUI redraws from the window root on any notify and skips only views embedded with Entity::cached; the Settings page is GitTurtle::render_settings called inside GitTurtle::render and the dialog layer is a child of the same render, so every keystroke in the theme editor's inputs and every caret blink (about 200 per launch, 16 to 23 ms each) rebuilds page plus dialog. Give the Settings page its own entity embedded with Entity::cached, rendering from the app's state through a weak handle and notified by the app only for changes that alter the page (settings, custom themes, editor card state, the status line, pointer hover, press and focus on its controls, and every palette application, since the whole window follows a theme switch or a live-preview draft), never by input inside the dialog. The live-preview edit frame keeps its cost and its themes-draw-cost bound; the win is on non-preview keystrokes and blink frames, expected from the diagnosis at 10 to 16 ms per frame. This is a state-lifetime change under docs/development/architecture-review.md: enumerate every notify site, cover a missed notify as the failure mode, and do not change the visible design.",
+      "depends_on": [
+        "themes-draw-cost"
+      ],
+      "scope": [
+        "crates/app/src/settings.rs",
+        "crates/app/src/theme_editor.rs",
+        "crates/app/src/main.rs",
+        "crates/app/src/views.rs",
+        "crates/app/src/platform_polish.rs",
+        "crates/app/docs/**",
+        "docs/benchmarks/**"
+      ],
+      "acceptance": [
+        {
+          "id": "page-reused",
+          "description": "A #[gpui::test] opens the theme editor, types into its Name field and asserts the frame reuses the cached Settings page while the dialog re-renders; and asserts the page is rebuilt by a live-preview edit, a picker switch, a save that changes the status line, a delete, an import, and hover, press and keyboard focus on a picker card, each through the real input path where one exists."
+        },
+        {
+          "id": "keystroke-cpu",
+          "description": "docs/benchmarks/ gains a dated release record, on the themes-draw-cost fixture state and 32-theme store, of UI-thread CPU per non-preview keystroke (a key that changes the hex field's text without a valid colour, the key-6 control of docs/benchmarks/2026-09-19-theme-editor.md, 150 ms window) with median ≤ 14 ms, the count and median draw cost of caret-blink frames while the dialog is idle for 10 s, and gitturtle.theme_edit_frame_ms and UI-thread CPU per switch re-measured as in the themes-draw-cost record and still within its bounds; the performance-reviewer attests it."
+        },
+        {
+          "id": "lifetime-contract",
+          "description": "crates/app/docs/content-and-layout.md records the page entity's owner, what it reads through the weak handle, every site that notifies it and the failure mode of a missed notify, and a test per notify site fails if the notify is removed."
+        },
+        {
+          "id": "visual-unchanged",
+          "description": "native-qa repeats the themes-draw-cost visual comparison (picker, Your themes card on the 32-theme store, editor flow set, both window sizes) against the accepted themes-draw-cost head with the same allowed classes, and the design-reviewer approves any other difference against DESIGN.md or the criterion fails."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "performance",
+        "native",
+        "docs"
+      ],
+      "commit": "perf(settings): cache the Settings page view across dialog keystrokes"
+    },
+    {
+      "id": "themes-picker",
+      "title": "List custom themes in the picker with the built-ins and measure switching",
+      "description": "Extend the Settings theme picker with a 'Your themes' group that uses the same preview card from a custom palette with the name and base as description and a warning glyph when readability_issues is non-empty; each custom card embeds a retained settings::ThemePreviewBody through Entity::cached as the built-ins do after themes-draw-cost, rebuilt only when that theme's palette changes; change choose_theme to take ThemeSelection; tighten the grid to the spec's geometry so twenty built-ins fit; keep follow-system behavior; update DESIGN.md, docs/user-guide.md, docs/native-accessibility.md and docs/validation.md; and measure switching across every built-in and two custom themes in release mode against the budget in docs/development/themes/spec.md section 'Performance', on the 32-theme store of themes-draw-cost so the group holds its largest card count. themes-import-export and themes-batch-alucard-kanagawa, which this task built on, are accepted on the base.",
+      "depends_on": [
+        "themes-draw-cost"
+      ],
+      "scope": [
+        "crates/app/src/settings.rs",
+        "crates/app/src/theme_editor.rs",
+        "crates/app/src/main.rs",
+        "crates/app/src/views.rs",
+        "crates/app/src/platform_polish.rs",
+        "crates/app/src/appearance.rs",
+        "crates/app/src/appearance/**",
+        "crates/app/docs/**",
+        "DESIGN.md",
+        "docs/validation.md",
+        "docs/user-guide.md",
+        "docs/native-accessibility.md",
+        "docs/benchmarks/**",
+        "docs/evidence/themes/**"
+      ],
+      "acceptance": [
+        {
+          "id": "picker-groups",
+          "description": "A #[gpui::test] with two custom themes finds three groups, custom cards whose accessibility_label is '<name> theme', selection state following ThemeSelection, a click that applies the custom palette and saves the selection, and no third group when no custom theme exists; the themes-draw-cost one-render test extended to a custom card shows a live-preview edit reuses every custom miniature and that saving an edited theme rebuilds only its own."
+        },
+        {
+          "id": "geometry",
+          "description": "Cards are 132 px tall in a four-column grid at ≥ 1,060 px, three columns in the compact layout and two in the narrow layout, asserted through debug_bounds; the twenty built-in cards occupy at most five rows at 1,440 × 900."
+        },
+        {
+          "id": "switching-budget",
+          "description": "docs/benchmarks/ gains a dated release record of 60 switches cycling all twenty built-ins and two custom themes with History and a retained split comparison open, on the themes-draw-cost 32-theme seeded store: gitturtle.theme_apply_frame_ms median ≤ 8 ms and p95 ≤ 16 ms, zero worker jobs, raw samples, host and cache state, and UI-thread CPU per switch measured as in the themes-draw-cost record and reported beside that record's figure; the performance-reviewer attests it."
+        },
+        {
+          "id": "docs-current",
+          "description": "DESIGN.md, docs/user-guide.md, docs/native-accessibility.md and docs/validation.md describe twenty built-in themes plus custom themes, and the validation matrix gains a 'Themes and custom themes' row naming the editor, import/export and picker checks."
+        },
+        {
+          "id": "native-evidence",
+          "description": "native-qa records the picker at 1,000 × 680 and 1,440 × 900 in both densities with custom themes present, hover, selected and focus states, and follow-system switching with a custom theme selected, under docs/evidence/themes/ with a dated docs/validation.md entry."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native",
+        "performance",
+        "docs"
+      ],
+      "commit": "feat(settings): show custom themes in the picker and measure switching"
+    }
+  ]
+}

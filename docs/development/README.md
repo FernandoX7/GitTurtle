@@ -81,7 +81,7 @@ python3 scripts/agent-loop.py run \
   --max-tasks 3 --max-attempts 2 --max-minutes 180
 ```
 
-`--session-minutes` bounds each child session and defaults to 45. `--max-tasks` caps accepted tasks, and `--max-attempts` caps attempts per task. Optional `--max-output-tokens` stops between sessions using reported output usage; it is not a hard token or billing cap. A blocked task does not prevent another eligible, unrelated task from running, and its dependents remain ineligible. Gate/child failure, a missing capability, a requested stop and exhausted budgets retain their recorded outcomes; none establishes acceptance.
+`--session-minutes` bounds each child session and defaults to 45. `--max-tasks` caps tasks accepted by the run, and `--max-attempts` caps attempts per task. The task file carries no status, so a new run continues a queue from the branch: a task whose exact commit subject is already reachable from the source head, whose commit changed only paths in its scope, and whose dependencies also landed is recorded as accepted with its `landed` commit, satisfies dependents and does not count toward `--max-tasks`. Optional `--max-output-tokens` stops between sessions using reported output usage; it is not a hard token or billing cap. A blocked task does not prevent another eligible, unrelated task from running, and its dependents remain ineligible. Gate/child failure, a missing capability, a requested stop and exhausted budgets retain their recorded outcomes; none establishes acceptance.
 
 Inspect a run and request a stop using its printed directory:
 
@@ -100,6 +100,8 @@ Before expensive external checks, inspect `status`: the candidate's `base` must 
 
 The assigned owner exercises the exact candidate with the relevant existing skill or contract, preserving genuine app state and using disposable repositories for mutations. Record the build/executable identity, platform and desktop/session, fixture, steps, results and limitations. For measurements, retain raw samples and boundaries. Historical evidence for different code does not satisfy the new candidate.
 
+Exactly one owner operates the app at a time, and ownership changes hands explicitly: the next owner starts only after the previous one has confirmed it stopped launching, because two concurrent launches of the same build in one desktop session invalidate each other's observations and waste the run's remaining budget. Give every launch its own seeded preference store addressed by an absolute path, written before that launch; a relative path is ignored and reaches the operator's real preferences.
+
 After real evidence exists, register it with the exact task and candidate SHA:
 
 ```sh
@@ -110,9 +112,23 @@ python3 scripts/agent-loop.py attest \
 python3 scripts/agent-loop.py resume --run /absolute/path/to/run
 ```
 
-Use a supported evidence kind from `attest --help`. This records a responsible owner's assertion and evidence; it cannot prove the truth of an arbitrary file. The controller still requires the task's remaining checks and independent verdict. If the candidate changes, repeat the affected checks and attach evidence to the new identity.
+Use a supported evidence kind from `attest --help`. `attest` refuses a candidate whose base is no longer `accepted_head`, a symlinked evidence path and a file larger than 32 MiB, so register a short text or JSON summary that names the retained bundle and keep captures, raw samples and logs in the run directory or an ignored evidence directory. This records a responsible owner's assertion and evidence; it cannot prove the truth of an arbitrary file. The controller still requires the task's remaining checks and independent verdict. If the candidate changes, repeat the affected checks and attach evidence to the new identity.
 
 Live account/network operations, installation over a user's app, publication and releases need their specifically authorized context. Removing the clone's remote does not make arbitrary commands harmless or grant permission to contact other systems. The runner is development tooling, not a security boundary against arbitrary same-user code execution.
+
+### Evidence gated by its own commit
+
+A criterion can require the captures or the measurement record to be part of the commit they validate. That is reachable in only one order, because the evidence has to exist on the base the candidate is rebuilt onto:
+
+1. Let the controller gate the candidate and park it `awaiting_evidence`. Do not collect evidence for a candidate that has not passed its gates.
+2. Clone that attempt's checkout (`attempts/<task>/<attempt>/repo` inside the run) into an ignored working directory named after the candidate, build it in release with an absolute `CARGO_TARGET_DIR` shared by every candidate, and copy the executable to a name carrying the candidate SHA. The shared target directory keeps each rebuild incremental; the renamed executable keeps every observation tied to one identity.
+3. Exercise that exact executable for each required lens — the affected native workflow, the measurement, and the visual review when the criterion is visual — at the window size and density the criterion names.
+4. Commit the captures, any benchmark record and a dated [validation](../validation.md) entry on the run's `accepted` checkout, not in your contribution branch: those commits have to be the rebuilt candidate's ancestors.
+5. Advance `accepted_head` to that commit and `resume`. The pending candidate is now stale, so the controller rebuilds it on the base that carries its evidence, which spends one implementer attempt on a rebuild that contains no new work.
+6. Attest the rebuilt candidate only after re-checking it against the committed captures and re-running the measurement on its executable. The evidence has to describe the build being attested, not its predecessor.
+7. Bring each accepted commit onto the contribution branch as it lands, with `git fetch /absolute/path/to/run/accepted HEAD` followed by `git cherry-pick -x FETCH_HEAD`. Work that exists only inside a run directory is lost as soon as a harness change makes that run unresumable.
+
+Advancing `accepted_head` restales every other pending candidate and costs each one an attempt, so gate and accept evidence-gated tasks strictly one at a time, budget `--max-attempts` for the forced rebuilds, and order the queue so the fewest candidates are waiting when a head advances.
 
 ## Evidence, interruption and continuation
 
@@ -137,3 +153,23 @@ Accepted candidates accumulate by local fetch and fast-forward in the private `a
 Update the closest contract when behavior changes. Use the [research template](research-template.md) for decisions that need current primary sources, compatibility checks and explicit enforcement. The librarian reconciles claims with code and evidence; it does not keep stale instructions byte-identical for caching.
 
 Validate development-tool changes with the controller's focused tests and guidance checks. Run Rust/native gates only when changed product code, dependencies or a concrete product concern requires them. A successful fake-child or disposable-runner test establishes controller behavior, not a completed model-driven product feature or an hours-long production run.
+
+## Claude Code adapter
+
+The controller can run its fresh sessions through Claude Code instead of Codex with `run --tool claude`. Codex remains the default; a saved run remembers its tool, so `resume` needs no flag. The adapter ([claude.py](../../scripts/agent_loop/claude.py)) launches one non-interactive `claude -p` process per implementer, verifier and security-review session with an explicit `--model`/`--effort`, `--permission-prompts none`, a turn cap, `--output-format json` and `--json-schema` for the same build/review/security result schemas the Codex path validates. Requirements: Claude Code 2.1.257 or later, a completed interactive sign-in (`claude auth status` must report `loggedIn: true`; subscription usage is billed to that account), and committed `.claude/agents/{implementer,implementer-hard,verifier,security-reviewer}.md` role files. Preflight checks all of these before creating a run.
+
+Sessions load the checkout's `CLAUDE.md`, rules, skills and settings-file hooks (Claude Code runs project hooks in `-p` without a trust prompt), plus a settings snapshot the run writes to `controller/claude-settings.json` from [claude-settings.json](../../scripts/agent_loop/claude-settings.json): deny rules for pushes, hard resets, cleans, `--no-verify` commits and snapshot acceptance, an auto-compaction window of 300k tokens, and the child environment (`GITTURTLE_LOOP=1`, `GITTURTLE_TASK_CONTEXT` pointing at the task contract, background subagents disabled, spawn depth 1, at most four concurrent subagents, agent teams off, `INSTA_UPDATE=no`, `CARGO_TERM_COLOR=never`, `CARGO_TARGET_DIR` set to the run's shared build directory). The role file the session uses must match the run snapshot byte for byte, and `.claude/**` and every `CLAUDE.md` are protected paths in every run regardless of tool. Implementer sessions run with `--permission-mode bypassPermissions` inside the private attempt clone; reviewer sessions run with `--permission-mode dontAsk`, only `Read`, `Grep`, `Glob` and `Bash`, and an allowlist of `cargo`, read-only `git` and `scripts/gate.py` commands, and the controller still fails any review that leaves the candidate dirty. `--sandbox on` additionally enables Claude Code's Bash sandbox with write access to `~/.cargo`, `~/.rustup` and the run build directory; `auto` (the default) enables it only when macOS Seatbelt or both `bubblewrap` and `socat` are available and a namespace probe succeeds, and `off` disables it.
+
+Routing is by attempt number because the task schema has no hardness field. Attempt 1 uses `--model`/`--effort` (or `--light-model`, default `sonnet` at `medium`, for tasks whose declared profiles are only `docs`/`tooling`); attempt 2 keeps the model and raises effort to `--retry-effort` (default one step above `--effort`); attempt 3 onward runs the `implementer-hard` agent on `--hard-model` (default `fable`). Pass `none` to `--hard-model` or `--light-model` to disable a step. Reviewers always use the base model and effort. `--max-turns` (default 200) and `--review-max-turns` (default 120) cap each session; the chosen agent, model and effort are recorded per attempt under `tasks.<id>.session` in the run state. Each session leaves `<role>.prompt.txt`, `<role>.stdout.log`, `<role>.stderr.log`, `<role>.session.json` (session ID, reported usage and cost) and `<role>.response.json` beside the attempt evidence; usage recovery after a crash replays the session records.
+
+A session that Claude Code refuses because the subscription's session, weekly or Fable allowance is exhausted is not a failed attempt: the task is recorded as `interrupted` (or `review_blocked` when a reviewer was refused, keeping the candidate), the run pauses with the limit as its reason, and `resume` continues after the window resets. The attempt number stays consumed; raise `--max-attempts` on resume when that matters. A session that exhausts its turn cap without a structured result is an ordinary failed attempt.
+
+An illustrative bounded overnight run, not a repository default or an enabled schedule:
+
+```sh
+python3 scripts/agent-loop.py run --tool claude \
+  --model opus --effort high --hard-model fable --light-model sonnet \
+  --max-tasks 6 --max-attempts 3 --max-minutes 480 --session-minutes 90
+```
+
+`python3 scripts/check-agent-guidance.py` also validates the optional Claude Code configuration when `.claude/` exists: agent frontmatter (`name` equal to the file name, lowercase with hyphens except the documented `Explore` override, a nonempty `description`, and only documented `model`, `effort`, `permissionMode`, `memory`, `isolation`, `maxTurns` and list values), skill metadata under `.claude/skills` (symlinked entries included), `.claude/settings.json` structure and hook script paths, hook scripts parsing, and Markdown links in `CLAUDE.md`, agent and rule files.

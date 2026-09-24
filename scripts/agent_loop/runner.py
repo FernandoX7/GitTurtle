@@ -17,16 +17,25 @@ import sys
 import time
 import uuid
 
+from .claude import Claude, UsageLimited, snapshot_files as claude_snapshot_files
 from .codex import Codex, validate_review
-from .git import changed_paths, clean, clone, commit, committed_paths, git, head, identity, source_root, write_limits
-from .process import EnvironmentBlocked, LoopError, atomic_json, digest, read_json, run_process, reconcile_processes
+from .git import changed_paths, clean, clone, commit, committed_paths, git, head, identity, source_root, untracked_paths, within, write_limits
+from .process import EnvironmentBlocked, LoopError, MalformedResponse, atomic_json, digest, read_json, run_process, reconcile_processes
+from .rust_surface import renders
 from .task_spec import Task, load_spec, path_allowed, required_evidence, select_ready
 from .security_review import candidate_requires_security, validate_security_review
 
 
-CONTROLS = (".codex", ".agents", "scripts/agent_loop", "scripts/agent-loop.py", "scripts/check-agent-guidance.py", "docs/development/tasks.json", "docs/development/task.schema.json", "docs/development/security-review.md")
+CONTROLS = (".codex", ".agents", ".claude", "scripts/agent_loop", "scripts/agent-loop.py", "scripts/check-agent-guidance.py", "docs/development/tasks.json", "docs/development/task.schema.json", "docs/development/security-review.md")
+# An IDE sweep writes byte copies of `.claude/` under these protected roots in
+# every checkout a session ran in. Nothing a candidate may add lives there, so
+# an untracked file under them is left out of the candidate and recorded with
+# the attempt instead of failing it; tracked files there stay protected.
+MIRRORS = (".codex", ".agents/skills")
 EVIDENCE_KINDS = {"native", "performance", "package", "vendor"}
 EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
+TOOLS = ("codex", "claude")
+CLAUDE_OPTIONS = ("retry_effort", "hard_model", "light_model", "max_turns", "review_max_turns", "sandbox")
 
 
 def now() -> str:
@@ -34,7 +43,23 @@ def now() -> str:
 
 
 def controlled(path: str) -> bool:
-    return Path(path).name == "AGENTS.md" or any(path == item or path.startswith(item + "/") for item in CONTROLS)
+    return Path(path).name in {"AGENTS.md", "CLAUDE.md"} or any(path == item or path.startswith(item + "/") for item in CONTROLS)
+
+
+def mirror_untracked(repo: Path) -> list[str]:
+    return [path for path in untracked_paths(repo) if within(path, MIRRORS)]
+
+
+def note_mirror(repo: Path, record: dict) -> None:
+    if mirrored := mirror_untracked(repo):
+        record["mirror_untracked"] = sorted(set(record.get("mirror_untracked", ())) | set(mirrored))
+
+
+def checkout_clean(repo: Path, record: dict | None = None) -> bool:
+    """Clean apart from a mirror sweep, which `record` keeps instead of failing."""
+    if record is not None:
+        note_mirror(repo, record)
+    return clean(repo, ignore_untracked=MIRRORS)
 
 
 def validate_patch(repo: Path, task: Task, base: str) -> list[str]:
@@ -42,7 +67,7 @@ def validate_patch(repo: Path, task: Task, base: str) -> list[str]:
         raise LoopError("worker changed HEAD; the controller alone owns commits")
     if git(repo, "diff", "--cached", "--name-only", "-z"):
         raise LoopError("worker changed the index; the controller alone owns staging")
-    paths = changed_paths(repo)
+    paths = changed_paths(repo, ignore_untracked=MIRRORS)
     if not paths:
         raise LoopError("worker produced no patch; split verification-only work from implementation tasks")
     original_entries = git(repo, "ls-tree", "-z", base, "--", *paths).split("\0")
@@ -56,7 +81,14 @@ def validate_patch(repo: Path, task: Task, base: str) -> list[str]:
     return paths
 
 
-def profiles_for(task: Task, paths: list[str]) -> set[str]:
+def profiles_for(task: Task, paths: list[str], sources=None) -> set[str]:
+    """Infer the profiles a candidate touching `paths` must satisfy.
+
+    `sources` maps a path to its (before, after) text and lets app Rust that adds
+    no view, layout or rendering code skip the native profile. Without it every
+    app Rust change keeps that profile, so a caller that cannot read the two
+    revisions errs toward demanding the evidence.
+    """
     profiles = set(task.profiles) | {"docs"}
     if any(path.endswith(".rs") or Path(path).name in {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml"} for path in paths):
         profiles.add("rust")
@@ -64,7 +96,10 @@ def profiles_for(task: Task, paths: list[str]) -> set[str]:
         profiles.add("tooling")
     if any(path.startswith("vendor/") for path in paths):
         profiles.update({"vendor", "rust"})
-    if any((path.startswith("crates/app/") and path.endswith(".rs")) or path.startswith("vendor/gpui") for path in paths):
+    if any(path.startswith("vendor/gpui") for path in paths):
+        profiles.add("native")
+    app_rust = [path for path in paths if path.startswith("crates/app/") and path.endswith(".rs")]
+    if app_rust and (sources is None or any(renders(*sources(path)) for path in app_rust)):
         profiles.add("native")
     if any(
         path.startswith("assets/") or path in {
@@ -78,6 +113,52 @@ def profiles_for(task: Task, paths: list[str]) -> set[str]:
     ):
         profiles.add("package")
     return profiles
+
+
+def gate_context(path: Path) -> str:
+    """The gate result itself, not only where it lives.
+
+    A review session runs with prompts disabled and a command allowlist, so a
+    path outside its checkout is unreadable to it: pointing at the evidence left
+    every gate-backed criterion unverified. The outcome is small, so it travels
+    in the prompt; the path stays for identification.
+    """
+    summary = f"Gate evidence: {path}"
+    try:
+        report = read_json(path)
+    except LoopError:
+        return summary + " (unreadable)"
+    checks = [
+        {key: check.get(key) for key in ("name", "returncode", "elapsed", "stopped")}
+        for check in report.get("checks", []) if isinstance(check, dict)
+    ]
+    return summary + "\nGate result: " + json.dumps({"passed": report.get("passed"), "checks": checks})
+
+
+def revision_sources(repo: Path, base: str, candidate: str):
+    """Read a path at both revisions; an absent path reads as empty text."""
+    def read(revision: str, path: str) -> str:
+        if not git(repo, "ls-tree", "-z", revision, "--", path):
+            return ""
+        return git(repo, "show", f"{revision}:{path}")
+
+    return lambda path: (read(base, path), read(candidate, path))
+
+
+def make_adapter(controller: Path, settings: dict):
+    """Build the session adapter a run recorded; saved runs without a tool use Codex."""
+    tool = settings.get("tool") or "codex"
+    if tool == "claude":
+        return Claude(
+            controller, settings["model"], settings["effort"],
+            retry_effort=settings.get("retry_effort"), hard_model=settings.get("hard_model", "fable"),
+            light_model=settings.get("light_model", "sonnet"), max_turns=settings.get("max_turns") or 200,
+            review_max_turns=settings.get("review_max_turns") or 120, sandbox=settings.get("sandbox") or "auto",
+            settings_sha256=settings.get("claude_settings_sha256"),
+        )
+    if tool != "codex":
+        raise LoopError(f"unknown session tool {tool!r}")
+    return Codex(controller, settings["model"], settings["effort"])
 
 
 @contextmanager
@@ -122,7 +203,8 @@ class Runner:
             if not path.is_file() or digest(path) != expected:
                 raise LoopError(f"controller version changed; resume using {self.controller / 'scripts/agent-loop.py'}")
         self.repo = self.directory / "accepted"
-        self.adapter = adapter or Codex(self.controller, self.state["model"], self.state["effort"])
+        self.adapter = adapter or make_adapter(self.controller, self.state)
+        self.usage_limited: str | None = None
         self.gate_runner = gate_runner
         self.started = time.monotonic()
         self.initial_seconds = self.state["remaining_seconds"]
@@ -139,6 +221,12 @@ class Runner:
     def recover_usage(self) -> None:
         reported = 0
         incomplete = False
+        recover = getattr(self.adapter, "recover_usage", None)
+        if callable(recover):
+            reported, incomplete = recover(self.directory / "attempts")
+            self.initial_tokens = max(self.initial_tokens, reported)
+            self.state["output_usage_incomplete"] = self.state.get("output_usage_incomplete", False) or incomplete
+            return
         for log in (self.directory / "attempts").glob("**/*.jsonl"):
             if log.name not in {"implementer.jsonl", "verifier.jsonl", "security-reviewer.jsonl"}:
                 continue
@@ -178,6 +266,8 @@ class Runner:
     def budget_stop(self) -> str | None:
         if self.stop_requested():
             return "stop requested"
+        if self.usage_limited:
+            return self.usage_limited
         if self.timeout() <= 0:
             return "time budget exhausted"
         cap = self.state.get("max_output_tokens")
@@ -227,7 +317,7 @@ class Runner:
     def reconcile(self) -> None:
         reconcile_processes(self.directory)
         actual = head(self.repo)
-        if not clean(self.repo):
+        if not checkout_clean(self.repo):
             raise LoopError("accepted checkout has unexpected changes; preserve and inspect it")
         phase = self.state["phase"]
         active = self.state.get("active")
@@ -269,7 +359,9 @@ class Runner:
             self.state.update(phase="paused", reason=reason, active=None, budget_running=False)
             self.save()
             return self.state
-        self.state["codex_version"] = self.adapter.preflight()
+        self.state["tool_version"] = self.adapter.preflight()
+        if (self.state.get("tool") or "codex") == "codex":
+            self.state["codex_version"] = self.state["tool_version"]
         if not self.state.get("baseline_passed"):
             self.state["phase"] = "preflight"
             self.save()
@@ -277,7 +369,7 @@ class Runner:
             baseline = self.directory / "baseline" / uuid.uuid4().hex
             report = self.gates(self.repo, profiles, baseline)
             self.state["baseline_evidence"] = str(baseline / "gates.json")
-            if not report["passed"] or not clean(self.repo):
+            if not report["passed"] or not checkout_clean(self.repo):
                 self.state["phase"] = "baseline_failed"
                 self.state["budget_running"] = False
                 self.save()
@@ -291,7 +383,8 @@ class Runner:
                 self.state.update(phase="paused", reason=reason)
                 break
             accepted = {key for key, value in self.state["tasks"].items() if value["status"] == "accepted"}
-            if len(accepted) >= self.state["max_tasks"]:
+            # --max-tasks bounds work accepted by this run; tasks that landed before it only satisfy dependencies.
+            if len([key for key in accepted if "landed" not in self.state["tasks"][key]]) >= self.state["max_tasks"]:
                 self.state.update(phase="complete" if len(accepted) == len(self.tasks) else "paused", reason="accepted-task limit reached")
                 break
             blocked = set(visited)
@@ -317,9 +410,10 @@ class Runner:
                 else:
                     try:
                         self.review_and_accept(task, record)
-                    except EnvironmentBlocked as error:
+                    except (EnvironmentBlocked, MalformedResponse) as error:
                         if self.state["phase"] == "accepting":
                             raise
+                        self.note_limit(error)
                         record.update(status="review_blocked", reason=str(error))
                         self.state.update(phase="idle", active=None)
                         self.save()
@@ -338,23 +432,29 @@ class Runner:
         previous = {key: record[key] for key in ("reason", "directory") if key in record}
         record["attempts"] += 1
         record.update(status="building", base=self.state["accepted_head"])
-        for key in ("candidate", "review", "review_sha256", "review_inputs", "security_review", "security_review_sha256", "security_review_inputs", "security_required", "security_paths", "attestations", "gate_sha256"):
+        for key in ("candidate", "review", "review_sha256", "review_inputs", "security_review", "security_review_sha256", "security_review_inputs", "security_required", "security_paths", "attestations", "gate_sha256", "mirror_untracked"):
             record.pop(key, None)
         directory = self.directory / "attempts" / task.id / str(record["attempts"])
         record["directory"] = str(directory)
         self.state.update(phase="building", active={"task": task.id})
         self.save()
         repo = directory / "repo"
+        configure = getattr(self.adapter, "configure_attempt", None)
+        if callable(configure):
+            record["session"] = configure(task, record["attempts"])
+            self.save()
         try:
             clone(self.repo, repo, record["base"], tuple(self.state["author"]), owner=self.directory)
             result = self.adapter.run("implementer", task, repo, directory, self.timeout(), self.stop_requested,
-                                      context="Previous attempt evidence (read-only): " + json.dumps(previous))
+                                      context="Previous attempt evidence (read-only): " + json.dumps(previous),
+                                      spec_path=self.state["spec_path"])
             if self.budget_stop():
                 raise LoopError(self.budget_stop())
             if result["status"] == "blocked":
                 record.update(status="blocked", reason=result["summary"])
                 return
             paths = validate_patch(repo, task, record["base"])
+            note_mirror(repo, record)
             if self.state["spec_path"] in paths:
                 raise LoopError("worker changed the task contract")
             record["candidate"] = commit(repo, paths, task.commit, f"{task.description}\n\nTask: {task.id}")
@@ -364,7 +464,7 @@ class Runner:
             # Keep the patch and Git object even when gates/review fail.
             patch = git(repo, "diff", "--binary", "--no-ext-diff", "--no-textconv", record["base"], record["candidate"])
             (directory / "candidate.patch").write_bytes(patch.encode("utf-8", "surrogateescape"))
-            profiles = profiles_for(task, paths)
+            profiles = profiles_for(task, paths, revision_sources(repo, record["base"], record["candidate"]))
             record["profiles"] = sorted(profiles)
             record["required_evidence"] = sorted(required_evidence(task) | (profiles & EVIDENCE_KINDS))
             self.state["phase"] = "gating"
@@ -374,7 +474,7 @@ class Runner:
             if not gates["passed"]:
                 record.update(status="failed", reason="required gate failed; inspect checks/gates.json")
                 return
-            if head(repo) != record["candidate"] or not clean(repo):
+            if head(repo) != record["candidate"] or not checkout_clean(repo, record):
                 raise LoopError("gate changed candidate source or HEAD")
             record["status"] = "awaiting_evidence"
             if self.missing_evidence(record):
@@ -384,7 +484,18 @@ class Runner:
         except EnvironmentBlocked as error:
             if self.state["phase"] == "accepting":
                 raise
-            record.update(status="review_blocked" if self.state["phase"] in {"verifying", "security_reviewing"} else "blocked", reason=str(error))
+            self.note_limit(error)
+            if self.state["phase"] in {"verifying", "security_reviewing"}:
+                status = "review_blocked"
+            else:
+                status = "interrupted" if isinstance(error, UsageLimited) else "blocked"
+            record.update(status=status, reason=str(error))
+        except MalformedResponse as error:
+            if self.state["phase"] == "accepting":
+                raise
+            # The candidate passed its gates; only the verdict was unreadable.
+            # Retry the review on it instead of spending an attempt rebuilding it.
+            record.update(status="review_blocked", reason=str(error))
         except LoopError as error:
             if self.state["phase"] == "accepting":
                 raise  # Git may have moved; preserve intent for reconciliation.
@@ -393,6 +504,12 @@ class Runner:
             if self.state["phase"] != "accepting":
                 self.state.update(phase="idle", active=None)
             self.save()
+
+    def note_limit(self, error: Exception) -> None:
+        # A usage-limit refusal affects every later session; pause the run instead
+        # of consuming an attempt per task.
+        if isinstance(error, UsageLimited) and not self.usage_limited:
+            self.usage_limited = str(error)
 
     def missing_evidence(self, record: dict) -> list[str]:
         supplied = record.get("attestations", {})
@@ -442,7 +559,7 @@ class Runner:
         if self.budget_stop():
             record["status"] = "awaiting_evidence"
             return
-        context = "Gate evidence: " + str(directory / "checks/gates.json") + "\nExternal evidence: " + json.dumps(record.get("attestations", {}))
+        context = gate_context(directory / "checks/gates.json") + "\nExternal evidence: " + json.dumps(record.get("attestations", {}))
         general_validator = lambda value: validate_review(value, task, candidate)
         if not self.saved_review(record, "review", general_validator):
             review_dir = directory / ("review-" + uuid.uuid4().hex[:10])
@@ -453,7 +570,7 @@ class Runner:
                 candidate=candidate, context=context,
             )
             verdict = general_validator(value)
-            if head(repo) != candidate or not clean(repo):
+            if head(repo) != candidate or not checkout_clean(repo, record):
                 raise LoopError("verifier changed candidate source or HEAD")
             self.validate_candidate(record)
             self.store_review(record, "review", review_dir, value)
@@ -478,7 +595,7 @@ class Runner:
                     + "\nGeneral review evidence (not authoritative): " + record["review"],
                 )
                 verdict = security_validator(value)
-                if head(repo) != candidate or not clean(repo):
+                if head(repo) != candidate or not checkout_clean(repo, record):
                     raise LoopError("security reviewer changed candidate source or HEAD")
                 self.validate_candidate(record)
                 # Security review cannot invalidate and silently replace the
@@ -511,7 +628,7 @@ class Runner:
         self.save()
 
     def finish_acceptance(self, task_id: str, record: dict) -> None:
-        if head(self.repo) != record["candidate"] or not clean(self.repo):
+        if head(self.repo) != record["candidate"] or not checkout_clean(self.repo):
             raise LoopError("accepted checkout changed during acceptance")
         self.validate_candidate(record)
         task = next(task for task in self.tasks if task.id == task_id)
@@ -536,7 +653,7 @@ class Runner:
     def validate_candidate(self, record: dict) -> None:
         directory = Path(record["directory"])
         repo = directory / "repo"
-        if head(repo) != record["candidate"] or not clean(repo):
+        if head(repo) != record["candidate"] or not checkout_clean(repo, record):
             raise LoopError("candidate source or HEAD changed")
         report_path = directory / "checks/gates.json"
         if digest(report_path) != record["gate_sha256"]:
@@ -550,6 +667,37 @@ class Runner:
                 raise LoopError("gate command log changed")
 
 
+def landed_tasks(root: Path, base: str, tasks: list[Task]) -> dict[str, str]:
+    """Map each task already committed on the source branch to its newest commit.
+
+    The queue is status-free, so a queue continued in a fresh run would otherwise
+    redo accepted work. A task counts as landed only when a single-parent commit
+    reachable from ``base`` carries its exact subject, changes at least one path
+    and only paths inside its scope, and every dependency landed too.
+    """
+    newest: dict[str, str] = {}
+    for line in git(root, "log", "--no-merges", "--format=%H%x1f%s", base).splitlines():
+        sha, _, subject = line.partition("\x1f")
+        newest.setdefault(subject, sha)
+    candidates = {}
+    for task in tasks:
+        sha = newest.get(task.commit)
+        if not sha:
+            continue
+        paths = list(filter(None, git(root, "diff-tree", "--no-commit-id", "--root", "-r", "--name-only", "-z", "--no-renames", sha).split("\0")))
+        if paths and all(path_allowed(path, task.scope) for path in paths):
+            candidates[task.id] = sha
+    landed: dict[str, str] = {}
+    changed = True
+    while changed:
+        changed = False
+        for task in tasks:
+            if task.id in candidates and task.id not in landed and set(task.depends_on) <= landed.keys():
+                landed[task.id] = candidates[task.id]
+                changed = True
+    return landed
+
+
 def create_run(repo: Path, spec_path: Path, controller: Path, options: dict) -> Path:
     root = source_root(repo)
     spec_path = spec_path.resolve()
@@ -561,7 +709,10 @@ def create_run(repo: Path, spec_path: Path, controller: Path, options: dict) -> 
     if not tasks:
         raise LoopError("task queue is empty; define and commit an authorized milestone first")
     author = identity(root)
-    adapter = Codex(controller, options["model"], options["effort"])
+    tool = options.get("tool") or "codex"
+    if tool not in TOOLS:
+        raise LoopError(f"unknown session tool {tool!r}")
+    adapter = make_adapter(controller, options | {"tool": tool})
     adapter.preflight()
     state_parent = root / ".local" / "agent-loop"
     if (root / ".local").is_symlink() or state_parent.is_symlink():
@@ -574,27 +725,43 @@ def create_run(repo: Path, spec_path: Path, controller: Path, options: dict) -> 
     os.chmod(directory, 0o700)
     shutil.copyfile(spec_path, directory / "tasks.json")
     controller_files = {}
-    for relative in ("scripts/agent_loop", "scripts/agent-loop.py", "scripts/check-agent-guidance.py", ".codex/agents"):
+    sources: list[tuple[str, Path]] = []
+    roles = (".codex/agents",) if tool == "codex" else ()
+    for relative in ("scripts/agent_loop", "scripts/agent-loop.py", "scripts/check-agent-guidance.py", *roles):
         source = controller / relative
         files = sorted(source.rglob("*.py")) if source.is_dir() and relative.startswith("scripts") else sorted(source.glob("*.toml")) if source.is_dir() else [source]
         for file in files:
             if file.is_symlink() or not file.is_file():
                 raise LoopError(f"invalid controller source: {file}")
-            target = directory / "controller" / file.relative_to(controller)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(file, target)
-            controller_files[file.relative_to(controller).as_posix()] = digest(target)
+            sources.append((file.relative_to(controller).as_posix(), file))
+    if tool == "claude":
+        sources.extend(claude_snapshot_files(controller))
+    for relative, file in sources:
+        target = directory / "controller" / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(file, target)  # follows a symlinked skill to its content
+        controller_files[relative] = digest(target)
+    prepared = adapter.prepare_run(directory) if hasattr(adapter, "prepare_run") else {}
     base = head(root)
+    landed = landed_tasks(root, base, tasks)
     clone(root, directory / "accepted", base, author, owner=directory)
-    git(directory / "accepted", "switch", "--quiet", "-c", "codex/agent-" + run_id, owner=directory)
+    git(directory / "accepted", "switch", "--quiet", "-c", getattr(adapter, "branch_prefix", "codex/agent-") + run_id, owner=directory)
+    records = {task.id: {"status": "pending", "attempts": 0} for task in tasks}
+    for task_id, sha in landed.items():
+        records[task_id] = {
+            "status": "accepted", "attempts": 0, "accepted_at": now(), "landed": sha,
+            "reason": f"landed on the source branch before this run as {sha[:12]}",
+        }
     state = {
         "version": 1, "run": str(directory), "source": str(root), "source_head": base,
         "accepted_head": base, "spec_path": relative_spec, "spec_sha256": digest(directory / "tasks.json"),
         "controller_files": controller_files, "author": author, "phase": "idle", "active": None,
         "created_at": now(), "updated_at": now(), "baseline_passed": False,
         "remaining_seconds": options["max_minutes"] * 60, "output_tokens": 0,
-        "tasks": {task.id: {"status": "pending", "attempts": 0} for task in tasks},
+        "tasks": records,
+        "tool": tool, **prepared,
         **{key: options[key] for key in ("model", "effort", "max_tasks", "max_attempts", "session_minutes", "max_output_tokens")},
+        **{key: options[key] for key in CLAUDE_OPTIONS if tool == "claude" and key in options},
     }
     atomic_json(directory / "state.json", state)
     return directory
@@ -646,6 +813,14 @@ def main(argv=None) -> int:
             command.add_argument("--max-minutes", type=positive, required=True)
             command.add_argument("--session-minutes", type=positive, default=45)
             command.add_argument("--max-output-tokens", type=positive)
+            command.add_argument("--tool", choices=TOOLS, default="codex", help="session CLI: codex (default) or claude")
+            claude = command.add_argument_group("claude", "options used only with --tool claude")
+            claude.add_argument("--retry-effort", choices=EFFORTS[:5], help="effort for attempt 2 (default: one step above --effort)")
+            claude.add_argument("--hard-model", default="fable", help="model for attempt 3 onward via the implementer-hard agent; none disables")
+            claude.add_argument("--light-model", default="sonnet", help="model for docs/tooling-only tasks on attempt 1; none disables")
+            claude.add_argument("--max-turns", type=positive, default=200, help="turn cap per implementer session")
+            claude.add_argument("--review-max-turns", type=positive, default=120, help="turn cap per review session")
+            claude.add_argument("--sandbox", choices=("auto", "on", "off"), default="auto", help="Bash sandbox for implementer sessions")
     for name in ("status", "resume", "stop", "attest"):
         command = sub.add_parser(name)
         command.add_argument("--run", type=Path, required=True)
@@ -659,6 +834,10 @@ def main(argv=None) -> int:
             command.add_argument("--evidence", type=Path, required=True)
             command.add_argument("--summary", required=True)
     args = parser.parse_args(argv)
+    # Run directories and records are private to this user: records.py refuses a
+    # group- or other-writable record directory or file, so every path the
+    # controller creates must stay private regardless of the shell's umask.
+    os.umask(0o077)
     try:
         if args.command == "validate":
             path = args.tasks if args.tasks.is_absolute() else args.repo / args.tasks

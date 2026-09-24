@@ -3,12 +3,18 @@
 //! A single application executor serializes these operations off the UI thread.
 
 use crate::{
-    appearance::{Density, ThemeChoice},
+    appearance::{
+        Density, Palette, ThemeChoice,
+        custom::{
+            CustomTheme, ResolvedTheme, ThemeSelection, TokenKind, built_in_from_key,
+            fallback_base, format_hex, parse_hex, validate_theme_name,
+        },
+    },
     columns::ColumnSettings,
     project_library::{ProjectGroup, ProjectLibrary, ProjectNode},
 };
 use anyhow::{Context, Result, ensure};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::IgnoredAny};
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions},
@@ -23,12 +29,19 @@ const MAX_RECENT: usize = 10;
 const MAX_PROJECT_NAMES: usize = 128;
 pub const MAX_PROJECT_NAME_BYTES: usize = 128;
 const MAX_SETTINGS_BYTES: u64 = 8 * 1024 * 1024;
+/// Custom themes are user-authored, so reaching the limit refuses a new theme
+/// instead of evicting one, and a stored section above it refuses later writes.
+pub const MAX_CUSTOM_THEMES: usize = 32;
+/// The store version this build writes. Every earlier version still loads.
+const STORE_VERSION: u32 = 6;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSettings {
-    pub theme: ThemeChoice,
+    /// A built-in selection keeps the version-5 bare string (`"nord"`); a custom
+    /// theme is stored as `{"custom": id}`.
+    pub theme: ThemeSelection,
     pub follow_system: bool,
     pub external_editor: String,
     pub columns: ColumnSettings,
@@ -48,7 +61,7 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            theme: ThemeChoice::default(),
+            theme: ThemeSelection::default(),
             follow_system: false,
             external_editor: String::new(),
             columns: ColumnSettings::default(),
@@ -67,21 +80,25 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
-    pub fn resolved_theme(&self, appearance: gpui_kit::WindowAppearance) -> ThemeChoice {
+    /// The theme to apply. Without following the system this is the selection's
+    /// palette; a custom id missing from `custom_themes` resolves to the default
+    /// theme. Following the system, a light appearance selects Braden and a dark
+    /// one keeps a dark selection (built-in or custom) and otherwise Midnight.
+    pub fn resolved_theme(
+        &self,
+        appearance: gpui_kit::WindowAppearance,
+        custom_themes: &[CustomTheme],
+    ) -> ResolvedTheme {
+        let chosen = self.theme.resolve(custom_themes);
         if !self.follow_system {
-            return self.theme;
+            return chosen;
         }
         match appearance {
             gpui_kit::WindowAppearance::Light | gpui_kit::WindowAppearance::VibrantLight => {
-                ThemeChoice::Daylight
+                ResolvedTheme::built_in(ThemeChoice::Daylight)
             }
-            _ => {
-                if self.theme.is_light() {
-                    ThemeChoice::Midnight
-                } else {
-                    self.theme
-                }
-            }
+            _ if chosen.is_light => ResolvedTheme::built_in(ThemeChoice::Midnight),
+            _ => chosen,
         }
     }
 
@@ -183,10 +200,15 @@ pub struct Preferences {
     pub project_names: HashMap<PathBuf, String>,
     /// Known projects and the user's groups for the project list pane.
     pub project_library: ProjectLibrary,
+    /// User-authored themes, in saved order. Empty for stores before version 6.
+    pub custom_themes: Vec<CustomTheme>,
 }
 
+/// `Themes` is the saved section's type. Only a failed load reads the store
+/// again with `IgnoredAny` there, to tell a refused `custom_themes` section
+/// from a failure elsewhere in the file.
 #[derive(Serialize, Deserialize)]
-struct StoredPreferences {
+struct StoredPreferences<Themes = StoredCustomThemes> {
     version: u32,
     #[serde(default)]
     recent_repositories: Vec<StoredPath>,
@@ -198,6 +220,177 @@ struct StoredPreferences {
     project_names: Vec<StoredProjectName>,
     #[serde(default)]
     project_library: Vec<StoredNode>,
+    #[serde(default)]
+    custom_themes: Themes,
+}
+
+/// The saved `custom_themes` section. Reading keeps at most one entry past
+/// [`MAX_CUSTOM_THEMES`] and skips the rest without parsing them as themes, so
+/// an oversized section costs no more memory than a full one and
+/// `validate_custom_themes` refuses it with the bound, exactly as it refuses a
+/// section one entry over it.
+#[derive(Default, Serialize)]
+#[serde(transparent)]
+struct StoredCustomThemes(Vec<StoredCustomTheme>);
+
+impl<'de> Deserialize<'de> for StoredCustomThemes {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = StoredCustomThemes;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a list of custom themes")
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut access: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut themes = Vec::new();
+                while themes.len() <= MAX_CUSTOM_THEMES {
+                    let Some(theme) = access.next_element()? else {
+                        return Ok(StoredCustomThemes(themes));
+                    };
+                    themes.push(theme);
+                }
+                while access.next_element::<IgnoredAny>()?.is_some() {}
+                Ok(StoredCustomThemes(themes))
+            }
+        }
+        deserializer.deserialize_seq(Visitor)
+    }
+}
+
+/// One saved custom theme. The 21 tokens are lowercase `#rrggbb` strings keyed
+/// like the export document, so the section stays readable and hand-repairable.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredCustomTheme {
+    id: u32,
+    name: String,
+    /// `None` when the store names a base this build does not know, such as a
+    /// built-in added by a newer release that still writes version 6.
+    #[serde(deserialize_with = "known_base")]
+    base: Option<ThemeChoice>,
+    tokens: StoredTokens,
+}
+
+/// `ThemeChoice` reads any unknown string as Midnight, which would make a light
+/// theme's reset target dark. Keep the unknown case visible so loading can use
+/// the same lightness fallback as import; a non-string base is still refused.
+fn known_base<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<ThemeChoice>, D::Error> {
+    Ok(built_in_from_key(&String::deserialize(deserializer)?))
+}
+
+impl StoredCustomTheme {
+    fn from_theme(theme: &CustomTheme) -> Self {
+        Self {
+            id: theme.id,
+            name: theme.name.clone(),
+            base: Some(theme.base),
+            tokens: StoredTokens(theme.palette),
+        }
+    }
+
+    fn into_theme(self) -> CustomTheme {
+        let palette = self.tokens.0;
+        CustomTheme {
+            id: self.id,
+            name: self.name,
+            base: self.base.unwrap_or_else(|| fallback_base(palette)),
+            palette,
+        }
+    }
+}
+
+/// Every token exactly once, as `#rrggbb`. A repeated, unknown, missing or
+/// malformed token fails the whole store rather than being dropped or defaulted.
+struct StoredTokens(Palette);
+
+impl Serialize for StoredTokens {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(TokenKind::ALL.len()))?;
+        for kind in TokenKind::ALL {
+            map.serialize_entry(kind.key(), &format_hex(self.0.get(kind)))?;
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for StoredTokens {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = StoredTokens;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an object of #rrggbb theme tokens")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut access: A,
+            ) -> Result<Self::Value, A::Error> {
+                use serde::de::Error;
+                let mut palette = ThemeChoice::default().palette();
+                let mut seen = HashSet::new();
+                while let Some((key, value)) = access.next_entry::<String, String>()? {
+                    let kind = TokenKind::from_key(&key)
+                        .ok_or_else(|| A::Error::custom(format!("unknown theme token {key:?}")))?;
+                    if !seen.insert(kind) {
+                        return Err(A::Error::custom(format!("repeated theme token {key:?}")));
+                    }
+                    let color = value
+                        .starts_with('#')
+                        .then(|| parse_hex(&value))
+                        .flatten()
+                        .ok_or_else(|| {
+                            A::Error::custom(format!("theme token {key:?} is not #rrggbb"))
+                        })?;
+                    palette.set(kind, color);
+                }
+                if let Some(missing) = TokenKind::ALL.into_iter().find(|kind| !seen.contains(kind))
+                {
+                    return Err(A::Error::custom(format!(
+                        "missing theme token {:?}",
+                        missing.key()
+                    )));
+                }
+                Ok(StoredTokens(palette))
+            }
+        }
+        deserializer.deserialize_map(Visitor)
+    }
+}
+
+/// The bounds a custom-theme section must meet both when it is saved and when it
+/// is loaded: at most [`MAX_CUSTOM_THEMES`] entries, unique ids, and names that
+/// pass `validate_theme_name` (one line, 1-128 bytes, not a built-in label,
+/// unique ignoring case).
+pub fn validate_custom_themes(themes: &[CustomTheme]) -> std::result::Result<(), String> {
+    if themes.len() > MAX_CUSTOM_THEMES {
+        return Err(format!(
+            "Up to {MAX_CUSTOM_THEMES} custom themes can be saved. Delete one before adding another."
+        ));
+    }
+    let mut ids = HashSet::new();
+    for (index, theme) in themes.iter().enumerate() {
+        if !ids.insert(theme.id) {
+            return Err(format!("Two custom themes share the id {}.", theme.id));
+        }
+        validate_theme_name(&theme.name, &themes[..index], None)?;
+    }
+    Ok(())
+}
+
+/// The context of a load refused by the saved `custom_themes` section. Every
+/// save rereads the store first, so each one reports it; the section can only
+/// be repaired outside the app, so the message names the file and the section.
+fn custom_themes_refusal(path: &Path) -> String {
+    format!(
+        "Invalid saved custom themes. Repair or remove the custom_themes section of {}",
+        path.display()
+    )
 }
 
 /// The saved project list. An externally tagged enum keeps each line of the
@@ -370,6 +563,32 @@ impl Preferences {
         Ok(next)
     }
 
+    /// Replace the saved custom themes. Run this on the serialized preference
+    /// executor: it rereads the disk store and replaces only this section, so
+    /// settings, recents, drafts, names and the project list saved since the
+    /// caller loaded its copy survive. A section outside the bounds is refused.
+    // The theme editor submits this; until it lands, tests are the only callers.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn save_custom_themes(themes: &[CustomTheme]) -> Result<Self> {
+        Self::save_custom_themes_at(themes, &settings_path()?)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn save_custom_themes_at(themes: &[CustomTheme], settings: &Path) -> Result<Self> {
+        let themes: Vec<CustomTheme> = themes
+            .iter()
+            .map(|theme| CustomTheme {
+                name: theme.name.trim().to_owned(),
+                ..theme.clone()
+            })
+            .collect();
+        validate_custom_themes(&themes).map_err(anyhow::Error::msg)?;
+        let mut next = Self::load_for_write(settings)?;
+        next.custom_themes = themes;
+        next.save_to(settings)?;
+        Ok(next)
+    }
+
     /// Keys must be canonical worktree roots resolved during repository
     /// discovery. Do not key drafts by a branch, common Git directory, or the
     /// initially requested folder: linked worktrees need independent drafts.
@@ -392,9 +611,18 @@ impl Preferences {
 
     fn load_from(path: &Path) -> Result<Self> {
         let bytes = read_store(path, MAX_SETTINGS_BYTES)?;
-        let stored: StoredPreferences = serde_json::from_slice(&bytes)?;
+        let stored: StoredPreferences = match serde_json::from_slice(&bytes) {
+            Ok(stored) => stored,
+            // The rest of the store parses, so the custom themes refused it.
+            Err(error)
+                if serde_json::from_slice::<StoredPreferences<IgnoredAny>>(&bytes).is_ok() =>
+            {
+                return Err(error).with_context(|| custom_themes_refusal(path));
+            }
+            Err(error) => return Err(error.into()),
+        };
         ensure!(
-            matches!(stored.version, 1..=5),
+            (1..=STORE_VERSION).contains(&stored.version),
             "Unsupported settings version"
         );
         let mut seen = HashSet::new();
@@ -443,6 +671,24 @@ impl Preferences {
             .validate()
             .map_err(anyhow::Error::msg)
             .context("Invalid saved project list")?;
+        // Custom themes are user-authored as well: a malformed token, repeated id
+        // or name, or more than the bound fails the load so later saves refuse
+        // instead of rewriting the file without them, each with the same
+        // `custom_themes_refusal`. Stores before version 6 have no section and
+        // load with none.
+        let custom_themes: Vec<CustomTheme> = stored
+            .custom_themes
+            .0
+            .into_iter()
+            .map(|stored| {
+                let mut theme = stored.into_theme();
+                theme.name = theme.name.trim().to_owned();
+                theme
+            })
+            .collect();
+        validate_custom_themes(&custom_themes)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| custom_themes_refusal(path))?;
         // A store written before the project list starts from the recents, so
         // the pane is useful at once. An emptied list stays empty afterwards.
         if stored.version < 5 {
@@ -463,6 +709,7 @@ impl Preferences {
                 })
                 .collect(),
             project_names,
+            custom_themes,
         })
     }
 
@@ -514,6 +761,7 @@ impl Preferences {
             commit_drafts: current.commit_drafts,
             project_names: current.project_names,
             project_library,
+            custom_themes: current.custom_themes,
         };
         next.save_to(settings)?;
         *self = next;
@@ -521,8 +769,8 @@ impl Preferences {
     }
 
     fn save_to(&self, path: &Path) -> Result<()> {
-        let stored = StoredPreferences {
-            version: 5,
+        let stored: StoredPreferences = StoredPreferences {
+            version: STORE_VERSION,
             recent_repositories: self
                 .recent_repositories
                 .iter()
@@ -546,6 +794,12 @@ impl Preferences {
                 .iter()
                 .map(StoredNode::from_node)
                 .collect(),
+            custom_themes: StoredCustomThemes(
+                self.custom_themes
+                    .iter()
+                    .map(StoredCustomTheme::from_theme)
+                    .collect(),
+            ),
             commit_drafts: {
                 let mut entries: Vec<_> = self.commit_drafts.iter().collect();
                 entries.sort_by_key(|(path, _)| *path);
@@ -599,11 +853,23 @@ pub fn validate_project_name(name: &str) -> std::result::Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(test))]
 fn absolute_environment_path(name: &str) -> Option<PathBuf> {
     std::env::var_os(name)
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
+}
+
+/// Where a save dialog starts before the user navigates: their home folder,
+/// or the working directory when the environment names none. An exported
+/// document is the user's file, so this is only the dialog's starting point.
+pub(super) fn home_directory() -> PathBuf {
+    #[cfg(unix)]
+    let home = absolute_environment_path("HOME");
+    #[cfg(not(unix))]
+    let home = absolute_environment_path("USERPROFILE");
+    home.filter(|home| home.is_dir())
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 #[cfg(not(test))]
@@ -723,23 +989,54 @@ pub(super) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         builder.mode(0o700);
     }
     builder.create(directory)?;
+    write_through_temporary(directory, path, bytes, ".preferences", Some(0o600))
+}
 
+/// Write a document the user chose a location for, such as an exported theme,
+/// through the same temporary-file-and-rename path as application data. Unlike
+/// [`atomic_write`] this never creates the folder — the save dialog returns one
+/// that exists — and leaves the platform's default permissions, because the
+/// user may share what they exported. A refused destination fails before any
+/// bytes are written, and a failure after that removes the temporary file, so
+/// no partial or truncated document is left behind.
+pub(super) fn write_exported_document(path: &Path, bytes: &[u8]) -> Result<()> {
+    let directory = path
+        .parent()
+        .filter(|directory| !directory.as_os_str().is_empty())
+        .context("The chosen location has no parent folder")?;
+    ensure!(
+        directory.is_absolute(),
+        "Choose a destination folder with an absolute path"
+    );
+    write_through_temporary(directory, path, bytes, ".gitturtle-export", None)
+        .with_context(|| format!("Could not write to {}", directory.display()))
+}
+
+/// Write `bytes` into `directory` under a temporary name and rename it onto
+/// `path`, so a reader sees either the previous file or the whole new one.
+/// `mode` sets the temporary file's Unix permissions where the data is private.
+fn write_through_temporary(
+    directory: &Path,
+    path: &Path,
+    bytes: &[u8],
+    prefix: &str,
+    mode: Option<u32>,
+) -> Result<()> {
+    #[cfg(not(unix))]
+    let _ = mode;
     // create_new prevents following an existing temporary-file symlink. The
     // final rename occurs on the same filesystem, so readers see a whole file.
     let (pending, mut file) = (0..32)
         .find_map(|_| {
             let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let temporary = directory.join(format!(
-                ".preferences.{}.{}.tmp",
-                std::process::id(),
-                sequence
-            ));
+            let temporary =
+                directory.join(format!("{prefix}.{}.{}.tmp", std::process::id(), sequence));
             let mut options = OpenOptions::new();
             options.write(true).create_new(true);
             #[cfg(unix)]
-            {
+            if let Some(mode) = mode {
                 use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
+                options.mode(mode);
             }
             match options.open(&temporary) {
                 Ok(file) => Some(Ok((PendingFile(temporary), file))),
@@ -747,7 +1044,7 @@ pub(super) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
                 Err(error) => Some(Err(error)),
             }
         })
-        .context("Could not reserve an atomic settings file")??;
+        .context("Could not reserve a temporary file beside the destination")??;
     file.write_all(bytes)?;
     file.sync_all()?;
     drop(file);
@@ -828,6 +1125,44 @@ mod tests {
     }
 
     #[test]
+    fn exported_documents_replace_whole_files_and_leave_nothing_behind_on_failure() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("sunset.gitturtle-theme.json");
+        write_exported_document(&path, b"first\n").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"first\n");
+        // A second export replaces the whole file rather than truncating it.
+        write_exported_document(&path, b"second document\n").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"second document\n");
+        assert_eq!(fs::read_dir(fixture.path()).unwrap().count(), 1);
+
+        // A relative or parentless destination is refused before any write.
+        assert!(write_exported_document(Path::new("sunset.json"), b"x").is_err());
+        // A destination folder that does not exist is refused; the export
+        // dialog returns an existing one, and nothing is created here.
+        let missing = fixture.path().join("absent").join("theme.json");
+        assert!(write_exported_document(&missing, b"x").is_err());
+        assert!(!missing.parent().unwrap().exists());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let locked = fixture.path().join("locked");
+            fs::create_dir(&locked).unwrap();
+            let destination = locked.join("theme.json");
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).unwrap();
+            let refused = write_exported_document(&destination, b"x").unwrap_err();
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(
+                format!("{refused:#}")
+                    .contains(&format!("Could not write to {}", locked.display())),
+                "an unwritable folder reports the refused write: {refused:#}"
+            );
+            // Temp-and-rename: no partial or temporary file is left behind.
+            assert_eq!(fs::read_dir(&locked).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
     fn text_sizes_migrate_independently_and_reject_unsupported_values() {
         let old: AppSettings =
             serde_json::from_str(r#"{"theme":"nord","density":"compact"}"#).unwrap();
@@ -839,7 +1174,7 @@ mod tests {
         let loaded: AppSettings =
             serde_json::from_str(&serde_json::to_string(&changed).unwrap()).unwrap();
         assert_eq!(loaded, changed);
-        assert_eq!(loaded.theme, ThemeChoice::Nord);
+        assert_eq!(loaded.theme, ThemeSelection::BuiltIn(ThemeChoice::Nord));
         assert_eq!(loaded.density, Density::Compact);
         changed.interface_text_size = 0;
         changed.code_text_size = 255;
@@ -1352,7 +1687,7 @@ mod tests {
         let saved = Preferences::save_settings_at(&loaded.settings, &path).unwrap();
         assert_eq!(saved.recent_repositories, loaded.recent_repositories);
         let encoded: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(encoded["version"], 5);
+        assert_eq!(encoded["version"], 6);
     }
 
     #[test]
@@ -1367,7 +1702,7 @@ mod tests {
         let mut latest = Preferences::default();
         latest.remember_at(&first, &path).unwrap();
         let mut edited = AppSettings {
-            theme: ThemeChoice::Daylight,
+            theme: ThemeSelection::BuiltIn(ThemeChoice::Daylight),
             density: Density::Compact,
             reopen_last: false,
             default_branch: "team/main".into(),
@@ -1401,7 +1736,10 @@ mod tests {
         let original = br#"{"version":2,"settings":{"theme":"unknown","density":"unknown","default_branch":"--upload-pack=evil","columns":{"subject":{"visible":false,"width":1},"graph":{"width":999999}}}}"#;
         fs::write(&path, original).unwrap();
         let loaded = Preferences::load_from(&path).unwrap();
-        assert_eq!(loaded.settings.theme, ThemeChoice::Midnight);
+        assert_eq!(
+            loaded.settings.theme,
+            ThemeSelection::BuiltIn(ThemeChoice::Midnight)
+        );
         assert_eq!(loaded.settings.density, Density::Comfortable);
         assert_eq!(loaded.settings.default_branch, "main");
         assert!(loaded.settings.columns.subject.visible);
@@ -1512,6 +1850,534 @@ mod tests {
         assert_eq!(
             loaded.recent_repositories,
             vec![repository.canonicalize().unwrap()]
+        );
+    }
+
+    fn custom_theme(id: u32, name: &str, base: ThemeChoice, accent: u32) -> CustomTheme {
+        let mut theme = CustomTheme::from_base(id, name, base);
+        theme.palette.set(TokenKind::Accent, accent);
+        theme
+    }
+
+    /// A light custom theme and a dark one, with accents no built-in uses.
+    fn two_custom_themes() -> Vec<CustomTheme> {
+        vec![
+            custom_theme(1, "Sunrise", ThemeChoice::Daylight, 0x8a2be2),
+            custom_theme(2, "Harbor", ThemeChoice::Nord, 0x12ab34),
+        ]
+    }
+
+    #[test]
+    fn a_complete_version_five_store_loads_unchanged_without_custom_themes_or_a_write() {
+        let fixture = TestDirectory::new();
+        let path = fixture.0.join("preferences.json");
+        let project = fixture.0.join("turtle");
+        let other = fixture.0.join("shell");
+        fs::create_dir(&project).unwrap();
+        fs::create_dir(&other).unwrap();
+        let project = project.canonicalize().unwrap();
+        let other = other.canonicalize().unwrap();
+        let (project_text, other_text) = (project.to_str().unwrap(), other.to_str().unwrap());
+        let original = serde_json::to_vec_pretty(&serde_json::json!({
+            "version": 5,
+            "recent_repositories": [project_text, other_text],
+            "settings": {"theme": "nord", "density": "compact", "code_text_size": 15},
+            "commit_drafts": [
+                {"worktree": project_text, "draft": {"title": "Fix", "description": "Why\n"}}
+            ],
+            "project_names": [{"path": other_text, "name": "Shell tools"}],
+            "project_library": [
+                {"group": {"id": 3, "name": "Work", "collapsed": true, "nodes": [
+                    {"project": {"path": project_text}}
+                ]}},
+                {"project": {"path": other_text}}
+            ]
+        }))
+        .unwrap();
+        fs::write(&path, &original).unwrap();
+
+        let loaded = Preferences::load_from(&path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), original, "loading never writes");
+        assert_eq!(
+            loaded.recent_repositories,
+            vec![project.clone(), other.clone()]
+        );
+        assert_eq!(
+            loaded.settings,
+            AppSettings {
+                theme: ThemeSelection::BuiltIn(ThemeChoice::Nord),
+                density: Density::Compact,
+                code_text_size: 15,
+                ..AppSettings::default()
+            }
+        );
+        assert_eq!(
+            loaded.commit_drafts,
+            HashMap::from([(
+                project.clone(),
+                CommitDraft {
+                    title: "Fix".into(),
+                    description: "Why\n".into(),
+                }
+            )])
+        );
+        assert_eq!(
+            loaded.project_names,
+            HashMap::from([(other.clone(), "Shell tools".to_owned())])
+        );
+        assert_eq!(
+            loaded.project_library.nodes,
+            vec![
+                ProjectNode::Group(ProjectGroup {
+                    id: 3,
+                    name: "Work".into(),
+                    collapsed: true,
+                    nodes: vec![ProjectNode::Project(project.clone())],
+                }),
+                ProjectNode::Project(other.clone()),
+            ]
+        );
+        assert!(loaded.custom_themes.is_empty());
+
+        // The first explicit save migrates to version 6 and keeps every section.
+        let saved = Preferences::save_settings_at(&loaded.settings, &path).unwrap();
+        let encoded: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(encoded["version"], 6);
+        assert_eq!(encoded["settings"]["theme"], "nord");
+        assert_eq!(encoded["custom_themes"], serde_json::json!([]));
+        let reloaded = Preferences::load_from(&path).unwrap();
+        for preferences in [&saved, &reloaded] {
+            assert_eq!(preferences.recent_repositories, loaded.recent_repositories);
+            assert_eq!(preferences.settings, loaded.settings);
+            assert_eq!(preferences.commit_drafts, loaded.commit_drafts);
+            assert_eq!(preferences.project_names, loaded.project_names);
+            assert_eq!(
+                preferences.project_library.nodes,
+                loaded.project_library.nodes
+            );
+            assert!(preferences.custom_themes.is_empty());
+        }
+    }
+
+    #[test]
+    fn custom_themes_and_a_custom_selection_round_trip_byte_for_byte_at_version_six() {
+        let fixture = TestDirectory::new();
+        let path = fixture.0.join("preferences.json");
+        let themes = two_custom_themes();
+        Preferences::save_custom_themes_at(&themes, &path).unwrap();
+        let settings = AppSettings {
+            theme: ThemeSelection::Custom(2),
+            ..AppSettings::default()
+        };
+        Preferences::save_settings_at(&settings, &path).unwrap();
+        let written = fs::read(&path).unwrap();
+        let text = std::str::from_utf8(&written).unwrap();
+        assert!(text.contains("\"version\": 6,"), "{text}");
+        assert!(
+            text.contains("\"theme\": {\n      \"custom\": 2\n    },"),
+            "{text}"
+        );
+        assert!(text.contains("\"accent\": \"#12ab34\""), "{text}");
+
+        let loaded = Preferences::load_from(&path).unwrap();
+        assert_eq!(loaded.custom_themes, themes);
+        assert_eq!(loaded.settings.theme, ThemeSelection::Custom(2));
+        for appearance in [
+            gpui_kit::WindowAppearance::Dark,
+            gpui_kit::WindowAppearance::Light,
+        ] {
+            let resolved = loaded
+                .settings
+                .resolved_theme(appearance, &loaded.custom_themes);
+            assert_eq!(resolved, ResolvedTheme::custom(&themes[1]));
+            assert_eq!(resolved.palette.get(TokenKind::Accent), 0x12ab34);
+        }
+        assert_eq!(fs::read(&path).unwrap(), written, "loading never writes");
+
+        // Unrelated saves carry the section and the selection through unchanged.
+        Preferences::save_settings_at(&loaded.settings, &path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), written);
+        Preferences::save_commit_drafts_at(&HashMap::new(), &path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), written);
+        Preferences::save_custom_themes_at(&loaded.custom_themes, &path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), written);
+    }
+
+    #[test]
+    fn unusable_custom_themes_refuse_every_later_write_and_keep_the_original_bytes() {
+        let fixture = TestDirectory::new();
+        let path = fixture.0.join("preferences.json");
+        let project = fixture.0.join("turtle");
+        fs::create_dir(&project).unwrap();
+        let project = project.canonicalize().unwrap();
+        Preferences::save_custom_themes_at(&two_custom_themes(), &path).unwrap();
+        let valid: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let themes = |edit: &dyn Fn(&mut Vec<serde_json::Value>)| {
+            let mut store = valid.clone();
+            edit(store["custom_themes"].as_array_mut().unwrap());
+            serde_json::to_vec_pretty(&store).unwrap()
+        };
+        let cases = [
+            ("duplicate id", themes(&|themes| themes[1]["id"] = 1.into())),
+            (
+                "duplicate name ignoring case",
+                themes(&|themes| themes[1]["name"] = "sUNRISE".into()),
+            ),
+            (
+                "33 themes",
+                themes(&|themes| {
+                    let template = themes[0].clone();
+                    themes.clear();
+                    for id in 1..=33 {
+                        let mut theme = template.clone();
+                        theme["id"] = id.into();
+                        theme["name"] = format!("Theme {id}").into();
+                        themes.push(theme);
+                    }
+                }),
+            ),
+            (
+                "invalid hex token",
+                themes(&|themes| themes[0]["tokens"]["accent"] = "#12ab3g".into()),
+            ),
+            (
+                "token without #",
+                themes(&|themes| themes[0]["tokens"]["accent"] = "12ab34".into()),
+            ),
+            (
+                "missing token",
+                themes(&|themes| {
+                    themes[0]["tokens"].as_object_mut().unwrap().remove("hunk");
+                }),
+            ),
+            (
+                "built-in name",
+                themes(&|themes| themes[0]["name"] = "Nord".into()),
+            ),
+            (
+                "multi-line name",
+                themes(&|themes| themes[0]["name"] = "Sun\nrise".into()),
+            ),
+            (
+                "non-string base",
+                themes(&|themes| themes[0]["base"] = 7.into()),
+            ),
+            (
+                "unknown theme field",
+                themes(&|themes| themes[0]["favorite"] = true.into()),
+            ),
+        ];
+        // The 33-theme store is otherwise valid: only the bound refuses it.
+        let bounded: Vec<CustomTheme> = (1..=32)
+            .map(|id| custom_theme(id, &format!("Theme {id}"), ThemeChoice::Nord, 0x123456))
+            .collect();
+        validate_custom_themes(&bounded).unwrap();
+        // Every refusal names the file and the section to repair, and a save
+        // adds only its own context in front of it.
+        let refusal = format!(
+            "Invalid saved custom themes. Repair or remove the custom_themes section of {}: ",
+            path.display()
+        );
+        let refused = |case: &str| {
+            let error = format!(
+                "{:#}",
+                Preferences::load_from(&path).map(drop).expect_err(case)
+            );
+            assert!(error.starts_with(&refusal), "{case}: {error}");
+            let saves = [
+                Preferences::save_settings_at(&AppSettings::default(), &path).map(drop),
+                Preferences::save_custom_themes_at(&two_custom_themes(), &path).map(drop),
+                Preferences::save_commit_drafts_at(&HashMap::new(), &path),
+                Preferences::save_project_name_at(&project, Some("Turtle"), &path).map(drop),
+                Preferences::save_project_library_at(&ProjectLibrary::default(), &path).map(drop),
+                Preferences::default().remember_at(&project, &path),
+            ];
+            for save in saves {
+                let error = format!("{:#}", save.expect_err(case));
+                assert!(
+                    error.starts_with(&format!(
+                        "Read current preferences before saving: {refusal}"
+                    )),
+                    "{case}: {error}"
+                );
+            }
+        };
+        for (case, original) in cases {
+            fs::write(&path, &original).unwrap();
+            refused(case);
+            assert_eq!(fs::read(&path).unwrap(), original, "{case}");
+        }
+
+        // A repeated token key cannot be expressed through a JSON value, so write it literally.
+        fs::write(&path, serde_json::to_vec_pretty(&valid).unwrap()).unwrap();
+        let text = String::from_utf8(fs::read(&path).unwrap()).unwrap();
+        let original = text
+            .replacen(
+                "\"accent\": \"#8a2be2\",",
+                "\"accent\": \"#8a2be2\",\n        \"accent\": \"#000000\",",
+                1,
+            )
+            .into_bytes();
+        assert_ne!(original, text.as_bytes());
+        fs::write(&path, &original).unwrap();
+        refused("repeated token");
+        assert_eq!(fs::read(&path).unwrap(), original);
+
+        // A failure elsewhere in the file keeps its own message.
+        let mut elsewhere = valid.clone();
+        elsewhere["project_names"] = 7.into();
+        fs::write(&path, serde_json::to_vec_pretty(&elsewhere).unwrap()).unwrap();
+        let error = format!("{:#}", Preferences::load_from(&path).map(drop).unwrap_err());
+        assert!(!error.contains("custom_themes"), "{error}");
+    }
+
+    #[test]
+    fn an_oversized_custom_themes_section_is_read_one_entry_past_the_bound_and_refused_by_it() {
+        let fixture = TestDirectory::new();
+        let path = fixture.0.join("preferences.json");
+        Preferences::save_custom_themes_at(&two_custom_themes(), &path).unwrap();
+        let valid: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        // One theme over the bound, then `extra` entries that are not themes at
+        // all: nothing past the bound is read as a theme, so they cannot change
+        // the refusal.
+        let store = |extra: usize| {
+            let mut store = valid.clone();
+            let themes = store["custom_themes"].as_array_mut().unwrap();
+            let template = themes[0].clone();
+            themes.clear();
+            for id in 1..=MAX_CUSTOM_THEMES as u32 + 1 {
+                let mut theme = template.clone();
+                theme["id"] = id.into();
+                theme["name"] = format!("Theme {id}").into();
+                themes.push(theme);
+            }
+            themes.extend((0..extra).map(|_| serde_json::Value::from(0)));
+            serde_json::to_vec(&store).unwrap()
+        };
+        let refusal = |original: &[u8]| {
+            fs::write(&path, original).unwrap();
+            let error = format!("{:#}", Preferences::load_from(&path).map(drop).unwrap_err());
+            assert!(Preferences::save_settings_at(&AppSettings::default(), &path).is_err());
+            assert_eq!(fs::read(&path).unwrap(), original);
+            error
+        };
+        let over_bound = refusal(&store(0));
+        assert!(
+            over_bound.ends_with(
+                "Up to 32 custom themes can be saved. Delete one before adding another."
+            ),
+            "{over_bound}"
+        );
+        let oversized = store(100_000);
+        assert_eq!(refusal(&oversized), over_bound);
+        let stored: StoredPreferences = serde_json::from_slice(&oversized).unwrap();
+        assert_eq!(stored.custom_themes.0.len(), MAX_CUSTOM_THEMES + 1);
+    }
+
+    #[test]
+    fn saving_custom_themes_refuses_an_unbounded_or_ambiguous_section_without_writing() {
+        let fixture = TestDirectory::new();
+        let path = fixture.0.join("preferences.json");
+        Preferences::save_custom_themes_at(&two_custom_themes(), &path).unwrap();
+        let original = fs::read(&path).unwrap();
+        let too_many: Vec<CustomTheme> = (1..=33)
+            .map(|id| custom_theme(id, &format!("Theme {id}"), ThemeChoice::Nord, 0x123456))
+            .collect();
+        let mut same_id = two_custom_themes();
+        same_id[1].id = 1;
+        let mut same_name = two_custom_themes();
+        same_name[1].name = " SUNRISE ".into();
+        let mut built_in_name = two_custom_themes();
+        built_in_name[0].name = "braden".into();
+        for themes in [too_many, same_id, same_name, built_in_name] {
+            assert!(Preferences::save_custom_themes_at(&themes, &path).is_err());
+            assert_eq!(fs::read(&path).unwrap(), original);
+        }
+        // Names are stored trimmed, like project names.
+        let mut padded = two_custom_themes();
+        padded[0].name = "  Sunrise  ".into();
+        let saved = Preferences::save_custom_themes_at(&padded, &path).unwrap();
+        assert_eq!(saved.custom_themes, two_custom_themes());
+        assert_eq!(fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn an_unknown_saved_base_falls_back_by_lightness_without_a_write() {
+        let fixture = TestDirectory::new();
+        let path = fixture.0.join("preferences.json");
+        let mut themes = two_custom_themes();
+        themes[0].base = ThemeChoice::Porcelain;
+        Preferences::save_custom_themes_at(&themes, &path).unwrap();
+        let mut store: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        // A newer release that adds built-ins still writes version 6.
+        store["custom_themes"][0]["base"] = "future_light".into();
+        store["custom_themes"][1]["base"] = "future_dark".into();
+        let original = serde_json::to_vec_pretty(&store).unwrap();
+        fs::write(&path, &original).unwrap();
+
+        let loaded = Preferences::load_from(&path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), original, "loading never writes");
+        // The palettes and names are kept; only the reset target is substituted,
+        // Braden for the light theme rather than `ThemeChoice`'s Midnight.
+        themes[0].base = ThemeChoice::Daylight;
+        themes[1].base = ThemeChoice::Midnight;
+        assert_eq!(loaded.custom_themes, themes);
+    }
+
+    #[test]
+    fn a_missing_custom_selection_resolves_to_the_default_theme_without_a_write() {
+        let fixture = TestDirectory::new();
+        let path = fixture.0.join("preferences.json");
+        Preferences::save_custom_themes_at(&two_custom_themes(), &path).unwrap();
+        let mut store: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        store["settings"]["theme"] = serde_json::json!({"custom": 99});
+        let original = serde_json::to_vec_pretty(&store).unwrap();
+        fs::write(&path, &original).unwrap();
+
+        let loaded = Preferences::load_from(&path).unwrap();
+        assert_eq!(loaded.settings.theme, ThemeSelection::Custom(99));
+        for appearance in [
+            gpui_kit::WindowAppearance::Dark,
+            gpui_kit::WindowAppearance::Light,
+        ] {
+            assert_eq!(
+                loaded
+                    .settings
+                    .resolved_theme(appearance, &loaded.custom_themes),
+                ResolvedTheme::built_in(ThemeChoice::default())
+            );
+        }
+        assert_eq!(fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn saving_custom_themes_on_the_preference_executor_merges_the_latest_disk_store() {
+        let path = settings_path().unwrap();
+        let project = test_settings_directory().path().join("turtle");
+        fs::create_dir_all(&project).unwrap();
+        let project = project.canonicalize().unwrap();
+        Preferences::save_settings_at(&AppSettings::default(), &path).unwrap();
+        // The editor edits a copy loaded earlier; settings, recents and names
+        // change on disk before its save reaches the executor.
+        let snapshot = Preferences::load_from(&path).unwrap();
+        let changed = AppSettings {
+            density: Density::Compact,
+            follow_system: true,
+            ..snapshot.settings.clone()
+        };
+        Preferences::save_settings_at(&changed, &path).unwrap();
+        Preferences::default().remember_at(&project, &path).unwrap();
+        Preferences::save_project_name_at(&project, Some("Turtle"), &path).unwrap();
+
+        let executor = crate::operations::SerialExecutor::new("gitturtle-preferences-test");
+        let themes = two_custom_themes();
+        let submitted = themes.clone();
+        let saved = futures::executor::block_on(
+            executor.submit(move || Preferences::save_custom_themes(&submitted)),
+        )
+        .unwrap()
+        .unwrap();
+        let loaded = Preferences::load_from(&path).unwrap();
+        for preferences in [&saved, &loaded] {
+            assert_eq!(preferences.settings, changed);
+            assert_eq!(preferences.recent_repositories, vec![project.clone()]);
+            assert_eq!(
+                preferences.project_names,
+                HashMap::from([(project.clone(), "Turtle".to_owned())])
+            );
+            assert_eq!(preferences.custom_themes, themes);
+        }
+
+        // A later settings save carries the disk's custom section.
+        let with_selection = AppSettings {
+            theme: ThemeSelection::Custom(1),
+            ..changed
+        };
+        let saved = Preferences::save_settings_at(&with_selection, &path).unwrap();
+        assert_eq!(saved.custom_themes, themes);
+        assert_eq!(Preferences::load_from(&path).unwrap().custom_themes, themes);
+    }
+
+    #[test]
+    fn custom_selections_follow_the_system_by_their_own_lightness() {
+        let themes = two_custom_themes();
+        let (light, dark) = (&themes[0], &themes[1]);
+        assert!(light.is_light() && !dark.is_light());
+        let mut settings = AppSettings::default();
+        for (appearance, follow, selected, expected) in [
+            // Not following the system: the selection's palette under either appearance.
+            (
+                gpui_kit::WindowAppearance::Light,
+                false,
+                light,
+                ResolvedTheme::custom(light),
+            ),
+            (
+                gpui_kit::WindowAppearance::Dark,
+                false,
+                light,
+                ResolvedTheme::custom(light),
+            ),
+            (
+                gpui_kit::WindowAppearance::Light,
+                false,
+                dark,
+                ResolvedTheme::custom(dark),
+            ),
+            (
+                gpui_kit::WindowAppearance::Dark,
+                false,
+                dark,
+                ResolvedTheme::custom(dark),
+            ),
+            // Following: light selects Braden; dark keeps a dark palette, else Midnight.
+            (
+                gpui_kit::WindowAppearance::Light,
+                true,
+                light,
+                ResolvedTheme::built_in(ThemeChoice::Daylight),
+            ),
+            (
+                gpui_kit::WindowAppearance::VibrantLight,
+                true,
+                dark,
+                ResolvedTheme::built_in(ThemeChoice::Daylight),
+            ),
+            (
+                gpui_kit::WindowAppearance::Dark,
+                true,
+                light,
+                ResolvedTheme::built_in(ThemeChoice::Midnight),
+            ),
+            (
+                gpui_kit::WindowAppearance::VibrantDark,
+                true,
+                dark,
+                ResolvedTheme::custom(dark),
+            ),
+        ] {
+            settings.theme = ThemeSelection::Custom(selected.id);
+            settings.follow_system = follow;
+            assert_eq!(
+                settings.resolved_theme(appearance, &themes),
+                expected,
+                "{appearance:?} follow={follow} {}",
+                selected.name
+            );
+        }
+        // Built-ins keep the existing rule when custom themes are present.
+        settings.follow_system = true;
+        settings.theme = ThemeSelection::BuiltIn(ThemeChoice::Nord);
+        assert_eq!(
+            settings.resolved_theme(gpui_kit::WindowAppearance::Dark, &themes),
+            ResolvedTheme::built_in(ThemeChoice::Nord)
+        );
+        settings.theme = ThemeSelection::BuiltIn(ThemeChoice::Porcelain);
+        assert_eq!(
+            settings.resolved_theme(gpui_kit::WindowAppearance::Dark, &themes),
+            ResolvedTheme::built_in(ThemeChoice::Midnight)
         );
     }
 }

@@ -1,0 +1,25 @@
+# cargo-nextest profiles for GitTurtle. `scripts/gate.py` runs tests with
+# `-P ci`; the defaults apply to interactive `cargo nextest run`.
+# Reference: https://nexte.st/docs/configuration/reference/
+
+[profile.default]
+# A test that runs longer than a minute is reported as slow; after two periods
+# it is terminated so a hung Git process or a parked GPUI task cannot stall the
+# gate.
+slow-timeout = { period = "60s", terminate-after = 2 }
+# A test whose child process or thread still holds the output pipes shortly
+# after it returns is reported as a leak instead of silently passing.
+leak-timeout = "200ms"
+
+[profile.ci]
+inherits = "default"
+fail-fast = false
+retries = 0
+failure-output = "immediate"
+success-output = "never"
+
+[profile.ci.junit]
+path = "junit.xml"
+
+[profile.mutants]
+inherits = "ci"

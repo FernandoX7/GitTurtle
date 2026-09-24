@@ -25,12 +25,12 @@ import fcntl
 # Immutable controller snapshots also launch this file as a standalone script.
 if __package__:
     from .records import (
-        EnvironmentBlocked, LoopError, atomic_json, atomic_json_at,
+        EnvironmentBlocked, LoopError, MalformedResponse, atomic_json, atomic_json_at,
         open_directory, read_json, read_json_at, validate_basename,
     )
 else:
     from records import (
-        EnvironmentBlocked, LoopError, atomic_json, atomic_json_at,
+        EnvironmentBlocked, LoopError, MalformedResponse, atomic_json, atomic_json_at,
         open_directory, read_json, read_json_at, validate_basename,
     )
 

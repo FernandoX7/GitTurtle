@@ -24,3 +24,26 @@ lays out real component Buttons and observes their inherited text size and
 centered icon geometry in a synthetic GPUI window. It covers unchanged defaults
 alongside distinct explicit font/icon sizes. Actual rendered controls across
 themes, densities and enlarged interfaces still require native inspection.
+
+The focus-handle patch also modifies `src/button/button.rs`. Upstream Button
+always tracks a focus handle it keeps in keyed element state, and GPUI tracks
+one handle per element, so a caller's `track_focus` on a Button (the
+`InteractiveElement` method) was silently replaced and the caller could not
+tell whether its Button held focus or move focus to it. `Button::track_focus`
+now takes a caller-owned handle, with the name and signature of gpui-base's
+`Button::track_focus`, and the Button tracks it instead of creating keyed
+state. Buttons that do not call it keep the keyed-state handle unchanged,
+including their refusal of focus on mouse down. Nothing else changes: tab
+order, the focus ring and click handling follow whichever handle is tracked.
+
+Two app paths opt in. The Settings picker cards track the app's per-card
+handles (`GitTurtle::theme_card_focus`), so the picker finds the card that
+holds keyboard focus and draws its ring; the Your themes row actions track
+app-owned handles, so focus can be placed on an action of a row that is not
+drawn yet. `cargo test --locked -p gitturtle keyboard_focus_rings_the_picker_card_outside_its_border`
+tabs through the picker cards on their app handles and checks where focus
+lands and the ring the focused card draws.
+
+Remove this part of the patch when upstream Button honors a caller-owned focus
+handle, or when the Settings picker and the Your themes rows no longer need to
+own their Buttons' focus.

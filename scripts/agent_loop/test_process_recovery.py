@@ -17,6 +17,8 @@ from unittest.mock import patch
 
 from agent_loop import process
 from agent_loop.process import EnvironmentBlocked, LoopError, reconcile_processes, run_process
+# Records and run state stay private even when the host umask is permissive.
+from agent_loop.test_support import setUpModule, tearDownModule
 
 
 @unittest.skipUnless(os.name == "posix", "Watchdog ownership supports macOS and Linux")

@@ -10,9 +10,9 @@ use crate::{
     tooltip::{ManagedTooltipExt as _, Tooltip},
 };
 use gpui::{
-    AnyElement, App, Background, ClickEvent, Corners, Edges, ElementId, Hsla, InteractiveElement,
-    Interactivity, IntoElement, MouseButton, ParentElement, Pixels, RenderOnce, Role, SharedString,
-    StatefulInteractiveElement as _, StyleRefinement, Styled, Window, div,
+    AnyElement, App, Background, ClickEvent, Corners, Edges, ElementId, FocusHandle, Hsla,
+    InteractiveElement, Interactivity, IntoElement, MouseButton, ParentElement, Pixels, RenderOnce,
+    Role, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled, Window, div,
     prelude::FluentBuilder as _, relative, transparent_white,
 };
 
@@ -218,6 +218,7 @@ pub struct Button {
 
     tab_index: isize,
     tab_stop: bool,
+    provided_focus_handle: Option<FocusHandle>,
 }
 
 impl From<Button> for AnyElement {
@@ -265,6 +266,7 @@ impl Button {
             hover_group_held: false,
             tab_index: 0,
             tab_stop: true,
+            provided_focus_handle: None,
         }
     }
 
@@ -430,6 +432,12 @@ impl Button {
         self
     }
 
+    /// Uses a caller-owned focus handle instead of creating keyed state.
+    pub fn track_focus(mut self, focus_handle: &FocusHandle) -> Self {
+        self.provided_focus_handle = Some(focus_handle.clone());
+        self
+    }
+
     /// Set to show a dropdown caret icon at the end of the button.
     pub fn dropdown_caret(mut self, dropdown_caret: bool) -> Self {
         self.dropdown_caret = dropdown_caret;
@@ -544,10 +552,12 @@ impl RenderOnce for Button {
         };
         let has_content = self.icon.is_some() || self.label.is_some() || !children.is_empty();
 
-        let focus_handle = window
-            .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
-            .read(cx)
-            .clone();
+        let focus_handle = self.provided_focus_handle.clone().unwrap_or_else(|| {
+            window
+                .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
+                .read(cx)
+                .clone()
+        });
         let is_focused = focus_handle.is_focused(window);
 
         let rounding = match self.rounded {

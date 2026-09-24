@@ -1,0 +1,1922 @@
+{
+ "record": "2026-09-19-theme-editor",
+ "task": "themes-editor",
+ "criterion": "no-reprepare-budget",
+ "criterion_text": "gitturtle.theme_apply_frame_ms for editor edits runs from the edit handler through the frame that shows the draft; metrics.md states that edit boundary; ten consecutive edits are recorded in release mode on the fixture of themes-apply-trace with the build identity, raw samples, statistics and the dominant cost. The 16 ms p95 edit budget is owned by themes-draw-cost, not by this task; p95 is reported here for information.",
+ "metric": "gitturtle.theme_apply_frame_ms (custom theme editor live-preview edits)",
+ "metric_definition": "metrics.md",
+ "baseline_for_format_and_method": "2026-09-18-theme-apply.md",
+ "previous_editor_records": "Two earlier readings of this task, both retained outside the repository and neither committed under docs/benchmarks/: build bb9f332 (perf-theme-editor/record/2026-09-18-theme-editor.{md,json}) and build cd563f6 (perf-theme-editor/record-cd563f6/2026-09-19-theme-editor.{md,json}).",
+ "spec": "../development/themes/spec.md#performance",
+ "date": "2026-09-19",
+ "status": "Measured on candidate 3927b57bbb913e35ee4a8b48f12b5c7eaa19f686 (attempt 4) of run 20260919T143547Z-8e458d6a. That executable is rebuilt once this evidence lands on the base, so no performance attestation is registered from this record; the attestation belongs on the rebuilt candidate after the launches are repeated with tools/drive_theme_editor.py --binary.",
+ "build": {
+  "build_info": {
+   "application": "GitTurtle",
+   "version": "0.1.0",
+   "source_revision": "3927b57bbb913e35ee4a8b48f12b5c7eaa19f686",
+   "source_tree": "clean",
+   "target": "x86_64-unknown-linux-gnu",
+   "profile": "release",
+   "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+   "build_unix_seconds": "1789844613"
+  },
+  "executable_sha256": "1faff02061c9f07500cbf74827ae61d425d145caef6a153682230ef239bbe593",
+  "note": "Identity from the exercised executable's --build-info, read by the driver at the start of every launch; all four launches below ran this executable.",
+  "difference_from_cd563f6": "Same live-preview patch. crates/app/src/theme_editor.rs adds an always-visible scrollbar in the token column (Scrollbar::vertical with ScrollbarMode::Always, in a reserved track the body pads for), widens the hex field from 70 to 78 logical px so the leading '#' no longer scrolls out of the focused field, and adds a square cross glyph on a row whose value is not #rrggbb; crates/app/src/settings.rs caches the Your themes card's readability counts per theme id and palette. The first three change what every Settings frame renders while the dialog is open; the cache does not run here at all, because the scratch store holds no custom themes (see limitations)."
+ },
+ "host": {
+  "cpu": "Intel Core Ultra 9 275HX (24 threads)",
+  "ram": "188 GiB",
+  "os": "Pop!_OS 24.04 LTS",
+  "kernel": "7.1.5-76070105-generic",
+  "git": "2.43.0",
+  "desktop": "GNOME Shell 46.0 on Wayland; app as an X11 client of XWayland (DISPLAY=:1, WAYLAND_DISPLAY unset)",
+  "display": "eDP-1 3840x2400 at 119.98 Hz, Mutter scale 2.0",
+  "renderer": "same host as the apply baseline (Intel Graphics ARL iGPU, i915, Mesa 26.1.6); not re-verified in these launches",
+  "power": "AC, powersave governor, balance_performance EPP (runs/host-state-before-warmup-3927b57.txt, runs/host-state-before-recorded-3927b57.txt)",
+  "other_load": "owner desktop session active, uncontrolled; load average before/after each launch in launches[]"
+ },
+ "window": {
+  "scale_factor": 2,
+  "logical": [
+   1480,
+   980
+  ],
+  "physical": [
+   2960,
+   1960
+  ],
+  "env": {
+   "DISPLAY": ":1",
+   "XDG_CONFIG_HOME": "<worktree>/.local/themes-evidence/perf-theme-editor/runs/recorded-3927b57/config",
+   "GPUI_X11_SCALE_FACTOR": "2",
+   "GITTURTLE_TRACE": "1",
+   "ZED_MEASUREMENTS": null,
+   "WAYLAND_DISPLAY": "unset"
+  }
+ },
+ "cache_state": "warm: one exploratory launch (1 set of 2 edits) and one warm-up launch (60 edits, summarised in launches[] but not eligible to supply the criterion samples) of the same executable on the same fixture preceded the recorded launch; caches not dropped. Every launch used a fresh process and a fresh absolute scratch store seeded {version 5, theme midnight}. No cold-cache run.",
+ "fixture": {
+  "path_role": "themes-evidence/perf-theme-apply/repo (the themes-apply-trace fixture, unmodified)",
+  "head": "c8f20cfeb3f846168abbdcde270983c42bb27e71",
+  "branch": "main",
+  "commits": 1207,
+  "clean_after_all_launches": true,
+  "history_state": "Older appended page 2 (header 'All history 1-1000'); row 1 c8f20cf selected",
+  "comparison": "src/generated/large-module.ts (2,000 lines, 23 changed) in Compare, Split, retained behind Settings",
+  "precondition_traces_recorded_launch": {
+   "gitturtle.history_page_frame_ms": "6.568",
+   "gitturtle.file_preview_frame_ms": "5.154"
+  },
+  "after_edits": "Back showed the retained Split with 0 new file_preview_frame_ms lines; a second Back showed History 1-1000"
+ },
+ "procedure": {
+  "driver_change_for_this_build": "none: the unmodified tools/drive_theme_editor.py ran on 3927b57. The wider hex field and the reserved scrollbar track move the rows, not the two sampled boxes (the dialog's title strip and the Settings page margin), and the scrollbar and the invalid glyph are not tab stops. Navigation, the Tab x28 order to 'New theme...', the Tab x2 order to the Canvas hex field and both pixel boxes were re-verified by the exploratory launch and then by every per-edit assertion of the four recorded launches.",
+  "dialog": "Ctrl+comma opens Settings over the comparison; 15 wheel steps bring Your themes on screen; Tab x28 focuses 'New theme...'; Space opens New theme with base Midnight (the active theme); Tab x2 reaches the Canvas hex field.",
+  "edit": "Ctrl+A, then '#rrggbb' typed with 60 ms between keys and 150 ms before the 7th key. parse_hex (appearance/custom.rs:265) accepts exactly six hex digits with an optional leading '#', so the value is invalid through the 6th key ('#rrggb') and valid at the 7th: one preview per edit, asserted on every edit. On this build the focused field shows the whole seven-character value (runs/explore-3927b57/h-edit-01.png), the design review's D2 defect on cd563f6; the invalid rows of keys 1-6 also carry the new cross glyph. Neither changes the value or the measurement. >= 1.2 s without input before every edit.",
+  "colours": "12 dark canvases cycled (#141a26 ... #111b28), each with Midnight's empty Readability list so every edit renders the same rows",
+  "sets": "6 dialogs x 10 edits in one launch; Escape closes each dialog (draft dropped, Midnight re-applied without a trace line) and Space reopens",
+  "verification_per_edit": [
+   "no trace line from keys 1-6",
+   "exactly one new gitturtle.theme_apply_frame_ms line after key 7",
+   "dialog title strip (physical 1200-2000 x 204-236) 100% the typed colour",
+   "page margin (physical 16-200 x 700-1300) 100% one colour equal to the typed colour under the modal's 20% black overlay (+-1)"
+  ],
+  "verification_per_set": [
+   "the open printed exactly one line (recorded as an open sample, not an edit)",
+   "store still names midnight with no custom themes",
+   "Escape restored the Midnight canvas and printed no line"
+  ],
+  "percentile_method": "statistics.median; nearest rank for p90/p95: the ceil(p/100*n)-th smallest (p95 of 10 = the 10th = the maximum; p95 of 60 = the 57th)",
+  "criterion_set": "set 1 of the recorded launch, designated in writing before the launch ran (runs/criterion-set-3927b57.txt)",
+  "script_sha256": {
+   "analyze_editor.py": "2e9192106ed8af52668c94106a12b7aad54fcc65cf37d43768bb00776cb85325",
+   "build_record.py": "8290e034f900ce594a2bda4cf251db5aa4daf313ccec976e13bdf24c2e7fee57",
+   "drive_editor.py": "19587ccd3e0fee94888d69e133b846d824929801a550cb12fdfd8476a320caa3",
+   "drive_theme_apply.py": "5dfea4bdb190d6967585928cf9b68079f457a6927bc6463b2fa0ec79b65a8ad2",
+   "drive_theme_editor.py": "457cc79a0f078e01e4e76288e945b663ff85175567093973729c3b28ab5e12e4",
+   "launch.py": "654d0ebf0cc8f7af08112341a05f2dea8dc1787a23f11e750a39635f22dfcff6",
+   "readability.py": "9b0e5314bf33addc949c116282941442aab6431fa4e784b7d0771e9c03767229",
+   "resolve_palettes.py": "d9aecf81c13324251aa03b9fdb366c45d5cf1dfc2c5d1df61c79710926e001a3",
+   "tools-3927b57/analyze_editor.py": "2e9192106ed8af52668c94106a12b7aad54fcc65cf37d43768bb00776cb85325",
+   "tools-3927b57/build_record.py": "3a73ce17109fd7a15f196b0402608886fb9414f7762d292f46e3a33910a72bfa"
+  },
+  "driver_that_ran": {
+   "path": "perf-theme-editor/tools/drive_theme_editor.py",
+   "sha256": "457cc79a0f078e01e4e76288e945b663ff85175567093973729c3b28ab5e12e4",
+   "recorded_by": "the driver itself, into each run's samples.json",
+   "same_as_cd563f6_run": true
+  },
+  "xhelper_sha256": "2fac1d5fe3bd5edeaa4aada30a7885b401f46fa4b7112aea3965ed72b089182e"
+ },
+ "criterion_set": {
+  "launch": "recorded-3927b57",
+  "set": 1,
+  "samples_ms": [
+   30.472,
+   35.413,
+   31.905,
+   27.062,
+   26.287,
+   28.553,
+   36.048,
+   28.757,
+   24.275,
+   35.056
+  ],
+  "summary": {
+   "n": 10,
+   "min": 24.275,
+   "median": 29.614,
+   "mean": 30.383,
+   "p90": 35.413,
+   "p95": 36.048,
+   "max": 36.048,
+   "stdev": 4.119
+  }
+ },
+ "budget": {
+  "p95_le_ms": 16,
+  "owner": "themes-draw-cost (owner decision of 2026-09-19); not a gate for themes-editor",
+  "criterion_set_p95_ms": 36.048,
+  "criterion_set_p95_le_16": false,
+  "pooled_p95_ms": 36.51,
+  "pooled_p95_le_16": false,
+  "criterion_set_median_ms": 29.614,
+  "pooled_median_ms": 29.51,
+  "edits_over_16ms": 60,
+  "edits_over_two_refresh_periods": 60
+ },
+ "samples": [
+  {
+   "index": 1,
+   "set": 1,
+   "edit": 1,
+   "colour": "#141a26",
+   "ms": 30.472,
+   "key7_to_line_ms": 36.724,
+   "ui_cpu_edit_ms": 23.03,
+   "ui_cpu_key6_ms": 18.581,
+   "ui_cpu_idle_ms": 0.667,
+   "process_cpu_edit_ms": 23.464,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 2,
+   "set": 1,
+   "edit": 2,
+   "colour": "#0c1119",
+   "ms": 35.413,
+   "key7_to_line_ms": 40.733,
+   "ui_cpu_edit_ms": 27.816,
+   "ui_cpu_key6_ms": 22.46,
+   "ui_cpu_idle_ms": 0.896,
+   "process_cpu_edit_ms": 28.105,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 3,
+   "set": 1,
+   "edit": 3,
+   "colour": "#161c2a",
+   "ms": 31.905,
+   "key7_to_line_ms": 36.382,
+   "ui_cpu_edit_ms": 25.676,
+   "ui_cpu_key6_ms": 25.228,
+   "ui_cpu_idle_ms": 0.689,
+   "process_cpu_edit_ms": 25.879,
+   "quiet_before_edit_s": 1.204
+  },
+  {
+   "index": 4,
+   "set": 1,
+   "edit": 4,
+   "colour": "#0e1320",
+   "ms": 27.062,
+   "key7_to_line_ms": 32.975,
+   "ui_cpu_edit_ms": 22.854,
+   "ui_cpu_key6_ms": 20.697,
+   "ui_cpu_idle_ms": 0.484,
+   "process_cpu_edit_ms": 23.251,
+   "quiet_before_edit_s": 1.203
+  },
+  {
+   "index": 5,
+   "set": 1,
+   "edit": 5,
+   "colour": "#121824",
+   "ms": 26.287,
+   "key7_to_line_ms": 29.096,
+   "ui_cpu_edit_ms": 19.178,
+   "ui_cpu_key6_ms": 20.426,
+   "ui_cpu_idle_ms": 1.429,
+   "process_cpu_edit_ms": 19.49,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 6,
+   "set": 1,
+   "edit": 6,
+   "colour": "#0a0f16",
+   "ms": 28.553,
+   "key7_to_line_ms": 34.107,
+   "ui_cpu_edit_ms": 22.787,
+   "ui_cpu_key6_ms": 20.781,
+   "ui_cpu_idle_ms": 0.855,
+   "process_cpu_edit_ms": 23.199,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 7,
+   "set": 1,
+   "edit": 7,
+   "colour": "#181e2c",
+   "ms": 36.048,
+   "key7_to_line_ms": 41.594,
+   "ui_cpu_edit_ms": 28.64,
+   "ui_cpu_key6_ms": 27.853,
+   "ui_cpu_idle_ms": 0.945,
+   "process_cpu_edit_ms": 28.941,
+   "quiet_before_edit_s": 1.204
+  },
+  {
+   "index": 8,
+   "set": 1,
+   "edit": 8,
+   "colour": "#10161d",
+   "ms": 28.757,
+   "key7_to_line_ms": 34.066,
+   "ui_cpu_edit_ms": 21.928,
+   "ui_cpu_key6_ms": 20.146,
+   "ui_cpu_idle_ms": 0.81,
+   "process_cpu_edit_ms": 22.327,
+   "quiet_before_edit_s": 1.203
+  },
+  {
+   "index": 9,
+   "set": 1,
+   "edit": 9,
+   "colour": "#131627",
+   "ms": 24.275,
+   "key7_to_line_ms": 29.01,
+   "ui_cpu_edit_ms": 21.495,
+   "ui_cpu_key6_ms": 27.45,
+   "ui_cpu_idle_ms": 1.181,
+   "process_cpu_edit_ms": 21.671,
+   "quiet_before_edit_s": 1.203
+  },
+  {
+   "index": 10,
+   "set": 1,
+   "edit": 10,
+   "colour": "#0d151b",
+   "ms": 35.056,
+   "key7_to_line_ms": 40.881,
+   "ui_cpu_edit_ms": 29.259,
+   "ui_cpu_key6_ms": 32.299,
+   "ui_cpu_idle_ms": 0.62,
+   "process_cpu_edit_ms": 29.521,
+   "quiet_before_edit_s": 1.204
+  },
+  {
+   "index": 11,
+   "set": 2,
+   "edit": 1,
+   "colour": "#151921",
+   "ms": 32.009,
+   "key7_to_line_ms": 37.914,
+   "ui_cpu_edit_ms": 29.814,
+   "ui_cpu_key6_ms": 25.912,
+   "ui_cpu_idle_ms": 0.7,
+   "process_cpu_edit_ms": 30.129,
+   "quiet_before_edit_s": 1.201
+  },
+  {
+   "index": 12,
+   "set": 2,
+   "edit": 2,
+   "colour": "#111b28",
+   "ms": 28.531,
+   "key7_to_line_ms": 32.69,
+   "ui_cpu_edit_ms": 27.279,
+   "ui_cpu_key6_ms": 26.736,
+   "ui_cpu_idle_ms": 0.63,
+   "process_cpu_edit_ms": 27.547,
+   "quiet_before_edit_s": 1.203
+  },
+  {
+   "index": 13,
+   "set": 2,
+   "edit": 3,
+   "colour": "#141a26",
+   "ms": 32.562,
+   "key7_to_line_ms": 38.505,
+   "ui_cpu_edit_ms": 24.527,
+   "ui_cpu_key6_ms": 22.464,
+   "ui_cpu_idle_ms": 0.646,
+   "process_cpu_edit_ms": 24.899,
+   "quiet_before_edit_s": 1.203
+  },
+  {
+   "index": 14,
+   "set": 2,
+   "edit": 4,
+   "colour": "#0c1119",
+   "ms": 22.388,
+   "key7_to_line_ms": 25.959,
+   "ui_cpu_edit_ms": 19.763,
+   "ui_cpu_key6_ms": 21.31,
+   "ui_cpu_idle_ms": 0.537,
+   "process_cpu_edit_ms": 20.075,
+   "quiet_before_edit_s": 1.203
+  },
+  {
+   "index": 15,
+   "set": 2,
+   "edit": 5,
+   "colour": "#161c2a",
+   "ms": 31.371,
+   "key7_to_line_ms": 39.172,
+   "ui_cpu_edit_ms": 22.851,
+   "ui_cpu_key6_ms": 19.425,
+   "ui_cpu_idle_ms": 0.785,
+   "process_cpu_edit_ms": 23.241,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 16,
+   "set": 2,
+   "edit": 6,
+   "colour": "#0e1320",
+   "ms": 26.534,
+   "key7_to_line_ms": 32.789,
+   "ui_cpu_edit_ms": 22.179,
+   "ui_cpu_key6_ms": 29.872,
+   "ui_cpu_idle_ms": 0.824,
+   "process_cpu_edit_ms": 22.519,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 17,
+   "set": 2,
+   "edit": 7,
+   "colour": "#121824",
+   "ms": 30.445,
+   "key7_to_line_ms": 34.633,
+   "ui_cpu_edit_ms": 27.692,
+   "ui_cpu_key6_ms": 25.127,
+   "ui_cpu_idle_ms": 0.987,
+   "process_cpu_edit_ms": 27.935,
+   "quiet_before_edit_s": 1.204
+  },
+  {
+   "index": 18,
+   "set": 2,
+   "edit": 8,
+   "colour": "#0a0f16",
+   "ms": 24.317,
+   "key7_to_line_ms": 29.683,
+   "ui_cpu_edit_ms": 22.516,
+   "ui_cpu_key6_ms": 20.362,
+   "ui_cpu_idle_ms": 1.05,
+   "process_cpu_edit_ms": 22.843,
+   "quiet_before_edit_s": 1.204
+  },
+  {
+   "index": 19,
+   "set": 2,
+   "edit": 9,
+   "colour": "#181e2c",
+   "ms": 35.755,
+   "key7_to_line_ms": 42.051,
+   "ui_cpu_edit_ms": 28.721,
+   "ui_cpu_key6_ms": 25.535,
+   "ui_cpu_idle_ms": 0.305,
+   "process_cpu_edit_ms": 28.997,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 20,
+   "set": 2,
+   "edit": 10,
+   "colour": "#10161d",
+   "ms": 30.626,
+   "key7_to_line_ms": 36.446,
+   "ui_cpu_edit_ms": 30.278,
+   "ui_cpu_key6_ms": 25.511,
+   "ui_cpu_idle_ms": 1.345,
+   "process_cpu_edit_ms": 30.495,
+   "quiet_before_edit_s": 1.204
+  },
+  {
+   "index": 21,
+   "set": 3,
+   "edit": 1,
+   "colour": "#131627",
+   "ms": 28.128,
+   "key7_to_line_ms": 34.076,
+   "ui_cpu_edit_ms": 28.005,
+   "ui_cpu_key6_ms": 28.145,
+   "ui_cpu_idle_ms": 0.897,
+   "process_cpu_edit_ms": 28.216,
+   "quiet_before_edit_s": 1.204
+  },
+  {
+   "index": 22,
+   "set": 3,
+   "edit": 2,
+   "colour": "#0d151b",
+   "ms": 30.079,
+   "key7_to_line_ms": 36.44,
+   "ui_cpu_edit_ms": 23.669,
+   "ui_cpu_key6_ms": 21.058,
+   "ui_cpu_idle_ms": 1.365,
+   "process_cpu_edit_ms": 23.947,
+   "quiet_before_edit_s": 1.204
+  },
+  {
+   "index": 23,
+   "set": 3,
+   "edit": 3,
+   "colour": "#151921",
+   "ms": 27.047,
+   "key7_to_line_ms": 33.471,
+   "ui_cpu_edit_ms": 23.483,
+   "ui_cpu_key6_ms": 21.676,
+   "ui_cpu_idle_ms": 0.896,
+   "process_cpu_edit_ms": 23.833,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 24,
+   "set": 3,
+   "edit": 4,
+   "colour": "#111b28",
+   "ms": 24.843,
+   "key7_to_line_ms": 30.376,
+   "ui_cpu_edit_ms": 21.587,
+   "ui_cpu_key6_ms": 21.605,
+   "ui_cpu_idle_ms": 0.676,
+   "process_cpu_edit_ms": 21.895,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 25,
+   "set": 3,
+   "edit": 5,
+   "colour": "#141a26",
+   "ms": 36.51,
+   "key7_to_line_ms": 43.458,
+   "ui_cpu_edit_ms": 29.597,
+   "ui_cpu_key6_ms": 27.268,
+   "ui_cpu_idle_ms": 0.351,
+   "process_cpu_edit_ms": 29.876,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 26,
+   "set": 3,
+   "edit": 6,
+   "colour": "#0c1119",
+   "ms": 34.439,
+   "key7_to_line_ms": 39.11,
+   "ui_cpu_edit_ms": 27.482,
+   "ui_cpu_key6_ms": 27.689,
+   "ui_cpu_idle_ms": 0.935,
+   "process_cpu_edit_ms": 27.694,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 27,
+   "set": 3,
+   "edit": 7,
+   "colour": "#161c2a",
+   "ms": 35.909,
+   "key7_to_line_ms": 42.067,
+   "ui_cpu_edit_ms": 28.104,
+   "ui_cpu_key6_ms": 26.45,
+   "ui_cpu_idle_ms": 0.837,
+   "process_cpu_edit_ms": 28.411,
+   "quiet_before_edit_s": 1.204
+  },
+  {
+   "index": 28,
+   "set": 3,
+   "edit": 8,
+   "colour": "#0e1320",
+   "ms": 27.917,
+   "key7_to_line_ms": 31.05,
+   "ui_cpu_edit_ms": 23.34,
+   "ui_cpu_key6_ms": 21.635,
+   "ui_cpu_idle_ms": 0.558,
+   "process_cpu_edit_ms": 23.633,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 29,
+   "set": 3,
+   "edit": 9,
+   "colour": "#121824",
+   "ms": 20.96,
+   "key7_to_line_ms": 25.686,
+   "ui_cpu_edit_ms": 20.295,
+   "ui_cpu_key6_ms": 19.14,
+   "ui_cpu_idle_ms": 0.656,
+   "process_cpu_edit_ms": 20.674,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 30,
+   "set": 3,
+   "edit": 10,
+   "colour": "#0a0f16",
+   "ms": 23.116,
+   "key7_to_line_ms": 30.465,
+   "ui_cpu_edit_ms": 22.058,
+   "ui_cpu_key6_ms": 21.553,
+   "ui_cpu_idle_ms": 0.713,
+   "process_cpu_edit_ms": 22.381,
+   "quiet_before_edit_s": 1.203
+  },
+  {
+   "index": 31,
+   "set": 4,
+   "edit": 1,
+   "colour": "#181e2c",
+   "ms": 32.378,
+   "key7_to_line_ms": 38.135,
+   "ui_cpu_edit_ms": 22.745,
+   "ui_cpu_key6_ms": 19.435,
+   "ui_cpu_idle_ms": 0.723,
+   "process_cpu_edit_ms": 23.109,
+   "quiet_before_edit_s": 1.203
+  },
+  {
+   "index": 32,
+   "set": 4,
+   "edit": 2,
+   "colour": "#10161d",
+   "ms": 29.192,
+   "key7_to_line_ms": 35.809,
+   "ui_cpu_edit_ms": 21.921,
+   "ui_cpu_key6_ms": 22.771,
+   "ui_cpu_idle_ms": 0.57,
+   "process_cpu_edit_ms": 22.288,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 33,
+   "set": 4,
+   "edit": 3,
+   "colour": "#131627",
+   "ms": 33.983,
+   "key7_to_line_ms": 39.64,
+   "ui_cpu_edit_ms": 28.099,
+   "ui_cpu_key6_ms": 24.169,
+   "ui_cpu_idle_ms": 0.612,
+   "process_cpu_edit_ms": 28.405,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 34,
+   "set": 4,
+   "edit": 4,
+   "colour": "#0d151b",
+   "ms": 21.607,
+   "key7_to_line_ms": 26.148,
+   "ui_cpu_edit_ms": 21.553,
+   "ui_cpu_key6_ms": 26.056,
+   "ui_cpu_idle_ms": 0.625,
+   "process_cpu_edit_ms": 21.865,
+   "quiet_before_edit_s": 1.203
+  },
+  {
+   "index": 35,
+   "set": 4,
+   "edit": 5,
+   "colour": "#151921",
+   "ms": 29.828,
+   "key7_to_line_ms": 36.469,
+   "ui_cpu_edit_ms": 29.919,
+   "ui_cpu_key6_ms": 27.7,
+   "ui_cpu_idle_ms": 0.523,
+   "process_cpu_edit_ms": 30.169,
+   "quiet_before_edit_s": 1.203
+  },
+  {
+   "index": 36,
+   "set": 4,
+   "edit": 6,
+   "colour": "#111b28",
+   "ms": 23.443,
+   "key7_to_line_ms": 29.552,
+   "ui_cpu_edit_ms": 20.822,
+   "ui_cpu_key6_ms": 22.877,
+   "ui_cpu_idle_ms": 0.608,
+   "process_cpu_edit_ms": 21.174,
+   "quiet_before_edit_s": 1.204
+  },
+  {
+   "index": 37,
+   "set": 4,
+   "edit": 7,
+   "colour": "#141a26",
+   "ms": 28.776,
+   "key7_to_line_ms": 34.769,
+   "ui_cpu_edit_ms": 22.551,
+   "ui_cpu_key6_ms": 20.473,
+   "ui_cpu_idle_ms": 0.834,
+   "process_cpu_edit_ms": 22.828,
+   "quiet_before_edit_s": 1.203
+  },
+  {
+   "index": 38,
+   "set": 4,
+   "edit": 8,
+   "colour": "#0c1119",
+   "ms": 25.743,
+   "key7_to_line_ms": 31.411,
+   "ui_cpu_edit_ms": 21.502,
+   "ui_cpu_key6_ms": 20.973,
+   "ui_cpu_idle_ms": 0.729,
+   "process_cpu_edit_ms": 21.821,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 39,
+   "set": 4,
+   "edit": 9,
+   "colour": "#161c2a",
+   "ms": 26.628,
+   "key7_to_line_ms": 32.475,
+   "ui_cpu_edit_ms": 22.361,
+   "ui_cpu_key6_ms": 19.993,
+   "ui_cpu_idle_ms": 0.794,
+   "process_cpu_edit_ms": 22.726,
+   "quiet_before_edit_s": 1.204
+  },
+  {
+   "index": 40,
+   "set": 4,
+   "edit": 10,
+   "colour": "#0e1320",
+   "ms": 30.713,
+   "key7_to_line_ms": 35.245,
+   "ui_cpu_edit_ms": 22.751,
+   "ui_cpu_key6_ms": 20.0,
+   "ui_cpu_idle_ms": 0.633,
+   "process_cpu_edit_ms": 23.048,
+   "quiet_before_edit_s": 1.204
+  },
+  {
+   "index": 41,
+   "set": 5,
+   "edit": 1,
+   "colour": "#121824",
+   "ms": 26.499,
+   "key7_to_line_ms": 31.175,
+   "ui_cpu_edit_ms": 22.178,
+   "ui_cpu_key6_ms": 21.21,
+   "ui_cpu_idle_ms": 0.644,
+   "process_cpu_edit_ms": 22.505,
+   "quiet_before_edit_s": 1.203
+  },
+  {
+   "index": 42,
+   "set": 5,
+   "edit": 2,
+   "colour": "#0a0f16",
+   "ms": 35.972,
+   "key7_to_line_ms": 42.241,
+   "ui_cpu_edit_ms": 27.226,
+   "ui_cpu_key6_ms": 23.742,
+   "ui_cpu_idle_ms": 0.584,
+   "process_cpu_edit_ms": 27.579,
+   "quiet_before_edit_s": 1.203
+  },
+  {
+   "index": 43,
+   "set": 5,
+   "edit": 3,
+   "colour": "#181e2c",
+   "ms": 38.385,
+   "key7_to_line_ms": 45.066,
+   "ui_cpu_edit_ms": 30.502,
+   "ui_cpu_key6_ms": 26.977,
+   "ui_cpu_idle_ms": 1.21,
+   "process_cpu_edit_ms": 30.755,
+   "quiet_before_edit_s": 1.204
+  },
+  {
+   "index": 44,
+   "set": 5,
+   "edit": 4,
+   "colour": "#10161d",
+   "ms": 36.182,
+   "key7_to_line_ms": 40.215,
+   "ui_cpu_edit_ms": 29.702,
+   "ui_cpu_key6_ms": 31.706,
+   "ui_cpu_idle_ms": 0.661,
+   "process_cpu_edit_ms": 29.958,
+   "quiet_before_edit_s": 1.203
+  },
+  {
+   "index": 45,
+   "set": 5,
+   "edit": 5,
+   "colour": "#131627",
+   "ms": 28.912,
+   "key7_to_line_ms": 34.121,
+   "ui_cpu_edit_ms": 20.978,
+   "ui_cpu_key6_ms": 22.164,
+   "ui_cpu_idle_ms": 0.983,
+   "process_cpu_edit_ms": 21.332,
+   "quiet_before_edit_s": 1.204
+  },
+  {
+   "index": 46,
+   "set": 5,
+   "edit": 6,
+   "colour": "#0d151b",
+   "ms": 24.479,
+   "key7_to_line_ms": 31.182,
+   "ui_cpu_edit_ms": 23.055,
+   "ui_cpu_key6_ms": 19.101,
+   "ui_cpu_idle_ms": 0.327,
+   "process_cpu_edit_ms": 23.368,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 47,
+   "set": 5,
+   "edit": 7,
+   "colour": "#151921",
+   "ms": 38.513,
+   "key7_to_line_ms": 43.955,
+   "ui_cpu_edit_ms": 29.403,
+   "ui_cpu_key6_ms": 25.967,
+   "ui_cpu_idle_ms": 0.578,
+   "process_cpu_edit_ms": 29.726,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 48,
+   "set": 5,
+   "edit": 8,
+   "colour": "#111b28",
+   "ms": 30.897,
+   "key7_to_line_ms": 36.954,
+   "ui_cpu_edit_ms": 27.006,
+   "ui_cpu_key6_ms": 26.513,
+   "ui_cpu_idle_ms": 0.748,
+   "process_cpu_edit_ms": 27.223,
+   "quiet_before_edit_s": 1.204
+  },
+  {
+   "index": 49,
+   "set": 5,
+   "edit": 9,
+   "colour": "#141a26",
+   "ms": 34.803,
+   "key7_to_line_ms": 40.497,
+   "ui_cpu_edit_ms": 29.126,
+   "ui_cpu_key6_ms": 24.33,
+   "ui_cpu_idle_ms": 0.696,
+   "process_cpu_edit_ms": 29.468,
+   "quiet_before_edit_s": 1.203
+  },
+  {
+   "index": 50,
+   "set": 5,
+   "edit": 10,
+   "colour": "#0c1119",
+   "ms": 25.866,
+   "key7_to_line_ms": 32.168,
+   "ui_cpu_edit_ms": 22.882,
+   "ui_cpu_key6_ms": 20.287,
+   "ui_cpu_idle_ms": 0.704,
+   "process_cpu_edit_ms": 23.228,
+   "quiet_before_edit_s": 1.204
+  },
+  {
+   "index": 51,
+   "set": 6,
+   "edit": 1,
+   "colour": "#161c2a",
+   "ms": 35.659,
+   "key7_to_line_ms": 40.864,
+   "ui_cpu_edit_ms": 29.625,
+   "ui_cpu_key6_ms": 27.456,
+   "ui_cpu_idle_ms": 1.157,
+   "process_cpu_edit_ms": 29.889,
+   "quiet_before_edit_s": 1.204
+  },
+  {
+   "index": 52,
+   "set": 6,
+   "edit": 2,
+   "colour": "#0e1320",
+   "ms": 31.55,
+   "key7_to_line_ms": 36.937,
+   "ui_cpu_edit_ms": 26.4,
+   "ui_cpu_key6_ms": 26.323,
+   "ui_cpu_idle_ms": 1.017,
+   "process_cpu_edit_ms": 26.622,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 53,
+   "set": 6,
+   "edit": 3,
+   "colour": "#121824",
+   "ms": 27.093,
+   "key7_to_line_ms": 33.296,
+   "ui_cpu_edit_ms": 21.324,
+   "ui_cpu_key6_ms": 21.329,
+   "ui_cpu_idle_ms": 0.662,
+   "process_cpu_edit_ms": 21.696,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 54,
+   "set": 6,
+   "edit": 4,
+   "colour": "#0a0f16",
+   "ms": 25.534,
+   "key7_to_line_ms": 30.192,
+   "ui_cpu_edit_ms": 23.399,
+   "ui_cpu_key6_ms": 21.513,
+   "ui_cpu_idle_ms": 0.571,
+   "process_cpu_edit_ms": 23.702,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 55,
+   "set": 6,
+   "edit": 5,
+   "colour": "#181e2c",
+   "ms": 29.03,
+   "key7_to_line_ms": 34.397,
+   "ui_cpu_edit_ms": 22.511,
+   "ui_cpu_key6_ms": 19.507,
+   "ui_cpu_idle_ms": 1.161,
+   "process_cpu_edit_ms": 22.897,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 56,
+   "set": 6,
+   "edit": 6,
+   "colour": "#10161d",
+   "ms": 25.077,
+   "key7_to_line_ms": 30.644,
+   "ui_cpu_edit_ms": 21.824,
+   "ui_cpu_key6_ms": 20.073,
+   "ui_cpu_idle_ms": 0.565,
+   "process_cpu_edit_ms": 22.135,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 57,
+   "set": 6,
+   "edit": 7,
+   "colour": "#131627",
+   "ms": 37.953,
+   "key7_to_line_ms": 43.923,
+   "ui_cpu_edit_ms": 29.548,
+   "ui_cpu_key6_ms": 21.853,
+   "ui_cpu_idle_ms": 0.542,
+   "process_cpu_edit_ms": 29.816,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 58,
+   "set": 6,
+   "edit": 8,
+   "colour": "#0d151b",
+   "ms": 33.912,
+   "key7_to_line_ms": 38.725,
+   "ui_cpu_edit_ms": 27.111,
+   "ui_cpu_key6_ms": 28.615,
+   "ui_cpu_idle_ms": 0.707,
+   "process_cpu_edit_ms": 27.419,
+   "quiet_before_edit_s": 1.202
+  },
+  {
+   "index": 59,
+   "set": 6,
+   "edit": 9,
+   "colour": "#151921",
+   "ms": 28.593,
+   "key7_to_line_ms": 33.176,
+   "ui_cpu_edit_ms": 23.134,
+   "ui_cpu_key6_ms": 21.59,
+   "ui_cpu_idle_ms": 0.715,
+   "process_cpu_edit_ms": 23.411,
+   "quiet_before_edit_s": 1.204
+  },
+  {
+   "index": 60,
+   "set": 6,
+   "edit": 10,
+   "colour": "#111b28",
+   "ms": 32.605,
+   "key7_to_line_ms": 36.458,
+   "ui_cpu_edit_ms": 28.088,
+   "ui_cpu_key6_ms": 26.173,
+   "ui_cpu_idle_ms": 0.662,
+   "process_cpu_edit_ms": 28.381,
+   "quiet_before_edit_s": 1.204
+  }
+ ],
+ "sample_fields": {
+  "ms": "printed value",
+  "key7_to_line_ms": "7th key (after XSync) to the line's arrival on the stderr pipe",
+  "ui_cpu_edit_ms": "UI thread schedstat delta, just before key 7 to 150 ms after it",
+  "ui_cpu_key6_ms": "same, 150 ms after the 6th key (text change, invalid value, no preview)",
+  "ui_cpu_idle_ms": "same, 150 ms idle window before Ctrl+A"
+ },
+ "summary_pooled": {
+  "n": 60,
+  "min": 20.96,
+  "median": 29.51,
+  "mean": 29.952,
+  "p90": 35.972,
+  "p95": 36.51,
+  "max": 38.513,
+  "stdev": 4.543
+ },
+ "per_set": {
+  "1": {
+   "ms": [
+    30.472,
+    35.413,
+    31.905,
+    27.062,
+    26.287,
+    28.553,
+    36.048,
+    28.757,
+    24.275,
+    35.056
+   ],
+   "summary": {
+    "n": 10,
+    "min": 24.275,
+    "median": 29.614,
+    "mean": 30.383,
+    "p90": 35.413,
+    "p95": 36.048,
+    "max": 36.048,
+    "stdev": 4.119
+   }
+  },
+  "2": {
+   "ms": [
+    32.009,
+    28.531,
+    32.562,
+    22.388,
+    31.371,
+    26.534,
+    30.445,
+    24.317,
+    35.755,
+    30.626
+   ],
+   "summary": {
+    "n": 10,
+    "min": 22.388,
+    "median": 30.535,
+    "mean": 29.454,
+    "p90": 32.562,
+    "p95": 35.755,
+    "max": 35.755,
+    "stdev": 4.05
+   }
+  },
+  "3": {
+   "ms": [
+    28.128,
+    30.079,
+    27.047,
+    24.843,
+    36.51,
+    34.439,
+    35.909,
+    27.917,
+    20.96,
+    23.116
+   ],
+   "summary": {
+    "n": 10,
+    "min": 20.96,
+    "median": 28.023,
+    "mean": 28.895,
+    "p90": 35.909,
+    "p95": 36.51,
+    "max": 36.51,
+    "stdev": 5.344
+   }
+  },
+  "4": {
+   "ms": [
+    32.378,
+    29.192,
+    33.983,
+    21.607,
+    29.828,
+    23.443,
+    28.776,
+    25.743,
+    26.628,
+    30.713
+   ],
+   "summary": {
+    "n": 10,
+    "min": 21.607,
+    "median": 28.984,
+    "mean": 28.229,
+    "p90": 32.378,
+    "p95": 33.983,
+    "max": 33.983,
+    "stdev": 3.884
+   }
+  },
+  "5": {
+   "ms": [
+    26.499,
+    35.972,
+    38.385,
+    36.182,
+    28.912,
+    24.479,
+    38.513,
+    30.897,
+    34.803,
+    25.866
+   ],
+   "summary": {
+    "n": 10,
+    "min": 24.479,
+    "median": 32.85,
+    "mean": 32.051,
+    "p90": 38.385,
+    "p95": 38.513,
+    "max": 38.513,
+    "stdev": 5.37
+   }
+  },
+  "6": {
+   "ms": [
+    35.659,
+    31.55,
+    27.093,
+    25.534,
+    29.03,
+    25.077,
+    37.953,
+    33.912,
+    28.593,
+    32.605
+   ],
+   "summary": {
+    "n": 10,
+    "min": 25.077,
+    "median": 30.29,
+    "mean": 30.701,
+    "p90": 35.659,
+    "p95": 37.953,
+    "max": 37.953,
+    "stdev": 4.351
+   }
+  }
+ },
+ "opens": {
+  "note": "open_theme_editor applies the base palette through preview_theme_draft (theme_editor.rs:252), so each dialog open also prints one line; not an edit",
+  "samples_ms": [
+   30.792,
+   26.968,
+   24.767,
+   27.693,
+   30.886,
+   25.732
+  ],
+  "summary": {
+   "n": 6,
+   "min": 24.767,
+   "median": 27.331,
+   "mean": 27.806,
+   "p90": 30.886,
+   "p95": 30.886,
+   "max": 30.886,
+   "stdev": 2.556
+  }
+ },
+ "boundary_findings": {
+  "what_the_value_spans": "Starts in preview_theme_draft (theme_editor.rs:308) inside the 7th key's InputEvent::Change handler, after hex parsing, sync_picker and readability_issues. The first draft of a frame applies in that handler: apply_appearance runs at theme_editor.rs:309, one line after the stamp, and Palette::apply and apply_text_sizes call window.refresh() (appearance.rs:897 and 151). The handler then registers a next-frame callback (theme_editor.rs:317) which applies any draft coalesced from later edits in the same frame and registers trace_next_frame (main.rs:1326); the line prints from that second callback. The value therefore spans apply_appearance, the layout, paint and present of the whole-window render that shows the draft, and the wait for the frame request that prints the line. It excludes pre-handler input delivery (key 7 after XSync to the stamp: see key7_to_stamp_ms), OS presentation and completed GPU execution.",
+  "includes_the_draw": "Yes. Unlike a Settings switch, which applies in its handler and ends at the first next-frame callback before that frame is drawn, an editor edit always contains one whole-window draw. Measured directly in the 20 of 60 attribution edits whose draft render went through request_frame: the render started a median 0.75 ms after the stamp, took a median 20.352 ms of draw+present, and the line followed a median 5.956 ms after it. In the other 40 the same UI-thread CPU was spent with no 'frame duration' line, i.e. in the one production draw outside measure() that is reachable here (see attribution_method).",
+  "difference_from_earlier_builds": "The boundary is unchanged from cd563f6 and stated identically in metrics.md, which this build does not touch. On bb9f332 the apply was deferred to the first next-frame callback, so 34 of 60 edits first rendered the typed character in the old palette and then rendered the draft: two whole-window renders inside one value. From cd563f6 on, the apply precedes the keystroke's own render, so there is one render per edit and no old-palette frame between the stamp and the line.",
+  "metric_catalogue": "docs/benchmarks/metrics.md is byte-identical to cd563f6's and states the edit boundary: 'The custom theme editor prints the same name once per open and once per burst of live-preview edits (theme_editor::preview_theme_draft), with its own edit boundary: from the edit handler through the frame that shows the draft.' The catalogue describes the draft being painted by the frame that follows the first callback; on this host the paint is as often the keystroke's own synchronous render, which is inside the same span.",
+  "x11_timer": "gpui-pre-linux 0.3.4 x11/client.rs start_refresh_loop re-arms at the next 8.334 ms grid instant after a tick's work; trace lines landed on one grid (phase summary below)",
+  "line_phase_on_8.334ms_grid_ms": {
+   "n": 60,
+   "min": -0.411,
+   "median": -0.255,
+   "mean": -0.248,
+   "p90": -0.101,
+   "p95": -0.074,
+   "max": 0.0,
+   "stdev": 0.094
+  },
+  "key7_to_stamp_ms": {
+   "n": 60,
+   "min": 2.809,
+   "median": 5.663,
+   "mean": 5.505,
+   "p90": 6.617,
+   "p95": 6.703,
+   "max": 7.801,
+   "stdev": 0.981
+  },
+  "all_edits_over_two_periods": 60
+ },
+ "dominant_cost": {
+  "statement": "One whole-window render at 2x of the Settings page with the editor dialog over it: a median 20.352 ms of draw+present (attribution launch) and a median 23.37 ms of UI-thread CPU per edit (recorded launch; 23.048 ms in the attribution launch). The palette application is the small remainder: the median per-edit CPU difference from the key-6 control is 1.847 ms in the recorded launch and 0.987 ms in the attribution launch, i.e. of order 1-2 ms.",
+  "evidence": [
+   "UI-thread CPU for an edit is close to the key-6 control, a keystroke that changes the same text and renders the same rows but parses no valid colour and applies nothing: 23.37 vs 22.462 ms median in the recorded launch (median per-edit difference 1.847 ms) and 23.048 vs 22.386 ms in the attribution launch (median difference 0.987 ms).",
+   "60 of 60 attribution edits spent that CPU in exactly one continuous burst >= 1 ms (key7_bursts_ge_1ms_count): the handler, the apply and the render are one continuous piece of UI-thread work, with no gap in which a second render or a worker hand-off could sit.",
+   "Measured draft renders (20) cost 20.352 ms median and measured key-6 renders (22) cost 21.28 ms median: the render costs the same whether or not the palette changed.",
+   "Whole-process CPU per edit (23.668 ms median) is within 0.298 ms of the UI thread's, so no worker did the work and no job was submitted."
+  ],
+  "residual": "Beyond the render, the value holds the wait for the frame request that prints the line (draft_end_to_line_ms, median 5.956 ms) and the apply itself (of order 1-2 ms, from the key-6 control)."
+ },
+ "anomalies": {
+  "two_renders_per_edit": "None: measured_frames_per_edit_150ms is {\"0\": 40, \"1\": 20} over the attribution launch's 60 edits, and 60 of 60 had a single CPU burst >= 1 ms.",
+  "old_palette_frame": "None between the stamp and the line: the apply precedes the keystroke's own render, and every edit's dialog strip sampled exactly the typed colour and its page margin that colour under the modal overlay when the line arrived. bb9f332's extra old-palette render (34 of 60 edits) did not occur.",
+  "late_or_missing_lines": "None: 66 lines per launch (6 opens + 60 edits) in all four launches, no line from keys 1-6, no line from Escape.",
+  "worker_jobs_and_writes": "None: the scratch store still named midnight with no custom themes after every set, and no file_preview_frame_ms line appeared after Settings opened."
+ },
+ "comparison": {
+  "against": "the two earlier readings of the same criterion on the same host, driver, fixture, window and procedure: cd563f6 (record-cd563f6/2026-09-19-theme-editor.json, the same live-preview patch without this build's editor polish) and bb9f332 (record/2026-09-18-theme-editor.json, the apply deferred to the next frame callback)",
+  "criterion_set": {
+   "median_ms": {
+    "bb9f332": 45.255,
+    "cd563f6": 29.433,
+    "3927b57": 29.614,
+    "vs_cd563f6": {
+     "cd563f6": 29.433,
+     "3927b57": 29.614,
+     "delta_ms": 0.181,
+     "change_pct": 0.6
+    },
+    "vs_bb9f332": {
+     "bb9f332": 45.255,
+     "3927b57": 29.614,
+     "delta_ms": -15.641,
+     "change_pct": -34.6
+    }
+   },
+   "p95_ms": {
+    "bb9f332": 56.594,
+    "cd563f6": 34.691,
+    "3927b57": 36.048,
+    "vs_cd563f6": {
+     "cd563f6": 34.691,
+     "3927b57": 36.048,
+     "delta_ms": 1.357,
+     "change_pct": 3.9
+    },
+    "vs_bb9f332": {
+     "bb9f332": 56.594,
+     "3927b57": 36.048,
+     "delta_ms": -20.546,
+     "change_pct": -36.3
+    }
+   },
+   "min_ms": {
+    "bb9f332": 27.432,
+    "cd563f6": 23.372,
+    "3927b57": 24.275
+   },
+   "max_ms": {
+    "bb9f332": 56.594,
+    "cd563f6": 34.691,
+    "3927b57": 36.048
+   }
+  },
+  "pooled_60": {
+   "median_ms": {
+    "bb9f332": 40.136,
+    "cd563f6": 28.895,
+    "3927b57": 29.51,
+    "vs_cd563f6": {
+     "cd563f6": 28.895,
+     "3927b57": 29.51,
+     "delta_ms": 0.615,
+     "change_pct": 2.1
+    },
+    "vs_bb9f332": {
+     "bb9f332": 40.136,
+     "3927b57": 29.51,
+     "delta_ms": -10.626,
+     "change_pct": -26.5
+    }
+   },
+   "p95_ms": {
+    "bb9f332": 56.119,
+    "cd563f6": 35.568,
+    "3927b57": 36.51,
+    "vs_cd563f6": {
+     "cd563f6": 35.568,
+     "3927b57": 36.51,
+     "delta_ms": 0.942,
+     "change_pct": 2.6
+    },
+    "vs_bb9f332": {
+     "bb9f332": 56.119,
+     "3927b57": 36.51,
+     "delta_ms": -19.609,
+     "change_pct": -34.9
+    }
+   },
+   "max_ms": {
+    "bb9f332": 61.075,
+    "cd563f6": 38.63,
+    "3927b57": 38.513
+   },
+   "stdev_ms": {
+    "bb9f332": 10.154,
+    "cd563f6": 4.2,
+    "3927b57": 4.543
+   }
+  },
+  "ui_cpu_edit_median_ms": {
+   "bb9f332": 36.052,
+   "cd563f6": 22.442,
+   "3927b57": 23.37,
+   "vs_cd563f6": {
+    "cd563f6": 22.442,
+    "3927b57": 23.37,
+    "delta_ms": 0.928,
+    "change_pct": 4.1
+   }
+  },
+  "opens_median_ms": {
+   "bb9f332": 28.867,
+   "cd563f6": 30.296,
+   "3927b57": 27.331,
+   "vs_cd563f6": {
+    "cd563f6": 30.296,
+    "3927b57": 27.331,
+    "delta_ms": -2.965,
+    "change_pct": -9.8
+   }
+  },
+  "same_day_cd563f6_remeasurement": {
+   "launch": "interleave-cd563f6-2",
+   "executable_sha256": "92a06f50d67783731d8551936df97e5e4f5aa36875ebca72e8b4aa42420a9706",
+   "source_revision": "cd563f68a94f43a9ab1811164992c1a5d0fa3c54",
+   "why": "The cd563f6 record was measured earlier the same day under lighter host load (its four launches began at load averages 0.63-0.94, these at 0.50-1.88). Statistics from different hours of an uncontrolled desktop are not like-for-like, so the cd563f6 executable was run again, unchanged, after this build's four launches, with the same driver, fixture and procedure.",
+   "edits": {
+    "n": 60,
+    "min": 21.108,
+    "median": 30.385,
+    "mean": 30.606,
+    "p90": 36.661,
+    "p95": 37.25,
+    "max": 37.834,
+    "stdev": 4.402
+   },
+   "opens": {
+    "n": 6,
+    "min": 26.334,
+    "median": 27.24,
+    "mean": 27.827,
+    "p90": 30.786,
+    "p95": 30.786,
+    "max": 30.786,
+    "stdev": 1.588
+   },
+   "ui_cpu_edit_ms": {
+    "n": 60,
+    "min": 19.807,
+    "median": 26.48,
+    "mean": 25.374,
+    "p90": 29.116,
+    "p95": 29.311,
+    "max": 31.521,
+    "stdev": 3.328
+   },
+   "ui_cpu_key6_ms": {
+    "n": 60,
+    "min": 18.528,
+    "median": 21.838,
+    "mean": 23.014,
+    "p90": 27.416,
+    "p95": 27.608,
+    "max": 27.919,
+    "stdev": 2.992
+   },
+   "load_before": [
+    0.82958984375,
+    0.86279296875,
+    0.982421875
+   ],
+   "finding": "Re-measured today, cd563f6 is 0.875 ms slower at the median (30.385 vs 29.51) and 0.74 ms slower at p95 (37.25 vs 36.51) than this build's recorded launch, and its UI-thread CPU per edit is 3.11 ms higher (26.48 vs 23.37), i.e. the two builds swap order between hours. The editor polish in 3927b57 therefore has no cost that this harness can resolve; the difference between the two records is host drift, not build."
+  },
+  "launch_spread": {
+   "3927b57": {
+    "medians": [
+     28.921,
+     29.358,
+     29.51,
+     30.124
+    ],
+    "p95s": [
+     35.509,
+     35.987,
+     36.041,
+     36.51
+    ]
+   },
+   "cd563f6": {
+    "medians": [
+     28.255,
+     28.895,
+     29.543,
+     30.302
+    ],
+    "p95s": [
+     34.211,
+     35.568,
+     36.129,
+     36.14
+    ]
+   },
+   "bb9f332": {
+    "medians": [
+     37.483,
+     39.386,
+     40.136,
+     40.222
+    ],
+    "p95s": [
+     55.022,
+     56.119,
+     56.625,
+     56.701
+    ]
+   }
+  },
+  "noise_statement": "The four 3927b57 launches span 1.203 ms of median and 1.001 ms of p95; the four cd563f6 launches spanned 2.047 ms and 1.929 ms. The criterion set's median differs from cd563f6's by 0.181 ms and its p95 by 1.357 ms, both inside those spreads, and the same-day re-measurement above puts cd563f6 on the slower side, so no difference between the two builds is resolvable with this harness. The bb9f332 gap is many times either spread."
+ },
+ "launches": {
+  "warmup-3927b57": {
+   "edits": {
+    "n": 60,
+    "min": 19.831,
+    "median": 30.124,
+    "mean": 30.17,
+    "p90": 35.226,
+    "p95": 35.987,
+    "max": 39.411,
+    "stdev": 4.107
+   },
+   "opens": {
+    "n": 6,
+    "min": 26.829,
+    "median": 31.329,
+    "mean": 31.064,
+    "p90": 34.857,
+    "p95": 34.857,
+    "max": 34.857,
+    "stdev": 2.843
+   },
+   "ui_cpu_edit_ms": {
+    "n": 60,
+    "min": 19.408,
+    "median": 25.703,
+    "mean": 25.25,
+    "p90": 29.153,
+    "p95": 29.582,
+    "max": 30.991,
+    "stdev": 3.372
+   },
+   "ui_cpu_key6_ms": {
+    "n": 60,
+    "min": 19.106,
+    "median": 24.776,
+    "mean": 24.117,
+    "p90": 27.846,
+    "p95": 28.098,
+    "max": 29.823,
+    "stdev": 3.017
+   },
+   "ui_cpu_idle_ms": {
+    "n": 60,
+    "min": 0.424,
+    "median": 0.702,
+    "mean": 0.735,
+    "p90": 0.966,
+    "p95": 1.017,
+    "max": 1.211,
+    "stdev": 0.168
+   },
+   "ui_cpu_edit_minus_key6_ms": {
+    "n": 60,
+    "min": -5.938,
+    "median": 1.483,
+    "mean": 1.134,
+    "p90": 4.61,
+    "p95": 5.906,
+    "max": 10.218,
+    "stdev": 3.319
+   },
+   "process_cpu_edit_ms": {
+    "n": 60,
+    "min": 19.627,
+    "median": 25.942,
+    "mean": 25.54,
+    "p90": 29.438,
+    "p95": 29.799,
+    "max": 31.228,
+    "stdev": 3.352
+   },
+   "load_before": [
+    1.8837890625,
+    1.3662109375,
+    1.14990234375
+   ],
+   "load_after": [
+    1.17041015625,
+    1.3203125,
+    1.17333984375
+   ],
+   "frames_mode": false,
+   "bursts_mode": false,
+   "no_compare": false
+  },
+  "recorded-3927b57": {
+   "edits": {
+    "n": 60,
+    "min": 20.96,
+    "median": 29.51,
+    "mean": 29.952,
+    "p90": 35.972,
+    "p95": 36.51,
+    "max": 38.513,
+    "stdev": 4.543
+   },
+   "opens": {
+    "n": 6,
+    "min": 24.767,
+    "median": 27.331,
+    "mean": 27.806,
+    "p90": 30.886,
+    "p95": 30.886,
+    "max": 30.886,
+    "stdev": 2.556
+   },
+   "ui_cpu_edit_ms": {
+    "n": 60,
+    "min": 19.178,
+    "median": 23.37,
+    "mean": 24.919,
+    "p90": 29.597,
+    "p95": 29.814,
+    "max": 30.502,
+    "stdev": 3.343
+   },
+   "ui_cpu_key6_ms": {
+    "n": 60,
+    "min": 18.581,
+    "median": 22.462,
+    "mean": 23.588,
+    "p90": 27.7,
+    "p95": 28.615,
+    "max": 32.299,
+    "stdev": 3.422
+   },
+   "ui_cpu_idle_ms": {
+    "n": 60,
+    "min": 0.305,
+    "median": 0.702,
+    "mean": 0.764,
+    "p90": 1.157,
+    "p95": 1.21,
+    "max": 1.429,
+    "stdev": 0.243
+   },
+   "ui_cpu_edit_minus_key6_ms": {
+    "n": 60,
+    "min": -7.693,
+    "median": 1.847,
+    "mean": 1.331,
+    "p90": 3.93,
+    "p95": 4.767,
+    "max": 7.695,
+    "stdev": 2.641
+   },
+   "process_cpu_edit_ms": {
+    "n": 60,
+    "min": 19.49,
+    "median": 23.668,
+    "mean": 25.227,
+    "p90": 29.876,
+    "p95": 30.129,
+    "max": 30.755,
+    "stdev": 3.315
+   },
+   "load_before": [
+    0.79736328125,
+    1.208984375,
+    1.1435546875
+   ],
+   "load_after": [
+    1.02783203125,
+    1.05712890625,
+    1.0888671875
+   ],
+   "frames_mode": false,
+   "bursts_mode": false,
+   "no_compare": false
+  },
+  "attribution-3927b57": {
+   "edits": {
+    "n": 60,
+    "min": 20.964,
+    "median": 28.921,
+    "mean": 29.405,
+    "p90": 34.114,
+    "p95": 36.041,
+    "max": 40.44,
+    "stdev": 3.873
+   },
+   "opens": {
+    "n": 6,
+    "min": 24.209,
+    "median": 29.184,
+    "mean": 31.001,
+    "p90": 39.933,
+    "p95": 39.933,
+    "max": 39.933,
+    "stdev": 6.118
+   },
+   "ui_cpu_edit_ms": {
+    "n": 60,
+    "min": 19.53,
+    "median": 23.048,
+    "mean": 24.228,
+    "p90": 28.598,
+    "p95": 28.762,
+    "max": 31.319,
+    "stdev": 3.366
+   },
+   "ui_cpu_key6_ms": {
+    "n": 60,
+    "min": 18.479,
+    "median": 22.386,
+    "mean": 23.246,
+    "p90": 26.637,
+    "p95": 27.339,
+    "max": 30.857,
+    "stdev": 2.926
+   },
+   "ui_cpu_idle_ms": {
+    "n": 60,
+    "min": 0.43,
+    "median": 0.753,
+    "mean": 0.791,
+    "p90": 1.005,
+    "p95": 1.24,
+    "max": 1.307,
+    "stdev": 0.203
+   },
+   "ui_cpu_edit_minus_key6_ms": {
+    "n": 60,
+    "min": -8.801,
+    "median": 0.987,
+    "mean": 0.982,
+    "p90": 4.873,
+    "p95": 6.734,
+    "max": 7.348,
+    "stdev": 3.168
+   },
+   "process_cpu_edit_ms": {
+    "n": 60,
+    "min": 19.784,
+    "median": 23.36,
+    "mean": 24.52,
+    "p90": 28.837,
+    "p95": 29.058,
+    "max": 31.626,
+    "stdev": 3.347
+   },
+   "load_before": [
+    1.09716796875,
+    1.07177734375,
+    1.09326171875
+   ],
+   "load_after": [
+    0.49658203125,
+    0.83935546875,
+    0.9970703125
+   ],
+   "frames_mode": true,
+   "bursts_mode": true,
+   "no_compare": false
+  },
+  "control-no-compare-3927b57": {
+   "edits": {
+    "n": 60,
+    "min": 21.1,
+    "median": 29.358,
+    "mean": 29.215,
+    "p90": 34.494,
+    "p95": 35.509,
+    "max": 37.755,
+    "stdev": 3.962
+   },
+   "opens": {
+    "n": 6,
+    "min": 25.016,
+    "median": 29.335,
+    "mean": 31.195,
+    "p90": 38.982,
+    "p95": 38.982,
+    "max": 38.982,
+    "stdev": 5.491
+   },
+   "ui_cpu_edit_ms": {
+    "n": 60,
+    "min": 19.829,
+    "median": 23.122,
+    "mean": 24.489,
+    "p90": 28.691,
+    "p95": 29.121,
+    "max": 29.735,
+    "stdev": 3.235
+   },
+   "ui_cpu_key6_ms": {
+    "n": 60,
+    "min": 19.278,
+    "median": 21.991,
+    "mean": 22.909,
+    "p90": 27.388,
+    "p95": 27.774,
+    "max": 28.423,
+    "stdev": 2.79
+   },
+   "ui_cpu_idle_ms": {
+    "n": 60,
+    "min": 0.397,
+    "median": 0.722,
+    "mean": 0.818,
+    "p90": 1.108,
+    "p95": 1.189,
+    "max": 1.792,
+    "stdev": 0.275
+   },
+   "ui_cpu_edit_minus_key6_ms": {
+    "n": 60,
+    "min": -4.64,
+    "median": 1.151,
+    "mean": 1.58,
+    "p90": 5.232,
+    "p95": 7.885,
+    "max": 8.918,
+    "stdev": 2.868
+   },
+   "process_cpu_edit_ms": {
+    "n": 60,
+    "min": 20.051,
+    "median": 23.448,
+    "mean": 24.804,
+    "p90": 29.006,
+    "p95": 29.404,
+    "max": 30.104,
+    "stdev": 3.222
+   },
+   "load_before": [
+    0.49658203125,
+    0.83935546875,
+    0.9970703125
+   ],
+   "load_after": [
+    0.7275390625,
+    0.84326171875,
+    0.9765625
+   ],
+   "frames_mode": false,
+   "bursts_mode": false,
+   "no_compare": true
+  },
+  "interleave-cd563f6-2": {
+   "edits": {
+    "n": 60,
+    "min": 21.108,
+    "median": 30.385,
+    "mean": 30.606,
+    "p90": 36.661,
+    "p95": 37.25,
+    "max": 37.834,
+    "stdev": 4.402
+   },
+   "opens": {
+    "n": 6,
+    "min": 26.334,
+    "median": 27.24,
+    "mean": 27.827,
+    "p90": 30.786,
+    "p95": 30.786,
+    "max": 30.786,
+    "stdev": 1.588
+   },
+   "ui_cpu_edit_ms": {
+    "n": 60,
+    "min": 19.807,
+    "median": 26.48,
+    "mean": 25.374,
+    "p90": 29.116,
+    "p95": 29.311,
+    "max": 31.521,
+    "stdev": 3.328
+   },
+   "ui_cpu_key6_ms": {
+    "n": 60,
+    "min": 18.528,
+    "median": 21.838,
+    "mean": 23.014,
+    "p90": 27.416,
+    "p95": 27.608,
+    "max": 27.919,
+    "stdev": 2.992
+   },
+   "ui_cpu_idle_ms": {
+    "n": 60,
+    "min": 0.418,
+    "median": 0.775,
+    "mean": 0.832,
+    "p90": 1.191,
+    "p95": 1.296,
+    "max": 1.379,
+    "stdev": 0.235
+   },
+   "ui_cpu_edit_minus_key6_ms": {
+    "n": 60,
+    "min": -8.112,
+    "median": 1.938,
+    "mean": 2.359,
+    "p90": 7.165,
+    "p95": 7.524,
+    "max": 10.291,
+    "stdev": 3.135
+   },
+   "process_cpu_edit_ms": {
+    "n": 60,
+    "min": 20.072,
+    "median": 26.799,
+    "mean": 25.664,
+    "p90": 29.425,
+    "p95": 29.588,
+    "max": 31.834,
+    "stdev": 3.321
+   },
+   "load_before": [
+    0.82958984375,
+    0.86279296875,
+    0.982421875
+   ],
+   "load_after": [
+    0.771484375,
+    0.875,
+    0.97314453125
+   ],
+   "frames_mode": false,
+   "bursts_mode": false,
+   "no_compare": false
+  }
+ },
+ "attribution": {
+  "draft_frames_identified": 20,
+  "measured_frames_per_edit_150ms": {
+   "0": 40,
+   "1": 20
+  },
+  "draft_draw_present_ms": {
+   "n": 20,
+   "min": 17.602,
+   "median": 20.352,
+   "mean": 22.368,
+   "p90": 26.649,
+   "p95": 26.944,
+   "max": 27.429,
+   "stdev": 3.533
+  },
+  "stamp_to_draft_draw_start_ms": {
+   "n": 20,
+   "min": 0.261,
+   "median": 0.75,
+   "mean": 1.092,
+   "p90": 2.504,
+   "p95": 2.517,
+   "max": 2.724,
+   "stdev": 0.802
+  },
+  "draft_end_to_line_ms": {
+   "n": 20,
+   "min": 1.066,
+   "median": 5.956,
+   "mean": 5.803,
+   "p90": 7.6,
+   "p95": 7.632,
+   "max": 8.526,
+   "stdev": 1.618
+  },
+  "edits_with_render_before_draft_frame": 0,
+  "stamp_to_draft_start_otherwise": {
+   "n": 20,
+   "min": 0.261,
+   "median": 0.75,
+   "mean": 1.092,
+   "p90": 2.504,
+   "p95": 2.517,
+   "max": 2.724,
+   "stdev": 0.802
+  },
+  "value_otherwise": {
+   "n": 20,
+   "min": 24.49,
+   "median": 27.413,
+   "mean": 29.263,
+   "p90": 34.114,
+   "p95": 34.742,
+   "max": 34.764,
+   "stdev": 4.13
+  },
+  "key6_with_measured_frame": {
+   "n": 22,
+   "ui_cpu_ms": {
+    "n": 22,
+    "min": 20.141,
+    "median": 22.386,
+    "mean": 23.334,
+    "p90": 26.091,
+    "p95": 27.339,
+    "max": 27.993,
+    "stdev": 2.486
+   },
+   "draw_present_ms": {
+    "n": 22,
+    "min": 18.773,
+    "median": 21.28,
+    "mean": 22.258,
+    "p90": 25.165,
+    "p95": 26.259,
+    "max": 26.91,
+    "stdev": 2.585
+   }
+  },
+  "key6_without_measured_frame": {
+   "n": 38,
+   "ui_cpu_ms": {
+    "n": 38,
+    "min": 18.479,
+    "median": 22.401,
+    "mean": 23.195,
+    "p90": 26.683,
+    "p95": 30.309,
+    "max": 30.857,
+    "stdev": 3.183
+   }
+  },
+  "key7_bursts_ge_1ms_count": {
+   "1": 60
+  },
+  "key7_burst_cpu_total_ms": {
+   "n": 60,
+   "min": 18.865,
+   "median": 22.239,
+   "mean": 23.564,
+   "p90": 27.97,
+   "p95": 28.415,
+   "max": 30.77,
+   "stdev": 3.439
+  },
+  "key6_bursts_ge_1ms_count": {
+   "1": 60
+  }
+ },
+ "attribution_method": "Launch 'attribution-3927b57' set ZED_MEASUREMENTS=1, so gpui-pre-util 0.3.4 measure() printed 'frame duration' (Window::draw + present, window.rs:1781) for every frame drawn from request_frame, and sampled the UI thread's schedstat about every 1 ms. 20 of 60 edits produced such a line and 40 did not, while both groups spent the same UI-thread CPU and the same single burst. The only production draw outside measure() that a keystroke can reach is the synchronous flush at the top of Window::dispatch_key_event (window.rs:5606-5608), which draws a dirty window before dispatching the next key event; here the key-release of the same keystroke, after the handler applied the draft. So the draft render is that flush when it beats the frame timer and the measured frame otherwise. Draft-frame start = its line arrival - its duration; stamp = trace line arrival - printed value.",
+ "limitations": [
+  "Linux XWayland on GNOME Wayland only (not native Wayland, not macOS); synthetic XTest keys through the X input method; 120 Hz display at 2x.",
+  "One recorded launch of 60 edits; warm caches; uncontrolled desktop load on the owner's active session.",
+  "The candidate is rebuilt after this evidence lands, so these numbers bind to executable sha256 1faff02061c9f07500cbf74827ae61d425d145caef6a153682230ef239bbe593 only.",
+  "No profiler on the host: costs are attributed to GPUI functions from frame-duration lines, CPU bursts and timing, not to app elements inside Window::draw.",
+  "One token (Canvas) edited through the hex field only; picker drags (the coalescing path) and edits that change the Readability list were not measured. The at-most-one-application-per-frame half of the criterion is covered by the task's test, not here.",
+  "This build's readability-count cache in the Your themes card is not exercised: the scratch store holds no custom themes, so the card renders 'No custom themes yet.' and the cached loop is empty in every frame measured here. The cache can only matter with saved custom themes, which this procedure never creates.",
+  "The no-compare control bounds the retained Split's share only to within launch-to-launch noise."
+ ]
+}

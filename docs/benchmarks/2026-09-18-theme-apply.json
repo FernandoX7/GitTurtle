@@ -1,0 +1,846 @@
+{
+  "record": "2026-09-18-theme-apply",
+  "task": "themes-apply-trace",
+  "criterion": "baseline-recorded",
+  "metric": "gitturtle.theme_apply_frame_ms",
+  "metric_definition": "metrics.md",
+  "spec": "../development/themes/spec.md#performance",
+  "date": "2026-09-18",
+  "build": {
+    "build_info": {
+      "application": "GitTurtle",
+      "version": "0.1.0",
+      "source_revision": "79242444c6b07c3b8430e67e713e2c57f940848e",
+      "source_tree": "clean",
+      "target": "x86_64-unknown-linux-gnu",
+      "profile": "release",
+      "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+      "build_unix_seconds": "1789767942"
+    },
+    "executable_sha256": "6f84cf3802267305b2988291b00693267ecd89079275e658413eb8612ad694af",
+    "note": "Release executable built from the clean candidate tree 79242444; this record applies to that executable only."
+  },
+  "host": {
+    "cpu": "Intel Core Ultra 9 275HX, 24 threads (1 per core), max 3.9 GHz scaling limit reported by lscpu",
+    "ram": "188.1 GiB",
+    "os": "Pop!_OS 24.04 LTS",
+    "kernel": "7.1.5-76070105-generic",
+    "git": "2.43.0",
+    "desktop": "GNOME Shell 46.0 on Wayland; the app ran as an X11 client of XWayland (DISPLAY=:1, WAYLAND_DISPLAY unset)",
+    "display": "eDP-1 3840x2400 physical at 119.98 Hz (Mutter logical scale 2.0); GPUI's X11 refresh timer period 8.334 ms",
+    "renderer": "Intel Graphics (ARL), i915, Mesa 26.1.6: the process's i915 DRM client accumulated 10.97 s render-engine time and 245 MB resident over the recorded launch. NVIDIA GeForce RTX 5090 Laptop GPU (driver 595.84) was present and opened during adapter enumeration; it is not the rendering device on this evidence. GPUI's wgpu backend is not logged by the app (Vulkan is preferred by its adapter ordering).",
+    "power": "AC online; cpufreq governor powersave with EPP balance_performance; no platform_profile / power-profiles-daemon",
+    "other_load": "Owner desktop session active (gnome-shell, browser, editors); load average 0.46/0.77/1.08 before and 0.56/0.64/0.93 after the recorded launch. Not isolated."
+  },
+  "window": {
+    "scale_factor": 2,
+    "env": "GPUI_X11_SCALE_FACTOR=2",
+    "logical": [
+      1480,
+      980
+    ],
+    "physical": [
+      2960,
+      1960
+    ],
+    "note": "The default window size (main.rs Bounds::centered 1480x980) fits the 3840x2400 screen at 2x; it was not resized."
+  },
+  "cache_state": "Warm OS page cache for the executable and fixture: an exploratory launch, two 3-switch smoke launches and a discarded full 60-switch warm-up launch of the same executable on the same fixture preceded the recorded launch; caches were not dropped. Mesa/NVIDIA shader caches under the user cache directory were warm. Fresh application process and a fresh, absolute scratch preference store per launch (seeded {version 5, theme midnight}; the app migrated it to version 6). No other application state carried between launches.",
+  "fixture": {
+    "generator": "make_fixture.py (scripts/create-demo-repo.py output plus 1,200 linear commits via git fast-import)",
+    "generator_sha256": "b86b68213b4a6d432fae3d2c4cfe40525a290faed688b8ad0c3780a9620247f2",
+    "head": "c8f20cfeb3f846168abbdcde270983c42bb27e71",
+    "branch": "main",
+    "commits": 1207,
+    "demo_base_commits": 7,
+    "commits_loaded": 1000,
+    "history_state": "Page 1 (500 rows) on open; the explicit Older control appended page 2 (gitturtle.history_page_frame_ms=8.235 in the recorded launch); the header range read 1-1000 before the switches and again after them.",
+    "comparison": "Newest commit c8f20cf (row 1, selected by default) -> Changed files -> src/generated/large-module.ts (2,000 lines, 23 lines changed; gitturtle.file_preview_frame_ms=10.418) -> Split. Settings was then opened via Menu > Open Settings with the comparison retained behind it.",
+    "unchanged_after": "HEAD c8f20cf, 1,207 commits, git status clean after all launches"
+  },
+  "procedure": {
+    "switches": 60,
+    "order": "ThemeChoice::ALL (appearance.rs:231) from Midnight: ALL[1..19], ALL[0], three full cycles; every click changed the selection",
+    "input": "Real XTest pointer clicks on the theme card (move, 150 ms, press, 150 ms hold, release). Light cards were clicked with the Settings page unscrolled; dark cards after 10 wheel steps (630 logical px), so all 12 dark cards are wholly visible. At least 1.2 s without input preceded every click.",
+    "verification_per_switch": "Before the click the target card's top border lay at its expected row in the previous theme's border colour; after it, that border was 100% the new theme's accent, the previous card (when on screen) had lost it, the scratch store named the new theme, and exactly one new trace line had appeared. Any failure would have aborted the launch; none did.",
+    "percentile_method": "nearest rank: the ceil(p/100*n)-th smallest sample (p95 of 60 = 57th)",
+    "driver": "runs/tools/drive_theme_apply.py (launch.py, analyze.py, build_record.py beside it; xhelper.py from the shared tooling)",
+    "driver_note": "The driver later gained supplementary-only options (idle/hover/press CPU controls, --pixels, --bursts). The recorded launch ran the same navigation, click timing and verification path without the control /proc reads.",
+    "script_sha256_final": {
+      "analyze.py": "2b4adc1076c64dec228edf97523ebddf5f413b715371be835a15c5ff28c4f22d",
+      "build_record.py": "e232875dabf3b6888e6116b8699ad7e960cf841323141943bacc858a4e800c6f",
+      "drive_theme_apply.py": "5dfea4bdb190d6967585928cf9b68079f457a6927bc6463b2fa0ec79b65a8ad2",
+      "launch.py": "654d0ebf0cc8f7af08112341a05f2dea8dc1787a23f11e750a39635f22dfcff6",
+      "x.py": "dddbe023b7eff00f0addca0054d84f05d99791a30a852b47b793ce3b734e2d1b"
+    },
+    "xhelper_sha256": "2fac1d5fe3bd5edeaa4aada30a7885b401f46fa4b7112aea3965ed72b089182e",
+    "resolve_palettes_sha256": "d9aecf81c13324251aa03b9fdb366c45d5cf1dfc2c5d1df61c79710926e001a3"
+  },
+  "samples": [
+    {
+      "index": 1,
+      "from": "Midnight",
+      "to": "Daylight",
+      "ms": 5.747,
+      "release_to_line_ms": 5.936,
+      "ui_thread_cpu_ms": 21.458
+    },
+    {
+      "index": 2,
+      "from": "Daylight",
+      "to": "Graphite",
+      "ms": 0.941,
+      "release_to_line_ms": 1.01,
+      "ui_thread_cpu_ms": 27.83
+    },
+    {
+      "index": 3,
+      "from": "Graphite",
+      "to": "TokyoNight",
+      "ms": 3.471,
+      "release_to_line_ms": 3.623,
+      "ui_thread_cpu_ms": 28.81
+    },
+    {
+      "index": 4,
+      "from": "TokyoNight",
+      "to": "CatppuccinMocha",
+      "ms": 0.494,
+      "release_to_line_ms": 0.577,
+      "ui_thread_cpu_ms": 20.868
+    },
+    {
+      "index": 5,
+      "from": "CatppuccinMocha",
+      "to": "Nord",
+      "ms": 5.826,
+      "release_to_line_ms": 5.961,
+      "ui_thread_cpu_ms": 20.711
+    },
+    {
+      "index": 6,
+      "from": "Nord",
+      "to": "Porcelain",
+      "ms": 2.94,
+      "release_to_line_ms": 3.104,
+      "ui_thread_cpu_ms": 18.784
+    },
+    {
+      "index": 7,
+      "from": "Porcelain",
+      "to": "Sandstone",
+      "ms": 1.508,
+      "release_to_line_ms": 1.768,
+      "ui_thread_cpu_ms": 22.609
+    },
+    {
+      "index": 8,
+      "from": "Sandstone",
+      "to": "DeepSea",
+      "ms": 5.031,
+      "release_to_line_ms": 5.133,
+      "ui_thread_cpu_ms": 20.472
+    },
+    {
+      "index": 9,
+      "from": "DeepSea",
+      "to": "Ember",
+      "ms": 3.92,
+      "release_to_line_ms": 3.959,
+      "ui_thread_cpu_ms": 17.906
+    },
+    {
+      "index": 10,
+      "from": "Ember",
+      "to": "SolarizedDark",
+      "ms": 2.026,
+      "release_to_line_ms": 2.159,
+      "ui_thread_cpu_ms": 21.893
+    },
+    {
+      "index": 11,
+      "from": "SolarizedDark",
+      "to": "SolarizedLight",
+      "ms": 6.698,
+      "release_to_line_ms": 6.763,
+      "ui_thread_cpu_ms": 27.018
+    },
+    {
+      "index": 12,
+      "from": "SolarizedLight",
+      "to": "OneDark",
+      "ms": 2.926,
+      "release_to_line_ms": 3.097,
+      "ui_thread_cpu_ms": 27.992
+    },
+    {
+      "index": 13,
+      "from": "OneDark",
+      "to": "OneLight",
+      "ms": 7.314,
+      "release_to_line_ms": 7.368,
+      "ui_thread_cpu_ms": 21.926
+    },
+    {
+      "index": 14,
+      "from": "OneLight",
+      "to": "RosePine",
+      "ms": 4.703,
+      "release_to_line_ms": 4.844,
+      "ui_thread_cpu_ms": 21.892
+    },
+    {
+      "index": 15,
+      "from": "RosePine",
+      "to": "RosePineDawn",
+      "ms": 2.265,
+      "release_to_line_ms": 2.308,
+      "ui_thread_cpu_ms": 20.275
+    },
+    {
+      "index": 16,
+      "from": "RosePineDawn",
+      "to": "Dracula",
+      "ms": 8.065,
+      "release_to_line_ms": 8.17,
+      "ui_thread_cpu_ms": 21.553
+    },
+    {
+      "index": 17,
+      "from": "Dracula",
+      "to": "Alucard",
+      "ms": 3.459,
+      "release_to_line_ms": 3.636,
+      "ui_thread_cpu_ms": 27.671
+    },
+    {
+      "index": 18,
+      "from": "Alucard",
+      "to": "KanagawaWave",
+      "ms": 0.522,
+      "release_to_line_ms": 0.71,
+      "ui_thread_cpu_ms": 21.361
+    },
+    {
+      "index": 19,
+      "from": "KanagawaWave",
+      "to": "KanagawaLotus",
+      "ms": 5.787,
+      "release_to_line_ms": 5.905,
+      "ui_thread_cpu_ms": 21.461
+    },
+    {
+      "index": 20,
+      "from": "KanagawaLotus",
+      "to": "Midnight",
+      "ms": 3.734,
+      "release_to_line_ms": 3.878,
+      "ui_thread_cpu_ms": 21.052
+    },
+    {
+      "index": 21,
+      "from": "Midnight",
+      "to": "Daylight",
+      "ms": 4.946,
+      "release_to_line_ms": 4.835,
+      "ui_thread_cpu_ms": 21.164
+    },
+    {
+      "index": 22,
+      "from": "Daylight",
+      "to": "Graphite",
+      "ms": 0.681,
+      "release_to_line_ms": 0.815,
+      "ui_thread_cpu_ms": 20.75
+    },
+    {
+      "index": 23,
+      "from": "Graphite",
+      "to": "TokyoNight",
+      "ms": 7.669,
+      "release_to_line_ms": 7.755,
+      "ui_thread_cpu_ms": 20.779
+    },
+    {
+      "index": 24,
+      "from": "TokyoNight",
+      "to": "CatppuccinMocha",
+      "ms": 5.719,
+      "release_to_line_ms": 5.854,
+      "ui_thread_cpu_ms": 20.868
+    },
+    {
+      "index": 25,
+      "from": "CatppuccinMocha",
+      "to": "Nord",
+      "ms": 3.658,
+      "release_to_line_ms": 3.7,
+      "ui_thread_cpu_ms": 21.454
+    },
+    {
+      "index": 26,
+      "from": "Nord",
+      "to": "Porcelain",
+      "ms": 6.949,
+      "release_to_line_ms": 7.068,
+      "ui_thread_cpu_ms": 22.647
+    },
+    {
+      "index": 27,
+      "from": "Porcelain",
+      "to": "Sandstone",
+      "ms": 5.205,
+      "release_to_line_ms": 5.315,
+      "ui_thread_cpu_ms": 19.905
+    },
+    {
+      "index": 28,
+      "from": "Sandstone",
+      "to": "DeepSea",
+      "ms": 2.201,
+      "release_to_line_ms": 2.304,
+      "ui_thread_cpu_ms": 28.23
+    },
+    {
+      "index": 29,
+      "from": "DeepSea",
+      "to": "Ember",
+      "ms": 0.987,
+      "release_to_line_ms": 1.063,
+      "ui_thread_cpu_ms": 28.333
+    },
+    {
+      "index": 30,
+      "from": "Ember",
+      "to": "SolarizedDark",
+      "ms": 6.862,
+      "release_to_line_ms": 6.966,
+      "ui_thread_cpu_ms": 28.326
+    },
+    {
+      "index": 31,
+      "from": "SolarizedDark",
+      "to": "SolarizedLight",
+      "ms": 3.977,
+      "release_to_line_ms": 3.959,
+      "ui_thread_cpu_ms": 23.916
+    },
+    {
+      "index": 32,
+      "from": "SolarizedLight",
+      "to": "OneDark",
+      "ms": 1.432,
+      "release_to_line_ms": 1.635,
+      "ui_thread_cpu_ms": 24.408
+    },
+    {
+      "index": 33,
+      "from": "OneDark",
+      "to": "OneLight",
+      "ms": 7.348,
+      "release_to_line_ms": 7.482,
+      "ui_thread_cpu_ms": 23.415
+    },
+    {
+      "index": 34,
+      "from": "OneLight",
+      "to": "RosePine",
+      "ms": 3.686,
+      "release_to_line_ms": 3.826,
+      "ui_thread_cpu_ms": 21.527
+    },
+    {
+      "index": 35,
+      "from": "RosePine",
+      "to": "RosePineDawn",
+      "ms": 0.547,
+      "release_to_line_ms": 0.593,
+      "ui_thread_cpu_ms": 27.39
+    },
+    {
+      "index": 36,
+      "from": "RosePineDawn",
+      "to": "Dracula",
+      "ms": 6.51,
+      "release_to_line_ms": 6.571,
+      "ui_thread_cpu_ms": 28.972
+    },
+    {
+      "index": 37,
+      "from": "Dracula",
+      "to": "Alucard",
+      "ms": 4.468,
+      "release_to_line_ms": 4.646,
+      "ui_thread_cpu_ms": 28.529
+    },
+    {
+      "index": 38,
+      "from": "Alucard",
+      "to": "KanagawaWave",
+      "ms": 2.475,
+      "release_to_line_ms": 2.552,
+      "ui_thread_cpu_ms": 27.884
+    },
+    {
+      "index": 39,
+      "from": "KanagawaWave",
+      "to": "KanagawaLotus",
+      "ms": 7.308,
+      "release_to_line_ms": 7.414,
+      "ui_thread_cpu_ms": 26.481
+    },
+    {
+      "index": 40,
+      "from": "KanagawaLotus",
+      "to": "Midnight",
+      "ms": 4.528,
+      "release_to_line_ms": 4.665,
+      "ui_thread_cpu_ms": 27.637
+    },
+    {
+      "index": 41,
+      "from": "Midnight",
+      "to": "Daylight",
+      "ms": 3.718,
+      "release_to_line_ms": 3.865,
+      "ui_thread_cpu_ms": 22.581
+    },
+    {
+      "index": 42,
+      "from": "Daylight",
+      "to": "Graphite",
+      "ms": 7.558,
+      "release_to_line_ms": 7.699,
+      "ui_thread_cpu_ms": 26.369
+    },
+    {
+      "index": 43,
+      "from": "Graphite",
+      "to": "TokyoNight",
+      "ms": 5.931,
+      "release_to_line_ms": 5.996,
+      "ui_thread_cpu_ms": 28.262
+    },
+    {
+      "index": 44,
+      "from": "TokyoNight",
+      "to": "CatppuccinMocha",
+      "ms": 3.564,
+      "release_to_line_ms": 3.675,
+      "ui_thread_cpu_ms": 27.017
+    },
+    {
+      "index": 45,
+      "from": "CatppuccinMocha",
+      "to": "Nord",
+      "ms": 0.596,
+      "release_to_line_ms": 0.748,
+      "ui_thread_cpu_ms": 28.712
+    },
+    {
+      "index": 46,
+      "from": "Nord",
+      "to": "Porcelain",
+      "ms": 3.636,
+      "release_to_line_ms": 3.825,
+      "ui_thread_cpu_ms": 28.689
+    },
+    {
+      "index": 47,
+      "from": "Porcelain",
+      "to": "Sandstone",
+      "ms": 0.675,
+      "release_to_line_ms": 0.811,
+      "ui_thread_cpu_ms": 26.947
+    },
+    {
+      "index": 48,
+      "from": "Sandstone",
+      "to": "DeepSea",
+      "ms": 5.476,
+      "release_to_line_ms": 5.745,
+      "ui_thread_cpu_ms": 28.015
+    },
+    {
+      "index": 49,
+      "from": "DeepSea",
+      "to": "Ember",
+      "ms": 2.26,
+      "release_to_line_ms": 2.479,
+      "ui_thread_cpu_ms": 27.664
+    },
+    {
+      "index": 50,
+      "from": "Ember",
+      "to": "SolarizedDark",
+      "ms": 7.8,
+      "release_to_line_ms": 7.958,
+      "ui_thread_cpu_ms": 27.232
+    },
+    {
+      "index": 51,
+      "from": "SolarizedDark",
+      "to": "SolarizedLight",
+      "ms": 4.961,
+      "release_to_line_ms": 5.107,
+      "ui_thread_cpu_ms": 30.904
+    },
+    {
+      "index": 52,
+      "from": "SolarizedLight",
+      "to": "OneDark",
+      "ms": 0.6,
+      "release_to_line_ms": 0.736,
+      "ui_thread_cpu_ms": 28.901
+    },
+    {
+      "index": 53,
+      "from": "OneDark",
+      "to": "OneLight",
+      "ms": 4.486,
+      "release_to_line_ms": 4.692,
+      "ui_thread_cpu_ms": 28.891
+    },
+    {
+      "index": 54,
+      "from": "OneLight",
+      "to": "RosePine",
+      "ms": 0.515,
+      "release_to_line_ms": 0.665,
+      "ui_thread_cpu_ms": 27.381
+    },
+    {
+      "index": 55,
+      "from": "RosePine",
+      "to": "RosePineDawn",
+      "ms": 1.787,
+      "release_to_line_ms": 1.954,
+      "ui_thread_cpu_ms": 29.689
+    },
+    {
+      "index": 56,
+      "from": "RosePineDawn",
+      "to": "Dracula",
+      "ms": 5.357,
+      "release_to_line_ms": 5.455,
+      "ui_thread_cpu_ms": 28.233
+    },
+    {
+      "index": 57,
+      "from": "Dracula",
+      "to": "Alucard",
+      "ms": 2.551,
+      "release_to_line_ms": 2.671,
+      "ui_thread_cpu_ms": 18.6
+    },
+    {
+      "index": 58,
+      "from": "Alucard",
+      "to": "KanagawaWave",
+      "ms": 7.861,
+      "release_to_line_ms": 8.007,
+      "ui_thread_cpu_ms": 22.858
+    },
+    {
+      "index": 59,
+      "from": "KanagawaWave",
+      "to": "KanagawaLotus",
+      "ms": 4.83,
+      "release_to_line_ms": 4.944,
+      "ui_thread_cpu_ms": 27.406
+    },
+    {
+      "index": 60,
+      "from": "KanagawaLotus",
+      "to": "Midnight",
+      "ms": 1.366,
+      "release_to_line_ms": 1.478,
+      "ui_thread_cpu_ms": 28.082
+    }
+  ],
+  "sample_fields": {
+    "ms": "the printed gitturtle.theme_apply_frame_ms value",
+    "release_to_line_ms": "XTest release (after XSync) to the trace line's arrival on the stderr pipe, both CLOCK_MONOTONIC",
+    "ui_thread_cpu_ms": "UI (main) thread run time from /proc/<pid>/task/<pid>/schedstat, from just before the release to 150 ms after it"
+  },
+  "summary": {
+    "n": 60,
+    "min": 0.494,
+    "median": 3.827,
+    "mean": 4.001,
+    "p90": 7.314,
+    "p95": 7.669,
+    "max": 8.065,
+    "stdev": 2.329
+  },
+  "budget": {
+    "median_le_ms": 8,
+    "p95_le_ms": 16,
+    "median_holds": true,
+    "p95_holds": true
+  },
+  "boundary_findings": {
+    "callback_runs_before_the_frame_is_drawn": "gpui-pre 0.3.4 window.rs:1762-1789 runs pending on_next_frame callbacks at the start of the next request_frame, before window.draw() and present(). The gitturtle.layout line printed at the start of the root render arrived a median 0.047 ms after each theme line (60/60 in order), so the printed value ends before that frame's layout and paint.",
+    "x11_frame_source": "gpui-pre-linux 0.3.4 x11/client.rs:1985-2017 drives frames from a fixed-cadence timer at the CRTC mode's rate (8.334 ms here); X input is dispatched as it arrives (client.rs:472).",
+    "callback_phase_on_timer_grid_ms": {
+      "n": 60,
+      "min": -0.186,
+      "median": -0.001,
+      "mean": 0.001,
+      "p90": 0.102,
+      "p95": 0.119,
+      "max": 0.507,
+      "stdev": 0.108
+    },
+    "handler_entry_phase_ms": {
+      "n": 60,
+      "min": 0.323,
+      "median": 4.429,
+      "mean": 4.334,
+      "p90": 7.675,
+      "p95": 7.728,
+      "max": 8.326,
+      "stdev": 2.329
+    },
+    "samples_over_one_period": 0,
+    "input_delivery_ms": {
+      "n": 60,
+      "min": -0.111,
+      "median": 0.134,
+      "mean": 0.123,
+      "p90": 0.189,
+      "p95": 0.206,
+      "max": 0.269,
+      "stdev": 0.062
+    },
+    "interpretation": "Every trace line landed on the 8.334 ms timer grid (phase stdev 0.108 ms) while handler entries were spread across the whole period and no sample exceeded one period. The printed value is therefore the handler (bounded above by the 0.494 ms minimum sample) plus the wait for the next refresh tick; its distribution is set by the display rate and input phase, not by theme-application work."
+  },
+  "supplementary": {
+    "note": "Separate launches of the same executable, fixture, window and procedure. Not part of the recorded samples.",
+    "launch_medians_ms": {
+      "warmup": {
+        "n": 60,
+        "min": 0.424,
+        "median": 4.008,
+        "mean": 4.073,
+        "p90": 7.231,
+        "p95": 7.438,
+        "max": 8.038,
+        "stdev": 2.334
+      },
+      "recorded": {
+        "n": 60,
+        "min": 0.494,
+        "median": 3.827,
+        "mean": 4.001,
+        "p90": 7.314,
+        "p95": 7.669,
+        "max": 8.065,
+        "stdev": 2.329
+      },
+      "control": {
+        "n": 60,
+        "min": 0.443,
+        "median": 2.789,
+        "mean": 3.4,
+        "p90": 6.719,
+        "p95": 7.333,
+        "max": 7.891,
+        "stdev": 2.452
+      },
+      "pixels": {
+        "n": 60,
+        "min": 0.409,
+        "median": 3.857,
+        "mean": 3.853,
+        "p90": 6.936,
+        "p95": 7.367,
+        "max": 8.043,
+        "stdev": 2.347
+      },
+      "bursts": {
+        "n": 20,
+        "min": 1.913,
+        "median": 3.519,
+        "mean": 4.075,
+        "p90": 6.503,
+        "p95": 6.861,
+        "max": 8.128,
+        "stdev": 1.922
+      }
+    },
+    "ui_thread_cpu_per_150ms_window_control_launch": {
+      "idle": {
+        "n": 60,
+        "min": 0.44,
+        "median": 0.726,
+        "mean": 0.765,
+        "p90": 1.08,
+        "p95": 1.193,
+        "max": 1.28,
+        "stdev": 0.205
+      },
+      "hover_repaint": {
+        "n": 60,
+        "min": 10.313,
+        "median": 13.875,
+        "mean": 14.497,
+        "p90": 17.533,
+        "p95": 17.743,
+        "max": 18.684,
+        "stdev": 2.081
+      },
+      "press_repaint": {
+        "n": 60,
+        "min": 12.104,
+        "median": 13.578,
+        "mean": 14.326,
+        "p90": 16.674,
+        "p95": 18.117,
+        "max": 20.032,
+        "stdev": 1.847
+      },
+      "theme_switch": {
+        "n": 60,
+        "min": 18.407,
+        "median": 25.721,
+        "mean": 24.689,
+        "p90": 28.552,
+        "p95": 28.995,
+        "max": 36.522,
+        "stdev": 3.796
+      }
+    },
+    "ui_thread_cpu_theme_switch_recorded_launch": {
+      "n": 60,
+      "min": 17.906,
+      "median": 26.425,
+      "mean": 24.81,
+      "p90": 28.712,
+      "p95": 28.901,
+      "max": 30.904,
+      "stdev": 3.586
+    },
+    "release_to_new_accent_pixels_ms": {
+      "launch": "pixels",
+      "summary": {
+        "n": 60,
+        "min": 28.08,
+        "median": 47.925,
+        "mean": 47.327,
+        "p90": 57.77,
+        "p95": 59.94,
+        "max": 72.23,
+        "stdev": 9.621
+      },
+      "method": "After each release the driver polled a 2-row strip of the target card's top border with XGetImage until it was >95% the new accent. Includes input delivery, handler, tick wait, draw, GPU execution, Vulkan presentation through XWayland and polling granularity; the polling loads the X server during the frame.",
+      "metric_in_same_launch": {
+        "n": 60,
+        "min": 0.409,
+        "median": 3.857,
+        "mean": 3.853,
+        "p90": 6.936,
+        "p95": 7.367,
+        "max": 8.043,
+        "stdev": 2.347
+      }
+    },
+    "ui_thread_bursts": {
+      "launch": "bursts",
+      "switches": 20,
+      "separable_second_render": 13,
+      "merged_into_one_burst": 7,
+      "merged_burst_cpu_ms": {
+        "n": 7,
+        "min": 24.192,
+        "median": 26.164,
+        "mean": 26.903,
+        "p90": 32.628,
+        "p95": 32.628,
+        "max": 32.628,
+        "stdev": 2.701
+      },
+      "first_burst_end_after_release_ms": {
+        "n": 13,
+        "min": 13.91,
+        "median": 19.35,
+        "mean": 18.657,
+        "p90": 20.87,
+        "p95": 21.54,
+        "max": 21.54,
+        "stdev": 2.594
+      },
+      "first_burst_cpu_ms": {
+        "n": 13,
+        "min": 10.163,
+        "median": 12.969,
+        "mean": 13.772,
+        "p90": 17.371,
+        "p95": 19.478,
+        "max": 19.478,
+        "stdev": 2.426
+      },
+      "second_burst_start_after_release_ms": {
+        "n": 13,
+        "min": 17.16,
+        "median": 22.93,
+        "mean": 22.361,
+        "p90": 27.23,
+        "p95": 27.93,
+        "max": 27.93,
+        "stdev": 3.119
+      },
+      "second_burst_cpu_ms": {
+        "n": 13,
+        "min": 7.43,
+        "median": 10.345,
+        "mean": 11.026,
+        "p90": 14.1,
+        "p95": 14.627,
+        "max": 14.627,
+        "stdev": 2.597
+      },
+      "method": "UI-thread schedstat sampled about every 1 ms for 150 ms after the release; CPU grouped into bursts separated by >= 2 ms without CPU; a later burst counts as a separable second render when it has >= 5 ms CPU (bursts under 0.5 ms were ignored). The first burst includes the handler and the first frame after the callback."
+    },
+    "preference_save_probe": {
+      "summary": {
+        "write_ms": {
+          "median": 0.187,
+          "p95": 0.248,
+          "max": 0.275
+        },
+        "file_fsync_ms": {
+          "median": 13.475,
+          "p95": 14.283,
+          "max": 14.392
+        },
+        "rename_ms": {
+          "median": 0.104,
+          "p95": 0.128,
+          "max": 0.176
+        },
+        "dir_fsync_ms": {
+          "median": 2.808,
+          "p95": 3.184,
+          "max": 3.355
+        },
+        "total_ms": {
+          "median": 16.537,
+          "p95": 17.154,
+          "max": 17.353
+        },
+        "bytes": 1311,
+        "n": 40,
+        "spacing_s": 1.0
+      },
+      "method": "40 repetitions, 1 s apart, of the save_to sequence (write the recorded 1,311-byte preferences.json to a temporary file, sync_all, rename, sync_all on the directory; preferences.rs:945-952) in a directory on the same ext4 NVMe filesystem as the scratch store. A Python reproduction of the sequence, not the app's writer."
+    }
+  },
+  "limitations": [
+    "The metric excludes the layout and paint of the frame that shows the new theme; docs/benchmarks/metrics.md in candidate 7924244 states that it includes them.",
+    "Linux XWayland on GNOME Wayland, not native Wayland or macOS; XTest synthetic input.",
+    "Custom themes were not in the cycle: the spec names two custom themes, but custom themes have no Settings UI yet and choose_theme traces built-ins only, so this task's contract (60 switches cycling ThemeChoice::ALL) governs.",
+    "One recorded launch of 60 samples; background desktop load uncontrolled; warm caches only (no cold-cache run).",
+    "UI-thread CPU, burst and pixel figures are supplementary observations and do not attribute cost to functions (perf is not installed)."
+  ]
+}

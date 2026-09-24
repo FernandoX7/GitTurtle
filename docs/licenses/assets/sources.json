@@ -28,5 +28,35 @@
     "file": "ufbx-native-LICENSE",
     "url": "https://raw.githubusercontent.com/ufbx/ufbx/fcc5d6ba444cfd3eb80677dba5e37e493941abe5/LICENSE",
     "sha256": "0dd48ebadf52273c736256325c8f078c03c8bb4facee22a4122de0ad3f615391"
+  },
+  {
+    "name": "solarized",
+    "file": "solarized-LICENSE",
+    "url": "https://raw.githubusercontent.com/altercation/solarized/62f656a02f93c5190a8753159e34b385588d5ff3/LICENSE",
+    "sha256": "494aefdabf86acce06bd63001ad8aedad4ee38da23509d3f917d95aa3368b9a6"
+  },
+  {
+    "name": "atom-one",
+    "file": "atom-one-LICENSE.md",
+    "url": "https://raw.githubusercontent.com/atom/one-dark-syntax/9c96f4454362267ac45322063e193ccf9d2debb1/LICENSE.md",
+    "sha256": "e1bd6bab503e4d7990504df1e646f6e7465a9096648304335e4c0b55c88f1f54"
+  },
+  {
+    "name": "rose-pine",
+    "file": "rose-pine-LICENSE",
+    "url": "https://raw.githubusercontent.com/rose-pine/palette/92af52b465ab6e47437aca223c9b8d3009a2023b/LICENSE",
+    "sha256": "0e691132d5d92a848a1688b90fd4c662f62f78f3bd550ba46826ec31ec98fc70"
+  },
+  {
+    "name": "dracula",
+    "file": "dracula-LICENSE",
+    "url": "https://raw.githubusercontent.com/dracula/dracula-theme/5962daae54e4608d281cb6f4eee2349e605d9e3c/LICENSE",
+    "sha256": "38b806a7e799cca4e9821e6f8d65cf0d8bfaaddbe454b41f12e5baad52d310f1"
+  },
+  {
+    "name": "kanagawa",
+    "file": "kanagawa-LICENSE",
+    "url": "https://raw.githubusercontent.com/rebelot/kanagawa.nvim/bb85e4bfc8d89b0e62c8fa53ccdd13d12e2f77b3/LICENSE",
+    "sha256": "dfce81e2e5bf5b5b1b440269abc551ddf96a673be9fdf64f082d5802787a4b04"
   }
 ]
