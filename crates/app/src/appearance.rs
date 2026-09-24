@@ -1,8 +1,10 @@
 //! Native presentation choices shared by history, previews, and settings.
 
+use gpui_kit::component::button::{ButtonCustomVariant, ButtonVariant};
 use gpui_kit::component::{Colorize, Theme, ThemeMode};
-use gpui_kit::{App, Global, Pixels, Window, px, rgb};
+use gpui_kit::{App, Global, Pixels, Rgba, Window, px, rgb};
 use serde::{Deserialize, Serialize};
+use std::cell::Cell;
 use std::sync::{
     Arc,
     atomic::{AtomicU8, AtomicU32, Ordering},
@@ -167,6 +169,23 @@ pub fn apply_text_sizes(interface: u8, code: u8, window: &mut Window, cx: &mut A
     window.refresh();
 }
 
+// The shared `button` helper builds its control without a UI context, so the
+// palette application path leaves the control's colors here. Unlike the text
+// sizes, only element construction reads them, which runs on the thread that
+// owns the application, as palette application does; each GPUI test owns its
+// application on its own thread.
+thread_local! {
+    static CONTROL_BUTTON: Cell<Option<ButtonCustomVariant>> = const { Cell::new(None) };
+}
+
+/// The shared compact button's variant: the applied palette's control fills,
+/// or the kit's ghost before any palette is applied.
+pub fn control_button_variant() -> ButtonVariant {
+    CONTROL_BUTTON
+        .get()
+        .map_or(ButtonVariant::Ghost, ButtonVariant::Custom)
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThemeChoice {
@@ -234,6 +253,45 @@ impl Palette {
             color |= ((base * 93 + accent * 7) / 100) << shift;
         }
         color
+    }
+
+    /// The shared button's fill for a state surface (`hover` or `selected`): a
+    /// translucent layer that GPUI composites over whatever the button sits on.
+    ///
+    /// Over `panel`, the surface the readability rules measure both states
+    /// against, the layer composites to exactly `state`. Elsewhere it repeats
+    /// that step, so a button in a hovered or selected row lifts again, where an
+    /// opaque fill would vanish into a row of the same surface; and hover and
+    /// pressed stay as far apart on every surface as the palette's own rows. The
+    /// opacity is the smallest that still reaches `state` from `panel` with a
+    /// displayable color, which keeps the step nearly the same everywhere: the
+    /// layer moves a surface `s` by `(state - panel) + alpha * (panel - s)`.
+    pub fn control_fill(self, state: u32) -> Rgba {
+        let (panel, state) = (rgb(self.panel), rgb(state));
+        let steps = [(panel.r, state.r), (panel.g, state.g), (panel.b, state.b)];
+        // Below one 8-bit step the layer could not change a pixel.
+        let alpha = steps.iter().fold(1. / 255., |alpha: f32, &(from, to)| {
+            // Past this opacity the channel's layer color leaves 0..=1.
+            alpha.max(if to > from {
+                (to - from) / (1. - from)
+            } else if to < from {
+                (from - to) / from
+            } else {
+                0.
+            })
+        });
+        let [r, g, b] = steps.map(|(from, to)| (from + (to - from) / alpha).clamp(0., 1.));
+        Rgba { r, g, b, a: alpha }
+    }
+
+    /// The shared button's colors: transparent at rest with its label in
+    /// `text`, and the [`Self::control_fill`] layers of `hover` and `selected`
+    /// while hovered and pressed.
+    fn control_button(self, cx: &App) -> ButtonCustomVariant {
+        ButtonCustomVariant::new(cx)
+            .foreground(rgb(self.text).into())
+            .hover(self.control_fill(self.hover).into())
+            .active(self.control_fill(self.selected).into())
     }
 }
 
@@ -921,6 +979,7 @@ impl Palette {
             cx,
         );
         self.configure(is_light, Theme::global_mut(cx));
+        CONTROL_BUTTON.set(Some(self.control_button(cx)));
         cx.set_global(self);
         Theme::sync_base(cx);
         if let Some(window) = window {
@@ -1089,8 +1148,9 @@ impl Density {
 
 #[cfg(test)]
 mod tests {
-    use super::custom::contrast;
+    use super::custom::{contrast, luminance};
     use super::*;
+    use gpui_kit as gpui;
     use gpui_kit::{Background, Hsla};
 
     #[test]
@@ -1281,6 +1341,125 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Composite a translucent layer over an opaque surface as GPUI's renderers
+    /// blend a quad: on the gamma-encoded values of their non-sRGB targets.
+    fn composite(layer: Rgba, surface: u32) -> u32 {
+        let beneath = rgb(surface);
+        [
+            (layer.r, beneath.r, 16),
+            (layer.g, beneath.g, 8),
+            (layer.b, beneath.b, 0),
+        ]
+        .into_iter()
+        .fold(0, |color, (top, bottom, shift)| {
+            let value = (layer.a * top + (1. - layer.a) * bottom) * 255.;
+            color | ((value.round() as u32) << shift)
+        })
+    }
+
+    fn channel_distance(a: u32, b: u32) -> u32 {
+        [16, 8, 0]
+            .into_iter()
+            .map(|shift| ((a >> shift) & 0xff).abs_diff((b >> shift) & 0xff))
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// The kit's ghost hover read 1.16:1 the wrong way over a hovered row. The
+    /// tightest built-in lift is Rosé Pine's 1.078:1 over its canvas, from a
+    /// hover that is only 1.087:1 on its own panel (DESIGN.md records that limit).
+    const CONTROL_HOVER_LIFT: f64 = 1.07;
+    /// Selected surfaces keep 1.15:1 from panels; the tightest pressed lift is
+    /// Kanagawa Wave's 1.128:1 over a hovered row.
+    const CONTROL_PRESS_LIFT: f64 = 1.12;
+    /// The kit's ghost pressed fill differed from its hover by (1, 2, 2). The
+    /// palettes' own `selected` sits closest to `hover` in Sandstone, 3 apart.
+    const CONTROL_PRESS_DISTANCE: u32 = 3;
+
+    #[test]
+    fn shared_button_fills_lift_every_surface_beneath_and_pressed_stays_distinct() {
+        assert_eq!(ThemeChoice::ALL.len(), 20);
+        for choice in ThemeChoice::ALL {
+            let palette = choice.palette();
+            let (hover, pressed) = (
+                palette.control_fill(palette.hover),
+                palette.control_fill(palette.selected),
+            );
+            for (layer, state) in [(hover, palette.hover), (pressed, palette.selected)] {
+                let over_panel = composite(layer, palette.panel);
+                assert!(
+                    channel_distance(over_panel, state) <= 1,
+                    "{choice:?} fill over panel {over_panel:06x}, not {state:06x}"
+                );
+            }
+            // The filled color, and its contrast with the surface when it moves
+            // the way hover moves in this theme (0 otherwise).
+            let lift = |layer, beneath| {
+                let filled = composite(layer, beneath);
+                let lifted = if choice.is_light() {
+                    luminance(filled) < luminance(beneath)
+                } else {
+                    luminance(filled) > luminance(beneath)
+                };
+                let ratio = if lifted {
+                    contrast(filled, beneath)
+                } else {
+                    0.
+                };
+                (filled, ratio)
+            };
+            for (surface, beneath) in [
+                ("panel", palette.panel),
+                ("subtle", palette.subtle),
+                ("canvas", palette.canvas),
+                ("hovered row", palette.hover),
+                ("selected row", palette.selected),
+                ("hovered selected row", palette.row_hover(true)),
+            ] {
+                let (hovered, ratio) = lift(hover, beneath);
+                assert!(
+                    ratio >= CONTROL_HOVER_LIFT,
+                    "{choice:?} hover {hovered:06x} over the {surface} {beneath:06x}: {ratio:.4}"
+                );
+                let (held, ratio) = lift(pressed, beneath);
+                assert!(
+                    ratio >= CONTROL_PRESS_LIFT,
+                    "{choice:?} pressed {held:06x} over the {surface} {beneath:06x}: {ratio:.4}"
+                );
+                let distance = channel_distance(held, hovered);
+                assert!(
+                    distance >= CONTROL_PRESS_DISTANCE,
+                    "{choice:?} pressed {held:06x} is {distance} from hover {hovered:06x} \
+                     on the {surface}"
+                );
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn palette_application_hands_the_shared_button_its_fills(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            for choice in [
+                ThemeChoice::Midnight,
+                ThemeChoice::Porcelain,
+                ThemeChoice::KanagawaLotus,
+            ] {
+                choice.apply(None, cx);
+                let palette = choice.palette();
+                let expected = ButtonCustomVariant::new(cx)
+                    .foreground(rgb(palette.text).into())
+                    .hover(palette.control_fill(palette.hover).into())
+                    .active(palette.control_fill(palette.selected).into());
+                assert_eq!(
+                    control_button_variant(),
+                    ButtonVariant::Custom(expected),
+                    "{choice:?}"
+                );
+            }
+        });
     }
 
     #[test]
