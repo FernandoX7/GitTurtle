@@ -23,12 +23,15 @@ class MaskTest(unittest.TestCase):
                 frames.parse_mask(bad)
 
     def test_status_timing_covers_the_observed_digits(self) -> None:
-        # Round-3 IE-D3 differences between launches of one build at 1000x680.
+        # Differences between launches of one build at 1000x680 (IE-D3 round 3, native-QA phase 2).
         x0, y0, x1, y1 = frames.status_timing(1000, 680)
-        for box in ((128, 663, 133, 672), (136, 663, 141, 672), (156, 663, 161, 671), (164, 663, 169, 672)):
+        for box in ((128, 663, 133, 672), (136, 663, 141, 672), (156, 663, 161, 671), (164, 663, 169, 672),
+                    (127, 663, 141, 672)):
             self.assertTrue(x0 <= box[0] and y0 <= box[1] and box[2] <= x1 and box[3] <= y1, box)
         self.assertLess(y1, 680)
         self.assertGreater(y0, 680 - 26)  # stays inside the 26 px status bar
+        self.assertLessEqual((x1 - x0) * (y1 - y0), 1500)  # the text line's timing, not the whole bar
+        self.assertEqual(frames.status_timing(1440, 900), (96, 882, 208, 893))
 
 
 @unittest.skipUnless(HAVE_PIL, "Pillow is not installed")

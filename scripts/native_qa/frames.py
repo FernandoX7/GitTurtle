@@ -14,12 +14,14 @@ GAP = 3    # cells: differences within 12 px are one region
 
 
 def status_timing(width: int, height: int) -> tuple[int, int, int, int]:
-    """The left half of the status-bar text line (26 px bar at scale 1).
+    """The timing digits of the left-aligned status-bar message, at scale 1.
 
-    History and Changes print per-launch timings there ("2 changed files ·
-    file list 2.9 ms"); at 1000x680 the digits fall in x 128-169, y 663-671.
+    History and Changes print a per-launch timing there ("2 changed files ·
+    file list 2.9 ms"). Launches of one build differed in x 127-169, y 663-671
+    at 1000x680; the box leaves room for a longer count or timing. Another
+    message, layout or scale needs an explicit rectangle.
     """
-    return (0, height - 20, width // 2, height - 4)
+    return (96, height - 18, 208, height - 7)
 
 
 NAMED_MASKS = {"status-timing": status_timing}

@@ -13,7 +13,7 @@ Python 3.11 or newer. `launch` needs Pillow and python-xlib, `compare` and `priv
 | `display-check [--display :1] [--allow-pid N]` | Prints `date -u`, anchored `pgrep -af` matches for GitTurtle executables and QA drivers (this process tree excluded), and every GitTurtle window with its `_NET_WM_PID`. Exits 1 if anything not allowed is running. Run it before taking the display and when handing it back. |
 | `identity BINARY [CANDIDATE]` | sha256 plus `--build-info`, run with no display and a throwaway HOME. Flags a `source_tree` other than `clean`; a pair with the same sha256 or `source_revision` is refused (a shared `CARGO_TARGET_DIR` once made a candidate build a no-op). |
 | `launch --binary B --fixture F --run-dir /abs/empty ...` | One isolated launch, described below. |
-| `compare BASE CANDIDATE [--mask status-timing] [--mask x0,y0,x1,y1]` | Two frames or two directories of frames. Reports the differing pixel count outside the masks, the pixels masked, and the regions. Masked pixels are still counted, so a mask never hides that something changed. `status-timing` is the left half of the status-bar text line, where History and Changes print per-launch timings. |
+| `compare BASE CANDIDATE [--mask status-timing] [--mask x0,y0,x1,y1]` | Two frames or two directories of frames. Reports the differing pixel count outside the masks, the pixels masked, and the regions. Masked pixels are still counted, so a mask never hides that something changed. `status-timing` covers the per-launch timing that History and Changes print in the left-aligned status-bar message, at scale 1 (`96,H-18,208,H-7`); another message or scale needs an explicit rectangle. |
 | `privacy scan FRAME... --templates DIR` | Template matching (zero-mean normalized cross-correlation, either polarity) of personal strings in PNG or JPEG frames. Exits 1 on any match at or above 0.80. |
 | `privacy crop FRAME x0,y0,x1,y1 OUT.png` | Cuts a template from a frame that shows a personal string. |
 
@@ -37,7 +37,7 @@ Drivers that need more than steps import the library from `scripts/`: `session.S
 
 ## Privacy templates
 
-Tracked files never contain the personal strings. Supply templates at run time: crop them from a frame that showed the string (`privacy crop`), or render them with `--text STRING --font FILE [--size N]`, where the font is the one the app draws with. Crops match more reliably. A template directory or crop inside a Git work tree must be ignored there, for example under `.local/`. The default engine is `ncc.c`, compiled on first use into `$XDG_CACHE_HOME/gitturtle-native-qa/`: a 1000x680 frame takes about 0.1 s per template, against minutes for the ~30-template set in pure Python. `--engine python` runs the same rules without a compiler.
+Tracked files never contain the personal strings. Supply templates at run time: crop them from a frame that showed the string (`privacy crop`), or render them with `--text STRING --font FILE [--size N]`, where the font is the one the app draws with. Crops match more reliably. A template directory or crop inside a Git work tree must be ignored there, for example under `.local/`. The default engine is `ncc.c`, compiled on first use into `$XDG_CACHE_HOME/gitturtle-native-qa/`: 33 templates of up to 130x17 px take about 18 s per 1000x680 frame, and one 130x15 template takes 0.23 s against 11 s in pure Python. `--engine python` runs the same rules without a compiler.
 
 ## Tests
 

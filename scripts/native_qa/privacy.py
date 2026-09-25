@@ -7,8 +7,8 @@ supplied font; a template directory inside a Git work tree must be ignored.
 
 Matching is zero-mean normalized cross-correlation, so light-on-dark and
 dark-on-light renderings of the same text both score (the sign is reported).
-A 1000x680 frame against ~30 templates of ~100x12 px is ~10^10 multiply-adds
-in pure Python, minutes per frame, so the default engine is `ncc.c`, compiled
+A 1000x680 frame against ~30 templates of ~100x12 px is ~10^10 multiply-adds,
+minutes per frame in pure Python, so the default engine is `ncc.c`, compiled
 once per source digest into a cache directory outside the repository. The
 pure-Python engine implements the same rules for hosts without a compiler
 and for the tests.
