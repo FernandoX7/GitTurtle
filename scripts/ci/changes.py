@@ -57,7 +57,7 @@ def classify_paths(paths: list[bytes]) -> dict:
             return full_plan("package-delivery")
         if path.startswith(".github/"):
             return full_plan("workflow-or-repository-policy")
-        if (path.startswith(("scripts/ci/", "scripts/agent_loop/", ".agents/", ".codex/",
+        if (path.startswith(("scripts/ci/", "scripts/agent_loop/", "scripts/native_qa/", ".agents/", ".codex/",
                              "docs/development/"))
                 or path in ("scripts/agent-loop.py", "scripts/check-agent-guidance.py")
                 or parts[-1] == "AGENTS.md"):
