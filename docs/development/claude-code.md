@@ -29,7 +29,7 @@ Start Claude Code at the repository root so `CLAUDE.md` and the shared settings 
 
 ## Gates and hooks
 
-`python3 scripts/gate.py fast` covers the crates that changed and is meant to finish in under three minutes on a warm target directory; `python3 scripts/gate.py full` covers the workspace and is what the controller and verifier run. A red run writes `.local/gate/report.md` with the failing stage, the first error as `file:line:col` and the narrowest reproducing command. Host-specific known failures go in `.local/gate/known-failures.txt`, one test name per line. The `gitturtle-gates` skill documents exit codes and strict mode.
+The [`gitturtle-gates`](../../.claude/skills/gitturtle-gates/SKILL.md) skill describes the fast and full gates: their stages, strict mode, known failures and the red-gate report.
 
 Hooks live in `.claude/settings.json` so they also fire in headless sessions. The Stop hook only builds when the Cargo target directory is already warm and gives up after two attempts in a session, so it never turns a turn end into a cold build. `stop_gate.py` can be skipped for a session with `GITTURTLE_SKIP_STOP_GATE=1`; `protect_paths.py` only blocks when the controller sets `GITTURTLE_LOOP=1`, and in that mode it also protects the run's active task queue named by `GITTURTLE_TASKS_PATH` (set by the controller for implementer sessions), whichever file the run uses. The deny list blocks force pushes, hook bypasses and blind snapshot acceptance; everything else follows your permission mode.
 
@@ -56,11 +56,8 @@ Fable 5.1 plans, takes the hard tail and reviews finished runs; Opus 5 implement
 
 ## Session length
 
-Work to about 40% of the context window, then hand off. Output degrades before
-compaction, not at it — confident claims start drifting from what the tools
-returned — so a fresh session costs less than re-verifying late work. Nothing
-measures this for you; it is a discipline the session applies to itself, and the
-rule lives in [`CLAUDE.md`](../../CLAUDE.md#session-length).
+Work to about 40% of the context window, then hand off; the rule and its reasons
+live in [`CLAUDE.md`](../../CLAUDE.md#session-length).
 
 The unattended loop already holds to it structurally, and that is deliberate:
 every attempt is a fresh process, agents cap `maxTurns` (40 for `Explore`, 60–120

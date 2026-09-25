@@ -64,7 +64,7 @@ For packaging or performance work, also run `cargo build --release --locked -p g
 
 Docs-only changes need link, command and diff checks. Artwork changes need verification of their consumers and derived resources; see [asset conventions](assets/icons/README.md). Neither requires unrelated Rust tests.
 
-Development-controller changes use `python3 scripts/check-agent-guidance.py` and `python3 -m unittest discover -s scripts/agent_loop -t scripts -p 'test_*.py'`. Follow the [development workflow](docs/development/README.md) for task contracts, isolated runs and evidence; product checks apply when those changes also affect the client.
+Development-controller changes use `python3 scripts/check-agent-guidance.py` and `umask 022 && python3 -m unittest discover -s scripts/agent_loop -t scripts -p 'test_*.py'`. Follow the [development workflow](docs/development/README.md) for task contracts, isolated runs and evidence; product checks apply when those changes also affect the client.
 
 CI changes also use `python3 -m unittest discover -s scripts/ci/tests -p 'test_*.py'`
 and pinned actionlint 1.7.12 on both Quality and Website workflows. The
