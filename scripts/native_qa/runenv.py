@@ -111,9 +111,10 @@ def check_fixture(fixture: Path | str, for_commit: bool) -> tuple[Path, list[str
 
 def check_commit_run_dir(run_dir: Path) -> None:
     """Settings can draw HOME-derived paths, so a committed frame's run directory avoids home roots."""
-    resolved = run_dir.resolve()
+    # Compare literal and resolved forms: macOS resolves /home to /System/Volumes/Data/home.
+    paths = {run_dir.absolute(), run_dir.resolve()}
     for root in (*HOME_ROOTS, operator_home()):
-        if within(resolved, root):
+        if any(within(path, candidate) for path in paths for candidate in {root, root.resolve()}):
             raise Refusal(f"run directory {run_dir} is under {root}; use {EVIDENCE_ROOT}/runs/<name> for commit captures")
 
 

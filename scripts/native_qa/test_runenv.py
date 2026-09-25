@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from native_qa import runenv, stores
 
@@ -108,6 +109,18 @@ class RunEnvironmentTest(unittest.TestCase):
             with self.subTest(root=root), self.assertRaises(runenv.Refusal):
                 runenv.check_commit_run_dir(root / "someone" / "run")
         runenv.check_commit_run_dir(runenv.EVIDENCE_ROOT / "runs" / "one")
+
+    def test_commit_run_directory_refuses_home_roots_that_resolve_elsewhere(self) -> None:
+        # macOS resolves /home to /System/Volumes/Data/home.
+        resolve = Path.resolve
+
+        def firmlinked(path: Path, strict: bool = False) -> Path:
+            if path == Path("/home") or Path("/home") in path.parents:
+                return Path("/System/Volumes/Data") / path.relative_to("/")
+            return resolve(path, strict)
+
+        with mock.patch.object(Path, "resolve", firmlinked), self.assertRaises(runenv.Refusal):
+            runenv.check_commit_run_dir(Path("/home/someone/run"))
 
 
 class StoreTest(unittest.TestCase):
