@@ -49,7 +49,7 @@ Choose validation for the changed behavior:
 - Rust iteration: `cargo fmt --all -- --check`, `cargo check --locked -p gitturtle`, and relevant tests in `cargo test --locked -p gitturtle`, `-p gitturtle-core`, or `-p gitturtle-preview`; narrow by test name when useful.
 - Final combined Rust/dependency validation, after targeted iteration and integration: `cargo test --locked --workspace` and `cargo clippy --locked --workspace --all-targets -- -D warnings`. Build release for performance or packaged-app changes. Do not repeat a clean run on unchanged code.
 - Guidance/docs-only changes: check links, command/package names, skill frontmatter, and the diff. Do not rebuild the native app or rerun the Rust suite unless a code concern warrants it.
-- Development-controller changes: run `python3 scripts/check-agent-guidance.py` and `python3 -m unittest discover -s scripts/agent_loop -t scripts -p 'test_*.py'`. Product Rust/native gates apply when product code or dependencies also change.
+- Development-controller changes: run `python3 scripts/check-agent-guidance.py` and `umask 022 && python3 -m unittest discover -s scripts/agent_loop -t scripts -p 'test_*.py'`. Product Rust/native gates apply when product code or dependencies also change.
 - Artwork-only changes: verify the selected source and its actual consumers. Rebuild derived icon resources and check the package when affected; an existing release executable can be reused if its source identity is established and Rust/dependencies are unchanged. Embedded control SVG or branding PNG changes require an executable rebuild.
 
 `cargo run --locked -p gitturtle -- /path/to/repository` launches the app. Keep commands current rather than hard-coding historical test counts.
