@@ -1,6 +1,6 @@
 # Custom themes — specification (September 17, 2026)
 
-Status: implemented. All 13 tasks in [`tasks.json`](tasks.json) landed on `claude/themes` (pull request #23), and [follow-ups.md](follow-ups.md) lists what is still open. Palette selection and provenance: [the research note](../2026-09-17-theme-palettes.md). Design intent: [`DESIGN.md` §Semantic palette ownership](../../../DESIGN.md#semantic-palette-ownership). The [architecture review](../architecture-review.md) applies: this changes a shared interface (`ThemeChoice` becomes one case of `ThemeSelection`), a persistent store (preferences version 5 → 6) and a hot path (theme application).
+Status: implemented. All 13 tasks in [`tasks.json`](tasks.json) landed on `claude/themes` (pull request #23), and its follow-ups are done or moved to the development backlog ([`../tasks.json`](../tasks.json), [follow-ups.md](follow-ups.md)). Palette selection and provenance: [the research note](../2026-09-17-theme-palettes.md). Design intent: [`DESIGN.md` §Semantic palette ownership](../../../DESIGN.md#semantic-palette-ownership). The [architecture review](../architecture-review.md) applies: this changes a shared interface (`ThemeChoice` becomes one case of `ThemeSelection`), a persistent store (preferences version 5 → 6) and a hot path (theme application).
 
 ## Observable outcome
 
