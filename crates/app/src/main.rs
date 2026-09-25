@@ -1809,9 +1809,12 @@ fn button(
     active: bool,
 ) -> Button {
     let label = label.into();
+    // Transparent at rest like the kit's ghost, with the palette's hover and
+    // pressed fills: the ghost's own hover darkens a hovered row. Selected, it
+    // keeps the `selected` surface.
     let mut button = Button::new(id)
         .small()
-        .ghost()
+        .with_variant(appearance::control_button_variant(active))
         .h(appearance::ui_size(28.))
         .min_w(appearance::ui_size(28.))
         .px(appearance::ui_size(if label.is_empty() { 6. } else { 10. }))
@@ -1822,7 +1825,7 @@ fn button(
     if active {
         // The kit omits variant hover styles for selected controls. Keep their
         // selected surface and expose gentle pointer feedback explicitly.
-        button = button.secondary().hover(|style| style.opacity(0.9));
+        button = button.hover(|style| style.opacity(0.9));
     }
     if label.is_empty() {
         button = button

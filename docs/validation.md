@@ -4,6 +4,34 @@ Use the [current validation guidance](#current-validation-guidance) for the affe
 
 This page contains current validation guidance and dated local evidence, with each completed stage tied to its exercised source/build. The September 7–8 records below cover earlier history, design and everyday Git workflows; the September 9 backend report covers its recorded review-milestone inputs. Native workflow evidence is primarily macOS-specific; the September 14 entries add Pop!_OS startup and clean Ubuntu/virtual-native checks. Platform execution and access limits belong to the applicable dated record and [platform runbook](linux.md); the earlier [environment report](benchmarks/2026-09-09-milestone-environment.md) describes its own session. The configured [quality workflow](../.github/workflows/quality.yml) alone is not evidence of hosted CI execution. Public binary release prerequisites belong in the [launch checklist](public-launch.md); the Linux runbook includes a local teammate bundle.
 
+## September 24 shared button hover and pressed states
+
+Themes follow-up 21 (IE-D3) replaces the kit's ghost styles on the shared 28 px `button` helper (`crates/app/src/main.rs`). Before, the helper's hover painted darker than a hovered row (1.16:1 the wrong way), and pressed differed from hover by (1, 2, 2). Now its hover and pressed fills are translucent layers from `Palette::control_fill` (`ec341d6`). Over `panel` they composite to exactly `hover` and `selected`; on any other surface they add nearly the same step, so an action in a hovered or selected row still lifts. `Palette::control_label` keeps the label at least 4.5:1 on every fill (`79d5c65`, `1625b2f`). Only Kanagawa Lotus (`545464` to `41414e`) and One Dark (`aeb5c2` to `bdc2cd`) move their helper label, at rest too, because the kit paints one foreground for every state. Selected helpers in those two themes use the same label. The other 18 themes keep `text`. Two deliberate departures from the item's literal wording were accepted by the design reviewer:
+- hover equals `p.hover` exactly only over `panel`;
+- pressed is a translucent `selected` layer, not an opaque `selected` fill. An opaque fill lands 1 per channel from a hovered button on a hovered row in Rosé Pine, and disappears on selected rows.
+
+`appearance::tests::shared_button_fills_lift_every_surface_and_keep_the_label_readable` checks all 20 built-in themes on panel, subtle, canvas, hovered, selected and hovered-selected rows, for lift, hover-to-pressed distance and label contrast. `palette_application_hands_the_shared_button_its_fills_and_label` checks the variants that palette application installs. Both fail on the unchanged or partially fixed helper. `cargo fmt --all -- --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo test --locked --workspace` and the agent-loop suite (umask 022) passed on this Linux host.
+
+Native evidence ran on Linux under XWayland on the GNOME Wayland desktop (`DISPLAY=:1`, `GPUI_X11_SCALE_FACTOR=1`, 1000x680). It used debug builds of base `ff06709` and each candidate, a fresh HOME and XDG directories per launch with the `GitTurtle QA <qa@example.invalid>` identity, and fixtures under `/tmp/gitturtle-evidence/`. Every press was released off the control, and every after-release frame matched rest. Measured button fills (8-bit RGB, contrast against the surface beneath):
+
+| Theme, surface | Base hover / pressed | Candidate hover / pressed |
+| --- | --- | --- |
+| Midnight, hovered row (34,44,60) | (24,32,45) 1.16:1 darker / (25,34,47), 2 from hover | (44,57,75) 1.20:1 / (44,71,74), 14 from hover |
+| Midnight, subtle header (19,26,37) | (21,28,40) 1.02:1 / 3 from hover | (30,40,54) 1.18:1 / (31,56,54) 1.40:1, 16 from hover |
+| Porcelain, hovered row (229,233,244) | (210,215,235) 1.18:1 / 27 from hover | (206,213,234) 1.21:1 / (200,211,236), 6 from hover |
+| One Dark, row | 1.21:1 darker / 1.16:1 darker | 1.09:1 / 1.15:1 lift |
+
+Every candidate fill is within 1 per channel of the formula. Kanagawa Lotus and One Dark labels read 4.92–7.82:1 on the candidate's fills, including the hovered imported theme row, where `ec341d6` would have given 3.61:1. Porcelain's pressed state is quieter than the ghost's, because its own `hover` and `selected` tokens are 6 apart. While Stage is held, the working-file row keeps its hover colour, as in base.
+
+Resting frames are pixel-identical to base in the other 18 themes, apart from per-launch status-bar timing text. In Kanagawa Lotus and One Dark only helper labels and icons change, so this change replaces those themes' eleven committed frames:
+- `themes/alucard-kanagawa/kanagawa_lotus-*` and `themes/solarized-one/one_dark-*` (five each);
+- `themes/import-export/lotus-1000x680-01-refuse-notjson.png`.
+They were recaptured with the pass-B2 drivers alongside a same-session base run. Base matched the committed frames apart from timing text and one pixel that base also shows. The replacements carry that session's timing digits. The new frames under `evidence/button-states/` show hover and pressed on row actions, header buttons and the Stage button in Midnight and Porcelain, a hovered button on the subtle header and on the hovered imported row in Kanagawa Lotus, and One Dark's row pair.
+
+Audit of `docs/evidence/`: no themes frame shows a hovered or pressed helper button, because those drivers park the pointer. Sixteen older consistency-milestone and macOS-milestone frames and four review-milestone frames have the macOS pointer resting on a helper button. Most show no fill, because the old hover barely registered; `consistency-milestone/recovery-retry-result.jpeg` shows the old fill. They remain dated evidence for their builds.
+
+Still open (follow-ups 22 and 23): macOS, scale factors other than 1, helper buttons sitting directly on `panel` or `canvas` (covered by the unit test only), Sandstone's `selected` only 3 from its `hover`, Kanagawa Wave's `selected` darker than its `hover`, and Solarized Dark's pressed label at 4.575:1 over the hovered selected row. Focus and disabled states are unchanged by the variant, except that a disabled selected helper in Kanagawa Lotus or One Dark now has a transparent background.
+
 ## September 23 Theme picker with custom themes
 
 Native QA for `themes-picker`, which lists saved custom themes in the Settings

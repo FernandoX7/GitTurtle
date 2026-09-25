@@ -57,5 +57,5 @@ list32-1000x680-12-tab-reveals-row32-delete.png  efa681bdd57f421f1b22f92a9a4508e
     32 saved themes, the list at its end: Tab to row 32's Delete… draws its whole focus ring, clear of the scrollbar
 bound-1000x680-01-hover-import-disabled.png  2fad29ca46039e658c9614510d45b3d7ccc7ed467212b92b66bca5a027fcd807  b2/runs/cand/ie/bound/captures/01-bound-hover-import.png
     32 saved themes: the disabled Import… tooltip gives the reason and the remedy
-lotus-1000x680-01-refuse-notjson.png  db8ae99d6b46e697540251edf42e52a4576da97c7933363ba879ebaa66b56cd5  b2/runs/cand/warn/kanagawa_lotus/captures/01-refuse-notjson.png
+lotus-1000x680-01-refuse-notjson.png  6fa92acf8d6794e25c6c16d26c9c4957fb743e76e6011d01f726c5c35dafc30a  ../evidence-ie-d3-ec341d6/round3/proposed-themes/import-export/lotus-1000x680-01-refuse-notjson.png (re-taken on 2026-09-24 from 1625b2f for IE-D3's label change)
     Kanagawa Lotus: a refused import's failure line in its warning color on the subtle surface
