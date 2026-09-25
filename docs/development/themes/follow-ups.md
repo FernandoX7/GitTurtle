@@ -2,6 +2,8 @@
 
 All 13 tasks in [`tasks.json`](tasks.json) are accepted and on `claude/themes`, which is open as pull request #23 with every check green at `5a17c4c`. This file is the verified list of what is still open, each item checked against HEAD `5a17c4c` on 2026-09-23. It is the work queue for finishing the initiative.
 
+**Closed on September 25, 2026.** Every item below is done, obsolete or moved: 22 (EVIDENCE-GAPS) and 23 (PRESS-DISTINCT) are tasks in the development backlog, [`docs/development/tasks.json`](../tasks.json). The controller follow-ups under [Outside this branch](#outside-this-branch) are development tooling, not themes work, and stay open there. The rest of this file is the initiative's record.
+
 Sources are cited by file and section. `HANDOFF.md` means [the handoff](../HANDOFF.md) as of `5a17c4c`, which later sessions rewrite. Paths under `.local/themes-evidence/` are the coordinator's local, unversioned review bundles.
 
 ## Owner decisions
@@ -149,28 +151,8 @@ The "Landed" lines of items 11-18 and 20 cite two native passes on Linux X11 at 
     - Acceptance: hover is `p.hover` composited over the surface beneath, and pressed is `p.selected`, measured distinct on rows and headers.
     - Evidence changed: resting frames are unchanged if only hover and pressed change. No committed themes frame is known to show a hovered or pressed helper button, because the drivers park the pointer, but audit `docs/evidence/` before claiming none. It adds new hover and pressed frames. Kind: native, design.
     - Landed: `ec341d6` (translucent hover and pressed layers from `Palette::control_fill`), `79d5c65` (`Palette::control_label` keeps the label at 4.5:1 on every fill) and `1625b2f` (selected helpers share that label). The design reviewer accepted pressed as a `selected` layer rather than an opaque fill, because an opaque fill is not distinct in Rosé Pine. Evidence is in the [September 24 entry](../../validation.md#september-24-shared-button-hover-and-pressed-states).
-22. **EVIDENCE-GAPS: what no capture attests yet.**
-    - macOS at 2x, and any scale factor other than 1.
-    - The accessibility tree: GPUI does not register with AT-SPI on the Linux host, and VoiceOver is unchecked.
-    - Hover and pressed states for row actions, header buttons and the scrollbar thumb.
-    - A failure line in a light theme. Linux at 1x now has one, `import-export/lotus-1000x680-01-refuse-notjson.png` (item 20); macOS does not.
-    - The portal dialogs themselves.
-    - Editor states without a frame: Reset to base, Replace colors, a refused save with "Saving…", a failed delete, and text above 13 pt.
-    - The two-column picker.
-    - A focused row action beside the just-imported highlight.
-    - A hovered action on a partly scrolled row.
-    - Light palettes with the 32-theme list.
-
-    Source: the "Requirements left open" sections of the import-export and `evidence-editor-3927b57` design reviews; "Open, not findings" in the draw-cost ruling; "Still open" in `.local/themes-evidence/evidence-settings-view-a3/design-ruling.md`. Acceptance: native frames for each, the macOS ones on a real Mac, recorded in the matching `docs/validation.md` entry. Evidence changed: new captures only. Kind: native.
-23. **PRESS-DISTINCT: some palettes keep `selected` too close to `hover` for the shared button's pressed state (found in the IE-D3 review).** The helper's pressed fill turns a panel into `selected` and its hover fill into `hover` (`Palette::control_fill`, `crates/app/src/appearance.rs`), so on every surface pressed stands only as far from hover as the palette's own `selected` stands from `hover`:
-    - Sandstone: 3 per channel apart (`eddfd0` against `eae1d3`, 1.009:1), on every surface.
-    - Porcelain: 6 per channel apart, 4 over the hovered selected row.
-    - Kanagawa Wave: `selected` (`24364e`) is darker than `hover` (`363646`), so pressed differs from hover by hue, not by a further lift.
-    - Proposed spec rule: `selected` differs from `hover` by at least 8 in one channel, and sits at least as far from `panel` as `hover` in the lift direction. No rule checks this pair today, and the button test's floor (`CONTROL_PRESS_DISTANCE`, 3) is Sandstone's value.
-    - Margin limit: Solarized Dark's button label is 4.575:1 on the pressed fill over the hovered selected row. That clears the 4.5 rule but not its 0.25 margin, and reaching the margin would move its label off `text`.
-    - Non-blocking, from the same review: in a custom theme whose `hover` moves a channel toward 0 or 255 from a panel already near that end, the fill's opacity approaches 1 and the hover disappears on hovered rows. The same holds for `selected` and pressed.
-    - Taste, from the final IE-D3 ruling: in Kanagawa Lotus and One Dark a disabled selected helper is transparent over its surface, while the other 18 themes keep a subtle chip. Its label still dims. It shows at one site, the command palette's disabled "Open command" (`command_palette.rs:588`).
-    - Acceptance: the rule in `spec.md` and `readability_issues`, the listed palettes tuned or explicitly exempted, and the test floor raised to the rule. Evidence changed: pressed frames in the tuned themes. Kind: design, palette.
+22. **EVIDENCE-GAPS (moved): what no capture attests yet.** Since September 25, 2026 this is `themes-evidence-gaps-linux` and `themes-evidence-gaps-macos` in the development backlog, [`docs/development/tasks.json`](../tasks.json), which carries its list.
+23. **PRESS-DISTINCT (moved): some palettes keep `selected` too close to `hover` for the shared button's pressed state.** Since September 25, 2026 this is `themes-press-distinct` in [`docs/development/tasks.json`](../tasks.json), which carries the measurements, the proposed rule and the acceptance.
 
 ## Outside this branch
 

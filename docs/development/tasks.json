@@ -537,6 +537,103 @@
         "tooling"
       ],
       "commit": "ci(macos): prepare signed and notarized releases"
+    },
+    {
+      "id": "themes-press-distinct",
+      "title": "Keep the pressed button distinct from hover in every palette",
+      "description": "Moved on 2026-09-25 from themes follow-up 23 (PRESS-DISTINCT), found in the IE-D3 review. The shared button helper's pressed fill turns a panel into `selected` and its hover fill into `hover` (`Palette::control_fill`, crates/app/src/appearance.rs), so on every surface pressed stands only as far from hover as the palette's own `selected` stands from `hover`. Measured: Sandstone is 3 per channel apart (eddfd0 against eae1d3, 1.009:1) on every surface; Porcelain is 6 per channel apart, 4 over the hovered selected row; Kanagawa Wave's `selected` (24364e) is darker than its `hover` (363646), so pressed differs from hover by hue rather than a further lift. No readability rule checks this pair, and the button test's floor CONTROL_PRESS_DISTANCE (3) is Sandstone's value. Proposed rule: `selected` differs from `hover` by at least 8 in one channel and sits at least as far from `panel` as `hover` in the lift direction. Margin limit: Solarized Dark's button label is 4.575:1 on the pressed fill over the hovered selected row, which clears 4.5 but not its 0.25 margin, and reaching the margin would move its label off `text`. Non-blocking notes from the same review: in a custom theme whose `hover` moves a channel toward 0 or 255 from a panel already near that end, the fill's opacity approaches 1 and the hover disappears on hovered rows, and the same holds for `selected` and pressed; in Kanagawa Lotus and One Dark a disabled selected helper is transparent over its surface while the other 18 themes keep a subtle chip (the command palette's disabled Open command). Changing a built-in palette changes its committed themes frames, so recapture them against a same-session base.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/appearance.rs",
+        "crates/app/src/appearance/**",
+        "docs/development/themes/spec.md",
+        "docs/development/themes/contrast-margins.md",
+        "DESIGN.md",
+        "docs/evidence/themes/**",
+        "docs/evidence/button-states/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "spec-rule",
+          "description": "The readability rules in docs/development/themes/spec.md state the selected-versus-hover rule (the proposed one or a justified variant), and `readability_issues` (crates/app/src/appearance/custom.rs) reports a palette that breaks it, with a unit test that fails on the unchanged Sandstone palette."
+        },
+        {
+          "id": "palettes",
+          "description": "Sandstone, Porcelain and Kanagawa Wave meet the rule or are explicitly exempted, with the reason recorded in spec.md and in the test; every other built-in theme still passes the full readability rule set."
+        },
+        {
+          "id": "test-floor",
+          "description": "CONTROL_PRESS_DISTANCE in the shared button test is raised to the rule's distance, and appearance::tests::shared_button_fills_lift_every_surface_and_keep_the_label_readable passes for every built-in theme."
+        },
+        {
+          "id": "native-evidence",
+          "description": "Native captures on Linux X11 at scale factor 1 show hover and pressed on a row action, a header button and the Stage button in each tuned theme against a same-session base. Committed frames of tuned palettes under docs/evidence/themes/ and docs/evidence/button-states/ are recaptured, a design review rules on every non-timing difference, and a dated docs/validation.md entry records which frames changed and why."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(appearance): keep pressed buttons distinct from hover"
+    },
+    {
+      "id": "themes-evidence-gaps-linux",
+      "title": "Capture the themes states that no Linux frame attests yet",
+      "description": "Moved on 2026-09-25 from themes follow-up 22 (EVIDENCE-GAPS), the part a Linux host can attest. The owner decided these gaps do not block merges; they stay listed as open in docs/validation.md until captured. Open on Linux X11: helper buttons sitting directly on `panel` or `canvas` (covered by a unit test only); the scrollbar thumb's hover and pressed; scale factor 2 (GPUI_X11_SCALE_FACTOR=2); the portal dialogs themselves; editor states without a frame (Reset to base, Replace colors, a refused save with Saving…, a failed delete, and text above 13 pt); the two-column picker; a focused row action beside the just-imported highlight; a hovered action on a partly scrolled row; light palettes with the 32-theme list; and whether GPUI registers with AT-SPI (it did not in the themes passes). Row actions and header buttons in Midnight, Porcelain, Kanagawa Lotus and One Dark, and a light-theme failure line at scale 1, are already in docs/evidence/button-states/ and docs/evidence/themes/import-export/. Sources: the Requirements left open sections of the import-export and editor design reviews and the draw-cost and settings-view rulings, as summarized in docs/development/themes/follow-ups.md item 22 at commit 92118f9.",
+      "depends_on": [
+        "themes-press-distinct"
+      ],
+      "scope": [
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "frames",
+          "description": "Each listed state has a native frame on Linux X11 from an identified build (sha256 and --build-info), captured with a fresh HOME and XDG directories per launch, a fixture under /tmp/gitturtle-evidence/ and the GitTurtle QA <qa@example.invalid> identity, committed under docs/evidence/ and recorded in a dated docs/validation.md entry."
+        },
+        {
+          "id": "accessibility",
+          "description": "The entry records the AT-SPI observation as observed, including the command used, and does not claim accessibility coverage it did not see."
+        },
+        {
+          "id": "still-open",
+          "description": "Any state that cannot be reached natively is listed as still open in that entry, with the reason."
+        }
+      ],
+      "profiles": [
+        "native",
+        "docs"
+      ],
+      "commit": "docs(evidence): capture the remaining themes states on Linux"
+    },
+    {
+      "id": "themes-evidence-gaps-macos",
+      "title": "Attest the themes pages on macOS",
+      "description": "Moved on 2026-09-25 from themes follow-up 22 (EVIDENCE-GAPS), the part that needs a real Mac. No capture attests the themes work on macOS: the Settings theme picker, the editor and import-export at 2x, a failure line in a light theme, the native file dialogs, the shared button's hover and pressed states, and VoiceOver. Record these as open rather than claim them until a Mac run exists.",
+      "depends_on": [
+        "themes-press-distinct"
+      ],
+      "scope": [
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "mac-frames",
+          "description": "Frames from a real Mac at 2x show the Settings theme picker, the editor, import-export including a light-theme failure line, the file dialogs, and the shared button's hover and pressed states, from an identified build (sha256 and --build-info), recorded in a dated docs/validation.md entry."
+        },
+        {
+          "id": "voiceover",
+          "description": "A VoiceOver pass over the same pages records what is announced for theme cards, editor fields and status marks, and lists any gap as a finding."
+        }
+      ],
+      "profiles": [
+        "native",
+        "docs"
+      ],
+      "commit": "docs(evidence): attest the themes pages on macOS"
     }
   ]
 }
