@@ -187,6 +187,16 @@ struct KeyboardMenu {
     _dismiss: Subscription,
 }
 
+/// A recent-project save awaiting its reply. The preference writer adds the
+/// opened project to the stored list; the reply merges that addition into the
+/// pane instead of replacing the pane's list.
+pub(super) struct RecentProjectSave {
+    save: u64,
+    /// The pane already listed the project when the save was submitted, so
+    /// its current list, including a removal made since, stands.
+    listed: bool,
+}
+
 pub struct State {
     pub scroll: UniformListScrollHandle,
     pub focus: FocusHandle,
@@ -195,13 +205,21 @@ pub struct State {
     pub group_form: Option<Entity<GroupForm>>,
     /// A refused edit or a failed save, shown inside the pane with Retry.
     pub error: Option<String>,
-    /// Saves submitted and not yet answered.
+    /// Pane saves submitted and not yet answered.
     pending_saves: usize,
-    /// The number of the newest save submitted. Only its reply may replace
-    /// the presented list: each reply is awaited by its own task, and a newer
-    /// save's task can run before an older one's wake, so an older reply
-    /// handled last must not undo the newer edit.
+    /// The number of the newest save that returns the project list, pane and
+    /// recent-project saves alike. Only its reply may replace the presented
+    /// list: each reply is awaited by its own task, and a newer save's task
+    /// can run before an older one's wake, so an older reply handled last
+    /// must not undo the newer edit.
     latest_save: u64,
+    /// The number of the newest pane save. Only its reply sets or clears the
+    /// error, and it wrote the whole list over any recent-project save
+    /// numbered before it.
+    latest_pane_save: u64,
+    /// The newest pane save answered with a failure: the list on screen is
+    /// unsaved until Retry, which the user starts.
+    pane_save_failed: bool,
     menu_open: Option<usize>,
     keyboard_menu: Option<KeyboardMenu>,
 }
@@ -217,6 +235,8 @@ impl State {
             error: None,
             pending_saves: 0,
             latest_save: 0,
+            latest_pane_save: 0,
+            pane_save_failed: false,
             menu_open: None,
             keyboard_menu: None,
         }
@@ -258,31 +278,58 @@ impl GitTurtle {
         self.rebuild_project_rows();
     }
 
-    /// The newest pane save when a recent-project save is submitted; pass it
-    /// back with that save's reply.
-    pub(super) fn latest_project_library_save(&self) -> u64 {
-        self.project_pane.latest_save
-    }
-
-    /// A recent-project save also returns the stored list. It applies only
-    /// when no pane save is pending and none was submitted after it, so it
-    /// never replaces a newer pane edit; while a pane save is pending it is
-    /// dropped.
-    pub(super) fn absorb_saved_project_library(
-        &mut self,
-        submitted_after: u64,
-        library: ProjectLibrary,
-    ) {
-        if self.project_pane.pending_saves == 0 && self.project_pane.latest_save == submitted_after
-        {
-            self.set_project_library(library);
+    /// Number a recent-project save among the project-list saves, noting
+    /// whether the pane already lists the project it adds.
+    pub(super) fn begin_recent_project_save(&mut self, path: &Path) -> RecentProjectSave {
+        self.project_pane.latest_save += 1;
+        RecentProjectSave {
+            save: self.project_pane.latest_save,
+            listed: self.project_library.contains_project(path),
         }
     }
 
-    /// Count a save as outstanding and number it for its reply.
+    /// Merge the project a recent-project save added into the pane's current
+    /// list. It never replaces the list or touches the error, so an unsaved
+    /// or newer edit survives the reply.
+    pub(super) fn absorb_remembered_project(
+        &mut self,
+        recent: RecentProjectSave,
+        stored: &Preferences,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if recent.listed {
+            return;
+        }
+        // The writer puts the canonical path first; a list full of grouped
+        // projects refuses it.
+        let Some(path) = stored
+            .recent_repositories
+            .first()
+            .filter(|path| stored.project_library.contains_project(path))
+        else {
+            return;
+        };
+        let mut library = self.project_library.clone();
+        if !library.remember(path) {
+            return;
+        }
+        self.set_project_library(library);
+        // A pane save numbered after this one wrote the whole list without
+        // the project, so the merged list has to be written again. When the
+        // newest pane save failed, Retry writes it with the unsaved edit.
+        if self.project_pane.latest_pane_save > recent.save && !self.project_pane.pane_save_failed {
+            self.submit_project_library_save(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Count a pane save as outstanding and number it for its reply.
     fn begin_project_library_save(&mut self) -> u64 {
         self.project_pane.pending_saves += 1;
         self.project_pane.latest_save += 1;
+        self.project_pane.latest_pane_save = self.project_pane.latest_save;
+        self.project_pane.pane_save_failed = false;
         self.project_pane.latest_save
     }
 
@@ -312,20 +359,23 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) {
         self.project_pane.pending_saves = self.project_pane.pending_saves.saturating_sub(1);
-        // Every save writes the whole list, so only the newest one's outcome
-        // is current: an older reply neither replaces the list nor sets or
-        // clears the error.
-        if save == self.project_pane.latest_save {
-            match result {
-                Ok(preferences) => {
-                    self.set_project_library(preferences.project_library.clone());
-                    self.project_pane.error = None;
-                }
-                Err(error) => {
-                    self.project_pane.error =
-                        Some(format!("Could not save the project list: {error:#}"));
-                }
-            }
+        // Every pane save writes the whole list, so only the newest one's
+        // outcome is current: an older reply neither sets nor clears the
+        // error.
+        if save == self.project_pane.latest_pane_save {
+            self.project_pane.pane_save_failed = result.is_err();
+            self.project_pane.error = result
+                .as_ref()
+                .err()
+                .map(|error| format!("Could not save the project list: {error:#}"));
+        }
+        // A newer recent-project save's addition arrives through its own
+        // reply, so this list stands only when no save of either kind
+        // followed it.
+        if save == self.project_pane.latest_save
+            && let Ok(preferences) = result
+        {
+            self.set_project_library(preferences.project_library.clone());
         }
         cx.notify();
     }

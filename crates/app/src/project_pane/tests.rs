@@ -377,7 +377,7 @@ async fn the_keyboard_browses_the_tree_like_the_navigator(cx: &mut TestAppContex
 
 #[gpui::test]
 fn an_older_save_reply_never_replaces_a_newer_edit(cx: &mut TestAppContext) {
-    let (library, group, paths) = library_with_group();
+    let (library, group, _) = library_with_group();
     let (app, cx) = test_app(cx, enabled(), library.clone());
     let mut newer = library.clone();
     newer.rename_group(group, "Newer").unwrap();
@@ -398,28 +398,19 @@ fn an_older_save_reply_never_replaces_a_newer_edit(cx: &mut TestAppContext) {
             app.finish_project_library_save(first, &Ok(older.clone()), cx);
             assert_eq!(app.project_library, newer);
             assert_eq!(app.project_pane.pending_saves(), 1);
-            // A recent-project reply is dropped while a pane save is pending.
-            app.absorb_saved_project_library(app.latest_project_library_save(), library.clone());
-            assert_eq!(app.project_library, newer);
             app.finish_project_library_save(second, &Ok(newest.clone()), cx);
             assert_eq!(app.project_library, newer);
             assert_eq!(app.project_pane.pending_saves(), 0);
-            // One submitted after the last pane save applies.
-            app.absorb_saved_project_library(app.latest_project_library_save(), library.clone());
-            assert_eq!(app.project_library, library);
-            assert!(app.project_library.contains_project(&paths[1]));
 
             // Each reply wakes its own task, so older ones can be handled
-            // last: an older save's success or failure, or a recent-project
-            // save submitted before them, still cannot undo the rename or
-            // report a stale outcome.
-            let recent = app.latest_project_library_save();
+            // last: an older save's success or failure still cannot undo the
+            // rename or report a stale outcome.
+            app.set_project_library(library.clone());
             let first = app.begin_project_library_save();
             app.set_project_library(newer.clone());
             let second = app.begin_project_library_save();
             app.finish_project_library_save(second, &Ok(newest), cx);
             app.finish_project_library_save(first, &Ok(older), cx);
-            app.absorb_saved_project_library(recent, library.clone());
             assert_eq!(app.project_library, newer);
             let first = app.begin_project_library_save();
             let second = app.begin_project_library_save();
@@ -460,6 +451,178 @@ fn an_older_save_reply_never_replaces_a_newer_edit(cx: &mut TestAppContext) {
     });
 }
 
+/// The reply of a recent-project save that added `opened` to `stored`.
+fn remembered(stored: &ProjectLibrary, opened: &Path) -> Preferences {
+    let mut project_library = stored.clone();
+    project_library.remember(opened);
+    Preferences {
+        recent_repositories: vec![opened.to_owned()],
+        project_library,
+        ..Default::default()
+    }
+}
+
+#[gpui::test]
+async fn opening_a_project_during_a_pane_save_keeps_both_in_every_reply_order(
+    cx: &mut TestAppContext,
+) {
+    let (base, group, _) = library_with_group();
+    let (app, cx) = test_app(cx, enabled(), base.clone());
+    let opened = Path::new("/projects/gamma");
+    let mut edited = base.clone();
+    edited.rename_group(group, "Renamed").unwrap();
+    let merged = remembered(&edited, opened).project_library;
+    let pane_reply = Preferences {
+        project_library: edited.clone(),
+        ..Default::default()
+    };
+
+    for pane_submitted_first in [true, false] {
+        for pane_reply_first in [true, false] {
+            let case = format!(
+                "pane save submitted {}, its reply handled {}",
+                if pane_submitted_first {
+                    "first"
+                } else {
+                    "second"
+                },
+                if pane_reply_first { "first" } else { "second" },
+            );
+            let resaved = cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.set_project_library(base.clone());
+                    // The serialized writer stores each list in submission
+                    // order, so the recent save adds the project to whatever
+                    // the store held when it ran.
+                    let (pane, recent, recent_reply) = if pane_submitted_first {
+                        app.set_project_library(edited.clone());
+                        let pane = app.begin_project_library_save();
+                        let recent = app.begin_recent_project_save(opened);
+                        (pane, recent, remembered(&edited, opened))
+                    } else {
+                        let recent = app.begin_recent_project_save(opened);
+                        app.set_project_library(edited.clone());
+                        let pane = app.begin_project_library_save();
+                        (pane, recent, remembered(&base, opened))
+                    };
+                    let latest = app.project_pane.latest_save;
+                    if pane_reply_first {
+                        app.finish_project_library_save(pane, &Ok(pane_reply.clone()), cx);
+                        app.absorb_remembered_project(recent, &recent_reply, window, cx);
+                    } else {
+                        app.absorb_remembered_project(recent, &recent_reply, window, cx);
+                        app.finish_project_library_save(pane, &Ok(pane_reply.clone()), cx);
+                    }
+                    assert_eq!(app.project_library, merged, "{case}");
+                    assert!(app.project_pane.error.is_none(), "{case}");
+                    // A pane save after the recent one wrote the list without
+                    // the project, so only then is the merged list saved.
+                    let resaved = app.project_pane.latest_save > latest;
+                    assert_eq!(resaved, !pane_submitted_first, "{case}");
+                    assert_eq!(app.project_pane.pending_saves(), usize::from(resaved));
+                    if resaved {
+                        assert_eq!(
+                            app.project_pane.latest_pane_save,
+                            app.project_pane.latest_save
+                        );
+                    }
+                    resaved
+                })
+            });
+            settle_save(&app, cx).await;
+            app.read_with(cx, |app, _| {
+                assert_eq!(app.project_library, merged, "{case}");
+                assert_eq!(app.project_pane.pending_saves(), 0, "{case}");
+                assert!(app.project_pane.error.is_none(), "{case}");
+            });
+            if resaved {
+                assert_eq!(Preferences::load().project_library, merged, "{case}");
+            }
+        }
+    }
+}
+
+#[gpui::test]
+fn a_recent_reply_after_a_failed_newer_pane_save_leaves_the_write_to_retry(
+    cx: &mut TestAppContext,
+) {
+    let (base, group, _) = library_with_group();
+    let (app, cx) = test_app(cx, enabled(), base.clone());
+    let opened = Path::new("/projects/gamma");
+    let mut edited = base.clone();
+    edited.rename_group(group, "Renamed").unwrap();
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            let recent = app.begin_recent_project_save(opened);
+            app.set_project_library(edited.clone());
+            let pane = app.begin_project_library_save();
+            app.finish_project_library_save(pane, &Err(anyhow::anyhow!("disk full")), cx);
+            let latest = app.project_pane.latest_save;
+            // The failed pane save wrote nothing, so the store kept the
+            // project. The reply merges it beside the unsaved edit and
+            // submits nothing: only Retry writes the list again.
+            app.absorb_remembered_project(recent, &remembered(&base, opened), window, cx);
+            assert_eq!(
+                app.project_library,
+                remembered(&edited, opened).project_library
+            );
+            assert!(app.project_pane.error.is_some());
+            assert_eq!(app.project_pane.latest_save, latest);
+            assert_eq!(app.project_pane.pending_saves(), 0);
+        })
+    });
+}
+
+#[gpui::test]
+fn a_recent_project_reply_adds_only_what_the_pane_lacked_and_the_store_kept(
+    cx: &mut TestAppContext,
+) {
+    let (library, _, paths) = library_with_group();
+    let (app, cx) = test_app(cx, enabled(), library.clone());
+    let listed = &paths[1];
+    let mut removed = library.clone();
+    assert!(removed.forget_project(listed));
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            // The pane listed the project when it was reopened, and the user
+            // removed it before the recent save's reply.
+            let recent = app.begin_recent_project_save(listed);
+            app.set_project_library(removed.clone());
+            let pane = app.begin_project_library_save();
+            app.absorb_remembered_project(recent, &remembered(&library, listed), window, cx);
+            assert_eq!(app.project_library, removed);
+            assert_eq!(app.project_pane.pending_saves(), 1);
+            app.finish_project_library_save(
+                pane,
+                &Ok(Preferences {
+                    project_library: removed.clone(),
+                    ..Default::default()
+                }),
+                cx,
+            );
+            assert_eq!(app.project_library, removed);
+            assert_eq!(app.project_pane.pending_saves(), 0);
+
+            // A store that refused the project, such as a list full of
+            // grouped projects, has no addition to merge.
+            let refused = Path::new("/projects/gamma");
+            let recent = app.begin_recent_project_save(refused);
+            app.absorb_remembered_project(
+                recent,
+                &Preferences {
+                    recent_repositories: vec![refused.to_owned()],
+                    project_library: removed.clone(),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            );
+            assert_eq!(app.project_library, removed);
+            assert_eq!(app.project_pane.pending_saves(), 0);
+        })
+    });
+}
+
 #[gpui::test]
 async fn a_failed_save_stays_visible_in_the_pane_until_retry_succeeds(cx: &mut TestAppContext) {
     let (library, group, _) = library_with_group();
@@ -473,7 +636,7 @@ async fn a_failed_save_stays_visible_in_the_pane_until_retry_succeeds(cx: &mut T
     cx.update(|window, cx| app.update(cx, |app, cx| app.toggle_project_group(group, window, cx)));
     settle_save(&app, cx).await;
     assert!(cx.debug_bounds("project-pane-error").is_some());
-    app.read_with(cx, |app, _| {
+    let edited = app.read_with(cx, |app, _| {
         assert!(
             app.project_pane
                 .error
@@ -483,20 +646,43 @@ async fn a_failed_save_stays_visible_in_the_pane_until_retry_succeeds(cx: &mut T
         // The edit stays on screen so Retry can write it.
         assert!(app.project_library.group(group).unwrap().collapsed);
         assert!(app.operation_error.is_none());
+        app.project_library.clone()
     });
 
+    // Opening a project now saves the recents to a writable store holding
+    // neither the edit nor the project. Its reply adds the project beside
+    // the unsaved edit and leaves the failure in place.
     fs::remove_dir(&store).unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let opened = project.path().canonicalize().unwrap();
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.path = Some(project.path().to_owned());
+            app.remember_repository(window, cx);
+            app.path = None;
+        })
+    });
+    settle_save(&app, cx).await;
+    let mut merged = edited;
+    assert!(merged.remember(&opened));
+    assert!(cx.debug_bounds("project-pane-error").is_some());
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.project_library, merged);
+        assert!(app.project_pane.error.is_some());
+        assert_eq!(app.project_pane.pending_saves(), 0);
+        assert!(app.operation_error.is_none());
+    });
+
     cx.update(|window, cx| app.update(cx, |app, cx| app.retry_project_library_save(window, cx)));
     settle_save(&app, cx).await;
     assert!(cx.debug_bounds("project-pane-error").is_none());
-    app.read_with(cx, |app, _| assert!(app.project_pane.error.is_none()));
-    assert!(
-        Preferences::load()
-            .project_library
-            .group(group)
-            .unwrap()
-            .collapsed
-    );
+    app.read_with(cx, |app, _| {
+        assert!(app.project_pane.error.is_none());
+        assert_eq!(app.project_library, merged);
+    });
+    let saved = Preferences::load();
+    assert_eq!(saved.project_library, merged);
+    assert_eq!(saved.recent_repositories, vec![opened]);
 }
 
 #[gpui::test]
