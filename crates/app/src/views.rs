@@ -337,9 +337,10 @@ impl GitTurtle {
             .into_any_element()
     }
 
-    /// `squeezed` marks a History navigation hidden only because the window is
-    /// too narrow; its button explains that instead of doing nothing.
-    pub(super) fn render_rail(&self, squeezed: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// `narrow` marks a History window too narrow for navigation. Its button
+    /// then explains that, whatever the saved choice, instead of changing a
+    /// choice nothing would show.
+    pub(super) fn render_rail(&self, narrow: bool, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
         div()
             .debug_selector(|| "repository-rail".into())
@@ -355,16 +356,17 @@ impl GitTurtle {
             .border_r_1()
             .border_color(rgb(colors.border))
             .when(self.mode == WorkspaceMode::History, |rail| {
-                let label = if squeezed {
+                let label = if narrow {
                     "Widen the window to show branches and worktrees"
                 } else {
                     "Show branches and worktrees"
                 };
                 rail.child(
                     button("rail-sidebar", "", "commit", false)
+                        .debug_selector(|| "rail-sidebar".into())
                         .accessibility_label(label)
                         .tooltip(label)
-                        .disabled(squeezed)
+                        .disabled(narrow)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.sidebar = true;
                             this.history_sidebar = true;
@@ -1862,6 +1864,26 @@ impl GitTurtle {
             .min((window.viewport_size().width - px(800.)).max(px(180.)))
     }
 
+    /// Whether History has room for its navigation beside the table and the
+    /// narrowest inspector.
+    pub(super) fn navigation_fits(&self, window: &Window) -> bool {
+        self.repository_width(window) >= px(SIDEBAR_FIT_WIDTH)
+    }
+
+    /// The shortcut, the menu bar and the command palette share this. Outside
+    /// History it returns there. In History too narrow for navigation it keeps
+    /// the saved choice, since flipping it would show nothing until the window
+    /// widens; the rail button and the palette entry are disabled there.
+    pub(super) fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode != WorkspaceMode::History {
+            self.back_to_history(window, cx);
+        } else if self.navigation_fits(window) {
+            self.sidebar = !self.sidebar;
+            self.history_sidebar = self.sidebar;
+            cx.notify();
+        }
+    }
+
     /// The width the repository page receives beside the project pane.
     fn repository_width(&self, window: &Window) -> Pixels {
         let width = window.viewport_size().width;
@@ -1880,7 +1902,6 @@ impl GitTurtle {
         // navigation choice are untouched.
         let width = self.repository_width(window);
         let narrow = width < px(SIDEBAR_FIT_WIDTH);
-        let squeezed = narrow && self.sidebar && self.mode == WorkspaceMode::History;
         let rail = appearance::ui_size(44.);
         let (content_min, inspector_min) = if narrow {
             let beside_rail = width - rail;
@@ -1899,7 +1920,7 @@ impl GitTurtle {
                 .size_full()
                 .flex()
                 .min_w_0()
-                .child(self.render_rail(squeezed, cx))
+                .child(self.render_rail(narrow, cx))
                 .child(
                     div()
                         .flex_1()
@@ -1908,7 +1929,7 @@ impl GitTurtle {
                         .child(self.render_preview(content_min - rail, cx)),
                 )
                 .into_any_element()
-        } else if self.sidebar && !squeezed {
+        } else if self.sidebar && !narrow {
             h_resizable("history-columns")
                 .with_state(&self.history_panels)
                 .on_resize({
@@ -1940,7 +1961,7 @@ impl GitTurtle {
                 .size_full()
                 .flex()
                 .min_w_0()
-                .child(self.render_rail(squeezed, cx))
+                .child(self.render_rail(narrow, cx))
                 .child(
                     div()
                         .flex_1()
@@ -2348,13 +2369,7 @@ impl Render for GitTurtle {
                 {
                     return;
                 }
-                if this.mode != WorkspaceMode::History {
-                    this.back_to_history(window, cx);
-                } else {
-                    this.sidebar = !this.sidebar;
-                    this.history_sidebar = this.sidebar;
-                    cx.notify();
-                }
+                this.toggle_sidebar(window, cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleProjectPane, window, cx| {
                 this.toggle_project_pane(window, cx)
@@ -2548,14 +2563,41 @@ mod tests {
     use super::*;
     use core::prelude::v1::test;
 
-    /// Tiling window managers such as Hyprland ignore the window's minimum
-    /// size, so a half-screen tile is often 600–800 px wide, and at a
-    /// fractional scale a half tile of a display about 1,000 logical pixels
-    /// wide is 460–560 px wide and shorter than the minimum height.
-    #[gpui::test]
-    async fn narrow_windows_keep_the_inspector_whole_and_the_header_on_one_row(
+    fn draw(cx: &mut VisualTestContext) {
+        for _ in 0..3 {
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            cx.executor().run_until_parked();
+        }
+    }
+    async fn settle(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        for _ in 0..8 {
+            cx.executor().run_until_parked();
+            let tasks = cx.update(|_, cx| {
+                app.update(cx, |app, _| {
+                    [app.task.take(), app.status_task.take()]
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<_>>()
+                })
+            });
+            if tasks.is_empty() {
+                break;
+            }
+            for task in tasks {
+                task.await;
+            }
+        }
+        draw(cx);
+    }
+
+    /// A 1000 × 680 window on a one-commit fixture, in History with the
+    /// commit selected. Keep the returned directory until the test ends.
+    async fn history_window(
         cx: &mut TestAppContext,
-    ) {
+    ) -> (tempfile::TempDir, Entity<GitTurtle>, &mut VisualTestContext) {
         use gpui_kit::component::Root;
         use std::{
             cell::RefCell,
@@ -2563,36 +2605,6 @@ mod tests {
             process::{Command, Stdio},
             rc::Rc,
         };
-
-        fn draw(cx: &mut VisualTestContext) {
-            for _ in 0..3 {
-                cx.update(|window, cx| {
-                    window.simulate_next_frame(cx);
-                    window.draw(cx).clear(cx);
-                });
-                cx.executor().run_until_parked();
-            }
-        }
-        async fn settle(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
-            for _ in 0..8 {
-                cx.executor().run_until_parked();
-                let tasks = cx.update(|_, cx| {
-                    app.update(cx, |app, _| {
-                        [app.task.take(), app.status_task.take()]
-                            .into_iter()
-                            .flatten()
-                            .collect::<Vec<_>>()
-                    })
-                });
-                if tasks.is_empty() {
-                    break;
-                }
-                for task in tasks {
-                    task.await;
-                }
-            }
-            draw(cx);
-        }
 
         cx.executor().allow_parking();
         cx.update(|cx| {
@@ -2661,6 +2673,18 @@ mod tests {
         settle(&app, cx).await;
         cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(0, window, cx)));
         settle(&app, cx).await;
+        (fixture, app, cx)
+    }
+
+    /// Tiling window managers such as Hyprland ignore the window's minimum
+    /// size, so a half-screen tile is often 600–800 px wide, and at a
+    /// fractional scale a half tile of a display about 1,000 logical pixels
+    /// wide is 460–560 px wide and shorter than the minimum height.
+    #[gpui::test]
+    async fn narrow_windows_keep_the_inspector_whole_and_the_header_on_one_row(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = history_window(cx).await;
 
         let one_row = appearance::ui_size(60.);
         for (width, height) in [
@@ -2738,6 +2762,81 @@ mod tests {
                 "Blame under the inspector at {width}: {blame:?}, files {files:?}"
             );
         }
+    }
+
+    /// With navigation hidden only by a narrow window, the shortcut, the rail
+    /// button and the palette entry leave the saved choice alone instead of
+    /// flipping one that nothing would show until the window widens.
+    #[gpui::test]
+    async fn narrow_history_keeps_the_navigation_choice(cx: &mut TestAppContext) {
+        use crate::command_palette::CommandId;
+
+        let (_fixture, app, cx) = history_window(cx).await;
+        cx.update(|window, cx| {
+            crate::shortcuts::bind_keys(cx);
+            let focus = app.read(cx).app_focus.clone();
+            window.focus(&focus, cx);
+        });
+        let toggle = if cfg!(target_os = "macos") {
+            "cmd-b"
+        } else {
+            "ctrl-b"
+        };
+        let state = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                let app = app.read(cx);
+                (
+                    app.sidebar,
+                    app.history_sidebar,
+                    app.menu_command_reason(CommandId::Sidebar, window),
+                )
+            })
+        };
+        let click_rail = |cx: &mut VisualTestContext| {
+            let button = cx
+                .debug_bounds("rail-sidebar")
+                .expect("History's rail offers navigation");
+            cx.simulate_click(button.center(), Modifiers::default());
+            draw(cx);
+        };
+        let press_toggle = |cx: &mut VisualTestContext| {
+            cx.simulate_keystrokes(toggle);
+            draw(cx);
+        };
+        let resize = |cx: &mut VisualTestContext, width: f32, height: f32| {
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+        };
+        let narrow = Some("Widen the window to show branches and worktrees");
+
+        // Wide, the shortcut hides the navigation.
+        assert_eq!(state(cx), (true, true, None));
+        press_toggle(cx);
+        assert_eq!(state(cx), (false, false, None));
+        assert!(cx.debug_bounds("history-sidebar").is_none());
+
+        // Hidden by choice and then narrowed, nothing can show it: the rail
+        // button, the shortcut and the palette entry keep the choice.
+        resize(cx, 600., 718.);
+        assert_eq!(state(cx), (false, false, narrow));
+        click_rail(cx);
+        press_toggle(cx);
+        assert_eq!(state(cx), (false, false, narrow));
+
+        // Widened, the rail button shows the navigation again.
+        resize(cx, 1000., 680.);
+        click_rail(cx);
+        assert_eq!(state(cx), (true, true, None));
+        assert!(cx.debug_bounds("history-sidebar").is_some());
+
+        // Shown by choice and then narrowed, the shortcut keeps the choice,
+        // so widening brings the navigation back.
+        resize(cx, 600., 718.);
+        press_toggle(cx);
+        assert_eq!(state(cx), (true, true, narrow));
+        assert!(cx.debug_bounds("history-sidebar").is_none());
+        resize(cx, 1000., 680.);
+        assert!(cx.debug_bounds("history-sidebar").is_some());
     }
 
     #[gpui::test]
