@@ -56,6 +56,10 @@ impl Server {
                     }
                     Err(error) => panic!("{error}"),
                 };
+                // BSD accept(2), as on macOS, copies the listener's O_NONBLOCK to the
+                // stream, so a request not yet written would read as empty and be
+                // answered 401 even when Git sends credentials. Linux does not.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(1)))
                     .unwrap();
@@ -69,6 +73,11 @@ impl Server {
                         Ok(0) | Err(_) => break,
                         Ok(n) => request.extend_from_slice(&bytes[..n]),
                     }
+                }
+                // A truncated request is not a missing credential; let Git see a
+                // transport failure instead of a 401 that makes it reject the helper's answer.
+                if !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    continue;
                 }
                 let request = String::from_utf8_lossy(&request);
                 // Basic base64("fixture:fixture-token"), disposable fixture only.

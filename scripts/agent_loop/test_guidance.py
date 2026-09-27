@@ -1,10 +1,40 @@
 """Regression fixtures for discovery metadata and maintained guidance links."""
 
+import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
+from unittest import mock
+import zlib
 
+from agent_loop import guidance
 from agent_loop.guidance import markdown_anchors, validate
+
+
+def chunk(kind: bytes, body: bytes) -> bytes:
+    return len(body).to_bytes(4, "big") + kind + body + zlib.crc32(kind + body).to_bytes(4, "big")
+
+
+def png(*chunks: bytes) -> bytes:
+    header = chunk(b"IHDR", (1).to_bytes(4, "big") * 2 + bytes([8, 0, 0, 0, 0]))
+    return guidance._PNG_SIGNATURE + header + b"".join(chunks) + chunk(b"IEND", b"")
+
+
+def segment(marker: int, body: bytes) -> bytes:
+    return bytes([0xFF, marker]) + (len(body) + 2).to_bytes(2, "big") + body
+
+
+def jpeg(*segments: bytes, after_scan: bytes = b"") -> bytes:
+    scan = segment(0xDA, bytes(8)) + b"\x12\xff\x00\x34\xff\xd0\x56"
+    return b"\xff\xd8" + b"".join(segments) + scan + after_scan + b"\xff\xd9"
+
+
+def exif(tag_text: bytes) -> bytes:
+    """A little-endian TIFF block with one entry whose value is `tag_text`."""
+    entry = (0x9C9D).to_bytes(2, "little") + (1).to_bytes(2, "little") + len(tag_text).to_bytes(4, "little")
+    ifd = (1).to_bytes(2, "little") + entry + (26).to_bytes(4, "little") + bytes(4)
+    return b"II*\x00" + (8).to_bytes(4, "little") + ifd + tag_text
 
 
 class GuidanceTests(unittest.TestCase):
@@ -161,13 +191,152 @@ Read [rules](../../absent.md).
                    ' "run": "<worktree>/.local/themes-evidence/run/home"}\n')
         self.write("docs/notes.md", "Paths such as `/home/<user>/…`, /home/<name>/ and /Users/<name>/ "
                    "are placeholders; files under /home/ belong to users.\n")
-        self.write("docs/evidence/frame.png", "").write_bytes(b"\x89PNG\r\n/home/alice/")
+        # Pixel data is neither documentation text nor image metadata.
+        self.write("docs/evidence/frame.png", "").write_bytes(png(chunk(b"IDAT", b"/home/alice/")))
         self.assertEqual(validate(self.root), [])
 
     def test_anchor_slug_formatting_unicode_and_duplicates(self):
         anchors = markdown_anchors("# A `code` & **thing**!\n# Café\n# Café\n"
                                    '<a id="custom"></a>\n`<a id="example"></a>`\n')
         self.assertEqual(anchors, {"a-code--thing", "café", "café-1", "custom"})
+
+
+class ImageMetadataTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name).resolve()
+        patcher = mock.patch.dict(os.environ, {guidance.PRIVATE_STRINGS_ENV: ""})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def image(self, name, data):
+        path = self.root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return path
+
+    def messages(self):
+        return [f"{issue.path.relative_to(self.root)}: {issue.message}"
+                for issue in guidance.image_metadata_issues(self.root)]
+
+    def test_each_png_text_chunk_and_exif_is_parsed(self):
+        cases = {
+            "text.png": (png(chunk(b"tEXt", b"Source\0/home/alice/shot.png")), "PNG tEXt holds an absolute home path"),
+            "ztxt.png": (png(chunk(b"zTXt", b"Author\0\0" + zlib.compress(b"alice@users.noreply.github.com"))),
+                         "PNG zTXt holds an email address"),
+            "itxt.png": (png(chunk(b"iTXt", b"Comment\0\0\0en\0\0C:\\Users\\alice\\shot.png")),
+                         "PNG iTXt holds an absolute home path"),
+            "xmp.png": (png(chunk(b"iTXt", guidance._XMP_KEYWORD + b"\0\1\0\0\0" +
+                                  zlib.compress(b"<x:xmpmeta><dc:creator>alice@mail.example.co</dc:creator>"))),
+                        "PNG iTXt XMP holds an email address"),
+            "exif.png": (png(chunk(b"eXIf", exif("/Users/alice/Desktop".encode("utf-16-le")))),
+                         "PNG eXIf holds an absolute home path"),
+        }
+        for name, (data, _) in cases.items():
+            self.image(name, data)
+        found = self.messages()
+        for name, (_, expected) in cases.items():
+            self.assertIn(f"{name}: image metadata {expected}; strip or rewrite that metadata", found)
+        self.assertEqual(len(found), len(cases), found)
+
+    def test_each_jpeg_segment_is_parsed_including_after_the_scan(self):
+        self.image("exif.jpg", jpeg(segment(0xE1, b"Exif\0\0" + exif(b"/home/alice/"))))
+        self.image("xmp.jpeg", jpeg(segment(0xE1, b"http://ns.adobe.com/xap/1.0/\0<rdf>bob@mail.example.co</rdf>")))
+        self.image("comment.jpg", jpeg(segment(0xE0, b"JFIF\0"), after_scan=segment(0xFE, b"/Users/bob/pic")))
+        # Some tracked .png files hold JPEG data; the parser follows the content.
+        self.image("named.png", jpeg(segment(0xFE, b"carol@mail.example.co")))
+        self.assertEqual(sorted(self.messages()), sorted([
+            "comment.jpg: image metadata JPEG COM holds an absolute home path; strip or rewrite that metadata",
+            "exif.jpg: image metadata JPEG APP1 EXIF holds an absolute home path; strip or rewrite that metadata",
+            "named.png: image metadata JPEG COM holds an email address; strip or rewrite that metadata",
+            "xmp.jpeg: image metadata JPEG APP1 XMP holds an email address; strip or rewrite that metadata",
+        ]))
+
+    def test_existing_tool_icc_photoshop_and_c2pa_metadata_pass(self):
+        profile = b"acsp Display P3 /home/alice/profile.icc alice@mail.example.co"
+        self.image("plot.png", png(chunk(b"tEXt", b"Software\0Matplotlib version3.8.0, https://matplotlib.org/"),
+                                   chunk(b"iCCP", b"P3\0\0" + zlib.compress(profile)),
+                                   chunk(b"caBX", b"jumb c2pa claim_generator alice@mail.example.co"),
+                                   chunk(b"IDAT", b"pixels@ab.cd /home/alice/")))
+        self.image("photo.jpg", jpeg(segment(0xE2, b"ICC_PROFILE\0\1\1" + profile),
+                                     segment(0xED, b"Photoshop 3.0\08BIM /Users/alice/"),
+                                     segment(0xE1, b"Exif\0\0" + exif(b"Adobe Photoshop 25.0 (Macintosh)"))))
+        self.assertEqual(self.messages(), [])
+
+    def test_reserved_example_domains_and_redacted_homes_pass(self):
+        text = (b"qa@example.invalid a@example.com b@mail.example.org c@example.net d@host.example "
+                b"/home/REDACTED/x /Users/<user>/ Checkout/home/icon")
+        self.image("ok.png", png(chunk(b"tEXt", b"Comment\0" + text)))
+        self.image("icon.svg", b'<svg xmlns="http://www.w3.org/2000/svg"><!-- qa@example.invalid --></svg>')
+        self.assertEqual(self.messages(), [])
+
+    def test_svg_source_and_other_formats_are_scanned(self):
+        self.image("art.svg", b'<svg inkscape:export-filename="/home/alice/art.png"/>')
+        self.image("clip.gif", b"GIF89a\0\0!\xfe\x10dave@mail.example.co\0;")
+        self.image("broken.png", guidance._PNG_SIGNATURE + b"truncated /Users/erin/")
+        self.assertEqual(sorted(self.messages()), [
+            "art.svg: image metadata SVG source holds an absolute home path; strip or rewrite that metadata",
+            "broken.png: image metadata embedded bytes holds an absolute home path; strip or rewrite that metadata",
+            "clip.gif: image metadata embedded bytes holds an email address; strip or rewrite that metadata",
+        ])
+
+    def test_configured_private_strings_are_reported_but_never_echoed(self):
+        strings = self.root.parent / f"{self.root.name}-private.txt"
+        self.addCleanup(strings.unlink, missing_ok=True)
+        strings.write_text("# comment\n\nQA-Private Name\nzz\n", encoding="utf-8")
+        self.image("name.png", png(chunk(b"tEXt", "Author\0qa-private name".encode("latin-1"))))
+        with mock.patch.dict(os.environ, {guidance.PRIVATE_STRINGS_ENV: str(strings)}):
+            issues = guidance.image_metadata_issues(self.root)
+        text = "\n".join(str(issue) for issue in issues)
+        self.assertIn("name.png:1: image metadata PNG tEXt holds a configured private string", text)
+        self.assertIn(f"{strings}:4: private strings shorter than 3 characters", text)
+        self.assertNotIn("Private", text)
+        self.assertNotIn("zz", text.replace(str(strings), ""))
+        strings.unlink()
+        with mock.patch.dict(os.environ, {guidance.PRIVATE_STRINGS_ENV: str(strings)}):
+            self.assertIn("cannot read the private strings file", str(guidance.image_metadata_issues(self.root)[0]))
+
+    def test_default_private_strings_file_is_read_from_the_local_directory(self):
+        (self.root / guidance.PRIVATE_STRINGS_FILE).parent.mkdir(parents=True)
+        (self.root / guidance.PRIVATE_STRINGS_FILE).write_text("QA-Private Name\n", encoding="utf-8")
+        self.image("docs/name.jpg", jpeg(segment(0xFE, b"by QA-Private Name")))
+        self.assertEqual(self.messages(), ["docs/name.jpg: image metadata JPEG COM holds a configured private "
+                                           "string; strip or rewrite that metadata"])
+
+    def test_only_tracked_images_count_in_a_work_tree_and_size_is_bounded(self):
+        git = ["git", "-C", str(self.root), "-c", "core.hooksPath=/dev/null"]
+        subprocess.run([*git, "init", "-q"], check=True)
+        leak = png(chunk(b"tEXt", b"Source\0/home/alice/"))
+        self.image("tracked.png", leak)
+        self.image("big.jpg", b"\xff\xd8")
+        subprocess.run([*git, "add", "tracked.png", "big.jpg"], check=True)
+        self.image("untracked.png", leak)
+        self.image(".local/private.png", leak)
+        with mock.patch.object(guidance, "MAX_IMAGE_BYTES", 96):
+            self.image("big.jpg", b"\xff\xd8" + bytes(100))
+            self.assertEqual(self.messages(), [
+                "big.jpg: image exceeds the 0 MiB metadata scan bound",
+                "tracked.png: image metadata PNG tEXt holds an absolute home path; strip or rewrite that metadata",
+            ])
+
+    def test_decompressed_text_shares_one_budget_per_image_and_stops_the_parse(self):
+        stream = zlib.compress(bytes(600))
+        later = chunk(b"tEXt", b"Source\0/home/alice/")
+        with mock.patch.object(guidance, "MAX_INFLATED_BYTES", 1024):
+            self.image("many.png", png(*[chunk(b"zTXt", b"Comment\0\0" + stream)] * 3, later))
+            self.image("corrupt.png", png(chunk(b"iTXt", b"Comment\0\1\0\0\0not zlib"), later))
+            self.image("fits.png", png(chunk(b"zTXt", b"Comment\0\0" + stream), later))
+            texts = guidance._image_texts(Path("many.png"), (self.root / "many.png").read_bytes())
+            self.assertIs(iter(texts), texts)  # lazy: nothing is parsed before it is consumed
+            found = sorted(self.messages())
+        incomplete = ("image metadata {} exceeds the 1 KiB decompressed-text budget per image or does not "
+                      "decompress; the image was not fully checked")
+        self.assertEqual(found, [
+            "corrupt.png: " + incomplete.format("PNG iTXt"),
+            "fits.png: image metadata PNG tEXt holds an absolute home path; strip or rewrite that metadata",
+            "many.png: " + incomplete.format("PNG zTXt"),
+        ])
 
 
 if __name__ == "__main__":

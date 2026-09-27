@@ -2,7 +2,9 @@
 
 This is a structural check, not an evaluation of an agent's instructions. It
 does not infer paths from prose or execute commands found in documentation. It
-does reject absolute home paths anywhere in the text files under docs/.
+does reject absolute home paths anywhere in the text files under docs/, and
+home paths, personal email addresses and configured private strings in the
+metadata of every tracked image.
 """
 
 from __future__ import annotations
@@ -15,10 +17,12 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tomllib
 import unicodedata
 from urllib.parse import unquote, urlsplit
+import zlib
 
 
 @dataclass(frozen=True)
@@ -234,6 +238,256 @@ def home_path_issues(root: Path) -> list[Issue]:
                 line = text.count("\n", 0, match.start()) + 1
                 issues.append(Issue(path, line, f"absolute home path {match.group(0)}: write "
                                     "<worktree>/ or a prefix the record defines once"))
+    return issues
+
+
+# Image metadata. Pixels need the template scan in scripts/native_qa; this
+# covers the text a tool can embed: PNG tEXt, zTXt, iTXt (XMP included) and
+# eXIf chunks, JPEG APP1 EXIF/XMP and COM segments, SVG source, and the
+# printable runs of any other image format or of a PNG/JPEG that does not parse.
+# ICC profiles, Photoshop resources and C2PA manifests are not text chunks.
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".avif", ".heic", ".heif",
+                  ".icns", ".ico", ".bmp", ".tif", ".tiff"}
+MAX_IMAGE_BYTES = 32 * 1024 * 1024
+MAX_INFLATED_BYTES = 1024 * 1024  # decompressed text per image, all chunks together
+PRIVATE_STRINGS_ENV = "GITTURTLE_PRIVATE_STRINGS_FILE"
+PRIVATE_STRINGS_FILE = Path(".local/privacy/private-strings.txt")
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_XMP_KEYWORD = b"XML:com.adobe.xmp"
+_WINDOWS_HOME = re.compile(r"(?i)(?<![\w.-])[a-z]:[\\/]+users[\\/]+([\w.-]+)")
+_EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]+@((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})(?![\w-])", re.ASCII)
+_EXAMPLE_DOMAINS = ("example.com", "example.org", "example.net")
+_EXAMPLE_TLDS = ("invalid", "example")
+
+
+def _inflate(data: bytes, budget: list[int]) -> tuple[bytes, bool]:
+    """Decompressed text within the image's remaining budget, and whether the whole stream fit."""
+    if budget[0] <= 0:
+        return b"", False
+    inflater = zlib.decompressobj()
+    try:
+        text = inflater.decompress(data, budget[0])
+    except zlib.error:
+        return b"", False
+    budget[0] -= len(text)
+    return text, inflater.eof and not inflater.unconsumed_tail
+
+
+def _png_texts(data: bytes):
+    """(segment, bytes, complete) for each PNG text and EXIF chunk; ValueError if the file does not parse.
+
+    Compressed text shares one MAX_INFLATED_BYTES budget per image. The first
+    chunk that does not fit or does not decompress is yielded incomplete and
+    ends the parse, so the image is reported as not fully checked.
+    """
+    if not data.startswith(_PNG_SIGNATURE):
+        raise ValueError("not a PNG")
+    budget = [MAX_INFLATED_BYTES]
+    offset = len(_PNG_SIGNATURE)
+    while offset + 12 <= len(data):
+        length = int.from_bytes(data[offset:offset + 4], "big")
+        kind = data[offset + 4:offset + 8]
+        body = data[offset + 8:offset + 8 + length]
+        if len(body) != length:
+            raise ValueError("truncated chunk")
+        if kind == b"tEXt":
+            yield "PNG tEXt", body, True
+        elif kind == b"zTXt":
+            keyword, _, rest = body.partition(b"\0")
+            yield "PNG zTXt", keyword, True
+            text, complete = _inflate(rest[1:], budget)
+            yield "PNG zTXt", text, complete
+            if not complete:
+                return
+        elif kind == b"iTXt":
+            keyword, _, rest = body.partition(b"\0")
+            compressed, rest = rest[:1] == b"\1", rest[2:]
+            language, _, rest = rest.partition(b"\0")
+            translated, _, text = rest.partition(b"\0")
+            segment = "PNG iTXt XMP" if keyword == _XMP_KEYWORD else "PNG iTXt"
+            yield segment, b"\0".join((keyword, language, translated)), True
+            text, complete = _inflate(text, budget) if compressed else (text, True)
+            yield segment, text, complete
+            if not complete:
+                return
+        elif kind == b"eXIf":
+            yield "PNG eXIf", body, True
+        elif kind == b"IEND":
+            return
+        offset += 12 + length
+    raise ValueError("no IEND chunk")
+
+
+def _jpeg_texts(data: bytes):
+    """(segment, bytes, complete) for JPEG APP1 EXIF/XMP and COM segments; ValueError if it does not parse."""
+    if not data.startswith(b"\xff\xd8"):
+        raise ValueError("not a JPEG")
+    offset = 2
+    while offset + 2 <= len(data):
+        if data[offset] != 0xFF:
+            raise ValueError("expected a marker")
+        marker = data[offset + 1]
+        if marker == 0xFF:
+            offset += 1
+            continue
+        if marker == 0xD9:
+            return
+        if marker == 0x01 or 0xD0 <= marker <= 0xD7:
+            offset += 2
+            continue
+        length = int.from_bytes(data[offset + 2:offset + 4], "big")
+        body = data[offset + 4:offset + 2 + length]
+        if length < 2 or len(body) != length - 2:
+            raise ValueError("truncated segment")
+        if marker == 0xE1 and body.startswith(b"Exif\0"):
+            yield "JPEG APP1 EXIF", body[6:], True
+        elif marker == 0xE1 and body.startswith(b"http://ns.adobe.com/"):
+            yield "JPEG APP1 XMP", body.partition(b"\0")[2], True
+        elif marker == 0xFE:
+            yield "JPEG COM", body, True
+        offset += 2 + length
+        if marker == 0xDA:
+            # Entropy-coded data: skip to the next marker that is not a stuffed byte or restart.
+            while True:
+                offset = data.find(b"\xff", offset)
+                if offset < 0 or offset + 1 >= len(data):
+                    return
+                if data[offset + 1] != 0 and not 0xD0 <= data[offset + 1] <= 0xD7:
+                    break
+                offset += 2
+    raise ValueError("no end of image")
+
+
+def _image_texts(path: Path, data: bytes):
+    """Yield (segment, bytes, complete) lazily, choosing the parser by content: some tracked .png
+    files are JPEG data. A PNG or JPEG that stops parsing is then scanned whole."""
+    if path.suffix.lower() == ".svg":
+        yield "SVG source", data, True
+        return
+    parser = (_png_texts if data.startswith(_PNG_SIGNATURE) else
+              _jpeg_texts if data.startswith(b"\xff\xd8") else None)
+    if parser is not None:
+        try:
+            yield from parser(data)
+            return
+        except ValueError:
+            pass
+    yield "embedded bytes", data, True
+
+
+def _decodings(data: bytes):
+    """Text chunks are Latin-1 or UTF-8; EXIF also holds UTF-16 (the Windows XP* tags). One at a time."""
+    yield data.decode("latin-1")
+    yield data.decode("utf-8", "replace")
+    yield data.decode("utf-16-le", "replace")
+    yield data[1:].decode("utf-16-le", "replace")
+
+
+def _personal_email(domain: str) -> bool:
+    domain = domain.lower()
+    return not (domain.rsplit(".", 1)[-1] in _EXAMPLE_TLDS or
+                any(domain == name or domain.endswith("." + name) for name in _EXAMPLE_DOMAINS))
+
+
+def metadata_findings(text: str, private: list[str]) -> list[str]:
+    """Categories of personal data in decoded metadata; never the matched text itself."""
+    found = []
+    homes = [*_HOME_PATH.finditer(text), *_WINDOWS_HOME.finditer(text)]
+    if any(match.group(1).rstrip(".") not in _REDACTED_HOMES for match in homes):
+        found.append("an absolute home path")
+    if any(_personal_email(match.group(1)) for match in _EMAIL.finditer(text)):
+        found.append("an email address")
+    folded = text.casefold()
+    if any(value.casefold() in folded for value in private):
+        found.append("a configured private string")
+    return found
+
+
+def _checkout_roots(root: Path) -> list[Path]:
+    """This checkout, then the main checkout that owns its Git directory (for a linked worktree)."""
+    roots = [root]
+    common = subprocess.run(["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                            capture_output=True, text=True, check=False)
+    if common.returncode == 0 and common.stdout.strip():
+        main = Path(common.stdout.strip()).parent
+        if main != root and main.is_dir():
+            roots.append(main)
+    return roots
+
+
+def private_strings(root: Path) -> tuple[list[str], list[Issue]]:
+    """Strings from GITTURTLE_PRIVATE_STRINGS_FILE or the git-ignored .local/privacy/private-strings.txt.
+
+    One string per line; blank lines and lines starting with # are ignored. The
+    file is never tracked, and no report repeats a line from it.
+    """
+    override = os.environ.get(PRIVATE_STRINGS_ENV, "")
+    candidates = [Path(override)] if override else [base / PRIVATE_STRINGS_FILE for base in _checkout_roots(root)]
+    for path in candidates:
+        if not override and not path.is_file():
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeError) as error:
+            return [], [Issue(path, 1, f"cannot read the private strings file: {type(error).__name__}")]
+        values, issues = [], []
+        for number, line in enumerate(lines, 1):
+            value = line.strip()
+            if not value or value.startswith("#"):
+                continue
+            if len(value) < 3:
+                issues.append(Issue(path, number, "private strings shorter than 3 characters would match "
+                                    "almost any metadata; lengthen or remove this line"))
+            else:
+                values.append(value)
+        return values, issues
+    return [], []
+
+
+def tracked_images(root: Path) -> list[Path]:
+    """Every tracked image when root is a Git work tree's top level, otherwise every image beneath it."""
+    top = subprocess.run(["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+                         capture_output=True, text=True, check=False)
+    if top.returncode == 0 and Path(top.stdout.strip()).resolve() == root:
+        listed = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--cached", "--full-name"],
+                                capture_output=True, check=False, env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"})
+        if listed.returncode == 0:
+            names = [os.fsdecode(name) for name in listed.stdout.split(b"\0") if name]
+            return sorted(root / name for name in names if Path(name).suffix.lower() in IMAGE_SUFFIXES)
+    images = []
+    for directory, children, files in os.walk(root, followlinks=False):
+        children[:] = sorted(name for name in children if name not in {".git", ".local", "target", "node_modules"})
+        images += [Path(directory) / name for name in sorted(files) if Path(name).suffix.lower() in IMAGE_SUFFIXES]
+    return images
+
+
+def image_metadata_issues(root: Path) -> list[Issue]:
+    """Report personal data in the metadata of every tracked image, naming only the segment and category."""
+    private, issues = private_strings(root)
+    for path in tracked_images(root):
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            with path.open("rb") as stream:
+                data = stream.read(MAX_IMAGE_BYTES + 1)
+        except OSError as error:
+            issues.append(Issue(path, 1, f"cannot read image: {error.strerror}"))
+            continue
+        if len(data) > MAX_IMAGE_BYTES:
+            issues.append(Issue(path, 1, f"image exceeds the {MAX_IMAGE_BYTES >> 20} MiB metadata scan bound"))
+            continue
+        reported = set()
+        for segment, payload, complete in _image_texts(path, data):
+            if not complete:
+                issues.append(Issue(path, 1, f"image metadata {segment} exceeds the {MAX_INFLATED_BYTES >> 10} KiB "
+                                    "decompressed-text budget per image or does not decompress; the image was "
+                                    "not fully checked"))
+            for category in dict.fromkeys(found for text in _decodings(payload)
+                                          for found in metadata_findings(text, private)):
+                if (segment, category) not in reported:
+                    reported.add((segment, category))
+                    issues.append(Issue(path, 1, f"image metadata {segment} holds {category}; "
+                                        "strip or rewrite that metadata"))
     return issues
 
 
@@ -509,6 +763,7 @@ def validate(root: Path) -> list[Issue]:
                 issues.extend(_skill_issues(path, text))
             issues.extend(_link_issues(root, path, text, anchors))
     issues.extend(home_path_issues(root))
+    issues.extend(image_metadata_issues(root))
     return issues
 
 
@@ -525,5 +780,5 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(f"Guidance validation passed: {len(guidance_files(args.root.resolve()))} files; "
           "local links, Markdown anchors, skill metadata, agent TOML, Claude Code configuration, "
-          "and home paths under docs/.")
+          "home paths under docs/ and personal data in tracked image metadata.")
     return 0

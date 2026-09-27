@@ -346,6 +346,9 @@ impl AskpassServer {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         let handle = || -> Result<()> {
+                            // macOS accept(2) inherits the listener's O_NONBLOCK, which
+                            // would drop a prompt the helper has not finished writing.
+                            stream.set_nonblocking(false)?;
                             stream.set_read_timeout(Some(Duration::from_secs(1)))?;
                             stream.set_write_timeout(Some(Duration::from_secs(1)))?;
                             let mut size = [0; 4];
@@ -541,6 +544,41 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn askpass_server_waits_for_a_prompt_written_after_accept() {
+        use std::os::unix::net::UnixStream;
+        let control = OperationControl::default();
+        let server = AskpassServer::new(control.clone()).unwrap();
+        let mut stream = UnixStream::connect(&server.socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        // Outlast the 10 ms accept poll so the server holds the connection before any
+        // prompt bytes exist, then split the frame the way a slow helper could.
+        let prompt = "Password for 'https://example.invalid/repo': ";
+        thread::sleep(Duration::from_millis(100));
+        stream
+            .write_all(&(prompt.len() as u32).to_be_bytes())
+            .unwrap();
+        thread::sleep(Duration::from_millis(50));
+        stream.write_all(prompt.as_bytes()).unwrap();
+        let started = Instant::now();
+        let prompt = loop {
+            if let Some(prompt) = control.take_prompt() {
+                break prompt;
+            }
+            assert!(started.elapsed() < Duration::from_secs(3));
+            thread::sleep(Duration::from_millis(5));
+        };
+        assert!(control.answer(prompt.id, Some("fixture-answer".into())));
+        let mut size = [0; 4];
+        stream.read_exact(&mut size).unwrap();
+        let mut response = vec![0; u32::from_be_bytes(size) as usize];
+        stream.read_exact(&mut response).unwrap();
+        assert_eq!(response, b"fixture-answer");
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn cancelling_askpass_unblocks_helper_and_removes_private_socket() {
         let control = OperationControl::default();
         let server = AskpassServer::new(control.clone()).unwrap();
@@ -599,6 +637,8 @@ mod tests {
         std::fs::write(&helper, "#!/bin/sh\ncase \"$1\" in Username*) printf 'fixture-user' ;; *) printf 'fixture-password' ;; esac\n").unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let global_config = directory.path().join("gitconfig");
+        std::fs::write(&global_config, "").unwrap();
         run_controlled(OperationControl::default(), || {
             let mut command = normal_command(directory.path());
             command
@@ -606,6 +646,15 @@ mod tests {
                 .arg(format!("core.askPass={}", helper.display()))
                 .args(["credential", "fill"]);
             configure_askpass(&mut command, true)?;
+            // Git prefers GIT_ASKPASS over core.askPass, and system or global
+            // settings such as credential.username change the prompts. Clear
+            // what a desktop session can export so only this fixture applies.
+            command
+                .env_remove("GIT_ASKPASS")
+                .env_remove("GIT_CONFIG_PARAMETERS")
+                .env_remove("GIT_CONFIG_COUNT")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", &global_config);
             let output = bounded_write_output(
                 command,
                 Some(b"protocol=https\nhost=fixture.invalid\n\n".to_vec()),

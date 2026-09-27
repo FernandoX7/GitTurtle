@@ -5,6 +5,7 @@ Run with: python3 -m unittest scripts/test_gate.py
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -12,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -210,27 +212,77 @@ class FilterTests(unittest.TestCase):
         self.assertEqual(kept[-1], "boom")
 
 
-class KnownFailureTests(unittest.TestCase):
-    def outcome(self, kind: str, failed: tuple[str, ...]) -> gate.Outcome:
-        stage = gate.Stage("tests:x", ["cargo", "nextest", "run", "-p", "x"], kind=kind)
-        return gate.Outcome(stage, 100, 1.0, [], [], None, failed, "failed")
+class GitIsolationTests(unittest.TestCase):
+    ALL_TOOLS = {name: True for name in gate.OPTIONAL_TOOLS}
 
-    def test_only_known_failures_pass_with_warn(self):
-        outcome = gate.apply_known_failures(self.outcome("nextest", ("a::b",)), {"a::b"})
-        self.assertEqual(outcome.status, "warn")
-        self.assertIn("a::b", outcome.message)
+    def full_stages(self, root: Path) -> list[gate.Stage]:
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+        base = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        (root / "crates/app/src").mkdir(parents=True)
+        (root / "crates/app/src/views.rs").write_text("#[gpui::test]\nfn draws() {}\n")
+        subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+        scope = gate.Scope(("gitturtle",), True, True, ("crates/app/src/views.rs",))
+        with patch.dict(os.environ, {"GITTURTLE_GATE_COVERAGE_MIN": "50"}):
+            return gate.build_stages("full", scope, root, self.ALL_TOOLS, base, True, CRATES, root)
 
-    def test_unknown_failure_stays_failed(self):
-        outcome = gate.apply_known_failures(self.outcome("nextest", ("a::b", "c::d")), {"a::b"})
-        self.assertEqual(outcome.status, "failed")
+    def test_every_test_stage_is_isolated_and_nothing_else(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stages = self.full_stages(Path(tmp))
+            isolated = {stage.name for stage in stages if stage.unset_env}
+            self.assertEqual(isolated, {"tests", "gpui-iterations", "doctests", "mutants", "coverage"})
+            for stage in stages:
+                if stage.name not in isolated:
+                    self.assertNotIn("GIT_CONFIG_GLOBAL", stage.env, stage.name)
+                    continue
+                self.assertEqual(stage.env["GIT_CONFIG_NOSYSTEM"], "1")
+                global_config = Path(stage.env["GIT_CONFIG_GLOBAL"])
+                self.assertEqual(global_config.parent, Path(tmp))
+                self.assertEqual(global_config.read_text(), "")
+                self.assertTrue({"GIT_ASKPASS", "SSH_ASKPASS"} <= set(stage.unset_env))
+                self.assertTrue(stage.reproduce.startswith("env -u GIT_ASKPASS -u SSH_ASKPASS "), stage.reproduce)
 
-    def test_build_failure_without_names_stays_failed(self):
-        outcome = gate.apply_known_failures(self.outcome("nextest", ()), {"a::b"})
-        self.assertEqual(outcome.status, "failed")
+    def test_fast_crate_test_stages_are_isolated(self):
+        scope = gate.Scope(("gitturtle-core", "gitturtle-preview"), False, True, ())
+        with tempfile.TemporaryDirectory() as tmp:
+            stages = gate.build_stages("fast", scope, Path(tmp), {"nextest": True}, None, False, CRATES, Path(tmp))
+        tests = [stage for stage in stages if stage.name.startswith("tests:")]
+        self.assertEqual(len(tests), 2)
+        self.assertTrue(all(stage.unset_env == gate.GIT_ISOLATION_UNSET for stage in tests))
+        self.assertTrue(all(not stage.unset_env for stage in stages if not stage.name.startswith("tests:")))
 
-    def test_non_test_stage_untouched(self):
-        outcome = gate.apply_known_failures(self.outcome("cargo-json", ("a::b",)), {"a::b"})
-        self.assertEqual(outcome.status, "failed")
+    def test_run_stage_drops_inherited_askpass_and_configuration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dump = root / "env.json"
+            stage = gate.Stage("tests", [sys.executable, "-c", "import json, os, sys; json.dump(dict(os.environ), open(sys.argv[1], 'w'))", str(dump)])
+            [stage] = gate.isolate_test_stages([stage], root)
+            hostile = {
+                "GIT_ASKPASS": "/usr/bin/false",
+                "SSH_ASKPASS": "/usr/bin/false",
+                "SSH_ASKPASS_REQUIRE": "force",
+                "GIT_CONFIG_PARAMETERS": "'credential.username'='hostile'",
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_NOSYSTEM": "0",
+                "GIT_CONFIG_GLOBAL": "/hostile/gitconfig",
+            }
+            with patch.dict(os.environ, hostile):
+                outcome = gate.run_stage(stage, root, "fast")
+            self.assertEqual(outcome.returncode, 0, outcome.lines)
+            env = json.loads(dump.read_text())
+        for name in gate.GIT_ISOLATION_UNSET:
+            self.assertNotIn(name, env)
+        self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertEqual(env["GIT_CONFIG_GLOBAL"], str(root / "gitconfig"))
+
+    def test_next_command_for_an_isolated_test_keeps_the_isolation(self):
+        stage = gate.Stage("tests:gitturtle-core", ["cargo", "nextest", "run", "--locked", "-p", "gitturtle-core"], kind="nextest")
+        with tempfile.TemporaryDirectory() as tmp:
+            [stage] = gate.isolate_test_stages([stage], Path(tmp))
+        outcome = gate.Outcome(stage, 100, 1.0, [], [], None, ("a::b",), "failed")
+        command = gate.narrow_command(outcome)
+        self.assertTrue(command.startswith(gate.GIT_ISOLATION_PREFIX), command)
+        self.assertTrue(command.endswith("cargo nextest run --locked -p gitturtle-core -E 'test(=a::b)'"), command)
 
 
 class StageTests(unittest.TestCase):
@@ -275,7 +327,7 @@ class StageTests(unittest.TestCase):
             stages = gate.build_stages("fast", scope, root, self.tools(nextest=True), None, False, CRATES, root)
         stage = stages[-1]
         self.assertEqual(stage.name, "gpui-iterations")
-        self.assertEqual(stage.env, {"ITERATIONS": "20"})
+        self.assertEqual(stage.env["ITERATIONS"], "20")
         self.assertEqual(stage.argv[-1], "test(/::renders$/)")
 
     def test_full_adds_candidate_stages_and_mutants_when_diff_exists(self):
@@ -314,6 +366,122 @@ class StageTests(unittest.TestCase):
         self.assertIn("-p", coverage.argv)
 
 
+HAVE_PIL = importlib.util.find_spec("PIL") is not None
+
+
+class PrivacyStageTests(unittest.TestCase):
+    """The image privacy stage, with synthetic templates rendered from a harmless string."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve() / "repo"
+        self.root.mkdir()
+        environment = patch.dict(os.environ, {"XDG_CACHE_HOME": str(Path(self.tmp.name) / "cache")})
+        environment.start()
+        self.addCleanup(environment.stop)
+        os.environ.pop(gate.PRIVACY_TEMPLATES_ENV, None)
+        self.git("init", "-q", "-b", "main")
+        (self.root / "docs").mkdir()
+        (self.root / "docs/old.png").write_bytes(b"old")
+        (self.root / "docs/gone.png").write_bytes(b"gone")
+        self.git("add", ".")
+        self.git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "base")
+        self.base = self.git("rev-parse", "HEAD")
+
+    def git(self, *args: str) -> str:
+        return subprocess.run(["git", "-C", str(self.root), *args], capture_output=True, text=True, check=True).stdout.strip()
+
+    def stage(self) -> gate.Stage:
+        return gate.privacy_stage(self.root, self.base)
+
+    def test_without_templates_the_stage_is_skipped_and_never_passes(self) -> None:
+        stage = self.stage()
+        self.assertIsNone(stage.argv)
+        self.assertIsNone(stage.run)
+        self.assertIn("NOT scanned", stage.note)
+        scope = gate.Scope(("gitturtle-core",), True, True, ())
+        stages = gate.build_stages("full", scope, self.root, {name: False for name in gate.OPTIONAL_TOOLS}, self.base, False, CRATES, Path(self.tmp.name))
+        self.assertIn("privacy", [stage.name for stage in stages])
+        fast = gate.build_stages("fast", scope, self.root, {name: False for name in gate.OPTIONAL_TOOLS}, self.base, False, CRATES, Path(self.tmp.name))
+        self.assertNotIn("privacy", [stage.name for stage in fast])
+
+    def test_changed_images_exclude_deletions_other_files_and_symlinks(self) -> None:
+        (self.root / "docs/gone.png").unlink()
+        (self.root / "docs/old.png").write_bytes(b"changed")
+        (self.root / "docs/new.JPG").write_bytes(b"new")
+        (self.root / "docs/notes.md").write_text("text")
+        (self.root / "docs/link.png").symlink_to("old.png")
+        self.assertEqual(gate.changed_images(self.root, self.base), (["docs/new.JPG", "docs/old.png"], 0))
+
+    def test_non_ascii_names_are_scanned_and_unprintable_ones_refused(self) -> None:
+        (self.root / "docs/ñandú frame.png").write_bytes(b"new")
+        (self.root / "docs/sub").mkdir()
+        (self.root / "docs/sub/café.webp").write_bytes(b"new")
+        self.git("add", "docs/ñandú frame.png")
+        self.assertEqual(gate.changed_images(self.root, self.base), (["docs/sub/café.webp", "docs/ñandú frame.png"], 0))
+        (self.root / "docs/line\nbreak.png").write_bytes(b"new")
+        refused = 1
+        try:
+            (self.root / os.fsdecode(b"docs/latin-\xe9.png")).write_bytes(b"new")
+            refused += 1
+        except OSError:
+            pass  # file systems such as APFS refuse names that are not UTF-8
+        self.assertEqual(gate.changed_images(self.root, self.base)[1], refused)
+        (self.root / gate.PRIVACY_TEMPLATES_DIR).mkdir(parents=True)
+        stage = self.stage()
+        self.assertEqual(stage.run(), (1, f"{refused} added or changed image name(s) are not printable UTF-8; "
+                                          "rename them so they can be scanned\n"))
+
+    def test_default_directory_in_the_checkout_and_a_missing_configured_directory(self) -> None:
+        (self.root / gate.PRIVACY_TEMPLATES_DIR).mkdir(parents=True)
+        self.assertEqual(gate.privacy_templates(self.root), self.root / gate.PRIVACY_TEMPLATES_DIR)
+        (self.root / "docs/old.png").write_bytes(b"changed")
+        with patch.dict(os.environ, {gate.PRIVACY_TEMPLATES_ENV: str(Path(self.tmp.name) / "absent")}):
+            stage = self.stage()
+            code, text = stage.run()
+        self.assertEqual(code, 2)
+        self.assertNotIn(self.tmp.name, text + stage.reproduce)
+
+    def test_no_changed_images_is_reported_as_such(self) -> None:
+        (self.root / gate.PRIVACY_TEMPLATES_DIR).mkdir(parents=True)
+        stage = self.stage()
+        self.assertEqual(stage.run(), (0, "no added or changed images\n"))
+
+    def test_failed_image_listing_fails_instead_of_reporting_no_images(self) -> None:
+        (self.root / gate.PRIVACY_TEMPLATES_DIR).mkdir(parents=True)
+        self.assertIsNone(gate.changed_images(self.root, "0" * 40))  # a base Git cannot resolve
+        with patch.object(gate, "git_paths", return_value=None):
+            code, text = self.stage().run()
+        self.assertEqual(code, 1)
+        self.assertIn("nothing was scanned", text)
+
+    @unittest.skipUnless(HAVE_PIL, "Pillow is not installed")
+    def test_scan_names_only_images_and_verdicts(self) -> None:
+        from PIL import Image, ImageDraw, ImageFont
+
+        font = ImageFont.load_default()
+        text = Image.new("L", (80, 14), 255)
+        ImageDraw.Draw(text).text((2, 1), "QA-TEMPLATE", font=font, fill=0)
+        templates = Path(self.tmp.name) / "templates"
+        templates.mkdir()
+        text.save(templates / "QA-TEMPLATE-secret-name.png")
+        leaky = Image.new("L", (160, 60), 230)
+        leaky.paste(text, (40, 20))
+        leaky.convert("RGB").save(self.root / "docs/old.png")
+        Image.new("RGB", (160, 60), (230, 230, 230)).save(self.root / "docs/clean.png")
+        with patch.dict(os.environ, {gate.PRIVACY_TEMPLATES_ENV: str(templates)}):
+            stage = self.stage()
+            code, output = stage.run()
+        self.assertEqual(code, 1, output)
+        self.assertEqual(output.splitlines(), ["docs/clean.png: clean", "docs/old.png: MATCH",
+                                               "privacy scan: 2 image(s), 1 matched a template"])
+        outcome = gate.Outcome(stage, code, 1.0, output.splitlines(), output.splitlines(), None, (), "failed")
+        report = gate.render_report("full", outcome, [outcome], 0, {}, self.root)
+        for secret in ("QA-TEMPLATE", str(templates)):
+            self.assertNotIn(secret, output + stage.reproduce + stage.note + report)
+
+
 class ReportTests(unittest.TestCase):
     def test_render_report_fields_in_order(self):
         stage = gate.Stage("tests:gitturtle-core", ["cargo", "nextest", "run", "-p", "gitturtle-core"], kind="nextest")
@@ -347,8 +515,9 @@ class CliTests(unittest.TestCase):
         self.assertEqual(gate.main(["nightly"]), 4)
         self.assertEqual(gate.main(["fast", "--changed-only", "--workspace"]), 4)
 
-    def test_missing_known_failures_file_is_usage_error(self):
+    def test_known_failures_allowlist_is_retired(self):
         self.assertEqual(gate.main(["fast", "--known-failures", "/nonexistent/known.txt"]), 4)
+        self.assertFalse(hasattr(gate, "apply_known_failures"))
 
     def test_shell_quote(self):
         self.assertEqual(gate.shell_quote("cargo"), "cargo")

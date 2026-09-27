@@ -286,6 +286,42 @@ jobs:
           if-no-files-found: warn
           include-hidden-files: false
 
+  # Template-scans added or changed images against private-string templates
+  # that exist only in the optional NATIVE_QA_PRIVACY_TEMPLATES secret. GitHub
+  # withholds secrets from fork pull requests; those runs, and a repository
+  # without the secret, record "unavailable" with a notice instead of a pass.
+  image-privacy:
+    name: Image privacy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      status: ${{ steps.scan.outputs.status || steps.plan.outputs.status }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: List added or changed images
+        id: plan
+        env:
+          TEMPLATES_CONFIGURED: ${{ secrets.NATIVE_QA_PRIVACY_TEMPLATES != '' }}
+        run: python3 scripts/ci/image_privacy.py plan --list "$RUNNER_TEMP/image-privacy/images" --output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY"
+      # The Ubuntu archive's signed package; the scan's C engine uses the runner's compiler.
+      - name: Install Pillow from the Ubuntu archive
+        if: steps.plan.outputs.status == 'scan'
+        run: |
+          if ! /usr/bin/python3 -c 'import PIL' 2>/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends python3-pil
+          fi
+          /usr/bin/python3 -c 'import PIL; print("Pillow", PIL.__version__)'
+      - name: Template-scan added or changed images
+        id: scan
+        if: steps.plan.outputs.status == 'scan'
+        env:
+          NATIVE_QA_PRIVACY_TEMPLATES: ${{ secrets.NATIVE_QA_PRIVACY_TEMPLATES }}
+        run: /usr/bin/python3 scripts/ci/image_privacy.py scan --list "$RUNNER_TEMP/image-privacy/images" --directory "$RUNNER_TEMP/image-privacy" --jobs "$(nproc)" --output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY"
+
   website:
     name: Website
     needs: changes
@@ -297,7 +333,7 @@ jobs:
   quality:
     name: Quality gate
     if: always()
-    needs: [changes, agent-tooling, rust-format, rust-debug, rust-release, website]
+    needs: [changes, agent-tooling, rust-format, rust-debug, rust-release, image-privacy, website]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

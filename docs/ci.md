@@ -78,14 +78,18 @@ lines. Only fixed flags and a bounded plan are output. PR titles, branch names a
 other contributor fields are not interpolated into commands. Quality and the
 Website caller/callee use only `contents: read`; checkout does not persist its
 credentials. There is no `pull_request_target`, secret inheritance, publication,
-Pages permission or signing credential. External-fork approval remains controlled
+Pages permission or signing credential. The one secret Quality reads is the
+optional `NATIVE_QA_PRIVACY_TEMPLATES`, passed only to the
+[image privacy scan](#image-privacy-scan) step; GitHub withholds it from fork pull
+requests. External-fork approval remains controlled
 by GitHub's existing repository policy; C1 must observe a real approved fork run.
 
 ### Stable gate and compatibility
 
 `Quality gate` runs with `always()` after classification, formatting, the debug
-and release platform matrices, development tooling and the Website call. It
-requires successful classification and success for each required lane. A skipped lane is accepted only when the recorded classification says it is
+and release platform matrices, development tooling, the image privacy scan and the
+Website call. It requires successful classification and success for each required
+lane and for the image privacy job, whose recorded status it prints. A skipped lane is accepted only when the recorded classification says it is
 unneeded. Failures, cancellations, unexpected skips, absent jobs, mismatched
 outputs or unknown classification versions fail. Each matrix keeps
 `fail-fast: false` so one platform failure does not discard the other platform's
@@ -143,6 +147,59 @@ another action. Never remove protection to clear a failed check. The independent
 [security review](development/security-review.md) is a development acceptance
 requirement. It is not an automated GitHub status check, and a successful Quality
 gate alone does not establish that the review happened.
+
+### Image privacy scan
+
+The repository is public, and committed screenshots have leaked an account name,
+home paths and a hostname-derived Git identity in their pixels. Two checks guard
+images. The guidance check in the mandatory `Changes and CI policy` job parses the
+text metadata of every tracked image (PNG `tEXt`, `zTXt`, `iTXt` and `eXIf`
+chunks, JPEG APP1 EXIF and XMP and COM segments, SVG source) for home paths and
+email addresses outside the reserved example domains. Its declared limits: ICC
+profiles, JPEG APP13 (Photoshop and IPTC) and C2PA manifests, bytes after a PNG's
+`IEND` or a JPEG's end-of-image marker, and pixel data are not read; other formats
+and PNG or JPEG files that do not parse are searched whole; decompressed PNG text
+is capped at 1 MiB per image, and an image over the cap fails as not fully
+checked. Pixels need template matching against the private strings themselves,
+which no tracked file may hold.
+
+The `Image privacy` job runs on every Quality event. [`image_privacy.py`](../scripts/ci/image_privacy.py)
+lists the PNG, JPEG, GIF and WebP files the event adds or changes, using the
+classifier's verified comparisons (the merge-base to the PR head and the base to
+the merge commit; a main push's before/after) with deletions excluded. When the
+optional `NATIVE_QA_PRIVACY_TEMPLATES` repository secret is present, the job
+installs Pillow from the Ubuntu archive and runs the
+[native-QA scan](../scripts/native_qa/README.md#automated-scans) with
+`--redacted`, which prints each image's path and `clean` or `MATCH` only. Every
+frame of an animated GIF, WebP or PNG is scanned; an image with more than 64
+frames fails as unscannable rather than being sampled. A match
+fails the job and therefore `Quality gate`. The job records one of four statuses,
+and the gate prints it:
+
+- `scanned`: every added or changed image was scanned and none matched.
+- `no-images`: the event adds or changes no raster image.
+- `unavailable`: the secret is absent, which is always the case for a fork pull
+  request. The job emits a `::notice::` and a step-summary line saying the images
+  were **not** scanned; the gate line says so too. It is not a pass.
+- `no-comparison`: manual dispatch, or a main push without a previous commit, has
+  nothing to compare, and the notice says the images were not scanned.
+
+The secret is safe to hold because GitHub passes secrets only to runs from this
+repository's own branches, whose authors already have write access; a fork pull
+request, `pull_request_target` or a Dependabot run never sees it. It carries
+grayscale template pixels without file names (`qa.py privacy pack`), fits under
+GitHub's 48 KB limit, and reaches only the scan step's environment. That step
+writes it to a mode-0600 file under `$RUNNER_TEMP`, strips it from the scanner's
+environment, keeps the scanner's temporary files under `$RUNNER_TEMP`, and
+removes the file afterwards. GitHub masks the value in logs; the scan prints no
+template name, score, position or crop, so nothing else derived from it can
+reach a log, and nothing is uploaded or published. Image paths travel
+NUL-delimited in a file, unprintable names fail the job, and the scan output is
+printed with workflow commands stopped, so a crafted file name cannot become a
+workflow command. The owner creates or rotates the secret with the steps in the
+[native-QA tooling guide](../scripts/native_qa/README.md#automated-scans); until
+then every run reports `unavailable` or `no-images`. Locally, `python3
+scripts/gate.py full` runs the same scan when a templates directory is configured.
 
 ## Parallel validation and coverage
 
@@ -549,6 +606,38 @@ They are targets, not measured results or authorization to reduce validation.
 Record cold-run and runner-minute regressions alongside any warm improvement.
 These baseline runs predate CodeQL retirement. Separate that scope change from
 cache/fanout improvements when comparing the full required-check completion time.
+
+### Development-tooling job on macOS
+
+For documentation and tooling pull requests, the macOS development-tooling job
+is the critical path, and the agent-loop suite takes most of it. Never-merge
+probe [run 36284689192](https://github.com/FernandoX7/GitTurtle/actions/runs/36284689192)
+(September 27, 2026, `unittest --durations`) found that all 233 tests passed and
+four end-to-end controller classes took 94% of the macOS time. Nearly all of
+that time was spent inside controller Git writes. Each of the suite's roughly
+1,000 writes goes through `run_process`, and the supervisor and watchdog each
+waited for a fixed 50 ms tick. A 5-20 ms write therefore cost 110-135 ms on
+Linux and 230-350 ms on macOS. The watchdog's Python start-up, the guard
+process and seven fsyncs per write make up the rest. Those are the controller's
+crash-safety and durability mechanisms, so they stay.
+
+The supervisor now waits on the watchdog with `Popen.wait(timeout=0.05)`. The
+watchdog waits on its control pipe, backing off from 1 ms to 50 ms. Short writes
+finish within milliseconds, and a stop request or supervisor exit wakes the
+watchdog at once. Nothing else changes: spawning, process groups, the guard,
+signals, cleanup and durable records. Every agent-loop test still runs on both
+platforms, and none was skipped or removed.
+
+| Measurement (macos-15 unless noted) | Before | After |
+| --- | --- | --- |
+| Agent-loop suite, probe runs | 251 s, 278 s ([36284689192](https://github.com/FernandoX7/GitTurtle/actions/runs/36284689192)) | 119 s, 117 s ([36285858330](https://github.com/FernandoX7/GitTurtle/actions/runs/36285858330)) |
+| Agent-loop suite, ubuntu-24.04 probe | 137 s | 69 s |
+| Agent-loop step inside the tooling job | 281 s, 293 s (runs 36284332195, 36284341103) | 162.5 s, 141.4 s (run 36285853931 attempts 1 and 2) |
+| `Development tooling · macos-15` job | 343 s, 351 s (same runs) | 230 s, 206 s (same run and attempts) |
+
+The before and after runs differ only in `scripts/agent_loop/process.py` and
+`records.py`. On a 3-CPU hosted runner, both the per-test profile and the job
+durations vary by about 10%.
 
 ### Later measurements and C1
 
