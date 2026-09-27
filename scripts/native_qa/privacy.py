@@ -12,17 +12,25 @@ minutes per frame in pure Python, so the default engine is `ncc.c`, compiled
 once per source digest into a cache directory outside the repository. The
 pure-Python engine implements the same rules for hosts without a compiler
 and for the tests.
+
+Automated callers (the local gate and CI) load templates anonymously, so a
+template's file name, which can itself be private, never reaches their output.
+`pack_templates` stores only the grayscale pixels, in a compact form small
+enough for a GitHub repository secret.
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import lzma
 import math
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from operator import mul
 from pathlib import Path
 
@@ -33,6 +41,12 @@ FLAT_VARIANCE = 16.0  # per pixel: windows with a standard deviation under 4 can
 MAX_HITS = 4096
 LISTED_HITS = 20
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg")
+PACK_MAGIC = b"GTPRIV1\n"
+SECRET_LIMIT = 48_000  # GitHub limits a secret to 48 KB; this takes the smaller reading of KB
+MAX_PACKED_TEMPLATES = 256
+MAX_TEMPLATE_SIDE = 2048
+MAX_UNPACKED_BYTES = 16 * 1024 * 1024
+MAX_SCAN_FRAMES = 64  # animation frames per image; more is refused rather than sampled
 
 
 # ---------- engines ----------
@@ -132,8 +146,11 @@ def ncc_c(binary: Path, frame: bytes, width: int, height: int, templates: dict, 
             data, tw, th = templates[name]
             (scratch / f"{index}.raw").write_bytes(data)
             argv += [str(scratch / f"{index}.raw"), str(tw), str(th)]
-        output = subprocess.run(argv, capture_output=True, text=True, check=True).stdout
-    return parse_ncc_output(output, names)
+        completed = subprocess.run(argv, capture_output=True, text=True, check=False)
+    if completed.returncode != 0:
+        # Fixed text: the argument list carries template sizes, and stderr the scratch paths.
+        raise SystemExit(f"the ncc helper failed with exit status {completed.returncode}")
+    return parse_ncc_output(completed.stdout, names)
 
 
 def match(frame: bytes, width: int, height: int, templates: dict, threshold: float = THRESHOLD,
@@ -163,11 +180,11 @@ def git_unignored(path: Path) -> str | None:
     return None if ignored.returncode == 0 else top.stdout.strip()
 
 
-def refuse_tracked(path: Path, what: str) -> None:
+def refuse_tracked(path: Path, what: str, reveal: bool = True) -> None:
     tree = git_unignored(path)
     if tree is not None:
-        raise SystemExit(f"refusing: {what} {path} is inside the work tree {tree} and not ignored; "
-                         "keep personal-string templates out of any tracked path")
+        where = f"{what} {path} is inside the work tree {tree}" if reveal else f"the {what} is inside a Git work tree"
+        raise SystemExit(f"refusing: {where} and not ignored; keep personal-string templates out of any tracked path")
 
 
 def gray(image) -> tuple[bytes, int, int]:
@@ -175,17 +192,73 @@ def gray(image) -> tuple[bytes, int, int]:
     return image.tobytes(), image.width, image.height
 
 
-def load_templates(directory: Path) -> dict:
+def load_templates(directory: Path, anonymous: bool = False) -> dict:
+    """Templates keyed by file stem, or by position (`t1`, `t2`, ...) with no name or path in any message."""
     from PIL import Image
 
-    refuse_tracked(directory, "template directory")
+    where = "the template directory" if anonymous else str(directory)
+    refuse_tracked(directory, "template directory", reveal=not anonymous)
+    try:
+        paths = sorted(path for path in directory.iterdir() if path.suffix.lower() in IMAGE_SUFFIXES)
+    except OSError:
+        if not anonymous:
+            raise
+        raise SystemExit("the template directory cannot be read") from None
     templates = {}
-    for path in sorted(directory.iterdir()):
-        if path.suffix.lower() in IMAGE_SUFFIXES:
+    for number, path in enumerate(paths, 1):
+        try:
             with Image.open(path) as image:
-                templates[path.stem] = gray(image)
+                templates[f"t{number}" if anonymous else path.stem] = gray(image)
+        except (OSError, ValueError):
+            if not anonymous:
+                raise
+            raise SystemExit(f"template {number} in {where} is not a readable image") from None
     if not templates:
-        raise SystemExit(f"no PNG or JPEG templates in {directory}")
+        raise SystemExit(f"no PNG or JPEG templates in {where}")
+    return templates
+
+
+def pack_templates(templates: dict) -> str:
+    """Base64 of an xz stream of each template's size and grayscale pixels: no names, no file metadata."""
+    records = bytearray()
+    for _, (data, width, height) in sorted(templates.items()):
+        if not (0 < width <= MAX_TEMPLATE_SIDE and 0 < height <= MAX_TEMPLATE_SIDE):
+            raise SystemExit(f"a template is larger than {MAX_TEMPLATE_SIDE} px on a side")
+        records += width.to_bytes(2, "big") + height.to_bytes(2, "big") + data
+    if len(templates) > MAX_PACKED_TEMPLATES or len(records) > MAX_UNPACKED_BYTES:
+        raise SystemExit("too many or too large templates to pack")
+    packed = PACK_MAGIC + lzma.compress(bytes(records), preset=9 | lzma.PRESET_EXTREME)
+    return base64.b64encode(packed).decode("ascii")
+
+
+def unpack_templates(text: str) -> dict:
+    """The templates `pack_templates` wrote, keyed `t1`, `t2`, ...; refuses anything malformed or unbounded."""
+    corrupt = "the packed templates are malformed"
+    try:
+        raw = base64.b64decode("".join(text.split()), validate=True)
+    except ValueError:
+        raise SystemExit(corrupt) from None
+    if not raw.startswith(PACK_MAGIC):
+        raise SystemExit(corrupt)
+    decompressor = lzma.LZMADecompressor(format=lzma.FORMAT_XZ)
+    try:
+        records = decompressor.decompress(raw[len(PACK_MAGIC):], max_length=MAX_UNPACKED_BYTES + 1)
+    except lzma.LZMAError:
+        raise SystemExit(corrupt) from None
+    if len(records) > MAX_UNPACKED_BYTES or not decompressor.eof or decompressor.unused_data:
+        raise SystemExit(corrupt)
+    templates, offset = {}, 0
+    while offset < len(records):
+        width = int.from_bytes(records[offset:offset + 2], "big")
+        height = int.from_bytes(records[offset + 2:offset + 4], "big")
+        end = offset + 4 + width * height
+        if (len(templates) == MAX_PACKED_TEMPLATES or offset + 4 > len(records) or end > len(records)
+                or not (0 < width <= MAX_TEMPLATE_SIDE and 0 < height <= MAX_TEMPLATE_SIDE)):
+            raise SystemExit(corrupt)
+        templates[f"t{len(templates) + 1}"] = (records[offset + 4:end], width, height)
+        offset = end
+    if not templates:
+        raise SystemExit(corrupt)
     return templates
 
 
@@ -214,17 +287,31 @@ def frame_paths(paths: list[Path]) -> list[Path]:
     return found
 
 
-def scan(frames: list[Path], templates: dict, threshold: float = THRESHOLD, engine: str = "auto") -> dict:
-    from PIL import Image
+def scan(frames: list[Path], templates: dict, threshold: float = THRESHOLD, engine: str = "auto",
+         jobs: int = 1) -> dict:
+    """Per image, in order: its size, frame count, engine and each template's best result over every
+    animation frame, with hits summed; `jobs` images at a time."""
+    from PIL import Image, ImageSequence
 
-    report = {}
-    for path in frame_paths(frames):
+    def one(path: Path) -> tuple[str, dict]:
+        merged, hits, used = {}, 0, "python"
         with Image.open(path) as image:
-            data, width, height = gray(image)
-        results, used = match(data, width, height, templates, threshold, engine)
-        report[str(path)] = dict(engine=used, size=[width, height], templates=results,
-                                 hits=sum(result["hits"] for result in results.values()))
-    return report
+            count = getattr(image, "n_frames", 1)
+            if count > MAX_SCAN_FRAMES:
+                raise SystemExit(f"cannot scan {path}: more than {MAX_SCAN_FRAMES} animation frames")
+            for index, frame in enumerate(ImageSequence.Iterator(image)):
+                data, width, height = gray(frame)
+                results, used = match(data, width, height, templates, threshold, engine)
+                hits += sum(result["hits"] for result in results.values())
+                for name, result in results.items():
+                    if name not in merged or result["best"] > merged[name]["best"]:
+                        merged[name] = dict(result, frame=index)
+        return str(path), dict(engine=used, size=[width, height], frames=count, templates=merged, hits=hits)
+
+    if engine in ("auto", "c"):
+        helper()  # build once, before worker threads race for the same partial file
+    with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+        return dict(pool.map(one, frame_paths(frames)))
 
 
 def crop(frame: Path, box: tuple[int, int, int, int], output: Path) -> None:
