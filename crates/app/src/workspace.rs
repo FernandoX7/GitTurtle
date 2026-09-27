@@ -264,6 +264,7 @@ impl GitTurtle {
         let Some(path) = self.path.clone() else {
             return;
         };
+        let submitted_after = self.latest_project_library_save();
         let response = self.preferences_writer.submit(move || {
             let mut prefs = Preferences::load();
             prefs.remember_repository(&path)?;
@@ -273,7 +274,7 @@ impl GitTurtle {
             if let Ok(result) = response.await {
                 let _ = this.update_in(cx, |this, _, cx| match result {
                     Ok(prefs) => {
-                        this.absorb_saved_project_library(prefs.project_library);
+                        this.absorb_saved_project_library(submitted_after, prefs.project_library);
                         this.hub
                             .update(cx, |hub, cx| hub.set_recent(prefs.recent_repositories, cx));
                     }
