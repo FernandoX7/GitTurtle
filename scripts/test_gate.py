@@ -5,6 +5,7 @@ Run with: python3 -m unittest scripts/test_gate.py
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -363,6 +364,95 @@ class StageTests(unittest.TestCase):
         coverage = next(stage for stage in stages if stage.name == "coverage")
         self.assertEqual(coverage.argv[-2:], ["--fail-under-lines", "60"])
         self.assertIn("-p", coverage.argv)
+
+
+HAVE_PIL = importlib.util.find_spec("PIL") is not None
+
+
+class PrivacyStageTests(unittest.TestCase):
+    """The image privacy stage, with synthetic templates rendered from a harmless string."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve() / "repo"
+        self.root.mkdir()
+        environment = patch.dict(os.environ, {"XDG_CACHE_HOME": str(Path(self.tmp.name) / "cache")})
+        environment.start()
+        self.addCleanup(environment.stop)
+        os.environ.pop(gate.PRIVACY_TEMPLATES_ENV, None)
+        self.git("init", "-q", "-b", "main")
+        (self.root / "docs").mkdir()
+        (self.root / "docs/old.png").write_bytes(b"old")
+        (self.root / "docs/gone.png").write_bytes(b"gone")
+        self.git("add", ".")
+        self.git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "base")
+        self.base = self.git("rev-parse", "HEAD")
+
+    def git(self, *args: str) -> str:
+        return subprocess.run(["git", "-C", str(self.root), *args], capture_output=True, text=True, check=True).stdout.strip()
+
+    def stage(self) -> gate.Stage:
+        return gate.privacy_stage(self.root, self.base)
+
+    def test_without_templates_the_stage_is_skipped_and_never_passes(self) -> None:
+        stage = self.stage()
+        self.assertIsNone(stage.argv)
+        self.assertIsNone(stage.run)
+        self.assertIn("NOT scanned", stage.note)
+        scope = gate.Scope(("gitturtle-core",), True, True, ())
+        stages = gate.build_stages("full", scope, self.root, {name: False for name in gate.OPTIONAL_TOOLS}, self.base, False, CRATES, Path(self.tmp.name))
+        self.assertIn("privacy", [stage.name for stage in stages])
+        fast = gate.build_stages("fast", scope, self.root, {name: False for name in gate.OPTIONAL_TOOLS}, self.base, False, CRATES, Path(self.tmp.name))
+        self.assertNotIn("privacy", [stage.name for stage in fast])
+
+    def test_changed_images_exclude_deletions_other_files_and_symlinks(self) -> None:
+        (self.root / "docs/gone.png").unlink()
+        (self.root / "docs/old.png").write_bytes(b"changed")
+        (self.root / "docs/new.JPG").write_bytes(b"new")
+        (self.root / "docs/notes.md").write_text("text")
+        (self.root / "docs/link.png").symlink_to("old.png")
+        self.assertEqual(gate.changed_images(self.root, self.base), ["docs/new.JPG", "docs/old.png"])
+
+    def test_default_directory_in_the_checkout_and_a_missing_configured_directory(self) -> None:
+        (self.root / gate.PRIVACY_TEMPLATES_DIR).mkdir(parents=True)
+        self.assertEqual(gate.privacy_templates(self.root), self.root / gate.PRIVACY_TEMPLATES_DIR)
+        (self.root / "docs/old.png").write_bytes(b"changed")
+        with patch.dict(os.environ, {gate.PRIVACY_TEMPLATES_ENV: str(Path(self.tmp.name) / "absent")}):
+            stage = self.stage()
+            code, text = stage.run()
+        self.assertEqual(code, 2)
+        self.assertNotIn(self.tmp.name, text + stage.reproduce)
+
+    def test_no_changed_images_is_reported_as_such(self) -> None:
+        (self.root / gate.PRIVACY_TEMPLATES_DIR).mkdir(parents=True)
+        stage = self.stage()
+        self.assertEqual(stage.run(), (0, "no added or changed images\n"))
+
+    @unittest.skipUnless(HAVE_PIL, "Pillow is not installed")
+    def test_scan_names_only_images_and_verdicts(self) -> None:
+        from PIL import Image, ImageDraw, ImageFont
+
+        font = ImageFont.load_default()
+        text = Image.new("L", (80, 14), 255)
+        ImageDraw.Draw(text).text((2, 1), "QA-TEMPLATE", font=font, fill=0)
+        templates = Path(self.tmp.name) / "templates"
+        templates.mkdir()
+        text.save(templates / "QA-TEMPLATE-secret-name.png")
+        leaky = Image.new("L", (160, 60), 230)
+        leaky.paste(text, (40, 20))
+        leaky.convert("RGB").save(self.root / "docs/old.png")
+        Image.new("RGB", (160, 60), (230, 230, 230)).save(self.root / "docs/clean.png")
+        with patch.dict(os.environ, {gate.PRIVACY_TEMPLATES_ENV: str(templates)}):
+            stage = self.stage()
+            code, output = stage.run()
+        self.assertEqual(code, 1, output)
+        self.assertEqual(output.splitlines(), ["docs/clean.png: clean", "docs/old.png: MATCH",
+                                               "privacy scan: 2 image(s), 1 matched a template"])
+        outcome = gate.Outcome(stage, code, 1.0, output.splitlines(), output.splitlines(), None, (), "failed")
+        report = gate.render_report("full", outcome, [outcome], 0, {}, self.root)
+        for secret in ("QA-TEMPLATE", str(templates)):
+            self.assertNotIn(secret, output + stage.reproduce + stage.note + report)
 
 
 class ReportTests(unittest.TestCase):

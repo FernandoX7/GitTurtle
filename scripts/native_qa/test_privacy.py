@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import importlib.util
+import lzma
 import os
 import random
 import shutil
@@ -74,6 +76,36 @@ class EngineTest(unittest.TestCase):
                 self.assertAlmostEqual(theirs["best"], ours["best"], places=3)
 
 
+class PackTest(unittest.TestCase):
+    def test_round_trip_keeps_pixels_in_name_order_and_drops_names(self) -> None:
+        _, _, _, template = synthetic()
+        wide = (bytes(range(24)), 6, 4)
+        packed = privacy.pack_templates({"QA-TEMPLATE-b": wide, "QA-TEMPLATE-a": template})
+        self.assertNotIn("QA-TEMPLATE", base64.b64decode(packed).decode("latin-1"))
+        self.assertEqual(privacy.unpack_templates(packed[:40] + "\n" + packed[40:]), {"t1": template, "t2": wide})
+
+    def test_malformed_or_unbounded_packs_are_refused(self) -> None:
+        good = base64.b64decode(privacy.pack_templates({"a": (bytes(12), 4, 3)}))
+        header = privacy.PACK_MAGIC
+        cases = {
+            "not base64": "%%%",
+            "unknown format": base64.b64encode(b"GTPRIV0\n" + good[len(header):]).decode(),
+            "truncated stream": base64.b64encode(good[:-8]).decode(),
+            "trailing data": base64.b64encode(good + b"x").decode(),
+            "short record": base64.b64encode(header + lzma.compress(b"\x00\x04\x00\x03" + bytes(5))).decode(),
+            "zero width": base64.b64encode(header + lzma.compress(b"\x00\x00\x00\x03")).decode(),
+            "oversized side": base64.b64encode(header + lzma.compress(b"\x10\x00\x00\x01" + bytes(4096))).decode(),
+            "empty": base64.b64encode(header + lzma.compress(b"")).decode(),
+        }
+        for name, text in cases.items():
+            with self.subTest(name), self.assertRaises(SystemExit) as refused:
+                privacy.unpack_templates(text)
+            self.assertEqual(str(refused.exception), "the packed templates are malformed")
+
+    def test_the_real_limit_fits_a_github_secret(self) -> None:
+        self.assertLessEqual(privacy.SECRET_LIMIT, 48 * 1000)
+
+
 class TrackedPathTest(unittest.TestCase):
     def test_templates_inside_the_work_tree_must_be_ignored(self) -> None:
         if not (REPO / ".git").exists():
@@ -112,6 +144,52 @@ class ScanTest(unittest.TestCase):
             privacy.crop(root / "leaky.png", (30, 12, 30 + tw, 12 + th), root / "cut" / "again.png")
             with Image.open(root / "cut" / "again.png") as cut:
                 self.assertEqual(cut.tobytes(), patch)
+
+    def test_redacted_scan_and_pack_never_print_a_template_name(self) -> None:
+        from PIL import Image
+
+        frame, width, height, (patch, tw, th) = synthetic()
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            (root / "tpl").mkdir()
+            Image.frombytes("L", (tw, th), patch).save(root / "tpl" / "QA-TEMPLATE.png")
+            Image.frombytes("L", (width, height), frame).convert("RGB").save(root / "leaky.png")
+            Image.new("RGB", (width, height), (40, 40, 40)).save(root / "clean.png")
+            self.assertEqual(list(privacy.load_templates(root / "tpl", anonymous=True)), ["t1"])
+
+            pack = subprocess.run([sys.executable, "-B", str(QA), "privacy", "pack", "--templates", str(root / "tpl"),
+                                   "--output", str(root / "set.b64")], capture_output=True, text=True)
+            self.assertEqual(pack.returncode, 0, pack.stderr)
+            self.assertEqual((root / "set.b64").stat().st_mode & 0o777, 0o600)
+            frames = [str(root / "leaky.png"), str(root / "clean.png")]
+            for source in (["--templates", str(root / "tpl")], ["--packed", str(root / "set.b64")]):
+                with self.subTest(source=source[0]):
+                    run = subprocess.run([sys.executable, "-B", str(QA), "privacy", "scan", "--redacted", "--jobs", "2",
+                                          "--engine", "python", *source, *frames], capture_output=True, text=True)
+                    self.assertEqual(run.returncode, 1, run.stderr)
+                    self.assertEqual(run.stdout.splitlines(), [f"{frames[0]}: MATCH", f"{frames[1]}: clean",
+                                                               "privacy scan: 2 image(s), 1 matched a template"])
+                    self.assertNotIn("QA-TEMPLATE", run.stdout + run.stderr + pack.stdout + pack.stderr)
+
+            (root / "tpl" / "QA-TEMPLATE-broken.png").write_bytes(b"not an image")
+            with self.assertRaises(SystemExit) as refused:
+                privacy.load_templates(root / "tpl", anonymous=True)
+            self.assertNotIn("QA-TEMPLATE", str(refused.exception))
+
+    def test_pack_refuses_a_set_above_the_secret_limit(self) -> None:
+        from PIL import Image
+
+        from native_qa import qa
+
+        rng = random.Random(3)
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            (root / "tpl").mkdir()
+            Image.frombytes("L", (64, 64), bytes(rng.randrange(256) for _ in range(4096))).save(root / "tpl" / "a.png")
+            with mock.patch.object(privacy, "SECRET_LIMIT", 100), mock.patch("sys.stderr"):
+                self.assertEqual(qa.main(["privacy", "pack", "--templates", str(root / "tpl"),
+                                          "--output", str(root / "set.b64")]), 1)
+            self.assertFalse((root / "set.b64").exists())
 
 
 if __name__ == "__main__":

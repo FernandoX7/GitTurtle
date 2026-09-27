@@ -37,6 +37,14 @@ command-line configuration (``GIT_ASKPASS``, ``SSH_ASKPASS``,
 ``SSH_ASKPASS_REQUIRE``, ``GIT_CONFIG_PARAMETERS``, ``GIT_CONFIG_COUNT``), so a
 desktop session's environment cannot turn a test red. There is no allowlist of
 known failures: a red test is fixed at its cause.
+
+Image privacy: ``full`` template-scans every image added or changed since the
+base (``scripts/native_qa/qa.py privacy scan --redacted``) when a templates
+directory is configured: ``GITTURTLE_PRIVACY_TEMPLATES``, else
+``.local/privacy/templates`` in this checkout or in the main checkout of a
+linked worktree. The stage prints image paths and verdicts only, never a
+template's name, score or position. Without templates it is skipped with a
+``warn:`` line, which is not a pass.
 """
 
 from __future__ import annotations
@@ -94,6 +102,9 @@ MAX_STAGE_SECONDS = {"fast": 1800, "full": 5400}
 MAX_KEPT_LINES = 20000
 MAX_ITERATION_TESTS = 40
 GPUI_ITERATIONS = "20"
+PRIVACY_TEMPLATES_ENV = "GITTURTLE_PRIVACY_TEMPLATES"
+PRIVACY_TEMPLATES_DIR = Path(".local/privacy/templates")
+PRIVACY_IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 
 RUST_SPAN = re.compile(r"--> ([^\s:]+):(\d+):(\d+)")
 PANIC_AT = re.compile(r"panicked at ([^\s:]+):(\d+):(\d+)")
@@ -598,6 +609,61 @@ def insta_check(root: Path) -> Callable[[], tuple[int, str]]:
     return run
 
 
+def checkout_roots(root: Path) -> list[Path]:
+    """This checkout, then the main checkout that owns its Git directory (for a linked worktree)."""
+    roots = [root]
+    code, out = git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    main = Path(out.strip()).parent if code == 0 and out.strip() else None
+    if main is not None and main != root and main.is_dir():
+        roots.append(main)
+    return roots
+
+
+def privacy_templates(root: Path) -> Path | None:
+    configured = os.environ.get(PRIVACY_TEMPLATES_ENV, "")
+    if configured:
+        return Path(configured)
+    return next((base / PRIVACY_TEMPLATES_DIR for base in checkout_roots(root)
+                 if (base / PRIVACY_TEMPLATES_DIR).is_dir()), None)
+
+
+def changed_images(root: Path, base: str | None) -> list[str]:
+    """Raster images added or changed since the base, untracked ones included; deletions drop out."""
+    return sorted(
+        path for path in changed_paths(root, base)
+        if path.lower().endswith(PRIVACY_IMAGE_SUFFIXES)
+        and (root / path).is_file() and not (root / path).is_symlink()
+    )
+
+
+def privacy_stage(root: Path, base: str | None) -> Stage:
+    templates = privacy_templates(root)
+    if templates is None:
+        return Stage("privacy", None, note=f"skipped: no templates ({PRIVACY_TEMPLATES_ENV} or {PRIVACY_TEMPLATES_DIR}); "
+                     "added or changed images were NOT scanned")
+    images = changed_images(root, base)
+    reproduce = (f'python3 scripts/native_qa/qa.py privacy scan --redacted --templates "${PRIVACY_TEMPLATES_ENV}" '
+                 f"<{len(images)} added or changed images>")
+    if not images:
+        return Stage("privacy", None, reproduce=reproduce, run=lambda: (0, "no added or changed images\n"),
+                     note="no added or changed images")
+    argv = [sys.executable, "-B", str(Path(__file__).resolve().parent / "native_qa" / "qa.py"), "privacy", "scan", "--redacted",
+            "--jobs", str(min(4, os.cpu_count() or 1)), "--templates", str(templates), "--", *images]
+
+    def run() -> tuple[int, str]:
+        # A run callable keeps the templates path out of the report's Command line.
+        if not templates.is_dir():
+            return 2, f"the configured privacy templates directory does not exist ({PRIVACY_TEMPLATES_ENV})\n"
+        try:
+            completed = subprocess.run(argv, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                       errors="replace", timeout=MAX_STAGE_SECONDS["full"], check=False)
+        except subprocess.TimeoutExpired:
+            return 124, "[gate] privacy scan timed out\n"
+        return completed.returncode, completed.stdout
+
+    return Stage("privacy", None, reproduce=reproduce, run=run, note=f"{len(images)} added or changed image(s)")
+
+
 def build_stages(
     tier: str,
     scope: Scope,
@@ -698,6 +764,7 @@ def build_stages(
         )
     )
     stages.append(Stage("insta", None, reproduce="find crates -name '*.snap.new'", run=insta_check(root)))
+    stages.append(privacy_stage(root, base))
     stages.append(
         Stage(
             "deny",

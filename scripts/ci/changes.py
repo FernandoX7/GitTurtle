@@ -23,6 +23,16 @@ LANES = ("product", "tooling", "website")
 # cannot compensate for a missing/cancelled release matrix or formatter.
 JOBS = {"rust-format": "product", "rust-debug": "product", "rust-release": "product",
         "agent-tooling": "tooling", "website": "website"}
+# The image privacy job always runs and reports what it did. Only "scanned" is a
+# scan; the other results succeed without claiming one, and the gate says so.
+PRIVACY_JOB = "image-privacy"
+PRIVACY_RESULTS = {
+    "scanned": f"{PRIVACY_JOB}: added or changed images template-scanned; no match",
+    "no-images": f"{PRIVACY_JOB}: no added or changed images",
+    "unavailable": f"{PRIVACY_JOB}: NOT scanned; the templates secret is unavailable to this run "
+                   "(fork pull request or unconfigured repository)",
+    "no-comparison": f"{PRIVACY_JOB}: NOT scanned; this event has no comparison",
+}
 OID = re.compile(r"[0-9a-f]{40}\Z")
 DOC_NAMES = {
     "README.md", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "SECURITY.md",
@@ -113,23 +123,43 @@ def valid_oid(value: object) -> str:
     return value
 
 
+def checkout_identity(repository: Path, checkout_sha: str) -> str:
+    expected = valid_oid(checkout_sha)
+    actual = git_read(repository, "rev-parse", "HEAD").decode("ascii").strip()
+    if actual != expected:
+        raise PolicyError("checkout-identity-mismatch")
+    return expected
+
+
+def pull_request_comparisons(repository: Path, event: dict, expected: str) -> list[tuple[str, str]]:
+    """The PR head against its merge-base, and the base against the exercised merge commit."""
+    pr = event["pull_request"]
+    base, head = valid_oid(pr["base"]["sha"]), valid_oid(pr["head"]["sha"])
+    parents = git_read(repository, "rev-list", "--parents", "-n", "1", expected).decode("ascii").split()
+    if parents != [expected, base, head]:
+        raise PolicyError("merge-identity-mismatch")
+    merge_base = git_read(repository, "merge-base", base, head).decode("ascii").strip()
+    valid_oid(merge_base)
+    return [(merge_base, head), (base, expected)]
+
+
+def compared_paths(repository: Path, comparisons: list[tuple[str, str]], diff_filter: str = "") -> list[bytes]:
+    paths = set()
+    for before, after in comparisons:
+        paths.update(parse_paths(git_read(repository, "diff", "--no-ext-diff", "--no-textconv",
+                                         "--name-only", "-z", "--no-renames",
+                                         *([f"--diff-filter={diff_filter}"] if diff_filter else []),
+                                         before, after, "--")))
+    return sorted(paths)
+
+
 def classify_checkout(repository: Path, event_name: str, event: dict, checkout_sha: str) -> dict:
     if event_name == "workflow_dispatch":
         return full_plan("manual-full-validation")
     try:
-        expected = valid_oid(checkout_sha)
-        actual = git_read(repository, "rev-parse", "HEAD").decode("ascii").strip()
-        if actual != expected:
-            raise PolicyError("checkout-identity-mismatch")
+        expected = checkout_identity(repository, checkout_sha)
         if event_name == "pull_request":
-            pr = event["pull_request"]
-            base, head = valid_oid(pr["base"]["sha"]), valid_oid(pr["head"]["sha"])
-            parents = git_read(repository, "rev-list", "--parents", "-n", "1", expected).decode("ascii").split()
-            if parents != [expected, base, head]:
-                raise PolicyError("merge-identity-mismatch")
-            merge_base = git_read(repository, "merge-base", base, head).decode("ascii").strip()
-            valid_oid(merge_base)
-            comparisons = [(merge_base, head), (base, expected)]
+            comparisons = pull_request_comparisons(repository, event, expected)
         elif event_name == "push":
             valid_oid(event["before"])
             head = valid_oid(event["after"])
@@ -141,11 +171,7 @@ def classify_checkout(repository: Path, event_name: str, event: dict, checkout_s
             return full_plan("main-full-validation")
         else:
             raise PolicyError("unsupported-event")
-        paths = set()
-        for before, after in comparisons:
-            paths.update(parse_paths(git_read(repository, "diff", "--no-ext-diff", "--no-textconv",
-                                             "--name-only", "-z", "--no-renames", before, after, "--")))
-        return classify_paths(sorted(paths))
+        return classify_paths(compared_paths(repository, comparisons))
     except (PolicyError, KeyError, TypeError, UnicodeError):
         return full_plan("comparison-unavailable-or-inconsistent")
 
@@ -172,7 +198,7 @@ def validate_plan(plan: object) -> dict:
 
 
 def gate(needs: object) -> list[str]:
-    if not isinstance(needs, dict) or set(needs) != {"changes", *JOBS}:
+    if not isinstance(needs, dict) or set(needs) != {"changes", PRIVACY_JOB, *JOBS}:
         raise PolicyError("missing or unexpected job results")
     changes = needs["changes"]
     if not isinstance(changes, dict) or changes.get("result") != "success":
@@ -194,6 +220,13 @@ def gate(needs: object) -> list[str]:
             results.append(f"{job}: not needed by classification")
         else:
             raise PolicyError(f"{job}: required result was not successful ({result!r})")
+    entry = needs[PRIVACY_JOB]
+    result = entry.get("result") if isinstance(entry, dict) else None
+    outputs = entry.get("outputs") if isinstance(entry, dict) else None
+    status = outputs.get("status") if isinstance(outputs, dict) else None
+    if result != "success" or not isinstance(status, str) or status not in PRIVACY_RESULTS:
+        raise PolicyError(f"{PRIVACY_JOB}: required result was not successful ({result!r}, {status!r})")
+    results.append(PRIVACY_RESULTS[status])
     return results
 
 

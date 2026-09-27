@@ -3,7 +3,8 @@
 
   python3 scripts/native_qa/qa.py launch --binary B --fixture F --run-dir /abs/empty [--scenario S.json]
   python3 scripts/native_qa/qa.py compare BASE CANDIDATE [--mask status-timing] [--mask x0,y0,x1,y1]
-  python3 scripts/native_qa/qa.py privacy scan FRAME... --templates /local/dir
+  python3 scripts/native_qa/qa.py privacy scan FRAME... --templates /local/dir [--redacted] [--jobs N]
+  python3 scripts/native_qa/qa.py privacy pack --templates /local/dir --output /local/templates.b64
   python3 scripts/native_qa/qa.py identity BASE [CANDIDATE]
   python3 scripts/native_qa/qa.py display-check [--display :1]
 
@@ -15,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -99,15 +101,25 @@ def compare(args) -> int:
 def privacy_scan(args) -> int:
     from native_qa import privacy
 
-    if bool(args.templates) == bool(args.text):
-        raise SystemExit("give either --templates DIR or --text with --font")
+    if [bool(args.templates), bool(args.packed), bool(args.text)].count(True) != 1:
+        raise SystemExit("give exactly one of --templates DIR, --packed FILE or --text with --font")
     if args.templates:
-        templates = privacy.load_templates(args.templates)
+        templates = privacy.load_templates(args.templates, anonymous=args.redacted)
+    elif args.packed:
+        templates = privacy.unpack_templates(args.packed.read_text(encoding="ascii", errors="replace"))
     else:
         if not args.font:
             raise SystemExit("--text needs --font (the face the app draws with, for example Ubuntu)")
         templates = privacy.render_templates(args.text, args.font, args.size or [13])
-    report = privacy.scan(args.frames, templates, args.threshold, args.engine)
+    report = privacy.scan(args.frames, templates, args.threshold, args.engine, args.jobs)
+    write_json(args.json, report)
+    matched = sum(1 for result in report.values() if result["hits"])
+    if args.redacted:
+        # Automated callers: the frame and a verdict only, never a template's name, score or place.
+        for frame, result in report.items():
+            print(f"{frame}: {'MATCH' if result['hits'] else 'clean'}")
+        print(f"privacy scan: {len(report)} image(s), {matched} matched a template")
+        return 1 if matched else 0
     for frame, result in report.items():
         best = max(result["templates"].items(), key=lambda item: item[1]["best"])
         print(f"{Path(frame).name}: {result['hits']} hit(s) >= {args.threshold}; best {best[0]} "
@@ -115,8 +127,24 @@ def privacy_scan(args) -> int:
         for name, found in result["templates"].items():
             for x, y, score in found["hit_list"]:
                 print(f"    HIT {name} at ({x},{y}) ncc {score:+.3f}")
-    write_json(args.json, report)
-    return 1 if any(result["hits"] for result in report.values()) else 0
+    return 1 if matched else 0
+
+
+def privacy_pack(args) -> int:
+    from native_qa import privacy
+
+    privacy.refuse_tracked(args.output, "packed template file")
+    templates = privacy.load_templates(args.templates, anonymous=True)
+    text = privacy.pack_templates(templates)
+    summary = f"{len(templates)} template(s), {len(text)} bytes of base64 (secret limit {privacy.SECRET_LIMIT})"
+    if len(text) > privacy.SECRET_LIMIT:
+        print(f"not written: {summary}", file=sys.stderr)
+        return 1
+    descriptor = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="ascii") as output:
+        output.write(text)
+    print(f"packed {summary}")
+    return 0
 
 
 def privacy_crop(args) -> int:
@@ -190,13 +218,21 @@ def parser() -> argparse.ArgumentParser:
     s = actions.add_parser("scan", help="exit 1 if any template matches a frame")
     s.add_argument("frames", type=Path, nargs="+", help="PNG/JPEG frames or directories of them")
     s.add_argument("--templates", type=Path, help="local, untracked directory of template PNGs")
+    s.add_argument("--packed", type=Path, help="a template set written by `privacy pack`")
     s.add_argument("--text", action="append", default=[], help="render this string as a template (repeatable)")
     s.add_argument("--font", type=Path, help="TrueType/OpenType file for --text")
     s.add_argument("--size", type=int, action="append", default=[], help="pixel size for --text (repeatable, default 13)")
     s.add_argument("--threshold", type=float, default=0.80, help="|ncc| that counts as a hit (default 0.80)")
     s.add_argument("--engine", choices=("auto", "c", "python"), default="auto")
+    s.add_argument("--jobs", type=int, default=1, help="frames scanned at once (default 1)")
+    s.add_argument("--redacted", action="store_true",
+                   help="print each frame's verdict only, never a template's name, score or position")
     s.add_argument("--json", type=Path, help="write the full report here")
     s.set_defaults(func=privacy_scan)
+    k = actions.add_parser("pack", help="pack a template directory into one base64 file for a CI secret")
+    k.add_argument("--templates", type=Path, required=True, help="local, untracked directory of template PNGs")
+    k.add_argument("--output", type=Path, required=True, help="the packed file, outside any tracked path")
+    k.set_defaults(func=privacy_pack)
     c = actions.add_parser("crop", help="cut a template from a frame that shows a personal string")
     c.add_argument("frame", type=Path)
     c.add_argument("box", help="x0,y0,x1,y1")

@@ -17,12 +17,17 @@ changes = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(changes)
 
 
+def privacy(status="scanned", result="success"):
+    return {"image-privacy": {"result": result, "outputs": {"status": status}}}
+
+
 def needs_for(plan):
     return {
         "changes": {"result": "success", "outputs": {
             "plan": json.dumps(plan), **{lane: str(plan[lane]).lower() for lane in changes.LANES}}},
         **{job: {"result": "success" if plan[lane] else "skipped"}
            for job, lane in changes.JOBS.items()},
+        **privacy(),
     }
 
 
@@ -80,10 +85,10 @@ class GateTests(unittest.TestCase):
         for case in cases:
             with self.subTest(case=case["name"]):
                 plan = changes.classify_paths([case["path"].encode()])
-                needs = {"changes": needs_for(plan)["changes"],
+                needs = {"changes": needs_for(plan)["changes"], **privacy(),
                          **{job: {"result": result} for job, result in case["results"].items()}}
                 if case["accept"]:
-                    self.assertEqual(len(changes.gate(needs)), 5)
+                    self.assertEqual(len(changes.gate(needs)), 6)
                 else:
                     with self.assertRaises(changes.PolicyError):
                         changes.gate(needs)
@@ -92,11 +97,11 @@ class GateTests(unittest.TestCase):
         for paths in [[b"docs/user-guide.md"], [b"website/check.py"], [b"scripts/ci/metrics.py"],
                       [b"crates/app/src/main.rs"]]:
             with self.subTest(paths=paths):
-                self.assertEqual(len(changes.gate(needs_for(changes.classify_paths(paths)))), 5)
+                self.assertEqual(len(changes.gate(needs_for(changes.classify_paths(paths)))), 6)
 
     def test_required_failure_cancellation_and_skip_each_fail(self):
         baseline = needs_for(changes.full_plan("full"))
-        for job in ["changes", *changes.JOBS]:
+        for job in ["changes", "image-privacy", *changes.JOBS]:
             for result in ["failure", "cancelled", "skipped", "timed_out", None]:
                 with self.subTest(job=job, result=result):
                     needs = copy.deepcopy(baseline)
@@ -116,7 +121,7 @@ class GateTests(unittest.TestCase):
         needs = needs_for(changes.classify_paths([b"README.md"]))
         for job in changes.JOBS:
             needs[job]["result"] = "success"
-        self.assertEqual(len(changes.gate(needs)), 5)
+        self.assertEqual(len(changes.gate(needs)), 6)
 
     def test_absent_and_unknown_jobs_fail(self):
         baseline = needs_for(changes.full_plan("full"))
@@ -145,6 +150,21 @@ class GateTests(unittest.TestCase):
         needs["changes"]["outputs"]["product"] = "true"
         with self.assertRaises(changes.PolicyError):
             changes.gate(needs)
+
+    def test_image_privacy_reports_what_it_did_and_never_claims_an_absent_scan(self):
+        baseline = needs_for(changes.classify_paths([b"docs/evidence/frame.png"]))
+        for status, line in [("scanned", "image-privacy: added or changed images template-scanned; no match"),
+                             ("no-images", "image-privacy: no added or changed images"),
+                             ("unavailable", "image-privacy: NOT scanned; the templates secret is unavailable "
+                                             "to this run (fork pull request or unconfigured repository)"),
+                             ("no-comparison", "image-privacy: NOT scanned; this event has no comparison")]:
+            with self.subTest(status=status):
+                self.assertEqual(changes.gate({**baseline, **privacy(status)})[-1], line)
+        for entry in [privacy("scan")["image-privacy"], privacy(["scanned"])["image-privacy"],
+                      privacy(None)["image-privacy"], {"result": "success"}, {"result": "success", "outputs": []},
+                      privacy("scanned", "failure")["image-privacy"], "success"]:
+            with self.subTest(entry=entry), self.assertRaises(changes.PolicyError):
+                changes.gate({**baseline, "image-privacy": entry})
 
     def test_gate_cli_reports_actual_exit_status(self):
         good = needs_for(changes.full_plan("full"))
