@@ -39,6 +39,11 @@ ashpd = { version = "=0.13.13", default-features = false, features = ["async-io"
 [dev-dependencies]
 gpui-kit = { version = "=0.6.0", features = ["test-support"] }
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# The toolkit's Linux text system, already in the graph through gpui-kit; the
+# bundled code font test loads it without system fonts.
+gpui-pre-wgpu = "=0.3.4"
+
 [[bin]]
 name = "gitturtle"
 path = "src/main.rs"

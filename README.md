@@ -60,6 +60,8 @@ python3 dist/gitturtle-linux-x86_64/install.py
 
 Run the installer without `sudo`, then open **GitTurtle** from Applications. The bundle installs under your home directory and requires a Wayland or X11 desktop with working graphics drivers. It is a local build bundle, without distribution signing. The [Linux guide](docs/linux.md) covers bundle transfer, checksums, upgrades, troubleshooting and uninstalling.
 
+On Arch Linux or Omarchy, install the build tools listed in [Arch Linux and Omarchy](docs/linux.md#arch-linux-and-omarchy) and use the same two commands.
+
 ### Open a repository
 
 Choose **Projects** to open, clone or create a repository, or launch directly from the checkout:
@@ -80,7 +82,7 @@ See [commands and keyboard navigation](docs/command-palette.md) for contextual a
 
 ## Platform status
 
-macOS is the first platform; Linux initially targets Ubuntu 24.04 x86-64. Earlier macOS native checks, a clean Ubuntu userspace build and installation, virtual X11/Wayland interactions, and initial Pop!_OS desktop checks are recorded separately in [validation](docs/validation.md). **Actual Ubuntu GNOME desktop acceptance remains pending.** A successful build or virtual desktop check does not establish that coverage.
+macOS is the first platform; Linux initially targets Ubuntu 24.04 x86-64. Earlier macOS native checks, a clean Ubuntu userspace build and installation, virtual X11/Wayland interactions, initial Pop!_OS desktop checks and an Omarchy (Arch, Hyprland) desktop check are recorded separately in [validation](docs/validation.md). **Actual Ubuntu GNOME desktop acceptance remains pending.** A successful build or virtual desktop check does not establish that coverage.
 
 Linux does not yet support persistent GitHub account credentials, native PDF rendering or macOS-only image codecs. Git's configured authentication for fetch/pull/push is separate. Some advanced Git operations and preview formats have bounded or unsupported cases; read the [Linux limits](docs/linux.md#platform-limits) and [current feature limits](docs/user-guide.md#current-limits) before relying on them.
 

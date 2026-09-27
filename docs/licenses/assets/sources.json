@@ -58,5 +58,11 @@
     "file": "kanagawa-LICENSE",
     "url": "https://raw.githubusercontent.com/rebelot/kanagawa.nvim/bb85e4bfc8d89b0e62c8fa53ccdd13d12e2f77b3/LICENSE",
     "sha256": "dfce81e2e5bf5b5b1b440269abc551ddf96a673be9fdf64f082d5802787a4b04"
+  },
+  {
+    "name": "dejavu-fonts",
+    "file": "dejavu-fonts-LICENSE",
+    "url": "https://raw.githubusercontent.com/dejavu-fonts/dejavu-fonts/0eda8a319c08835009849583cd090bb5b141ce25/LICENSE",
+    "sha256": "7a083b136e64d064794c3419751e5c7dd10d2f64c108fe5ba161eae5e5958a93"
   }
 ]
