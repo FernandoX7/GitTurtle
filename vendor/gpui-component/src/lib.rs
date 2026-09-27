@@ -1,3 +1,4 @@
+// Cache-key probe for the ci-vendor-warm-reuse task; never merge.
 use gpui::App;
 use std::ops::Deref;
 
