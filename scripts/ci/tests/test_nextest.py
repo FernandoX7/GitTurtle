@@ -128,16 +128,19 @@ class WorkflowPolicyTests(unittest.TestCase):
             "setup": "uses: ./.github/actions/setup-rust\n        with:\n          profile: debug",
             "install": "scripts/ci/tools.py install-nextest",
             "tests": "cargo nextest run",
-            "doctests": "cargo test --locked --workspace --doc",
+            "doctests": "--name doctests ",
             "clippy": "cargo clippy",
             "finish": "phase: finish",
         }.items()}
         self.assertEqual(sorted(index, key=index.get), ["setup", "install", "tests", "doctests", "clippy", "finish"])
         self.assertTrue(steps[index["tests"]].rstrip().endswith(
             '--name tests --directory "$RUNNER_TEMP/ci-metrics" -- cargo nextest run --locked --workspace -P ci --no-fail-fast --timings'))
-        self.assertIn("--name doctests ", steps[index["doctests"]])
+        # Default selection reuses the nextest build; the filter matches only
+        # doctest names (`src/lib.rs - item (line 3)`), never a test path.
+        self.assertTrue(steps[index["doctests"]].rstrip().endswith(
+            '-- cargo test --locked --workspace --timings -- "(line "'))
         self.assertIn('--path-file "$GITHUB_PATH"', steps[index["install"]])
-        # The only other Cargo test invocation in the job runs doctests alone.
+        # The only other Cargo test invocation in the job runs doctests.
         self.assertEqual(job.count("cargo test "), 1)
         for name in ("install", "tests", "doctests"):
             self.assertNotIn("\n        if:", steps[index[name]])

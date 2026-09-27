@@ -210,7 +210,7 @@ After classification, the selected jobs have no build dependencies on each other
 - `Rust tests and Clippy · macos-15` and `· ubuntu-24.04` each restore the **debug**
   cache, install the [pinned cargo-nextest](#test-execution-with-nextest), run
   `cargo nextest run --locked --workspace -P ci --no-fail-fast --timings`, then
-  `cargo test --locked --workspace --doc --timings`, then
+  `cargo test --locked --workspace --timings -- "(line "`, then
   `cargo clippy --locked --workspace --all-targets --timings -- -D warnings`.
   nextest builds the same targets as Cargo's default
   [test selection](https://doc.rust-lang.org/cargo/commands/cargo-test.html) and
@@ -287,8 +287,17 @@ differ. The tests step now runs `cargo nextest run --locked --workspace -P ci
 targets as `cargo test` (passing `--locked` and `--timings` through to Cargo), then
 runs each test in its own process across the runner's CPUs. It cannot run
 doctests, so a separate `Locked workspace doctests` step runs `cargo test --locked
---workspace --doc --timings` and records its own `doctests` measurement. It should
-reuse the libraries the nextest step built; its Cargo timing report shows whether it did.
+--workspace --timings -- "(line "` and records its own `doctests` measurement.
+The step keeps Cargo's default target selection so that it reuses every library
+the nextest step built. `cargo test --doc` selects library targets only; on Linux
+the app's bin-only dependencies then leave the unit graph, Cargo no longer shares
+`quote`, `syn` and the proc-macro crates between host and target, and it rebuilt
+about 30 of them with build-override debug information: the first hosted sample,
+PR run [36300227546](https://github.com/FernandoX7/GitTurtle/actions/runs/36300227546),
+spent 107 s compiling for 0 doctests. The filter matches every doctest, whose
+libtest name is `<file> - <item> (line <n>)`, and no unit or integration test,
+whose name is a Rust path; each test binary starts once and reports every test
+filtered out.
 
 The [`ci` profile](../.config/nextest.toml) sets `fail-fast = false` (the step also
 passes `--no-fail-fast`), `retries = 0`, `failure-output = "immediate"` and
@@ -340,7 +349,7 @@ Reproduce the CI test phase locally with the same isolation as the job:
 ```sh
 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
   cargo nextest run --locked --workspace -P ci --no-fail-fast
-GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null cargo test --locked --workspace --doc
+GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null cargo test --locked --workspace -- "(line "
 ```
 
 To check that two runs executed the same tests, download each Rust debug job's
