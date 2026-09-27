@@ -896,6 +896,80 @@
         "tooling"
       ],
       "commit": "perf(ci): shorten the macOS development-tooling job"
+    },
+    {
+      "id": "themes-helper-focus-ring",
+      "title": "Paint the shared helper's focus ring at full accent",
+      "description": "Found on 2026-09-27 in the themes-evidence-gaps-linux design review (docs/validation.md, 'Focus beside the import highlight'). The shared `button` helper (crates/app/src/main.rs) uses a custom toolkit variant with no border, so when it is focused the only ring is the toolkit's 3 px layer at 50% of `accent` (FOCUS_RING_OPACITY, vendor/gpui-component/src/styled.rs); `focus_ring_style` sets the element's own border to full `ring` colour, but the helper has no border for it to colour. Measured, the ring reads 2.23:1 on Porcelain's subtle surface and 2.15:1 on its selected highlight (Midnight 3.67:1 and 3.11:1); the reviewer's computation for the ten original palettes puts Sandstone lowest at 1.98:1. The readability rule checks `accent` at 3:1 on six surfaces, but on the declared token, not on the ring as painted, so every palette passes it today. Fix it in the app, not the vendored toolkit: paint the helper's ring at full accent, for example with a 1 px border that is transparent at rest and takes the ring colour when focused, keeping the helper's 28 px size and its content position. Watch the selected helper, whose hover sets `opacity(0.9)` on the whole element and would dim a border ring with it. The toolkit's own inputs, selects and checkboxes already carry a 1 px border and stay out of scope, as does FOCUS_RING_OPACITY.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/main.rs",
+        "crates/app/src/appearance.rs",
+        "crates/app/src/appearance/**",
+        "DESIGN.md",
+        "docs/development/themes/spec.md",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "failing-check",
+          "description": "A unit test in crates/app composites the ring the shared `button` helper paints when focused, read from the configuration the helper itself uses rather than a copied constant, over each readability surface of every built-in palette and requires 3:1. Run against the origin/main helper it fails, naming Porcelain on the subtle surface (about 2.23:1) and Sandstone; that output is recorded in the pull request, and the test passes after the change."
+        },
+        {
+          "id": "full-accent-ring",
+          "description": "A focused helper paints a ring at full `accent` at least 1 px wide around its edge at rest, hovered, selected and selected-and-hovered, and `cargo test --locked -p gitturtle` and clippy pass. vendor/ is unchanged."
+        },
+        {
+          "id": "no-shift",
+          "description": "Unfocused helpers keep their size, radius and content position: masked `scripts/native_qa/qa.py compare` of resting and hovered frames against the same-session base shows no difference apart from timing digits."
+        },
+        {
+          "id": "native-evidence",
+          "description": "Native captures on Linux X11 at scale factor 1 show a focused helper on the subtle surface (a Your themes row action), on the selected highlight and on a panel (a header button) in Porcelain, Sandstone and Midnight against a same-session base, privacy-scanned. A design review rules on every non-timing difference, DESIGN.md states the helper's focus ring, and a dated docs/validation.md entry records the measured ring contrast and lists the committed frames that show a focused helper, recaptured or marked superseded with the reason."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(appearance): paint the helper focus ring at full accent"
+    },
+    {
+      "id": "theme-editor-readability-followups",
+      "title": "Align the theme editor's readability copy, step-warning rows and 18 pt inset",
+      "description": "Three small theme-editor findings from the 2026-09-27 themes reviews (themes-press-distinct code review and themes-evidence-gaps-linux design review), all in crates/app/src/theme_editor.rs. (1) The Readability list's empty state says \"Every pair meets its contrast minimum.\", but the rule set now includes the pressed step (`ReadabilityMeasure::Step`, 6 of 255 in one channel), which is not a contrast minimum. (2) `issue_tokens` marks only the Selected and Hover rows for a step warning, although the step is measured with both fills composited over panel, canvas, subtle, hover, selected and the hovered selected row, so a change to Panel, Canvas, Subtle or Accent can also cause or clear it and those rows show no glyph. (3) At an 18 pt interface text size the editor panel ends 19 px above the window's bottom edge when the rows overflow, where DESIGN.md sets 16 px.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/theme_editor.rs",
+        "crates/app/src/theme_editor/**",
+        "DESIGN.md",
+        "docs/evidence/themes/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "copy",
+          "description": "The empty Readability list names the whole rule set rather than contrast alone, DESIGN.md quotes the new copy, and a view or unit test asserts it."
+        },
+        {
+          "id": "step-rows",
+          "description": "A step warning shows the warning glyph on the Selected and Hover rows and on every token row its measurement composites over, with a unit test on `issue_tokens` that fails on origin/main; DESIGN.md says which rows a step warning marks."
+        },
+        {
+          "id": "inset",
+          "description": "With the rows overflowing at an 18 pt interface text size, the editor panel ends 16 px above the window's bottom edge, as at 13 pt, measured in a native frame or asserted by a layout test."
+        },
+        {
+          "id": "native-evidence",
+          "description": "Native captures on Linux X11 at scale factor 1 of the empty Readability list, a custom theme with a step warning, and the editor at 18 pt against a same-session base, privacy-scanned, with a design review of every non-timing difference and a dated docs/validation.md entry."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(themes): align the editor's readability copy, glyphs and inset"
     }
   ]
 }
