@@ -2656,6 +2656,16 @@ mod tests {
                     "header wrapped at {width}: {header:?}"
                 );
             }
+            // A label-less kit button is a square icon button; the compact
+            // profile button must keep its whole icon rather than a sliver.
+            let profile = cx.debug_bounds("profile-button").unwrap();
+            assert!(
+                profile.right() <= px(width),
+                "profile at {width}: {profile:?}"
+            );
+            if width < COMPACT_HEADER_WIDTH {
+                assert_eq!(profile.size.width, appearance::ui_size(36.), "at {width}");
+            }
             let sidebar = cx.debug_bounds("history-sidebar").is_some();
             let rail = cx.debug_bounds("repository-rail").is_some();
             assert_eq!(
