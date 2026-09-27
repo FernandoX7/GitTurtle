@@ -106,6 +106,21 @@ impl SerialExecutor {
         self.submit_impl(operation, true)
     }
 
+    /// Block until every job submitted before this call has answered. The
+    /// queue is FIFO, so a marker queued now runs after all of them.
+    /// `run_until_parked` cannot wait for this thread, so a GPUI test drains
+    /// first and then settles to handle the replies on its own thread.
+    #[cfg(test)]
+    pub fn drain(&self) {
+        let (done, drained) = mpsc::channel();
+        self.sender
+            .send(Box::new(move |_| {
+                let _ = done.send(());
+            }))
+            .expect("the executor accepts the marker");
+        drained.recv().expect("the executor ran the marker");
+    }
+
     fn submit_impl<T: Send + 'static>(
         &self,
         operation: impl FnOnce() -> Result<T> + Send + 'static,

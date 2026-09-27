@@ -113,6 +113,10 @@ fn app_window(
         *captured.borrow_mut() = Some(app.clone());
         Root::new(app, window, cx)
     });
+    // The review dialog slides in on a wall-clock animation, so under load a
+    // control can move between reading its bounds and the click. Open dialogs
+    // at rest; no discard test covers motion.
+    cx.update(|_, cx| cx.set_reduce_motion(true));
     cx.simulate_resize(size(px(1480.), px(981.)));
     draw(cx);
     let app = observed.borrow_mut().take().unwrap();

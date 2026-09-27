@@ -2735,6 +2735,21 @@ mod tests {
         ran
     }
 
+    /// Settle a transfer whose dialog was answered: while the card waits for
+    /// the real preference writer thread, let it answer, then handle the
+    /// reply. An accepted import's read submits its save as a second job; a
+    /// job the full executor refused has already answered.
+    fn finish_transfer(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) {
+        settle(cx);
+        for _ in 0..2 {
+            if !cx.read(|cx| app.read(cx).theme_transfer_busy()) {
+                return;
+            }
+            cx.read(|cx| app.read(cx).preferences_writer.drain());
+            settle(cx);
+        }
+    }
+
     /// Wait for replies from the real preference writer thread.
     fn wait_for(cx: &mut VisualTestContext, mut done: impl FnMut(&mut VisualTestContext) -> bool) {
         for _ in 0..500 {
@@ -4061,16 +4076,15 @@ mod tests {
         if let Some(hold) = hold {
             assert_waits_for_the_executor(cx, app, hold);
         }
-        wait_for(cx, |cx| {
-            let (notice, error, pending) = transfer_result(cx, app);
-            !pending && (notice.is_some() || error.is_some() || !cx.did_prompt_for_paths())
-        });
+        finish_transfer(cx, app);
         let (notice, error, pending) = transfer_result(cx, app);
         assert!(!pending, "the export released the card");
         (notice, error)
     }
 
     /// Answer the import dialog with `chosen` and wait for the card to report.
+    /// The read releases the transfer before an accepted document's save runs,
+    /// and only that save's answer carries the notice, so the wait covers both.
     fn import_file(
         cx: &mut VisualTestContext,
         app: &Entity<GitTurtle>,
@@ -4091,12 +4105,12 @@ mod tests {
         if let Some(hold) = hold {
             assert_waits_for_the_executor(cx, app, hold);
         }
-        wait_for(cx, |cx| {
-            let (notice, error, pending) = transfer_result(cx, app);
-            !pending && (notice.is_some() || error.is_some() || !cx.did_prompt_for_paths())
-        });
-        let (notice, error, pending) = transfer_result(cx, app);
-        assert!(!pending, "the import released the card");
+        finish_transfer(cx, app);
+        let (notice, error, _) = transfer_result(cx, app);
+        assert!(
+            !cx.read(|cx| app.read(cx).theme_transfer_busy()),
+            "the import and its save released the card"
+        );
         (notice, error)
     }
 
@@ -4370,17 +4384,7 @@ mod tests {
 
         let (notice, error) = import_file(cx, &app, Some(path), None);
         assert_eq!(error, None);
-        // A 64 KiB document takes longer to read and parse than the card
-        // releases the transfer for, so the notice lands with the save.
-        let notice = notice.unwrap_or_else(|| {
-            wait_for(cx, |cx| {
-                let (notice, error, _) = transfer_result(cx, &app);
-                notice.is_some() || error.is_some()
-            });
-            let (notice, error, _) = transfer_result(cx, &app);
-            assert_eq!(error, None);
-            notice.expect("the card reports the import")
-        });
+        let notice = notice.expect("the card reports the import");
         assert!(notice.contains("Imported “Sunset”."), "{notice}");
         // The quoted base is clamped where the message is built, to the
         // base's own cap so the unbreakable token fits one line with its
@@ -4444,15 +4448,7 @@ mod tests {
 
             let (notice, error) = import_file(cx, &app, Some(path), None);
             assert_eq!(error, None);
-            let notice = notice.unwrap_or_else(|| {
-                wait_for(cx, |cx| {
-                    let (notice, error, _) = transfer_result(cx, &app);
-                    notice.is_some() || error.is_some()
-                });
-                let (notice, error, _) = transfer_result(cx, &app);
-                assert_eq!(error, None);
-                notice.expect("the card reports the import")
-            });
+            let notice = notice.expect("the card reports the import");
             if unknown_base {
                 // Three clauses share the budget, so each fragment is shorter
                 // than the single-clause clamp; the sentence still reaches the
