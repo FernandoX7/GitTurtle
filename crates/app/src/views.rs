@@ -1514,7 +1514,10 @@ impl GitTurtle {
             })
             .into_any_element()
     }
-    pub(super) fn render_preview(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// `column_min` is the preview column's narrowest width; the path row keeps
+    /// 220 px before the modes wrap below it, but never more than that column
+    /// holds, and its buttons wrap below the path rather than clip.
+    pub(super) fn render_preview(&self, column_min: Pixels, cx: &mut Context<Self>) -> AnyElement {
         if self.blame.is_visible() {
             return self.render_blame(cx);
         }
@@ -1525,11 +1528,14 @@ impl GitTurtle {
             .map(|file| file.path().to_string_lossy().into_owned())
             .unwrap_or("File comparison".into());
         let copy_path = path.clone();
+        // The toolbar's `px_3` is 1.5 rem on both sides.
+        let path_room = (column_min - appearance::ui_size(19.5)).max(px(0.));
         let mut path_controls = div()
             .min_h(appearance::ui_size(28.))
-            .min_w(appearance::ui_size(220.))
+            .min_w(appearance::ui_size(220.).min(path_room))
             .flex_1()
             .flex()
+            .flex_wrap()
             .items_center()
             .gap_1()
             .children(
@@ -1602,6 +1608,7 @@ impl GitTurtle {
         {
             path_controls = path_controls.child(
                 button("open-blame", "Blame", "", false)
+                    .debug_selector(|| "open-blame".into())
                     .tooltip(
                         "Line attribution and history; working files include uncommitted lines",
                     )
@@ -1898,7 +1905,7 @@ impl GitTurtle {
                         .flex_1()
                         .min_w_0()
                         .h_full()
-                        .child(self.render_preview(cx)),
+                        .child(self.render_preview(content_min - rail, cx)),
                 )
                 .into_any_element()
         } else if self.sidebar && !squeezed {
@@ -2709,6 +2716,28 @@ mod tests {
         cx.simulate_resize(size(px(1000.), px(680.)));
         draw(cx);
         assert!(cx.debug_bounds("history-sidebar").is_some());
+
+        // Compare's path row keeps its buttons in the preview column.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        for (width, height) in [(1000., 680.), (600., 718.), (493., 526.), (460., 526.)] {
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let files = cx
+                .debug_bounds("commit-inspector-files")
+                .expect("Compare keeps the commit's files");
+            assert!(
+                files.right() <= px(width),
+                "Compare files clipped at {width}: {files:?}"
+            );
+            let blame = cx
+                .debug_bounds("open-blame")
+                .expect("a text comparison offers Blame");
+            assert!(
+                blame.right() <= files.left(),
+                "Blame under the inspector at {width}: {blame:?}, files {files:?}"
+            );
+        }
     }
 
     #[gpui::test]
