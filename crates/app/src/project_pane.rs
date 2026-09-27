@@ -195,10 +195,13 @@ pub struct State {
     pub group_form: Option<Entity<GroupForm>>,
     /// A refused edit or a failed save, shown inside the pane with Retry.
     pub error: Option<String>,
-    /// Saves submitted and not yet answered. Only the last outstanding reply
-    /// may replace the presented list, so an older reply cannot undo a newer
-    /// edit that is still being written.
+    /// Saves submitted and not yet answered.
     pending_saves: usize,
+    /// The number of the newest save submitted. Only its reply may replace
+    /// the presented list: each reply is awaited by its own task, and a newer
+    /// save's task can run before an older one's wake, so an older reply
+    /// handled last must not undo the newer edit.
+    latest_save: u64,
     menu_open: Option<usize>,
     keyboard_menu: Option<KeyboardMenu>,
 }
@@ -213,6 +216,7 @@ impl State {
             group_form: None,
             error: None,
             pending_saves: 0,
+            latest_save: 0,
             menu_open: None,
             keyboard_menu: None,
         }
@@ -254,17 +258,36 @@ impl GitTurtle {
         self.rebuild_project_rows();
     }
 
+    /// The newest pane save when a recent-project save is submitted; pass it
+    /// back with that save's reply.
+    pub(super) fn latest_project_library_save(&self) -> u64 {
+        self.project_pane.latest_save
+    }
+
     /// A recent-project save also returns the stored list. It is older than
-    /// any pane edit still being written, so it only applies when none is.
-    pub(super) fn absorb_saved_project_library(&mut self, library: ProjectLibrary) {
-        if self.project_pane.pending_saves == 0 {
+    /// any pane edit still being written or submitted after it, so it only
+    /// applies when none is, whichever reply is handled first.
+    pub(super) fn absorb_saved_project_library(
+        &mut self,
+        submitted_after: u64,
+        library: ProjectLibrary,
+    ) {
+        if self.project_pane.pending_saves == 0 && self.project_pane.latest_save == submitted_after
+        {
             self.set_project_library(library);
         }
     }
 
+    /// Count a save as outstanding and number it for its reply.
+    fn begin_project_library_save(&mut self) -> u64 {
+        self.project_pane.pending_saves += 1;
+        self.project_pane.latest_save += 1;
+        self.project_pane.latest_save
+    }
+
     fn submit_project_library_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let library = self.project_library.clone();
-        self.project_pane.pending_saves += 1;
+        let save = self.begin_project_library_save();
         let response = self
             .preferences_writer
             .submit(move || Preferences::save_project_library(&library));
@@ -275,7 +298,7 @@ impl GitTurtle {
                 ))
             });
             let _ = this.update_in(cx, |this, _, cx| {
-                this.finish_project_library_save(&result, cx);
+                this.finish_project_library_save(save, &result, cx);
             });
         })
         .detach();
@@ -283,20 +306,24 @@ impl GitTurtle {
 
     pub(super) fn finish_project_library_save(
         &mut self,
+        save: u64,
         result: &anyhow::Result<Preferences>,
         cx: &mut Context<Self>,
     ) {
         self.project_pane.pending_saves = self.project_pane.pending_saves.saturating_sub(1);
-        match result {
-            Ok(preferences) => {
-                if self.project_pane.pending_saves == 0 {
+        // Every save writes the whole list, so only the newest one's outcome
+        // is current: an older reply neither replaces the list nor sets or
+        // clears the error.
+        if save == self.project_pane.latest_save {
+            match result {
+                Ok(preferences) => {
                     self.set_project_library(preferences.project_library.clone());
+                    self.project_pane.error = None;
                 }
-                self.project_pane.error = None;
-            }
-            Err(error) => {
-                self.project_pane.error =
-                    Some(format!("Could not save the project list: {error:#}"));
+                Err(error) => {
+                    self.project_pane.error =
+                        Some(format!("Could not save the project list: {error:#}"));
+                }
             }
         }
         cx.notify();
@@ -661,7 +688,7 @@ impl GitTurtle {
             return;
         }
         self.set_project_library(library.clone());
-        self.project_pane.pending_saves += 1;
+        let save = self.begin_project_library_save();
         let response = self
             .preferences_writer
             .submit(move || Preferences::save_project_library(&library));
@@ -672,7 +699,7 @@ impl GitTurtle {
                 ))
             });
             let _ = this.update_in(cx, |this, window, cx| {
-                this.finish_project_library_save(&result, cx);
+                this.finish_project_library_save(save, &result, cx);
                 this.finish_group_form(form, result.is_ok(), window, cx);
             });
         })

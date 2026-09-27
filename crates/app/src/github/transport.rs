@@ -686,6 +686,9 @@ mod tests {
         let accepting = socket.try_clone().unwrap();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = await_connection(|| accepting.accept());
+            // BSD accept(2), as on macOS, copies the listener's O_NONBLOCK to
+            // the stream, so a request not yet written would read WouldBlock.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
@@ -730,6 +733,7 @@ mod tests {
         let proxy_url = format!("http://{}", proxy.local_addr().unwrap());
         let server = std::thread::spawn(move || {
             let (mut stream, _) = await_connection(|| proxy.accept());
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();

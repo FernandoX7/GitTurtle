@@ -391,21 +391,54 @@ fn an_older_save_reply_never_replaces_a_newer_edit(cx: &mut TestAppContext) {
     };
     cx.update(|_, cx| {
         app.update(cx, |app, cx| {
+            let first = app.begin_project_library_save();
             app.set_project_library(newer.clone());
-            app.project_pane.pending_saves = 2;
+            let second = app.begin_project_library_save();
             // The first reply is for a write that preceded the rename.
-            app.finish_project_library_save(&Ok(older), cx);
+            app.finish_project_library_save(first, &Ok(older.clone()), cx);
             assert_eq!(app.project_library, newer);
             assert_eq!(app.project_pane.pending_saves(), 1);
             // A recent-project save answering now is older too.
-            app.absorb_saved_project_library(library.clone());
+            app.absorb_saved_project_library(app.latest_project_library_save(), library.clone());
             assert_eq!(app.project_library, newer);
-            app.finish_project_library_save(&Ok(newest), cx);
+            app.finish_project_library_save(second, &Ok(newest.clone()), cx);
             assert_eq!(app.project_library, newer);
             assert_eq!(app.project_pane.pending_saves(), 0);
-            app.absorb_saved_project_library(library.clone());
+            // One submitted after the last pane save applies.
+            app.absorb_saved_project_library(app.latest_project_library_save(), library.clone());
             assert_eq!(app.project_library, library);
             assert!(app.project_library.contains_project(&paths[1]));
+
+            // Each reply wakes its own task, so older ones can be handled
+            // last: an older save's success or failure, or a recent-project
+            // save submitted before them, still cannot undo the rename or
+            // report a stale outcome.
+            let recent = app.latest_project_library_save();
+            let first = app.begin_project_library_save();
+            app.set_project_library(newer.clone());
+            let second = app.begin_project_library_save();
+            app.finish_project_library_save(second, &Ok(newest), cx);
+            app.finish_project_library_save(first, &Ok(older), cx);
+            app.absorb_saved_project_library(recent, library.clone());
+            assert_eq!(app.project_library, newer);
+            let first = app.begin_project_library_save();
+            let second = app.begin_project_library_save();
+            app.finish_project_library_save(
+                second,
+                &Ok(Preferences {
+                    project_library: newer.clone(),
+                    ..Default::default()
+                }),
+                cx,
+            );
+            app.finish_project_library_save(
+                first,
+                &Err(anyhow::anyhow!("an older write failed")),
+                cx,
+            );
+            assert_eq!(app.project_library, newer);
+            assert!(app.project_pane.error.is_none());
+            assert_eq!(app.project_pane.pending_saves(), 0);
         })
     });
 }
@@ -414,8 +447,10 @@ fn an_older_save_reply_never_replaces_a_newer_edit(cx: &mut TestAppContext) {
 async fn a_failed_save_stays_visible_in_the_pane_until_retry_succeeds(cx: &mut TestAppContext) {
     let (library, group, _) = library_with_group();
     let (app, cx) = test_app(cx, enabled(), library);
-    // A directory where the store should be makes every write fail.
+    // A directory where the store should be makes every write fail. An
+    // earlier iteration on this thread leaves the saved file there.
     let store = crate::preferences::settings_path().unwrap();
+    let _ = fs::remove_file(&store);
     fs::create_dir_all(&store).unwrap();
 
     cx.update(|window, cx| app.update(cx, |app, cx| app.toggle_project_group(group, window, cx)));

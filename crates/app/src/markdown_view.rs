@@ -1535,6 +1535,10 @@ mod tests {
                     window,
                     cx,
                 );
+                // Startup profile loading replies from the real preferences
+                // worker. Let it answer before GPUI first polls the reply, so
+                // no wake arrives from that thread.
+                app.preferences_writer.drain();
                 app.page = AppPage::Repository;
                 app.mode = WorkspaceMode::Compare;
                 app
@@ -1550,6 +1554,10 @@ mod tests {
             new: Arc::new(prepare_document(&source, &path, true, &|| Ok(())).unwrap()),
         });
         let document = cx.update(|window, cx| {
+            // The dialog slides in on a wall-clock animation, so under load a
+            // toggle can move between reading its bounds and the click. Open
+            // the dialog at rest instead.
+            cx.set_reduce_motion(true);
             app.read(cx).file_focus.clone().focus(window, cx);
             open_local_document(path, source.clone(), Some(markdown), 1, window, cx)
         });
