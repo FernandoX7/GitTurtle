@@ -23,7 +23,7 @@ sudo apt-get update
 sudo apt-get install -y --no-install-recommends \
   git openssh-client ca-certificates python3 desktop-file-utils xdg-utils \
   libxcb1 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libwayland-cursor0 \
-  libwayland-egl1 libfontconfig1 fontconfig fonts-dejavu-core fonts-dejavu-mono \
+  libwayland-egl1 libfontconfig1 fontconfig fonts-dejavu-core \
   libvulkan1 mesa-vulkan-drivers libegl1 libgl1 libgl1-mesa-dri \
   xdg-desktop-portal xdg-desktop-portal-gnome xdg-desktop-portal-gtk
 ```
@@ -255,7 +255,7 @@ portal packages, log out and back in if the session has stale service state.
 | Window/graphics initialization fails | Launch from a desktop terminal to capture stderr; check `vulkaninfo --summary` (`vulkan-tools`) and your GPU driver. An invalid display connection can still fail inside the toolkit before window creation. |
 | Picker does nothing / reports a portal failure | Check `systemctl --user status xdg-desktop-portal xdg-desktop-portal-gnome`; inspect `journalctl --user -b -u xdg-desktop-portal`. Check the matching backend, then reopen the app. |
 | Blank launcher icon / menu entry absent | Rerun the installer and `desktop-file-validate` on the installed entry; confirm the entry's absolute `Icon` path exists. Refresh the app menu or log out/in if its cache remains stale. |
-| Missing or cramped text | Check `fc-match sans-serif` and `fc-match 'DejaVu Sans Mono'`; install both DejaVu packages above. Settings has separate interface/code text sizes. |
+| Missing or cramped text | Check `fc-match sans-serif`; install `fonts-dejavu-core` above if no sans family resolves. Code text uses the DejaVu Sans Mono embedded in the executable, so it needs no font package. Settings has separate interface/code text sizes. |
 | Text smaller than in other apps | On Wayland, GitTurtle multiplies its text sizes by the desktop text scaling factor (GNOME Settings › Accessibility › Large Text, `org.gnome.desktop.interface text-scaling-factor`). On X11 the toolkit scales the whole window through `Xft.dpi` instead. The app's own interface/code sizes apply on top. |
 | Colored fringes or soft text, typically on an OLED or rotated panel | GitTurtle follows the desktop antialiasing preference. GNOME's default `font-rendering` "automatic" renders grayscale like GTK 4; "manual" follows `font-antialiasing` (Tweaks › Fonts), where `rgba` selects subpixel rendering. Other desktops are read through fontconfig: `fc-match --format '%{antialias}\|%{rgba}\n' sans-serif`. Grayscale is the safe choice; changes apply without a restart. |
 | Need an X11 comparison in a session that provides XWayland | Launch once with `env -u WAYLAND_DISPLAY "$HOME/.local/bin/gitturtle" /path/to/fixture`. This tests XWayland, not a full Xorg session. |

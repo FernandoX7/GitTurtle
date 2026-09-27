@@ -1,4 +1,5 @@
-//! Desktop text preferences on Linux: glyph antialiasing and text scaling.
+//! Desktop text on Linux: the bundled code font, glyph antialiasing and text
+//! scaling.
 //!
 //! The toolkit's Linux backend always recommends subpixel (RGB stripe) glyph
 //! rendering and never consults the session's font settings. That fringes on
@@ -111,6 +112,37 @@ pub(super) async fn ready(initial: Initial, cx: &AsyncApp) {
 }
 #[cfg(not(target_os = "linux"))]
 pub(super) async fn ready(_initial: Initial, _cx: &AsyncApp) {}
+
+/// DejaVu Sans Mono 2.37 (`assets/fonts/dejavu-sans-mono`). The toolkit's Linux
+/// text system matches family names exactly and ignores fontconfig aliases, so
+/// a session without the installed family (Arch and Omarchy by default) drew
+/// code in a proportional interface font.
+#[cfg(target_os = "linux")]
+const CODE_FONT_FACES: [&[u8]; 4] = [
+    include_bytes!("../../../assets/fonts/dejavu-sans-mono/DejaVuSansMono.ttf"),
+    include_bytes!("../../../assets/fonts/dejavu-sans-mono/DejaVuSansMono-Bold.ttf"),
+    include_bytes!("../../../assets/fonts/dejavu-sans-mono/DejaVuSansMono-Oblique.ttf"),
+    include_bytes!("../../../assets/fonts/dejavu-sans-mono/DejaVuSansMono-BoldOblique.ttf"),
+];
+
+/// Registers the bundled code font. Call it before any window lays out text:
+/// the toolkit caches a failed family lookup for the life of the process.
+#[cfg(target_os = "linux")]
+pub(super) fn register_code_font(cx: &gpui_kit::App) {
+    if let Err(error) = cx.text_system().add_fonts(code_font_faces()) {
+        eprintln!("GitTurtle could not register its bundled code font: {error:#}");
+    }
+}
+#[cfg(not(target_os = "linux"))]
+pub(super) fn register_code_font(_cx: &gpui_kit::App) {}
+
+#[cfg(target_os = "linux")]
+fn code_font_faces() -> Vec<std::borrow::Cow<'static, [u8]>> {
+    CODE_FONT_FACES
+        .iter()
+        .map(|face| std::borrow::Cow::Borrowed(*face))
+        .collect()
+}
 
 #[cfg(target_os = "linux")]
 fn apply(snapshot: DesktopText, cx: &mut gpui_kit::App) {
@@ -716,6 +748,39 @@ mod portal {
 mod tests {
     use super::*;
     use gpui_kit::TextRenderingMode::{Grayscale, Subpixel};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bundled_code_font_is_monospace_in_every_style_without_system_fonts() {
+        use gpui_kit::{FontStyle, FontWeight, PlatformTextSystem as _};
+        use gpui_wgpu::CosmicTextSystem;
+
+        let code = gpui_kit::font(crate::mono());
+        // What a session without the installed family saw before the bundle.
+        let bare = CosmicTextSystem::new_without_system_fonts("IBM Plex Sans");
+        assert!(bare.font_id(&code).is_err());
+
+        let text = CosmicTextSystem::new_without_system_fonts("IBM Plex Sans");
+        text.add_fonts(code_font_faces()).unwrap();
+        let mut faces = std::collections::HashSet::new();
+        for weight in [FontWeight::NORMAL, FontWeight::BOLD] {
+            for style in [FontStyle::Normal, FontStyle::Italic] {
+                let requested = gpui_kit::Font {
+                    weight,
+                    style,
+                    ..code.clone()
+                };
+                let face = text.font_id(&requested).unwrap();
+                let advance = |ch| {
+                    let glyph = text.glyph_for_char(face, ch).unwrap();
+                    text.advance(face, glyph).unwrap().width
+                };
+                assert_eq!(advance('i'), advance('W'), "{weight:?} {style:?}");
+                faces.insert(face);
+            }
+        }
+        assert_eq!(faces.len(), 4, "each style has its own bundled face");
+    }
 
     #[test]
     fn gnome_manual_mode_follows_the_antialiasing_key() {

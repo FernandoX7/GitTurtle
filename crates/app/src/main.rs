@@ -1991,6 +1991,7 @@ fn main() {
     });
     gpui_kit::application().with_assets(Assets).run(move |cx| {
         gpui_kit::init(cx);
+        desktop_text::register_code_font(cx);
         native_accessibility::sync_preferences(cx);
         let desktop_text = desktop_text::start(cx);
         native_accessibility::bind_keys(cx);
