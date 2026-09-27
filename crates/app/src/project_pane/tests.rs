@@ -398,7 +398,7 @@ fn an_older_save_reply_never_replaces_a_newer_edit(cx: &mut TestAppContext) {
             app.finish_project_library_save(first, &Ok(older.clone()), cx);
             assert_eq!(app.project_library, newer);
             assert_eq!(app.project_pane.pending_saves(), 1);
-            // A recent-project save answering now is older too.
+            // A recent-project reply is dropped while a pane save is pending.
             app.absorb_saved_project_library(app.latest_project_library_save(), library.clone());
             assert_eq!(app.project_library, newer);
             app.finish_project_library_save(second, &Ok(newest.clone()), cx);
@@ -438,6 +438,23 @@ fn an_older_save_reply_never_replaces_a_newer_edit(cx: &mut TestAppContext) {
             );
             assert_eq!(app.project_library, newer);
             assert!(app.project_pane.error.is_none());
+            // Nor does an older success clear the newest save's failure.
+            let first = app.begin_project_library_save();
+            let second = app.begin_project_library_save();
+            app.finish_project_library_save(
+                second,
+                &Err(anyhow::anyhow!("the newest write failed")),
+                cx,
+            );
+            app.finish_project_library_save(
+                first,
+                &Ok(Preferences {
+                    project_library: newer.clone(),
+                    ..Default::default()
+                }),
+                cx,
+            );
+            assert!(app.project_pane.error.is_some());
             assert_eq!(app.project_pane.pending_saves(), 0);
         })
     });

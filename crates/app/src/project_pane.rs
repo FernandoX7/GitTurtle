@@ -264,9 +264,10 @@ impl GitTurtle {
         self.project_pane.latest_save
     }
 
-    /// A recent-project save also returns the stored list. It is older than
-    /// any pane edit still being written or submitted after it, so it only
-    /// applies when none is, whichever reply is handled first.
+    /// A recent-project save also returns the stored list. It applies only
+    /// when no pane save is pending and none was submitted after it, so it
+    /// never replaces a newer pane edit; while a pane save is pending it is
+    /// dropped.
     pub(super) fn absorb_saved_project_library(
         &mut self,
         submitted_after: u64,
