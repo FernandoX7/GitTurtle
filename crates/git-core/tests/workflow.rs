@@ -663,6 +663,9 @@ fn local_http_authentication_failure_reports_helper_recovery_without_prompting()
         while !stop.load(Ordering::Relaxed) && start.elapsed() < Duration::from_secs(5) {
             match server.accept() {
                 Ok((mut socket, _)) => {
+                    // macOS accept(2) inherits the listener's O_NONBLOCK; read the
+                    // request before answering so closing cannot reset the connection.
+                    socket.set_nonblocking(false).unwrap();
                     socket
                         .set_read_timeout(Some(Duration::from_secs(1)))
                         .unwrap();
