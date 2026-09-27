@@ -25,7 +25,7 @@ Read the affected crate's instructions before edits or reviews, including when s
 | Image/animation, PDF, Markdown/Mermaid, mesh/CAD and local LFS previews | [Preview guide](crates/preview/AGENTS.md); [app guide](crates/app/AGENTS.md); [support matrix](docs/file-previews.md); local assets and LFS belong to Git core |
 | Vendored toolkit, macOS backend and Mermaid patches | [Vendor guide](vendor/AGENTS.md); patch provenance, consumers and focused checks |
 | App icon and control artwork | [Asset conventions](assets/icons/README.md), `assets/AppIcon.icon`, `scripts/render-app-icon.sh`, `scripts/package-macos.sh` |
-| Current native workflows, packaging and evidence | [Validation matrix](docs/validation.md#current-validation-guidance), `scripts/package-macos.sh`, `docs/benchmarks/` |
+| Current native workflows, packaging and evidence | [Validation matrix](docs/validation.md#current-validation-guidance), [visual evidence tiers](.agents/skills/gitturtle-native-qa/references/visual-evidence.md), `scripts/package-macos.sh`, `docs/benchmarks/` |
 | CI and platform build setup | [Quality workflow](.github/workflows/quality.yml), `Cargo.toml`; configured jobs are not evidence of an executed hosted run |
 | Development agents, feature contracts and unattended execution | [Development workflow](docs/development/README.md); [agent architecture](docs/agent-guidance.md); [feature-work skill](.agents/skills/gitturtle-feature-work/SKILL.md); [security review](docs/development/security-review.md) |
 
