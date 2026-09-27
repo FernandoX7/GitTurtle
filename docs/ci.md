@@ -607,6 +607,38 @@ Record cold-run and runner-minute regressions alongside any warm improvement.
 These baseline runs predate CodeQL retirement. Separate that scope change from
 cache/fanout improvements when comparing the full required-check completion time.
 
+### Development-tooling job on macOS
+
+For documentation and tooling pull requests, the macOS development-tooling job
+is the critical path, and the agent-loop suite takes most of it. Never-merge
+probe [run 36284689192](https://github.com/FernandoX7/GitTurtle/actions/runs/36284689192)
+(September 27, 2026, `unittest --durations`) found that all 233 tests passed and
+four end-to-end controller classes took 94% of the macOS time. Nearly all of
+that time was spent inside controller Git writes. Each of the suite's roughly
+1,000 writes goes through `run_process`, and the supervisor and watchdog each
+waited for a fixed 50 ms tick. A 5-20 ms write therefore cost 110-135 ms on
+Linux and 230-350 ms on macOS. The watchdog's Python start-up, the guard
+process and seven fsyncs per write make up the rest. Those are the controller's
+crash-safety and durability mechanisms, so they stay.
+
+The supervisor now waits on the watchdog with `Popen.wait(timeout=0.05)`. The
+watchdog waits on its control pipe, backing off from 1 ms to 50 ms. Short writes
+finish within milliseconds, and a stop request or supervisor exit wakes the
+watchdog at once. Nothing else changes: spawning, process groups, the guard,
+signals, cleanup and durable records. Every agent-loop test still runs on both
+platforms, and none was skipped or removed.
+
+| Measurement (macos-15 unless noted) | Before | After |
+| --- | --- | --- |
+| Agent-loop suite, probe runs | 251 s, 278 s ([36284689192](https://github.com/FernandoX7/GitTurtle/actions/runs/36284689192)) | 119 s, 117 s ([36285858330](https://github.com/FernandoX7/GitTurtle/actions/runs/36285858330)) |
+| Agent-loop suite, ubuntu-24.04 probe | 137 s | 69 s |
+| Agent-loop step inside the tooling job | 281 s, 293 s (runs 36284332195, 36284341103) | 162.5 s, 141.4 s (run 36285853931 attempts 1 and 2) |
+| `Development tooling · macos-15` job | 343 s, 351 s (same runs) | 230 s, 206 s (same run and attempts) |
+
+The before and after runs differ only in `scripts/agent_loop/process.py` and
+`records.py`. On a 3-CPU hosted runner, both the per-test profile and the job
+durations vary by about 10%.
+
 ### Later measurements and C1
 
 The [September 16 record](benchmarks/2026-09-16-ci.md) documents the first
