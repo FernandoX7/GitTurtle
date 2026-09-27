@@ -292,7 +292,8 @@ class ImageMetadataTests(unittest.TestCase):
         self.assertIn("name.png:1: image metadata PNG tEXt holds a configured private string", text)
         self.assertIn(f"{strings}:4: private strings shorter than 3 characters", text)
         self.assertNotIn("Private", text)
-        self.assertNotIn("zz", text.replace(str(strings), ""))
+        # Both paths are random temporary names that can contain "zz" themselves.
+        self.assertNotIn("zz", text.replace(str(strings), "").replace(str(self.root), ""))
         strings.unlink()
         with mock.patch.dict(os.environ, {guidance.PRIVATE_STRINGS_ENV: str(strings)}):
             self.assertIn("cannot read the private strings file", str(guidance.image_metadata_issues(self.root)[0]))
