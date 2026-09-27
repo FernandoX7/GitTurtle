@@ -148,15 +148,30 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # crates/app/build.rs watches .git/packed-refs, which a shallow checkout
+      # lacks. Cargo reruns a build script whose watched file is missing, so
+      # each later Cargo command would recompile the app. Packing the refs
+      # while keeping the loose ones changes no ref and no ref file it watches.
+      - name: Give the checkout the Git files the app build watches
+        run: git pack-refs --all --no-prune
       - name: Prepare Rust and restore bounded dependencies
         uses: ./.github/actions/setup-rust
         with:
           profile: debug
           vendor-reuse: true
-      # These phases share one cold debug build. Cargo's default workspace
-      # test selection includes unit/integration tests and doctests.
-      - name: Locked workspace tests and doctests
-        run: python3 scripts/ci/metrics.py measure --name tests --directory "$RUNNER_TEMP/ci-metrics" -- cargo test --locked --workspace --timings
+      # Outside setup-rust, so the pin does not change the Rust cache key.
+      - name: Install pinned, checksum-verified cargo-nextest
+        run: python3 scripts/ci/metrics.py measure --name nextest-install --directory "$RUNNER_TEMP/ci-metrics" -- python3 scripts/ci/tools.py install-nextest --directory "$RUNNER_TEMP/cargo-nextest" --path-file "$GITHUB_PATH"
+      # These phases share one cold debug build. nextest builds and runs the
+      # same unit and integration tests as `cargo test` with the ci profile in
+      # .config/nextest.toml; it cannot run doctests, so Cargo runs them next.
+      # The doctest step keeps Cargo's default selection so it reuses that
+      # build: `--doc` alone drops the bin-only dependencies and rebuilds every
+      # shared proc-macro dependency. Only doctest names contain "(line ".
+      - name: Locked workspace tests with nextest
+        run: python3 scripts/ci/metrics.py measure --name tests --directory "$RUNNER_TEMP/ci-metrics" -- cargo nextest run --locked --workspace -P ci --no-fail-fast --timings
+      - name: Locked workspace doctests
+        run: python3 scripts/ci/metrics.py measure --name doctests --directory "$RUNNER_TEMP/ci-metrics" -- cargo test --locked --workspace --timings -- "(line "
       - name: Locked all-target Clippy
         run: python3 scripts/ci/metrics.py measure --name clippy --directory "$RUNNER_TEMP/ci-metrics" -- cargo clippy --locked --workspace --all-targets --timings -- -D warnings
       - name: Prepare bounded successful-main debug cache save
