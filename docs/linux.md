@@ -214,6 +214,46 @@ No local link workaround is needed with the development packages installed:
 runtime package supplies the versioned `libxkbcommon-x11.so.0`. A manually made
 symlink in `target/` is not part of the supported installation.
 
+## Arch Linux and Omarchy
+
+Checked on 2026-09-27 on Omarchy 4.0.4 (Arch; Hyprland 0.56.2 on native
+Wayland; AMD Radeon Vega with Mesa 26.2.2 and `vulkan-radeon`; one 1366 × 768
+display at scale 1). Other Arch-based desktops share the build requirements but
+have no recorded check.
+
+Omarchy already ships the native libraries, `clang`, `desktop-file-utils` and
+both portal backends. Install the three missing build tools, then use the same
+packaging script and installer as Ubuntu:
+
+```sh
+sudo pacman -S --needed rustup python-pillow cmake
+./scripts/package-linux.sh
+python3 dist/gitturtle-linux-x86_64/install.py
+```
+
+`rustup` needs no default toolchain: the checkout's `rust-toolchain.toml`
+installs Rust 1.98.0 on the first build. On another Arch system also install
+`base-devel clang pkgconf desktop-file-utils fontconfig wayland libxkbcommon-x11
+libx11 libxcb openssl zstd vulkan-icd-loader`, the Vulkan driver for your GPU,
+`xdg-desktop-portal` and a FileChooser backend. No font package is needed for
+code text, which uses the embedded DejaVu Sans Mono.
+
+On Hyprland:
+
+- The compositor supplies server-side decorations and draws no title bar, so
+  GitTurtle shows no window buttons. Quit with **Ctrl+Q** or close the window
+  with the compositor's binding.
+- Tiled windows ignore the 1,000 × 680 window minimum. Below 800 px History
+  collapses its navigation to the rail and the header keeps only icons for
+  Projects and the profile; the inspector stays whole down to about 600 px.
+  Float the window (Omarchy: **Super+T**) or widen its split for the full layout.
+- The window class and Wayland app ID are `com.gitturtle.desktop`, for window
+  rules and the launcher entry's `StartupWMClass`.
+- `xdg-desktop-portal-hyprland` has no file chooser; the repository picker is
+  `xdg-desktop-portal-gtk`'s dialog, which Omarchy's portal configuration
+  selects. The first open after login took about four seconds while that
+  backend started.
+
 ## Launch, state and troubleshooting
 
 ```sh
