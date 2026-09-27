@@ -144,6 +144,11 @@ fn parent_label(path: &Path) -> String {
         .unwrap_or_else(|| parent.map(|p| p.display().to_string()).unwrap_or_default())
 }
 
+/// Why a project-list save failed, as the pane and the group dialog show it.
+fn save_failure(error: &anyhow::Error) -> String {
+    format!("Could not save the project list: {error:#}")
+}
+
 /// Every place a row can move to, in the pane's order. The current location
 /// is marked, and impossible destinations are disabled instead of failing
 /// after the click.
@@ -314,11 +319,17 @@ impl GitTurtle {
         if !library.remember(path) {
             return;
         }
+        // A full list drops an ungrouped project to fit this one, and replies
+        // handled out of order can drop a different one than the store did.
+        let evicted = library.project_count() == self.project_library.project_count();
         self.set_project_library(library);
         // A pane save numbered after this one wrote the whole list without
-        // the project, so the merged list has to be written again. When the
-        // newest pane save failed, Retry writes it with the unsaved edit.
-        if self.project_pane.latest_pane_save > recent.save && !self.project_pane.pane_save_failed {
+        // the project, and an eviction may differ from the store's, so the
+        // merged list has to be written again. When the newest pane save
+        // failed, Retry writes it with the unsaved edit.
+        if (evicted || self.project_pane.latest_pane_save > recent.save)
+            && !self.project_pane.pane_save_failed
+        {
             self.submit_project_library_save(window, cx);
         }
         cx.notify();
@@ -364,10 +375,7 @@ impl GitTurtle {
         // error.
         if save == self.project_pane.latest_pane_save {
             self.project_pane.pane_save_failed = result.is_err();
-            self.project_pane.error = result
-                .as_ref()
-                .err()
-                .map(|error| format!("Could not save the project list: {error:#}"));
+            self.project_pane.error = result.as_ref().err().map(save_failure);
         }
         // A newer recent-project save's addition arrives through its own
         // reply, so this list stands only when no save of either kind
@@ -751,7 +759,8 @@ impl GitTurtle {
             });
             let _ = this.update_in(cx, |this, window, cx| {
                 this.finish_project_library_save(save, &result, cx);
-                this.finish_group_form(form, result.is_ok(), window, cx);
+                let failure = result.as_ref().err().map(save_failure);
+                this.finish_group_form(form, failure, window, cx);
             });
         })
         .detach();
@@ -760,7 +769,7 @@ impl GitTurtle {
     fn finish_group_form(
         &mut self,
         form: WeakEntity<GroupForm>,
-        saved: bool,
+        failure: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -771,7 +780,7 @@ impl GitTurtle {
             .is_some_and(|current| {
                 current.entity_id() == form.entity_id() && current.read(cx).visible
             });
-        if saved {
+        if failure.is_none() {
             let _ = form.update(cx, |form, cx| {
                 form.pending = false;
                 form.visible = false;
@@ -782,12 +791,12 @@ impl GitTurtle {
             }
             self.project_pane.group_form = None;
         } else {
-            // The pane already shows the failure with Retry; the dialog keeps
-            // the typed name and repeats the reason beside it.
-            let error = self.project_pane.error.clone();
+            // The dialog keeps the typed name and gives this save's own reason:
+            // the pane shows only the newest save's outcome, and a newer save
+            // may have succeeded or still be pending.
             let _ = form.update(cx, |form, cx| {
                 form.pending = false;
-                form.error = error;
+                form.error = failure;
                 cx.notify();
             });
         }

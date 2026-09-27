@@ -574,6 +574,59 @@ fn a_recent_reply_after_a_failed_newer_pane_save_leaves_the_write_to_retry(
 }
 
 #[gpui::test]
+async fn replies_handled_out_of_order_at_the_bound_save_the_project_the_pane_kept(
+    cx: &mut TestAppContext,
+) {
+    // Grouped projects fill every place but one, so each opened project
+    // drops the one ungrouped project before it.
+    let mut base = ProjectLibrary::default();
+    let group = base.create_group(None, "Work").unwrap();
+    for index in 1..crate::project_library::MAX_PROJECTS {
+        let path = Path::new("/projects/grouped").join(index.to_string());
+        assert!(base.remember(&path));
+        base.move_project(&path, Some(group)).unwrap();
+    }
+    let ungrouped = Path::new("/projects/ungrouped");
+    assert!(base.remember(ungrouped));
+    let (app, cx) = test_app(cx, enabled(), base.clone());
+    let (first, second) = (Path::new("/projects/first"), Path::new("/projects/second"));
+    // The writer drops the ungrouped project for the first, then the first
+    // for the second.
+    let first_reply = remembered(&base, first);
+    let second_reply = remembered(&first_reply.project_library, second);
+    assert!(!second_reply.project_library.contains_project(first));
+
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            let first_save = app.begin_recent_project_save(first);
+            let second_save = app.begin_recent_project_save(second);
+            let latest = app.project_pane.latest_save;
+            app.absorb_remembered_project(second_save, &second_reply, window, cx);
+            app.absorb_remembered_project(first_save, &first_reply, window, cx);
+            // The pane dropped the second project for the first, unlike the
+            // store, so it writes its own list after both recent saves.
+            assert!(app.project_library.contains_project(first));
+            assert!(!app.project_library.contains_project(second));
+            assert!(!app.project_library.contains_project(ungrouped));
+            assert!(app.project_pane.latest_pane_save > latest);
+            assert_eq!(
+                app.project_pane.latest_pane_save,
+                app.project_pane.latest_save
+            );
+            assert!(app.project_pane.pending_saves() > 0);
+        })
+    });
+    settle_save(&app, cx).await;
+    let shown = app.read_with(cx, |app, _| {
+        assert_eq!(app.project_pane.pending_saves(), 0);
+        assert!(app.project_pane.error.is_none());
+        app.project_library.clone()
+    });
+    assert!(shown.contains_project(first));
+    assert_eq!(Preferences::load().project_library, shown);
+}
+
+#[gpui::test]
 fn a_recent_project_reply_adds_only_what_the_pane_lacked_and_the_store_kept(
     cx: &mut TestAppContext,
 ) {
@@ -742,4 +795,62 @@ async fn naming_a_group_saves_it_and_removing_it_keeps_the_projects(cx: &mut Tes
     for path in &paths {
         assert!(saved.project_library.contains_project(path));
     }
+}
+
+#[gpui::test]
+async fn a_group_dialog_shows_its_own_failed_save_beside_a_newer_one(cx: &mut TestAppContext) {
+    let (library, group, _) = library_with_group();
+    let (app, cx) = test_app(cx, enabled(), library);
+    // A directory where the store should be makes the group's save fail. An
+    // earlier iteration on this thread leaves the saved file there.
+    let store = crate::preferences::settings_path().unwrap();
+    let _ = fs::remove_file(&store);
+    fs::create_dir_all(&store).unwrap();
+
+    let form = cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_group_form(GroupIntent::Create(None), window, cx);
+            app.project_pane.group_form.clone().unwrap()
+        })
+    });
+    settle(cx);
+    let repair = cx.update(|window, cx| {
+        form.update(cx, |form, cx| {
+            form.input
+                .update(cx, |input, cx| input.set_value("Clients", window, cx));
+            form.submit(window, cx);
+        });
+        // The writer runs in submission order: the group's save fails, the
+        // store is repaired, and a newer pane save succeeds, so the pane
+        // reports no failure when the group's reply is handled.
+        app.update(cx, |app, cx| {
+            let repaired = store.clone();
+            let repair = app
+                .preferences_writer
+                .submit(move || Ok(fs::remove_dir(&repaired)?));
+            app.edit_project_library(
+                |library| {
+                    library.set_collapsed(group, true);
+                    Ok(())
+                },
+                window,
+                cx,
+            );
+            repair
+        })
+    });
+    repair.await.unwrap().unwrap();
+    settle_save(&app, cx).await;
+    app.read_with(cx, |app, _| {
+        assert!(app.project_pane.error.is_none());
+        assert!(app.project_pane.group_form.is_some());
+    });
+    form.read_with(cx, |form, _| {
+        assert!(!form.pending);
+        assert!(
+            form.error
+                .as_deref()
+                .is_some_and(|error| error.starts_with("Could not save the project list"))
+        );
+    });
 }
