@@ -297,7 +297,14 @@ PR run [36300227546](https://github.com/FernandoX7/GitTurtle/actions/runs/363002
 spent 107 s compiling for 0 doctests. The filter matches every doctest, whose
 libtest name is `<file> - <item> (line <n>)`, and no unit or integration test,
 whose name is a Rust path; each test binary starts once and reports every test
-filtered out.
+filtered out. Every Cargo command after the first would still recompile the app:
+[`crates/app/build.rs`](../crates/app/build.rs) watches `.git/packed-refs`, a
+shallow checkout has none, and Cargo reruns a build script whose watched file is
+missing. The second sample, PR run
+[36321021870](https://github.com/FernandoX7/GitTurtle/actions/runs/36321021870),
+spent 32 s (Linux) and 72 s (macOS) doing that in the doctest step, so the job
+first runs `git pack-refs --all --no-prune`, which writes the file and keeps the
+loose refs the build script also watches.
 
 The [`ci` profile](../.config/nextest.toml) sets `fail-fast = false` (the step also
 passes `--no-fail-fast`), `retries = 0`, `failure-output = "immediate"` and

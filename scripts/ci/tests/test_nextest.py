@@ -125,6 +125,7 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_tests_run_with_pinned_nextest_then_doctests_before_clippy_and_finish(self):
         job, steps = rust_debug_steps()
         index = {name: next(i for i, step in enumerate(steps) if marker in step) for name, marker in {
+            "refs": "git pack-refs --all --no-prune",
             "setup": "uses: ./.github/actions/setup-rust\n        with:\n          profile: debug",
             "install": "scripts/ci/tools.py install-nextest",
             "tests": "cargo nextest run",
@@ -132,7 +133,7 @@ class WorkflowPolicyTests(unittest.TestCase):
             "clippy": "cargo clippy",
             "finish": "phase: finish",
         }.items()}
-        self.assertEqual(sorted(index, key=index.get), ["setup", "install", "tests", "doctests", "clippy", "finish"])
+        self.assertEqual(sorted(index, key=index.get), ["refs", "setup", "install", "tests", "doctests", "clippy", "finish"])
         self.assertTrue(steps[index["tests"]].rstrip().endswith(
             '--name tests --directory "$RUNNER_TEMP/ci-metrics" -- cargo nextest run --locked --workspace -P ci --no-fail-fast --timings'))
         # Default selection reuses the nextest build; the filter matches only

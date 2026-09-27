@@ -148,6 +148,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # crates/app/build.rs watches .git/packed-refs, which a shallow checkout
+      # lacks. Cargo reruns a build script whose watched file is missing, so
+      # each later Cargo command would recompile the app. Packing the refs
+      # while keeping the loose ones changes no ref and no ref file it watches.
+      - name: Give the checkout the Git files the app build watches
+        run: git pack-refs --all --no-prune
       - name: Prepare Rust and restore bounded dependencies
         uses: ./.github/actions/setup-rust
         with:
