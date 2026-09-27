@@ -67,7 +67,7 @@ The [CI workflow](../.github/workflows/quality.yml) configures locked workspace 
 
 ## September 27 themes states on Linux
 
-Task `themes-evidence-gaps-linux` captures the themes states that no Linux frame attested (themes follow-up 22, the Linux part). All 65 frames are in [`evidence/themes/linux-gaps/`](evidence/themes/linux-gaps/) and come from one build, merged `main` `9a0a17b`: debug, sha256 `5a784da4…`, `--build-info` source tree clean. Later `main` commits change no product source.
+Task `themes-evidence-gaps-linux` captures the themes states that no Linux frame attested (themes follow-up 22, the Linux part). All 65 frames are in [`evidence/themes/linux-gaps/`](evidence/themes/linux-gaps/) and come from one build, merged `main` `9a0a17b`: debug, sha256 `5a784da4…`, `--build-info` source tree clean. These frames attest that build. The later #59 (`4ac3953`) embeds a Linux code font and changes the layout below 800 px, so code text may render differently in later builds.
 
 The app ran on Linux under XWayland on the GNOME 46 Wayland desktop (`DISPLAY=:1`), at `GPUI_X11_SCALE_FACTOR=1` and 1000x680 unless a frame's name says otherwise. Every launch had a fresh HOME and XDG directories, the `GitTurtle QA <qa@example.invalid>` identity and a fixture under `/tmp/gitturtle-evidence/`, and both fixtures were byte-identical before and after. The driver copies and flow logs stay in the local QA bundle. A privacy scan of all 65 frames with the local template set came back clean.
 
@@ -95,6 +95,23 @@ Still open:
 - **What a screen reader announces on Linux.**
 - **The shared helper's focus ring below 3:1 in light palettes** (the finding above), a product change outside this evidence task.
 - **The macOS items**, which need a real Mac (task `themes-evidence-gaps-macos`): the Settings theme picker, the editor and import-export at 2x, a failure line in a light theme, the native file dialogs, the shared button's hover and pressed states, and VoiceOver. No Mac run exists, so none of these is claimed.
+||||||| f3836ec
+
+## September 27 Omarchy and Hyprland
+
+The owner asked whether GitTurtle supports Omarchy. The check ran on the owner's own desktop: Omarchy 4.0.4 (Arch), Hyprland 0.56.2 on native Wayland (the window reports `xwayland: false`), AMD Radeon Vega (Picasso/Raven 2) with Mesa 26.2.2 and `vulkan-radeon`, one 1366 × 768 display at scale 1, two CPU threads, `xdg-desktop-portal` 1.22.1 with the `hyprland` 1.4.1 and `gtk` 1.15.3 backends, and no DejaVu, IBM Plex or Lilex fonts installed. The repository was this checkout, read passively; no write, staging or network action ran.
+
+The base, `f3836ec` (release, clean, sha256 `a5299020…`), was built with `scripts/package-linux.sh` after `pacman -S rustup python-pillow cmake` (a cold build took 38 min 42 s) and installed with the bundle's `install.py`. It launched on native Wayland with class and app ID `com.gitturtle.desktop`, matching the installed entry (`desktop-file-validate` clean, eight icon sizes present). Hyprland grants server-side decorations without a title bar, so no client window controls are drawn. The app followed the dark preference and showed History (257 commits) with its graph and inspector, Quick Open and the source view; local refresh reported working-tree edits and new commits. **Ctrl+O** opened `xdg-desktop-portal-gtk`'s Open Folder dialog about 4 s after the key on the first open, and cancelling it left the view and focus unchanged. **Ctrl+Q** quit with status 0 and relaunching restored the selected commit.
+
+Two defects were found. Code, diffs and hashes drew in the proportional Adwaita Sans, because the toolkit matches family names exactly and DejaVu Sans Mono was not installed. And tiled windows, which Hyprland sizes below the 1000 × 680 minimum, clipped: in 900, 800, 700 and 600 px tiles the layout fit exactly at 800 px, while at 700 px the inspector ran off the right edge mid-word and the header wrapped to two rows (three at 600 px, with the action bar wrapping too).
+
+The candidate `319eae6` (release, clean, sha256 `1f6e0438…`) embeds DejaVu Sans Mono on Linux (`b45ae28`), shows the History rail and a compact header below 800 px (`a1ea120`), and keeps the compact profile button's icon whole (`319eae6`; `a1ea120`, sha256 `0d6b27e4…`, drew it as a 26 px sliver). In a 664 × 718 tile the header stayed on one row, History showed the rail, and the inspector stayed whole in History, the source view and a Cargo.lock diff, whose comparison modes wrapped onto their own line as designed. Code, diff gutters and the SHA column drew in DejaVu Sans Mono. Maximized (1342 × 718), the navigation, Projects label and full profile button returned unchanged.
+
+Launch to first window, measured with `hyprctl` polling on an empty workspace, fresh XDG directories per launch and a warm page cache, ten launches each and interleaved: `a1ea120` median 380 ms (354–468) against `f3836ec` 408 ms (363–439). The font registration shows no measurable cost; this is not a speed claim.
+
+`desktop_text::tests::bundled_code_font_is_monospace_in_every_style_without_system_fonts` loads the faces with no system fonts. `views::tests::narrow_windows_keep_the_inspector_whole_and_the_header_on_one_row` resizes a repository window through 1000, 800, 664 and 600 px; it fails on `f3836ec`'s layout with the inspector's right edge at 800 px in a 664 px window, and on `a1ea120` with the 26 px profile button.
+
+The owner then used the installed `319eae6` on the same desktop: Omarchy's launcher (**Super+Space**) lists GitTurtle with its title and icon, and the owner reported their everyday workflows working. That report is the owner's, not a recorded procedure. Not covered by a recorded check: fractional or HiDPI scales, multiple monitors, XWayland on this desktop, a rail tooltip hovered with a pointer, and write and network workflows. The frames show the owner's desktop notifications and stay out of the repository.
 
 ## September 27 pressed buttons distinct from hover
 

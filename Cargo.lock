@@ -2264,6 +2264,7 @@ dependencies = [
  "gitturtle-core",
  "gitturtle-preview",
  "gpui-kit",
+ "gpui-pre-wgpu",
  "image",
  "libc",
  "markdown",
