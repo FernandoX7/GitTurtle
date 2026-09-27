@@ -153,10 +153,16 @@ jobs:
         with:
           profile: debug
           vendor-reuse: true
-      # These phases share one cold debug build. Cargo's default workspace
-      # test selection includes unit/integration tests and doctests.
-      - name: Locked workspace tests and doctests
-        run: python3 scripts/ci/metrics.py measure --name tests --directory "$RUNNER_TEMP/ci-metrics" -- cargo test --locked --workspace --timings
+      # Outside setup-rust, so the pin does not change the Rust cache key.
+      - name: Install pinned, checksum-verified cargo-nextest
+        run: python3 scripts/ci/metrics.py measure --name nextest-install --directory "$RUNNER_TEMP/ci-metrics" -- python3 scripts/ci/tools.py install-nextest --directory "$RUNNER_TEMP/cargo-nextest" --path-file "$GITHUB_PATH"
+      # These phases share one cold debug build. nextest builds and runs the
+      # same unit and integration tests as `cargo test` with the ci profile in
+      # .config/nextest.toml; it cannot run doctests, so Cargo runs them next.
+      - name: Locked workspace tests with nextest
+        run: python3 scripts/ci/metrics.py measure --name tests --directory "$RUNNER_TEMP/ci-metrics" -- cargo nextest run --locked --workspace -P ci --no-fail-fast --timings
+      - name: Locked workspace doctests
+        run: python3 scripts/ci/metrics.py measure --name doctests --directory "$RUNNER_TEMP/ci-metrics" -- cargo test --locked --workspace --doc --timings
       - name: Locked all-target Clippy
         run: python3 scripts/ci/metrics.py measure --name clippy --directory "$RUNNER_TEMP/ci-metrics" -- cargo clippy --locked --workspace --all-targets --timings -- -D warnings
       - name: Prepare bounded successful-main debug cache save

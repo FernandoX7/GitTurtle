@@ -163,6 +163,8 @@ def cargo_timings(log):
     for match in re.finditer(r"Finished `[^`]+`[^\n]*? in (?:(\d+)m )?(\d+(?:\.\d+)?)s", log):
         compilation.append(60 * number(float(match[1] or 0)) + number(float(match[2])))
     harness = [float(m) for m in re.findall(r"test result: [^\n]*?finished in (\d+(?:\.\d+)?)s", log)]
+    # nextest reports one run duration: `Summary [  12.345s] 950 tests run: ...`.
+    harness += [float(m) for m in re.findall(r"\bSummary \[\s*(\d+(?:\.\d+)?)s\] \d+(?:/\d+)? tests? run\b", log)]
     return {
         "cargo_compilation_seconds": round(number(sum(compilation)), 6) if compilation else None,
         "test_harness_seconds": round(number(sum(harness)), 6) if harness else None,

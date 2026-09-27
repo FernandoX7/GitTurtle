@@ -183,6 +183,18 @@ class ReportTests(unittest.TestCase):
             "cargo_compilation_seconds": 65.25, "test_harness_seconds": 0.5,
         })
 
+    def test_nextest_run_summary_counts_as_one_harness_duration(self):
+        log = (
+            "    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 03s\n"
+            "\x1b[32m     Summary\x1b[0m [  61.250s] 961 tests run: 961 passed, 5 skipped\n"
+            "        PASS [   1.000s] (  1/961) gitturtle-core history::loads\n"
+            "     Summary [   2.000s] 8/10 tests run: 5 passed, 3 failed, 2 skipped\n"
+            "test result: ok. 0 passed; 0 failed; finished in 0.25s\n"
+        )
+        self.assertEqual(metrics.cargo_timings(log), {
+            "cargo_compilation_seconds": 123, "test_harness_seconds": 63.5,
+        })
+
     def test_cancelled_step_without_end_is_unavailable(self):
         cancelled = self.runs[104]
         self.assertEqual(cancelled["conclusion"], "cancelled")

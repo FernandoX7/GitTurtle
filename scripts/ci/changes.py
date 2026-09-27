@@ -65,6 +65,10 @@ def classify_paths(paths: list[bytes]) -> dict:
             return full_plan("unrecognized-path")
         if path == "scripts/ci/packages.py":
             return full_plan("package-delivery")
+        # The pinned tool installer only runs in the Rust jobs, so a pin change
+        # must exercise them before it reaches main.
+        if path == "scripts/ci/tools.py":
+            return full_plan("pinned-ci-tool")
         if path.startswith(".github/"):
             return full_plan("workflow-or-repository-policy")
         # Claude Code configuration is development guidance like .agents/ and

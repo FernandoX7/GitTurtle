@@ -59,7 +59,7 @@ For pull requests:
   still runs all lanes.
 - Rust, manifests, the lockfile/toolchain, native assets, vendored inputs, build or
   package scripts, workflow/repository-policy changes and unrecognized paths run
-  **all** lanes. Rust keeps formatting, locked workspace tests with doctests,
+  **all** lanes. Rust keeps formatting, locked workspace tests and doctests,
   strict all-target Clippy, release compilation and both platform package checks.
 
 Routing uses complete local Git diffs after `checkout` fetches history, avoiding
@@ -208,11 +208,15 @@ After classification, the selected jobs have no build dependencies on each other
 - `Rust formatting` checks `cargo fmt --all -- --check` on Ubuntu with the pinned
   workspace toolchain. It installs no native packages and restores no target cache.
 - `Rust tests and Clippy · macos-15` and `· ubuntu-24.04` each restore the **debug**
-  cache, run `cargo test --locked --workspace --timings`, then
+  cache, install the [pinned cargo-nextest](#test-execution-with-nextest), run
+  `cargo nextest run --locked --workspace -P ci --no-fail-fast --timings`, then
+  `cargo test --locked --workspace --doc --timings`, then
   `cargo clippy --locked --workspace --all-targets --timings -- -D warnings`.
-  Cargo's default [test selection](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
-  includes unit/integration tests and doctests. There is no package, test-name,
-  target or feature filter that removes the existing platform-conditional tests.
+  nextest builds the same targets as Cargo's default
+  [test selection](https://doc.rust-lang.org/cargo/commands/cargo-test.html) and
+  runs its unit and integration tests; the doctest step runs the rest of that
+  selection. There is no package, test-name, target or feature filter that removes
+  the existing platform-conditional tests.
 - `Rust release · macos-26` and `· ubuntu-24.04` each restore the **release** cache
   and build `gitturtle` with `--release --locked --timings` and an explicit platform
   target. Each job packages that executable without rebuilding it. Linux checks
@@ -261,12 +265,102 @@ not predictions for the new graph.
 Release compilation has a distinct profile and can overlap debug work. Keeping
 Clippy with tests avoids another cold debug dependency build and another cache
 reader/writer family; Clippy remains a separate measured step with strict warnings.
-A failing test stops that debug job before Clippy, as before; the independent
-release job continues to retain its diagnostics. There is no automatic retry.
-The short post-compilation test phase does not justify nextest, partitions or
-additional test runners, so this change introduces none. If later measurements
+A failing test stops that debug job before doctests and Clippy, as before; the
+independent release job continues to retain its diagnostics. There is no automatic
+retry. The September 15 fan-out judged the short test phase too small to justify
+nextest, partitions or additional test runners. Later warm runs made test execution
+itself visible (see [Test execution with nextest](#test-execution-with-nextest)), and
+the local gate already ran nextest, so the tests step now uses it; there are still
+no partitions or additional test runners. If later measurements
 show Clippy still dominates the warm critical path, compare a separate Clippy lane
 against the extra cold compilation, setup, transfer and runner time before adopting it.
+
+### Test execution with nextest
+
+`cargo test` ran the workspace's 25 test binaries one after another, each with
+its own thread pool: in warm main run
+[36164627195](https://github.com/FernandoX7/GitTurtle/actions/runs/36164627195)
+libtest reported 146 s of summed test execution on macOS against 59 s on Linux. The local gate already ran
+[cargo-nextest](https://nexte.st/) with `-P ci`, so CI and local results could
+differ. The tests step now runs `cargo nextest run --locked --workspace -P ci
+--no-fail-fast --timings`. nextest builds the same unit, integration and example
+targets as `cargo test` (passing `--locked` and `--timings` through to Cargo), then
+runs each test in its own process across the runner's CPUs. It cannot run
+doctests, so a separate `Locked workspace doctests` step runs `cargo test --locked
+--workspace --doc --timings` and records its own `doctests` measurement. It should
+reuse the libraries the nextest step built; its Cargo timing report shows whether it did.
+
+The [`ci` profile](../.config/nextest.toml) sets `fail-fast = false` (the step also
+passes `--no-fail-fast`), `retries = 0`, `failure-output = "immediate"` and
+`status-level = "skip"`. A failing test's output appears in the log where it fails
+and the step still exits non-zero after every test has run; unlike `cargo test`,
+a failure in one binary no longer hides the others' results. No test is retried,
+so a flaky test fails the job as before. The status level prints one `PASS`,
+`FAIL` or `SKIP` line per test, so the log lists every executed and ignored test
+as libtest's `test … ok|ignored` lines did. The inherited default profile reports
+a test running longer than 60 s as slow and terminates it after 120 s; `cargo test`
+had no per-test limit, so a test that hangs now fails with a `TIMEOUT` line
+instead of holding the job until its 45-minute timeout. The profile's JUnit report
+(`target/nextest/ci/junit.xml`) is not uploaded: it holds unsanitized captured
+output of failing tests, and the sanitized `tests.log` already lists every result.
+The measurement helper reads nextest's `Summary [ … ]` run duration as the test
+harness time; being one parallel run, it is a wall-clock span rather than a sum
+of per-binary times.
+
+The pinned version is installed by
+[`scripts/ci/tools.py install-nextest`](../scripts/ci/tools.py) before the tests
+step, measured as `nextest-install`. It downloads the official release archive
+over HTTPS, verifies its SHA-256 against the digest committed in that script before
+reading it, extracts only the regular `cargo-nextest` file into
+`$RUNNER_TEMP/cargo-nextest`, checks that `cargo nextest --version` resolves to the
+pinned release, and only then adds the directory to `GITHUB_PATH`. A transport
+failure is retried twice; a checksum, archive or version mismatch fails the step.
+The step needs no token or permission beyond the workflow's `contents: read`, and
+no third-party install action is used. It lives outside the Rust setup action, whose
+files are hashed into the [cache key](#tool-choice-and-compatible-reuse), so
+changing the pin does not invalidate the Rust caches. The archive is fetched on
+each run rather than cached: about 12 MB (Linux) or 17 MB (macOS).
+
+| Runner | Release archive (cargo-nextest 0.9.146) | SHA-256 |
+| --- | --- | --- |
+| ubuntu-24.04 (Linux X64) | [`cargo-nextest-0.9.146-x86_64-unknown-linux-gnu.tar.gz`](https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-x86_64-unknown-linux-gnu.tar.gz) | `682c21b777c333e96fd532e114d3a5a894e0729ab88d94c0a9f20f8419695428` |
+| macos-15 (macOS ARM64) | [`cargo-nextest-0.9.146-universal-apple-darwin.tar.gz`](https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-universal-apple-darwin.tar.gz) | `39785160b3c2f6ed9a765049cf4fa79f3b39aa02eb7598a5a0e2a1a0b9ffb9a8` |
+
+Version 0.9.146 (September 21, 2026) was the latest release when this was pinned.
+It differs from 0.9.145, whose status-line format `scripts/gate.py` parses, only in
+replacing yanked dependency versions. Both digests matched the release's published
+`.sha256` files, GitHub's recorded asset digests, and a local `sha256sum` of the
+downloaded archives on September 27, 2026. To move the pin, update the version and
+both digests in `tools.py` and this table from the new release's `.sha256` assets,
+check that its output format still matches the gate's parser, and run the CI helper
+tests.
+
+Reproduce the CI test phase locally with the same isolation as the job:
+
+```sh
+GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+  cargo nextest run --locked --workspace -P ci --no-fail-fast
+GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null cargo test --locked --workspace --doc
+```
+
+To check that two runs executed the same tests, download each Rust debug job's
+log (`gh api repos/FernandoX7/GitTurtle/actions/jobs/<job-id>/logs`) and compare them:
+
+```sh
+python3 scripts/ci/executed_tests.py compare --before cargo-test-job.log --after nextest-job.log
+```
+
+[`executed_tests.py`](../scripts/ci/executed_tests.py) reads libtest `Running` and
+`Doc-tests` headers with their `test … ok|ignored|FAILED` lines, and nextest
+`PASS`/`FAIL`/`SKIP` lines. It keys each test by target kind and Cargo crate name
+(`lib:gitturtle_core history::…`, `bin:gitturtle …`, `test:worktrees_reflog …`,
+`doc:gitturtle_core …`), prints the executed and ignored counts, and lists every
+test executed or ignored on one side only. It exits non-zero when they differ, and
+`list` prints the extracted set. Test output that interrupts a libtest result line
+can hide that test from the extraction; investigate any listed difference in the
+log before calling the sets different. The dated
+[nextest record](benchmarks/2026-09-27-ci-nextest-tests.md) holds the hosted
+before/after durations and the test-list comparison.
 
 Each Rust matrix has two fixed OS entries, `fail-fast: false`, `max-parallel: 2`
 and a 45-minute job timeout. Thus at most four compilation runners are requested
@@ -443,7 +537,8 @@ intervals and conflicting duplicate snapshots produce a clear error.
   subset when missing intervals prevent a complete total.
 - **Cargo compilation** (`cargo_compilation_seconds`) sums durations from Cargo
   `Finished` profile messages. **Test harness time** (`test_harness_seconds`) sums
-  the durations explicitly reported by completed test harnesses. These distinguish
+  the durations explicitly reported by completed test harnesses: libtest's
+  `test result: … finished in` lines and nextest's `Summary [ … ]` run duration. These distinguish
   build cost from measured test work without subtracting compilation from a step
   to invent execution time. Harness totals exclude startup and doctest compilation;
   parallel harness totals are not a wall-clock span. Missing markers leave the
@@ -472,13 +567,13 @@ or total runner cost.
 ## Workflow summaries and retained diagnostics
 
 Quality wraps guidance checks, development-tooling tests, CI measurement fixtures,
-formatting, workspace tests, Clippy, release compilation and Linux package checks
-with `measure`. The wrapper preserves the command's result while recording timing
+formatting, the nextest installation, workspace tests, doctests, Clippy, release
+compilation and Linux package checks with `measure`. The wrapper preserves the command's result while recording timing
 and a bounded, sanitized log. The summary step runs after failures and lists the
 available measurements. Each command produces `<name>.json` and `<name>.log`.
 Logs retain at most 1 MiB, with a truncation marker when older output is dropped;
-individual lines over 16 KiB are omitted. Tests, Clippy and release builds request
-Cargo `--timings`. The helper copies a newly produced timing report of up to 2 MiB
+individual lines over 16 KiB are omitted. Tests (nextest passes the flag to its
+Cargo build), doctests, Clippy and release builds request Cargo `--timings`. The helper copies a newly produced timing report of up to 2 MiB
 as sanitized plain text, for example `tests-timing.txt`, instead of retaining an
 executable HTML artifact. Missing or oversized timing artifacts remain unavailable.
 The uploaded diagnostic artifact expires after **three days**. Quality uses
@@ -503,7 +598,7 @@ Use the same helper locally when investigating a command:
 
 ```sh
 python3 scripts/ci/metrics.py measure --name tests --directory .local/ci-metrics \
-  -- cargo test --locked --workspace --timings
+  -- cargo nextest run --locked --workspace -P ci --no-fail-fast --timings
 python3 scripts/ci/metrics.py summary --directory .local/ci-metrics
 ```
 
@@ -760,7 +855,7 @@ setup and the lifetime of optional compilation caches. Each compilation job call
 consumer of `target`**, including package construction and installation checks.
 Finish may remove compiled outputs to bound a successful main cache. Keep future
 binary/artifact consumers before that boundary. The debug job always runs locked
-workspace tests (including doctests) and strict all-target Clippy; the separate
+workspace tests with nextest, then doctests, and strict all-target Clippy; the separate
 release job always runs locked optimized compilation, regardless of a cache hit.
 Formatting has no compilation cache or native setup.
 

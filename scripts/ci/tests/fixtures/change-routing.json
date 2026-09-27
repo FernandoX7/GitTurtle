@@ -3,6 +3,7 @@
   {"name":"website", "paths":["website/public/index.html", "website/check.py"], "required":["website"]},
   {"name":"controller", "paths":["scripts/agent_loop/runner.py", "docs/development/tasks.json"], "required":["tooling"]},
   {"name":"CI package delivery", "paths":["scripts/ci/packages.py"], "required":["product", "tooling", "website"]},
+  {"name":"CI pinned tool installer", "paths":["scripts/ci/tools.py"], "required":["product", "tooling", "website"]},
   {"name":"ci tools", "paths":["scripts/ci/metrics.py", "scripts/ci/tests/test_metrics.py"], "required":["tooling"]},
   {"name":"native-QA tools", "paths":["scripts/native_qa/qa.py", "scripts/native_qa/ncc.c", "scripts/native_qa/README.md"], "required":["tooling"]},
   {"name":"agent guide", "paths":["crates/app/AGENTS.md", ".agents/skills/gitturtle-feature-work/SKILL.md"], "required":["tooling"]},
