@@ -54,7 +54,11 @@ impl GitTurtle {
         })
         .detach();
     }
-    pub(super) fn render_profile_button(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_profile_button(
+        &self,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let assignment = self
             .path
             .as_ref()
@@ -85,7 +89,7 @@ impl GitTurtle {
             .h(crate::appearance::ui_size(36.))
             .px_3()
             .max_w(px(230.))
-            .label(title.clone())
+            .when(!compact, |button| button.label(title.clone()))
             .icon(Icon::default().path("icons/user.svg").size(px(16.)))
             .dropdown_caret(true)
             .disabled(self.operation_busy.is_some() || self.profiles.saving)
