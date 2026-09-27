@@ -41,6 +41,8 @@ extend-ignore-words-re = [
 # matches against diagnostic text.
 extend-ignore-re = [
     "contains\\(\"authenticat\"\\)",
+    # A UI label quoted as the window truncated it in themes evidence notes.
+    "focus rin…",
 ]
 
 [default.extend-words]
