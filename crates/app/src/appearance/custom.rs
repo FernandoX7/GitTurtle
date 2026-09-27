@@ -362,7 +362,7 @@ impl fmt::Display for ReadabilityIssue {
         if self.measure == ReadabilityMeasure::Step {
             return write!(
                 f,
-                "{} against {} differs by {}, needs {}",
+                "{} against {} differs by {} of 255 in one channel, needs {}",
                 self.foreground, self.background, self.ratio, self.minimum
             );
         }
@@ -1401,7 +1401,7 @@ mod tests {
         assert_eq!(shipped_porcelain.readability_issues(), vec![step(4)]);
         assert_eq!(
             step(3).to_string(),
-            "Selected against Hover differs by 3, needs 6"
+            "Selected against Hover differs by 3 of 255 in one channel, needs 6"
         );
         // Kanagawa Wave's `selected` (upstream waveBlue1, lightened only to the panel rule)
         // lifts less from its panel than `hover` does, so its pressed button steps by hue, at
