@@ -634,6 +634,268 @@
         "docs"
       ],
       "commit": "docs(evidence): attest the themes pages on macOS"
+    },
+    {
+      "id": "ci-claude-config-lane",
+      "title": "Route Claude Code configuration changes to the tooling CI lane",
+      "description": "Owner-approved on 2026-09-26 from the ranked tooling survey of 2026-09-25 (recorded in HANDOFF.md). scripts/ci/changes.py classify_paths sends `.claude/**`, the root CLAUDE.md and crates/*/CLAUDE.md to full_plan(\"product-or-unrecognized-input\"), because only scripts/ci, scripts/agent_loop, scripts/native_qa, .agents, .codex, docs/development and AGENTS.md reach the tooling lane. A Claude-configuration-only pull request therefore runs both Rust matrices and both release builds (PR #30 did), about ten minutes of hosted time for no product input. Route them like AGENTS.md. `.claude/hooks/*.py` and `.claude/settings.json` are exercised by the agent-loop suite (test_claude_hooks), which the tooling lane runs; confirm no documented reason in docs/ci.md for the current routing before changing it.",
+      "depends_on": [],
+      "scope": [
+        "scripts/ci/changes.py",
+        "scripts/ci/tests/**",
+        "docs/ci.md"
+      ],
+      "acceptance": [
+        {
+          "id": "routing",
+          "description": "Paths under .claude/ and any file named CLAUDE.md select only the tooling lane, and a change that also touches crates/, vendor/, a manifest or .github/ still selects the full plan."
+        },
+        {
+          "id": "fixtures",
+          "description": "scripts/ci/tests fixtures cover .claude/agents, .claude/hooks, .claude/settings.json, the root CLAUDE.md and a crate CLAUDE.md, alone and mixed with product paths; the CI test suite passes."
+        },
+        {
+          "id": "hosted",
+          "description": "A hosted run of a Claude-configuration-only change is shown taking the tooling path, and docs/ci.md states the routing and its reason."
+        }
+      ],
+      "profiles": [
+        "tooling"
+      ],
+      "commit": "ci: route Claude Code configuration changes to the tooling lane"
+    },
+    {
+      "id": "gate-git-isolation",
+      "title": "Isolate Git configuration in local test runs and retire the known-failures list",
+      "description": "Owner-approved on 2026-09-26 from the ranked tooling survey of 2026-09-25 (recorded in HANDOFF.md). Touches controller-protected or policy paths, so it is interactive work: the unattended controller must not run it. CI isolates Git configuration for tests (quality.yml sets GIT_CONFIG_NOSYSTEM=1 and GIT_CONFIG_GLOBAL to a temporary file); scripts/gate.py base_env does not. work::authentication::tests::controlled_git_preserves_configured_askpass_and_helper_interaction has failed on this Linux host only and sits in the local, git-ignored .local/gate/known-failures.txt (primary checkout and the claude-code-support worktree); it passed in the 2026-09-24 local runs. Suspected, unverified cause: configure_askpass (crates/git-core/src/work/authentication.rs) keeps an inherited GIT_ASKPASS, which Git prefers over the test's core.askPass, and desktop sessions can export GIT_ASKPASS or SSH_ASKPASS. Reproduce the failure first, then fix it at the right layer: a test that depends on the caller's environment should clear what it depends on, so plain `cargo test --locked --workspace` passes on this host too, and the gate's test stages should match CI's isolation. Product behaviour that honours a user's GIT_ASKPASS must not change without a separate decision.",
+      "depends_on": [],
+      "scope": [
+        "scripts/gate.py",
+        "scripts/test_gate.py",
+        "crates/git-core/src/work/authentication.rs",
+        "crates/git-core/tests/**",
+        ".claude/rules/validation.md",
+        ".claude/skills/gitturtle-gates/SKILL.md",
+        "docs/development/claude-code.md",
+        "docs/development/HANDOFF.md"
+      ],
+      "acceptance": [
+        {
+          "id": "root-cause",
+          "description": "The pull request states the reproduced cause of the host-only failure with the command and environment that reproduce it, or states that it could not be reproduced and what was tried."
+        },
+        {
+          "id": "isolation",
+          "description": "The gate's test stages run with GIT_CONFIG_NOSYSTEM=1, an empty temporary global Git configuration and no inherited GIT_ASKPASS or SSH_ASKPASS, covered by scripts/test_gate.py; any test that depended on the caller's environment is isolated in the test itself."
+        },
+        {
+          "id": "retired",
+          "description": "On this host `cargo test --locked --workspace` and `python3 scripts/gate.py full` pass with no known-failures entry; the local known-failures files are deleted with the owner's approval of 2026-09-26, and guidance no longer tells agents to add host entries unless the mechanism is deliberately kept, with the reason recorded."
+        }
+      ],
+      "profiles": [
+        "tooling",
+        "rust"
+      ],
+      "commit": "fix(gate): isolate Git configuration in local test runs"
+    },
+    {
+      "id": "guidance-image-privacy",
+      "title": "Check committed images for private details",
+      "description": "Owner-approved on 2026-09-26 from the ranked tooling survey of 2026-09-25 (recorded in HANDOFF.md). Touches controller-protected or policy paths, so it is interactive work: the unattended controller must not run it. The public repository leaked the account name, home paths and a hostname-derived Git identity in screenshot pixels (removed by #25). The home-path rule in scripts/agent_loop/guidance.py (home_path_issues) scans only UTF-8 text under docs/, so every image is skipped. A 2026-09-25 scan of all 346 tracked images found no personal metadata: 106 carry ICC and Photoshop blocks, 7 PNG icons carry eXIf, two turtle.png files carry C2PA manifests, and one PNG has a Matplotlib tEXt chunk. Pixel leaks need the template scan now tracked as `python3 scripts/native_qa/qa.py privacy scan`, whose templates are private and must never be committed or printed in logs.",
+      "depends_on": [],
+      "scope": [
+        "scripts/check-agent-guidance.py",
+        "scripts/agent_loop/guidance.py",
+        "scripts/agent_loop/test_guidance.py",
+        "scripts/native_qa/**",
+        "scripts/gate.py",
+        "scripts/test_gate.py",
+        ".github/workflows/quality.yml",
+        "scripts/ci/**",
+        ".agents/skills/gitturtle-native-qa/SKILL.md",
+        ".claude/agents/native-qa.md",
+        "docs/ci.md"
+      ],
+      "acceptance": [
+        {
+          "id": "metadata",
+          "description": "The guidance check parses PNG text and eXIf chunks and JPEG EXIF, XMP and comment segments of every tracked image with the standard library and fails on home paths, personal email addresses and configured private strings, without flagging the ICC, Photoshop, C2PA and tool-name metadata already in the tree; unit tests cover each chunk type."
+        },
+        {
+          "id": "pixels",
+          "description": "Added or changed images are template-scanned before they can merge wherever private templates are available: at least the local gate when a templates directory is configured, and CI through a repository secret only if the owner creates one (fork pull requests without secrets skip with a notice, never a pass claim). Templates and matched strings never appear in tracked files or logs."
+        },
+        {
+          "id": "procedure",
+          "description": "The native-QA skill and agent require the scan on every frame proposed for commit, and the cost per frame is recorded."
+        }
+      ],
+      "profiles": [
+        "tooling"
+      ],
+      "commit": "feat(guidance): check committed images for private details"
+    },
+    {
+      "id": "ci-vendor-warm-reuse",
+      "title": "Stop warm CI runs rebuilding the vendored crates",
+      "description": "Owner-approved on 2026-09-26 from the ranked tooling survey of 2026-09-25 (recorded in HANDOFF.md). Even on a Rust cache hit, 47 units rebuild in the Rust jobs. On macOS gpui-component takes 155 s and finishes at 194 s of a 234 s compile, gpui-base 92 s and mermaid-rs-renderer 105 s; Linux shows gpui-component 110 s of a 154 s compile (run 36164627195, --timings). .github/actions/setup-rust/action.yml sets `cache-workspace-crates: false` for Swatinem/rust-cache, which drops path-dependency outputs, and checkout gives vendor/ fresh mtimes, which would also dirty their fingerprints. The cache key already hashes vendor/ (.github/actions/setup-rust/cache.py). Find why the setting is false before changing it: the cache budget is limited (see the ci-rust-cache task and docs/ci.md). Estimated saving 120-190 s per Rust job, not yet measured.",
+      "depends_on": [],
+      "scope": [
+        ".github/actions/**",
+        ".github/workflows/quality.yml",
+        "scripts/ci/**",
+        "docs/ci.md",
+        "docs/benchmarks/**"
+      ],
+      "acceptance": [
+        {
+          "id": "fresh",
+          "description": "On a warm hosted run after the change, cargo --timings shows the vendored crates fresh on both Linux and macOS, and a vendor/ content change still produces a new cache key and a rebuild."
+        },
+        {
+          "id": "measured",
+          "description": "A dated record under docs/benchmarks/ gives cold and warm job durations before and after on both platforms, with run IDs, cache sizes and the repository cache total against its limit."
+        },
+        {
+          "id": "safe",
+          "description": "No stale artifact can be reused across a vendor/, toolchain or lockfile change, and docs/ci.md explains the mechanism and its cache-size cost."
+        }
+      ],
+      "profiles": [
+        "tooling"
+      ],
+      "commit": "ci: reuse vendored crate builds in warm Rust jobs"
+    },
+    {
+      "id": "evidence-light-tier",
+      "title": "Add a lighter native-evidence tier for small visual changes",
+      "description": "Owner-approved on 2026-09-26 from the ranked tooling survey of 2026-09-25 (recorded in HANDOFF.md). Every visible change currently needs a same-session base and candidate recapture plus a design ruling on every difference; those rules live in the closed docs/development/themes/follow-ups.md (Evidence rules for this list), HANDOFF.md, the native-QA skill and the agent files. Define one home for the evidence rules and a lighter tier for a change confined to one control or state with no palette, token or shared-layout change: candidate captures of the affected states from an identified build, one design-review pass and the privacy scan. The tracked tooling reproduced a committed frame byte for byte on 2026-09-25, so committed frames can serve as the base when an unchanged control frame reproduces exactly in the same session. Escalate to the full tier when any committed frame moves outside the expected region, a palette or token changes, or the reviewer cannot attribute a difference. Keep sha256 and --build-info identity mandatory in both tiers.",
+      "depends_on": [
+        "guidance-image-privacy"
+      ],
+      "scope": [
+        ".agents/skills/gitturtle-native-qa/**",
+        ".claude/agents/native-qa.md",
+        ".claude/agents/design-reviewer.md",
+        "docs/validation.md",
+        "docs/development/README.md",
+        "docs/development/HANDOFF.md",
+        "AGENTS.md"
+      ],
+      "acceptance": [
+        {
+          "id": "one-home",
+          "description": "The evidence rules for both tiers live in one maintained place, and every other file links to it instead of restating it."
+        },
+        {
+          "id": "tier-rules",
+          "description": "The light tier states its eligibility, required captures, reviewer pass, base-from-committed-frames condition and escalation triggers, and the full tier is unchanged in substance."
+        },
+        {
+          "id": "tooling",
+          "description": "The steps name the tracked qa.py commands that implement them, including compare against committed frames with masks."
+        }
+      ],
+      "profiles": [
+        "docs"
+      ],
+      "commit": "docs(native-qa): add a lighter evidence tier for small visual changes"
+    },
+    {
+      "id": "gate-stage-order",
+      "title": "Remove redundant gate stages and run cheap checks first",
+      "description": "Owner-approved on 2026-09-26 from the ranked tooling survey of 2026-09-25 (recorded in HANDOFF.md). Touches controller-protected or policy paths, so it is interactive work: the unattended controller must not run it. scripts/gate.py `full` runs a workspace `cargo check` that the workspace clippy stage already covers, `fast` type-checks the changed crates twice (check, then clippy), and the cheap guidance and controller-test stages run after the release build, so a guidance failure is reported last. A warm fast gate takes about 12 s, so the gain is mainly on dirty builds and early failure. Keep every check the gate performs today.",
+      "depends_on": [
+        "gate-git-isolation"
+      ],
+      "scope": [
+        "scripts/gate.py",
+        "scripts/test_gate.py",
+        ".claude/skills/gitturtle-gates/SKILL.md"
+      ],
+      "acceptance": [
+        {
+          "id": "same-coverage",
+          "description": "Every lint, test and policy check the gate ran before still runs, shown by a stage list before and after in the pull request."
+        },
+        {
+          "id": "fail-fast",
+          "description": "Stages that need no Rust build run before any Rust build in both fast and full."
+        },
+        {
+          "id": "measured",
+          "description": "Fast and full wall times before and after on this host, warm and after a one-file change, with no other build running, are recorded in the pull request."
+        }
+      ],
+      "profiles": [
+        "tooling"
+      ],
+      "commit": "perf(gate): drop redundant stages and run cheap checks first"
+    },
+    {
+      "id": "ci-nextest-tests",
+      "title": "Run CI's Rust tests with nextest",
+      "description": "Owner-approved on 2026-09-26 from the ranked tooling survey of 2026-09-25 (recorded in HANDOFF.md). CI's tests step runs `cargo test --locked --workspace` over about 30 test binaries one after another: 146 s of test execution on macOS against 59 s on Linux (run 36164627195). The local gate already runs `cargo nextest run -P ci` with .config/nextest.toml, so CI and local runs differ. The ci-parallel-checks task requires measured evidence before hosted checks change.",
+      "depends_on": [
+        "ci-vendor-warm-reuse"
+      ],
+      "scope": [
+        ".github/workflows/quality.yml",
+        ".github/actions/**",
+        ".config/nextest.toml",
+        "scripts/ci/**",
+        "docs/ci.md",
+        "docs/benchmarks/**"
+      ],
+      "acceptance": [
+        {
+          "id": "equivalent",
+          "description": "The set of tests executed is identical before and after (compare test lists), doctests still run as their own step, and failures still fail the job with readable output."
+        },
+        {
+          "id": "pinned",
+          "description": "nextest is installed at a pinned version and checksum without widening the workflow's permissions."
+        },
+        {
+          "id": "measured",
+          "description": "Hosted before and after durations of the tests step on both platforms, warm, are recorded with run IDs."
+        }
+      ],
+      "profiles": [
+        "tooling"
+      ],
+      "commit": "ci: run Rust tests with nextest"
+    },
+    {
+      "id": "ci-macos-tooling-speed",
+      "title": "Shorten the macOS development-tooling job",
+      "description": "Owner-approved on 2026-09-26 from the ranked tooling survey of 2026-09-25 (recorded in HANDOFF.md). For documentation and tooling pull requests the critical path is the macOS development-tooling job: 323-340 s, of which the agent-loop Python suite takes 264-288 s against 136 s on Ubuntu (runs 36164627195 and 36163895196). Profile the suite per test on macOS, fix slow tests at their cause (fixed sleeps, process spawning, polling intervals), and only then consider running the macOS leg for platform-sensitive paths alone. Keep macOS coverage for the process, watchdog and file-permission code that differs by platform.",
+      "depends_on": [],
+      "scope": [
+        "scripts/agent_loop/**",
+        ".github/workflows/quality.yml",
+        "scripts/ci/**",
+        "docs/ci.md"
+      ],
+      "acceptance": [
+        {
+          "id": "profiled",
+          "description": "Per-test macOS durations before the change are recorded, and the slowest causes are named."
+        },
+        {
+          "id": "coverage-kept",
+          "description": "Every agent-loop test still runs on macOS whenever platform-sensitive controller code changes, and no test is deleted or skipped to save time without a stated reason."
+        },
+        {
+          "id": "measured",
+          "description": "Hosted macOS tooling-job durations before and after are recorded with run IDs."
+        }
+      ],
+      "profiles": [
+        "tooling"
+      ],
+      "commit": "perf(ci): shorten the macOS development-tooling job"
     }
   ]
 }
