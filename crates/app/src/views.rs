@@ -98,7 +98,9 @@ impl GitTurtle {
         .inset_0()
     }
 
-    pub(super) fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// `compact` drops the Projects and profile labels in a narrow window,
+    /// keeping their icons, tooltips and accessible names.
+    pub(super) fn render_header(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         let busy = self.operation_busy.is_some();
         let back_label = self.back_label();
@@ -132,6 +134,7 @@ impl GitTurtle {
                 .into_any_element();
         }
         div()
+            .debug_selector(|| "repository-header".into())
             .min_h(appearance::ui_size(48.))
             .py_1p5()
             .flex_wrap()
@@ -146,7 +149,11 @@ impl GitTurtle {
             .child(
                 button(
                     "page-back",
-                    if back_to_projects { "Projects" } else { "" },
+                    if back_to_projects && !compact {
+                        "Projects"
+                    } else {
+                        ""
+                    },
                     if back_to_projects {
                         "folder"
                     } else {
@@ -320,7 +327,7 @@ impl GitTurtle {
                         ),
                 )
             })
-            .child(self.render_profile_button(cx))
+            .child(self.render_profile_button(compact, cx))
             .child(
                 button("settings", "", "settings", false)
                     .accessibility_label("Settings")
@@ -330,9 +337,12 @@ impl GitTurtle {
             .into_any_element()
     }
 
-    pub(super) fn render_rail(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// `squeezed` marks a History navigation hidden only because the window is
+    /// too narrow; its button explains that instead of doing nothing.
+    pub(super) fn render_rail(&self, squeezed: bool, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
         div()
+            .debug_selector(|| "repository-rail".into())
             .w(appearance::ui_size(44.))
             .h_full()
             .flex_shrink_0()
@@ -345,10 +355,16 @@ impl GitTurtle {
             .border_r_1()
             .border_color(rgb(colors.border))
             .when(self.mode == WorkspaceMode::History, |rail| {
+                let label = if squeezed {
+                    "Widen the window to show branches and worktrees"
+                } else {
+                    "Show branches and worktrees"
+                };
                 rail.child(
                     button("rail-sidebar", "", "commit", false)
-                        .accessibility_label("Show branches and worktrees")
-                        .tooltip("Show branches and worktrees")
+                        .accessibility_label(label)
+                        .tooltip(label)
+                        .disabled(squeezed)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.sidebar = true;
                             this.history_sidebar = true;
@@ -372,6 +388,7 @@ impl GitTurtle {
     pub(super) fn render_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
         div()
+            .debug_selector(|| "history-sidebar".into())
             .size_full()
             .flex()
             .flex_col()
@@ -1813,14 +1830,52 @@ impl GitTurtle {
     }
 }
 
+/// Navigation and the history table (520 px) beside the narrowest inspector
+/// (280 px): below this repository width, History shows the rail.
+const SIDEBAR_FIT_WIDTH: f32 = 800.;
+/// The narrowest content column beside the rail in a narrow window.
+const NARROW_CONTENT_MIN: f32 = 240.;
+/// Below this window width, at the interface text size, the header drops the
+/// Projects and profile labels so it stays on one row.
+const COMPACT_HEADER_WIDTH: f32 = 800.;
+
 impl GitTurtle {
+    /// A narrow window shrinks the project pane toward its minimum before the
+    /// repository's own panes lose room; the saved width is untouched.
+    fn project_pane_width(&self, window: &Window) -> Pixels {
+        px(self.settings.project_pane_width)
+            .min((window.viewport_size().width - px(800.)).max(px(180.)))
+    }
+
+    /// The width the repository page receives beside the project pane.
+    fn repository_width(&self, window: &Window) -> Pixels {
+        let width = window.viewport_size().width;
+        if self.settings.project_pane && self.page != AppPage::Projects {
+            width - self.project_pane_width(window)
+        } else {
+            width
+        }
+    }
+
     fn render_repository(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        // Tiling window managers ignore the window's minimum size. Below the
+        // width that fits navigation, the history table and the narrowest
+        // inspector, History shows the rail and the content column accepts
+        // less, so the inspector stays whole; saved widths and the user's
+        // navigation choice are untouched.
+        let narrow = self.repository_width(window) < px(SIDEBAR_FIT_WIDTH);
+        let squeezed = narrow && self.sidebar && self.mode == WorkspaceMode::History;
+        let content_min = if narrow {
+            appearance::ui_size(44.) + px(NARROW_CONTENT_MIN)
+        } else {
+            px(520.)
+        };
         let left = if self.mode != WorkspaceMode::History {
             div()
                 .size_full()
                 .flex()
                 .min_w_0()
-                .child(self.render_rail(cx))
+                .child(self.render_rail(squeezed, cx))
                 .child(
                     div()
                         .flex_1()
@@ -1829,7 +1884,7 @@ impl GitTurtle {
                         .child(self.render_preview(cx)),
                 )
                 .into_any_element()
-        } else if self.sidebar {
+        } else if self.sidebar && !squeezed {
             h_resizable("history-columns")
                 .with_state(&self.history_panels)
                 .on_resize({
@@ -1861,7 +1916,7 @@ impl GitTurtle {
                 .size_full()
                 .flex()
                 .min_w_0()
-                .child(self.render_rail(cx))
+                .child(self.render_rail(squeezed, cx))
                 .child(
                     div()
                         .flex_1()
@@ -1889,7 +1944,7 @@ impl GitTurtle {
             })
             .child(
                 resizable_panel()
-                    .size_range(px(520.)..px(10000.))
+                    .size_range(content_min..px(10000.))
                     .child(left),
             )
             .child(
@@ -1973,6 +2028,8 @@ impl Render for GitTurtle {
             platform_polish::menus(menu_state.0, menu_state.1, cx);
             self.menu_state = Some(menu_state);
         }
+        let compact_header =
+            window.viewport_size().width < appearance::ui_size(COMPACT_HEADER_WIDTH);
         let page = match self.page {
             AppPage::Repository => self.render_repository(window, cx),
             AppPage::Projects => self.hub.clone().into_any_element(),
@@ -1981,10 +2038,7 @@ impl Render for GitTurtle {
         // The pane spans the whole body so a project stays one click away on
         // Repository and Settings. The hub already lists projects full width.
         let body = if self.settings.project_pane && self.page != AppPage::Projects {
-            // A narrow window shrinks the pane toward its minimum before the
-            // repository's own panes lose room; the saved width is untouched.
-            let pane_width = px(self.settings.project_pane_width)
-                .min((window.viewport_size().width - px(800.)).max(px(180.)));
+            let pane_width = self.project_pane_width(window);
             h_resizable("workspace-columns")
                 .with_state(&self.project_panels)
                 .on_resize({
@@ -2283,7 +2337,7 @@ impl Render for GitTurtle {
             }))
             .child(self.render_repository_tabs(window, cx))
             .when(self.page != AppPage::Projects, |root| {
-                root.child(self.render_header(cx))
+                root.child(self.render_header(compact_header, cx))
             })
             .when(
                 self.page == AppPage::Projects && self.operation_busy.is_some(),
@@ -2469,6 +2523,166 @@ impl Render for GitTurtle {
 mod tests {
     use super::*;
     use core::prelude::v1::test;
+
+    /// Tiling window managers such as Hyprland ignore the window's minimum
+    /// size, so a half-screen tile is often 600–800 px wide.
+    #[gpui::test]
+    async fn narrow_windows_keep_the_inspector_whole_and_the_header_on_one_row(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::component::Root;
+        use std::{
+            cell::RefCell,
+            io::Write,
+            process::{Command, Stdio},
+            rc::Rc,
+        };
+
+        fn draw(cx: &mut VisualTestContext) {
+            for _ in 0..3 {
+                cx.update(|window, cx| {
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                });
+                cx.executor().run_until_parked();
+            }
+        }
+        async fn settle(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+            for _ in 0..8 {
+                cx.executor().run_until_parked();
+                let tasks = cx.update(|_, cx| {
+                    app.update(cx, |app, _| {
+                        [app.task.take(), app.status_task.take()]
+                            .into_iter()
+                            .flatten()
+                            .collect::<Vec<_>>()
+                    })
+                });
+                if tasks.is_empty() {
+                    break;
+                }
+                for task in tasks {
+                    task.await;
+                }
+            }
+            draw(cx);
+        }
+
+        cx.executor().allow_parking();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+        });
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = GitRepository::init(fixture.path().join("narrow"), "main").unwrap();
+        let input = "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 13\nfixture notes\nM 100644 inline notes.txt\ndata 6\nnotes\n\ndone\n";
+        let mut command = Command::new("git");
+        command
+            .arg("-C")
+            .arg(repo.path())
+            .args(["fast-import", "--quiet"])
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for name in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_COMMON_DIR",
+            "GIT_INDEX_FILE",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_PARAMETERS",
+        ] {
+            command.env_remove(name);
+        }
+        let mut import = command.spawn().unwrap();
+        import
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        let imported = import.wait_with_output().unwrap();
+        assert!(
+            imported.status.success(),
+            "{}",
+            String::from_utf8_lossy(&imported.stderr)
+        );
+
+        let initial = repo.path().to_owned();
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let observed = captured.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let app = cx.new(|cx| {
+                GitTurtle::new(
+                    Some(initial),
+                    Preferences::default(),
+                    repository_tabs::Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                )
+            });
+            *captured.borrow_mut() = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let app = observed.borrow_mut().take().unwrap();
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        settle(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(0, window, cx)));
+        settle(&app, cx).await;
+
+        let one_row = appearance::ui_size(60.);
+        for (width, height) in [(1000., 680.), (800., 718.), (664., 718.), (600., 718.)] {
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let files = cx
+                .debug_bounds("commit-inspector-files")
+                .expect("the inspector lists the commit's files");
+            assert!(
+                files.right() <= px(width),
+                "inspector clipped at {width}: {files:?}"
+            );
+            // One row holds down to a half tile of a 1366 px display; a
+            // narrower header wraps rather than clipping.
+            if width >= 640. {
+                let header = cx.debug_bounds("repository-header").unwrap();
+                assert!(
+                    header.size.height < one_row,
+                    "header wrapped at {width}: {header:?}"
+                );
+            }
+            // A label-less kit button is a square icon button; the compact
+            // profile button must keep its whole icon rather than a sliver.
+            let profile = cx.debug_bounds("profile-button").unwrap();
+            assert!(
+                profile.right() <= px(width),
+                "profile at {width}: {profile:?}"
+            );
+            if width < COMPACT_HEADER_WIDTH {
+                assert_eq!(profile.size.width, appearance::ui_size(36.), "at {width}");
+            }
+            let sidebar = cx.debug_bounds("history-sidebar").is_some();
+            let rail = cx.debug_bounds("repository-rail").is_some();
+            assert_eq!(
+                (sidebar, rail),
+                (width >= SIDEBAR_FIT_WIDTH, width < SIDEBAR_FIT_WIDTH),
+                "navigation at {width}"
+            );
+        }
+        // Width alone hides the navigation; the user's choice is untouched.
+        app.read_with(cx, |app, _| {
+            assert!(app.sidebar);
+            assert!(app.history_sidebar);
+        });
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        draw(cx);
+        assert!(cx.debug_bounds("history-sidebar").is_some());
+    }
 
     #[gpui::test]
     fn resized_history_rows_clear_the_horizontal_scrollbar(cx: &mut TestAppContext) {

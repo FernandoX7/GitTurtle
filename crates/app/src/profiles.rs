@@ -54,7 +54,11 @@ impl GitTurtle {
         })
         .detach();
     }
-    pub(super) fn render_profile_button(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_profile_button(
+        &self,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let assignment = self
             .path
             .as_ref()
@@ -81,13 +85,21 @@ impl GitTurtle {
             });
         let owner = cx.entity().downgrade();
         Button::new("profile")
+            .debug_selector(|| "profile-button".into())
             .secondary()
             .h(crate::appearance::ui_size(36.))
-            .px_3()
             .max_w(px(230.))
-            .label(title.clone())
+            // The kit sizes a label-less button as a square icon button; the
+            // caret and the full button's padding would clip the icon.
+            .map(|button| {
+                if compact {
+                    button.w(crate::appearance::ui_size(36.))
+                } else {
+                    button.px_3().label(title.clone())
+                }
+            })
             .icon(Icon::default().path("icons/user.svg").size(px(16.)))
-            .dropdown_caret(true)
+            .dropdown_caret(!compact)
             .disabled(self.operation_busy.is_some() || self.profiles.saving)
             .accessibility_label(format!("Git profile: {title}. Choose or manage profiles"))
             .tooltip(

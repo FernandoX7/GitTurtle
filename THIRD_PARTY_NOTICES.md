@@ -87,10 +87,14 @@ by the OS/user; distribution of those components would require a separate review
   [`crates/app/src/appearance/sources.rs`](crates/app/src/appearance/sources.rs).
   MIT asks for nothing beyond those notices; theme names are used descriptively
   and imply no endorsement.
-- No font files are bundled by GitTurtle's assets or the selected GPUI icon asset
-  bundle. Text uses installed system fonts. Font files present in decoder/text
-  dependency test directories are not application assets. Preserve their own
-  notices if separately redistributing those test corpora or adding bundled fonts.
+- Linux builds embed DejaVu Sans Mono 2.37 (Regular, Bold, Oblique and Bold
+  Oblique, unmodified) as the code font, with its [provenance and hashes](assets/fonts/dejavu-sans-mono/README.md).
+  Preserve its Bitstream Vera, public-domain DejaVu and Arev
+  [notice](docs/licenses/assets/dejavu-fonts-LICENSE). macOS builds embed no font
+  and use installed system fonts, as does the Linux interface text. Font files
+  present in decoder/text dependency test directories are not application
+  assets. Preserve their own notices if separately redistributing those test
+  corpora.
 
 ## Test fixtures and screenshots
 
