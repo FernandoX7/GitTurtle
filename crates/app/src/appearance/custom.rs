@@ -8,7 +8,7 @@
 //! kind, `ResolvedTheme` carries the palette that is applied, and the export document is the
 //! bounded JSON format from the specification's "Import and export" section.
 
-use super::{Palette, ThemeChoice};
+use super::{Palette, ThemeChoice, composite};
 use crate::preferences::{MAX_CUSTOM_THEMES, MAX_PROJECT_NAME_BYTES};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -292,6 +292,15 @@ pub fn contrast(a: u32, b: u32) -> f64 {
     (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
+/// The largest difference between two `0xrrggbb` colors in any one 8-bit channel.
+pub fn channel_distance(a: u32, b: u32) -> u32 {
+    [16, 8, 0]
+        .into_iter()
+        .map(|shift| ((a >> shift) & 0xff).abs_diff((b >> shift) & 0xff))
+        .max()
+        .unwrap_or(0)
+}
+
 /// The color being judged: a palette token or one of the palette's graph lane colors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReadabilityForeground {
@@ -308,11 +317,24 @@ pub enum ReadabilityBackground {
     SelectedRowHover,
 }
 
-/// One pair that falls below its rule's minimum contrast ratio.
+/// What a rule measures between its two colors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadabilityMeasure {
+    /// The WCAG contrast ratio, from 1 to 21.
+    Contrast,
+    /// The largest difference in one 8-bit channel ([`channel_distance`]), for two surfaces
+    /// that must stay apart where no contrast ratio sees the difference, such as two hues of
+    /// the same lightness.
+    Step,
+}
+
+/// One pair that falls below its rule's minimum.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ReadabilityIssue {
     pub foreground: ReadabilityForeground,
     pub background: ReadabilityBackground,
+    pub measure: ReadabilityMeasure,
+    /// The measured value: a contrast ratio, or the step for [`ReadabilityMeasure::Step`].
     pub ratio: f64,
     pub minimum: f64,
 }
@@ -337,6 +359,13 @@ impl fmt::Display for ReadabilityBackground {
 
 impl fmt::Display for ReadabilityIssue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.measure == ReadabilityMeasure::Step {
+            return write!(
+                f,
+                "{} against {} differs by {} of 255 in one channel, needs {}",
+                self.foreground, self.background, self.ratio, self.minimum
+            );
+        }
         // Round down so a failing pair never displays as reaching its minimum.
         let ratio = (self.ratio * 10.).floor() / 10.;
         write!(
@@ -352,6 +381,10 @@ const GRAPHIC: f64 = 3.0;
 const SELECTED_SURFACE: f64 = 1.15;
 const HOVER_SURFACE: f64 = 1.08;
 const BORDER_SURFACE: f64 = 1.3;
+/// How far the shared button's pressed fill stands from its hover fill, in one channel, on
+/// every surface it sits on. It is the largest step every built-in keeps without retuning
+/// (Catppuccin Mocha and Nord hold 6 over their selected rows); see the rule's row in the spec.
+pub(super) const PRESSED_STEP: u32 = 6;
 
 impl Palette {
     /// Light palettes paint dark foregrounds on a bright canvas. This is the rule the graph has
@@ -393,6 +426,7 @@ impl Palette {
                 issues.push(ReadabilityIssue {
                     foreground,
                     background,
+                    measure: ReadabilityMeasure::Contrast,
                     ratio,
                     minimum,
                 });
@@ -465,6 +499,35 @@ impl Palette {
                     GRAPHIC,
                 );
             }
+        }
+
+        // A pressed button stays apart from its hover on every surface it sits on: the
+        // `selected` and `hover` layers of `Palette::control_fill`, which over `panel` are
+        // those tokens themselves. A step in hue counts, so the measure is a channel.
+        let (hover, pressed) = (
+            self.control_fill(self.hover),
+            self.control_fill(self.selected),
+        );
+        let step = [
+            self.canvas,
+            self.panel,
+            self.subtle,
+            self.hover,
+            self.selected,
+            self.row_hover(true),
+        ]
+        .into_iter()
+        .map(|surface| channel_distance(composite(pressed, surface), composite(hover, surface)))
+        .min()
+        .unwrap_or(0);
+        if step < PRESSED_STEP {
+            issues.push(ReadabilityIssue {
+                foreground: ReadabilityForeground::Token(Selected),
+                background: token(Hover),
+                measure: ReadabilityMeasure::Step,
+                ratio: f64::from(step),
+                minimum: f64::from(PRESSED_STEP),
+            });
         }
         issues
     }
@@ -1110,6 +1173,7 @@ mod tests {
         ReadabilityIssue {
             foreground,
             background,
+            measure: ReadabilityMeasure::Contrast,
             ratio,
             minimum,
         }
@@ -1301,6 +1365,7 @@ mod tests {
         let lane = ReadabilityIssue {
             foreground: ReadabilityForeground::Lane(2),
             background: SelectedRowHover,
+            measure: ReadabilityMeasure::Contrast,
             ratio: 2.99,
             minimum: 3.,
         };
@@ -1309,6 +1374,42 @@ mod tests {
             lane.to_string(),
             "Graph lane 3 on Selected row hover 2.9:1, needs 3:1"
         );
+    }
+
+    /// The pressed-against-hover rule catches the two palettes that shipped with `selected`
+    /// too close to `hover`: Sandstone 3 apart on every surface, Porcelain 4 over the hovered
+    /// selected row. Both now lean `selected` toward their accent's hue (the palettes test in
+    /// `appearance.rs` asserts every built-in passes).
+    #[test]
+    fn pressed_buttons_stay_apart_from_hover_on_every_surface() {
+        let step = |step: u32| ReadabilityIssue {
+            foreground: ReadabilityForeground::Token(Selected),
+            background: ReadabilityBackground::Token(Hover),
+            measure: ReadabilityMeasure::Step,
+            ratio: f64::from(step),
+            minimum: 6.,
+        };
+        let shipped_sandstone = Palette {
+            selected: 0xeddfd0,
+            ..ThemeChoice::Sandstone.palette()
+        };
+        let shipped_porcelain = Palette {
+            selected: 0xdfe6f6,
+            ..ThemeChoice::Porcelain.palette()
+        };
+        assert_eq!(shipped_sandstone.readability_issues(), vec![step(3)]);
+        assert_eq!(shipped_porcelain.readability_issues(), vec![step(4)]);
+        assert_eq!(
+            step(3).to_string(),
+            "Selected against Hover differs by 3 of 255 in one channel, needs 6"
+        );
+        // Kanagawa Wave's `selected` (upstream waveBlue1, lightened only to the panel rule)
+        // lifts less from its panel than `hover` does, so its pressed button steps by hue, at
+        // least 17 in one channel on every surface, rather than by a further lift. This rule
+        // counts that step, so Wave keeps its values.
+        let wave = ThemeChoice::KanagawaWave.palette();
+        assert!(contrast(wave.selected, wave.panel) < contrast(wave.hover, wave.panel));
+        assert!(wave.readability_issues().is_empty());
     }
 
     #[test]

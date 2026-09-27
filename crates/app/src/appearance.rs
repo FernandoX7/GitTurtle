@@ -508,7 +508,9 @@ impl ThemeChoice {
                 accent_foreground: 0xffffff,
                 accent_hover: 0x294790,
                 accent_active: 0x203978,
-                selected: 0xdfe6f6,
+                // Leans toward the sapphire accent so a pressed button stands apart from
+                // its hover on every surface (the pressed-step readability rule).
+                selected: 0xdce6f6,
                 added: 0x246448,
                 removed: 0xa92d4e,
                 modified: 0x795314,
@@ -531,7 +533,9 @@ impl ThemeChoice {
                 accent_foreground: 0xffffff,
                 accent_hover: 0x82432b,
                 accent_active: 0x6e3723,
-                selected: 0xeddfd0,
+                // Leans toward the terracotta accent so a pressed button stands apart from
+                // its hover on every surface (the pressed-step readability rule).
+                selected: 0xf2dcd0,
                 added: 0x396241,
                 removed: 0xa13243,
                 modified: 0x755012,
@@ -1255,7 +1259,7 @@ impl Density {
 
 #[cfg(test)]
 mod tests {
-    use super::custom::{contrast, luminance};
+    use super::custom::{channel_distance, contrast, luminance};
     use super::*;
     use gpui_kit as gpui;
     use gpui_kit::{Background, Hsla};
@@ -1450,14 +1454,6 @@ mod tests {
         }
     }
 
-    fn channel_distance(a: u32, b: u32) -> u32 {
-        [16, 8, 0]
-            .into_iter()
-            .map(|shift| ((a >> shift) & 0xff).abs_diff((b >> shift) & 0xff))
-            .max()
-            .unwrap_or(0)
-    }
-
     /// The kit's ghost hover read 1.16:1 the wrong way over a hovered row. The
     /// tightest built-in lift is Rosé Pine's 1.078:1 over its canvas, from a
     /// hover that is only 1.087:1 on its own panel (DESIGN.md records that limit).
@@ -1465,11 +1461,11 @@ mod tests {
     /// Selected surfaces keep 1.15:1 from panels; the tightest pressed lift is
     /// Kanagawa Wave's 1.128:1 over a hovered row.
     const CONTROL_PRESS_LIFT: f64 = 1.12;
-    /// The kit's ghost pressed fill differed from its hover by (1, 2, 2). The
-    /// palettes' own `selected` sits closest to `hover` in Sandstone, 3 apart;
-    /// item 23 of `docs/development/themes/follow-ups.md` records these palette
-    /// limits and proposes a spec rule for `selected` against `hover`.
-    const CONTROL_PRESS_DISTANCE: u32 = 3;
+    /// The kit's ghost pressed fill differed from its hover by (1, 2, 2). This
+    /// is the pressed-step readability rule's distance: Sandstone and Porcelain
+    /// were tuned past it (from 3 and 4 to 8), and Catppuccin Mocha and Nord
+    /// hold it exactly over their selected rows.
+    const CONTROL_PRESS_DISTANCE: u32 = custom::PRESSED_STEP;
 
     #[test]
     fn shared_button_fills_lift_every_surface_and_keep_the_label_readable() {
