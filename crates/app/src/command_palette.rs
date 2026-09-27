@@ -309,6 +309,8 @@ struct Availability {
     blame: bool,
     integration: bool,
     profile_saving: bool,
+    /// History in a window too narrow for its navigation.
+    narrow_history: bool,
 }
 impl CommandId {
     fn workspace(self) -> bool {
@@ -379,6 +381,9 @@ impl CommandId {
         }
         if self == Self::Profiles && context.profile_saving {
             return Some("Wait for the profile save to finish");
+        }
+        if self == Self::Sidebar && context.narrow_history {
+            return Some("Widen the window to show branches and worktrees");
         }
         None
     }
@@ -465,9 +470,13 @@ impl Selection {
     }
 }
 impl GitTurtle {
-    #[cfg(target_os = "linux")]
-    pub(super) fn menu_command_reason(&self, id: CommandId) -> Option<&'static str> {
-        id.reason(&self.palette_availability())
+    #[cfg(any(target_os = "linux", test))]
+    pub(super) fn menu_command_reason(
+        &self,
+        id: CommandId,
+        window: &Window,
+    ) -> Option<&'static str> {
+        id.reason(&self.palette_availability(window))
     }
 
     #[cfg(target_os = "linux")]
@@ -479,7 +488,7 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) {
         if &self.path != path
-            || id.reason(&self.palette_availability()).is_some()
+            || id.reason(&self.palette_availability(window)).is_some()
             || window.has_active_dialog(cx)
             || window.has_active_sheet(cx)
         {
@@ -488,9 +497,9 @@ impl GitTurtle {
         self.run_palette_command(id, window, cx);
     }
 
-    fn palette_context(&self) -> PaletteContext {
+    fn palette_context(&self, window: &Window) -> PaletteContext {
         PaletteContext {
-            availability: self.palette_availability(),
+            availability: self.palette_availability(window),
             path: self.path.clone(),
             label: self
                 .repository
@@ -535,7 +544,7 @@ impl GitTurtle {
             working: None,
         }
     }
-    fn palette_availability(&self) -> Availability {
+    fn palette_availability(&self, window: &Window) -> Availability {
         let file_scope = self.palette_file_scope();
         Availability {
             repository: self.repository.is_some(),
@@ -552,6 +561,7 @@ impl GitTurtle {
             blame: self.blame.is_visible(),
             integration: self.integration_state.is_some(),
             profile_saving: self.profile_save_pending(),
+            narrow_history: self.mode == WorkspaceMode::History && !self.navigation_fits(window),
         }
     }
     pub(super) fn open_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -562,7 +572,7 @@ impl GitTurtle {
         let path = self.path.clone();
         let return_focus = window.focused(cx);
         let file_scope = self.palette_file_scope();
-        let context = self.palette_context();
+        let context = self.palette_context(window);
         let form =
             cx.new(|cx| Palette::new(owner, path, file_scope, context, return_focus, window, cx));
         let query_focus = form.read(cx).query.read(cx).focus_handle(cx);
@@ -664,15 +674,7 @@ impl GitTurtle {
                 self.show_history(window, cx);
                 self.search(&Search, window, cx);
             }
-            CommandId::Sidebar => {
-                if self.mode != WorkspaceMode::History {
-                    self.back_to_history(window, cx);
-                } else {
-                    self.sidebar = !self.sidebar;
-                    self.history_sidebar = self.sidebar;
-                    cx.notify();
-                }
-            }
+            CommandId::Sidebar => self.toggle_sidebar(window, cx),
             CommandId::ProjectPane => self.toggle_project_pane(window, cx),
             CommandId::EarlierGraphLanes | CommandId::LaterGraphLanes => {
                 self.shift_graph_lanes(id == CommandId::LaterGraphLanes);
@@ -735,9 +737,9 @@ impl Palette {
         // reads this owned snapshot because the dialog layer itself is rendered
         // while GitTurtle is mutably borrowed.
         let owner_subscription = owner.upgrade().map(|owner| {
-            cx.observe(&owner, |this, owner, cx| {
+            cx.observe_in(&owner, window, |this, owner, window, cx| {
                 if !this.selection.closed {
-                    this.context = owner.read(cx).palette_context();
+                    this.context = owner.read(cx).palette_context(window);
                     cx.notify();
                 }
             })
@@ -792,7 +794,7 @@ impl Palette {
                 self.error = Some("The selected file changed. Close and reopen the palette to review its current target.".into());
                 return;
             }
-            if let Some(reason) = command.reason(&owner.palette_availability()) {
+            if let Some(reason) = command.reason(&owner.palette_availability(window)) {
                 self.error = Some(reason.into());
                 return;
             }

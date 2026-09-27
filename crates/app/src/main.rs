@@ -325,6 +325,11 @@ struct GitTurtle {
     /// (`settings::picker_tests::bound_tooltips_say_what_to_delete`).
     #[cfg(test)]
     theme_action_tooltips: std::cell::RefCell<[(String, String); 2]>,
+    /// Test-only: the accessible name, tooltip and disabled state of the
+    /// History rail's navigation button as the last draw built it
+    /// (`views::tests::narrow_history_keeps_the_navigation_choice`).
+    #[cfg(test)]
+    rail_navigation: std::cell::Cell<Option<(&'static str, &'static str, bool)>>,
     /// Test-only: the palette every draw of this view saw. A Settings theme
     /// switch and a live-preview edit each cost exactly one draw, which
     /// already shows the new palette; see
@@ -631,6 +636,8 @@ impl GitTurtle {
             theme_action_names: Default::default(),
             #[cfg(test)]
             theme_action_tooltips: Default::default(),
+            #[cfg(test)]
+            rail_navigation: Default::default(),
             project_pane: project_pane::State::new(cx),
             rename_project: None,
             draft_saver: commit_drafts::DraftSaver::default(),
