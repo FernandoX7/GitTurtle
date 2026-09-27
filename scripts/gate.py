@@ -627,18 +627,21 @@ def privacy_templates(root: Path) -> Path | None:
                  if (base / PRIVACY_TEMPLATES_DIR).is_dir()), None)
 
 
-def git_paths(root: Path, *args: str) -> list[bytes]:
-    """Raw NUL-delimited paths from a Git command: never quoted, whatever their bytes."""
+def git_paths(root: Path, *args: str) -> list[bytes] | None:
+    """Raw NUL-delimited paths from a Git command: never quoted, whatever their bytes. None when Git fails."""
     result = subprocess.run(["git", *args], cwd=root, capture_output=True, check=False)
-    return [path for path in result.stdout.split(b"\0") if path] if result.returncode == 0 else []
+    return [path for path in result.stdout.split(b"\0") if path] if result.returncode == 0 else None
 
 
-def changed_images(root: Path, base: str | None) -> tuple[list[str], int]:
+def changed_images(root: Path, base: str | None) -> tuple[list[str], int] | None:
     """Raster images added or changed since the base (HEAD without one), untracked ones included;
     deletions and symlinks drop out. Also the count of names that are not printable UTF-8, which the
-    scan could neither open by a quoted name nor print safely."""
-    names = set(git_paths(root, "ls-files", "-z", "--others", "--exclude-standard"))
-    names.update(git_paths(root, "diff", "--no-ext-diff", "--name-only", "-z", base or "HEAD"))
+    scan could neither open by a quoted name nor print safely. None when Git cannot list them."""
+    untracked = git_paths(root, "ls-files", "-z", "--others", "--exclude-standard")
+    changed = git_paths(root, "diff", "--no-ext-diff", "--name-only", "-z", base or "HEAD")
+    if untracked is None or changed is None:
+        return None
+    names = set(untracked) | set(changed)
     suffixes = tuple(suffix.encode() for suffix in PRIVACY_IMAGE_SUFFIXES)
     images, refused = [], 0
     for name in sorted(names):
@@ -661,7 +664,12 @@ def privacy_stage(root: Path, base: str | None) -> Stage:
     if templates is None:
         return Stage("privacy", None, note=f"skipped: no templates ({PRIVACY_TEMPLATES_ENV} or {PRIVACY_TEMPLATES_DIR}); "
                      "added or changed images were NOT scanned")
-    images, refused = changed_images(root, base)
+    listed = changed_images(root, base)
+    if listed is None:
+        # Never report "no added or changed images" when the listing itself failed.
+        return Stage("privacy", None, run=lambda: (1, "git could not list the added or changed images; nothing was scanned\n"),
+                     note="image listing failed")
+    images, refused = listed
     reproduce = (f'python3 scripts/native_qa/qa.py privacy scan --redacted --templates "${PRIVACY_TEMPLATES_ENV}" '
                  f"<{len(images)} added or changed images>")
     if refused:

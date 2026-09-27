@@ -448,6 +448,14 @@ class PrivacyStageTests(unittest.TestCase):
         stage = self.stage()
         self.assertEqual(stage.run(), (0, "no added or changed images\n"))
 
+    def test_failed_image_listing_fails_instead_of_reporting_no_images(self) -> None:
+        (self.root / gate.PRIVACY_TEMPLATES_DIR).mkdir(parents=True)
+        self.assertIsNone(gate.changed_images(self.root, "0" * 40))  # a base Git cannot resolve
+        with patch.object(gate, "git_paths", return_value=None):
+            code, text = self.stage().run()
+        self.assertEqual(code, 1)
+        self.assertIn("nothing was scanned", text)
+
     @unittest.skipUnless(HAVE_PIL, "Pillow is not installed")
     def test_scan_names_only_images_and_verdicts(self) -> None:
         from PIL import Image, ImageDraw, ImageFont
