@@ -16,9 +16,9 @@ import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass
-from typing import Callable
 
 import fcntl
 
@@ -147,14 +147,15 @@ def run_process(
             # Closing this copy must not explicitly unlock the shared lock.
             ownership.close()
         try:
-            while watchdog.poll() is None:
+            while True:
                 if stop():
                     try:
                         os.write(control.fileno(), b"stop")
                     except BrokenPipeError:
                         pass
                     break
-                time.sleep(0.05)
+                if _exited(watchdog, 0.05):
+                    break
         finally:
             control.close()
             try:
@@ -166,6 +167,16 @@ def run_process(
         if completed.get("spawn_error") or completed.get("watchdog_error"):
             raise EnvironmentBlocked(str(completed.get("spawn_error") or completed.get("watchdog_error")))
         return result
+
+
+def _exited(watchdog: subprocess.Popen, timeout: float) -> bool:
+    # Popen.wait polls with a millisecond back-off inside each interval, so a
+    # short-lived watchdog is reaped within milliseconds, not at a 50 ms tick.
+    try:
+        watchdog.wait(timeout=timeout)
+        return True
+    except subprocess.TimeoutExpired:
+        return False
 
 
 def _lock_path(record: Path) -> Path:
@@ -404,6 +415,7 @@ def _watchdog(directory: int, reader: int, prompt: int, output: int,
             record.update(state="running", watchdog_pid=os.getpid(), worker_pid=child.pid,
                           guard_pid=guard.pid)
             _write_launch(directory, ownership, record)
+            delay = 0.001
             while True:
                 stopped = _control_status(reader)
                 if not stopped and termination:
@@ -414,7 +426,11 @@ def _watchdog(directory: int, reader: int, prompt: int, output: int,
                     stopped = "log limit exceeded"
                 if stopped or _exited_unreaped(child):
                     break
-                time.sleep(0.05)
+                # Control input wakes this wait at once. Back off from 1 ms so a
+                # short Git write is noticed promptly and a long session still
+                # polls every 50 ms.
+                select.select([reader], [], [], delay)
+                delay = min(delay * 2, 0.05)
     except BaseException as error:
         failure = f"process watchdog failed: {type(error).__name__}: {error}"[:4096]
         stopped = "watchdog failure"
