@@ -50,6 +50,13 @@ For pull requests:
 - CI helpers, development-controller files, agent guides and development contracts
   also run the existing macOS and Ubuntu development-tooling matrix, including all
   CI helper tests.
+- Claude Code configuration (`.claude/**` and any file named `CLAUDE.md`) routes
+  like `AGENTS.md` and `.agents/`. No build or package reads it: the guidance check
+  validates its agents, skills, settings structure, hook paths and syntax and links,
+  and the agent-loop suite in the tooling lane runs the path-protection hook
+  (`test_claude_hooks`) and the controller's Claude adapter. A change that also
+  touches `crates/`, `vendor/` (other than its guides), a manifest or `.github/`
+  still runs all lanes.
 - Rust, manifests, the lockfile/toolchain, native assets, vendored inputs, build or
   package scripts, workflow/repository-policy changes and unrecognized paths run
   **all** lanes. Rust keeps formatting, locked workspace tests with doctests,

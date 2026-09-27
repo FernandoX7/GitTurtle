@@ -57,10 +57,12 @@ def classify_paths(paths: list[bytes]) -> dict:
             return full_plan("package-delivery")
         if path.startswith(".github/"):
             return full_plan("workflow-or-repository-policy")
+        # Claude Code configuration is development guidance like .agents/ and
+        # .codex/: the guidance check and the agent-loop suite exercise it.
         if (path.startswith(("scripts/ci/", "scripts/agent_loop/", "scripts/native_qa/", ".agents/", ".codex/",
-                             "docs/development/"))
+                             ".claude/", "docs/development/"))
                 or path in ("scripts/agent-loop.py", "scripts/check-agent-guidance.py")
-                or parts[-1] == "AGENTS.md"):
+                or parts[-1] in ("AGENTS.md", "CLAUDE.md")):
             selected.add("tooling")
         elif path.startswith("website/"):
             selected.add("website")
