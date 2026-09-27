@@ -356,16 +356,23 @@ impl GitTurtle {
             .border_r_1()
             .border_color(rgb(colors.border))
             .when(self.mode == WorkspaceMode::History, |rail| {
-                let label = if narrow {
-                    "Widen the window to show branches and worktrees"
+                // Disabled, it keeps its action name with the reason, as the
+                // palette's unavailable commands do.
+                let (name, tooltip) = if narrow {
+                    (
+                        "Show branches and worktrees. Unavailable: widen the window",
+                        "Widen the window to show branches and worktrees",
+                    )
                 } else {
-                    "Show branches and worktrees"
+                    ("Show branches and worktrees", "Show branches and worktrees")
                 };
+                #[cfg(test)]
+                self.rail_navigation.set(Some((name, tooltip, narrow)));
                 rail.child(
                     button("rail-sidebar", "", "commit", false)
                         .debug_selector(|| "rail-sidebar".into())
-                        .accessibility_label(label)
-                        .tooltip(label)
+                        .accessibility_label(name)
+                        .tooltip(tooltip)
                         .disabled(narrow)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.sidebar = true;
@@ -2807,18 +2814,30 @@ mod tests {
             cx.simulate_resize(size(px(width), px(height)));
             draw(cx);
         };
+        let rail =
+            |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.rail_navigation.get());
         let narrow = Some("Widen the window to show branches and worktrees");
 
-        // Wide, the shortcut hides the navigation.
+        // Wide, the shortcut hides the navigation and the rail offers it.
         assert_eq!(state(cx), (true, true, None));
         press_toggle(cx);
         assert_eq!(state(cx), (false, false, None));
         assert!(cx.debug_bounds("history-sidebar").is_none());
+        let show = "Show branches and worktrees";
+        assert_eq!(rail(cx), Some((show, show, false)));
 
         // Hidden by choice and then narrowed, nothing can show it: the rail
         // button, the shortcut and the palette entry keep the choice.
         resize(cx, 600., 718.);
         assert_eq!(state(cx), (false, false, narrow));
+        assert_eq!(
+            rail(cx),
+            Some((
+                "Show branches and worktrees. Unavailable: widen the window",
+                "Widen the window to show branches and worktrees",
+                true
+            ))
+        );
         click_rail(cx);
         press_toggle(cx);
         assert_eq!(state(cx), (false, false, narrow));
