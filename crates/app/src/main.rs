@@ -1822,10 +1822,14 @@ fn button(
         .rounded(appearance::ui_size(7.))
         .selected(active)
         .text_size(crate::appearance::ui_text(12.));
+    if let Some(edge) = appearance::control_focus_edge() {
+        // Full accent inside the kit's half-opacity focus ring.
+        button = button.focus(move |style| style.shadow(vec![edge]));
+    }
     if active {
         // The kit omits variant hover styles for selected controls. Keep their
         // selected surface and expose gentle pointer feedback explicitly.
-        button = button.hover(|style| style.opacity(0.9));
+        button = button.hover(|style| style.opacity(appearance::CONTROL_SELECTED_HOVER_OPACITY));
     }
     if label.is_empty() {
         button = button
@@ -2100,5 +2104,88 @@ mod repository_branch_input_tests {
         assert!(scope.opened(second.path()));
         assert!(!scope.opened(second.path()));
         assert!(scope.opened(first.path()));
+    }
+}
+#[cfg(test)]
+mod shared_button_tests {
+    use super::*;
+    use core::prelude::v1::test;
+
+    struct Probe {
+        icon: FocusHandle,
+        label: FocusHandle,
+    }
+
+    impl Render for Probe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .p_4()
+                .flex()
+                .gap_2()
+                .child(
+                    button("probe-icon", "", "copy", false)
+                        .track_focus(&self.icon)
+                        .debug_selector(|| "probe-icon".into()),
+                )
+                .child(
+                    button("probe-label", "Fetch", "", true)
+                        .track_focus(&self.label)
+                        .debug_selector(|| "probe-label".into()),
+                )
+        }
+    }
+
+    /// Focus marks the helper with an inset shadow, so a focused helper, at
+    /// rest or hovered, keeps the box it had unfocused.
+    #[gpui::test]
+    fn focusing_the_shared_button_keeps_its_box(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            appearance::ThemeChoice::Porcelain.apply(None, cx);
+            assert!(appearance::control_focus_edge().is_some());
+        });
+        let (probe, cx) = cx.add_window_view(|_, cx| Probe {
+            icon: cx.focus_handle(),
+            label: cx.focus_handle(),
+        });
+        let draw = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            cx.run_until_parked();
+        };
+        draw(cx);
+        for selector in ["probe-icon", "probe-label"] {
+            let resting = cx.debug_bounds(selector).expect("rendered helper");
+            let handle = cx.read(|cx| {
+                let probe = probe.read(cx);
+                if selector == "probe-icon" {
+                    probe.icon.clone()
+                } else {
+                    probe.label.clone()
+                }
+            });
+            cx.update(|window, cx| window.focus(&handle, cx));
+            draw(cx);
+            assert!(
+                cx.update(|window, _| handle.is_focused(window)),
+                "{selector}"
+            );
+            assert_eq!(
+                cx.debug_bounds(selector),
+                Some(resting),
+                "{selector} focused"
+            );
+            cx.simulate_mouse_move(resting.center(), None, Modifiers::default());
+            draw(cx);
+            assert_eq!(
+                cx.debug_bounds(selector),
+                Some(resting),
+                "{selector} focused and hovered"
+            );
+            cx.simulate_mouse_move(point(px(0.), px(0.)), None, Modifiers::default());
+            draw(cx);
+        }
     }
 }
