@@ -1835,6 +1835,14 @@ impl GitTurtle {
 const SIDEBAR_FIT_WIDTH: f32 = 800.;
 /// The narrowest content column beside the rail in a narrow window.
 const NARROW_CONTENT_MIN: f32 = 240.;
+/// The narrowest inspector while the rail and the narrow content column fit.
+const INSPECTOR_MIN: f32 = 280.;
+/// Where even those do not fit, as in a half tile of a display about
+/// 1,000 px wide at a fractional scale, the inspector yields to this width
+/// first and then the content column to `TIGHT_CONTENT_MIN`, so the
+/// inspector stays whole down to about 460 px.
+const TIGHT_INSPECTOR_MIN: f32 = 240.;
+const TIGHT_CONTENT_MIN: f32 = 176.;
 /// Below this window width, at the interface text size, the header drops the
 /// Projects and profile labels so it stays on one row.
 const COMPACT_HEADER_WIDTH: f32 = 800.;
@@ -1863,12 +1871,21 @@ impl GitTurtle {
         // inspector, History shows the rail and the content column accepts
         // less, so the inspector stays whole; saved widths and the user's
         // navigation choice are untouched.
-        let narrow = self.repository_width(window) < px(SIDEBAR_FIT_WIDTH);
+        let width = self.repository_width(window);
+        let narrow = width < px(SIDEBAR_FIT_WIDTH);
         let squeezed = narrow && self.sidebar && self.mode == WorkspaceMode::History;
-        let content_min = if narrow {
-            appearance::ui_size(44.) + px(NARROW_CONTENT_MIN)
+        let rail = appearance::ui_size(44.);
+        let (content_min, inspector_min) = if narrow {
+            let beside_rail = width - rail;
+            let inspector = (beside_rail - px(NARROW_CONTENT_MIN))
+                .max(px(TIGHT_INSPECTOR_MIN))
+                .min(px(INSPECTOR_MIN));
+            let content = (beside_rail - inspector)
+                .max(px(TIGHT_CONTENT_MIN))
+                .min(px(NARROW_CONTENT_MIN));
+            (rail + content, inspector)
         } else {
-            px(520.)
+            (px(520.), px(INSPECTOR_MIN))
         };
         let left = if self.mode != WorkspaceMode::History {
             div()
@@ -1950,7 +1967,7 @@ impl GitTurtle {
             .child(
                 resizable_panel()
                     .size(px(self.settings.inspector_width))
-                    .size_range(px(280.)..px(480.))
+                    .size_range(inspector_min..px(480.))
                     .flex_none()
                     .child(if self.mode == WorkspaceMode::Working {
                         self.render_working_inspector(window, cx)
@@ -2525,7 +2542,9 @@ mod tests {
     use core::prelude::v1::test;
 
     /// Tiling window managers such as Hyprland ignore the window's minimum
-    /// size, so a half-screen tile is often 600–800 px wide.
+    /// size, so a half-screen tile is often 600–800 px wide, and at a
+    /// fractional scale a half tile of a display about 1,000 logical pixels
+    /// wide is 460–560 px wide and shorter than the minimum height.
     #[gpui::test]
     async fn narrow_windows_keep_the_inspector_whole_and_the_header_on_one_row(
         cx: &mut TestAppContext,
@@ -2637,7 +2656,15 @@ mod tests {
         settle(&app, cx).await;
 
         let one_row = appearance::ui_size(60.);
-        for (width, height) in [(1000., 680.), (800., 718.), (664., 718.), (600., 718.)] {
+        for (width, height) in [
+            (1000., 680.),
+            (800., 718.),
+            (664., 718.),
+            (600., 718.),
+            (560., 718.),
+            (493., 526.),
+            (460., 526.),
+        ] {
             cx.simulate_resize(size(px(width), px(height)));
             draw(cx);
             let files = cx
