@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -76,6 +77,72 @@ class CacheFixture(unittest.TestCase):
         (self.root / "vendor/tool/build.rs").unlink()
         with self.assertRaises(FileNotFoundError):
             cache.source_identity(self.root)
+
+    def prepared(self):
+        with patch.dict(os.environ, {"CACHE_PROFILE": "debug", "RUNNER_OS": "Linux"}), \
+                patch.object(cache, "native_identity", return_value="native"):
+            cache.prepare()
+        lines = Path(self.env["GITHUB_ENV"]).read_text().splitlines()
+        Path(self.env["GITHUB_ENV"]).write_text("")
+        return dict(line.split("=", 1) for line in lines)
+
+    def test_rewound_vendor_set_equals_the_hashed_vendor_inputs(self):
+        self.init_git()
+        inputs = cache.keyed_inputs(self.root)
+        hashed = {self.root / path for raw, path in inputs if raw.startswith(b"vendor/")}
+        member = self.root / "crates/app/src/main.rs"
+        member_time = member.stat().st_mtime_ns
+        count = cache.normalize_vendor_mtimes(self.root, inputs)
+        rewound = {path for path in self.root.rglob("*") if ".git" not in path.parts
+                   and path.stat().st_mtime_ns == cache.VENDOR_MTIME_NS}
+        self.assertEqual({path for path in rewound if path.is_file()}, hashed)
+        # Directories up to vendor/ are rewound for directory rerun-if-changed
+        # scans; nothing above vendor/ and nothing under crates/ is touched.
+        self.assertEqual({path for path in rewound if path.is_dir()},
+                         {self.root / "vendor", self.root / "vendor/tool", self.root / "vendor/tool/src",
+                          self.root / "vendor/tool/native"})
+        self.assertEqual(count, len(rewound))
+        self.assertEqual(member.stat().st_mtime_ns, member_time)
+        self.assertNotEqual(self.root.stat().st_mtime_ns, cache.VENDOR_MTIME_NS)
+
+    def test_vendor_symlink_refuses_without_rewinding_anything(self):
+        self.init_git()
+        (self.root / "vendor/tool/alias.rs").symlink_to("src/lib.rs")
+        subprocess.run(["git", "-C", str(self.root), "add", "vendor/tool/alias.rs"], check=True)
+        before = {path: path.lstat().st_mtime_ns for path in (self.root / "vendor").rglob("*")}
+        with self.assertRaises(ValueError):
+            cache.normalize_vendor_mtimes(self.root, cache.keyed_inputs(self.root))
+        self.assertEqual(before, {path: path.lstat().st_mtime_ns for path in (self.root / "vendor").rglob("*")})
+        # prepare still produces a key; vendored packages simply rebuild.
+        values = self.prepared()
+        self.assertEqual(values["CI_RUST_CACHE_VENDOR_MTIMES"], "refused")
+        self.assertTrue(values["CI_RUST_CACHE_KEY"].startswith("debug-"))
+        self.assertNotEqual((self.root / "vendor/tool/src/lib.rs").stat().st_mtime_ns, cache.VENDOR_MTIME_NS)
+
+    def test_prepare_keys_on_content_and_rewinds_vendor_before_restore(self):
+        self.init_git()
+        first = self.prepared()
+        self.assertEqual((self.root / "vendor/tool/src/lib.rs").stat().st_mtime_ns, cache.VENDOR_MTIME_NS)
+        self.assertEqual(int(first["CI_RUST_CACHE_VENDOR_MTIMES"]), 7)
+        # A later checkout's fresh times alone keep the key; content never does.
+        os.utime(self.root / "vendor/tool/src/lib.rs")
+        self.assertEqual(self.prepared()["CI_RUST_CACHE_KEY"], first["CI_RUST_CACHE_KEY"])
+        for path in ("vendor/tool/src/lib.rs", "Cargo.lock", "rust-toolchain.toml"):
+            with self.subTest(path=path):
+                before = self.prepared()["CI_RUST_CACHE_KEY"]
+                self.file(self.root / path, b"changed " + path.encode())
+                self.assertNotEqual(before, self.prepared()["CI_RUST_CACHE_KEY"])
+
+    def test_both_upstream_steps_root_at_crates_and_keep_members_out(self):
+        steps = (ROOT / ".github/actions/setup-rust/action.yml").read_text().split("uses: Swatinem/rust-cache@")[1:]
+        self.assertEqual(len(steps), 2)
+        for step in steps:
+            with self.subTest(step=step.splitlines()[0]):
+                options = dict(line.strip().split(": ", 1) for line in step.splitlines()
+                               if line.startswith("        ") and ": " in line and not line.strip().startswith("#"))
+                self.assertEqual(options["workspaces"], "crates -> ../target")
+                self.assertEqual(options["cache-workspace-crates"], "false")
+                self.assertEqual(options["prefix-key"], "gitturtle-rust-v2")
 
     def test_native_versions_are_part_of_compatibility(self):
         for platform in ("Linux", "macOS"):
@@ -172,6 +239,47 @@ class CacheFixture(unittest.TestCase):
         self.assertTrue(small.exists())
         self.assertEqual(result["removed_dependency_packages"], 1)
         self.assertTrue(all("--locked" in command for command in calls))
+
+    def test_members_are_cleaned_but_vendored_path_packages_are_kept_and_never_evicted(self):
+        member = self.file(self.paths[0] / "debug/deps/libapp-abcd.rlib", b"M" * 100)
+        vendored = [self.file(self.paths[0] / "debug/deps/libtool-abcd.rlib", b"V" * 300),
+                    self.file(self.paths[0] / "debug/.fingerprint/tool-abcd/lib-tool", b"F")]
+        dependency = self.file(self.paths[0] / "debug/deps/libdep-abcd.rlib", b"D" * 200)
+        packages = [
+            {"name": "app", "id": "app", "source": None, "manifest_path": str(self.root / "crates/app/Cargo.toml"),
+             "targets": [{"name": "app", "kind": ["lib"]}]},
+            {"name": "tool", "id": "tool", "source": None, "manifest_path": str(self.root / "vendor/tool/Cargo.toml"),
+             "targets": [{"name": "tool", "kind": ["lib"]}]},
+            # A path package outside vendor/ is not keyed, so it is cleaned too.
+            {"name": "helper", "id": "helper", "source": None, "manifest_path": str(self.root / "tools/helper/Cargo.toml"),
+             "targets": [{"name": "helper", "kind": ["lib"]}]},
+            {"name": "dep", "id": "dep", "source": "registry", "targets": [{"name": "dep", "kind": ["lib"]}]}]
+        calls = []
+
+        def execute(command, **_):
+            calls.append(command)
+            if command[1] == "metadata":
+                return json.dumps({"packages": packages}).encode()
+            for package in command[command.index("--package") + 1::2]:
+                if package in ("app", "dep"):
+                    {"app": member, "dep": dependency}[package].unlink(missing_ok=True)
+            return b""
+
+        # After member cleanup: four directories, the vendored library and
+        # fingerprint and the registry library (29,173 bytes). Evicting only the
+        # registry dependency fits; the vendored package is never a candidate.
+        with patch.dict(cache.PROFILE_LIMITS, {"debug": 25_000}):
+            result = cache.bound_payload(self.root, self.paths, "debug", execute=execute)
+        cleaned = [command[command.index("--package") + 1::2] for command in calls if command[1] == "clean"]
+        self.assertEqual(cleaned, [["app", "helper"], ["dep"]])
+        self.assertFalse(member.exists())
+        self.assertFalse(dependency.exists())
+        self.assertTrue(all(path.exists() for path in vendored))
+        self.assertEqual([row["name"] for row in result["evicted_packages"]], ["dep"])
+        self.assertTrue(result["save"])
+        self.assertFalse(result["dropped_target"])
+        self.assertEqual(result["retained_vendor_packages"], 1)
+        self.assertEqual(result["retained_vendor_bytes"], 300 + 1 + 3 * 4096)
 
     def test_oversized_target_is_discarded_without_partial_native_outputs(self):
         self.file(self.paths[0] / "debug/build/sys-hash/out/include.h", b"native")
@@ -633,6 +741,66 @@ class CacheFixture(unittest.TestCase):
         self.assertIn(b"1 passed", second.stdout)
         self.assertIn(b"Compiling cache_recovery_fixture", second.stderr)
         self.assertTrue(list(layout.glob("build/cache_recovery_fixture-*/out/answer.rs")))
+
+    @unittest.skipUnless(os.environ.get("GITTURTLE_CACHE_CARGO_QA") == "1" and shutil.which("cargo"),
+                         "Set GITTURTLE_CACHE_CARGO_QA=1 for the real Cargo vendored-reuse fixture")
+    def test_real_cargo_vendored_path_package_is_fresh_only_after_rewinding_checkout_times(self):
+        # Mirrors the workspace: an excluded vendor/ path package under the
+        # root, a member under crates/, a build script watching a directory.
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        self.file(self.root / "Cargo.toml", b'[workspace]\nmembers=["crates/app"]\nexclude=["vendor/tool"]\nresolver="2"\n')
+        self.file(self.root / "crates/app/Cargo.toml",
+                  b'[package]\nname="cache_member"\nversion="0.1.0"\nedition="2021"\n'
+                  b'[dependencies]\ncache_vendored={path="../../vendor/tool"}\n')
+        self.file(self.root / "crates/app/src/lib.rs", b"#[test] fn answer(){assert_eq!(cache_vendored::answer(),42);}")
+        self.file(self.root / "vendor/tool/Cargo.toml", b'[package]\nname="cache_vendored"\nversion="0.1.0"\nedition="2021"\n')
+        self.file(self.root / "vendor/tool/build.rs",
+                  b'fn main(){println!("cargo:rerun-if-changed=build.rs");println!("cargo:rerun-if-changed=data");}')
+        self.file(self.root / "vendor/tool/data/answer.txt", b"42")
+        self.file(self.root / "vendor/tool/src/lib.rs",
+                  b'pub fn answer()->u32{include_str!("../data/answer.txt").parse().unwrap()}')
+        subprocess.run(["cargo", "generate-lockfile", "--offline"], cwd=self.root, check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(self.root), "add", "--all"], check=True)
+        command = ["cargo", "test", "--locked", "--offline", "-v"]
+
+        def build():
+            result = subprocess.run(command, cwd=self.root, check=True, capture_output=True)
+            self.assertIn(b"1 passed", result.stdout)
+            return result.stderr
+
+        def checkout():
+            # A fresh checkout writes every tracked file (and so its directory)
+            # after the cached outputs were built.
+            later = time.time_ns() + 2 * 10**9
+            for path in sorted({*(self.root / p for _, p in cache.keyed_inputs(self.root)),
+                                *(self.root / p for p in ("vendor/tool/data", "vendor/tool/src", "vendor/tool", "vendor"))}):
+                os.utime(path, ns=(later, later))
+
+        inputs = cache.keyed_inputs(self.root)
+        key = cache.source_identity(self.root, inputs)
+        cache.normalize_vendor_mtimes(self.root, inputs)
+        build()
+        first = cache.bound_payload(self.root, self.paths, "debug")
+        self.assertTrue(first["save"])
+        self.assertEqual(first["retained_vendor_packages"], 1)
+        self.assertGreater(first["retained_vendor_bytes"], 0)
+        self.assertFalse(list(self.paths[0].glob("debug/.fingerprint/cache_member-*")))
+        self.assertTrue(list(self.paths[0].glob("debug/.fingerprint/cache_vendored-*")))
+        # Control: kept outputs alone are not enough, checkout times dirty them.
+        checkout()
+        self.assertIn(b"Compiling cache_vendored", build())
+        cache.bound_payload(self.root, self.paths, "debug")
+        checkout()
+        self.assertEqual(cache.source_identity(self.root), key)
+        cache.normalize_vendor_mtimes(self.root, cache.keyed_inputs(self.root))
+        warm = build()
+        self.assertIn(b"Fresh cache_vendored", warm)
+        self.assertNotIn(b"Compiling cache_vendored", warm)
+        self.assertIn(b"Compiling cache_member", warm)
+        # A content change is a different key, so CI discards the target
+        # before Cargo could compare the rewound times.
+        self.file(self.root / "vendor/tool/data/answer.txt", b"43")
+        self.assertNotEqual(cache.source_identity(self.root), key)
 
 
 if __name__ == "__main__":

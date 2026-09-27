@@ -28,6 +28,11 @@ PROFILE_LIMITS = {"debug": 6 * 1024**3, "release": 3584 * 1024**2, "debug-releas
 LIBRARY_KINDS = {"lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"}
 ARTIFACT_DIRECTORIES = {"deps", "build", ".fingerprint"}
 LIBRARY_SUFFIXES = {".rlib", ".rmeta", ".a", ".so", ".dylib", ".dll"}
+# Vendored path packages are the only local outputs kept: every tracked byte
+# under this prefix is in the key. Their sources are rewound to Cargo's own
+# deterministic registry timestamp (2006-07-24) before any Cargo command.
+VENDOR_PREFIX = "vendor/"
+VENDOR_MTIME_NS = 1_153_704_088 * 10**9
 
 
 def profile_limit(profile):
@@ -47,17 +52,24 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def source_identity(root):
-    """Hash actual tracked build inputs, including local patches, not their names."""
+def keyed_inputs(root):
+    """Tracked build inputs whose actual bytes form the cache identity, sorted."""
     names = run(["git", "ls-files", "-z"], cwd=root).split(b"\0")
-    hasher = hashlib.sha256()
+    inputs = []
     for raw in sorted(filter(None, names)):
         name = raw.decode("utf-8", errors="surrogateescape")
         path = Path(name)
-        if not (name.startswith("vendor/") or name.startswith(".github/actions/setup-rust/")
+        if (name.startswith(VENDOR_PREFIX) or name.startswith(".github/actions/setup-rust/")
                 or path.name in {"Cargo.toml", "Cargo.lock", "build.rs", "rust-toolchain", "rust-toolchain.toml"}
                 or name in {".cargo/config", ".cargo/config.toml"}):
-            continue
+            inputs.append((raw, path))
+    return inputs
+
+
+def source_identity(root, inputs=None):
+    """Hash actual tracked build inputs, including local patches, not their names."""
+    hasher = hashlib.sha256()
+    for raw, path in keyed_inputs(root) if inputs is None else inputs:
         source = root / path
         hasher.update(raw + b"\0")
         if source.is_symlink():
@@ -68,6 +80,48 @@ def source_identity(root):
                     hasher.update(chunk)
         hasher.update(b"\0")
     return hasher.hexdigest()
+
+
+def vendor_paths(root, inputs):
+    """Vendored files and their directories up to vendor/, all inside the key.
+
+    Refuses symlinks and anything that is not a regular file or directory, so a
+    rewound timestamp can never reach a file outside the hashed set.
+    """
+    vendor = root / VENDOR_PREFIX.rstrip("/")
+    paths = set()
+    for raw, path in inputs:
+        if not raw.startswith(VENDOR_PREFIX.encode()):
+            continue
+        source = root / path
+        mode = os.lstat(source).st_mode
+        if not stat.S_ISREG(mode):
+            raise ValueError("nonregular vendored input refused")
+        paths.add(source)
+        parent = source.parent
+        while parent != root:
+            if not stat.S_ISDIR(os.lstat(parent).st_mode):
+                raise ValueError("nondirectory vendored parent refused")
+            paths.add(parent)
+            if parent == vendor:
+                break
+            parent = parent.parent
+    return sorted(paths)
+
+
+def normalize_vendor_mtimes(root, inputs):
+    """Rewind vendored sources to one fixed time so restored outputs stay fresh.
+
+    Checkout gives every file the current time, and Cargo rebuilds a path
+    package whose sources are newer than its dep-info. This is safe only
+    because each rewound file's bytes are in the cache key and a non-exact
+    restore is discarded: equal times can never hide a content change. Never
+    apply it to crates/, whose sources the key does not hash.
+    """
+    paths = vendor_paths(root, inputs)
+    for path in paths:
+        os.utime(path, ns=(VENDOR_MTIME_NS, VENDOR_MTIME_NS), follow_symlinks=False)
+    return len(paths)
 
 
 def native_identity(platform):
@@ -317,7 +371,14 @@ def bound_payload(root, paths, profile, *, execute=run, snapshots=None, diagnost
         observed["cleanup"] = sum(row["elapsed_seconds"] for row in timings[first:])
 
     measure("before_local_cleanup", deadline)
-    local = [package["id"] for package in packages if package.get("source") is None]
+    # Members rebuild after every checkout (their sources are not in the key),
+    # so only their outputs are cleaned. Vendored path packages are kept and
+    # never evicted: their bytes are keyed and their sources rewound (prepare).
+    vendor = root / VENDOR_PREFIX.rstrip("/")
+    vendored = [package for package in packages if package.get("source") is None
+                and package.get("manifest_path") and Path(package["manifest_path"]).is_relative_to(vendor)]
+    kept = {package["id"] for package in vendored}
+    local = [package["id"] for package in packages if package.get("source") is None and package["id"] not in kept]
     if local:
         clean(local, "local_cleanup")
     measured, removable, snapshot = measure("after_local_cleanup", deadline)
@@ -367,6 +428,8 @@ def bound_payload(root, paths, profile, *, execute=run, snapshots=None, diagnost
         measured, _, snapshot = measure("after_target_fallback", finalize_deadline)
     retained = snapshot["bytes"]
     return {"limit_bytes": limit, "before_bytes": before, "retained_bytes": retained,
+            "retained_vendor_packages": len(vendored),
+            "retained_vendor_bytes": sum(package_artifact_bytes(vendored, measured, paths[0]).values()),
             "removed_dependency_packages": removed, "removed_source_directories": len(removable),
             "dropped_target": dropped_target, "save": retained <= limit,
             "evicted_packages": evictions, "snapshots": snapshots, "stage_seconds": timings}
@@ -394,10 +457,18 @@ def prepare():
     cargo.mkdir(exist_ok=True)
     if cargo.is_symlink() or (root / "target").is_symlink():
         raise ValueError("symlinked cache roots refused")
-    identity = digest(json.dumps({"profile": profile, "source": source_identity(root),
+    inputs = keyed_inputs(root)
+    identity = digest(json.dumps({"profile": profile, "source": source_identity(root, inputs),
                                  "native": native_identity(os.environ["RUNNER_OS"])}, sort_keys=True).encode())
+    try:
+        vendor_mtimes = str(normalize_vendor_mtimes(root, inputs))
+    except (OSError, ValueError):
+        # A refusal rewinds nothing; a later I/O error may leave some sources at
+        # checkout time. Either way those packages rebuild: slower, never stale.
+        vendor_mtimes = "refused"
     output_file("GITHUB_ENV", {"CI_RUST_CACHE_KEY": f"{profile}-{identity}",
                               "CI_RUST_CACHE_PROFILE": profile,
+                              "CI_RUST_CACHE_VENDOR_MTIMES": vendor_mtimes,
                               "CI_RUST_CACHE_LOCK": digest((root / "Cargo.lock").read_bytes()),
                               "CARGO_HOME": cargo, "CARGO_TARGET_DIR": root / "target"})
 
@@ -416,6 +487,7 @@ def restored():
     elapsed = time.monotonic() - started
     record("rust-cache-restore", elapsed, cache={"hit": hit, "restore_seconds": elapsed},
            details={"key_prefix": os.environ["CI_RUST_CACHE_KEY"],
+                    "vendor_mtimes": os.environ.get("CI_RUST_CACHE_VENDOR_MTIMES"),
                     "boundary": "restore action plus dispatch and recovery; not transfer-only"})
 
 

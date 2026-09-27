@@ -64,9 +64,12 @@ runs:
       continue-on-error: true
       uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       with:
-        prefix-key: gitturtle-rust-v1
+        prefix-key: gitturtle-rust-v2
         shared-key: ${{ env.CI_RUST_CACHE_KEY }}
-        workspaces: . -> target
+        # Upstream keeps outputs only for packages whose manifest lies outside
+        # this root. Rooting it at crates/ keeps registry and vendor/ path
+        # packages and still drops the members; see docs/ci.md.
+        workspaces: crates -> ../target
         cache-bin: false
         cache-workspace-crates: false
         cache-all-crates: false
@@ -93,9 +96,12 @@ runs:
       continue-on-error: true
       uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       with:
-        prefix-key: gitturtle-rust-v1
+        prefix-key: gitturtle-rust-v2
         shared-key: ${{ env.CI_RUST_CACHE_KEY }}
-        workspaces: . -> target
+        # Upstream keeps outputs only for packages whose manifest lies outside
+        # this root. Rooting it at crates/ keeps registry and vendor/ path
+        # packages and still drops the members; see docs/ci.md.
+        workspaces: crates -> ../target
         cache-bin: false
         cache-workspace-crates: false
         cache-all-crates: false
