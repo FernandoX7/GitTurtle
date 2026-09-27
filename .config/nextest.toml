@@ -1,5 +1,6 @@
-# cargo-nextest profiles for GitTurtle. `scripts/gate.py` runs tests with
-# `-P ci`; the defaults apply to interactive `cargo nextest run`.
+# cargo-nextest profiles for GitTurtle. Quality's tests step and
+# `scripts/gate.py` run tests with `-P ci`; the defaults apply to interactive
+# `cargo nextest run`. CI pins the nextest version in scripts/ci/tools.py.
 # Reference: https://nexte.st/docs/configuration/reference/
 
 [profile.default]
@@ -17,6 +18,9 @@ fail-fast = false
 retries = 0
 failure-output = "immediate"
 success-output = "never"
+# One PASS, FAIL or SKIP line per test, so a CI log lists every executed and
+# ignored test as `cargo test` did (scripts/ci/executed_tests.py compares them).
+status-level = "skip"
 
 [profile.ci.junit]
 path = "junit.xml"
