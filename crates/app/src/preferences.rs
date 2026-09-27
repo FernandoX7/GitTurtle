@@ -51,6 +51,9 @@ pub struct AppSettings {
     pub inspector_width: f32,
     pub interface_text_size: u8,
     pub code_text_size: u8,
+    /// Linux: draw code in the desktop's fontconfig `monospace` family when
+    /// it loads and is monospace; the bundled DejaVu Sans Mono otherwise.
+    pub system_code_font: bool,
     pub reopen_last: bool,
     pub default_branch: String,
     /// Show the project list on the far left of the window.
@@ -71,6 +74,7 @@ impl Default for AppSettings {
             inspector_width: 320.,
             interface_text_size: crate::appearance::DEFAULT_INTERFACE_TEXT_SIZE,
             code_text_size: crate::appearance::DEFAULT_CODE_TEXT_SIZE,
+            system_code_font: false,
             reopen_last: true,
             default_branch: "main".into(),
             project_pane: false,

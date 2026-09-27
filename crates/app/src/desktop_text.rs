@@ -1,5 +1,4 @@
-//! Desktop text on Linux: the bundled code font, glyph antialiasing and text
-//! scaling.
+//! Desktop text on Linux: the code font, glyph antialiasing and text scaling.
 //!
 //! The toolkit's Linux backend always recommends subpixel (RGB stripe) glyph
 //! rendering and never consults the session's font settings. That fringes on
@@ -10,7 +9,10 @@
 //! backend does not publish GNOME's keys, and follows portal changes while the app
 //! runs. Returning to a window refreshes the snapshot and fontconfig fallback. On Wayland it also applies the desktop text scaling factor ("Large
 //! Text"), where the toolkit has no DPI source; the X11 backend already scales
-//! the whole window through `Xft.dpi`. Nothing here writes a setting.
+//! the whole window through `Xft.dpi`. Code uses the bundled DejaVu Sans Mono
+//! unless Settings asks for the desktop's fontconfig `monospace` family, which
+//! is looked up on the same worker and used only when the toolkit has loaded it
+//! and it draws at one advance. Nothing here writes a setting.
 
 use gpui_kit::AsyncApp;
 
@@ -35,11 +37,16 @@ struct Observer {
 impl gpui_kit::Global for Observer {}
 
 #[cfg(target_os = "linux")]
-pub(super) fn start(cx: &mut gpui_kit::App) -> Initial {
+pub(super) fn start(system_code_font: bool, cx: &mut gpui_kit::App) -> Initial {
     use futures::StreamExt as _;
 
     // The deadline also needs a useful first frame if the worker cannot run.
     apply(Observed::default().resolve(false), cx);
+    let code_font = cx.default_global::<CodeFont>();
+    if system_code_font {
+        code_font.enable();
+    }
+    let lookup = portal::CodeFontLookup::new(code_font.generation.clone(), cx);
     let (sender, mut snapshots, latest) = portal::snapshots();
     let (refresh, requests) = futures::channel::mpsc::channel(0);
     let (ready, initial) = futures::channel::oneshot::channel();
@@ -48,7 +55,7 @@ pub(super) fn start(cx: &mut gpui_kit::App) -> Initial {
     let (cancel, cancellation) = futures::future::AbortHandle::new_pair();
     let worker = executor.clone().spawn(async move {
         let _ = futures::future::Abortable::new(
-            portal::observe(scales_text, sender, requests, executor),
+            portal::observe(scales_text, lookup, sender, requests, executor),
             cancellation,
         )
         .await;
@@ -101,7 +108,7 @@ pub(super) fn refresh(cx: &mut gpui_kit::App) {
 pub(super) fn refresh(_cx: &mut gpui_kit::App) {}
 
 #[cfg(not(target_os = "linux"))]
-pub(super) fn start(_cx: &mut gpui_kit::App) -> Initial {
+pub(super) fn start(_system_code_font: bool, _cx: &mut gpui_kit::App) -> Initial {
     Initial
 }
 
@@ -144,6 +151,105 @@ fn code_font_faces() -> Vec<std::borrow::Cow<'static, [u8]>> {
         .collect()
 }
 
+/// Where code text comes from when Settings asks for the desktop's font.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) enum SystemCodeFont {
+    /// The setting is off, or the platform is not Linux.
+    #[default]
+    Off,
+    /// Being looked up; code keeps its current font meanwhile.
+    Pending,
+    /// The desktop's `monospace` family, loaded and drawing at one advance.
+    Loaded(gpui_kit::SharedString),
+    /// Why the desktop's family is not used; code uses the bundled font.
+    Unavailable(String),
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct CodeFont {
+    /// 0 while the setting is off; otherwise the lookup a reply must match,
+    /// so a reply for a setting since turned off, or off and on, is dropped.
+    generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    next: u64,
+    state: SystemCodeFont,
+}
+#[cfg(target_os = "linux")]
+impl gpui_kit::Global for CodeFont {}
+
+#[cfg(target_os = "linux")]
+impl CodeFont {
+    fn enable(&mut self) {
+        self.next += 1;
+        self.generation
+            .store(self.next, std::sync::atomic::Ordering::Release);
+        self.state = SystemCodeFont::Pending;
+    }
+}
+
+/// The family code text is drawn in.
+pub(super) fn code_font_family(cx: &gpui_kit::App) -> gpui_kit::SharedString {
+    #[cfg(target_os = "linux")]
+    if let Some(CodeFont {
+        state: SystemCodeFont::Loaded(family),
+        ..
+    }) = cx.try_global::<CodeFont>()
+    {
+        return family.clone();
+    }
+    let _ = cx;
+    crate::mono().into()
+}
+
+/// What Settings shows beside its switch.
+pub(super) fn system_code_font(cx: &gpui_kit::App) -> SystemCodeFont {
+    #[cfg(target_os = "linux")]
+    if let Some(font) = cx.try_global::<CodeFont>() {
+        return font.state.clone();
+    }
+    let _ = cx;
+    SystemCodeFont::Off
+}
+
+/// Settings' switch. Off restores the bundled font at once. On looks the
+/// desktop's family up on the desktop-text worker, which looks again whenever
+/// a window regains focus, so a changed desktop font follows.
+#[cfg(target_os = "linux")]
+pub(super) fn set_system_code_font(enabled: bool, cx: &mut gpui_kit::App) {
+    let font = cx.default_global::<CodeFont>();
+    let on = font.generation.load(std::sync::atomic::Ordering::Acquire) != 0;
+    if enabled == on {
+        return;
+    }
+    if enabled {
+        font.enable();
+        refresh(cx);
+        cx.refresh_windows();
+    } else {
+        font.generation
+            .store(0, std::sync::atomic::Ordering::Release);
+        font.state = SystemCodeFont::Off;
+        sync_code_font(cx);
+        cx.refresh_windows();
+    }
+}
+#[cfg(not(target_os = "linux"))]
+pub(super) fn set_system_code_font(_enabled: bool, _cx: &mut gpui_kit::App) {}
+
+/// Puts [`code_font_family`] on the toolkit theme and re-derives the kit's
+/// base theme and text defaults from it. A theme change keeps the family,
+/// since no theme config names one. Returns whether the family changed.
+pub(super) fn sync_code_font(cx: &mut gpui_kit::App) -> bool {
+    use gpui_kit::component::Theme;
+    let family = code_font_family(cx);
+    if Theme::global(cx).mono_font_family == family {
+        return false;
+    }
+    Theme::global_mut(cx).mono_font_family = family;
+    Theme::sync_base(cx);
+    true
+}
+
 #[cfg(target_os = "linux")]
 fn apply(snapshot: DesktopText, cx: &mut gpui_kit::App) {
     let mut changed = crate::appearance::set_desktop_text_scale(snapshot.text_scale, cx);
@@ -151,17 +257,119 @@ fn apply(snapshot: DesktopText, cx: &mut gpui_kit::App) {
         cx.set_text_rendering_mode(snapshot.rendering);
         changed = true;
     }
+    if let Some((generation, found)) = snapshot.code_font {
+        changed |= apply_code_font(generation, found, cx);
+    }
     if changed {
         cx.refresh_windows();
     }
 }
 
+#[cfg(target_os = "linux")]
+fn apply_code_font(
+    generation: u64,
+    found: Result<gpui_kit::SharedString, String>,
+    cx: &mut gpui_kit::App,
+) -> bool {
+    let font = cx.default_global::<CodeFont>();
+    if generation == 0 || font.generation.load(std::sync::atomic::Ordering::Acquire) != generation {
+        return false;
+    }
+    let state = match found {
+        Ok(family) => SystemCodeFont::Loaded(family),
+        Err(reason) => SystemCodeFont::Unavailable(reason),
+    };
+    let shown = font.state != state;
+    font.state = state;
+    sync_code_font(cx) || shown
+}
+
+/// The first of fontconfig's names for its `monospace` match that the toolkit
+/// has loaded and that draws basic Latin at one advance. The toolkit matches
+/// family names exactly and caches a failed lookup for the life of the
+/// process, so a family is looked up only once `all_font_names` lists it.
+#[cfg(target_os = "linux")]
+fn desktop_code_font(
+    text: &gpui_kit::TextSystem,
+    families: &[String],
+) -> Result<gpui_kit::SharedString, String> {
+    let Some(first) = families.first() else {
+        return Err("fontconfig names no monospace font.".into());
+    };
+    let loaded = text.all_font_names();
+    let Some(family) = families
+        .iter()
+        .find(|family| loaded.iter().any(|name| name == *family))
+    else {
+        return Err(format!("{first} is not among the fonts GitTurtle loaded."));
+    };
+    // Listed, the family resolves; `resolve_font` falls back (and panics
+    // only when no fallback resolves either, as the interface text would).
+    let face = text.resolve_font(&gpui_kit::font(family.clone()));
+    if text
+        .get_font_for_id(face)
+        .is_none_or(|font| font.family.as_ref() != family)
+    {
+        return Err(format!("{family} could not be loaded."));
+    }
+    let advances = MONOSPACE_SAMPLE
+        .chars()
+        .map(|ch| {
+            text.advance(face, gpui_kit::px(16.), ch)
+                .map(|size| f32::from(size.width))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| format!("{family} lacks basic Latin glyphs."))?;
+    if !is_monospace(&advances) {
+        return Err(format!("{family} is not monospace."));
+    }
+    Ok(family.clone().into())
+}
+
+/// Narrow, wide, digit, punctuation and space glyphs.
+#[cfg(any(target_os = "linux", test))]
+const MONOSPACE_SAMPLE: &str = "iWm0.| ";
+
+#[cfg(any(target_os = "linux", test))]
+fn is_monospace(advances: &[f32]) -> bool {
+    advances.first().is_some_and(|first| {
+        *first > 0.
+            && advances
+                .iter()
+                .all(|advance| (advance - first).abs() < 0.01)
+    })
+}
+
+/// fontconfig's `%{family}` lists one match's names, comma separated. Keep a
+/// bounded few, in order, without duplicates or control characters.
+#[cfg(any(target_os = "linux", test))]
+fn monospace_families(output: &str) -> Vec<String> {
+    let mut families: Vec<String> = Vec::new();
+    for name in output.trim().split(',').map(str::trim) {
+        if name.is_empty()
+            || name.len() > 128
+            || name.chars().any(char::is_control)
+            || families.iter().any(|family| family == name)
+        {
+            continue;
+        }
+        families.push(name.to_owned());
+        if families.len() == 8 {
+            break;
+        }
+    }
+    families
+}
+
 /// The session's resolved text preferences.
 #[cfg(any(target_os = "linux", test))]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct DesktopText {
     pub rendering: gpui_kit::TextRenderingMode,
     pub text_scale: f32,
+    /// The desktop code font lookup and the generation it answers; `None`
+    /// while the setting is off.
+    pub code_font: Option<(u64, Result<gpui_kit::SharedString, String>)>,
 }
 
 /// Raw values as reported by the desktop; each source may be absent.
@@ -203,6 +411,7 @@ impl Observed {
         DesktopText {
             rendering,
             text_scale,
+            code_font: None,
         }
     }
 }
@@ -272,6 +481,9 @@ mod portal {
     const PORTAL_WAIT: Duration = Duration::from_millis(250);
     const FONTCONFIG_WAIT: Duration = Duration::from_millis(100);
     const FONTCONFIG_BYTES: usize = 128;
+    /// A family query can miss fontconfig's cache on its first run.
+    const FAMILY_WAIT: Duration = Duration::from_millis(500);
+    const FAMILY_BYTES: usize = 1024;
     const SIGNAL_BATCH: usize = 32;
     const CHANGE_COALESCE_WAIT: Duration = Duration::from_millis(16);
 
@@ -314,6 +526,44 @@ mod portal {
             futures::future::Either::Left((value, _)) => Some(value),
             // The losing future is dropped here, not detached behind a UI timeout.
             futures::future::Either::Right(_) => None,
+        }
+    }
+
+    /// The desktop code font query, run on this worker while Settings asks
+    /// for it: once per connection, so at launch, on focus return and when
+    /// the setting turns on, and never per portal signal.
+    pub(super) struct CodeFontLookup {
+        generation: Arc<std::sync::atomic::AtomicU64>,
+        text: Arc<gpui_kit::TextSystem>,
+    }
+
+    impl CodeFontLookup {
+        pub(super) fn new(
+            generation: Arc<std::sync::atomic::AtomicU64>,
+            cx: &gpui_kit::App,
+        ) -> Self {
+            Self {
+                generation,
+                text: cx.text_system().clone(),
+            }
+        }
+
+        fn run(&self) -> Option<(u64, Result<gpui_kit::SharedString, String>)> {
+            let generation = self.generation.load(std::sync::atomic::Ordering::Acquire);
+            if generation == 0 {
+                return None;
+            }
+            let found = match command_output_limited(
+                Command::new("fc-match").args(["--format", "%{family}", "monospace"]),
+                FAMILY_WAIT,
+                FAMILY_BYTES,
+            ) {
+                Some(output) => {
+                    super::desktop_code_font(&self.text, &super::monospace_families(&output))
+                }
+                None => Err("fontconfig did not answer.".into()),
+            };
+            Some((generation, found))
         }
     }
 
@@ -459,6 +709,7 @@ mod portal {
     /// and child execution have deadlines; the UI retains one latest value.
     pub(super) async fn observe(
         scales_text: bool,
+        code_font: CodeFontLookup,
         mut sender: Snapshots,
         mut refresh: Receiver<()>,
         executor: BackgroundExecutor,
@@ -480,7 +731,12 @@ mod portal {
             {
                 observed.fontconfig = fontconfig_defaults();
             }
-            if !sender.send(observed.resolve(scales_text)) {
+            let code = code_font.run();
+            let resolve = |observed: &Observed| DesktopText {
+                code_font: code.clone(),
+                ..observed.resolve(scales_text)
+            };
+            if !sender.send(resolve(&observed)) {
                 return;
             }
             let Some(mut session) = session else {
@@ -516,7 +772,7 @@ mod portal {
                     {
                         session.observed.fontconfig = fontconfig_defaults();
                     }
-                    if !sender.send(session.observed.resolve(scales_text)) {
+                    if !sender.send(resolve(&session.observed)) {
                         return;
                     }
                 }
@@ -544,6 +800,14 @@ mod portal {
     }
 
     fn command_output(command: &mut Command, timeout: Duration) -> Option<String> {
+        command_output_limited(command, timeout, FONTCONFIG_BYTES)
+    }
+
+    fn command_output_limited(
+        command: &mut Command,
+        timeout: Duration,
+        limit: usize,
+    ) -> Option<String> {
         let mut child = ChildGuard(
             command
                 .stdin(Stdio::null())
@@ -560,12 +824,12 @@ mod portal {
             return None;
         }
         let deadline = Instant::now() + timeout;
-        let mut output = Vec::with_capacity(FONTCONFIG_BYTES);
-        let mut buffer = [0; FONTCONFIG_BYTES + 1];
+        let mut output = Vec::with_capacity(limit);
+        let mut buffer = vec![0; limit + 1];
         loop {
             match stdout.read(&mut buffer) {
                 Ok(count) => {
-                    if output.len() + count > FONTCONFIG_BYTES {
+                    if output.len() + count > limit {
                         return None;
                     }
                     output.extend_from_slice(&buffer[..count]);
@@ -682,7 +946,8 @@ mod portal {
             for index in 0..10_000 {
                 assert!(sender.send(DesktopText {
                     rendering: gpui_kit::TextRenderingMode::Grayscale,
-                    text_scale: index as f32
+                    text_scale: index as f32,
+                    code_font: None,
                 }));
             }
             assert_eq!(latest.lock().unwrap().take().unwrap().text_scale, 9999.0);
@@ -783,6 +1048,105 @@ mod tests {
     }
 
     #[test]
+    fn fontconfig_family_lists_keep_a_bounded_ordered_few() {
+        assert_eq!(
+            monospace_families("JetBrainsMono Nerd Font,JetBrainsMono NF\n"),
+            ["JetBrainsMono Nerd Font", "JetBrainsMono NF"]
+        );
+        assert_eq!(
+            monospace_families(" DejaVu Sans Mono , ,DejaVu Sans Mono"),
+            ["DejaVu Sans Mono"]
+        );
+        assert!(monospace_families("").is_empty());
+        assert!(monospace_families("bad\u{7}name").is_empty());
+        assert!(monospace_families(&"x".repeat(129)).is_empty());
+        let many = (0..20).map(|n| format!("Family {n}")).collect::<Vec<_>>();
+        assert_eq!(monospace_families(&many.join(",")), many[..8]);
+    }
+
+    #[test]
+    fn monospace_needs_one_positive_advance_for_every_sample() {
+        assert_eq!(MONOSPACE_SAMPLE.chars().count(), 7);
+        assert!(is_monospace(&[9.6; 7]));
+        assert!(!is_monospace(&[3.4, 12.1, 9.6, 9.6, 4.0, 4.0, 4.2]));
+        assert!(!is_monospace(&[0.0; 7]));
+        assert!(!is_monospace(&[]));
+    }
+
+    /// A family must be one the toolkit loaded, looked up without touching a
+    /// missing name, which the toolkit would cache as failed for the process.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_desktop_code_font_must_be_loaded() {
+        use gpui_wgpu::CosmicTextSystem;
+
+        let text = gpui_kit::TextSystem::new(std::sync::Arc::new(
+            CosmicTextSystem::new_without_system_fonts("IBM Plex Sans"),
+        ));
+        text.add_fonts(code_font_faces()).unwrap();
+        let names = |list: &[&str]| list.iter().map(|name| name.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            desktop_code_font(&text, &names(&["Not Installed Mono", crate::mono()])),
+            Ok(crate::mono().into())
+        );
+        assert_eq!(
+            desktop_code_font(&text, &names(&["Not Installed Mono"])),
+            Err("Not Installed Mono is not among the fonts GitTurtle loaded.".into())
+        );
+        assert_eq!(
+            desktop_code_font(&text, &[]),
+            Err("fontconfig names no monospace font.".into())
+        );
+    }
+
+    /// A found family survives a theme change; a reply for a setting since
+    /// turned off and on is dropped; off restores the bundled font.
+    #[cfg(target_os = "linux")]
+    #[gpui_kit::test]
+    fn the_code_font_follows_the_setting_and_survives_theme_changes(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::component::Theme;
+
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            let family = |cx: &gpui_kit::App| Theme::global(cx).mono_font_family.to_string();
+            let generation = |cx: &gpui_kit::App| {
+                cx.global::<CodeFont>()
+                    .generation
+                    .load(std::sync::atomic::Ordering::Acquire)
+            };
+            set_system_code_font(true, cx);
+            assert_eq!(system_code_font(cx), SystemCodeFont::Pending);
+            let first = generation(cx);
+            assert!(apply_code_font(first, Ok("Desktop Mono".into()), cx));
+            assert_eq!(
+                system_code_font(cx),
+                SystemCodeFont::Loaded("Desktop Mono".into())
+            );
+            assert_eq!(family(cx), "Desktop Mono");
+
+            crate::appearance::ThemeChoice::Daylight
+                .palette()
+                .apply(true, None, cx);
+            assert_eq!(family(cx), "Desktop Mono");
+
+            set_system_code_font(false, cx);
+            assert_eq!(system_code_font(cx), SystemCodeFont::Off);
+            assert_eq!(family(cx), crate::mono());
+            assert!(!apply_code_font(first, Ok("Desktop Mono".into()), cx));
+            set_system_code_font(true, cx);
+            assert!(!apply_code_font(first, Ok("Desktop Mono".into()), cx));
+            assert_eq!(family(cx), crate::mono());
+
+            let reason = "Proportional Sans is not monospace.".to_string();
+            assert!(apply_code_font(generation(cx), Err(reason.clone()), cx));
+            assert_eq!(system_code_font(cx), SystemCodeFont::Unavailable(reason));
+            assert_eq!(family(cx), crate::mono());
+        });
+    }
+
+    #[test]
     fn gnome_manual_mode_follows_the_antialiasing_key() {
         assert_eq!(
             rendering_from_gnome(Some("manual"), Some("rgba")),
@@ -856,6 +1220,7 @@ mod tests {
             DesktopText {
                 rendering: Subpixel,
                 text_scale: 1.25,
+                code_font: None,
             }
         );
         let kde = Observed {
