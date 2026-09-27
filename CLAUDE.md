@@ -38,3 +38,5 @@ Reaching compaction means the handoff happened too late; treat it as a signal to
 wind down, not as a fresh budget.
 
 When compacting, always preserve the task id and contract, the full list of modified files, every gate command run with its result, open findings, and the evidence path. Drop exploratory file contents and superseded diffs.
+
+<!-- Routing probe for PR 34; never merged. -->
