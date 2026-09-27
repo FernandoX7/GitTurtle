@@ -775,17 +775,62 @@ optimization is introduced. The established action disables Cargo incremental
 artifacts (`CARGO_INCREMENTAL=0`); workspace optimization, debug information, LTO
 and codegen settings remain those in `Cargo.toml`.
 
-The evaluated implementation's
+#### Vendored path packages
+
+The pinned implementation's
 [package selection](https://github.com/Swatinem/rust-cache/blob/6323deb102c322ba6fcbdcafc7e3dddab59af2b6/src/workspace.ts)
-excludes every package beneath the workspace root, not only its three declared
-members. Consequently GitTurtle's maintained local GPUI/Mermaid patches and the
-application/core/preview crates rebuild after restoration. The cache reuses
-registry dependency outputs and Cargo downloads when compatible; it does not
-promise reuse of those expensive local libraries. The finish helper uses Cargo's
-own whole-package cleanup for local path packages rather than retaining their
-fingerprints accidentally. This limitation and remaining vendor compilation cost
-must appear in C1 measurements before deciding whether a different established
-cache strategy is justified.
+keeps outputs only for packages whose manifest lies outside the configured
+workspace root, plus the declared members when `cache-workspace-crates` is true
+([save.ts](https://github.com/Swatinem/rust-cache/blob/6323deb102c322ba6fcbdcafc7e3dddab59af2b6/src/save.ts)).
+The four vendored GPUI/Mermaid patches are neither: they sit beneath the root, are
+excluded from the workspace and enter through `[patch.crates-io]`, so with the root
+at `.` they were pruned on every save whatever that flag said. They then rebuilt on
+every warm run and held the critical path: on the warm runs recorded in
+[the vendor warm-reuse record](benchmarks/2026-09-26-ci-vendor-warm-reuse.md)
+`gpui-component` alone compiled for 110-158 s of a 154-234 s test build.
+
+The action therefore roots upstream at `crates -> ../target`. Cargo metadata run
+from `crates/` still resolves the root workspace and the same `target`, but now
+every registry, Git and `vendor/` package lies outside the root and keeps its
+outputs, while the three members under `crates/` are still pruned.
+`cache-workspace-crates` stays false: member sources are not part of the key and
+change on ordinary pull requests, so their outputs would only cost space. The
+finish helper cleans local path packages with Cargo's whole-package cleanup, except
+those under `vendor/`, and never selects a vendored package for dependency
+eviction; an oversized payload falls back to discarding the whole target as
+before. The budget record reports `retained_vendor_packages` and
+`retained_vendor_bytes`. This relies on the pinned upstream's selection rule and
+its `cargo metadata` working directory; re-verify both before changing the
+pinned commit. With the root at `crates/`, upstream no longer finds `Cargo.lock`
+for its own lockfile hash; the local key below hashes the lockfile's bytes, so
+compatibility is unchanged.
+
+Kept outputs alone would still rebuild. Cargo treats a path package as dirty when
+any source listed in its dep-info is newer than that dep-info, and checkout gives
+every file the current time. Quality's two compilation jobs therefore pass the
+action's `vendor-reuse: true` input, and setup rewinds every tracked file under
+`vendor/`, and each directory up to `vendor/` (a build script may watch a
+directory), to one fixed time: Cargo's own deterministic registry timestamp,
+2006-07-24. It runs in the prepare step, after the key is computed and before the
+restore and any Cargo command, on hits and misses alike (a cold build has no
+fingerprints to satisfy). This is safe only because every rewound file's bytes are
+in the key and a non-exact restore is discarded, so a vendor change is always a
+new key and a full rebuild, never a rewound source beside a stale output. It is
+never applied to `crates/`, whose sources the key does not hash. A symlink or
+other nonregular vendored entry refuses the step without rewinding anything; the
+restore record then shows `vendor_mtimes: refused` and the vendored packages
+rebuild. Paths under Cargo's home, such as the registry icon directory that
+`gpui-component`'s build script watches, are skipped by Cargo's own staleness
+check and need no rewinding.
+
+Vendored reuse is Quality-only. The input defaults to false and the release
+workflow keeps that default, so its vendored sources keep their checkout times:
+any vendored output restored from a Quality-seeded entry is dirty, and Cargo
+compiles the GPUI/Mermaid patches from the tagged checkout, as it did before
+vendored outputs were cached. The restore record then shows
+`vendor_mtimes: disabled`. The finish helper exempts vendored packages from
+cleanup and eviction regardless of the input, because only Quality's successful
+pushes to `main` register a save.
 
 [Upstream key construction](https://github.com/Swatinem/rust-cache/blob/6323deb102c322ba6fcbdcafc7e3dddab59af2b6/src/config.ts)
 separates OS/architecture, installed Rust compiler release/host/commit identities,
@@ -809,8 +854,11 @@ The raw manifest/lock digest is part of the compatibility prefix; unlike upstrea
 broader fallback, this deliberately does not restore an older dependency graph.
 Compiler/flags/platform/source mismatches cannot fall back to an incompatible
 prefix. The full upstream key remains in the Actions cache log; local diagnostics
-retain its setup prefix. Changing the versioned `gitturtle-rust-v1` prefix is a
+retain its setup prefix. Changing the versioned `gitturtle-rust-v2` prefix is a
 reviewable way to isolate a cold experiment without deleting another job's cache.
+Any edit to the setup action already changes the key because its files are hashed;
+the prefix moved from `v1` to `v2` with vendored reuse so the two generations are
+distinguishable in the cache list.
 
 ### Trust, failure and storage bounds
 
@@ -818,7 +866,8 @@ Cargo cache storage is isolated under the fresh runner's temporary directory.
 Only its `registry` and `git` subtrees and the workspace `target` are eligible;
 Cargo binaries, configuration and credential files are excluded. Checkout keeps
 `persist-credentials: false`, and existing Git configuration isolation and Linux
-native prerequisites remain in place. No cache is a trusted release input.
+native prerequisites remain in place. No cache is a trusted release input; release
+builds do not opt into [vendored reuse](#vendored-path-packages).
 
 Setup always restores with saving disabled. Only a successful **push to
 `FernandoX7/GitTurtle`'s `main`** can register the finish save; PRs, fork PRs and
@@ -853,7 +902,11 @@ workspace: roughly 6.3× for debug outputs, 5.0× for release outputs and 1.2× 
 archives and index. Applied to those hosted sizes, one generation of four archives
 is estimated at roughly 3.3 GB compressed (under 4 GB even if every retained
 download compressed only 1.2×) against the repository's 10 GB cache quota, of
-which 0.2 GB was in use by historical CodeQL entries. These are local
+which 0.2 GB was in use by historical CodeQL entries. Keeping vendored outputs adds
+roughly 0.33-0.36 GB of logical payload per debug lane and 0.14 GB per release lane
+(local measurement of the rlib/rmeta files, Linux), about 0.25 GB compressed per
+generation at the observed archive ratios; the Linux debug lane's headroom under
+its 6 GiB limit falls to roughly 0.2 GB. These are local
 pre-registration measurements and compression estimates, not compressed archive
 sizes or unconditional archive ceilings; hosted fit and actual archive sizes remain
 unverified until a new trusted-main seed is observed.
@@ -872,8 +925,8 @@ every lane by exhausting its budget. Both
 [observed failures](benchmarks/2026-09-15-ci.md#four-cache-budget-refusals)
 are retained separately from repair validation.
 
-After removing local package outputs through `cargo clean --locked --profile
-<profile> --package`, the helper may clean up to eight largest dependency package
+After removing local package outputs outside `vendor/` through `cargo clean --locked
+--profile <profile> --package`, the helper may clean up to eight largest dependency package
 groups. Packages are ranked by bytes attributed only from structured locations
 relative to the target root: the artifact file directly under `deps`, or the whole
 package directory directly under `build` or `.fingerprint`, keyed by the name
@@ -981,7 +1034,10 @@ It checks debug and release source recreation/pruning and local archive restorat
 retained dependencies are `Fresh`, the local consumer recompiles, preserved native
 source/output timestamps stay valid, and a fully evicted native package rebuilds
 and links successfully. A separate local-crate recovery fixture covers both profiles
-in the older combined mode. Run the optional Cargo fixtures explicitly with
+in the older combined mode. A vendored-reuse fixture builds an excluded `vendor/`
+path package and a `crates/` member, shows that checkout times alone recompile the
+kept vendored package, that after rewinding it stays `Fresh` while the cleaned
+member recompiles, and that a vendored content change produces a new key. Run the optional Cargo fixtures explicitly with
 `GITTURTLE_CACHE_CARGO_QA=1 python3 -B -m unittest discover -s scripts/ci/tests -p 'test_rust_cache*.py'`;
 ordinary development-tooling jobs do not install a Rust toolchain just for these
 fixtures. These checks establish source behavior, not a hosted cache hit, pinned

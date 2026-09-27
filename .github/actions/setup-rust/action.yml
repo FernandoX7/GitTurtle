@@ -10,6 +10,9 @@ inputs:
   target:
     description: Explicit Cargo `--target` triple used by this job's compilation, if any
     default: ""
+  vendor-reuse:
+    description: true rewinds vendor/ source times so restored vendored outputs stay fresh (Quality only); release builds keep the default and compile vendored crates from source
+    default: "false"
 outputs:
   cache-hit:
     description: True only for an exact restored entry; false also includes fallback or unavailable cache
@@ -23,9 +26,11 @@ runs:
         CACHE_PHASE: ${{ inputs.phase }}
         CACHE_PROFILE: ${{ inputs.profile }}
         CACHE_TARGET: ${{ inputs.target }}
+        CACHE_VENDOR_REUSE: ${{ inputs.vendor-reuse }}
       run: |
         set -euo pipefail
         case "$CACHE_PHASE" in setup|finish) ;; *) exit 2 ;; esac
+        case "$CACHE_VENDOR_REUSE" in true|false) ;; *) exit 2 ;; esac
         case "$CACHE_PROFILE" in debug|release|debug-release) ;; *) exit 2 ;; esac
         case "$CACHE_TARGET" in "") ;; [!A-Za-z0-9]*|*[!A-Za-z0-9_.-]*) exit 2 ;; esac
     - name: Install Linux native build dependencies
@@ -53,6 +58,7 @@ runs:
       shell: bash
       env:
         CACHE_PROFILE: ${{ inputs.profile }}
+        CACHE_VENDOR_REUSE: ${{ inputs.vendor-reuse }}
       run: python3 .github/actions/setup-rust/cache.py prepare
     - name: Start cache restore observation
       if: inputs.phase == 'setup'
@@ -64,9 +70,12 @@ runs:
       continue-on-error: true
       uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       with:
-        prefix-key: gitturtle-rust-v1
+        prefix-key: gitturtle-rust-v2
         shared-key: ${{ env.CI_RUST_CACHE_KEY }}
-        workspaces: . -> target
+        # Upstream keeps outputs only for packages whose manifest lies outside
+        # this root. Rooting it at crates/ keeps registry and vendor/ path
+        # packages and still drops the members; see docs/ci.md.
+        workspaces: crates -> ../target
         cache-bin: false
         cache-workspace-crates: false
         cache-all-crates: false
@@ -93,9 +102,12 @@ runs:
       continue-on-error: true
       uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       with:
-        prefix-key: gitturtle-rust-v1
+        prefix-key: gitturtle-rust-v2
         shared-key: ${{ env.CI_RUST_CACHE_KEY }}
-        workspaces: . -> target
+        # Upstream keeps outputs only for packages whose manifest lies outside
+        # this root. Rooting it at crates/ keeps registry and vendor/ path
+        # packages and still drops the members; see docs/ci.md.
+        workspaces: crates -> ../target
         cache-bin: false
         cache-workspace-crates: false
         cache-all-crates: false
