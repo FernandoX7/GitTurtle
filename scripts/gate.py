@@ -2,7 +2,7 @@
 """Tiered quality gate for GitTurtle.
 
     python3 scripts/gate.py <fast|full> [--base REF] [--report PATH] [--strict]
-        [--quiet] [--known-failures FILE] [--changed-only | --workspace]
+        [--quiet] [--changed-only | --workspace]
 
 ``fast`` is the per-change gate (formatting, spelling, unused dependencies, a
 workspace check, and clippy plus tests scoped to the changed crates). ``full``
@@ -30,9 +30,13 @@ workspace crate select that crate; Rust-affecting paths outside a crate
 and the gate configuration) widen the scope to the whole workspace;
 documentation, agent configuration and scripts do not widen it.
 
-Known failures: ``--known-failures FILE`` or ``GITTURTLE_GATE_KNOWN_FAILURES``
-(default ``.local/gate/known-failures.txt`` when it exists) lists test names,
-one per line; a test stage whose only failures are listed passes with a warn.
+Git isolation: every stage that runs tests (tests, gpui-iterations, doctests,
+mutants, coverage) gets CI's Git isolation, ``GIT_CONFIG_NOSYSTEM=1`` and an
+empty temporary ``GIT_CONFIG_GLOBAL``, and loses inherited askpass programs and
+command-line configuration (``GIT_ASKPASS``, ``SSH_ASKPASS``,
+``SSH_ASKPASS_REQUIRE``, ``GIT_CONFIG_PARAMETERS``, ``GIT_CONFIG_COUNT``), so a
+desktop session's environment cannot turn a test red. There is no allowlist of
+known failures: a red test is fixed at its cause.
 """
 
 from __future__ import annotations
@@ -52,7 +56,12 @@ from typing import Callable
 
 TIERS = ("fast", "full")
 DEFAULT_REPORT = Path(".local/gate/report.md")
-DEFAULT_KNOWN_FAILURES = Path(".local/gate/known-failures.txt")
+# Stages that run tests match CI's Git isolation (.github/workflows/quality.yml)
+# and drop inherited askpass programs and command-line configuration.
+GIT_ISOLATION_UNSET = ("GIT_ASKPASS", "SSH_ASKPASS", "SSH_ASKPASS_REQUIRE", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT")
+GIT_ISOLATION_PREFIX = (
+    "env " + " ".join(f"-u {name}" for name in GIT_ISOLATION_UNSET) + " GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=$(mktemp) "
+)
 FALLBACK_CRATES = {
     "crates/app": "gitturtle",
     "crates/git-core": "gitturtle-core",
@@ -135,6 +144,7 @@ class Stage:
     clear_target_dir: bool = False
     umask: int | None = None
     note: str = ""
+    unset_env: tuple[str, ...] = ()
 
 
 @dataclass
@@ -283,23 +293,6 @@ def gpui_test_names(root: Path, sources: tuple[str, ...]) -> list[str]:
         text = path.read_text(encoding="utf-8", errors="replace")
         names.extend(GPUI_TEST_FN.findall(text))
     return sorted(set(names))
-
-
-def read_known_failures(root: Path, explicit: str | None) -> tuple[set[str], str | None]:
-    candidate = explicit or os.environ.get("GITTURTLE_GATE_KNOWN_FAILURES")
-    path = Path(candidate) if candidate else root / DEFAULT_KNOWN_FAILURES
-    if not path.is_absolute():
-        path = root / path
-    if not path.exists():
-        if explicit:
-            raise GateUsage(f"known-failures file {path} does not exist")
-        return set(), None
-    names = {
-        line.strip()
-        for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    }
-    return names, str(path)
 
 
 # --- output filtering -------------------------------------------------------
@@ -534,6 +527,8 @@ def run_stage(stage: Stage, root: Path, tier: str) -> Outcome:
     else:
         assert stage.argv is not None
         env = base_env(stage.clear_target_dir)
+        for name in stage.unset_env:
+            env.pop(name, None)
         env.update(stage.env)
         umask = stage.umask
         try:
@@ -580,17 +575,6 @@ def run_stage(stage: Stage, root: Path, tier: str) -> Outcome:
         filtered, first = filter_plain(lines)
     status = "ok" if code == 0 else "failed"
     return Outcome(stage, code, elapsed, lines, filtered, first, failed_tests, status)
-
-
-def apply_known_failures(outcome: Outcome, known: set[str]) -> Outcome:
-    if outcome.status != "failed" or outcome.stage.kind not in ("nextest", "cargo-test"):
-        return outcome
-    if not outcome.failed_tests or not known:
-        return outcome
-    if set(outcome.failed_tests) <= known:
-        outcome.status = "warn"
-        outcome.message = "only known host failures: " + ", ".join(outcome.failed_tests)
-    return outcome
 
 
 # --- stage construction ------------------------------------------------------
@@ -699,7 +683,7 @@ def build_stages(
             stages.append(Stage("gpui-iterations", None, note=f"skipped: {len(names)} gpui tests exceed the {MAX_ITERATION_TESTS} rerun cap"))
 
     if tier == "fast":
-        return stages
+        return isolate_test_stages(stages, scratch)
 
     stages.append(
         Stage("doctests", ["cargo", "test", "--doc", "--workspace", "--locked"], reproduce="cargo test --doc --workspace --locked")
@@ -780,6 +764,22 @@ def build_stages(
             note="umask 077",
         )
     )
+    return isolate_test_stages(stages, scratch)
+
+
+TEST_STAGES = {"tests", "gpui-iterations", "doctests", "mutants", "coverage"}
+
+
+def isolate_test_stages(stages: list[Stage], scratch: Path) -> list[Stage]:
+    """Give every stage that runs tests CI's Git isolation (see GIT_ISOLATION_UNSET)."""
+    global_config = scratch / "gitconfig"
+    global_config.write_text("", encoding="utf-8")
+    for stage in stages:
+        if stage.argv is None or stage.name.split(":")[0] not in TEST_STAGES:
+            continue
+        stage.env = {**stage.env, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": str(global_config)}
+        stage.unset_env = GIT_ISOLATION_UNSET
+        stage.reproduce = GIT_ISOLATION_PREFIX + stage.reproduce
     return stages
 
 
@@ -804,11 +804,12 @@ def narrow_command(outcome: Outcome) -> str:
         if stage.argv and "-p" in stage.argv:
             crate = stage.argv[stage.argv.index("-p") + 1]
         test = outcome.failed_tests[0]
+        prefix = GIT_ISOLATION_PREFIX if stage.unset_env else ""
         if stage.kind == "nextest":
             selector = f"-p {crate}" if crate else "--workspace"
-            return f"cargo nextest run --locked {selector} -E 'test(={test})'"
+            return f"{prefix}cargo nextest run --locked {selector} -E 'test(={test})'"
         selector = f"-p {crate}" if crate else "--workspace"
-        return f"cargo test --locked {selector} -- {test} --exact"
+        return f"{prefix}cargo test --locked {selector} -- {test} --exact"
     return stage.reproduce or (" ".join(shell_quote(a) for a in stage.argv) if stage.argv else stage.name)
 
 
@@ -870,7 +871,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--report")
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--known-failures")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--changed-only", action="store_true")
     group.add_argument("--workspace", action="store_true")
@@ -884,7 +884,6 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args = parse_args(sys.argv[1:] if argv is None else argv)
         root = find_root()
-        known, known_path = read_known_failures(root, args.known_failures)
         base = resolve_base(root, args.base)
     except GateUsage as error:
         print(f"gate: usage error: {error}", file=sys.stderr)
@@ -907,8 +906,6 @@ def main(argv: list[str] | None = None) -> int:
         f"gate {args.tier}: base={base[:12] if base else 'none'} crates={','.join(scope.crates) or 'none'}"
         f"{' (workspace)' if scope.workspace else ''} tools=" + ",".join(name for name, ok in tools.items() if ok)
     )
-    if known_path:
-        progress(f"gate: known failures from {known_path}: {len(known)}")
     if not scope.rust_changed and args.tier == "fast":
         progress("gate: no Rust changes; running formatting, spelling and workspace check only")
 
@@ -932,7 +929,7 @@ def main(argv: list[str] | None = None) -> int:
                 progress(f"warn: {stage.name} {stage.note}")
                 continue
             progress(f"stage {stage.name}{' (' + stage.note + ')' if stage.note else ''} ...")
-            outcome = apply_known_failures(run_stage(stage, root, args.tier), known)
+            outcome = run_stage(stage, root, args.tier)
             if outcome.status == "failed" and stage.advisory and not args.strict:
                 outcome.status = "warn"
                 summary = outcome.first_error or (outcome.filtered[0] if outcome.filtered else f"exit {outcome.returncode}")

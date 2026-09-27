@@ -599,6 +599,8 @@ mod tests {
         std::fs::write(&helper, "#!/bin/sh\ncase \"$1\" in Username*) printf 'fixture-user' ;; *) printf 'fixture-password' ;; esac\n").unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let global_config = directory.path().join("gitconfig");
+        std::fs::write(&global_config, "").unwrap();
         run_controlled(OperationControl::default(), || {
             let mut command = normal_command(directory.path());
             command
@@ -606,6 +608,15 @@ mod tests {
                 .arg(format!("core.askPass={}", helper.display()))
                 .args(["credential", "fill"]);
             configure_askpass(&mut command, true)?;
+            // Git prefers GIT_ASKPASS over core.askPass, and system or global
+            // settings such as credential.username change the prompts. Clear
+            // what a desktop session can export so only this fixture applies.
+            command
+                .env_remove("GIT_ASKPASS")
+                .env_remove("GIT_CONFIG_PARAMETERS")
+                .env_remove("GIT_CONFIG_COUNT")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", &global_config);
             let output = bounded_write_output(
                 command,
                 Some(b"protocol=https\nhost=fixture.invalid\n\n".to_vec()),
