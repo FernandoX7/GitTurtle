@@ -1514,7 +1514,10 @@ impl GitTurtle {
             })
             .into_any_element()
     }
-    pub(super) fn render_preview(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// `column_min` is the preview column's narrowest width; the path row keeps
+    /// 220 px before the modes wrap below it, but never more than that column
+    /// holds, and its buttons wrap below the path rather than clip.
+    pub(super) fn render_preview(&self, column_min: Pixels, cx: &mut Context<Self>) -> AnyElement {
         if self.blame.is_visible() {
             return self.render_blame(cx);
         }
@@ -1525,11 +1528,14 @@ impl GitTurtle {
             .map(|file| file.path().to_string_lossy().into_owned())
             .unwrap_or("File comparison".into());
         let copy_path = path.clone();
+        // The toolbar's `px_3` is 1.5 rem on both sides.
+        let path_room = (column_min - appearance::ui_size(19.5)).max(px(0.));
         let mut path_controls = div()
             .min_h(appearance::ui_size(28.))
-            .min_w(appearance::ui_size(220.))
+            .min_w(appearance::ui_size(220.).min(path_room))
             .flex_1()
             .flex()
+            .flex_wrap()
             .items_center()
             .gap_1()
             .children(
@@ -1602,6 +1608,7 @@ impl GitTurtle {
         {
             path_controls = path_controls.child(
                 button("open-blame", "Blame", "", false)
+                    .debug_selector(|| "open-blame".into())
                     .tooltip(
                         "Line attribution and history; working files include uncommitted lines",
                     )
@@ -1835,6 +1842,14 @@ impl GitTurtle {
 const SIDEBAR_FIT_WIDTH: f32 = 800.;
 /// The narrowest content column beside the rail in a narrow window.
 const NARROW_CONTENT_MIN: f32 = 240.;
+/// The narrowest inspector while the rail and the narrow content column fit.
+const INSPECTOR_MIN: f32 = 280.;
+/// Where even those do not fit, as in a half tile of a display about
+/// 1,000 px wide at a fractional scale, the inspector yields to this width
+/// first and then the content column to `TIGHT_CONTENT_MIN`, so the
+/// inspector stays whole down to about 460 px.
+const TIGHT_INSPECTOR_MIN: f32 = 240.;
+const TIGHT_CONTENT_MIN: f32 = 176.;
 /// Below this window width, at the interface text size, the header drops the
 /// Projects and profile labels so it stays on one row.
 const COMPACT_HEADER_WIDTH: f32 = 800.;
@@ -1863,12 +1878,21 @@ impl GitTurtle {
         // inspector, History shows the rail and the content column accepts
         // less, so the inspector stays whole; saved widths and the user's
         // navigation choice are untouched.
-        let narrow = self.repository_width(window) < px(SIDEBAR_FIT_WIDTH);
+        let width = self.repository_width(window);
+        let narrow = width < px(SIDEBAR_FIT_WIDTH);
         let squeezed = narrow && self.sidebar && self.mode == WorkspaceMode::History;
-        let content_min = if narrow {
-            appearance::ui_size(44.) + px(NARROW_CONTENT_MIN)
+        let rail = appearance::ui_size(44.);
+        let (content_min, inspector_min) = if narrow {
+            let beside_rail = width - rail;
+            let inspector = (beside_rail - px(NARROW_CONTENT_MIN))
+                .max(px(TIGHT_INSPECTOR_MIN))
+                .min(px(INSPECTOR_MIN));
+            let content = (beside_rail - inspector)
+                .max(px(TIGHT_CONTENT_MIN))
+                .min(px(NARROW_CONTENT_MIN));
+            (rail + content, inspector)
         } else {
-            px(520.)
+            (px(520.), px(INSPECTOR_MIN))
         };
         let left = if self.mode != WorkspaceMode::History {
             div()
@@ -1881,7 +1905,7 @@ impl GitTurtle {
                         .flex_1()
                         .min_w_0()
                         .h_full()
-                        .child(self.render_preview(cx)),
+                        .child(self.render_preview(content_min - rail, cx)),
                 )
                 .into_any_element()
         } else if self.sidebar && !squeezed {
@@ -1950,7 +1974,7 @@ impl GitTurtle {
             .child(
                 resizable_panel()
                     .size(px(self.settings.inspector_width))
-                    .size_range(px(280.)..px(480.))
+                    .size_range(inspector_min..px(480.))
                     .flex_none()
                     .child(if self.mode == WorkspaceMode::Working {
                         self.render_working_inspector(window, cx)
@@ -2525,7 +2549,9 @@ mod tests {
     use core::prelude::v1::test;
 
     /// Tiling window managers such as Hyprland ignore the window's minimum
-    /// size, so a half-screen tile is often 600–800 px wide.
+    /// size, so a half-screen tile is often 600–800 px wide, and at a
+    /// fractional scale a half tile of a display about 1,000 logical pixels
+    /// wide is 460–560 px wide and shorter than the minimum height.
     #[gpui::test]
     async fn narrow_windows_keep_the_inspector_whole_and_the_header_on_one_row(
         cx: &mut TestAppContext,
@@ -2637,7 +2663,15 @@ mod tests {
         settle(&app, cx).await;
 
         let one_row = appearance::ui_size(60.);
-        for (width, height) in [(1000., 680.), (800., 718.), (664., 718.), (600., 718.)] {
+        for (width, height) in [
+            (1000., 680.),
+            (800., 718.),
+            (664., 718.),
+            (600., 718.),
+            (560., 718.),
+            (493., 526.),
+            (460., 526.),
+        ] {
             cx.simulate_resize(size(px(width), px(height)));
             draw(cx);
             let files = cx
@@ -2682,6 +2716,28 @@ mod tests {
         cx.simulate_resize(size(px(1000.), px(680.)));
         draw(cx);
         assert!(cx.debug_bounds("history-sidebar").is_some());
+
+        // Compare's path row keeps its buttons in the preview column.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        for (width, height) in [(1000., 680.), (600., 718.), (493., 526.), (460., 526.)] {
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let files = cx
+                .debug_bounds("commit-inspector-files")
+                .expect("Compare keeps the commit's files");
+            assert!(
+                files.right() <= px(width),
+                "Compare files clipped at {width}: {files:?}"
+            );
+            let blame = cx
+                .debug_bounds("open-blame")
+                .expect("a text comparison offers Blame");
+            assert!(
+                blame.right() <= files.left(),
+                "Blame under the inspector at {width}: {blame:?}, files {files:?}"
+            );
+        }
     }
 
     #[gpui::test]
