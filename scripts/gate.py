@@ -4,11 +4,13 @@
     python3 scripts/gate.py <fast|full> [--base REF] [--report PATH] [--strict]
         [--quiet] [--changed-only | --workspace]
 
-``fast`` is the per-change gate (formatting, spelling, unused dependencies, a
-workspace check, and clippy plus tests scoped to the changed crates). ``full``
-is the per-candidate gate at workspace scope with doctests, rustdoc, license
-and advisory checks, snapshot hygiene, diff-scoped mutation testing, the
-release build and the development-tooling checks.
+``fast`` is the per-change gate (formatting, spelling, unused dependencies,
+workspace clippy, which type-checks every target, and tests scoped to the
+changed crates; with no Rust change a workspace check replaces clippy).
+``full`` is the per-candidate gate at workspace scope with doctests, rustdoc,
+license and advisory checks, snapshot hygiene, diff-scoped mutation testing,
+the release build and the development-tooling checks. In both tiers every
+stage that needs no Rust build runs before the first compile.
 
 Exit codes: 0 green; 1 a stage failed; 3 a required tool is missing or unusable
 in ``--strict`` mode; 4 usage error. Without ``--strict`` a missing optional
@@ -706,10 +708,11 @@ def build_stages(
     scratch: Path,
 ) -> list[Stage]:
     stages: list[Stage] = []
-    workspace = scope.workspace
     targets = list(scope.crates)
     app_crate = crates.get("crates/app", "gitturtle")
 
+    # Stages that need no Rust build come first in both tiers, so a formatting,
+    # spelling, policy or controller failure is reported before any compile.
     stages.append(Stage("format", ["cargo", "fmt", "--all", "--", "--check"], reproduce="cargo fmt --all -- --check"))
     stages.append(
         Stage("typos", ["typos", "--format", "brief"], kind="typos", reproduce="typos --format brief", optional_tool="typos")
@@ -724,16 +727,53 @@ def build_stages(
             note="workspace crates only; vendored packages are upstream code",
         )
     )
-    stages.append(
-        Stage(
-            "check",
-            cargo_json(["cargo", "check", "--locked", "--workspace", "--all-targets"]),
-            kind="cargo-json",
-            reproduce="cargo check --locked --workspace --all-targets",
+    if tier == "full":
+        # Snapshot hygiene only finds `.snap.new` files already present:
+        # base_env sets INSTA_UPDATE=no, so the test stages write none.
+        stages.append(Stage("insta", None, reproduce="find crates -name '*.snap.new'", run=insta_check(root)))
+        stages.append(privacy_stage(root, base))
+        # --locked: running before any locked build, deny must not rewrite a
+        # stale Cargo.lock that `clippy --locked` would otherwise reject.
+        stages.append(
+            Stage(
+                "deny",
+                ["cargo", "deny", "--locked", "--format", "json", "check"],
+                kind="deny",
+                reproduce="cargo deny --locked check",
+                optional_tool="deny",
+                advisory=True,
+            )
         )
-    )
+        stages.append(
+            Stage(
+                "audit",
+                ["cargo", "audit", "--json", "--deny", "warnings"],
+                kind="audit",
+                reproduce="cargo audit --deny warnings",
+                optional_tool="audit",
+                advisory=True,
+            )
+        )
+        stages.append(
+            Stage("guidance", [sys.executable, "scripts/check-agent-guidance.py"], reproduce="python3 scripts/check-agent-guidance.py")
+        )
+        stages.append(
+            Stage(
+                "controller-tests",
+                [sys.executable, "-m", "unittest", "discover", "-s", "scripts/agent_loop", "-t", "scripts", "-p", "test_*.py"],
+                reproduce="(umask 077 && python3 -m unittest discover -s scripts/agent_loop -t scripts -p 'test_*.py')",
+                # The controller refuses group-writable records; a host umask of 002
+                # would otherwise fail its suite without any code defect.
+                umask=0o077,
+                note="umask 077",
+            )
+        )
 
-    if workspace:
+    if scope.rust_changed or scope.workspace:
+        # Workspace clippy type-checks every target that `cargo check
+        # --workspace --all-targets` does, so it replaces that stage rather
+        # than repeating it; it also lints crates outside the changed set,
+        # which CI requires anyway.
         stages.append(
             Stage(
                 "clippy",
@@ -742,21 +782,23 @@ def build_stages(
                 reproduce="cargo clippy --locked --workspace --all-targets -- -D warnings",
             )
         )
+    else:
+        stages.append(
+            Stage(
+                "check",
+                cargo_json(["cargo", "check", "--locked", "--workspace", "--all-targets"]),
+                kind="cargo-json",
+                reproduce="cargo check --locked --workspace --all-targets",
+            )
+        )
+
+    if scope.workspace:
         stages.append(test_stage("tests", ["--workspace"], tools, "workspace"))
     else:
         for crate in targets:
-            stages.append(
-                Stage(
-                    f"clippy:{crate}",
-                    cargo_json(["cargo", "clippy", "--locked", "-p", crate, "--no-deps", "--all-targets"]) + ["--", "-D", "warnings"],
-                    kind="cargo-json",
-                    reproduce=f"cargo clippy --locked -p {crate} --no-deps --all-targets -- -D warnings",
-                )
-            )
-        for crate in targets:
             stages.append(test_stage(f"tests:{crate}", ["-p", crate], tools, crate))
 
-    if scope.app_sources and (workspace or app_crate in targets):
+    if scope.app_sources and (scope.workspace or app_crate in targets):
         names = gpui_test_names(root, scope.app_sources)
         if names and len(names) <= MAX_ITERATION_TESTS:
             if tools["nextest"]:
@@ -794,35 +836,13 @@ def build_stages(
             advisory=True,
         )
     )
-    stages.append(Stage("insta", None, reproduce="find crates -name '*.snap.new'", run=insta_check(root)))
-    stages.append(privacy_stage(root, base))
-    stages.append(
-        Stage(
-            "deny",
-            ["cargo", "deny", "--format", "json", "check"],
-            kind="deny",
-            reproduce="cargo deny check",
-            optional_tool="deny",
-            advisory=True,
-        )
-    )
-    stages.append(
-        Stage(
-            "audit",
-            ["cargo", "audit", "--json", "--deny", "warnings"],
-            kind="audit",
-            reproduce="cargo audit --deny warnings",
-            optional_tool="audit",
-            advisory=True,
-        )
-    )
     if base and scope.rust_changed and tools["mutants"]:
         diff_path = scratch / "git.diff"
         code, diff_text = git(root, "diff", base, "--", "crates")
         if code == 0 and diff_text.strip():
             diff_path.write_text(diff_text, encoding="utf-8")
             argv = ["cargo", "mutants", "--in-diff", str(diff_path), "--test-tool", "nextest" if tools["nextest"] else "cargo", "--baseline=skip", "-j", "2", "--output", str(root / ".local/gate/mutants")]
-            for crate in targets if not workspace else []:
+            for crate in targets if not scope.workspace else []:
                 argv += ["-p", crate]
             stages.append(
                 Stage(
@@ -848,22 +868,7 @@ def build_stages(
     stages.append(
         Stage("release", ["cargo", "build", "--release", "--locked", "-p", app_crate], reproduce=f"cargo build --release --locked -p {app_crate}")
     )
-    stages.append(
-        Stage("guidance", [sys.executable, "scripts/check-agent-guidance.py"], reproduce="python3 scripts/check-agent-guidance.py")
-    )
-    stages.append(
-        Stage(
-            "controller-tests",
-            [sys.executable, "-m", "unittest", "discover", "-s", "scripts/agent_loop", "-t", "scripts", "-p", "test_*.py"],
-            reproduce="(umask 077 && python3 -m unittest discover -s scripts/agent_loop -t scripts -p 'test_*.py')",
-            # The controller refuses group-writable records; a host umask of 002
-            # would otherwise fail its suite without any code defect.
-            umask=0o077,
-            note="umask 077",
-        )
-    )
     return isolate_test_stages(stages, scratch)
-
 
 TEST_STAGES = {"tests", "gpui-iterations", "doctests", "mutants", "coverage"}
 

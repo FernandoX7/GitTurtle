@@ -6,6 +6,7 @@ Run with: python3 -m unittest scripts/test_gate.py
 from __future__ import annotations
 
 import importlib.util
+import itertools
 import json
 import os
 import subprocess
@@ -289,16 +290,48 @@ class StageTests(unittest.TestCase):
     def tools(self, **present: bool) -> dict[str, bool]:
         return {name: present.get(name, False) for name in gate.OPTIONAL_TOOLS}
 
-    def test_fast_scopes_clippy_and_tests_to_changed_crates(self):
+    def test_fast_type_checks_once_and_scopes_tests_to_changed_crates(self):
         scope = gate.Scope(("gitturtle-core",), False, True, ())
         with tempfile.TemporaryDirectory() as tmp:
             stages = gate.build_stages("fast", scope, Path(tmp), self.tools(nextest=True), None, False, CRATES, Path(tmp))
         names = [stage.name for stage in stages]
-        self.assertEqual(names, ["format", "typos", "machete", "check", "clippy:gitturtle-core", "tests:gitturtle-core"])
+        # Workspace clippy covers every target the old workspace check built.
+        self.assertEqual(names, ["format", "typos", "machete", "clippy", "tests:gitturtle-core"])
+        self.assertEqual(stages[3].reproduce, "cargo clippy --locked --workspace --all-targets -- -D warnings")
+        self.assertIn("--message-format=json", stages[3].argv)
         tests = stages[-1]
         self.assertEqual(tests.kind, "nextest")
         self.assertEqual(tests.argv, ["cargo", "nextest", "run", "--locked", "-p", "gitturtle-core", "-P", "ci", "--no-fail-fast"])
-        self.assertIn("--message-format=json", stages[3].argv)
+
+    def test_fast_without_rust_changes_keeps_the_workspace_check(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stages = gate.build_stages("fast", gate.Scope((), False, False, ()), Path(tmp), self.tools(), None, False, CRATES, Path(tmp))
+        self.assertEqual([stage.name for stage in stages], ["format", "typos", "machete", "check"])
+        self.assertEqual(stages[-1].reproduce, "cargo check --locked --workspace --all-targets")
+
+    def test_stages_without_a_rust_build_run_first(self):
+        build_free = {"format", "typos", "machete", "insta", "privacy", "deny", "audit", "guidance", "controller-tests"}
+        scopes = (
+            (gate.Scope(("gitturtle-core",), False, True, ()), "clippy"),
+            (gate.Scope(tuple(sorted(CRATES.values())), True, True, ()), "clippy"),
+            (gate.Scope((), False, False, ()), "check"),
+        )
+        for tier in ("fast", "full"):
+            for scope, first_build in scopes:
+                with tempfile.TemporaryDirectory() as tmp:
+                    tools = {name: True for name in gate.OPTIONAL_TOOLS}
+                    stages = gate.build_stages(tier, scope, Path(tmp), tools, None, False, CRATES, Path(tmp))
+                names = [stage.name for stage in stages]
+                leading = len(list(itertools.takewhile(build_free.__contains__, names)))
+                self.assertFalse(build_free & set(names[leading:]), f"{tier}: {names}")
+                self.assertEqual(names[leading], first_build, f"{tier}: {names}")
+                self.assertEqual(names.count("check") + names.count("clippy"), 1, f"{tier}: {names}")
+
+    def test_deny_never_rewrites_the_lockfile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stages = gate.build_stages("full", gate.Scope((), False, False, ()), Path(tmp), self.tools(deny=True), None, False, CRATES, Path(tmp))
+        deny = next(stage for stage in stages if stage.name == "deny")
+        self.assertEqual(deny.argv[:3], ["cargo", "deny", "--locked"])
 
     def test_fast_without_nextest_uses_cargo_test(self):
         scope = gate.Scope(("gitturtle-preview",), False, True, ())
@@ -315,7 +348,7 @@ class StageTests(unittest.TestCase):
         names = [stage.name for stage in stages]
         self.assertIn("clippy", names)
         self.assertIn("tests", names)
-        self.assertNotIn("clippy:gitturtle", names)
+        self.assertNotIn("tests:gitturtle", names)
 
     def test_gpui_iterations_stage_added_for_app_sources(self):
         with tempfile.TemporaryDirectory() as tmp:
