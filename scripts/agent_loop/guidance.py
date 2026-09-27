@@ -249,7 +249,7 @@ def home_path_issues(root: Path) -> list[Issue]:
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".avif", ".heic", ".heif",
                   ".icns", ".ico", ".bmp", ".tif", ".tiff"}
 MAX_IMAGE_BYTES = 32 * 1024 * 1024
-MAX_TEXT_BYTES = 1024 * 1024
+MAX_INFLATED_BYTES = 1024 * 1024  # decompressed text per image, all chunks together
 PRIVATE_STRINGS_ENV = "GITTURTLE_PRIVATE_STRINGS_FILE"
 PRIVATE_STRINGS_FILE = Path(".local/privacy/private-strings.txt")
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -260,20 +260,29 @@ _EXAMPLE_DOMAINS = ("example.com", "example.org", "example.net")
 _EXAMPLE_TLDS = ("invalid", "example")
 
 
-def _inflate(data: bytes) -> tuple[bytes, bool]:
-    """Decompressed text up to MAX_TEXT_BYTES, and whether it was complete."""
+def _inflate(data: bytes, budget: list[int]) -> tuple[bytes, bool]:
+    """Decompressed text within the image's remaining budget, and whether the whole stream fit."""
+    if budget[0] <= 0:
+        return b"", False
     inflater = zlib.decompressobj()
     try:
-        text = inflater.decompress(data, MAX_TEXT_BYTES)
+        text = inflater.decompress(data, budget[0])
     except zlib.error:
         return b"", False
-    return text, not inflater.unconsumed_tail
+    budget[0] -= len(text)
+    return text, inflater.eof and not inflater.unconsumed_tail
 
 
 def _png_texts(data: bytes):
-    """(segment, bytes, complete) for each PNG text and EXIF chunk; ValueError if the file does not parse."""
+    """(segment, bytes, complete) for each PNG text and EXIF chunk; ValueError if the file does not parse.
+
+    Compressed text shares one MAX_INFLATED_BYTES budget per image. The first
+    chunk that does not fit or does not decompress is yielded incomplete and
+    ends the parse, so the image is reported as not fully checked.
+    """
     if not data.startswith(_PNG_SIGNATURE):
         raise ValueError("not a PNG")
+    budget = [MAX_INFLATED_BYTES]
     offset = len(_PNG_SIGNATURE)
     while offset + 12 <= len(data):
         length = int.from_bytes(data[offset:offset + 4], "big")
@@ -285,8 +294,11 @@ def _png_texts(data: bytes):
             yield "PNG tEXt", body, True
         elif kind == b"zTXt":
             keyword, _, rest = body.partition(b"\0")
-            yield ("PNG zTXt", keyword, True)
-            yield ("PNG zTXt", *_inflate(rest[1:]))
+            yield "PNG zTXt", keyword, True
+            text, complete = _inflate(rest[1:], budget)
+            yield "PNG zTXt", text, complete
+            if not complete:
+                return
         elif kind == b"iTXt":
             keyword, _, rest = body.partition(b"\0")
             compressed, rest = rest[:1] == b"\1", rest[2:]
@@ -294,7 +306,10 @@ def _png_texts(data: bytes):
             translated, _, text = rest.partition(b"\0")
             segment = "PNG iTXt XMP" if keyword == _XMP_KEYWORD else "PNG iTXt"
             yield segment, b"\0".join((keyword, language, translated)), True
-            yield (segment, *_inflate(text)) if compressed else (segment, text, True)
+            text, complete = _inflate(text, budget) if compressed else (text, True)
+            yield segment, text, complete
+            if not complete:
+                return
         elif kind == b"eXIf":
             yield "PNG eXIf", body, True
         elif kind == b"IEND":
@@ -344,23 +359,28 @@ def _jpeg_texts(data: bytes):
 
 
 def _image_texts(path: Path, data: bytes):
-    """Segments by content, not suffix: some tracked .png files are JPEG data."""
+    """Yield (segment, bytes, complete) lazily, choosing the parser by content: some tracked .png
+    files are JPEG data. A PNG or JPEG that stops parsing is then scanned whole."""
     if path.suffix.lower() == ".svg":
-        return [("SVG source", data, True)]
+        yield "SVG source", data, True
+        return
     parser = (_png_texts if data.startswith(_PNG_SIGNATURE) else
               _jpeg_texts if data.startswith(b"\xff\xd8") else None)
     if parser is not None:
         try:
-            return list(parser(data))
+            yield from parser(data)
+            return
         except ValueError:
             pass
-    return [("embedded bytes", data, True)]
+    yield "embedded bytes", data, True
 
 
-def _decodings(data: bytes) -> list[str]:
-    """Text chunks are Latin-1 or UTF-8; EXIF also holds UTF-16 (the Windows XP* tags)."""
-    return [data.decode("latin-1"), data.decode("utf-8", "replace"),
-            data.decode("utf-16-le", "replace"), data[1:].decode("utf-16-le", "replace")]
+def _decodings(data: bytes):
+    """Text chunks are Latin-1 or UTF-8; EXIF also holds UTF-16 (the Windows XP* tags). One at a time."""
+    yield data.decode("latin-1")
+    yield data.decode("utf-8", "replace")
+    yield data.decode("utf-16-le", "replace")
+    yield data[1:].decode("utf-16-le", "replace")
 
 
 def _personal_email(domain: str) -> bool:
@@ -458,10 +478,10 @@ def image_metadata_issues(root: Path) -> list[Issue]:
             continue
         reported = set()
         for segment, payload, complete in _image_texts(path, data):
-            if not complete and (segment, "bound") not in reported:
-                reported.add((segment, "bound"))
-                issues.append(Issue(path, 1, f"image metadata {segment} exceeds the "
-                                    f"{MAX_TEXT_BYTES >> 20} MiB text bound or does not decompress"))
+            if not complete:
+                issues.append(Issue(path, 1, f"image metadata {segment} exceeds the {MAX_INFLATED_BYTES >> 10} KiB "
+                                    "decompressed-text budget per image or does not decompress; the image was "
+                                    "not fully checked"))
             for category in dict.fromkeys(found for text in _decodings(payload)
                                           for found in metadata_findings(text, private)):
                 if (segment, category) not in reported:

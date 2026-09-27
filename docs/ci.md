@@ -155,8 +155,13 @@ home paths and a hostname-derived Git identity in their pixels. Two checks guard
 images. The guidance check in the mandatory `Changes and CI policy` job parses the
 text metadata of every tracked image (PNG `tEXt`, `zTXt`, `iTXt` and `eXIf`
 chunks, JPEG APP1 EXIF and XMP and COM segments, SVG source) for home paths and
-email addresses outside the reserved example domains. Pixels need template
-matching against the private strings themselves, which no tracked file may hold.
+email addresses outside the reserved example domains. Its declared limits: ICC
+profiles, JPEG APP13 (Photoshop and IPTC) and C2PA manifests, bytes after a PNG's
+`IEND` or a JPEG's end-of-image marker, and pixel data are not read; other formats
+and PNG or JPEG files that do not parse are searched whole; decompressed PNG text
+is capped at 1 MiB per image, and an image over the cap fails as not fully
+checked. Pixels need template matching against the private strings themselves,
+which no tracked file may hold.
 
 The `Image privacy` job runs on every Quality event. [`image_privacy.py`](../scripts/ci/image_privacy.py)
 lists the PNG, JPEG, GIF and WebP files the event adds or changes, using the
@@ -165,7 +170,9 @@ the merge commit; a main push's before/after) with deletions excluded. When the
 optional `NATIVE_QA_PRIVACY_TEMPLATES` repository secret is present, the job
 installs Pillow from the Ubuntu archive and runs the
 [native-QA scan](../scripts/native_qa/README.md#automated-scans) with
-`--redacted`, which prints each image's path and `clean` or `MATCH` only. A match
+`--redacted`, which prints each image's path and `clean` or `MATCH` only. Every
+frame of an animated GIF, WebP or PNG is scanned; an image with more than 64
+frames fails as unscannable rather than being sampled. A match
 fails the job and therefore `Quality gate`. The job records one of four statuses,
 and the gate prints it:
 

@@ -627,13 +627,33 @@ def privacy_templates(root: Path) -> Path | None:
                  if (base / PRIVACY_TEMPLATES_DIR).is_dir()), None)
 
 
-def changed_images(root: Path, base: str | None) -> list[str]:
-    """Raster images added or changed since the base, untracked ones included; deletions drop out."""
-    return sorted(
-        path for path in changed_paths(root, base)
-        if path.lower().endswith(PRIVACY_IMAGE_SUFFIXES)
-        and (root / path).is_file() and not (root / path).is_symlink()
-    )
+def git_paths(root: Path, *args: str) -> list[bytes]:
+    """Raw NUL-delimited paths from a Git command: never quoted, whatever their bytes."""
+    result = subprocess.run(["git", *args], cwd=root, capture_output=True, check=False)
+    return [path for path in result.stdout.split(b"\0") if path] if result.returncode == 0 else []
+
+
+def changed_images(root: Path, base: str | None) -> tuple[list[str], int]:
+    """Raster images added or changed since the base (HEAD without one), untracked ones included;
+    deletions and symlinks drop out. Also the count of names that are not printable UTF-8, which the
+    scan could neither open by a quoted name nor print safely."""
+    names = set(git_paths(root, "ls-files", "-z", "--others", "--exclude-standard"))
+    names.update(git_paths(root, "diff", "--no-ext-diff", "--name-only", "-z", base or "HEAD"))
+    suffixes = tuple(suffix.encode() for suffix in PRIVACY_IMAGE_SUFFIXES)
+    images, refused = [], 0
+    for name in sorted(names):
+        path = root / os.fsdecode(name)
+        if not name.lower().endswith(suffixes) or not path.is_file() or path.is_symlink():
+            continue
+        try:
+            text = name.decode("utf-8")
+        except UnicodeError:
+            text = ""
+        if text.isprintable() and text:
+            images.append(text)
+        else:
+            refused += 1
+    return images, refused
 
 
 def privacy_stage(root: Path, base: str | None) -> Stage:
@@ -641,9 +661,12 @@ def privacy_stage(root: Path, base: str | None) -> Stage:
     if templates is None:
         return Stage("privacy", None, note=f"skipped: no templates ({PRIVACY_TEMPLATES_ENV} or {PRIVACY_TEMPLATES_DIR}); "
                      "added or changed images were NOT scanned")
-    images = changed_images(root, base)
+    images, refused = changed_images(root, base)
     reproduce = (f'python3 scripts/native_qa/qa.py privacy scan --redacted --templates "${PRIVACY_TEMPLATES_ENV}" '
                  f"<{len(images)} added or changed images>")
+    if refused:
+        message = f"{refused} added or changed image name(s) are not printable UTF-8; rename them so they can be scanned\n"
+        return Stage("privacy", None, reproduce=reproduce, run=lambda: (1, message), note="unscannable image names")
     if not images:
         return Stage("privacy", None, reproduce=reproduce, run=lambda: (0, "no added or changed images\n"),
                      note="no added or changed images")

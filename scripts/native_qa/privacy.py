@@ -46,6 +46,7 @@ SECRET_LIMIT = 48_000  # GitHub limits a secret to 48 KB; this takes the smaller
 MAX_PACKED_TEMPLATES = 256
 MAX_TEMPLATE_SIDE = 2048
 MAX_UNPACKED_BYTES = 16 * 1024 * 1024
+MAX_SCAN_FRAMES = 64  # animation frames per image; more is refused rather than sampled
 
 
 # ---------- engines ----------
@@ -145,8 +146,11 @@ def ncc_c(binary: Path, frame: bytes, width: int, height: int, templates: dict, 
             data, tw, th = templates[name]
             (scratch / f"{index}.raw").write_bytes(data)
             argv += [str(scratch / f"{index}.raw"), str(tw), str(th)]
-        output = subprocess.run(argv, capture_output=True, text=True, check=True).stdout
-    return parse_ncc_output(output, names)
+        completed = subprocess.run(argv, capture_output=True, text=True, check=False)
+    if completed.returncode != 0:
+        # Fixed text: the argument list carries template sizes, and stderr the scratch paths.
+        raise SystemExit(f"the ncc helper failed with exit status {completed.returncode}")
+    return parse_ncc_output(completed.stdout, names)
 
 
 def match(frame: bytes, width: int, height: int, templates: dict, threshold: float = THRESHOLD,
@@ -176,11 +180,11 @@ def git_unignored(path: Path) -> str | None:
     return None if ignored.returncode == 0 else top.stdout.strip()
 
 
-def refuse_tracked(path: Path, what: str) -> None:
+def refuse_tracked(path: Path, what: str, reveal: bool = True) -> None:
     tree = git_unignored(path)
     if tree is not None:
-        raise SystemExit(f"refusing: {what} {path} is inside the work tree {tree} and not ignored; "
-                         "keep personal-string templates out of any tracked path")
+        where = f"{what} {path} is inside the work tree {tree}" if reveal else f"the {what} is inside a Git work tree"
+        raise SystemExit(f"refusing: {where} and not ignored; keep personal-string templates out of any tracked path")
 
 
 def gray(image) -> tuple[bytes, int, int]:
@@ -189,12 +193,18 @@ def gray(image) -> tuple[bytes, int, int]:
 
 
 def load_templates(directory: Path, anonymous: bool = False) -> dict:
-    """Templates keyed by file stem, or by position (`t1`, `t2`, ...) so no name reaches the output."""
+    """Templates keyed by file stem, or by position (`t1`, `t2`, ...) with no name or path in any message."""
     from PIL import Image
 
-    refuse_tracked(directory, "template directory")
+    where = "the template directory" if anonymous else str(directory)
+    refuse_tracked(directory, "template directory", reveal=not anonymous)
+    try:
+        paths = sorted(path for path in directory.iterdir() if path.suffix.lower() in IMAGE_SUFFIXES)
+    except OSError:
+        if not anonymous:
+            raise
+        raise SystemExit("the template directory cannot be read") from None
     templates = {}
-    paths = sorted(path for path in directory.iterdir() if path.suffix.lower() in IMAGE_SUFFIXES)
     for number, path in enumerate(paths, 1):
         try:
             with Image.open(path) as image:
@@ -202,9 +212,9 @@ def load_templates(directory: Path, anonymous: bool = False) -> dict:
         except (OSError, ValueError):
             if not anonymous:
                 raise
-            raise SystemExit(f"template {number} in {directory} is not a readable image") from None
+            raise SystemExit(f"template {number} in {where} is not a readable image") from None
     if not templates:
-        raise SystemExit(f"no PNG or JPEG templates in {directory}")
+        raise SystemExit(f"no PNG or JPEG templates in {where}")
     return templates
 
 
@@ -279,15 +289,24 @@ def frame_paths(paths: list[Path]) -> list[Path]:
 
 def scan(frames: list[Path], templates: dict, threshold: float = THRESHOLD, engine: str = "auto",
          jobs: int = 1) -> dict:
-    """Per frame, in order: its size, the engine and each template's result; `jobs` frames at a time."""
-    from PIL import Image
+    """Per image, in order: its size, frame count, engine and each template's best result over every
+    animation frame, with hits summed; `jobs` images at a time."""
+    from PIL import Image, ImageSequence
 
     def one(path: Path) -> tuple[str, dict]:
+        merged, hits, used = {}, 0, "python"
         with Image.open(path) as image:
-            data, width, height = gray(image)
-        results, used = match(data, width, height, templates, threshold, engine)
-        return str(path), dict(engine=used, size=[width, height], templates=results,
-                               hits=sum(result["hits"] for result in results.values()))
+            count = getattr(image, "n_frames", 1)
+            if count > MAX_SCAN_FRAMES:
+                raise SystemExit(f"cannot scan {path}: more than {MAX_SCAN_FRAMES} animation frames")
+            for index, frame in enumerate(ImageSequence.Iterator(image)):
+                data, width, height = gray(frame)
+                results, used = match(data, width, height, templates, threshold, engine)
+                hits += sum(result["hits"] for result in results.values())
+                for name, result in results.items():
+                    if name not in merged or result["best"] > merged[name]["best"]:
+                        merged[name] = dict(result, frame=index)
+        return str(path), dict(engine=used, size=[width, height], frames=count, templates=merged, hits=hits)
 
     if engine in ("auto", "c"):
         helper()  # build once, before worker threads race for the same partial file

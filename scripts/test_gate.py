@@ -412,7 +412,26 @@ class PrivacyStageTests(unittest.TestCase):
         (self.root / "docs/new.JPG").write_bytes(b"new")
         (self.root / "docs/notes.md").write_text("text")
         (self.root / "docs/link.png").symlink_to("old.png")
-        self.assertEqual(gate.changed_images(self.root, self.base), ["docs/new.JPG", "docs/old.png"])
+        self.assertEqual(gate.changed_images(self.root, self.base), (["docs/new.JPG", "docs/old.png"], 0))
+
+    def test_non_ascii_names_are_scanned_and_unprintable_ones_refused(self) -> None:
+        (self.root / "docs/ñandú frame.png").write_bytes(b"new")
+        (self.root / "docs/sub").mkdir()
+        (self.root / "docs/sub/café.webp").write_bytes(b"new")
+        self.git("add", "docs/ñandú frame.png")
+        self.assertEqual(gate.changed_images(self.root, self.base), (["docs/sub/café.webp", "docs/ñandú frame.png"], 0))
+        (self.root / "docs/line\nbreak.png").write_bytes(b"new")
+        refused = 1
+        try:
+            (self.root / os.fsdecode(b"docs/latin-\xe9.png")).write_bytes(b"new")
+            refused += 1
+        except OSError:
+            pass  # file systems such as APFS refuse names that are not UTF-8
+        self.assertEqual(gate.changed_images(self.root, self.base)[1], refused)
+        (self.root / gate.PRIVACY_TEMPLATES_DIR).mkdir(parents=True)
+        stage = self.stage()
+        self.assertEqual(stage.run(), (1, f"{refused} added or changed image name(s) are not printable UTF-8; "
+                                          "rename them so they can be scanned\n"))
 
     def test_default_directory_in_the_checkout_and_a_missing_configured_directory(self) -> None:
         (self.root / gate.PRIVACY_TEMPLATES_DIR).mkdir(parents=True)

@@ -106,6 +106,18 @@ class PackTest(unittest.TestCase):
         self.assertLessEqual(privacy.SECRET_LIMIT, 48 * 1000)
 
 
+class HelperFailureTest(unittest.TestCase):
+    def test_a_failing_helper_reports_fixed_text_without_its_arguments(self) -> None:
+        frame, width, height, template = synthetic()
+        with tempfile.TemporaryDirectory() as scratch:
+            fake = Path(scratch) / "ncc"
+            fake.write_text("#!/bin/sh\necho \"$@\" >&2\nexit 3\n")
+            fake.chmod(0o755)
+            with self.assertRaises(SystemExit) as failed:
+                privacy.ncc_c(fake, frame, width, height, {"QA-TEMPLATE": template}, privacy.THRESHOLD)
+        self.assertEqual(str(failed.exception), "the ncc helper failed with exit status 3")
+
+
 class TrackedPathTest(unittest.TestCase):
     def test_templates_inside_the_work_tree_must_be_ignored(self) -> None:
         if not (REPO / ".git").exists():
@@ -175,6 +187,47 @@ class ScanTest(unittest.TestCase):
             with self.assertRaises(SystemExit) as refused:
                 privacy.load_templates(root / "tpl", anonymous=True)
             self.assertNotIn("QA-TEMPLATE", str(refused.exception))
+
+    def test_every_animation_frame_is_scanned_up_to_the_cap(self) -> None:
+        from PIL import Image
+
+        frame, width, height, (patch, tw, th) = synthetic()
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            flat = Image.new("L", (width, height), 40)
+            leaky = Image.frombytes("L", (width, height), frame)
+            flat.save(root / "late.gif", save_all=True, append_images=[leaky], duration=100, loop=0)
+            templates = {"t1": (patch, tw, th)}
+            report = privacy.scan([root / "late.gif"], templates, engine="python")[str(root / "late.gif")]
+            self.assertEqual((report["frames"], report["hits"], report["templates"]["t1"]["frame"]), (2, 1, 1))
+            with mock.patch.object(privacy, "MAX_SCAN_FRAMES", 1), self.assertRaises(SystemExit) as refused:
+                privacy.scan([root / "late.gif"], templates, engine="python")
+            self.assertEqual(str(refused.exception), f"cannot scan {root / 'late.gif'}: more than 1 animation frames")
+
+    def test_anonymous_loading_never_names_the_directory(self) -> None:
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch) / "QA-TEMPLATE-dir"
+            with self.assertRaises(SystemExit) as missing:
+                privacy.load_templates(root, anonymous=True)
+            root.mkdir()
+            with self.assertRaises(SystemExit) as empty:
+                privacy.load_templates(root, anonymous=True)
+            (root / "a.png").write_bytes(b"not an image")
+            with self.assertRaises(SystemExit) as unreadable:
+                privacy.load_templates(root, anonymous=True)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            (root / "a.png").unlink()
+            Image.new("L", (4, 4), 9).save(root / "a.png")
+            with self.assertRaises(SystemExit) as tracked:
+                privacy.load_templates(root, anonymous=True)
+        messages = [str(error.exception) for error in (missing, empty, unreadable, tracked)]
+        self.assertEqual(messages[:3], ["the template directory cannot be read",
+                                        "no PNG or JPEG templates in the template directory",
+                                        "template 1 in the template directory is not a readable image"])
+        self.assertTrue(messages[3].startswith("refusing: the template directory is inside a Git work tree"))
+        self.assertFalse(any("QA-TEMPLATE" in message or scratch in message for message in messages))
 
     def test_pack_refuses_a_set_above_the_secret_limit(self) -> None:
         from PIL import Image

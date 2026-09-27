@@ -122,8 +122,9 @@ def privacy_scan(args) -> int:
         return 1 if matched else 0
     for frame, result in report.items():
         best = max(result["templates"].items(), key=lambda item: item[1]["best"])
+        where = f" in frame {best[1]['frame']}" if result["frames"] > 1 else ""
         print(f"{Path(frame).name}: {result['hits']} hit(s) >= {args.threshold}; best {best[0]} "
-              f"{best[1]['best']:.2f} at {best[1]['at']} ({result['engine']})")
+              f"{best[1]['best']:.2f} at {best[1]['at']}{where} ({result['engine']})")
         for name, found in result["templates"].items():
             for x, y, score in found["hit_list"]:
                 print(f"    HIT {name} at ({x},{y}) ncc {score:+.3f}")

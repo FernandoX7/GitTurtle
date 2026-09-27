@@ -320,11 +320,23 @@ class ImageMetadataTests(unittest.TestCase):
                 "tracked.png: image metadata PNG tEXt holds an absolute home path; strip or rewrite that metadata",
             ])
 
-    def test_a_decompression_bomb_is_bounded_and_reported(self):
-        with mock.patch.object(guidance, "MAX_TEXT_BYTES", 1024):
-            self.image("bomb.png", png(chunk(b"zTXt", b"Comment\0\0" + zlib.compress(bytes(4096)))))
-            self.assertEqual(self.messages(), ["bomb.png: image metadata PNG zTXt exceeds the 0 MiB text bound "
-                                               "or does not decompress"])
+    def test_decompressed_text_shares_one_budget_per_image_and_stops_the_parse(self):
+        stream = zlib.compress(bytes(600))
+        later = chunk(b"tEXt", b"Source\0/home/alice/")
+        with mock.patch.object(guidance, "MAX_INFLATED_BYTES", 1024):
+            self.image("many.png", png(*[chunk(b"zTXt", b"Comment\0\0" + stream)] * 3, later))
+            self.image("corrupt.png", png(chunk(b"iTXt", b"Comment\0\1\0\0\0not zlib"), later))
+            self.image("fits.png", png(chunk(b"zTXt", b"Comment\0\0" + stream), later))
+            texts = guidance._image_texts(Path("many.png"), (self.root / "many.png").read_bytes())
+            self.assertIs(iter(texts), texts)  # lazy: nothing is parsed before it is consumed
+            found = sorted(self.messages())
+        incomplete = ("image metadata {} exceeds the 1 KiB decompressed-text budget per image or does not "
+                      "decompress; the image was not fully checked")
+        self.assertEqual(found, [
+            "corrupt.png: " + incomplete.format("PNG iTXt"),
+            "fits.png: image metadata PNG tEXt holds an absolute home path; strip or rewrite that metadata",
+            "many.png: " + incomplete.format("PNG zTXt"),
+        ])
 
 
 if __name__ == "__main__":
