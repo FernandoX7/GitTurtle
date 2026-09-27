@@ -29,7 +29,7 @@ Start Claude Code at the repository root so `CLAUDE.md` and the shared settings 
 
 ## Gates and hooks
 
-The [`gitturtle-gates`](../../.claude/skills/gitturtle-gates/SKILL.md) skill describes the fast and full gates: their stages, strict mode, known failures and the red-gate report.
+The [`gitturtle-gates`](../../.claude/skills/gitturtle-gates/SKILL.md) skill describes the fast and full gates: their stages, strict mode, Git isolation and the red-gate report.
 
 Hooks live in `.claude/settings.json` so they also fire in headless sessions. The Stop hook only builds when the Cargo target directory is already warm and gives up after two attempts in a session, so it never turns a turn end into a cold build. `stop_gate.py` can be skipped for a session with `GITTURTLE_SKIP_STOP_GATE=1`; `protect_paths.py` only blocks when the controller sets `GITTURTLE_LOOP=1`, and in that mode it also protects the run's active task queue named by `GITTURTLE_TASKS_PATH` (set by the controller for implementer sessions), whichever file the run uses. The deny list blocks force pushes, hook bypasses and blind snapshot acceptance; everything else follows your permission mode.
 

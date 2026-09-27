@@ -1,6 +1,6 @@
 ---
 name: gitturtle-gates
-description: Run and read GitTurtle's tiered quality gate (python3 scripts/gate.py fast|full) for Rust changes, including how to interpret .local/gate/report.md, known-failure allowlists and strict mode. Use before finishing any Rust change or when a gate is red.
+description: Run and read GitTurtle's tiered quality gate (python3 scripts/gate.py fast|full) for Rust changes, including how to interpret .local/gate/report.md, its Git isolation and strict mode. Use before finishing any Rust change or when a gate is red.
 ---
 
 # GitTurtle gates
@@ -11,6 +11,6 @@ Without `--strict` a missing optional tool skips its stage with a `warn:` line a
 
 Exit codes: 0 green, 1 a stage failed, 3 a required tool is missing in strict mode, 4 usage error. On success the script prints one line; on failure it prints a compact report and writes `.local/gate/report.md` with the failing stage, the command, the exit code, the first error as `file:line:col`, the narrowest command that reproduces it, the last twenty lines of output, and a `Tests removed` count from the diff.
 
-Read the report before touching code and reproduce with the `Next command` it names. Fix the root cause. Thresholds, `.config/nextest.toml`, `deny.toml`, snapshot baselines and the gate script itself are policy files: a change to them is a separately reviewed proposal, never part of making an attempt pass. A test that fails only on this host goes in `.local/gate/known-failures.txt` (or `--known-failures FILE`), one full test name per line; a test stage whose only failures are listed passes with a `warn:` and the summary reports them. Nothing else excuses a red test.
+Read the report before touching code and reproduce with the `Next command` it names. Fix the root cause. Thresholds, `.config/nextest.toml`, `deny.toml`, snapshot baselines and the gate script itself are policy files: a change to them is a separately reviewed proposal, never part of making an attempt pass. Nothing excuses a red test; the gate has no allowlist of known failures. Every stage that runs tests (tests, GPUI iterations, doctests, mutation testing, coverage) gets CI's Git isolation: `GIT_CONFIG_NOSYSTEM=1`, an empty temporary `GIT_CONFIG_GLOBAL`, and no inherited `GIT_ASKPASS`, `SSH_ASKPASS`, `SSH_ASKPASS_REQUIRE`, `GIT_CONFIG_PARAMETERS` or `GIT_CONFIG_COUNT`; the report's commands carry the same `env -u … GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=$(mktemp)` prefix. A test that passes there but fails in a plain `cargo test` depends on the caller's environment: isolate it in the test itself (clear the variable on its `Command`, give Git an empty configuration), as the askpass fixture in `crates/git-core/src/work/authentication.rs` does.
 
 Reuse the warm build: keep `CARGO_TARGET_DIR` pointing at the shared target directory when working from a worktree, and do not rerun a clean gate on unchanged code. Report the exact command and its result, including any `warn:` lines about skipped stages.
