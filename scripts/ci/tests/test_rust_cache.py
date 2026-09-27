@@ -78,9 +78,13 @@ class CacheFixture(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             cache.source_identity(self.root)
 
-    def prepared(self):
-        with patch.dict(os.environ, {"CACHE_PROFILE": "debug", "RUNNER_OS": "Linux"}), \
-                patch.object(cache, "native_identity", return_value="native"):
+    def prepared(self, vendor_reuse="true"):
+        settings = {"CACHE_PROFILE": "debug", "RUNNER_OS": "Linux"}
+        if vendor_reuse is not None:
+            settings["CACHE_VENDOR_REUSE"] = vendor_reuse
+        with patch.dict(os.environ, settings), patch.object(cache, "native_identity", return_value="native"):
+            if vendor_reuse is None:
+                os.environ.pop("CACHE_VENDOR_REUSE", None)
             cache.prepare()
         lines = Path(self.env["GITHUB_ENV"]).read_text().splitlines()
         Path(self.env["GITHUB_ENV"]).write_text("")
@@ -143,6 +147,55 @@ class CacheFixture(unittest.TestCase):
                 self.assertEqual(options["workspaces"], "crates -> ../target")
                 self.assertEqual(options["cache-workspace-crates"], "false")
                 self.assertEqual(options["prefix-key"], "gitturtle-rust-v2")
+
+    def test_vendor_reuse_is_opt_in_and_leaves_checkout_times_by_default(self):
+        self.init_git()
+        source = self.root / "vendor/tool/src/lib.rs"
+        checkout = source.stat().st_mtime_ns
+        default = self.prepared(vendor_reuse=None)
+        self.assertEqual(default["CI_RUST_CACHE_VENDOR_MTIMES"], "disabled")
+        self.assertEqual(self.prepared(vendor_reuse="false")["CI_RUST_CACHE_VENDOR_MTIMES"], "disabled")
+        self.assertEqual(source.stat().st_mtime_ns, checkout)
+        # The setting changes only source times, never the restored payload.
+        opted = self.prepared(vendor_reuse="true")
+        self.assertEqual(opted["CI_RUST_CACHE_KEY"], default["CI_RUST_CACHE_KEY"])
+        self.assertEqual(source.stat().st_mtime_ns, cache.VENDOR_MTIME_NS)
+        with self.assertRaises(ValueError):
+            self.prepared(vendor_reuse="yes")
+
+    def test_only_quality_opts_into_vendor_reuse_and_release_builds_from_source(self):
+        def setup_steps(workflow):
+            text = (ROOT / ".github/workflows" / workflow).read_text()
+            steps = [part.split("\n      - ", 1)[0] for part in text.split("uses: ./.github/actions/setup-rust")[1:]]
+            return ([step for step in steps if "phase: finish" not in step],
+                    [step for step in steps if "phase: finish" in step])
+
+        quality_setup, quality_finish = setup_steps("quality.yml")
+        self.assertEqual(len(quality_setup), 2)
+        self.assertTrue(all("vendor-reuse: true" in step for step in quality_setup))
+        self.assertFalse(any("vendor-reuse" in step for step in quality_finish))
+        release_setup, _ = setup_steps("release.yml")
+        self.assertTrue(release_setup)
+        for workflow in sorted((ROOT / ".github/workflows").glob("*.yml")):
+            if workflow.name != "quality.yml":
+                with self.subTest(workflow=workflow.name):
+                    self.assertNotIn("vendor-reuse", workflow.read_text())
+
+    def test_action_rewinds_only_in_prepare_before_the_restore_step(self):
+        text = (ROOT / ".github/actions/setup-rust/action.yml").read_text()
+        inputs, steps = text.split("\nruns:\n", 1)
+        self.assertIn('  vendor-reuse:\n', inputs)
+        self.assertIn('default: "false"', inputs.split("  vendor-reuse:\n", 1)[1].split("\n  ", 2)[1])
+        steps = steps.split("\n    - name: ")[1:]
+        prepare = next(index for index, step in enumerate(steps) if "cache.py prepare" in step)
+        restore = next(index for index, step in enumerate(steps) if "id: restore" in step)
+        validate = next(index for index, step in enumerate(steps) if "CACHE_VENDOR_REUSE" in step)
+        self.assertLess(validate, prepare)
+        self.assertLess(prepare, restore)
+        for index in (prepare, restore):
+            self.assertIn("if: inputs.phase == 'setup'", steps[index])
+        self.assertIn("CACHE_VENDOR_REUSE: ${{ inputs.vendor-reuse }}", steps[prepare])
+        self.assertEqual(sum("CACHE_VENDOR_REUSE" in step for step in steps), 2)
 
     def test_native_versions_are_part_of_compatibility(self):
         for platform in ("Linux", "macOS"):

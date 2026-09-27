@@ -718,7 +718,8 @@ compatibility is unchanged.
 
 Kept outputs alone would still rebuild. Cargo treats a path package as dirty when
 any source listed in its dep-info is newer than that dep-info, and checkout gives
-every file the current time. Setup therefore rewinds every tracked file under
+every file the current time. Quality's two compilation jobs therefore pass the
+action's `vendor-reuse: true` input, and setup rewinds every tracked file under
 `vendor/`, and each directory up to `vendor/` (a build script may watch a
 directory), to one fixed time: Cargo's own deterministic registry timestamp,
 2006-07-24. It runs in the prepare step, after the key is computed and before the
@@ -732,6 +733,15 @@ restore record then shows `vendor_mtimes: refused` and the vendored packages
 rebuild. Paths under Cargo's home, such as the registry icon directory that
 `gpui-component`'s build script watches, are skipped by Cargo's own staleness
 check and need no rewinding.
+
+Vendored reuse is Quality-only. The input defaults to false and the release
+workflow keeps that default, so its vendored sources keep their checkout times:
+any vendored output restored from a Quality-seeded entry is dirty, and Cargo
+compiles the GPUI/Mermaid patches from the tagged checkout, as it did before
+vendored outputs were cached. The restore record then shows
+`vendor_mtimes: disabled`. The finish helper exempts vendored packages from
+cleanup and eviction regardless of the input, because only Quality's successful
+pushes to `main` register a save.
 
 [Upstream key construction](https://github.com/Swatinem/rust-cache/blob/6323deb102c322ba6fcbdcafc7e3dddab59af2b6/src/config.ts)
 separates OS/architecture, installed Rust compiler release/host/commit identities,
@@ -767,7 +777,8 @@ Cargo cache storage is isolated under the fresh runner's temporary directory.
 Only its `registry` and `git` subtrees and the workspace `target` are eligible;
 Cargo binaries, configuration and credential files are excluded. Checkout keeps
 `persist-credentials: false`, and existing Git configuration isolation and Linux
-native prerequisites remain in place. No cache is a trusted release input.
+native prerequisites remain in place. No cache is a trusted release input; release
+builds do not opt into [vendored reuse](#vendored-path-packages).
 
 Setup always restores with saving disabled. Only a successful **push to
 `FernandoX7/GitTurtle`'s `main`** can register the finish save; PRs, fork PRs and

@@ -152,6 +152,7 @@ jobs:
         uses: ./.github/actions/setup-rust
         with:
           profile: debug
+          vendor-reuse: true
       # These phases share one cold debug build. Cargo's default workspace
       # test selection includes unit/integration tests and doctests.
       - name: Locked workspace tests and doctests
@@ -208,6 +209,7 @@ jobs:
         uses: ./.github/actions/setup-rust
         with:
           profile: release
+          vendor-reuse: true
       - name: Install declared package target
         env:
           PACKAGE_TARGET: ${{ matrix.target }}

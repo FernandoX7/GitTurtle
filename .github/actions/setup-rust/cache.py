@@ -451,6 +451,9 @@ def prepare():
     profile = os.environ["CACHE_PROFILE"]
     if profile not in PROFILES:
         raise ValueError("unsupported cache profile")
+    vendor_reuse = os.environ.get("CACHE_VENDOR_REUSE", "false")
+    if vendor_reuse not in {"true", "false"}:
+        raise ValueError("unsupported vendor reuse setting")
     root = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
     temp = Path(os.environ["RUNNER_TEMP"]).resolve()
     cargo = temp / "gitturtle-cargo"
@@ -460,12 +463,18 @@ def prepare():
     inputs = keyed_inputs(root)
     identity = digest(json.dumps({"profile": profile, "source": source_identity(root, inputs),
                                  "native": native_identity(os.environ["RUNNER_OS"])}, sort_keys=True).encode())
-    try:
-        vendor_mtimes = str(normalize_vendor_mtimes(root, inputs))
-    except (OSError, ValueError):
-        # A refusal rewinds nothing; a later I/O error may leave some sources at
-        # checkout time. Either way those packages rebuild: slower, never stale.
-        vendor_mtimes = "refused"
+    if vendor_reuse == "false":
+        # Release builds must not link vendored objects from an earlier run:
+        # checkout times leave any restored vendored output dirty, so Cargo
+        # compiles those crates from this checkout.
+        vendor_mtimes = "disabled"
+    else:
+        try:
+            vendor_mtimes = str(normalize_vendor_mtimes(root, inputs))
+        except (OSError, ValueError):
+            # A refusal rewinds nothing; a later I/O error may leave some sources
+            # at checkout time. Either way those packages rebuild: slower, never stale.
+            vendor_mtimes = "refused"
     output_file("GITHUB_ENV", {"CI_RUST_CACHE_KEY": f"{profile}-{identity}",
                               "CI_RUST_CACHE_PROFILE": profile,
                               "CI_RUST_CACHE_VENDOR_MTIMES": vendor_mtimes,

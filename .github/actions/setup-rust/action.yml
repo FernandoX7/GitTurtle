@@ -10,6 +10,9 @@ inputs:
   target:
     description: Explicit Cargo `--target` triple used by this job's compilation, if any
     default: ""
+  vendor-reuse:
+    description: true rewinds vendor/ source times so restored vendored outputs stay fresh (Quality only); release builds keep the default and compile vendored crates from source
+    default: "false"
 outputs:
   cache-hit:
     description: True only for an exact restored entry; false also includes fallback or unavailable cache
@@ -23,9 +26,11 @@ runs:
         CACHE_PHASE: ${{ inputs.phase }}
         CACHE_PROFILE: ${{ inputs.profile }}
         CACHE_TARGET: ${{ inputs.target }}
+        CACHE_VENDOR_REUSE: ${{ inputs.vendor-reuse }}
       run: |
         set -euo pipefail
         case "$CACHE_PHASE" in setup|finish) ;; *) exit 2 ;; esac
+        case "$CACHE_VENDOR_REUSE" in true|false) ;; *) exit 2 ;; esac
         case "$CACHE_PROFILE" in debug|release|debug-release) ;; *) exit 2 ;; esac
         case "$CACHE_TARGET" in "") ;; [!A-Za-z0-9]*|*[!A-Za-z0-9_.-]*) exit 2 ;; esac
     - name: Install Linux native build dependencies
@@ -53,6 +58,7 @@ runs:
       shell: bash
       env:
         CACHE_PROFILE: ${{ inputs.profile }}
+        CACHE_VENDOR_REUSE: ${{ inputs.vendor-reuse }}
       run: python3 .github/actions/setup-rust/cache.py prepare
     - name: Start cache restore observation
       if: inputs.phase == 'setup'
