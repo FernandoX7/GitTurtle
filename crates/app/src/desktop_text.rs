@@ -152,9 +152,10 @@ fn code_font_faces() -> Vec<std::borrow::Cow<'static, [u8]>> {
 }
 
 /// Where code text comes from when Settings asks for the desktop's font.
+#[cfg(target_os = "linux")]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) enum SystemCodeFont {
-    /// The setting is off, or the platform is not Linux.
+    /// The setting is off.
     #[default]
     Off,
     /// Being looked up; code keeps its current font meanwhile.
@@ -187,28 +188,24 @@ impl CodeFont {
     }
 }
 
-/// The family code text is drawn in.
-pub(super) fn code_font_family(cx: &gpui_kit::App) -> gpui_kit::SharedString {
-    #[cfg(target_os = "linux")]
-    if let Some(CodeFont {
-        state: SystemCodeFont::Loaded(family),
-        ..
-    }) = cx.try_global::<CodeFont>()
-    {
-        return family.clone();
+/// The family code text is drawn in. Other platforms keep the toolkit's.
+#[cfg(target_os = "linux")]
+fn code_font_family(cx: &gpui_kit::App) -> gpui_kit::SharedString {
+    match cx.try_global::<CodeFont>() {
+        Some(CodeFont {
+            state: SystemCodeFont::Loaded(family),
+            ..
+        }) => family.clone(),
+        _ => crate::mono().into(),
     }
-    let _ = cx;
-    crate::mono().into()
 }
 
 /// What Settings shows beside its switch.
+#[cfg(target_os = "linux")]
 pub(super) fn system_code_font(cx: &gpui_kit::App) -> SystemCodeFont {
-    #[cfg(target_os = "linux")]
-    if let Some(font) = cx.try_global::<CodeFont>() {
-        return font.state.clone();
-    }
-    let _ = cx;
-    SystemCodeFont::Off
+    cx.try_global::<CodeFont>()
+        .map(|font| font.state.clone())
+        .unwrap_or_default()
 }
 
 /// Settings' switch. Off restores the bundled font at once. On looks the
@@ -233,13 +230,11 @@ pub(super) fn set_system_code_font(enabled: bool, cx: &mut gpui_kit::App) {
         cx.refresh_windows();
     }
 }
-#[cfg(not(target_os = "linux"))]
-pub(super) fn set_system_code_font(_enabled: bool, _cx: &mut gpui_kit::App) {}
-
 /// Puts [`code_font_family`] on the toolkit theme and re-derives the kit's
 /// base theme and text defaults from it. A theme change keeps the family,
 /// since no theme config names one. Returns whether the family changed.
-pub(super) fn sync_code_font(cx: &mut gpui_kit::App) -> bool {
+#[cfg(target_os = "linux")]
+fn sync_code_font(cx: &mut gpui_kit::App) -> bool {
     use gpui_kit::component::Theme;
     let family = code_font_family(cx);
     if Theme::global(cx).mono_font_family == family {
@@ -1239,6 +1234,8 @@ mod tests {
         };
         assert_eq!(kde.resolve(true).rendering, Subpixel);
         assert_eq!(Observed::default().resolve(true).rendering, Grayscale);
+        // Resolution leaves the code font to the worker's own lookup.
+        assert_eq!(Observed::default().resolve(true).code_font, None);
     }
 
     #[test]
