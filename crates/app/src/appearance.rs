@@ -2,11 +2,11 @@
 
 use gpui_kit::component::button::{ButtonCustomVariant, ButtonVariant};
 use gpui_kit::component::{Colorize, Theme, ThemeMode};
-use gpui_kit::{App, BoxShadow, Global, Pixels, Rgba, Window, px, rgb};
+use gpui_kit::{App, BoxShadow, FontFeatures, Global, Pixels, Rgba, Styled, Window, px, rgb};
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 use std::sync::{
-    Arc,
+    Arc, LazyLock,
     atomic::{AtomicU8, AtomicU32, Ordering},
 };
 
@@ -135,6 +135,26 @@ pub fn code_text() -> Pixels {
 pub fn code_scale() -> f32 {
     f32::from(code_text()) / f32::from(DEFAULT_CODE_TEXT_SIZE)
 }
+
+/// The font features of code text. Code shows the characters as typed, so a
+/// ligature font such as JetBrains Mono never joins `--`, `->` or `!=` into one
+/// glyph. Fonts put programming ligatures in contextual alternates (`calt`,
+/// as JetBrains Mono and Fira Code do) or in standard ligatures (`liga`), so
+/// both are off.
+pub fn code_font_features() -> FontFeatures {
+    static FEATURES: LazyLock<FontFeatures> =
+        LazyLock::new(|| FontFeatures(Arc::new(vec![("calt".into(), 0), ("liga".into(), 0)])));
+    FEATURES.clone()
+}
+
+/// Code text: the code family with [`code_font_features`].
+pub trait CodeFont: Styled + Sized {
+    fn code_font(self, cx: &App) -> Self {
+        self.font_family(Theme::global(cx).mono_font_family.clone())
+            .font_features(code_font_features())
+    }
+}
+impl<T: Styled> CodeFont for T {}
 
 /// Store the text sizes and project them onto the toolkit theme and the
 /// window's rem geometry, leaving invalidation to the caller.
@@ -1873,5 +1893,41 @@ mod tests {
                 built_in(ThemeChoice::Midnight)
             );
         }
+    }
+
+    /// Code text draws what was typed. An element under [`CodeFont`] hands its
+    /// descendants the font that the kit's editor and the diff gutter shape
+    /// with (`window.text_style().font()`): the code family, ligatures off.
+    #[gpui::test]
+    fn code_text_shapes_the_code_family_without_ligatures(cx: &mut gpui::TestAppContext) {
+        use gpui_kit::{Context, Font, IntoElement, ParentElement, Render, canvas, div};
+        use std::{cell::RefCell, rc::Rc};
+
+        struct Probe(Rc<RefCell<Option<Font>>>);
+        impl Render for Probe {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let seen = self.0.clone();
+                div().code_font(cx).child(
+                    canvas(
+                        move |_, window, _| *seen.borrow_mut() = Some(window.text_style().font()),
+                        |_, _, _, _| {},
+                    )
+                    .w(px(1.))
+                    .h(px(1.)),
+                )
+            }
+        }
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            Theme::global_mut(cx).mono_font_family = "Desktop Mono".into();
+        });
+        let seen = Rc::new(RefCell::new(None));
+        let probe = Probe(seen.clone());
+        let (_, cx) = cx.add_window_view(move |_, _| probe);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let font = seen.borrow().clone().expect("the probe painted");
+        assert_eq!(font.family, "Desktop Mono");
+        assert_eq!(font.features.is_calt_enabled(), Some(false));
+        assert!(font.features.tag_value_list().contains(&("liga".into(), 0)));
     }
 }
