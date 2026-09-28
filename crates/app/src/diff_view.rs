@@ -3,7 +3,7 @@
 //! include presentation-only numbers. No Git reads happen in this component.
 
 use crate::{
-    appearance::palette,
+    appearance::{CodeFont, palette},
     partial_view::{PartialActions, PartialRow},
     text::PatchPresentation,
 };
@@ -14,7 +14,7 @@ use gpui_kit::{
     InteractiveElement, IntoElement, ParentElement, Pixels, Point, Render, SharedString, Styled,
     Subscription, TextAlign, TextRun, Window, canvas,
     component::{
-        Disableable, Sizable, Theme,
+        Disableable, Sizable,
         button::{Button, ButtonVariants},
         checkbox::Checkbox,
         input::EditorState,
@@ -252,7 +252,7 @@ impl Render for DiffView {
             .relative()
             .overflow_hidden()
             .pl(px(width))
-            .font_family(Theme::global(cx).mono_font_family.clone())
+            .code_font(cx)
             .text_size(crate::appearance::code_text())
             // Paint the editor first. It records its current scrolled bounds
             // during paint; the later gutter canvas reads those same-frame

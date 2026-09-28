@@ -1,6 +1,6 @@
 use crate::*;
 use appearance::custom::{CustomTheme, ThemeSelection};
-use appearance::{Density, ThemeChoice};
+use appearance::{CodeFont, Density, ThemeChoice};
 use columns::{ColumnId, ColumnSettings};
 use gitturtle_core::WriteCommand;
 use gpui_kit::base::{Scrollbar, ScrollbarMode};
@@ -648,12 +648,7 @@ impl GitTurtle {
                     .bg(rgb(p.canvas))
                     .text_color(rgb(p.text))
                     .when(code, |el| {
-                        el.font_family(
-                            gpui_kit::component::Theme::global(cx)
-                                .mono_font_family
-                                .clone(),
-                        )
-                        .text_size(appearance::code_text())
+                        el.code_font(cx).text_size(appearance::code_text())
                     })
                     .when(!code, |el| el.text_size(appearance::ui_text(12.)))
                     .child(if code {
