@@ -240,6 +240,11 @@ code text, which uses the embedded DejaVu Sans Mono unless **Use the desktop's
 monospace font** is turned on in Settings, which follows Omarchy's font
 (JetBrainsMono Nerd Font by default).
 
+Quality CI also builds the workspace and runs its tests in an `archlinux:base-devel`
+container against current Arch packages; see
+[Arch Linux container job](ci.md#arch-linux-container-job). That job has no display,
+so it does not replace the desktop check above.
+
 On Hyprland:
 
 - The compositor supplies server-side decorations and draws no title bar, so

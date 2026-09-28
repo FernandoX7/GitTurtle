@@ -60,7 +60,8 @@ For pull requests:
 - Rust, manifests, the lockfile/toolchain, native assets, vendored inputs, build or
   package scripts, workflow/repository-policy changes and unrecognized paths run
   **all** lanes. Rust keeps formatting, locked workspace tests and doctests,
-  strict all-target Clippy, release compilation and both platform package checks.
+  strict all-target Clippy, release compilation, both platform package checks
+  and the [Arch Linux container tests](#arch-linux-container-job).
 
 Routing uses complete local Git diffs after `checkout` fetches history, avoiding
 GitHub path-filter/API changed-file limits. PR classification checks the observed
@@ -87,18 +88,19 @@ by GitHub's existing repository policy; C1 must observe a real approved fork run
 ### Stable gate and compatibility
 
 `Quality gate` runs with `always()` after classification, formatting, the debug
-and release platform matrices, development tooling, the image privacy scan and the
-Website call. It requires successful classification and success for each required
-lane and for the image privacy job, whose recorded status it prints. A skipped lane is accepted only when the recorded classification says it is
+and release platform matrices, the Arch Linux container job, development tooling,
+the image privacy scan and the Website call. It requires successful classification
+and success for each required lane and for the image privacy job, whose recorded status it prints. A skipped lane is accepted only when the recorded classification says it is
 unneeded. Failures, cancellations, unexpected skips, absent jobs, mismatched
 outputs or unknown classification versions fail. Each matrix keeps
 `fail-fast: false` so one platform failure does not discard the other platform's
 diagnostics. A checkout/evaluator failure also leaves the gate unsuccessful.
 
-The actual platform work is named `Rust tests and Clippy · <platform>` and
-`Rust release · <platform>`. `Rust formatting` checks the workspace once on Ubuntu.
-The aggregate cannot pass a product change unless both platform matrices,
-formatting and other required lanes succeed; documentation changes may pass after
+The actual platform work is named `Rust tests and Clippy · <platform>`,
+`Rust release · <platform>` and `Rust tests · archlinux`. `Rust formatting` checks
+the workspace once on Ubuntu. The aggregate cannot pass a product change unless
+both platform matrices, the Arch Linux job, formatting and other required lanes
+succeed; documentation changes may pass after
 justified skips. This avoids GitHub's [skipped-job success behavior](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks)
 silently bypassing a failed dependency.
 
@@ -228,6 +230,10 @@ After classification, the selected jobs have no build dependencies on each other
   checks continue; other collection or verification errors fail the job. See the
   [artifact runbook](ci-artifacts.md) for exact gates and evidence requirements.
   These checks do not establish an interactive native desktop or notarized build.
+- `Rust tests · archlinux` runs the same nextest and doctest commands as the debug
+  jobs inside a digest-pinned Arch Linux container, against that day's Arch
+  packages and without a Rust cache. See
+  [Arch Linux container job](#arch-linux-container-job).
 - Only macOS optimized compilation and packaging use the standard ARM64 macOS 26
   runner. Tests, doctests, strict Clippy and development tooling remain on macOS 15.
   The shared `scripts/release/workflow.py select-xcode` command requires installed
@@ -248,9 +254,9 @@ mutable shared target directory is introduced. Debug/release use separate fresh
 runners and matching setup/finish profiles; a finish cannot remove another lane's
 inputs. Package/artifact consumers must precede finish because its successful-main
 cleanup can remove the application executable. The final gate requires the
-formatter and **both** platform matrices, in addition to tooling/Website according
-to the recorded plan. A successful debug matrix cannot cover a failed, cancelled,
-missing or unexpectedly skipped release matrix. Removing the transitional mirrors
+formatter, **both** platform matrices and the Arch Linux job, in addition to
+tooling/Website according to the recorded plan. A successful debug matrix cannot
+cover a failed, cancelled, missing or unexpectedly skipped release matrix. Removing the transitional mirrors
 does not change that dependency or result contract.
 
 ### Why two compilation lanes per platform
@@ -379,8 +385,10 @@ log before calling the sets different. The dated
 before/after durations and the test-list comparison.
 
 Each Rust matrix has two fixed OS entries, `fail-fast: false`, `max-parallel: 2`
-and a 45-minute job timeout. Thus at most four compilation runners are requested
-per Quality run, plus the independent inexpensive checks. Formatting is bounded
+and a 45-minute job timeout. With the single
+[Arch Linux job](#arch-linux-container-job), also bounded at 45 minutes, at most
+five compilation runners are requested per Quality run, plus the independent
+inexpensive checks. Formatting is bounded
 at five minutes, policy and the final gate at five, and tooling at ten.
 GitHub may queue those jobs under the repository's existing concurrency
 limits; matrix bounds do not promise simultaneous starts. See the documented
@@ -388,6 +396,117 @@ limits; matrix bounds do not promise simultaneous starts. See the documented
 Failed commands still retain their exit code, sanitized logs and available Cargo
 build timing reports in the three-day diagnostics artifacts. A cancelled runner
 may stop before artifact upload; do not claim a missing report was retained.
+
+### Arch Linux container job
+
+`Rust tests · archlinux` builds the workspace and runs its tests on Arch Linux, a
+rolling release that picks up new compilers, glibc and native libraries before
+Ubuntu does. It runs on `ubuntu-24.04` inside the official
+`archlinux:base-devel` image whenever the classification requests the product lane,
+and the final gate requires it like the other Rust jobs. It runs the debug jobs'
+commands unchanged: the [pinned cargo-nextest](#test-execution-with-nextest) with
+`cargo nextest run --locked --workspace -P ci --no-fail-fast --timings`, then
+`cargo test --locked --workspace --timings -- "(line "`, after the same
+`git pack-refs --all --no-prune`. Clippy, release compilation and packaging stay on
+the Ubuntu and macOS jobs, and no display or desktop session is involved.
+
+Steps, in order:
+
+1. As root, first check that the image's pacman requires trusted package signatures
+   (`pacman-conf SigLevel` includes `PackageRequired` and none of `PackageNever`,
+   `PackageOptional` or `PackageTrustAll`, globally and in any repository that sets its
+   own level), because package install scripts run as root. Then `pacman -Sy
+   archlinux-keyring` and `pacman -Su` with the build and
+   test packages: `base-devel clang cmake git openssh python rustup ca-certificates`
+   plus the GPUI native libraries (`fontconfig freetype2 wayland libxkbcommon
+   libxkbcommon-x11 libx11 libxcb vulkan-icd-loader vulkan-headers openssl zstd`),
+   the Arch counterparts of the Ubuntu jobs' packages. It checks their `pkg-config`
+   modules and prints the installed versions of the main packages. Git must be installed
+   before checkout, which otherwise downloads a tarball without `.git`.
+2. As root, create a `builder` account with the UID that owns `RUNNER_TEMP` (the
+   hosted runner's account, so the account can write `HOME` and the step command
+   files), and check that it holds no effective capabilities. Every later `run`
+   step executes as `builder` through the job's default shell (`setpriv --reuid
+   --regid --init-groups`); only the package, account and ownership steps name the
+   root shell. The container starts as root, and root ignores file permissions:
+   the preference and theme export tests that expect a write into a read-only
+   folder to be refused would fail, and the discard test that needs an unreadable
+   file skips itself for root.
+3. Point `GIT_CONFIG_GLOBAL` at a fresh file under `RUNNER_TEMP`, as the other
+   Rust jobs do (with `GIT_CONFIG_NOSYSTEM=1`), and keep `RUSTUP_HOME` and
+   `CARGO_HOME` under `RUNNER_TEMP`.
+4. Check out with `persist-credentials: false`, then `chown -R builder` the
+   workspace. Checkout runs as root and adds only the workspace path as
+   `safe.directory`, in that isolated file; after the `chown`, `builder` owns the
+   repository, so its own Git commands and `crates/app/build.rs` pass Git's
+   ownership check without the exception.
+5. `rustup toolchain install` reads `rust-toolchain.toml`, so the job builds with the
+   same Rust 1.98.0 as the other runners.
+
+The job keeps the workflow's `contents: read` permission, reads no secret and uses
+only the pinned `actions/checkout` and `actions/upload-artifact`. Its measurements
+and sanitized logs go into the same three-day diagnostics artifact as the other
+jobs (`ci-diagnostics-rust-arch-…`), including a `rust-toolchain` measurement.
+
+**Image pin.** The image is pinned by the digest of its multi-platform index,
+`archlinux:base-devel@sha256:8745817f349ed24373341ddb92776209eeec3f0364ea48f7f645ac5800d30a50`.
+It was read from the Docker Hub registry (`registry-1.docker.io`, the `base-devel`
+manifest's `Docker-Content-Digest`) on September 28, 2026, and matches the Docker
+Hub tag API. The index holds one `linux/amd64` image
+(`sha256:8185e444e45ba166146b244b41f1cba2d7d91f3eddce533a839cc9591e0fa785`) and its
+attestation, created September 21, 2026 from
+[archlinux-docker](https://gitlab.archlinux.org/archlinux/archlinux-docker) revision
+`40bf6d7fea891afa211c6ec66458b84aa979c39a`. To move the pin, read the current
+digest and update the workflow's image and dated comment and this paragraph:
+
+```sh
+token=$(curl -fsS 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/archlinux:pull' \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["token"])')
+curl -fsSI -H "Authorization: Bearer $token" \
+  -H 'Accept: application/vnd.oci.image.index.v1+json' \
+  -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+  https://registry-1.docker.io/v2/library/archlinux/manifests/base-devel | grep -i docker-content-digest
+curl -fsS https://hub.docker.com/v2/repositories/library/archlinux/tags/base-devel \
+  | python3 -c 'import json, sys; d = json.load(sys.stdin); print(d["digest"], d["last_updated"])'
+```
+
+A `.github/` change runs every lane, so the pull request that moves the pin also
+runs this job. Refresh it when the upgrade step fails to verify package signatures
+(an old image's keyring predates new packager keys) or when the upgrade grows
+slow because the image has fallen far behind the repositories.
+
+**Rolling release.** The pin fixes the starting image, not the packages. `pacman
+-Syu` installs the current Arch packages at run time, as Arch requires: it does not
+support partial upgrades, so installing new packages onto an old image without the
+upgrade can break. Two runs of the same commit can therefore build against
+different compilers and libraries, and a failure can come from an Arch update
+rather than the change under test. Compare the printed package versions of a
+failing run with the last passing one before blaming the change. A mirror or
+keyring failure fails the job; nothing retries it.
+
+**No cache.** The job restores and saves no Rust or pacman cache. The
+[setup action](#bounded-rust-dependency-caching) installs Ubuntu packages with
+`apt-get` and keys native identity on `dpkg-query`, neither of which exists in the
+container. A key that did capture the pacman inventory would change with nearly
+every Arch update, so each new entry would be cold on first use while it took space
+from the 10 GB repository quota and evicted the useful Ubuntu and macOS entries.
+Without a cache, no pull request can write an entry that `main` trusts.
+
+**Cost.** Every run is cold: an image pull (about 308 MB compressed), the package
+upgrade and install, the toolchain download, a full debug build of every
+dependency, then the tests. The September 15 baseline spent 10m49s compiling the
+workspace tests cold on Ubuntu; expect this job to take at least that plus its
+setup, on one more runner for every product pull request and `main` push. As of
+September 28, 2026 no hosted run of this job has been observed or measured.
+
+**Docker Hub limits.** The runner pulls the image from Docker Hub without
+credentials. Docker [counts unauthenticated pulls](https://docs.docker.com/docker-hub/usage/pulls/)
+per IPv4 address or IPv6 /64 subnet and documents no exemption for GitHub-hosted
+runners; users have reported rate-limit errors on hosted runners since mid-2024
+([discussion](https://github.com/orgs/community/discussions/130794)). A rate-limited
+pull fails the job before any step runs, and a rerun is the remedy. Authenticating
+the pull would add a secret to Quality and would not help fork pull requests,
+which receive no secrets.
 
 ### C1 fan-out experiment and acceptance still open
 
@@ -866,7 +985,9 @@ and [Cargo build timings](https://doc.rust-lang.org/cargo/reference/timings.html
 ## Bounded Rust dependency caching
 
 Quality's [Rust setup action](../.github/actions/setup-rust/action.yml) owns native
-setup and the lifetime of optional compilation caches. Each compilation job calls its
+setup and the lifetime of optional compilation caches. The
+[Arch Linux container job](#arch-linux-container-job) does not use it and has no
+cache. Each other compilation job calls its
 `setup` phase before validation and its matching `finish` phase **after every
 consumer of `target`**, including package construction and installation checks.
 Finish may remove compiled outputs to bound a successful main cache. Keep future
