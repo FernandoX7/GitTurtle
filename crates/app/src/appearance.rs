@@ -1586,6 +1586,11 @@ mod tests {
     /// styled.rs, which the app cannot read.
     const KIT_FOCUS_RING_OPACITY: f32 = 0.5;
 
+    /// The floor DESIGN.md publishes for a focused helper that a pointer hovers
+    /// or presses on a hovered or selected row, where its band lies on the
+    /// helper's own fill over the row's highlight.
+    const ROW_POINTER_FOCUS_FLOOR: f64 = 2.5;
+
     #[test]
     fn shared_button_focus_ring_clears_the_graphic_rule_in_every_state() {
         // The accent rule measures the token on each surface; this measures what
@@ -1607,7 +1612,8 @@ mod tests {
             // On a row, a pointer's hover and press layers land on the row's own
             // highlight: colors no readability rule sets accent against, where an
             // edge inside the button reads down to 2.54:1 (pressed on Alucard's
-            // hovered selected row). Those two states are held off rows.
+            // hovered selected row). Those two states are held to 3:1 off rows
+            // and to the 2.5:1 DESIGN.md publishes on them.
             let states = [
                 ("at rest", None, 1., true),
                 ("selected", Some(selected), 1., true),
@@ -1639,9 +1645,11 @@ mod tests {
                 ("hovered selected row", palette.row_hover(true), true),
             ] {
                 for (state, fill, opacity, on_rows) in states {
-                    if row && !on_rows {
-                        continue;
-                    }
+                    let minimum = if row && !on_rows {
+                        ROW_POINTER_FOCUS_FLOOR
+                    } else {
+                        custom::GRAPHIC
+                    };
                     // Opacity on the button dims every layer it paints.
                     let dim = |layer: Rgba| Rgba {
                         a: layer.a * opacity,
@@ -1652,9 +1660,10 @@ mod tests {
                     let inside =
                         edge.map_or(0., |edge| contrast(composite(dim(edge), filled), filled));
                     let ratio = outside.max(inside);
-                    if ratio < custom::GRAPHIC {
+                    if ratio < minimum {
                         failures.push(format!(
-                            "{choice:?} {state} on the {surface} {beneath:06x}: {ratio:.2}:1"
+                            "{choice:?} {state} on the {surface} {beneath:06x}: {ratio:.2}:1, \
+                             needs {minimum}:1"
                         ));
                     }
                 }
