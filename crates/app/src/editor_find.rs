@@ -227,7 +227,11 @@ impl Editor {
     pub fn new(state: &Entity<EditorState>) -> Self {
         Self {
             state: state.clone(),
-            native: NativeEditor::new(state).text_size(crate::appearance::code_text()),
+            // The kit editor supplies the code family; code keeps its
+            // characters as typed in every family.
+            native: NativeEditor::new(state)
+                .text_size(crate::appearance::code_text())
+                .font_features(crate::appearance::code_font_features()),
             height: relative(1.),
             label: "File text".into(),
         }
@@ -842,5 +846,22 @@ mod tests {
         assert_eq!(bounded_query(&accepted), accepted);
         assert_eq!(bounded_query(&format!("{accepted}x")), "");
         assert_eq!(bounded_query("\r\nλ filename\t"), "\r\nλ filename\t");
+    }
+
+    /// Every app editor (patches, files, conflicts and review text) draws code
+    /// as typed: the wrapper refines the kit editor's code family with the
+    /// code features, whichever family the desktop supplies.
+    #[gpui_kit::test]
+    fn editors_draw_code_without_ligatures(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::{AppContext as _, Styled as _, component::input::EditorState};
+
+        cx.update(gpui_kit::init);
+        let cx = cx.add_empty_window();
+        let state = cx.update(|window, cx| cx.new(|cx| EditorState::new(window, cx)));
+        let mut editor = super::Editor::new(&state);
+        assert_eq!(
+            editor.style().text.font_features,
+            Some(crate::appearance::code_font_features())
+        );
     }
 }
