@@ -1,6 +1,9 @@
 Note (2026-09-24): this file records the September 19 run of 3927b57. The images beside it were re-taken
 from 5899e2a on 2026-09-24 and are described in docs/validation.md, "September 19 Custom theme editor";
 this record was not regenerated for them.
+Note (2026-09-27): the focused-helper images {dark,light}-{1000x680,1440x900}-{08-saved,13-cancelled,16-deleted}
+and light-1000x680-{12-cancel-focused,15-delete-confirm} were replaced from 56a3fe5 (debug) when the helper's
+focus ring gained its full-accent band; see docs/validation.md, "September 27 helper focus ring at full accent".
 
 Custom theme editor (themes-editor): native flow verification
 ================================================================
