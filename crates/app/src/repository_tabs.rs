@@ -2968,7 +2968,15 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         use gpui_kit::component::Root;
-        use std::{cell::RefCell, rc::Rc, sync::mpsc};
+        use std::{
+            cell::RefCell,
+            rc::Rc,
+            sync::{
+                Arc,
+                atomic::{AtomicBool, Ordering},
+                mpsc,
+            },
+        };
 
         cx.executor().allow_parking();
         cx.executor().set_block_on_ticks(100..=100);
@@ -3042,10 +3050,10 @@ mod tests {
                 .map(|_| app.preferences_writer.submit(|| Ok(())))
                 .collect::<Vec<_>>()
         });
-        window_cx.update(|_, cx| {
+        let accepted = window_cx.update(|_, cx| {
             app.update(cx, |app, cx| {
                 // The accepted session snapshot occupies the eighth queue slot.
-                drop(app.queue_session_snapshot(cx));
+                app.queue_session_snapshot(cx)
             })
         });
         let refused = app.read_with(window_cx, |app, _| app.preferences_writer.submit(|| Ok(())));
@@ -3079,17 +3087,28 @@ mod tests {
         );
         // Resolve the real executor from a background task during GPUI's actual
         // shutdown wait. The removed window cannot own the final completion.
+        let released = Arc::new(AtomicBool::new(false));
+        let during_shutdown = released.clone();
         window_cx
             .executor()
             .spawn(async move {
                 release.send(()).unwrap();
+                during_shutdown.store(true, Ordering::SeqCst);
             })
             .detach();
         cx.quit();
+        // Shutdown steps this task only while a quit future is still pending.
+        assert!(
+            released.load(Ordering::SeqCst),
+            "shutdown must wait on the accepted session save"
+        );
         blocker.await.unwrap().unwrap();
         for response in queued {
             response.await.unwrap().unwrap();
         }
+        // GPUI stops waiting after 200 ms of real time, so slow disk I/O can
+        // still be writing the coalesced close snapshot when quit returns.
+        accepted.await.unwrap();
         let restored = Session::load_at(&save_path).unwrap();
         assert_eq!(restored.tabs.len(), 2);
         assert_eq!(restored.tabs[restored.active].path.path(), second_path);
