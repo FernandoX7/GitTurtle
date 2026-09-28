@@ -260,6 +260,25 @@ const DIFF_TINT_LIGHT: f64 = 0.10;
 /// fitting and their OKLCH hues are at least this many degrees apart.
 pub(crate) const DIFF_MIN_CHROMA: f64 = 0.05;
 pub(crate) const DIFF_MIN_HUE: f64 = 60.;
+/// Modified and renamed keep the theme's yellow and magenta only with `DIFF_MIN_CHROMA` of
+/// chroma and at least this many degrees of OKLCH hue from added, removed and each other.
+/// Among the bundled themes the pairs that read as one status are 26.5° apart or closer
+/// (Catppuccin's pink renamed beside its rose removed; Hackerman's and Osaka Jade's modified
+/// beside added at 7° and 5°); 30° also takes Everforest's two dusty pinks at 29.5°, and the
+/// closest pair kept is Flexoki Light's modified and added at 31°.
+pub(crate) const STATUS_MIN_HUE: f64 = 30.;
+/// A `lighter_background` this close to the background is flat, not a lighter surface: the
+/// bundled themes that mean one keep at least 1.045:1 (Lupine), and those without one repeat
+/// the background exactly (Last Horizon, Solitude, and `color0` in a generated theme).
+const FLAT_SURFACE: f64 = 1.03;
+/// The furthest subtle lifts off the panel and the selected row off the canvas, so grouped
+/// surfaces do not compete with the selected row and graph lanes keep their contrast on it.
+/// GitTurtle's own Braden, Tokyo Night and Catppuccin Mocha lift subtle 1.13:1 to 1.15:1 off
+/// the panel, and its Tokyo Night, Catppuccin Mocha, Nord and Graphite lift the selected row
+/// 1.34:1 to 1.45:1 off the canvas. The selected row's 1.15:1 step off the panel and the
+/// pressed-step rule still win.
+const SUBTLE_CAP: f64 = 1.15;
+const SELECTED_CAP: f64 = 1.45;
 
 /// The rules' foreground and background contrast checks, with the side of the surface the
 /// foreground must be on: lighter in a dark palette, darker in a light one.
@@ -361,16 +380,33 @@ pub(crate) fn fit(colors: &Colors) -> Palette {
         background_extreme,
         |candidate| within(candidate, PANEL_ROOM),
     );
-    let subtle = settle(
-        colors
-            .lighter_background
-            .unwrap_or_else(|| mix(canvas, colors.foreground, 0.06)),
-    );
-    let selected = lift(
+    // Bring a surface lifted further than `ratio` off `reference` back toward it, in lightness
+    // only: the mirror of `lift`.
+    let cap = |color: u32, reference: u32, ratio: f64| {
+        toward(color, background_extreme, |candidate| {
+            !judge.clears(candidate, &[(&[reference], ratio)], 0.)
+        })
+    };
+    let subtle = cap(
         settle(
             colors
-                .selection
-                .unwrap_or_else(|| mix(canvas, colors.accent, 0.25)),
+                .lighter_background
+                .filter(|&lighter| contrast(lighter, colors.background) >= FLAT_SURFACE)
+                .unwrap_or_else(|| mix(canvas, colors.foreground, 0.06)),
+        ),
+        panel,
+        SUBTLE_CAP,
+    );
+    // The selected row's own step off the panel wins over the cap.
+    let selected = lift(
+        cap(
+            settle(
+                colors
+                    .selection
+                    .unwrap_or_else(|| mix(canvas, colors.accent, 0.25)),
+            ),
+            canvas,
+            SELECTED_CAP,
         ),
         panel,
         1.15,
@@ -483,54 +519,100 @@ pub(crate) fn fit(colors: &Colors) -> Palette {
         rules.extend_from_slice(extra);
         judge.tune(color, &rules, CONTRAST_MARGIN)
     };
-    let red = status(colors.red, &[]);
-    let green = status(colors.green, &[]);
-    let (added, removed) = if distinguishable(red, green) {
-        (green, red)
+    // GitTurtle's own colors for the mode: Braden's in light, Midnight's in dark.
+    let own = if judge.dark {
+        ThemeChoice::Midnight.palette()
     } else {
-        let own = if judge.dark {
-            ThemeChoice::Midnight.palette()
-        } else {
-            ThemeChoice::Daylight.palette()
-        };
-        (status(own.added, &[]), status(own.removed, &[]))
+        ThemeChoice::Daylight.palette()
     };
     let tint = if judge.dark {
         DIFF_TINT_DARK
     } else {
         DIFF_TINT_LIGHT
     };
-    let added_background = settle(mix(canvas, added, tint));
-    let removed_background = settle(mix(canvas, removed, tint));
-    let tiles = [added_background, removed_background];
+    // The four file statuses from added and removed: the diff tiles and the colors on them,
+    // then modified and renamed as the theme's yellow and magenta where they stand apart
+    // from the others, and otherwise GitTurtle's own.
+    let statuses = |added: u32, removed: u32| {
+        let added_background = settle(mix(canvas, added, tint));
+        let removed_background = settle(mix(canvas, removed, tint));
+        let tiles = [added_background, removed_background];
+        let added = status(added, &[(&[added_background], 4.5)]);
+        let removed = status(removed, &[(&[removed_background], 4.5)]);
+        let icon =
+            |color: u32| judge.tune(color, &[(&surfaces, 3.0), (&tiles, 3.0)], CONTRAST_MARGIN);
+        let theirs = icon(colors.yellow);
+        let modified = if apart(theirs, &[added, removed]) {
+            theirs
+        } else {
+            icon(own.modified)
+        };
+        let theirs = icon(colors.magenta);
+        let renamed = if apart(theirs, &[added, removed, modified]) {
+            theirs
+        } else {
+            icon(own.renamed)
+        };
+        (tiles, [added, removed, modified, renamed])
+    };
+    let red = status(colors.red, &[]);
+    let green = status(colors.green, &[]);
+    let gitturtles = || statuses(status(own.added, &[]), status(own.removed, &[]));
+    let mut set = if distinguishable(red, green) {
+        statuses(green, red)
+    } else {
+        gitturtles()
+    };
+    // The theme's red and green keep the diff only while the four statuses stand apart: when
+    // GitTurtle's own modified or renamed would sit beside them (Matte Black's amber added
+    // beside GitTurtle's amber modified), the diff takes GitTurtle's hues as well.
+    let [added, removed, modified, renamed] = set.1;
+    if !(apart(added, &[removed, modified, renamed])
+        && apart(removed, &[modified, renamed])
+        && apart(modified, &[renamed]))
+    {
+        set = gitturtles();
+    }
+    let ([added_background, removed_background], [added, removed, modified, renamed]) = set;
     palette.added_background = added_background;
     palette.removed_background = removed_background;
-    palette.added = status(added, &[(&[added_background], 4.5)]);
-    palette.removed = status(removed, &[(&[removed_background], 4.5)]);
-    palette.modified = judge.tune(
-        colors.yellow,
-        &[(&surfaces, 3.0), (&tiles, 3.0)],
-        CONTRAST_MARGIN,
-    );
-    palette.renamed = judge.tune(
-        colors.magenta,
-        &[(&surfaces, 3.0), (&tiles, 3.0)],
-        CONTRAST_MARGIN,
-    );
-    palette.warning = status(colors.orange.unwrap_or(colors.yellow), &[(&[subtle], 4.5)]);
-    palette.hunk = judge.tune(
-        colors.blue,
-        &[
-            (&[canvas, panel, subtle], 4.5),
-            (&[hover, selected, row], 3.0),
-        ],
-        CONTRAST_MARGIN,
-    );
+    palette.added = added;
+    palette.removed = removed;
+    palette.modified = modified;
+    palette.renamed = renamed;
+    let tiles = [added_background, removed_background];
+    // A grey warning is no warning: it takes GitTurtle's, which shares modified's amber.
+    let warning = |color: u32| status(color, &[(&[subtle], 4.5)]);
+    let theirs = warning(colors.orange.unwrap_or(colors.yellow));
+    palette.warning = if oklch(theirs).0 >= DIFF_MIN_CHROMA {
+        theirs
+    } else {
+        warning(own.warning)
+    };
 
     // Text, then secondary text and line numbers lifted toward it.
     let text_rules: [(&[u32], f64); 2] = [(&surfaces, 4.5), (&tiles, 4.5)];
     let text = judge.tune(colors.foreground, &text_rules, CONTRAST_MARGIN);
     palette.text = text;
+    // Hunk headers stay blue and apart from the code text: a blue without chroma, or one that
+    // differs from the text only in lightness, takes GitTurtle's.
+    let hunk = |color: u32| {
+        judge.tune(
+            color,
+            &[
+                (&[canvas, panel, subtle], 4.5),
+                (&[hover, selected, row], 3.0),
+            ],
+            CONTRAST_MARGIN,
+        )
+    };
+    let theirs = hunk(colors.blue);
+    palette.hunk =
+        if oklch(theirs).0 >= DIFF_MIN_CHROMA && tint_distance(theirs, text) >= DIFF_MIN_CHROMA {
+            theirs
+        } else {
+            hunk(own.hunk)
+        };
     let dim = colors
         .dark_foreground
         .unwrap_or_else(|| mix(colors.foreground, canvas, 0.4));
@@ -603,14 +685,42 @@ fn accent_states(accent: u32, label: u32) -> (u32, u32) {
 /// lines: both keep `DIFF_MIN_CHROMA` of OKLCH chroma and their hues are `DIFF_MIN_HUE`
 /// degrees apart.
 pub(crate) fn distinguishable(red: u32, green: u32) -> bool {
-    let (red_chroma, red_hue) = oklch(red);
-    let (green_chroma, green_hue) = oklch(green);
-    let apart = (red_hue - green_hue).abs() % 360.;
-    red_chroma.min(green_chroma) >= DIFF_MIN_CHROMA && apart.min(360. - apart) >= DIFF_MIN_HUE
+    oklch(red).0.min(oklch(green).0) >= DIFF_MIN_CHROMA && hue_distance(red, green) >= DIFF_MIN_HUE
+}
+
+/// Whether `color` reads as a status of its own beside `others`: it keeps `DIFF_MIN_CHROMA`
+/// of chroma and lies at least `STATUS_MIN_HUE` degrees of hue from each of them.
+fn apart(color: u32, others: &[u32]) -> bool {
+    oklch(color).0 >= DIFF_MIN_CHROMA
+        && others
+            .iter()
+            .all(|&other| hue_distance(color, other) >= STATUS_MIN_HUE)
+}
+
+/// The angle between two colors' OKLCH hues, in degrees.
+fn hue_distance(a: u32, b: u32) -> f64 {
+    let apart = (oklch(a).1 - oklch(b).1).abs() % 360.;
+    apart.min(360. - apart)
+}
+
+/// How far apart two colors are in hue and chroma alone: their distance in OKLab's a–b
+/// plane, which leaves lightness out. Against a grey it is the color's chroma, so it asks of
+/// a hunk header what `DIFF_MIN_CHROMA` asks of a grey: that it reads as a color of its own
+/// beside the code text, not as the text a shade lighter or darker.
+fn tint_distance(a: u32, b: u32) -> f64 {
+    let (_, a1, b1) = oklab(a);
+    let (_, a2, b2) = oklab(b);
+    (a1 - a2).hypot(b1 - b2)
 }
 
 /// OKLCH chroma and hue in degrees of an `0xrrggbb` color.
 fn oklch(color: u32) -> (f64, f64) {
+    let (_, a, b) = oklab(color);
+    (a.hypot(b), b.atan2(a).to_degrees().rem_euclid(360.))
+}
+
+/// OKLab lightness, a and b of an `0xrrggbb` color.
+fn oklab(color: u32) -> (f64, f64, f64) {
     let linear = |shift: u32| {
         let value = f64::from((color >> shift) & 255) / 255.;
         if value <= 0.04045 {
@@ -623,9 +733,11 @@ fn oklch(color: u32) -> (f64, f64) {
     let l = (0.412_221_470_8 * r + 0.536_332_536_3 * g + 0.051_445_992_9 * b).cbrt();
     let m = (0.211_903_498_2 * r + 0.680_699_545_1 * g + 0.107_396_956_6 * b).cbrt();
     let s = (0.088_302_461_9 * r + 0.281_718_837_6 * g + 0.629_978_700_5 * b).cbrt();
-    let a = 1.977_998_495_1 * l - 2.428_592_205_0 * m + 0.450_593_709_9 * s;
-    let b = 0.025_904_037_1 * l + 0.782_771_766_2 * m - 0.808_675_766_0 * s;
-    (a.hypot(b), b.atan2(a).to_degrees().rem_euclid(360.))
+    (
+        0.210_454_255_3 * l + 0.793_617_785_0 * m - 0.004_072_046_8 * s,
+        1.977_998_495_1 * l - 2.428_592_205_0 * m + 0.450_593_709_9 * s,
+        0.025_904_037_1 * l + 0.782_771_766_2 * m - 0.808_675_766_0 * s,
+    )
 }
 
 /// `from` blended toward `to` by `amount` in each 8-bit channel.
@@ -790,14 +902,20 @@ mod tests {
     /// Values that already pass stay as the theme wrote them: Tokyo Night keeps its
     /// background, selection, accent, status colors and foreground, as GitTurtle's own
     /// Tokyo Night keeps the same upstream hues; its dim foreground (2.9:1) is lifted toward
-    /// the foreground only until secondary text reads on every surface.
+    /// the foreground only until secondary text reads on every surface. Its lighter
+    /// background, 1.26:1 off the panel, is brought back to the subtle cap in lightness only.
     #[test]
     fn a_passing_theme_keeps_its_own_colors() {
         let colors = bundled("tokyo-night");
         let palette = map(&colors).palette;
         assert_eq!(palette.canvas, colors.background);
         assert_eq!(Some(palette.panel), colors.dark_background);
-        assert_eq!(Some(palette.subtle), colors.lighter_background);
+        let lighter = colors.lighter_background.unwrap();
+        assert!(contrast(lighter, palette.panel) > SUBTLE_CAP + 0.1);
+        assert!(contrast(palette.subtle, palette.panel) <= SUBTLE_CAP);
+        let (hue, saturation, _) = to_hsl(palette.subtle);
+        let (theirs, their_saturation, _) = to_hsl(lighter);
+        assert!((hue - theirs).abs() < 0.01 && (saturation - their_saturation).abs() < 0.05);
         assert_eq!(Some(palette.selected), colors.selection);
         assert_eq!(palette.accent, colors.accent);
         assert_eq!(palette.accent, ThemeChoice::TokyoNight.palette().accent);
@@ -861,6 +979,237 @@ mod tests {
         // Hue alone too: a vivid red beside a vivid orange.
         assert!(!distinguishable(0xe03030, 0xe07020));
         assert!(distinguishable(0xe03030, 0x30b050));
+    }
+
+    /// Every bundled theme and the two generated from an `alacritty.toml`, by file name.
+    fn fixtures() -> Vec<(&'static str, Colors)> {
+        let generated = [
+            (
+                "alacritty-dark",
+                &include_bytes!("../../../tests/fixtures/omarchy/alacritty-dark.toml")[..],
+            ),
+            (
+                "alacritty-light",
+                &include_bytes!("../../../tests/fixtures/omarchy/alacritty-light.toml")[..],
+            ),
+        ];
+        BUNDLED
+            .iter()
+            .map(|(name, bytes, _)| (*name, *bytes))
+            .chain(generated)
+            .map(|(name, bytes)| (name, parse(bytes, false).unwrap()))
+            .collect()
+    }
+
+    /// Modified and renamed stand apart from added, removed and each other in every fixture:
+    /// the theme's yellow and magenta where they keep `DIFF_MIN_CHROMA` of chroma and
+    /// `STATUS_MIN_HUE` degrees of hue from the others, GitTurtle's own otherwise. Where
+    /// GitTurtle's own would sit beside the theme's red and green, the diff takes GitTurtle's
+    /// hues too (Matte Black's amber added; Miasma's tan removed, 0.043 chroma once fitted).
+    /// The themes that take each fallback are named, and a grey warning takes GitTurtle's.
+    #[test]
+    fn status_colors_stand_apart_or_take_gitturtles_own() {
+        let mut took = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+        for (name, colors) in fixtures() {
+            let palette = fit(&colors);
+            let own = own(colors.mode);
+            let statuses = [
+                palette.added,
+                palette.removed,
+                palette.modified,
+                palette.renamed,
+            ];
+            for (index, &status) in statuses.iter().enumerate() {
+                assert!(
+                    apart(status, &statuses[index + 1..]),
+                    "{name}: {statuses:06x?} stand apart"
+                );
+            }
+            // Which it took: whichever of the theme's color and GitTurtle's it is nearer.
+            let gitturtles = |color: u32, theirs: u32, gitturtle: u32| {
+                hue_distance(color, gitturtle) < hue_distance(color, theirs)
+            };
+            for (list, taken) in took.iter_mut().zip([
+                gitturtles(palette.modified, colors.yellow, own.modified),
+                gitturtles(palette.renamed, colors.magenta, own.renamed),
+                gitturtles(palette.removed, colors.red, own.removed),
+                oklch(colors.orange.unwrap_or(colors.yellow)).0 < DIFF_MIN_CHROMA,
+            ]) {
+                if taken {
+                    list.push(name);
+                }
+            }
+            assert!(
+                oklch(palette.warning).0 >= DIFF_MIN_CHROMA,
+                "{name}'s warning"
+            );
+        }
+        assert_eq!(
+            took,
+            [
+                vec![
+                    "hackerman",
+                    "last-horizon",
+                    "matte-black",
+                    "osaka-jade",
+                    "retro-82",
+                    "solitude",
+                    "vantablack",
+                    "white",
+                ],
+                vec![
+                    "catppuccin",
+                    "everforest",
+                    "gruvbox",
+                    "last-horizon",
+                    "lumon",
+                    "matte-black",
+                    "miasma",
+                    "retro-82",
+                    "solitude",
+                    "vantablack",
+                    "white",
+                ],
+                // Red and green that look alike (the diff rule), and then Matte Black and
+                // Miasma, whose own statuses cannot stand apart beside them.
+                vec![
+                    "ethereal",
+                    "hackerman",
+                    "last-horizon",
+                    "lumon",
+                    "lupine",
+                    "matte-black",
+                    "miasma",
+                    "solitude",
+                    "vantablack",
+                    "white",
+                ],
+                vec!["last-horizon", "solitude", "vantablack", "white"],
+            ],
+            "modified, renamed, the diff and warning"
+        );
+    }
+
+    /// A `lighter_background` within `FLAT_SURFACE` of the background is no surface of its
+    /// own: Last Horizon and Solitude repeat their background, and a generated theme's
+    /// `color0` is its background, so each takes the canvas 6% toward the foreground and its
+    /// grouped surfaces show. Lupine's, 1.045:1 off its background, is kept.
+    #[test]
+    fn a_flat_lighter_background_counts_as_absent() {
+        for (name, colors) in fixtures() {
+            let lighter = colors.lighter_background.unwrap();
+            let palette = fit(&colors);
+            let flat = contrast(lighter, colors.background) < FLAT_SURFACE;
+            assert_eq!(
+                flat,
+                [
+                    "alacritty-dark",
+                    "alacritty-light",
+                    "last-horizon",
+                    "solitude"
+                ]
+                .contains(&name),
+                "{name}"
+            );
+            if flat {
+                assert!(
+                    contrast(palette.subtle, palette.canvas) >= 1.04,
+                    "{name}'s subtle {:06x} stands off its canvas {:06x}",
+                    palette.subtle,
+                    palette.canvas
+                );
+            }
+        }
+        assert_eq!(
+            fit(&bundled("lupine")).subtle,
+            bundled("lupine").lighter_background.unwrap()
+        );
+    }
+
+    /// Hunk headers stay blue and apart from the code text: White's, Vantablack's,
+    /// Solitude's and Last Horizon's blue is a grey and Nord's keeps 0.045 chroma once fitted,
+    /// so each takes GitTurtle's hunk color; Matte Black's `blue` is an orange, with chroma and
+    /// apart from its grey text, and is kept. A blue that differs from a blue text only in
+    /// lightness takes GitTurtle's too.
+    #[test]
+    fn hunk_headers_stay_blue_and_apart_from_the_text() {
+        let mut took = Vec::new();
+        for (name, colors) in fixtures() {
+            let palette = fit(&colors);
+            assert!(oklch(palette.hunk).0 >= DIFF_MIN_CHROMA, "{name}");
+            assert!(
+                tint_distance(palette.hunk, palette.text) >= DIFF_MIN_CHROMA,
+                "{name}"
+            );
+            let own = own(colors.mode).hunk;
+            if hue_distance(palette.hunk, own) < hue_distance(palette.hunk, colors.blue) {
+                took.push(name);
+            }
+        }
+        assert_eq!(
+            took,
+            ["last-horizon", "nord", "solitude", "vantablack", "white"]
+        );
+        let tokyo = bundled("tokyo-night");
+        let blue_text = Colors {
+            foreground: 0x8fb0ff,
+            blue: 0x6f9af7,
+            ..tokyo
+        };
+        assert!(oklch(blue_text.blue).0 >= DIFF_MIN_CHROMA);
+        let theirs = fit(&blue_text).hunk;
+        assert_ne!(theirs, blue_text.blue);
+        let gitturtles = Colors {
+            blue: own(Mode::Dark).hunk,
+            ..blue_text
+        };
+        assert_eq!(theirs, fit(&gitturtles).hunk);
+    }
+
+    /// Subtle surfaces lift at most `SUBTLE_CAP` off the panel and the selected row at most
+    /// `SELECTED_CAP` off the canvas unless its own step off the panel needs more, brought
+    /// back in lightness only: White's subtle and
+    /// selected were both `#c0c0c0` (1.67:1 off its panel, 1.82:1 off its canvas) and Last
+    /// Horizon's selected row 2.45:1 off its canvas. On those rows every graph lane keeps at
+    /// least 4:1.
+    #[test]
+    fn subtle_and_selected_surfaces_lift_no_further_than_the_caps() {
+        for (name, colors) in fixtures() {
+            let palette = fit(&colors);
+            // A lift is toward the foreground: lighter in a dark palette, darker in a light
+            // one. A generated light theme's subtle sits between its canvas and its much
+            // darker panel, on the other side, and is not a lift.
+            let judge = Judge {
+                dark: colors.mode == Mode::Dark,
+            };
+            let lifted = |surface: u32, from: u32, cap: f64| {
+                judge.clears(surface, &[(&[from], cap + 0.005)], 0.)
+            };
+            assert!(!lifted(palette.subtle, palette.panel, SUBTLE_CAP), "{name}");
+            // The selected row's own step off the panel wins: a generated light theme's
+            // panel is dark enough that 1.15:1 below it is 1.55:1 below its canvas.
+            assert!(
+                !lifted(palette.selected, palette.canvas, SELECTED_CAP)
+                    || !lifted(
+                        palette.selected,
+                        palette.panel,
+                        1.15 + SURFACE_MARGIN + 0.01
+                    ),
+                "{name}"
+            );
+        }
+        for name in ["white", "last-horizon"] {
+            let palette = fit(&bundled(name));
+            let lanes = crate::graph::lane_colors(palette.is_light());
+            let weakest = lanes
+                .iter()
+                .map(|&lane| contrast(lane, palette.selected))
+                .fold(f64::INFINITY, f64::min);
+            assert!(
+                weakest >= 4.,
+                "{name}'s lanes on its selected row: {weakest:.2}"
+            );
+        }
     }
 
     /// A small xorshift generator, so the property test needs no new dependency and every run

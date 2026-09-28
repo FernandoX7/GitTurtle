@@ -245,14 +245,16 @@ themes. It follows your current Omarchy theme, including each switch while it
 is selected, and turns **Follow system appearance** off while in use. GitTurtle
 reads `~/.local/state/omarchy/current/theme/colors.toml`, the `theme.name` file
 beside `theme/`, and whether the theme has a `light.mode` file. It reads them at
-launch and whenever its window regains focus, and never writes under
-`~/.local/state/omarchy`. Colors resolve the way Omarchy's own
+launch, whenever its window regains focus and when you choose the card, watches
+them while the Omarchy theme is selected or Settings is open, and never writes
+under `~/.local/state/omarchy`. Colors resolve the way Omarchy's own
 `omarchy-theme-color` resolves them. That includes themes whose `colors.toml`
 Omarchy generated from an `alacritty.toml`, which name only `color0` to
 `color15`, and the older short names such as `bg` and `fg`. The card appears
 only when that `colors.toml` exists. A file that cannot be used keeps the last
-colors read (or Midnight) and shows the reason on the card, such as a missing
-color or a permission problem. The [user guide](user-guide.md) describes the
+colors read (or Midnight): the card says it is unavailable and which colors it
+keeps, and a line under it gives the reason, such as a missing color or a
+permission problem. The [user guide](user-guide.md) describes the
 theme.
 
 Quality CI also builds the workspace and runs its tests in an `archlinux:base-devel`

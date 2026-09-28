@@ -287,7 +287,8 @@ impl GitTurtle {
     /// without altering a pixel they draw. Reusing them is most of the
     /// difference between the frame budget and a full rebuild of the picker.
     pub(super) fn apply_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // The desktop's Omarchy theme is watched only while it is the selection.
+        // The desktop's Omarchy theme is followed while it is the selection
+        // (and watched, too, while Settings shows its card).
         #[cfg(target_os = "linux")]
         appearance::omarchy::follow(
             self.settings.theme == appearance::custom::ThemeSelection::Omarchy,

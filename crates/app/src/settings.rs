@@ -179,6 +179,10 @@ impl GitTurtle {
                 if this.page == AppPage::Settings {
                     this.sync_theme_cards(cx);
                 }
+                // Every page change notifies the app: the desktop's Omarchy
+                // theme is watched while Settings can show its card.
+                #[cfg(target_os = "linux")]
+                appearance::omarchy::show(this.page == AppPage::Settings, cx);
             }));
         // A change in one of the page's inputs reaches the page through its
         // own observation of the input (`SettingsPage::new`); the app has
@@ -772,7 +776,10 @@ impl GitTurtle {
         let Some(card) = self.sync_omarchy_card(cx) else {
             return;
         };
+        // A choice of the card waiting for its read applies what it finds
+        // (`choose_omarchy`), so nothing applies here meanwhile.
         if self.settings.theme == ThemeSelection::Omarchy
+            && self.omarchy_choice.waiting.is_none()
             && self.theme_editor.preview().is_none()
             && self.effective_theme(cx).palette != palette(cx)
         {
@@ -807,7 +814,8 @@ impl GitTurtle {
     /// Theme switches restyle retained editors in place: no worker job, no
     /// content re-preparation. `gitturtle.theme_apply_frame_ms` measures this
     /// handler through the next frame callback under `GITTURTLE_TRACE`, for a
-    /// built-in and a custom selection alike.
+    /// built-in and a custom selection alike; for the Omarchy card, through
+    /// the frame after the application its read decides (`choose_omarchy`).
     pub(super) fn choose_theme(
         &mut self,
         theme: ThemeSelection,
@@ -827,8 +835,70 @@ impl GitTurtle {
         }
         self.settings.theme = theme;
         self.settings.follow_system = false;
+        #[cfg(target_os = "linux")]
+        {
+            self.omarchy_choice.waiting = None;
+            if theme == ThemeSelection::Omarchy && self.choose_omarchy(started, window, cx) {
+                self.save_preferences(window, cx);
+                return;
+            }
+        }
         self.apply_appearance(window, cx);
         self.save_preferences(window, cx);
+        if let Some(start) = started {
+            Self::trace_next_frame("theme_apply_frame_ms", start, window);
+        }
+    }
+
+    /// Linux: choosing the Omarchy card reads `current/` first, since the
+    /// card may show a theme the desktop has left while nothing watched it,
+    /// and applies only what that read finds: exactly one application when
+    /// the read lands within [`OMARCHY_CHOICE_WAIT`]. A slower read (one that
+    /// joins a switch still settling) lets the cached palette apply at the
+    /// wait's end, and its own result then applies through `omarchy_changed`
+    /// when it differs. A read that fails applies the fallback the card
+    /// shows. `false` without the reader, when the choice applies at once.
+    #[cfg(target_os = "linux")]
+    fn choose_omarchy(
+        &mut self,
+        started: Option<std::time::Instant>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(read) = appearance::omarchy::read_now(cx) else {
+            return false;
+        };
+        appearance::omarchy::follow(true, cx);
+        self.omarchy_choice.made += 1;
+        let choice = self.omarchy_choice.made;
+        self.omarchy_choice.waiting = Some((choice, started));
+        let wait = cx.background_executor().timer(OMARCHY_CHOICE_WAIT);
+        cx.spawn_in(window, async move |this, cx| {
+            futures::future::select(read, wait).await;
+            this.update_in(cx, |this, window, cx| {
+                this.apply_omarchy_choice(choice, window, cx)
+            })
+            .ok();
+        })
+        .detach();
+        // The card shows as chosen, and Follow system as locked, at once.
+        self.notify_settings_page(cx);
+        cx.notify();
+        true
+    }
+
+    /// Apply the Omarchy card's `choice` once its read landed or the wait
+    /// ended, unless another choice has replaced it since.
+    #[cfg(target_os = "linux")]
+    fn apply_omarchy_choice(&mut self, choice: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((waiting, started)) = self.omarchy_choice.waiting else {
+            return;
+        };
+        if waiting != choice {
+            return;
+        }
+        self.omarchy_choice.waiting = None;
+        self.apply_appearance(window, cx);
         if let Some(start) = started {
             Self::trace_next_frame("theme_apply_frame_ms", start, window);
         }
@@ -1007,6 +1077,9 @@ impl GitTurtle {
                 name: "Omarchy".into(),
                 description: card.description.into(),
                 warnings: 0,
+                detail: Some(card.status.into()),
+                accessible_name: Some(card.accessible_name.into()),
+                tag: card.unavailable.then(|| "Unavailable".into()),
             }];
         }
         let _ = cx;
@@ -1025,6 +1098,9 @@ impl GitTurtle {
                     name: choice.label().into(),
                     description: choice.description().into(),
                     warnings: 0,
+                    detail: None,
+                    accessible_name: None,
+                    tag: None,
                 })
                 .collect::<Vec<_>>()
         };
@@ -1040,6 +1116,9 @@ impl GitTurtle {
                 name: theme.name.clone().into(),
                 description: format!("Based on {}", theme.base.label()).into(),
                 warnings,
+                detail: None,
+                accessible_name: None,
+                tag: None,
             })
             .collect::<Vec<_>>();
         [
@@ -1065,6 +1144,7 @@ impl GitTurtle {
                     card.name,
                     card.description,
                     card.warnings,
+                    card.tag,
                     selected == Some(card.selection),
                     active,
                 );
@@ -1144,9 +1224,41 @@ impl GitTurtle {
                                             .map(|_| div().flex_1().min_w_0().p(px(2.)).border_1()),
                                     )
                             }))
+                            .when(key == "desktop", |group| {
+                                group.children(self.desktop_theme_reason(p, cx))
+                            })
                     }),
             )
             .into_any_element()
+    }
+
+    /// Linux: while the Omarchy card is unavailable, the reason in its own
+    /// words, as a muted line under the card's row; the caption keeps only
+    /// "Unavailable · Keeping ‹Theme›". Bounded to two lines with the Your
+    /// themes notice's styling, so a long reason never moves the palettes.
+    fn desktop_theme_reason(&self, p: appearance::Palette, cx: &App) -> Option<AnyElement> {
+        #[cfg(target_os = "linux")]
+        {
+            let reason = appearance::omarchy::card(cx)?.reason?;
+            Some(
+                div()
+                    .id("settings-theme-omarchy-reason")
+                    .debug_selector(|| "settings-theme-omarchy-reason".into())
+                    .role(Role::Label)
+                    .aria_label(reason.clone())
+                    .text_size(appearance::ui_text(12.))
+                    .text_color(rgb(p.muted))
+                    .line_clamp(2)
+                    .text_ellipsis()
+                    .child(reason)
+                    .into_any_element(),
+            )
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (p, cx);
+            None
+        }
     }
 
     /// One picker card: a ghost toggle button holding the retained miniature
@@ -1169,12 +1281,17 @@ impl GitTurtle {
             ThemeSelection::Custom(id) => format!("settings-custom-theme-{id}"),
             ThemeSelection::Omarchy => "settings-theme-omarchy".into(),
         };
-        let accessible_name = format!("{} theme", card.name);
+        let accessible_name = card
+            .accessible_name
+            .clone()
+            .unwrap_or_else(|| format!("{} theme", card.name).into());
         #[cfg(test)]
         self.card_names
             .borrow_mut()
-            .push((selector(), accessible_name.clone()));
-        let tooltip = if card.warnings == 0 {
+            .push((selector(), accessible_name.to_string()));
+        let tooltip = if let Some(detail) = &card.detail {
+            format!("{} · {detail}", card.name)
+        } else if card.warnings == 0 {
             format!("{} · {}", card.name, card.description)
         } else {
             format!(
@@ -2496,6 +2613,7 @@ pub(super) struct CardKey {
     name: SharedString,
     description: SharedString,
     warnings: usize,
+    tag: Option<SharedString>,
     /// The applied accent, accent foreground and canvas, which draw the
     /// check badge and its ring; absent on a card that is not selected,
     /// which draws no badge.
@@ -2511,6 +2629,7 @@ impl CardKey {
         name: SharedString,
         description: SharedString,
         warnings: usize,
+        tag: Option<SharedString>,
         selected: bool,
         active: appearance::Palette,
     ) -> Self {
@@ -2519,6 +2638,7 @@ impl CardKey {
             name,
             description,
             warnings,
+            tag,
             badge: selected.then_some((active.accent, active.accent_foreground, active.canvas)),
             marks: (warnings > 0).then_some((active.warning, active.canvas)),
         }
@@ -3118,6 +3238,7 @@ impl Render for ThemeCardBody {
                 key.description,
                 key.badge.is_some(),
                 key.warnings,
+                key.tag,
                 self.active,
                 miniature,
             ))
@@ -3323,12 +3444,39 @@ fn focused_theme_card(card: Button, accent: u32) -> AnyElement {
 
 /// What a picker card shows: the theme it selects, the palette its miniature
 /// draws, its caption and the count of its readability findings.
+/// How long choosing the Omarchy card waits for its read before the cached
+/// palette applies (`GitTurtle::choose_omarchy`).
+#[cfg(target_os = "linux")]
+pub(super) const OMARCHY_CHOICE_WAIT: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Linux: the Omarchy card's choices (`GitTurtle::choose_omarchy`).
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+pub(super) struct OmarchyChoice {
+    /// Bumped by every choice, so a wait that outlived its choice applies
+    /// nothing.
+    made: u64,
+    /// The choice waiting for its read, with when it was made for
+    /// `gitturtle.theme_apply_frame_ms`.
+    waiting: Option<(u64, Option<std::time::Instant>)>,
+}
+
 struct ThemeCard {
     selection: ThemeSelection,
     palette: appearance::Palette,
     name: SharedString,
     description: SharedString,
     warnings: usize,
+    /// The whole state when the caption shortens it (the Omarchy card), for
+    /// the tooltip.
+    detail: Option<SharedString>,
+    /// The name for assistive technology when "‹name› theme" is not all it
+    /// needs: an unavailable Omarchy card adds its state, as the kit's
+    /// button takes a label but no description.
+    accessible_name: Option<SharedString>,
+    /// A muted word beside the name, "Unavailable" on an Omarchy card whose
+    /// theme cannot be read; the description then names the palette in use.
+    tag: Option<SharedString>,
 }
 
 /// A tiny workspace built from native elements stays crisp at any display scale
@@ -3395,6 +3543,7 @@ pub(super) fn theme_preview(
                 description.into(),
                 selected,
                 warnings,
+                None,
                 active,
                 miniature,
             )
@@ -3408,12 +3557,14 @@ pub(super) fn theme_preview(
 /// A theme preview's caption, without the background that follows the
 /// pointer: [`theme_preview`] styles it, and a picker card's caption is
 /// filled by [`LayerCard`], outside its cached body.
+#[allow(clippy::too_many_arguments)]
 fn preview_caption(
     p: appearance::Palette,
     label: SharedString,
     description: SharedString,
     selected: bool,
     warnings: usize,
+    tag: Option<SharedString>,
     active: appearance::Palette,
     miniature: EntityId,
 ) -> Stateful<Div> {
@@ -3439,12 +3590,26 @@ fn preview_caption(
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(rgb(p.text))
                 .child(label);
-            if selected || warnings > 0 {
+            if selected || warnings > 0 || tag.is_some() {
                 div()
                     .flex()
                     .items_center()
                     .gap_1()
                     .child(name.flex_1())
+                    .when_some(tag, |row, tag| {
+                        // Beside the name, in the warning count's muted
+                        // 10 px, so the description keeps its line for the
+                        // palette in use.
+                        row.child(
+                            div()
+                                .debug_selector(move || format!("theme-tag-{miniature}"))
+                                .flex_shrink_0()
+                                .text_size(crate::appearance::ui_text(10.))
+                                .line_height(relative(1.3))
+                                .text_color(rgb(p.muted))
+                                .child(tag),
+                        )
+                    })
                     .when(warnings > 0, |row| {
                         row.child(
                             div()
@@ -4363,10 +4528,32 @@ mod picker_tests {
                 )
             })
         };
+        let tag = |cx: &mut VisualTestContext| {
+            cx.read(|cx| {
+                let app = app.read(cx);
+                let key = app.theme_card_body(omarchy).read(cx).key.clone().unwrap();
+                key.tag.map(|tag| tag.to_string())
+            })
+        };
+        // The card's accessible name, with its state while unavailable.
+        let named = |cx: &mut VisualTestContext| {
+            page_shows(cx, "settings-theme-omarchy");
+            cx.read(|cx| {
+                app.read(cx)
+                    .card_names
+                    .borrow()
+                    .iter()
+                    .find(|(selector, _)| selector == "settings-theme-omarchy")
+                    .map(|(_, name)| name.clone())
+            })
+        };
         assert_eq!(
             caption(cx),
             ("Omarchy".into(), "Follows Tokyo Night".into(), mapped)
         );
+        assert_eq!(tag(cx), None);
+        assert_eq!(named(cx).as_deref(), Some("Omarchy theme"));
+        assert!(!page_shows(cx, "settings-theme-omarchy-reason"));
         assert_eq!(
             cx.read(|cx| app.read(cx).theme_preview_body(omarchy).read(cx).palette()),
             mapped
@@ -4415,15 +4602,28 @@ mod picker_tests {
         assert_eq!(follow(cx), locked);
 
         // Selected, the card stays when the file goes, keeping the last palette.
+        // Its caption says so in words that fit the card, the reason is a
+        // line of its own under the card's row, and the accessible name
+        // carries both.
         std::fs::remove_file(root.join("theme/colors.toml")).unwrap();
         cx.update(|_, cx| appearance::omarchy::refresh(cx));
         settle(cx);
-        assert!(drawn(cx, "settings-theme-omarchy".into()).is_some());
+        let card = drawn(cx, "settings-theme-omarchy".into()).expect("the card stays");
+        assert_eq!(caption(cx).1, "Keeping Tokyo Night");
+        assert_eq!(tag(cx).as_deref(), Some("Unavailable"));
         assert_eq!(
-            caption(cx).1,
-            "Unavailable: colors.toml is missing. Keeping Tokyo Night."
+            named(cx).as_deref(),
+            Some("Omarchy theme, unavailable: colors.toml is missing. Keeping Tokyo Night.")
+        );
+        let reason = drawn(cx, "settings-theme-omarchy-reason".into()).expect("the reason");
+        assert!(card.bottom() <= reason.top() && reason.bottom() <= group(cx, "light").top());
+        assert_eq!(
+            cx.read(|cx| appearance::omarchy::card(cx).unwrap().reason),
+            Some("colors.toml is missing.".into())
         );
         assert_eq!(cx.read(palette), mapped);
+        let kept = caption(cx).1;
+        unavailable_caption_fits(cx, &app, &kept);
 
         // Another card releases Follow system, and the unavailable card goes.
         choose(
@@ -4443,6 +4643,52 @@ mod picker_tests {
         assert!(!page_shows(cx, "settings-theme-group-desktop"));
         toggle_follow(cx);
         assert!(cx.read(|cx| app.read(cx).settings.follow_system));
+    }
+
+    /// An unavailable Omarchy card's caption fits its card at the default
+    /// interface size in a 1,400 px window, for the longest bundled theme
+    /// name: the name line holds "Omarchy", "Unavailable" and the check
+    /// badge, and the description (`kept`, Tokyo Night's) with Catppuccin
+    /// Latte in its place, each shaped narrower than the box that lays it
+    /// out, so neither is cut. The test text system gives every character
+    /// 0.6 em, wider than the interface font's letters on average.
+    #[cfg(target_os = "linux")]
+    fn unavailable_caption_fits(cx: &mut VisualTestContext, app: &Entity<GitTurtle>, kept: &str) {
+        let omarchy = ThemeSelection::Omarchy;
+        cx.simulate_resize(size(px(1400.), px(2400.)));
+        settle(cx);
+        let body = miniature(cx, app, omarchy);
+        let width = |cx: &mut VisualTestContext, text: &str, size: f32| {
+            cx.update(|window, _| {
+                let run = TextRun {
+                    len: text.len(),
+                    font: window.text_style().font(),
+                    color: gpui::black(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let size = appearance::ui_text(size);
+                window
+                    .text_system()
+                    .shape_line(text.to_owned().into(), size, &[run], None)
+                    .width()
+            })
+        };
+        let longest = kept.replace("Tokyo Night", "Catppuccin Latte");
+        let longest = longest.as_str();
+        let description = drawn(cx, format!("theme-description-{body}")).expect("a description");
+        assert!(
+            width(cx, longest, 10.) <= description.size.width,
+            "{longest:?} fits {description:?}"
+        );
+        let name = drawn(cx, format!("theme-name-{body}")).expect("a name");
+        let tag = drawn(cx, format!("theme-tag-{body}")).expect("the Unavailable tag");
+        assert!(width(cx, "Omarchy", 12.) <= name.size.width, "{name:?}");
+        assert!(width(cx, "Unavailable", 10.) <= tag.size.width, "{tag:?}");
+        assert!(name.right() <= tag.left());
+        cx.simulate_resize(size(px(1440.), px(2400.)));
+        settle(cx);
     }
 
     /// Without the Omarchy reader (no absolute `$HOME` on Linux, or another

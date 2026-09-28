@@ -6,8 +6,9 @@
 //! then rewrites `theme.name`.
 //!
 //! Nothing here writes or spawns a process. Every read runs on the background executor: once
-//! at launch, when a window regains focus, when the theme is selected, and, while it is
-//! selected, once the writes of a switch settle under a non-recursive watch of `current/`.
+//! at launch, when a window regains focus, when the theme is chosen (which applies only what
+//! that read finds), when a watch starts, and, while the theme is selected or Settings shows
+//! its card, once the writes of a switch settle under a non-recursive watch of `current/`.
 //! [`Omarchy`] is the one owner of what the reads found. The picker card, the Follow system
 //! switch and `apply_appearance` all read it, and it changes (notifying its observers) only
 //! when what it holds changes, so a reread that finds the same theme applies nothing.
@@ -217,24 +218,41 @@ impl Shown {
         }
     }
 
+    /// The card's description line, short enough for the card: what it follows, or, while
+    /// it is unavailable (which the name line says), the palette that stays in use. The
+    /// reason is [`Card::reason`].
     fn description(&self) -> String {
+        self.fallback().unwrap_or_else(|| self.following())
+    }
+
+    /// The whole state in one sentence, reason included: the card's tooltip.
+    fn status(&self) -> String {
+        match (&self.problem, self.fallback()) {
+            (Some(problem), Some(kept)) => format!("Unavailable: {problem}. {kept}."),
+            _ => self.following(),
+        }
+    }
+
+    fn following(&self) -> String {
         if self.pending {
             return "Reading your Omarchy theme…".into();
         }
-        let Some(problem) = &self.problem else {
-            return self.name.as_ref().map_or_else(
-                || "Follows your Omarchy theme".into(),
-                |name| format!("Follows {name}"),
-            );
-        };
-        match &self.last_good {
-            None => format!(
-                "Unavailable: {problem}. Using {}.",
-                super::ThemeChoice::default().label()
-            ),
-            Some((_, Some(name))) => format!("Unavailable: {problem}. Keeping {name}."),
-            Some((_, None)) => format!("Unavailable: {problem}. Keeping the last colors read."),
+        self.name.as_ref().map_or_else(
+            || "Follows your Omarchy theme".into(),
+            |name| format!("Follows {name}"),
+        )
+    }
+
+    /// Which palette stays in use while the theme cannot be read, or `None` when it can.
+    fn fallback(&self) -> Option<String> {
+        if self.pending || self.problem.is_none() {
+            return None;
         }
+        Some(match &self.last_good {
+            None => format!("Using {}", super::ThemeChoice::default().label()),
+            Some((_, Some(name))) => format!("Keeping {name}"),
+            Some((_, None)) => "Keeping the last colors".into(),
+        })
     }
 }
 
@@ -244,11 +262,17 @@ struct Follower {
     /// The latest reread started; a result from an older one is dropped.
     generation: u64,
     requests: mpsc::UnboundedSender<Request>,
+    /// The Omarchy theme is selected.
     following: bool,
+    /// Settings is open, so the card, while offered, shows what the latest read found.
+    showing: bool,
     watch: Watch,
-    /// Bumped whenever following starts or stops and whenever a watch starts, so a watcher
-    /// that finishes starting after that is dropped, and a lost watch is only the current one.
+    /// Bumped whenever the watch starts or stops, so a watcher that finishes starting after
+    /// that is dropped, and a lost watch is only the current one.
     epoch: u64,
+    /// Choices of the card waiting for a read that starts after the generation beside each
+    /// ([`read_now`]).
+    waiting: Vec<(u64, oneshot::Sender<()>)>,
     /// Launch's wait for the first read.
     ready: Option<oneshot::Sender<()>>,
     _rereads: Task<()>,
@@ -324,8 +348,10 @@ pub(crate) fn install(root: Option<PathBuf>, cx: &mut App) -> Initial {
         generation: 0,
         requests,
         following: false,
+        showing: false,
         watch: Watch::Off,
         epoch: 0,
+        waiting: Vec::new(),
         ready: Some(ready),
         _rereads: rereads,
         #[cfg(test)]
@@ -394,11 +420,11 @@ async fn reread(mut requests: mpsc::UnboundedReceiver<Request>, cx: &mut AsyncAp
 }
 
 /// The watch of `epoch` lost `current/`: mark it failed, so the next focus return watches
-/// the directory again, unless following has moved on since.
+/// the directory again, unless the watch has stopped or started again since.
 fn lose_watch(epoch: u64, cx: &mut App) {
     if cx
         .try_global::<Follower>()
-        .is_some_and(|follower| follower.following && follower.epoch == epoch)
+        .is_some_and(|follower| follower.epoch == epoch && !matches!(follower.watch, Watch::Off))
     {
         cx.global_mut::<Follower>().watch = Watch::Failed;
     }
@@ -422,24 +448,46 @@ fn finish(generation: u64, reading: Reading, cx: &mut App) {
     if follower.generation != generation {
         return;
     }
-    if let Some(ready) = cx.global_mut::<Follower>().ready.take() {
+    let follower = cx.global_mut::<Follower>();
+    if let Some(ready) = follower.ready.take() {
         let _ = ready.send(());
     }
-    let Some(state) = cx.try_global::<Omarchy>() else {
-        return;
-    };
-    let shown = state.shown.after(reading);
-    if shown == state.shown {
-        return;
+    // Answered once the result below is held, so a choice applies what this read found.
+    let (answered, waiting) = std::mem::take(&mut follower.waiting)
+        .into_iter()
+        .partition::<Vec<_>, _>(|(after, _)| *after < generation);
+    follower.waiting = waiting;
+    if let Some(state) = cx.try_global::<Omarchy>() {
+        let shown = state.shown.after(reading);
+        if shown != state.shown {
+            let state = cx.global_mut::<Omarchy>();
+            state.shown = shown;
+            state.revision += 1;
+            state.arrived = Some(Instant::now());
+        }
     }
-    let state = cx.global_mut::<Omarchy>();
-    state.shown = shown;
-    state.revision += 1;
-    state.arrived = Some(Instant::now());
+    for (_, answer) in answered {
+        let _ = answer.send(());
+    }
+    // Whether the card is offered may have changed.
+    sync_watch(cx);
 }
 
-/// Watch `current/` while the Omarchy theme is selected, and stop when another is. Selecting
-/// it also reads it again, so a theme changed while it was not followed is picked up.
+/// Start a read for a choice of the card: the receiver resolves once a read that started
+/// after this call has been taken, so the choice applies what `current/` holds now rather
+/// than what an earlier read found. A read already under way finishes first, and a watched
+/// switch still settling is joined, as focus return joins it. `None` without the reader.
+pub(crate) fn read_now(cx: &mut App) -> Option<oneshot::Receiver<()>> {
+    cx.try_global::<Follower>()?;
+    let follower = cx.global_mut::<Follower>();
+    let (answer, answered) = oneshot::channel();
+    follower.waiting.push((follower.generation, answer));
+    let _ = follower.requests.unbounded_send(Request::Now);
+    Some(answered)
+}
+
+/// Follow the Omarchy theme while it is `selected`: watch `current/`, which reads it again
+/// when the watch starts, so a theme changed while nothing watched is picked up.
 pub(crate) fn follow(selected: bool, cx: &mut App) {
     let Some(follower) = cx.try_global::<Follower>() else {
         return;
@@ -447,11 +495,48 @@ pub(crate) fn follow(selected: bool, cx: &mut App) {
     if follower.following == selected {
         return;
     }
+    cx.global_mut::<Follower>().following = selected;
+    sync_watch(cx);
+}
+
+/// Settings opened or closed. While it is open and the card is offered, `current/` is
+/// watched as for a selected theme, so the card's caption and miniature stay current; a
+/// reread then applies nothing unless the theme is selected.
+pub(crate) fn show(open: bool, cx: &mut App) {
+    let Some(follower) = cx.try_global::<Follower>() else {
+        return;
+    };
+    if follower.showing == open {
+        return;
+    }
+    cx.global_mut::<Follower>().showing = open;
+    sync_watch(cx);
+}
+
+/// Whether `current/` is watched: while the theme is selected, and while Settings shows
+/// the card, which it offers only while `colors.toml` is there.
+fn wanted(follower: &Follower, cx: &App) -> bool {
+    follower.following
+        || (follower.showing
+            && cx
+                .try_global::<Omarchy>()
+                .is_some_and(|state| state.shown.available))
+}
+
+/// Start or stop the watch to match [`wanted`]. A watch that starts reads `current/` once,
+/// because it sees nothing that happened before it.
+fn sync_watch(cx: &mut App) {
+    let Some(follower) = cx.try_global::<Follower>() else {
+        return;
+    };
+    let wanted = wanted(follower, cx);
+    if wanted == !matches!(follower.watch, Watch::Off) {
+        return;
+    }
     let follower = cx.global_mut::<Follower>();
-    follower.following = selected;
     follower.epoch += 1;
     follower.watch = Watch::Off;
-    if selected {
+    if wanted {
         let _ = follower.requests.unbounded_send(Request::Now);
         start_watch(cx);
     }
@@ -463,7 +548,7 @@ pub(crate) fn refresh(cx: &mut App) {
         return;
     };
     let _ = follower.requests.unbounded_send(Request::Now);
-    if follower.following && matches!(follower.watch, Watch::Failed) {
+    if matches!(follower.watch, Watch::Failed) {
         start_watch(cx);
     }
 }
@@ -494,7 +579,7 @@ fn start_watch(cx: &mut App) {
                 return;
             }
             let follower = cx.global_mut::<Follower>();
-            if follower.following && follower.epoch == epoch {
+            if follower.epoch == epoch && matches!(follower.watch, Watch::Starting) {
                 follower.watch = watcher.map_or(Watch::Failed, Watch::On);
             }
         });
@@ -585,7 +670,17 @@ pub(crate) struct Card {
     pub offered: bool,
     /// The palette its miniature draws: the one the theme applies.
     pub palette: Palette,
+    /// The short caption: "Follows Tokyo Night", or "Keeping Tokyo Night" while unavailable.
     pub description: String,
+    /// The theme cannot be read: the card's name line says "Unavailable".
+    pub unavailable: bool,
+    /// The whole state with its reason, for the tooltip.
+    pub status: String,
+    /// "Omarchy theme", and while unavailable its state as well: "Omarchy theme,
+    /// unavailable: colors.toml is missing. Keeping Tokyo Night."
+    pub accessible_name: String,
+    /// Why the theme cannot be read, as a sentence, while it cannot.
+    pub reason: Option<String>,
     pub revision: u64,
     pub arrived: Option<Instant>,
 }
@@ -593,13 +688,26 @@ pub(crate) struct Card {
 /// The card, or `None` when nothing is read on this desktop.
 pub(crate) fn card(cx: &App) -> Option<Card> {
     let state = cx.try_global::<Omarchy>()?;
+    let shown = &state.shown;
     Some(Card {
-        offered: state.shown.available,
-        palette: state.shown.last_good.as_ref().map_or_else(
+        offered: shown.available,
+        palette: shown.last_good.as_ref().map_or_else(
             || super::ThemeChoice::default().palette(),
             |(mapped, _)| mapped.palette,
         ),
-        description: state.shown.description(),
+        description: shown.description(),
+        unavailable: shown.fallback().is_some(),
+        status: shown.status(),
+        accessible_name: match (&shown.problem, shown.fallback()) {
+            (Some(problem), Some(kept)) => {
+                format!("Omarchy theme, unavailable: {problem}. {kept}.")
+            }
+            _ => "Omarchy theme".into(),
+        },
+        reason: shown
+            .fallback()
+            .and(shown.problem.as_ref())
+            .map(|problem| format!("{problem}.")),
         revision: state.revision,
         arrived: state.arrived,
     })
@@ -761,40 +869,74 @@ mod tests {
     }
 
     /// A failed read keeps the last good palette for the session and says why; without one,
-    /// the default theme stands in.
+    /// the default theme stands in. The caption stays short, the palette kept in use, and the
+    /// reason goes to its own line and, with that palette, to the card's status.
     #[test]
     fn a_failed_read_keeps_the_last_good_palette_and_says_why() {
         let pending = Shown {
             pending: true,
             ..Shown::default()
         };
-        assert_eq!(pending.description(), "Reading your Omarchy theme…");
+        let texts = |shown: &Shown| {
+            let reason = shown
+                .fallback()
+                .and(shown.problem.clone())
+                .map(|problem| format!("{problem}."));
+            (shown.description(), shown.status(), reason)
+        };
+        let reading = "Reading your Omarchy theme…".to_owned();
+        assert_eq!(texts(&pending), (reading.clone(), reading, None));
         let problem = || Reading {
             available: true,
             name: Some("Broken".into()),
-            outcome: Err("colors.toml is missing a background color".into()),
+            outcome: Err(
+                "colors.toml is missing a background color (background, bg or color0)".into(),
+            ),
         };
+        let reason = Some("colors.toml is missing a background color (background, bg or color0).");
         let first = pending.after(problem());
         assert_eq!(first.last_good, None);
         assert_eq!(
-            first.description(),
-            "Unavailable: colors.toml is missing a background color. Using Midnight."
+            texts(&first),
+            (
+                "Using Midnight".into(),
+                "Unavailable: colors.toml is missing a background color \
+                 (background, bg or color0). Using Midnight."
+                    .into(),
+                reason.map(Into::into),
+            )
         );
         let good = first.after(Reading {
             available: true,
             name: Some("Tokyo Night".into()),
             outcome: Ok(mapped(TOKYO_NIGHT)),
         });
-        assert_eq!(good.description(), "Follows Tokyo Night");
+        let follows = "Follows Tokyo Night".to_owned();
+        assert_eq!(texts(&good), (follows.clone(), follows, None));
         let broken = good.after(problem());
         assert_eq!(
             broken.last_good,
             Some((mapped(TOKYO_NIGHT), Some("Tokyo Night".into())))
         );
         assert_eq!(
-            broken.description(),
-            "Unavailable: colors.toml is missing a background color. Keeping Tokyo Night."
+            texts(&broken),
+            (
+                "Keeping Tokyo Night".into(),
+                "Unavailable: colors.toml is missing a background color \
+                 (background, bg or color0). Keeping Tokyo Night."
+                    .into(),
+                reason.map(Into::into),
+            )
         );
+        // A palette read without a name is kept by description alone.
+        let unnamed = Shown::default()
+            .after(Reading {
+                available: true,
+                name: None,
+                outcome: Ok(mapped(TOKYO_NIGHT)),
+            })
+            .after(problem());
+        assert_eq!(unnamed.description(), "Keeping the last colors");
     }
 
     /// Of two rereads, the one started last wins even when the older result arrives after
@@ -965,6 +1107,174 @@ mod tests {
         assert!(cx.read(|cx| matches!(cx.global::<Follower>().watch, Watch::Off)));
     }
 
+    /// The watch's state, by name.
+    fn watch_state(cx: &mut VisualTestContext) -> &'static str {
+        cx.read(|cx| match cx.global::<Follower>().watch {
+            Watch::Off => "off",
+            Watch::Starting => "starting",
+            Watch::On(_) => "on",
+            Watch::Failed => "failed",
+        })
+    }
+
+    /// Record every palette applied from now on.
+    fn applications(cx: &mut VisualTestContext) -> Rc<std::cell::RefCell<Vec<Palette>>> {
+        let applied = Rc::<std::cell::RefCell<Vec<Palette>>>::default();
+        let record = applied.clone();
+        cx.update(|_, cx| {
+            cx.observe_global::<Palette>(move |cx| {
+                record.borrow_mut().push(*cx.global::<Palette>())
+            })
+            .detach()
+        });
+        applied
+    }
+
+    fn choose(app: &Entity<crate::GitTurtle>, cx: &mut VisualTestContext, theme: ThemeSelection) {
+        cx.update(|window, cx| app.update(cx, |app, cx| app.choose_theme(theme, window, cx)));
+    }
+
+    /// While Settings is open, the card follows the desktop even when another theme is
+    /// selected: a switch updates its caption and miniature once the writes settle and
+    /// applies nothing. Closing Settings stops the watch unless the Omarchy theme is
+    /// selected, which keeps it.
+    #[gpui::test]
+    fn open_settings_keep_an_unselected_card_current(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = current(fixture.path(), TOKYO_NIGHT, "tokyo-night");
+        cx.update(|cx| drop(install(Some(root.clone()), cx)));
+        let (app, cx) = open_app(cx);
+        cx.run_until_parked();
+        assert_eq!(
+            watch_state(cx),
+            "off",
+            "nothing watches while Settings is closed"
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        cx.run_until_parked();
+        assert_eq!(watch_state(cx), "on", "Settings shows the card");
+        let applied = applications(cx);
+        let before = cx.read(|cx| cx.try_global::<Palette>().copied());
+
+        switch(&root, WHITE, "white", "switched");
+        delivered(cx, &root.join("switched"));
+        cx.run_until_parked();
+        let shown = |cx: &mut VisualTestContext| {
+            cx.read(|cx| {
+                let miniature = app
+                    .read(cx)
+                    .theme_preview_body(ThemeSelection::Omarchy)
+                    .read(cx)
+                    .palette();
+                (card(cx).unwrap().description, miniature)
+            })
+        };
+        assert_eq!(
+            shown(cx),
+            ("Follows Tokyo Night".into(), mapped(TOKYO_NIGHT).palette),
+            "nothing is read before the writes settle"
+        );
+        cx.executor().advance_clock(QUIET_PERIOD);
+        cx.run_until_parked();
+        assert_eq!(shown(cx), ("Follows White".into(), mapped(WHITE).palette));
+        assert!(
+            applied.borrow().is_empty(),
+            "an unselected card applies nothing"
+        );
+        assert_eq!(cx.read(|cx| cx.try_global::<Palette>().copied()), before);
+
+        let close = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+            cx.run_until_parked();
+        };
+        close(cx);
+        assert_eq!(watch_state(cx), "off", "closing Settings stops the watch");
+
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        cx.run_until_parked();
+        choose(&app, cx, ThemeSelection::Omarchy);
+        cx.run_until_parked();
+        assert_eq!(*applied.borrow(), vec![mapped(WHITE).palette]);
+        close(cx);
+        assert_eq!(watch_state(cx), "on", "a selected theme stays watched");
+    }
+
+    /// Choosing the card reads `current/` first: after a switch nothing saw (Settings
+    /// closed, no focus return), the card still shows the old theme, and the choice applies
+    /// the new one once, when its read lands, never the stale one. Chosen again while that
+    /// reading is current, it applies exactly once more.
+    #[gpui::test]
+    fn choosing_the_card_applies_what_its_read_finds_once(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = current(fixture.path(), TOKYO_NIGHT, "tokyo-night");
+        cx.update(|cx| drop(install(Some(root.clone()), cx)));
+        let (app, cx) = open_app(cx);
+        cx.run_until_parked();
+        switch(&root, WHITE, "white", "switched");
+        cx.run_until_parked();
+        assert_eq!(watch_state(cx), "off");
+        assert_eq!(
+            cx.read(|cx| card(cx).unwrap().description),
+            "Follows Tokyo Night",
+            "the card has not seen the switch"
+        );
+        let applied = applications(cx);
+
+        choose(&app, cx, ThemeSelection::Omarchy);
+        assert!(
+            applied.borrow().is_empty(),
+            "nothing applies before the read"
+        );
+        cx.run_until_parked();
+        assert_eq!(*applied.borrow(), vec![mapped(WHITE).palette]);
+        assert_eq!(cx.read(|cx| card(cx).unwrap().description), "Follows White");
+
+        let nord = ThemeChoice::Nord;
+        choose(&app, cx, ThemeSelection::BuiltIn(nord));
+        cx.run_until_parked();
+        choose(&app, cx, ThemeSelection::Omarchy);
+        cx.run_until_parked();
+        assert_eq!(
+            *applied.borrow(),
+            vec![mapped(WHITE).palette, nord.palette(), mapped(WHITE).palette]
+        );
+    }
+
+    /// A read slower than the choice's 100 ms wait, here one that joins a switch whose
+    /// writes are still settling, lets the cached palette apply at the wait's end, and the
+    /// read's own palette applies when it lands.
+    #[gpui::test]
+    fn a_slow_read_applies_the_cached_palette_then_the_new_one(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = current(fixture.path(), TOKYO_NIGHT, "tokyo-night");
+        cx.update(|cx| drop(install(Some(root.clone()), cx)));
+        let (app, cx) = open_app(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        cx.run_until_parked();
+        assert_eq!(watch_state(cx), "on");
+        let applied = applications(cx);
+
+        switch(&root, WHITE, "white", "switched");
+        delivered(cx, &root.join("switched"));
+        cx.run_until_parked();
+        choose(&app, cx, ThemeSelection::Omarchy);
+        cx.run_until_parked();
+        assert!(
+            applied.borrow().is_empty(),
+            "the read waits for the writes to settle"
+        );
+        cx.executor()
+            .advance_clock(crate::settings::OMARCHY_CHOICE_WAIT);
+        cx.run_until_parked();
+        assert_eq!(*applied.borrow(), vec![mapped(TOKYO_NIGHT).palette]);
+        cx.executor().advance_clock(QUIET_PERIOD);
+        cx.run_until_parked();
+        assert_eq!(
+            *applied.borrow(),
+            vec![mapped(TOKYO_NIGHT).palette, mapped(WHITE).palette]
+        );
+    }
+
     /// Launch waits for the first read only when it will apply it; with another theme
     /// selected the read still runs and offers the card.
     #[gpui::test]
@@ -1006,10 +1316,7 @@ mod tests {
         cx.executor().advance_clock(QUIET_PERIOD);
         cx.run_until_parked();
         assert!(cx.read(|cx| matches!(cx.global::<Follower>().watch, Watch::Failed)));
-        assert_eq!(
-            caption(cx),
-            "Unavailable: colors.toml is missing. Keeping Tokyo Night."
-        );
+        assert_eq!(caption(cx), "Keeping Tokyo Night");
 
         current(fixture.path(), WHITE, "white");
         cx.update(refresh);
@@ -1050,7 +1357,7 @@ mod tests {
             cx.observe_global::<Palette>(move |_| count.set(count.get() + 1))
                 .detach();
             cx.observe_global::<Omarchy>(move |cx| {
-                seen.borrow_mut().push(card(cx).unwrap().description)
+                seen.borrow_mut().push(card(cx).unwrap().status)
             })
             .detach();
         });

@@ -318,6 +318,10 @@ struct GitTurtle {
     /// `None` before it took any (`GitTurtle::omarchy_changed`).
     #[cfg(target_os = "linux")]
     omarchy_revision: Option<u64>,
+    /// Linux: the Omarchy card's choice waiting for its read
+    /// (`GitTurtle::choose_omarchy`).
+    #[cfg(target_os = "linux")]
+    omarchy_choice: settings::OmarchyChoice,
     /// Test-only: whether the last Settings build drew Follow system on, off
     /// and disabled for the Omarchy theme, and its description
     /// (`settings::picker_tests::the_omarchy_card_selects_and_locks_follow_system`).
@@ -643,6 +647,8 @@ impl GitTurtle {
             card_names: Default::default(),
             #[cfg(target_os = "linux")]
             omarchy_revision: None,
+            #[cfg(target_os = "linux")]
+            omarchy_choice: Default::default(),
             #[cfg(test)]
             follow_system_row: Default::default(),
             #[cfg(test)]
