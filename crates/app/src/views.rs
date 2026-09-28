@@ -371,7 +371,8 @@ impl GitTurtle {
                 // A refused Toggle Sidebar changes nothing on screen, so it is
                 // announced politely. Each refusal gets a fresh node, which
                 // screen readers announce when it appears; it is out of flow
-                // and draws nothing.
+                // and draws nothing. AT-SPI announces the node's name and
+                // AccessKit's macOS adapter its value, so both carry the text.
                 let announcement = (narrow && self.navigation_refusals > 0).then_some((
                     self.navigation_refusals,
                     "Branches and worktrees unavailable: widen the window",
@@ -398,6 +399,7 @@ impl GitTurtle {
                             .role(Role::Status)
                             .a11y_synthetic_children(native_accessibility::polite)
                             .aria_label(message)
+                            .aria_value(message)
                             .absolute()
                             .size(px(1.))
                             .overflow_hidden(),
@@ -1913,7 +1915,7 @@ impl GitTurtle {
             self.history_sidebar = self.sidebar;
             cx.notify();
         } else {
-            self.navigation_refusals += 1;
+            self.navigation_refusals = self.navigation_refusals.wrapping_add(1);
             cx.notify();
         }
     }
