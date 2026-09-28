@@ -12,7 +12,7 @@
 //! finding after the fit (only contrived input gets there) is replaced by the mode's default
 //! built-in, so the applied palette never breaks a rule.
 
-use crate::appearance::custom::{contrast, luminance};
+use crate::appearance::custom::{PRESSED_STEP, contrast, luminance};
 use crate::appearance::{Palette, ThemeChoice};
 use std::collections::HashMap;
 
@@ -253,6 +253,9 @@ const LANE_TARGET: f64 = 3.1;
 const PANEL_ROOM: f64 = 1.3;
 /// The pressed-step rule's 6, plus a margin.
 const PRESSED_TARGET: u32 = 8;
+/// The most rounds the pressed step takes: every lightness step of the selected row, and as
+/// many of hover's.
+const PRESS_ROUNDS: u32 = 2 * LIGHTNESS_STEPS;
 /// Diff tiles tint the canvas with this much of the status color.
 const DIFF_TINT_DARK: f64 = 0.14;
 const DIFF_TINT_LIGHT: f64 = 0.10;
@@ -272,6 +275,26 @@ pub(crate) const STATUS_MIN_HUE: f64 = 30.;
 /// blues run from Gruvbox's aqua at 179° to Ethereal's periwinkle at 280°, and the colors
 /// that are no blue sit at 163° (Osaka Jade's green) and below.
 const HUNK_HUES: std::ops::RangeInclusive<f64> = 175.0..=310.0;
+/// The OKLCH hues Modified keeps the theme's `yellow` in, from orange to yellow: GitTurtle's
+/// own Modified colors span 48.5° (Alucard's orange) to 86.7° (Solarized Dark's yellow), the
+/// bundled themes' span 51.8° (Miasma's tan) to 88.3° (Flexoki Light's yellow), and pure
+/// yellow sits at 110°. Outside it lie Matte Black's red at 27.5°, yellow-greens from about
+/// 118°, Osaka Jade's green at 147° and the blues Lumon and Lupine name `yellow`.
+const MODIFIED_HUES: std::ops::RangeInclusive<f64> = 40.0..=115.0;
+/// The OKLCH hues the warning keeps the theme's `orange` (or `yellow`) in, from orange-red to
+/// yellow: GitTurtle's own warnings span 48.5° (Alucard's orange) to 86.7° (Solarized Dark's
+/// yellow), and the bundled themes' oranges run down to Catppuccin Latte's `#A4391E` and Tokyo
+/// Night's `#EB927B` at 35°. Below it lie pure red at 29°, Catppuccin's salmon `#F6B6AB` at
+/// 29.8° and Matte Black's red at 21.6°; above it, as for Modified, the yellow-greens and
+/// Hackerman's green at 157°, and beyond them the blues Lumon and Lupine name `orange`.
+const WARNING_HUES: std::ops::RangeInclusive<f64> = 32.0..=115.0;
+/// The OKLCH hues renamed keeps the theme's `magenta` in, from blue-violet round to
+/// magenta-pink: GitTurtle's own renamed colors span 278.5° (Solarized Light's violet) to
+/// 328.8° (One Light's magenta), and the bundled themes' run from Ristretto's lavender at 283°
+/// to Flexoki Light's magenta at 353°. Pure blue sits at 264°, Hackerman's periwinkle
+/// `#86A7DF` at 261° and Lumon's sky blue `#8BC9EB` at 233°; past 360° pinks turn into the
+/// roses and reds that mark removed lines.
+const RENAMED_HUES: std::ops::RangeInclusive<f64> = 270.0..=360.0;
 /// A `lighter_background` this close to the background is flat, not a lighter surface: the
 /// bundled themes that mean one keep at least 1.045:1 (Lupine), and those without one repeat
 /// the background exactly (Last Horizon, Solitude, and `color0` in a generated theme).
@@ -288,6 +311,10 @@ const SELECTED_CAP: f64 = 1.45;
 /// foreground: the step the flat-surface fallback gives, and the hover's step off the panel.
 /// It wins over `SUBTLE_CAP`.
 const SUBTLE_FLOOR: f64 = 1.08;
+/// The least hover stands off the panel (the readability rule) and off subtle, where
+/// secondary buttons rest, toward the foreground. The lane limit and the pressed step bring
+/// subtle back under it rather than hover onto subtle.
+const HOVER_STEP: f64 = 1.08;
 
 /// The rules' foreground and background contrast checks, with the side of the surface the
 /// foreground must be on: lighter in a dark palette, darker in a light one.
@@ -369,9 +396,10 @@ pub(crate) fn fit(colors: &Colors) -> Palette {
     };
     let background_extreme = judge.background_extreme();
     let settle = |color: u32| toward(color, background_extreme, |candidate| within(candidate, 1.));
-    // Lift a surface off the panel toward the foreground side by `ratio`.
-    let lift = |color: u32, panel: u32, ratio: f64| {
-        let steps = |candidate: u32, ratio: f64| judge.clears(candidate, &[(&[panel], ratio)], 0.);
+    // Lift a surface off each of `references` toward the foreground side by `ratio`.
+    let lift = |color: u32, references: &[u32], ratio: f64| {
+        let steps =
+            |candidate: u32, ratio: f64| judge.clears(candidate, &[(references, ratio)], 0.);
         if steps(color, ratio) {
             return color;
         }
@@ -444,10 +472,29 @@ pub(crate) fn fit(colors: &Colors) -> Palette {
             canvas,
             SELECTED_CAP,
         ),
-        panel,
+        &[panel],
         1.15,
     );
-    let hover = lift(settle(mix(canvas, selected, 0.5)), panel, 1.08);
+    // Subtle brought back toward the background until `hover` stands its step off it.
+    let under = |subtle: u32, hover: u32| {
+        let step = HOVER_STEP + SURFACE_MARGIN;
+        toward(subtle, background_extreme, |candidate| {
+            judge.clears(hover, &[(&[candidate], step)], 0.)
+        })
+    };
+    // Hover stands its step off the panel and off subtle, where a secondary button rests. The
+    // lane limit wins: where it holds hover under that step, subtle comes back under hover.
+    let lifted = lift(
+        settle(mix(canvas, selected, 0.5)),
+        &[panel, subtle],
+        HOVER_STEP,
+    );
+    let hover = settle(lifted);
+    let subtle = if hover == lifted {
+        subtle
+    } else {
+        under(subtle, hover)
+    };
     let border = lift(
         mix(
             canvas,
@@ -456,7 +503,7 @@ pub(crate) fn fit(colors: &Colors) -> Palette {
                 .unwrap_or_else(|| mix(canvas, colors.foreground, 0.3)),
             0.7,
         ),
-        panel,
+        &[panel],
         1.3,
     );
     let mut palette = Palette {
@@ -517,34 +564,93 @@ pub(crate) fn fit(colors: &Colors) -> Palette {
         accent_label(judge, fit_accent(palette, accent), palette.canvas)
     };
     (palette.accent, palette.accent_foreground) = accent_for(palette, colors.accent);
-    // The pressed button's layer stands apart from its hover on every surface: lift the
-    // selected row further while it keeps the lanes, then bring hover back toward the panel
-    // while it keeps its own step.
+    // The pressed button's layer stands apart from its hover on every surface, with the
+    // selected row beyond hover. Each round takes the first move open, in this order: lift the
+    // selected row while it keeps the lanes and its cap; bring hover back toward the panel
+    // while it keeps its step off the panel, with subtle coming back under it while subtle
+    // keeps its floor. Only while the pressed step is below its rule do the cap and then the
+    // floor give way: lift the selected row past its cap, then bring hover back with subtle
+    // under it past its floor. Hover never loses its step off subtle.
     let foreground_side = if judge.dark { 1. } else { 0. };
-    for _ in 0..128 {
-        if palette.pressed_step() >= PRESSED_TARGET {
-            break;
-        }
-        let (h, s, l) = to_hsl(palette.selected);
-        let lifted = from_hsl(h, s, l + (foreground_side - l) / 32.);
-        if lifted != palette.selected && within(lifted, 1.) {
-            palette.selected = lifted;
-            (palette.accent, palette.accent_foreground) = accent_for(palette, palette.accent);
-            continue;
-        }
+    let floor: Vec<u32> = [canvas, panel]
+        .into_iter()
+        .filter(|&reference| judge.clears(subtle, &[(&[reference], SUBTLE_FLOOR)], 0.))
+        .collect();
+    // Hover a step back toward the panel, keeping its step off the panel, with subtle
+    // brought back under it; `floored` keeps subtle on its floor too.
+    let lower_hover = |palette: Palette, floored: bool| {
         let (h, s, l) = to_hsl(palette.hover);
         let lowered = from_hsl(h, s, l + (1. - foreground_side - l) / 32.);
-        if lowered == palette.hover
-            || !judge.clears(lowered, &[(&[panel], 1.08 + SURFACE_MARGIN)], 0.)
+        let subtle = under(palette.subtle, lowered);
+        (lowered != palette.hover
+            && judge.clears(lowered, &[(&[panel], HOVER_STEP + SURFACE_MARGIN)], 0.)
+            && !(floored && !judge.clears(subtle, &[(&floor, SUBTLE_FLOOR)], 0.)))
+        .then_some(Palette {
+            hover: lowered,
+            subtle,
+            ..palette
+        })
+    };
+    // The selected row lifts in the fitter's lightness steps, counted from where it starts so
+    // that rounding does not drift its hue: the next step that changes it, while it keeps the
+    // lanes and, when `capped`, its cap.
+    let start = to_hsl(palette.selected);
+    let raise = |from: u32, selected: u32, capped: bool| {
+        let (h, s, l) = start;
+        (from + 1..=LIGHTNESS_STEPS)
+            .map(|step| {
+                let amount = f64::from(step) / f64::from(LIGHTNESS_STEPS);
+                (step, from_hsl(h, s, l + (foreground_side - l) * amount))
+            })
+            .find(|&(_, candidate)| candidate != selected)
+            .filter(|&(_, candidate)| {
+                within(candidate, 1.)
+                    && !(capped && judge.clears(candidate, &[(&[canvas], SELECTED_CAP)], 0.))
+            })
+    };
+    let in_order =
+        |palette: &Palette| judge.clears(palette.selected, &[(&[palette.hover], 1.)], 0.);
+    let mut raised = 0;
+    // The first round that met the pressed target, whether or not in order.
+    let mut first = None;
+    for _ in 0..PRESS_ROUNDS {
+        let pressed = palette.pressed_step();
+        if pressed >= PRESSED_TARGET {
+            first.get_or_insert(palette);
+            if in_order(&palette) {
+                break;
+            }
+        }
+        let short = pressed < PRESSED_STEP;
+        if let Some((step, selected)) = raise(raised, palette.selected, true) {
+            (raised, palette.selected) = (step, selected);
+        } else if let Some(next) = lower_hover(palette, true) {
+            palette = next;
+        } else if let Some((step, selected)) = short
+            .then(|| raise(raised, palette.selected, false))
+            .flatten()
         {
+            (raised, palette.selected) = (step, selected);
+        } else if let Some(next) = short.then(|| lower_hover(palette, false)).flatten() {
+            palette = next;
+        } else {
             break;
         }
-        palette.hover = lowered;
         (palette.accent, palette.accent_foreground) = accent_for(palette, palette.accent);
+    }
+    // The order is kept only where it also meets the rule. Otherwise the first round that met
+    // the target stands, as the same moves without the order would have stopped there, and
+    // the selected row may then stand on hover's side in lightness, apart from it in a
+    // channel.
+    let unordered = first.unwrap_or(palette);
+    if !(in_order(&palette) && palette.pressed_step() >= PRESSED_STEP)
+        && unordered.pressed_step() >= PRESSED_STEP
+    {
+        palette = unordered;
     }
     (palette.accent_hover, palette.accent_active) =
         accent_states(palette.accent, palette.accent_foreground);
-    let (hover, selected) = (palette.hover, palette.selected);
+    let (subtle, hover, selected) = (palette.subtle, palette.hover, palette.selected);
     let row = palette.row_hover(true);
     let surfaces = [canvas, panel, subtle, hover, selected, row];
 
@@ -567,8 +673,8 @@ pub(crate) fn fit(colors: &Colors) -> Palette {
         DIFF_TINT_LIGHT
     };
     // The four file statuses from added and removed: the diff tiles and the colors on them,
-    // then modified and renamed as `yellow` and `magenta` where they stand apart from the
-    // others, and otherwise GitTurtle's own.
+    // then modified and renamed as `yellow` and `magenta` where they lie in their hue windows
+    // (amber, violet) and stand apart from the others, and otherwise GitTurtle's own.
     let statuses = |added: u32, removed: u32, yellow: u32, magenta: u32| {
         let added_background = settle(mix(canvas, added, tint));
         let removed_background = settle(mix(canvas, removed, tint));
@@ -578,13 +684,16 @@ pub(crate) fn fit(colors: &Colors) -> Palette {
         let icon =
             |color: u32| judge.tune(color, &[(&surfaces, 3.0), (&tiles, 3.0)], CONTRAST_MARGIN);
         let theirs = icon(yellow);
-        let modified = if apart(theirs, &[added, removed]) {
-            theirs
-        } else {
-            icon(own.modified)
-        };
+        let modified =
+            if MODIFIED_HUES.contains(&oklch(theirs).1) && apart(theirs, &[added, removed]) {
+                theirs
+            } else {
+                icon(own.modified)
+            };
         let theirs = icon(magenta);
-        let renamed = if apart(theirs, &[added, removed, modified]) {
+        let renamed = if RENAMED_HUES.contains(&oklch(theirs).1)
+            && apart(theirs, &[added, removed, modified])
+        {
             theirs
         } else {
             icon(own.renamed)
@@ -603,9 +712,10 @@ pub(crate) fn fit(colors: &Colors) -> Palette {
     // are distinguishable, then GitTurtle's (when GitTurtle's own modified or renamed would
     // sit beside the theme's, as Matte Black's amber added beside GitTurtle's amber
     // modified), each with the theme's yellow and magenta where those stand apart. A
-    // replacement is not checked against the color kept beside it (a theme whose yellow and
-    // magenta are both GitTurtle's violet renamed), so when neither set stands apart, all
-    // four are GitTurtle's own.
+    // replacement is not checked against the color kept beside it, so when neither set stands
+    // apart, all four are GitTurtle's own. Since modified and renamed keep only amber and
+    // violet, no known theme reaches that step: a replacement violet renamed can no longer
+    // land on a kept modified.
     let ([added_background, removed_background], [added, removed, modified, renamed]) =
         distinguishable(red, green)
             .then(|| statuses(green, red, colors.yellow, colors.magenta))
@@ -622,10 +732,12 @@ pub(crate) fn fit(colors: &Colors) -> Palette {
     palette.modified = modified;
     palette.renamed = renamed;
     let tiles = [added_background, removed_background];
-    // A grey warning is no warning: it takes GitTurtle's, which shares modified's amber.
+    // A grey warning is no warning, nor is one outside `WARNING_HUES` (Matte Black's red,
+    // Lupine's blue): it takes GitTurtle's, which shares modified's amber.
     let warning = |color: u32| status(color, &[(&[subtle], 4.5)]);
     let theirs = warning(colors.orange.unwrap_or(colors.yellow));
-    palette.warning = if oklch(theirs).0 >= DIFF_MIN_CHROMA {
+    let (chroma, hue) = oklch(theirs);
+    palette.warning = if chroma >= DIFF_MIN_CHROMA && WARNING_HUES.contains(&hue) {
         theirs
     } else {
         warning(own.warning)
@@ -953,11 +1065,12 @@ mod tests {
     }
 
     /// Values that already pass stay as the theme wrote them: Tokyo Night keeps its
-    /// background, selection, accent, status colors and foreground, as GitTurtle's own
-    /// Tokyo Night keeps the same upstream hues; its dim foreground (2.9:1) is lifted toward
-    /// the foreground only until secondary text reads on every surface. Its lighter
-    /// background, 1.26:1 off the panel, is brought back toward the panel in lightness only,
-    /// as far as the subtle floor off its canvas allows.
+    /// background, accent, status colors and foreground, as GitTurtle's own Tokyo Night keeps
+    /// the same upstream hues; its dim foreground (2.9:1) is lifted toward the foreground only
+    /// until secondary text reads on every surface. Its lighter background, 1.26:1 off the
+    /// panel, is brought back toward the panel in lightness only, as far as the subtle floor
+    /// off its canvas allows. Its selection, 1.27:1 off the canvas, is lifted in lightness
+    /// only, for the pressed step beyond a hover that stands its step off subtle.
     #[test]
     fn a_passing_theme_keeps_its_own_colors() {
         let colors = bundled("tokyo-night");
@@ -976,7 +1089,12 @@ mod tests {
         let (hue, saturation, _) = to_hsl(palette.subtle);
         let (theirs, their_saturation, _) = to_hsl(lighter);
         assert!((hue - theirs).abs() < 0.01 && (saturation - their_saturation).abs() < 0.05);
-        assert_eq!(Some(palette.selected), colors.selection);
+        let selection = colors.selection.unwrap();
+        let (hue, saturation, _) = to_hsl(palette.selected);
+        let (theirs, their_saturation, _) = to_hsl(selection);
+        assert!((hue - theirs).abs() < 0.01 && (saturation - their_saturation).abs() < 0.05);
+        assert!(contrast(palette.selected, palette.canvas) > contrast(selection, palette.canvas));
+        assert!(contrast(palette.selected, palette.canvas) < SELECTED_CAP);
         assert_eq!(palette.accent, colors.accent);
         assert_eq!(palette.accent, ThemeChoice::TokyoNight.palette().accent);
         assert_eq!(palette.text, colors.foreground);
@@ -1110,6 +1228,8 @@ mod tests {
                 vec![
                     "hackerman",
                     "last-horizon",
+                    "lumon",
+                    "lupine",
                     "matte-black",
                     "osaka-jade",
                     "retro-82",
@@ -1121,6 +1241,7 @@ mod tests {
                     "catppuccin",
                     "everforest",
                     "gruvbox",
+                    "hackerman",
                     "last-horizon",
                     "lumon",
                     "matte-black",
@@ -1179,18 +1300,96 @@ mod tests {
         }))
     }
 
-    /// A replacement is never checked against the theme color kept beside it, so when
-    /// neither the theme's diff nor GitTurtle's leaves the four statuses apart, all four are
-    /// GitTurtle's own: a Tokyo Night whose yellow and magenta are both GitTurtle's violet
-    /// renamed `#C1A5F5` kept that violet as modified and took GitTurtle's renamed, the same
-    /// violet, beside it.
+    /// The warning keeps the theme's `orange` (its `yellow` when it has none) only inside
+    /// `WARNING_HUES`, from orange-red to yellow, and renamed keeps its `magenta` only inside
+    /// `RENAMED_HUES`, from blue-violet round to magenta-pink; otherwise each takes GitTurtle's
+    /// own. Among the fixtures whose color has a hue of its own, the warning window leaves out
+    /// Catppuccin's salmon (29.8°), Hackerman's green, Lumon's and Lupine's blues and Matte
+    /// Black's red, and the renamed window Hackerman's periwinkle and Lumon's sky blue besides
+    /// the colors the 30° rule already replaced. A Tokyo Night whose orange and magenta are a
+    /// sky blue, which the 30° rule alone would keep, takes GitTurtle's for both.
     #[test]
-    fn statuses_that_still_sit_together_are_all_gitturtles_own() {
+    fn warning_and_renamed_keep_their_hues_or_take_gitturtles_own() {
+        let mut outside = [Vec::new(), Vec::new()];
+        for (name, colors) in fixtures() {
+            let palette = fit(&colors);
+            let own = own(colors.mode);
+            for (list, (hues, color, theirs, gitturtles)) in outside.iter_mut().zip([
+                (
+                    WARNING_HUES,
+                    palette.warning,
+                    colors.orange.unwrap_or(colors.yellow),
+                    own.warning,
+                ),
+                (RENAMED_HUES, palette.renamed, colors.magenta, own.renamed),
+            ]) {
+                assert!(
+                    hues.contains(&oklch(color).1),
+                    "{name}'s {color:06x} outside {hues:?}"
+                );
+                let (chroma, hue) = oklch(theirs);
+                if chroma >= DIFF_MIN_CHROMA && !hues.contains(&hue) {
+                    assert!(
+                        hue_distance(color, gitturtles) < hue_distance(color, theirs),
+                        "{name} takes GitTurtle's {gitturtles:06x}"
+                    );
+                    list.push(name);
+                }
+            }
+        }
+        assert_eq!(
+            outside,
+            [
+                vec!["catppuccin", "hackerman", "lumon", "lupine", "matte-black"],
+                vec![
+                    "gruvbox",
+                    "hackerman",
+                    "lumon",
+                    "matte-black",
+                    "miasma",
+                    "retro-82"
+                ],
+            ],
+            "warning, renamed"
+        );
+        let tokyo = bundled("tokyo-night");
+        let sky = 0x7dcfff;
+        let palette = fit(&Colors {
+            orange: Some(sky),
+            magenta: sky,
+            ..tokyo
+        });
+        assert!(apart(
+            sky,
+            &[palette.added, palette.removed, palette.modified]
+        ));
+        let gitturtles = fit(&Colors {
+            orange: Some(own(Mode::Dark).warning),
+            magenta: own(Mode::Dark).renamed,
+            ..tokyo
+        });
+        assert_eq!(
+            (palette.warning, palette.renamed),
+            (gitturtles.warning, gitturtles.renamed)
+        );
+        assert_ne!(palette.renamed, sky);
+        assert_eq!(palette.readability_issues(), Vec::new());
+    }
+
+    /// A replacement is never checked against the theme color kept beside it. Before Modified
+    /// was held to amber, a Tokyo Night whose yellow and magenta are both GitTurtle's violet
+    /// renamed `#C1A5F5` kept that violet as modified and took GitTurtle's renamed, the same
+    /// violet, beside it, and only the last step, all four statuses GitTurtle's own, set them
+    /// apart. The violet yellow now takes GitTurtle's amber and the violet stays renamed, with
+    /// the theme's red and green kept.
+    #[test]
+    fn a_violet_yellow_leaves_modified_and_renamed_apart() {
+        let tokyo = bundled("tokyo-night");
         let violet = own(Mode::Dark).renamed;
         let colors = Colors {
             yellow: violet,
             magenta: violet,
-            ..bundled("tokyo-night")
+            ..tokyo
         };
         let palette = fit(&colors);
         assert!(
@@ -1198,8 +1397,13 @@ mod tests {
             "{:06x?}",
             statuses(&palette)
         );
-        assert_eq!(statuses(&palette), gitturtles_statuses(&colors));
-        assert_ne!(palette.modified, violet);
+        let amber = fit(&Colors {
+            yellow: own(Mode::Dark).modified,
+            ..colors
+        });
+        assert_eq!(palette.modified, amber.modified);
+        assert_eq!(palette.renamed, violet);
+        assert_eq!((palette.added, palette.removed), (tokyo.green, tokyo.red));
         assert_eq!(palette.readability_issues(), Vec::new());
     }
 
@@ -1310,12 +1514,15 @@ mod tests {
 
     /// Subtle surfaces lift at most `SUBTLE_CAP` off the panel unless the subtle floor off the
     /// canvas needs more, and the selected row at most `SELECTED_CAP` off the canvas unless its
-    /// own step off the panel needs more, brought back in lightness only: White's subtle and
-    /// selected were both `#c0c0c0` (1.67:1 off its panel, 1.82:1 off its canvas) and Last
-    /// Horizon's selected row 2.45:1 off its canvas. On those rows every graph lane keeps at
-    /// least 4:1.
+    /// own step off the panel or the pressed step needs more, brought back in lightness only:
+    /// White's subtle and selected were both `#c0c0c0` (1.67:1 off its panel, 1.82:1 off its
+    /// canvas) and Last Horizon's selected row 2.45:1 off its canvas. On those rows every graph
+    /// lane keeps at least 4:1. The pressed step passes the cap only below its rule: Lupine's
+    /// panel sits 1.13:1 off its canvas, which leaves subtle's floor, hover's step and the
+    /// rule's 6 no room under the cap.
     #[test]
     fn subtle_and_selected_surfaces_lift_no_further_than_the_caps() {
+        let mut pressed = Vec::new();
         for (name, colors) in fixtures() {
             let palette = fit(&colors);
             // A lift is toward the foreground: lighter in a dark palette, darker in a light
@@ -1339,17 +1546,28 @@ mod tests {
                 "{name}"
             );
             // The selected row's own step off the panel wins: a generated light theme's
-            // panel is dark enough that 1.15:1 below it is 1.55:1 below its canvas.
-            assert!(
-                !lifted(palette.selected, palette.canvas, SELECTED_CAP)
-                    || !lifted(
-                        palette.selected,
-                        palette.panel,
-                        1.15 + SURFACE_MARGIN + 0.01
-                    ),
-                "{name}"
-            );
+            // panel is dark enough that 1.15:1 below it is 1.55:1 below its canvas. So does
+            // the pressed step: brought back to the cap, the selected row would stand too
+            // close to hover.
+            if lifted(palette.selected, palette.canvas, SELECTED_CAP)
+                && lifted(
+                    palette.selected,
+                    palette.panel,
+                    1.15 + SURFACE_MARGIN + 0.01,
+                )
+            {
+                let capped = toward(palette.selected, judge.background_extreme(), |candidate| {
+                    !judge.clears(candidate, &[(&[palette.canvas], SELECTED_CAP)], 0.)
+                });
+                let at_the_cap = Palette {
+                    selected: capped,
+                    ..palette
+                };
+                assert!(at_the_cap.pressed_step() < PRESSED_STEP, "{name}");
+                pressed.push(name);
+            }
         }
+        assert_eq!(pressed, ["lupine"]);
         for name in ["white", "last-horizon"] {
             let palette = fit(&bundled(name));
             let lanes = crate::graph::lane_colors(palette.is_light());
@@ -1398,6 +1616,87 @@ mod tests {
         assert!(contrast(generated.selected, generated.subtle) >= SUBTLE_FLOOR);
     }
 
+    /// Secondary buttons rest on subtle and hover to `hover`, so in every fixture hover stands
+    /// at least `HOVER_STEP` off subtle toward the foreground, as it does off the panel, and
+    /// the selected row, the pressed layer, stands beyond hover. The subtle floor had lifted
+    /// subtle onto hover: Tokyo Night's hover `#222534` stood 1.011:1 off its `#212434`
+    /// subtle, Lupine's was its subtle, and White's, Vantablack's and Flexoki Light's sat
+    /// behind it. The pressed step keeps its rule everywhere and its margin where the cap and
+    /// subtle's floor leave room: Catppuccin Latte and Lupine stop at the rule's 6.
+    #[test]
+    fn hover_stands_off_subtle_and_the_panel() {
+        let mut at_the_rule = Vec::new();
+        for (name, colors) in fixtures() {
+            let palette = fit(&colors);
+            let judge = Judge {
+                dark: colors.mode == Mode::Dark,
+            };
+            for (surface, reference) in [("subtle", palette.subtle), ("panel", palette.panel)] {
+                assert!(
+                    judge.clears(palette.hover, &[(&[reference], HOVER_STEP)], 0.),
+                    "{name}'s hover {:06x} on its {surface} {reference:06x}",
+                    palette.hover
+                );
+            }
+            assert!(
+                judge.clears(palette.selected, &[(&[palette.hover], 1.)], 0.),
+                "{name}'s selected row {:06x} beyond its hover {:06x}",
+                palette.selected,
+                palette.hover
+            );
+            assert!(palette.pressed_step() >= PRESSED_STEP, "{name}");
+            if palette.pressed_step() < PRESSED_TARGET {
+                at_the_rule.push(name);
+            }
+            assert_eq!(palette.readability_issues(), Vec::new(), "{name}");
+        }
+        assert_eq!(at_the_rule, ["catppuccin-latte", "lupine"]);
+    }
+
+    /// Modified keeps the theme's `yellow` only inside `MODIFIED_HUES`, from orange to yellow,
+    /// and otherwise takes GitTurtle's amber. Among the fixtures whose yellow has a hue of its
+    /// own, Lumon's `#6FA4C9` (240°) and Lupine's `#026FDE` (256°) are blues, Hackerman's a
+    /// teal, Matte Black's a red and Osaka Jade's a green. A Tokyo Night whose yellow is its
+    /// blue, which would otherwise stand apart from its red and green, takes GitTurtle's too.
+    #[test]
+    fn modified_stays_amber_or_takes_gitturtles_own() {
+        let mut outside = Vec::new();
+        for (name, colors) in fixtures() {
+            let palette = fit(&colors);
+            assert!(
+                MODIFIED_HUES.contains(&oklch(palette.modified).1),
+                "{name}'s modified {:06x}",
+                palette.modified
+            );
+            let (chroma, hue) = oklch(colors.yellow);
+            if chroma >= DIFF_MIN_CHROMA && !MODIFIED_HUES.contains(&hue) {
+                let gitturtles = own(colors.mode).modified;
+                assert!(
+                    hue_distance(palette.modified, gitturtles)
+                        < hue_distance(palette.modified, colors.yellow),
+                    "{name} takes GitTurtle's modified"
+                );
+                outside.push(name);
+            }
+        }
+        assert_eq!(
+            outside,
+            ["hackerman", "lumon", "lupine", "matte-black", "osaka-jade"]
+        );
+        let tokyo = bundled("tokyo-night");
+        let palette = fit(&Colors {
+            yellow: tokyo.blue,
+            ..tokyo
+        });
+        assert!(apart(tokyo.blue, &[palette.added, palette.removed]));
+        let gitturtles = fit(&Colors {
+            yellow: own(Mode::Dark).modified,
+            ..tokyo
+        });
+        assert_eq!(palette.modified, gitturtles.modified);
+        assert_eq!(palette.readability_issues(), Vec::new());
+    }
+
     /// A small xorshift generator, so the property test needs no new dependency and every run
     /// sees the same inputs.
     struct Inputs(u64);
@@ -1421,14 +1720,22 @@ mod tests {
 
     /// 600 arbitrary themes, a fifth of them with foreground equal to background and a fifth
     /// with red and green one step apart, in every mode: each maps to a palette with no
-    /// readability finding, whose lightness matches its mode, and its fit's four statuses
-    /// stand pairwise apart or are GitTurtle's own. The fit itself (before the built-in
-    /// fallback) must carry at least 97% of them.
+    /// readability finding, whose lightness matches its mode, its fit's four statuses stand
+    /// pairwise apart or are GitTurtle's own, and its fit's hover stands its step off subtle
+    /// and the panel. The fit itself (before the built-in fallback) must carry at least 97%
+    /// of them. Subtle's floor holds only where it can, and the count of themes whose subtle
+    /// stands under it is pinned: of the 600, 500 never take the floor off the canvas (their
+    /// canvas sits at the lane limit, or the step would leave the selected row no room), 22
+    /// lose it where the lane limit holds hover under its step off subtle, and 2 where the
+    /// pressed step falls below its rule; off the panel, 59 never take it and 7 lose it to the
+    /// pressed step's rule. Measured when the counts were set; the pressed step had taken it
+    /// from 8 and 19 themes while it also gave way for the margin and the order.
     #[test]
     fn arbitrary_themes_always_map_to_a_readable_palette() {
         let mut inputs = Inputs(0x9e37_79b9_7f4a_7c15);
         let total = 600;
         let mut fitted = 0;
+        let mut under_the_floor = [0; 2];
         for case in 0..total {
             let mut colors = Colors {
                 mode: if inputs.next().is_multiple_of(2) {
@@ -1470,10 +1777,26 @@ mod tests {
                 "case {case}: {:06x?}",
                 statuses(&fit)
             );
+            let judge = Judge {
+                dark: colors.mode == Mode::Dark,
+            };
+            assert!(
+                judge.clears(fit.hover, &[(&[fit.subtle, fit.panel], HOVER_STEP)], 0.),
+                "case {case}: hover {:06x} on subtle {:06x} or the panel {:06x}",
+                fit.hover,
+                fit.subtle,
+                fit.panel
+            );
+            for (count, reference) in under_the_floor.iter_mut().zip([fit.canvas, fit.panel]) {
+                if !judge.clears(fit.subtle, &[(&[reference], SUBTLE_FLOOR)], 0.) {
+                    *count += 1;
+                }
+            }
             if fit.readability_issues().is_empty() {
                 fitted += 1;
             }
         }
+        assert_eq!(under_the_floor, [524, 66], "off the canvas, off the panel");
         assert!(
             fitted * 100 >= total * 97,
             "the fit carried {fitted} of {total} themes"
