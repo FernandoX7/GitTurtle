@@ -377,7 +377,7 @@ impl fmt::Display for ReadabilityIssue {
 }
 
 const TEXT: f64 = 4.5;
-const GRAPHIC: f64 = 3.0;
+pub(super) const GRAPHIC: f64 = 3.0;
 const SELECTED_SURFACE: f64 = 1.15;
 const HOVER_SURFACE: f64 = 1.08;
 const BORDER_SURFACE: f64 = 1.3;

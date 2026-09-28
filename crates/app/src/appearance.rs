@@ -2,7 +2,7 @@
 
 use gpui_kit::component::button::{ButtonCustomVariant, ButtonVariant};
 use gpui_kit::component::{Colorize, Theme, ThemeMode};
-use gpui_kit::{App, Global, Pixels, Rgba, Window, px, rgb};
+use gpui_kit::{App, BoxShadow, Global, Pixels, Rgba, Window, px, rgb};
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 use std::sync::{
@@ -183,6 +183,36 @@ struct ControlButton {
     idle: ButtonCustomVariant,
     /// Only for a palette whose [`Palette::control_label`] is not `text`.
     selected: Option<ButtonCustomVariant>,
+    /// The palette's `accent`, which marks a focused button's edge.
+    accent: u32,
+}
+
+/// The opacity a selected shared button takes while hovered: the kit gives a
+/// selected control no hover surface, so the whole button dims instead.
+pub const CONTROL_SELECTED_HOVER_OPACITY: f32 = 0.9;
+
+/// Width of the band of full accent inside a focused shared button's edge.
+const CONTROL_FOCUS_EDGE: Pixels = px(1.);
+
+/// The shared button's focus edge, or none before any palette is applied.
+///
+/// The kit rings a focused control with a 3 px band of `ring`, the palette
+/// accent, at half opacity outside its edge, and tints a border the helper
+/// does not draw. At half opacity that band falls below the graphic rule on
+/// light surfaces, so the helper also paints a band of full accent inside its
+/// edge. It is an inset shadow because the kit's hover and selected styles
+/// replace the border color and fill but never the shadow, so the band holds
+/// in every state, and an unfocused button keeps its geometry and pixels.
+pub fn control_focus_edge() -> Option<BoxShadow> {
+    CONTROL_BUTTON
+        .get()
+        .map(|control| focus_edge(control.accent))
+}
+
+fn focus_edge(accent: u32) -> BoxShadow {
+    BoxShadow::new(px(0.), px(0.), rgb(accent).into())
+        .spread_radius(CONTROL_FOCUS_EDGE)
+        .inset()
 }
 
 /// The shared compact button's variant: the applied palette's control fills,
@@ -1090,6 +1120,7 @@ impl Palette {
         CONTROL_BUTTON.set(Some(ControlButton {
             idle: self.control_button(cx),
             selected: self.selected_control_button(cx),
+            accent: self.accent,
         }));
         cx.set_global(self);
         Theme::sync_base(cx);
@@ -1550,6 +1581,102 @@ mod tests {
         }
     }
 
+    /// The kit's focus ring outside a focused control's edge paints `ring`, the
+    /// palette accent, at this opacity: `FOCUS_RING_OPACITY` in the kit's
+    /// styled.rs, which the app cannot read.
+    const KIT_FOCUS_RING_OPACITY: f32 = 0.5;
+
+    /// The floor DESIGN.md publishes for a focused helper that a pointer hovers
+    /// or presses on a hovered or selected row, where its band lies on the
+    /// helper's own fill over the row's highlight.
+    const ROW_POINTER_FOCUS_FLOOR: f64 = 2.5;
+
+    #[test]
+    fn shared_button_focus_ring_clears_the_graphic_rule_in_every_state() {
+        // The accent rule measures the token on each surface; this measures what
+        // a focused helper paints. A ring pixel is compared with the same pixel
+        // unfocused, for the strongest band: the kit's ring outside the edge,
+        // over the surface beneath, or the helper's edge inside it, over its fill.
+        let mut failures = Vec::new();
+        for choice in ThemeChoice::ALL {
+            let palette = choice.palette();
+            let ring = Rgba {
+                a: KIT_FOCUS_RING_OPACITY,
+                ..rgb(palette.accent)
+            };
+            let edge = focus_edge(palette.accent);
+            // A band narrower than a pixel, or blurred, never reaches its color.
+            let edge = (edge.inset && edge.blur_radius == px(0.) && edge.spread_radius >= px(1.))
+                .then(|| edge.color.to_rgb());
+            let selected = rgb(palette.selected);
+            // On a row, a pointer's hover and press layers land on the row's own
+            // highlight: colors no readability rule sets accent against, where an
+            // edge inside the button reads down to 2.54:1 (pressed on Alucard's
+            // hovered selected row). Those two states are held to 3:1 off rows
+            // and to the 2.5:1 DESIGN.md publishes on them.
+            let states = [
+                ("at rest", None, 1., true),
+                ("selected", Some(selected), 1., true),
+                (
+                    "selected and hovered",
+                    Some(selected),
+                    CONTROL_SELECTED_HOVER_OPACITY,
+                    true,
+                ),
+                (
+                    "hovered",
+                    Some(palette.control_fill(palette.hover)),
+                    1.,
+                    false,
+                ),
+                (
+                    "pressed",
+                    Some(palette.control_fill(palette.selected)),
+                    1.,
+                    false,
+                ),
+            ];
+            for (surface, beneath, row) in [
+                ("panel", palette.panel, false),
+                ("subtle", palette.subtle, false),
+                ("canvas", palette.canvas, false),
+                ("hovered row", palette.hover, true),
+                ("selected row", palette.selected, true),
+                ("hovered selected row", palette.row_hover(true), true),
+            ] {
+                for (state, fill, opacity, on_rows) in states {
+                    let minimum = if row && !on_rows {
+                        ROW_POINTER_FOCUS_FLOOR
+                    } else {
+                        custom::GRAPHIC
+                    };
+                    // Opacity on the button dims every layer it paints.
+                    let dim = |layer: Rgba| Rgba {
+                        a: layer.a * opacity,
+                        ..layer
+                    };
+                    let filled = fill.map_or(beneath, |fill| composite(dim(fill), beneath));
+                    let outside = contrast(composite(dim(ring), beneath), beneath);
+                    let inside =
+                        edge.map_or(0., |edge| contrast(composite(dim(edge), filled), filled));
+                    let ratio = outside.max(inside);
+                    if ratio < minimum {
+                        failures.push(format!(
+                            "{choice:?} {state} on the {surface} {beneath:06x}: {ratio:.2}:1, \
+                             needs {minimum}:1"
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "focused shared button below {}:1\n{}",
+            custom::GRAPHIC,
+            failures.join("\n")
+        );
+    }
+
     #[gpui::test]
     fn palette_application_hands_the_shared_button_its_fills_and_label(
         cx: &mut gpui::TestAppContext,
@@ -1596,6 +1723,13 @@ mod tests {
                     }
                     variant => panic!("{choice:?} selects with {variant:?}"),
                 }
+                // The focus edge is the kit's `ring`, which is this `accent`.
+                assert_eq!(
+                    control_focus_edge(),
+                    Some(focus_edge(palette.accent)),
+                    "{choice:?}"
+                );
+                assert_eq!(Theme::global(cx).colors.ring, rgb(palette.accent).into());
             }
         });
     }
