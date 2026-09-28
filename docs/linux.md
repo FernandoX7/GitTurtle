@@ -255,6 +255,11 @@ colors read (or Midnight) and shows the reason on the card, such as a missing
 color or a permission problem. The [user guide](user-guide.md) describes the
 theme.
 
+Quality CI also builds the workspace and runs its tests in an `archlinux:base-devel`
+container against current Arch packages; see
+[Arch Linux container job](ci.md#arch-linux-container-job). That job has no display,
+so it does not replace the desktop check above.
+
 On Hyprland:
 
 - The compositor supplies server-side decorations and draws no title bar, so
