@@ -497,6 +497,62 @@ impl GitTurtle {
         cx.notify();
     }
 
+    /// Linux: code in the desktop's fontconfig `monospace` family, used only
+    /// when the toolkit loaded it and it draws at one advance.
+    fn render_code_font_setting(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = cx;
+            None
+        }
+        #[cfg(target_os = "linux")]
+        {
+            use crate::desktop_text::{self, SystemCodeFont};
+            let bundled = crate::mono();
+            let description: SharedString = match desktop_text::system_code_font(cx) {
+                SystemCodeFont::Off => format!(
+                    "Code uses the bundled {bundled}. Turn on to use fontconfig's monospace font when it is fixed-width."
+                )
+                .into(),
+                SystemCodeFont::Pending => "Looking up the desktop's monospace font…".into(),
+                SystemCodeFont::Loaded(family) => {
+                    format!("Code uses {family}, the desktop's monospace font.").into()
+                }
+                SystemCodeFont::Unavailable(reason) => {
+                    format!("{reason} Code uses the bundled {bundled}.").into()
+                }
+            };
+            Some(
+                div()
+                    .debug_selector(|| "code-font-setting".into())
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(setting_description(
+                        "Use the desktop's monospace font",
+                        description,
+                        cx,
+                    ))
+                    .child(
+                        div().debug_selector(|| "code-font-switch".into()).child(
+                            Switch::new("settings-system-code-font")
+                                .accessibility_label("Use the desktop's monospace font for code")
+                                .checked(self.settings.system_code_font)
+                                .on_click(cx.listener(|this, checked: &bool, window, cx| {
+                                    if this.settings.system_code_font != *checked {
+                                        this.settings.system_code_font = *checked;
+                                        desktop_text::set_system_code_font(*checked, cx);
+                                        this.save_preferences(window, cx);
+                                    }
+                                })),
+                        ),
+                    )
+                    .into_any_element(),
+            )
+        }
+    }
+
     fn render_text_size_setting(&self, code: bool, cx: &mut Context<Self>) -> AnyElement {
         let (label, explanation, value, bounds, default) = if code {
             (
@@ -1652,6 +1708,7 @@ impl GitTurtle {
             .child(self.render_custom_themes(window, cx))
             .child(self.render_text_size_setting(false, cx))
             .child(self.render_text_size_setting(true, cx))
+            .children(self.render_code_font_setting(cx))
             .child(
                 div()
                     .flex()
@@ -3387,8 +3444,13 @@ fn swatch_run<const N: usize>(
     .into_any_element()
 }
 
-fn setting_description(title: &'static str, description: &'static str, cx: &App) -> AnyElement {
+fn setting_description(
+    title: &'static str,
+    description: impl Into<SharedString>,
+    cx: &App,
+) -> AnyElement {
     let p = palette(cx);
+    let description = description.into();
     div()
         .id(title)
         .role(Role::Label)
@@ -4102,6 +4164,39 @@ mod picker_tests {
                 "{selector} for {error:?}"
             );
         }
+    }
+
+    /// Linux: the switch saves the choice and asks the desktop-text worker for
+    /// the family (none runs here, so the lookup stays pending); off restores
+    /// the bundled font at once.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn the_code_font_switch_saves_the_choice_and_starts_the_lookup(cx: &mut TestAppContext) {
+        use crate::desktop_text::{self, SystemCodeFont};
+
+        let (app, cx) = open_app(cx);
+        let state = |cx: &mut VisualTestContext| {
+            cx.read(|cx| {
+                (
+                    app.read(cx).settings.system_code_font,
+                    desktop_text::system_code_font(cx),
+                    gpui_kit::component::Theme::global(cx)
+                        .mono_font_family
+                        .to_string(),
+                )
+            })
+        };
+        let toggle = |cx: &mut VisualTestContext| {
+            let switch = shown(cx, "code-font-switch").expect("Linux Settings offers the switch");
+            cx.simulate_click(switch.center(), Modifiers::default());
+            settle(cx);
+        };
+        let bundled = crate::mono().to_string();
+        assert_eq!(state(cx), (false, SystemCodeFont::Off, bundled.clone()));
+        toggle(cx);
+        assert_eq!(state(cx), (true, SystemCodeFont::Pending, bundled.clone()));
+        toggle(cx);
+        assert_eq!(state(cx), (false, SystemCodeFont::Off, bundled));
     }
 
     /// At the 32-theme bound New theme… and Import… are disabled, so their

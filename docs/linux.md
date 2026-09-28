@@ -236,7 +236,9 @@ installs Rust 1.98.0 on the first build. On another Arch system also install
 `base-devel clang pkgconf desktop-file-utils fontconfig wayland libxkbcommon-x11
 libx11 libxcb openssl zstd vulkan-icd-loader`, the Vulkan driver for your GPU,
 `xdg-desktop-portal` and a FileChooser backend. No font package is needed for
-code text, which uses the embedded DejaVu Sans Mono.
+code text, which uses the embedded DejaVu Sans Mono unless **Use the desktop's
+monospace font** is turned on in Settings, which follows Omarchy's font
+(JetBrainsMono Nerd Font by default).
 
 On Hyprland:
 
@@ -295,7 +297,7 @@ portal packages, log out and back in if the session has stale service state.
 | Window/graphics initialization fails | Launch from a desktop terminal to capture stderr; check `vulkaninfo --summary` (`vulkan-tools`) and your GPU driver. An invalid display connection can still fail inside the toolkit before window creation. |
 | Picker does nothing / reports a portal failure | Check `systemctl --user status xdg-desktop-portal xdg-desktop-portal-gnome`; inspect `journalctl --user -b -u xdg-desktop-portal`. Check the matching backend, then reopen the app. |
 | Blank launcher icon / menu entry absent | Rerun the installer and `desktop-file-validate` on the installed entry; confirm the entry's absolute `Icon` path exists. Refresh the app menu or log out/in if its cache remains stale. |
-| Missing or cramped text | Check `fc-match sans-serif`; install `fonts-dejavu-core` above if no sans family resolves. Code text uses the DejaVu Sans Mono embedded in the executable, so it needs no font package. Settings has separate interface/code text sizes. |
+| Missing or cramped text | Check `fc-match sans-serif`; install `fonts-dejavu-core` above if no sans family resolves. Code text uses the DejaVu Sans Mono embedded in the executable, so it needs no font package. With **Use the desktop's monospace font** on, code uses `fc-match monospace`'s family when GitTurtle loaded it and it is monospace. Otherwise the setting shows why and keeps the embedded font. A newly installed font needs a relaunch. Settings has separate interface/code text sizes. |
 | Text smaller than in other apps | On Wayland, GitTurtle multiplies its text sizes by the desktop text scaling factor (GNOME Settings › Accessibility › Large Text, `org.gnome.desktop.interface text-scaling-factor`). On X11 the toolkit scales the whole window through `Xft.dpi` instead. The app's own interface/code sizes apply on top. |
 | Colored fringes or soft text, typically on an OLED or rotated panel | GitTurtle follows the desktop antialiasing preference. GNOME's default `font-rendering` "automatic" renders grayscale like GTK 4; "manual" follows `font-antialiasing` (Tweaks › Fonts), where `rgba` selects subpixel rendering. Other desktops are read through fontconfig: `fc-match --format '%{antialias}\|%{rgba}\n' sans-serif`. Grayscale is the safe choice; changes apply without a restart. |
 | Need an X11 comparison in a session that provides XWayland | Launch once with `env -u WAYLAND_DISPLAY "$HOME/.local/bin/gitturtle" /path/to/fixture`. This tests XWayland, not a full Xorg session. |

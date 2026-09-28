@@ -1984,6 +1984,7 @@ fn main() {
         std::process::exit(1);
     }
     let preferences = Preferences::load();
+    let system_code_font = preferences.settings.system_code_font;
     let activity = activity::State::load();
     let recovery_drafts = recovery_drafts::State::load();
     let tab_session = repository_tabs::Session::load();
@@ -2004,7 +2005,7 @@ fn main() {
         gpui_kit::init(cx);
         desktop_text::register_code_font(cx);
         native_accessibility::sync_preferences(cx);
-        let desktop_text = desktop_text::start(cx);
+        let desktop_text = desktop_text::start(system_code_font, cx);
         native_accessibility::bind_keys(cx);
         image_lifetime::init(cx);
         interactive_rebase::init(cx);
