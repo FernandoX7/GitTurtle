@@ -1123,8 +1123,10 @@ accounts logical file bytes plus a conservative 4 KiB per directory/file entry,
 counting hardlinked aliases separately. Every entry is checked, including source
 trees excluded from the projected payload; symlinks, special files, traversal
 errors, more than 250,000 entries or an expired accounting deadline refuse saving.
-The verified logical payload limits are **6 GiB for `debug` and 3.5 GiB for
-`release`**; the older combined mode uses their 9.5 GiB sum. They are sized from
+The verified logical payload limits are **7 GiB for `debug` and 3.5 GiB for
+`release`**; the older combined mode uses their 10.5 GiB sum. The debug limit was
+6 GiB until September 28, 2026, for the reason in the paragraph after next.
+The limits were first sized from
 the [second trusted-main seed](benchmarks/2026-09-15-ci.md#four-budget-timeouts)
 (run 35036670099), whose projected payloads after local cleanup and source pruning
 were about 5.9 GB (Linux debug), 3.9 GB (macOS debug), 3.1 GB (Linux release) and
@@ -1138,10 +1140,25 @@ which 0.2 GB was in use by historical CodeQL entries. Keeping vendored outputs a
 roughly 0.33-0.36 GB of logical payload per debug lane and 0.14 GB per release lane
 (local measurement of the rlib/rmeta files, Linux), about 0.25 GB compressed per
 generation at the observed archive ratios; the Linux debug lane's headroom under
-its 6 GiB limit falls to roughly 0.2 GB. These are local
+its original 6 GiB limit fell to roughly 0.2 GB. These are local
 pre-registration measurements and compression estimates, not compressed archive
-sizes or unconditional archive ceilings; hosted fit and actual archive sizes remain
-unverified until a new trusted-main seed is observed.
+sizes or unconditional archive ceilings.
+
+The first measured generation, from the `main` run for `1a9fc3e` (run 36431876305,
+September 28, 2026), confirmed that headroom: the Linux debug lane retained 6.21 GB
+of its 6.44 GB (6 GiB) limit, 0.33 GB of it vendored outputs, and evicted no
+dependency. The four lanes retained 6.21 GB (Linux debug), 3.74 GB (macOS debug),
+2.88 GB (Linux release) and 2.68 GB (macOS release), and the repository's cache
+inventory listed their archives at 1.42 GB, 1.04 GB, 0.86 GB and 0.79 GB: 4.11 GB
+per generation rather than the 3.3 GB estimate, because the Linux debug payload
+compressed about 4.4× rather than 6.3×. With 0.23 GB left, the next growth in
+dependencies would have evicted up to eight dependency groups before every Linux
+debug save, so that lane's warm runs would recompile them without any failure to
+show it. The debug limit therefore became 7 GiB (7.52 GB). At the observed ratio the
+extra 1.07 GB of payload costs at most about 0.25 GB of archive, so one generation
+stays under about 4.4 GB of the 10 GB quota; the macOS debug lane is far below
+either limit. The helper is part of every lane's cache identity, so the first `main`
+run after the change seeds all four lanes cold.
 
 The helper projects only the extracted registry package directories that pinned
 [rust-cache registry cleanup](https://github.com/Swatinem/rust-cache/blob/6323deb102c322ba6fcbdcafc7e3dddab59af2b6/src/cleanup.ts)

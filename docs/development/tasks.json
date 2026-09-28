@@ -970,6 +970,130 @@
         "native"
       ],
       "commit": "fix(themes): align the editor's readability copy, glyphs and inset"
+    },
+    {
+      "id": "vendor-button-focus-ring",
+      "title": "Let the app ring a focused toolkit Button in solid accent outside its edge",
+      "description": "Owner-approved 2026-09-28. A focused toolkit Button's ring comes from `focus_ring_style` (vendor/gpui-component/src/styled.rs:175-252), which Button applies on its root (button.rs:804-806): an absolutely positioned child 3 px outside the edge in `ring` at FOCUS_RING_OPACITY 0.5. The element's border takes full `ring`, but primary, danger, ghost and custom Buttons, the app's shared `button` helper among them, draw no border, and hover and selection restyle the border that does exist. At half opacity the ring is below 3:1 on canvas, panel or subtle in 16 of 20 palettes (2.27:1 on Porcelain's canvas) and, by the planner's estimate, on some row surface in all 20. The ring is already painted outside the edge on the root; only app-supplied children sit in the clipped content box (button.rs:667-703). Add a Button-scoped focus-ring setting on `Theme`, beside `focus_ring`, set in code rather than read from theme files: ring width, gap outside the edge, and opacity of `ring`, defaulting to today's 3 px, no gap and 0.5, so an application that does not set it sees no change. When set, every focused Button, built through an app helper or directly, and disabled or not, paints its ring with those values through the same absolutely positioned child. `focus_ring_style` and its other callers (Input, Select, Checkbox, Radio, Combobox, NumberInput, DatePicker, OtpInput), which keep their full-accent 1 px border, are unchanged. The app adopts the setting in `app-button-focus-ring`. Shared-interface change: apply docs/development/architecture-review.md. Open outside this task: macOS rendering and attestation (the technique is the bordered child the kit already paints there, not a shadow).",
+      "depends_on": [],
+      "scope": [
+        "vendor/gpui-component/src/theme/**",
+        "vendor/gpui-component/src/styled.rs",
+        "vendor/gpui-component/src/button/button.rs",
+        "vendor/gpui-component/src/lib.rs",
+        "vendor/gpui-component/GITTURTLE-PATCH.md",
+        "crates/app/src/native_accessibility/control_tests.rs",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "failing-check",
+          "description": "A rendered-node regression in crates/app/src/native_accessibility/control_tests.rs focuses a borderless Button, a primary Button and a disabled Button in a synthetic GPUI window with the setting at 2 px wide, 1 px outside and full opacity, and observes the ring each draws (through the rendered element or a pure ring-geometry helper the Button itself uses): outer edge the Button's bounds dilated by 3 px and inner edge 1 px outside them, within one device pixel, in `ring` at full alpha. Temporarily routing Button back through the default ring makes the test fail; that output is recorded in the pull request."
+        },
+        {
+          "id": "default-unchanged",
+          "description": "With the setting at its default, a focused Button's ring is today's, 3 px of `ring` at 0.5 opacity directly outside its edge, asserted by the same test. The diff leaves the drawing of `focus_ring_style` and its eight other callers unchanged, and `Theme::focus_ring = false` and `Button::focus_ring(false)` still draw no ring child."
+        },
+        {
+          "id": "no-shift",
+          "description": "Focusing a Button under either setting leaves its bounds, radius and content position unchanged and takes no layout space: the test compares the Button's and its label's bounds unfocused and focused, and an unfocused Button draws no ring child."
+        },
+        {
+          "id": "patch-note-and-gates",
+          "description": "vendor/gpui-component/GITTURTLE-PATCH.md records the focus-ring part of the patch: the missing upstream behaviour, the setting and its default, the modified files, the test command, the consuming app path and the removal condition (upstream Button draws a focus indicator of at least 3:1 against its surroundings or offers an equivalent setting). Provenance, license notice and dependency versions are unchanged. `cargo test --locked -p gitturtle`, clippy with -D warnings and `python3 scripts/gate.py full --base origin/main` pass."
+        },
+        {
+          "id": "native-neutral",
+          "description": "Native evidence on Linux X11 at scale factor 1, base origin/main and candidate built and run in the same session: because the app does not set the setting yet, focused and unfocused frames of the shared helper, a primary Button and a directly built Button (a Reflog or Tags action) are identical to base under masked `scripts/native_qa/qa.py compare`, recorded in docs/validation.md; the vendor attestation names the patched files against the unchanged upstream provenance."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "vendor",
+        "native"
+      ],
+      "commit": "feat(vendor): add a Button focus ring setting to the toolkit theme"
+    },
+    {
+      "id": "app-button-focus-ring",
+      "title": "Ring every focused Button in solid accent outside its edge",
+      "description": "Owner-approved 2026-09-28. Expected hard: it changes every focused Button and needs same-session native evidence across palettes. Using the setting from `vendor-button-focus-ring`, install a 2 px ring of full `accent` 1 px outside every focused Button's edge where the palette application sets `ring` (crates/app/src/appearance.rs, `theme.colors.ring`). The 3 px footprint is today's, so the room layouts reserve for it (the Your themes list) and clipping are unchanged, and it matches the picker card's 2 px ring 1 px outside its border (DESIGN.md). The 1 px gap keeps the ring off a primary or danger fill, so ring and gap lie on the surface beneath and the accent-on-six-surfaces readability rule applies directly: planner estimate 3.26:1 at worst (Solarized Dark, hovered selected row). This fixes primary and danger helpers, the Buttons built without the helper (text_review.rs:406-419, tags.rs:295, reflog.rs:262, editor_find.rs ~591/627/636, recovery.rs ~150/237, project_pane.rs ~857/1156, projects.rs ~423/487/540/714) with no edit at those sites, the focused disabled helper (workspace.rs:1509) and the row exception. Remove the #66 inset band (`control_focus_edge`, `focus_edge`, CONTROL_FOCUS_EDGE and the helper's focus shadow) as superseded: beside the gap it would draw a second line, it adds nothing on primary or danger fills, and it is the app's only inset shadow, never rendered on macOS. The selected helper's hover sets `opacity(CONTROL_SELECTED_HOVER_OPACITY)` on the whole element and dims the ring with it: planner estimate 2.89:1 on Solarized Light's hovered selected row and 2.94:1 on Solarized Dark's. Replace that dim with feedback that leaves the ring at full opacity rather than add an exception. The kit's loading fade (opacity 0.8, projects.rs:784/972) stays out of scope. Open after this task: macOS attestation (themes-evidence-gaps-macos holds the macOS frames), fractional scale factors, and the committed frames recaptured by `button-focus-ring-recapture`.",
+      "depends_on": [
+        "vendor-button-focus-ring"
+      ],
+      "scope": [
+        "crates/app/src/main.rs",
+        "crates/app/src/appearance.rs",
+        "crates/app/src/appearance/**",
+        "DESIGN.md",
+        "docs/development/themes/spec.md",
+        "docs/validation.md",
+        "docs/evidence/themes/button-focus-ring/**"
+      ],
+      "acceptance": [
+        {
+          "id": "failing-check",
+          "description": "A unit test in crates/app composites the ring a focused Button paints, with width, gap and opacity read from the setting the palette application installs (`Theme::global` after `ThemeChoice::apply`), not from copied constants, over the six readability surfaces (panel, subtle, canvas, hovered row, selected row, hovered selected row) of every built-in palette, in each state the helper paints (at rest, selected, selected and hovered, hovered, pressed, disabled) including any opacity a state applies to the whole Button, and requires 3:1 with no lower floor on rows. It asserts a ring at least 2 px wide with at least 1 px between it and the edge. Run with the kit's default setting it fails, naming Porcelain on the subtle surface (about 2.23:1) and Sandstone on the selected row (about 1.98:1); that output is in the pull request, and the test passes after the change."
+        },
+        {
+          "id": "band-removed",
+          "description": "`control_focus_edge`, its width constant and the helper's focus shadow are gone and no focus state paints a shadow; the Buttons built without the helper are not edited; `palette_application_hands_the_shared_button_its_fills_and_label` asserts the installed setting for every palette; `shared_button_tests::focusing_the_shared_button_keeps_its_box` passes; `cargo test --locked -p gitturtle` and clippy with -D warnings pass, and vendor/ is unchanged."
+        },
+        {
+          "id": "no-shift",
+          "description": "Unfocused Buttons keep their pixels: masked `scripts/native_qa/qa.py compare` of resting and hovered frames against the same-session base shows no difference apart from timing digits and, if the dim was replaced, the selected helper's hover feedback, which the design review rules on."
+        },
+        {
+          "id": "native-evidence",
+          "description": "Native captures on Linux X11 at scale factor 1, base (origin/main when the task starts) and candidate run in the same session, show a focused Button on the panel, subtle, canvas and selected-row surfaces in Porcelain, Sandstone, Midnight and Solarized Light, plus a focused primary (editor Save), danger (Delete theme), directly built Button (a Reflog or Tags action), disabled helper (Switch with an empty branch field) and the hovered active History segment. docs/validation.md tabulates the strongest ring pixel against the same pixel unfocused, each at least 3:1; the frames are committed under docs/evidence/themes/button-focus-ring/, privacy-scanned, and a design review accepts them."
+        },
+        {
+          "id": "docs",
+          "description": "DESIGN.md (the controls paragraph and the keyboard-focus rule) and docs/development/themes/spec.md describe the 2 px ring 1 px outside every focused Button's edge, drop the inset band and the 2.5:1 row exception, and list macOS rendering and fractional scale factors as open; docs/validation.md marks docs/evidence/themes/helper-focus-ring/ as the superseded #66 record."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native",
+        "docs"
+      ],
+      "commit": "fix(appearance): ring focused buttons in solid accent outside the edge"
+    },
+    {
+      "id": "button-focus-ring-recapture",
+      "title": "Recapture committed frames that show a focused Button under the solid ring",
+      "description": "Follows `app-button-focus-ring`. Expected hard: 30 of the frames need the xdg-desktop-portal FileChooser or the no-portal flow, and their drivers are not tracked (the #66 bundle under /tmp/gitturtle-evidence/runs is gone). The docs/validation.md entry 'September 27 helper focus ring at full accent' names 30 committed frames that show a focused helper and predate its band (themes/import-export transfer, collision2, lotus and noportal frames; linux-gaps imported-*-focus-*-highlight; button-states kanagawa_lotus imported-button-hover) and 19 it replaced for the band (themes/editor, linux-gaps editor-*, import-export list32). After the adoption each shows a stale ring. docs/evidence/themes/helper-focus-ring/ stays as the dated #66 record. The theme draw-cost procedure (docs/benchmarks/2026-09-22-theme-draw-cost.md, Procedure step 2) finds row 1's Edit… by the old ring's pixels; its driver lives outside the repository beside the earlier adapt_*.py scripts, so the re-pointing is an adaptation recorded by sha256 in the procedure lineage. No product code changes; macOS frames stay with themes-evidence-gaps-macos.",
+      "depends_on": [
+        "app-button-focus-ring"
+      ],
+      "scope": [
+        "docs/evidence/**",
+        "docs/validation.md",
+        "docs/benchmarks/2026-09-22-theme-draw-cost.md"
+      ],
+      "acceptance": [
+        {
+          "id": "recapture-listed",
+          "description": "Each of the 49 frames the September 27 entry names (30 not recaptured, 19 replaced) is recaptured through its original flow on a build of origin/main containing `app-button-focus-ring`, with the build's sha256 and `--build-info` source identity recorded; masked `scripts/native_qa/qa.py compare` against a same-session capture on the build before the adoption shows each differs only around the focused Button."
+        },
+        {
+          "id": "sweep",
+          "description": "Every other committed frame under docs/evidence/ that shows a keyboard-focused Button, found by a search recorded in the pull request (file names marking focus, confirmation or saving states, and the frames the September 27 entry calls identical to base, such as the editor's `saving` frames with a focused disabled Save), is recaptured the same way or named in the validation entry with the reason it was not; frames rechecked and unchanged are listed. docs/evidence/themes/helper-focus-ring/ is untouched."
+        },
+        {
+          "id": "privacy-and-ledger",
+          "description": "Every replaced frame passes the privacy scan with the local template set and uses the neutral fixture path and QA identity; a new docs/validation.md entry lists each replaced frame and the build it attests, and the September 27 entry's list of stale frames links to it."
+        },
+        {
+          "id": "draw-cost-repoint",
+          "description": "The draw-cost focus-finding step is re-pointed and checked: run against the adopted build it lands on row 1's Edit… (ring pixel count and box recorded), and the adaptation joins the procedure lineage in docs/benchmarks/2026-09-22-theme-draw-cost.md with its sha256, with no recorded measurement changed."
+        }
+      ],
+      "profiles": [
+        "docs",
+        "native"
+      ],
+      "commit": "docs(evidence): recapture frames that show the solid button focus ring"
     }
   ]
 }
