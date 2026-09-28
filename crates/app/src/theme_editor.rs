@@ -24,7 +24,7 @@
 use crate::*;
 use appearance::custom::{
     self, CustomTheme, ImportedTheme, ReadabilityBackground, ReadabilityForeground,
-    ReadabilityIssue, ThemeSelection, TokenGroup, TokenKind,
+    ReadabilityIssue, ReadabilityMeasure, ThemeSelection, TokenGroup, TokenKind,
 };
 use appearance::{Palette, ThemeChoice};
 use gpui_kit::base::{FocusableExt, Scrollbar, ScrollbarMode};
@@ -401,7 +401,24 @@ struct DeleteFocus {
     restored: Option<FocusHandle>,
 }
 
-/// The tokens a readability issue names, for the per-row warning glyphs.
+/// The Readability list with no warnings. It names every rule rather than
+/// contrast alone: the pressed step is measured in one channel, not as a ratio.
+const NO_READABILITY_WARNINGS: &str = "Every readability rule is met.";
+
+/// The tokens a step warning marks beyond the Selected and Hover it names:
+/// `Palette::readability_issues` measures both fills over canvas, panel,
+/// subtle, hover, selected and the hovered selected row, which blends accent
+/// into selected, and the fills themselves are layers over panel. A change to
+/// any of them can cause or clear the warning.
+const STEP_SURFACES: [TokenKind; 4] = [
+    TokenKind::Canvas,
+    TokenKind::Panel,
+    TokenKind::Subtle,
+    TokenKind::Accent,
+];
+
+/// The tokens a readability issue names, and for a step warning every token
+/// its measure composites over, for the per-row warning glyphs.
 fn issue_tokens(issue: &ReadabilityIssue) -> impl Iterator<Item = TokenKind> {
     let foreground = match issue.foreground {
         ReadabilityForeground::Token(kind) => Some(kind),
@@ -411,7 +428,14 @@ fn issue_tokens(issue: &ReadabilityIssue) -> impl Iterator<Item = TokenKind> {
         ReadabilityBackground::Token(kind) => Some(kind),
         ReadabilityBackground::SelectedRowHover => Some(TokenKind::Selected),
     };
-    foreground.into_iter().chain(background)
+    let surfaces: &[TokenKind] = match issue.measure {
+        ReadabilityMeasure::Contrast => &[],
+        ReadabilityMeasure::Step => &STEP_SURFACES,
+    };
+    foreground
+        .into_iter()
+        .chain(background)
+        .chain(surfaces.iter().copied())
 }
 
 fn hsla_rgb(color: Hsla) -> u32 {
@@ -1658,14 +1682,18 @@ impl ThemeForm {
 
     /// The tallest the form may be: the window less the alert's fixed chrome.
     /// The alert opens a tenth of the way down and sizes to its content; around
-    /// the form it adds 16 px panel padding above and below, the one-rem
-    /// (13 px) title with an 8 px gap under it, a 16 px gap above the footer
-    /// and the 28 px footer buttons, and 16 px stay under the panel. The body
-    /// takes what the header and base question leave, by layout.
+    /// the form it adds its 1 px border and 16 px padding above and below, the
+    /// title at one rem with the kit's half-rem gap under it, a 16 px gap
+    /// above the footer and the scaled 28 px footer buttons, and 16 px stay
+    /// under the panel. Each term keeps its own unit: the rem terms and the
+    /// buttons follow the interface text size, and the pixel terms do not.
+    /// The body takes what the header and base question leave, by layout.
     fn max_height(window: &Window) -> Pixels {
         let viewport = window.viewport_size().height;
-        let chrome =
-            viewport / 10. + px(16. + 8. + 16. + 16.) + appearance::ui_size(13. + 28. + 16.);
+        let chrome = viewport / 10.
+            + px(2. * (1. + 16.) + 16. + 16.)
+            + window.rem_size() * 1.5
+            + appearance::ui_size(28.);
         (viewport - chrome).max(px(200.))
     }
 
@@ -2274,6 +2302,7 @@ impl ThemeForm {
                 Some(
                     warning_glyph(p)
                         .id(("theme-token-warning", kind as usize))
+                        .debug_selector(move || format!("theme-token-warning-{}", kind.key()))
                         .role(Role::Label)
                         .aria_label(format!("{label} has a readability warning")),
                 )
@@ -2405,9 +2434,10 @@ impl ThemeForm {
             .when(count == 0, |list| {
                 list.child(
                     div()
+                        .debug_selector(|| "theme-editor-no-warnings".into())
                         .text_size(appearance::ui_text(11.))
                         .text_color(rgb(p.muted))
-                        .child("Every pair meets its contrast minimum."),
+                        .child(NO_READABILITY_WARNINGS),
                 )
             })
             .children(self.warnings.iter().enumerate().map(|(index, issue)| {
@@ -3697,18 +3727,7 @@ mod tests {
                 track.left()
             );
 
-            // The panel ends 16 px of padding under Save; 16 px stay under the panel.
-            let save = bounds(cx, "theme-editor-save".into());
-            let panel_bottom = save.bottom() + px(16.);
-            let margin = appearance::ui_size(16.);
-            assert!(
-                panel_bottom <= viewport.height - margin + px(1.),
-                "the footer is on screen: panel bottom {panel_bottom:?} in {viewport:?}"
-            );
-            assert!(
-                panel_bottom >= viewport.height - margin - px(1.),
-                "the body uses the window height: panel bottom {panel_bottom:?} in {viewport:?}"
-            );
+            // Where the panel ends is `the_panel_ends_16_px_above_the_window_at_every_text_size`.
             let editor = bounds(cx, "theme-editor".into());
             assert_eq!(
                 editor.size.height,
@@ -3719,6 +3738,132 @@ mod tests {
             cx.simulate_keystrokes("escape");
             settle(cx);
             assert!(cx.read(|cx| app.read(cx).theme_editor.form.is_none()));
+        }
+    }
+
+    /// With the rows overflowing, the panel ends 16 px above the window's
+    /// bottom edge at every interface text size (`DESIGN.md`). The alert's
+    /// title and the gap under it are in rems and its footer holds the scaled
+    /// 28 px buttons, while its padding, its border and the margin below stay
+    /// in pixels, so the form's cap counts each in its own unit. The panel
+    /// ends under Save by the 16 px padding and the 1 px border; the window is
+    /// at 2x, so the edge may land half a device pixel off.
+    #[gpui::test]
+    fn the_panel_ends_16_px_above_the_window_at_every_text_size(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        // The alert slides in on a wall-clock animation; open it at rest.
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        for viewport in [size(px(1000.), px(680.)), size(px(1440.), px(900.))] {
+            cx.simulate_resize(viewport);
+            for text_size in [
+                *appearance::INTERFACE_TEXT_RANGE.start(),
+                appearance::DEFAULT_INTERFACE_TEXT_SIZE,
+                *appearance::INTERFACE_TEXT_RANGE.end(),
+            ] {
+                cx.update(|window, cx| {
+                    app.update(cx, |app, _| app.settings.interface_text_size = text_size);
+                    appearance::apply_text_sizes(text_size, 12, window, cx);
+                    app.update(cx, |app, cx| app.open_theme_editor(None, window, cx));
+                });
+                settle(cx);
+                let form = form(cx, &app);
+                next_frame(cx);
+                let scroll = cx.read(|cx| form.read(cx).scroll.clone());
+                assert!(
+                    scroll.max_offset().y > px(0.),
+                    "the rows overflow at {text_size} pt in {viewport:?}"
+                );
+                let save = bounds(cx, "theme-editor-save".into());
+                let inset = viewport.height - (save.bottom() + px(16. + 1.));
+                assert!(
+                    (inset - px(16.)).abs() <= px(0.25),
+                    "at {text_size} pt in {viewport:?} the panel ends {inset:?} above the window's bottom edge"
+                );
+
+                cx.simulate_keystrokes("escape");
+                settle(cx);
+                assert!(cx.read(|cx| app.read(cx).theme_editor.form.is_none()));
+            }
+        }
+    }
+
+    /// A step warning marks the Selected and Hover rows it names and every
+    /// row whose token its measure composites over; a contrast warning marks
+    /// only the two tokens it names.
+    #[test]
+    fn a_step_warning_marks_every_token_its_measure_composites_over() {
+        use TokenKind::*;
+        let marked = |issue: &ReadabilityIssue| {
+            TokenKind::ALL
+                .into_iter()
+                .filter(|kind| issue_tokens(issue).any(|token| token == *kind))
+                .collect::<Vec<_>>()
+        };
+        let mut palette = ThemeChoice::Midnight.palette();
+        palette.hover = palette.selected;
+        let issues = palette.readability_issues();
+        let step = issues
+            .iter()
+            .find(|issue| issue.measure == ReadabilityMeasure::Step)
+            .expect("a hover fill equal to the pressed fill is a step warning");
+        assert_eq!(
+            marked(step),
+            [Canvas, Panel, Subtle, Hover, Selected, Accent],
+            "{step}"
+        );
+        let contrast = ReadabilityIssue {
+            foreground: ReadabilityForeground::Token(Muted),
+            background: ReadabilityBackground::Token(Selected),
+            measure: ReadabilityMeasure::Contrast,
+            ratio: 1.,
+            minimum: 4.5,
+        };
+        assert_eq!(marked(&contrast), [Selected, Muted]);
+    }
+
+    /// With no warnings the Readability list says every rule is met, which
+    /// names the whole rule set: the pressed step is not a contrast minimum.
+    /// Hover set to Selected leaves only the step warning, which replaces the
+    /// line and shows the glyph on exactly the rows its measure reads.
+    #[gpui::test]
+    fn the_empty_list_names_every_rule_and_a_step_warning_marks_its_rows(cx: &mut TestAppContext) {
+        assert_eq!(NO_READABILITY_WARNINGS, "Every readability rule is met.");
+        let (app, cx) = open_app(cx);
+        click(cx, "custom-themes-new");
+        let form = form(cx, &app);
+        next_frame(cx);
+        let warnings = cx.read(|cx| form.read(cx).warnings.clone());
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(settings::page_shows(cx, "theme-editor-no-warnings"));
+
+        let selected = cx.read(|cx| form.read(cx).draft.selected);
+        type_hex(cx, &form, TokenKind::Hover, &custom::format_hex(selected));
+        next_frame(cx);
+        let warnings = cx.read(|cx| form.read(cx).warnings.clone());
+        assert!(
+            matches!(
+                warnings.as_slice(),
+                [issue] if issue.measure == ReadabilityMeasure::Step
+            ),
+            "{warnings:?}"
+        );
+        assert!(!settings::page_shows(cx, "theme-editor-no-warnings"));
+        for kind in TokenKind::ALL {
+            let selector: &'static str = format!("theme-token-warning-{}", kind.key()).leak();
+            assert_eq!(
+                settings::page_shows(cx, selector),
+                matches!(
+                    kind,
+                    TokenKind::Canvas
+                        | TokenKind::Panel
+                        | TokenKind::Subtle
+                        | TokenKind::Hover
+                        | TokenKind::Selected
+                        | TokenKind::Accent
+                ),
+                "the {} row's glyph",
+                kind.label()
+            );
         }
     }
 
