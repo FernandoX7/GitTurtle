@@ -1,5 +1,5 @@
 use crate::{
-    highlighter::HighlightTheme, list::ListSettings, notification::NotificationSettings,
+    FocusRing, highlighter::HighlightTheme, list::ListSettings, notification::NotificationSettings,
     scroll::ScrollbarMode, sheet::SheetSettings,
 };
 use gpui::{App, Global, Hsla, IsZero as _, Pixels, SharedString, Window, WindowAppearance, px};
@@ -124,6 +124,15 @@ pub struct Theme {
     /// which costs no space and cannot be clipped.
     #[serde(default = "default_true")]
     pub focus_ring: bool,
+    /// The ring a focused [`crate::button::Button`] draws, default the ring
+    /// every other control draws.
+    ///
+    /// Set in code, not read from theme files. A Button often has no border of
+    /// its own, so an application can give it a wider or more opaque ring, or
+    /// hold the ring off its fill with a gap. The ring takes no layout space,
+    /// and [`Self::focus_ring`] still turns it off.
+    #[serde(skip)]
+    pub button_focus_ring: FocusRing,
     pub transparent: Hsla,
     /// Show the scrollbar mode, default: Scrolling
     #[serde(alias = "scrollbar_show")]
@@ -630,6 +639,7 @@ impl From<&ThemeColor> for Theme {
             radius_lg: px(8.),
             shadow: true,
             focus_ring: true,
+            button_focus_ring: FocusRing::default(),
             scrollbar_mode: ScrollbarMode::default(),
             notification: NotificationSettings::default(),
             tile_grid_size: px(8.),

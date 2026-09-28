@@ -5,7 +5,7 @@ These dependencies are selected by the root [Cargo patches](../Cargo.toml) and p
 | Dependency | Local purpose and contract |
 | --- | --- |
 | `gpui-base` | [Accessibility, dialog/input semantics and retained editor viewport behavior](gpui-base/GITTURTLE-PATCH.md) |
-| `gpui-component` | [Input accessibility projection and explicit control geometry](gpui-component/GITTURTLE-PATCH.md); input changes pair with the base patch |
+| `gpui-component` | [Input accessibility projection, explicit control geometry and the Button focus-ring setting](gpui-component/GITTURTLE-PATCH.md); input changes pair with the base patch |
 | `gpui-pre-macos` | [Demand-driven frames and accessibility responder alignment](gpui-pre-macos/README.gitturtle.md) |
 | `mermaid-rs-renderer` | [Disable renderer-owned disk font caching and isolate upstream test files](mermaid-rs-renderer/GITTURTLE-PATCH.md); bounded supplied-text integration remains in the preview crate |
 
