@@ -301,7 +301,9 @@ fn desktop_code_font(
         .iter()
         .find(|family| loaded.iter().any(|name| name == *family))
     else {
-        return Err(format!("{first} is not among the fonts GitTurtle loaded."));
+        return Err(format!(
+            "{first} is not among the fonts GitTurtle loaded; relaunch GitTurtle after installing it."
+        ));
     };
     // Listed, the family resolves; `resolve_font` falls back (and panics
     // only when no fallback resolves either, as the interface text would).
@@ -731,12 +733,17 @@ mod portal {
             {
                 observed.fontconfig = fontconfig_defaults();
             }
+            // Launch waits for the first snapshot, so the code font lookup
+            // follows it rather than holding the window back.
+            if !sender.send(observed.resolve(scales_text)) {
+                return;
+            }
             let code = code_font.run();
             let resolve = |observed: &Observed| DesktopText {
                 code_font: code.clone(),
                 ..observed.resolve(scales_text)
             };
-            if !sender.send(resolve(&observed)) {
+            if code.is_some() && !sender.send(resolve(&observed)) {
                 return;
             }
             let Some(mut session) = session else {
@@ -1091,7 +1098,10 @@ mod tests {
         );
         assert_eq!(
             desktop_code_font(&text, &names(&["Not Installed Mono"])),
-            Err("Not Installed Mono is not among the fonts GitTurtle loaded.".into())
+            Err(
+                "Not Installed Mono is not among the fonts GitTurtle loaded; relaunch GitTurtle after installing it."
+                    .into()
+            )
         );
         assert_eq!(
             desktop_code_font(&text, &[]),

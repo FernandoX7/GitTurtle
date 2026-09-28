@@ -511,7 +511,7 @@ impl GitTurtle {
             let bundled = crate::mono();
             let description: SharedString = match desktop_text::system_code_font(cx) {
                 SystemCodeFont::Off => format!(
-                    "Code uses the bundled {bundled}. On, it uses fontconfig's monospace family when that font is monospace."
+                    "Code uses the bundled {bundled}. Turn on to use fontconfig's monospace font when it is fixed-width."
                 )
                 .into(),
                 SystemCodeFont::Pending => "Looking up the desktop's monospace font…".into(),
