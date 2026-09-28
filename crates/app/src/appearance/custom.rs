@@ -302,7 +302,7 @@ pub fn channel_distance(a: u32, b: u32) -> u32 {
 }
 
 /// The color being judged: a palette token or one of the palette's graph lane colors.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReadabilityForeground {
     Token(TokenKind),
     /// Index into the six-color lane set chosen by `Palette::is_light`.
@@ -311,14 +311,14 @@ pub enum ReadabilityForeground {
 
 /// The surface it is judged against: a palette token or the selected-row hover blend
 /// (`Palette::row_hover(true)`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReadabilityBackground {
     Token(TokenKind),
     SelectedRowHover,
 }
 
 /// What a rule measures between its two colors.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReadabilityMeasure {
     /// The WCAG contrast ratio, from 1 to 21.
     Contrast,
@@ -368,7 +368,7 @@ impl ReadabilityBackground {
 
 impl ReadabilityIssue {
     /// Every palette token the issue's measure reads, so an edit to any of
-    /// them can cause or clear it: both colors' tokens, and for the pressed
+    /// them can move or clear it: both colors' tokens, and for the pressed
     /// step every surface the two fills are composited over.
     pub fn tokens(&self) -> impl Iterator<Item = TokenKind> {
         let surfaces: &[ReadabilityBackground] = match self.measure {
@@ -1303,11 +1303,21 @@ mod tests {
     #[test]
     fn every_issue_marks_the_tokens_its_measure_reads() {
         use std::collections::HashMap;
+        // Colors as numbers: tokens by discriminant, lanes and the hovered
+        // selected row past the last token.
         let key = |issue: &ReadabilityIssue| {
+            let foreground = match issue.foreground {
+                ReadabilityForeground::Token(kind) => kind as usize,
+                ReadabilityForeground::Lane(index) => TokenKind::ALL.len() + index,
+            };
+            let background = match issue.background {
+                ReadabilityBackground::Token(kind) => kind as usize,
+                SelectedRowHover => TokenKind::ALL.len(),
+            };
             (
-                issue.foreground,
-                issue.background,
-                issue.measure,
+                foreground,
+                background,
+                issue.measure == ReadabilityMeasure::Step,
                 issue.minimum.to_bits(),
             )
         };
@@ -1335,6 +1345,14 @@ mod tests {
             .iter()
             .filter(|issue| matches!(issue.foreground, ReadabilityForeground::Lane(_)))
             .count();
+        // Every contrast pair in the rules, 77 token pairs and 24 lane pairs:
+        // a new rule changes this count, and one that passes at 1:1 (a
+        // minimum of 1 or less) is left out and needs its own start palette.
+        assert_eq!(
+            gray_issues.len(),
+            101,
+            "the gray palette fails every contrast pair"
+        );
         assert_eq!(lanes, 6 * 4, "every lane fails on every gray row state");
         assert!(
             gray_issues
