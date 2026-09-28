@@ -273,9 +273,7 @@ pub(super) fn menus(repository: bool, busy: bool, cx: &mut App) {
 
 impl GitTurtle {
     pub(super) fn effective_theme(&self, cx: &App) -> appearance::custom::ResolvedTheme {
-        self.settings
-            .resolved_theme(cx.window_appearance(), &self.custom_themes)
-            .with_desktop(cx)
+        self.settings.effective_theme(cx, &self.custom_themes)
     }
     /// The one appearance application path: a Settings switch, a system
     /// appearance change and every theme-editor live-preview edit end here.
@@ -374,20 +372,18 @@ impl GitTurtle {
         shortcuts::open_help(window, cx);
     }
     pub(super) fn about(&self, window: &mut Window, cx: &mut Context<Self>) {
-        // Diagnostics report built-in keys only: a custom theme reports its base,
+        // Diagnostics report fixed keys only: a custom theme reports its base,
         // so a user-chosen theme name never enters a copied bug report, and the
-        // Omarchy theme the built-in of its lightness.
-        let effective = self.effective_theme(cx);
-        let theme = match effective.selection {
-            appearance::custom::ThemeSelection::BuiltIn(choice) => choice,
-            appearance::custom::ThemeSelection::Custom(id) => self
-                .custom_themes
-                .iter()
-                .find(|theme| theme.id == id)
-                .map_or_else(appearance::ThemeChoice::default, |theme| theme.base),
-            appearance::custom::ThemeSelection::Omarchy => {
-                appearance::custom::fallback_base(effective.palette)
-            }
+        // Omarchy theme reports "omarchy", not the desktop theme's name.
+        use appearance::custom::ThemeSelection;
+        let theme = match self.effective_theme(cx).selection {
+            ThemeSelection::Custom(id) => ThemeSelection::BuiltIn(
+                self.custom_themes
+                    .iter()
+                    .find(|theme| theme.id == id)
+                    .map_or_else(appearance::ThemeChoice::default, |theme| theme.base),
+            ),
+            selection => selection,
         };
         let report = build_info::diagnostics(
             window.scale_factor(),

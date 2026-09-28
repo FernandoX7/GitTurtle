@@ -1,9 +1,18 @@
 # Omarchy theme fixtures
 
-Each `<name>.toml` is an unmodified copy of `themes/<name>/colors.toml` from
-[Omarchy](https://github.com/basecamp/omarchy), as installed by the Omarchy 4.0.4
-package (copied on September 28, 2026). All 22 bundled themes are here: 17 dark
-and 5 light (`catppuccin-latte`, `flexoki-light`, `lupine`, `rose-pine`, `white`).
+Each `<name>.toml` except the two `alacritty-*.toml` files is an unmodified copy of
+`themes/<name>/colors.toml` from [Omarchy](https://github.com/basecamp/omarchy), as
+installed by the Omarchy 4.0.4 package (copied on September 28, 2026). All 22
+bundled themes are here: 17 dark and 5 light (`catppuccin-latte`, `flexoki-light`,
+`lupine`, `rose-pine`, `white`).
+
+`alacritty-dark.toml` and `alacritty-light.toml` are GitTurtle's own, written by
+hand in the exact shape `omarchy-theme-colors-from-alacritty` gives a theme that
+ships only `alacritty.toml`. That shape is `accent` (the normal blue), `selection`
+(the foreground when Alacritty names none), `background`, `foreground` and
+`color0`…`color15` (`color0` being the background and `color7` the foreground),
+with no named colors and no mode. Their palettes were invented for these tests;
+the script was not run.
 
 `appearance::omarchy::palette::tests` parses every file, checks its mode and
 requires the palette it maps to to have no readability findings. These files are

@@ -1113,6 +1113,22 @@ impl ThemeChoice {
     }
 }
 
+impl custom::ThemeSelection {
+    /// The selection this desktop honours: the Omarchy theme only on Linux with its reader
+    /// installed (it needs an absolute `$HOME`), and otherwise the default theme, so Follow
+    /// system is never locked for a theme without a visible card.
+    pub fn on_desktop(self, cx: &App) -> Self {
+        #[cfg(target_os = "linux")]
+        let honoured = self != Self::Omarchy || cx.has_global::<omarchy::Omarchy>();
+        #[cfg(not(target_os = "linux"))]
+        let honoured = {
+            let _ = cx;
+            self != Self::Omarchy
+        };
+        if honoured { self } else { Self::default() }
+    }
+}
+
 impl custom::ResolvedTheme {
     /// Apply the resolved built-in or custom palette through the one application path.
     pub fn apply(self, window: Option<&mut Window>, cx: &mut App) {

@@ -1,9 +1,10 @@
 //! Omarchy's `colors.toml`, parsed and mapped onto GitTurtle's semantic palette.
 //!
-//! The parser reads the flat subset of TOML that Omarchy themes use: `key = "#rrggbb"` lines,
-//! `mode = "light"|"dark"`, blank lines and comments. It ignores keys it does not read and
-//! values that are not a `#rrggbb` string (themes also carry Hyprland border expressions), and
-//! refuses only input that is too large, is not UTF-8 or lacks a required color.
+//! Lines are read the way Omarchy's own `omarchy-theme-color` reads them, and the keys GitTurtle
+//! uses are resolved through that script's alias cascade, so a theme generated from an
+//! `alacritty.toml` (ANSI `color0`…`color15` and no named colors or mode) or written with the
+//! legacy short names resolves as Omarchy renders it. The mode follows the same precedence.
+//! Input that is too large, not UTF-8 or without a required color is refused with a reason.
 //!
 //! The mapping follows the plan in `docs/development/themes/spec.md#omarchy-theme`: each token
 //! starts from the theme's own color and is then fitted to the readability rules, moving its
@@ -13,6 +14,7 @@
 
 use crate::appearance::custom::{contrast, luminance};
 use crate::appearance::{Palette, ThemeChoice};
+use std::collections::HashMap;
 
 /// Theme files larger than this are refused without reading past it.
 pub(crate) const MAX_COLORS_BYTES: usize = 16 * 1024;
@@ -24,11 +26,10 @@ pub(crate) enum Mode {
     Dark,
 }
 
-/// The colors of a theme the mapping reads.
+/// The colors of a theme the mapping reads, resolved through Omarchy's aliases.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Colors {
-    /// The theme's own `mode`, when it names one.
-    pub mode: Option<Mode>,
+    pub mode: Mode,
     pub background: u32,
     pub foreground: u32,
     pub accent: u32,
@@ -37,6 +38,7 @@ pub(crate) struct Colors {
     pub yellow: u32,
     pub blue: u32,
     pub magenta: u32,
+    /// An optional color is `None` only when the value it resolves to is not `#rrggbb`.
     pub selection: Option<u32>,
     pub muted: Option<u32>,
     pub dark_background: Option<u32>,
@@ -45,27 +47,84 @@ pub(crate) struct Colors {
     pub orange: Option<u32>,
 }
 
-/// The keys the mapping reads, the required ones first. Every other key is ignored.
-const KEYS: [&str; 14] = [
-    "background",
-    "foreground",
-    "accent",
-    "red",
-    "green",
-    "yellow",
-    "blue",
-    "magenta",
-    "selection",
-    "muted",
-    "dark_background",
-    "lighter_background",
-    "dark_foreground",
-    "orange",
+/// The required colors and the keys `omarchy-theme-color` tries for each, in its order: the
+/// canonical name, the legacy short name, then the ANSI color it aliases.
+const REQUIRED: [(&str, &[&str]); 8] = [
+    ("background", &["background", "bg", "color0"]),
+    ("foreground", &["foreground", "fg", "color7"]),
+    ("accent", &["accent"]),
+    ("red", &["red", "color1"]),
+    ("green", &["green", "color2"]),
+    ("yellow", &["yellow", "color3"]),
+    ("blue", &["blue", "color4"]),
+    ("magenta", &["magenta", "color5", "purple"]),
 ];
-const REQUIRED: usize = 8;
 
-/// Parse a theme's `colors.toml`. The error is a short reason for the Settings card.
-pub(crate) fn parse(bytes: &[u8]) -> Result<Colors, String> {
+/// The keys of one `colors.toml` as `omarchy-theme-color` reads them: the last value of each,
+/// where a key counts only with a non-empty value.
+struct Keys<'a>(HashMap<String, &'a str>);
+
+impl<'a> Keys<'a> {
+    /// Read each line as `omarchy-theme-color` does: split at the first `=`, drop quotes and
+    /// spaces from the key and skip it when empty, a comment or not `[A-Za-z0-9_-]`, take a
+    /// value between its first two quotes (or trimmed, unquoted), and skip a value with a
+    /// character outside Omarchy's set. Unlike that script, keys after a `[table]` header
+    /// belong to the table, as in TOML.
+    fn read(text: &'a str) -> Self {
+        let mut keys = HashMap::new();
+        let mut in_table = false;
+        for line in text.lines() {
+            if line.trim_start().starts_with('[') {
+                in_table = true;
+                continue;
+            }
+            let (key, value) = line.split_once('=').unwrap_or((line, ""));
+            let key: String = key
+                .chars()
+                .filter(|character| !matches!(character, '"' | '\'' | ' '))
+                .collect();
+            if in_table
+                || key.is_empty()
+                || !key
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+            {
+                continue;
+            }
+            let value = match value.find(['"', '\'']) {
+                Some(open) => {
+                    let rest = &value[open + 1..];
+                    &rest[..rest.find(['"', '\'']).unwrap_or(rest.len())]
+                }
+                // Bash's `[:space:]`.
+                None => value.trim_matches(|character: char| {
+                    character.is_ascii_whitespace() || character == '\x0b'
+                }),
+            };
+            if value.chars().all(|character| {
+                character.is_ascii_alphanumeric() || "#(),._+/% -".contains(character)
+            }) {
+                keys.insert(key, value);
+            }
+        }
+        Self(keys)
+    }
+
+    /// The first of `names` with a value, and the key that gave it.
+    fn first(&self, names: &[&'static str]) -> Option<(&'static str, &'a str)> {
+        names.iter().find_map(|&name| {
+            self.0
+                .get(name)
+                .filter(|value| !value.is_empty())
+                .map(|&value| (name, value))
+        })
+    }
+}
+
+/// Parse a theme's `colors.toml`, resolving it through Omarchy's aliases. `light_marker` says
+/// whether a regular `light.mode` file sits beside it, which Omarchy reads as a light theme
+/// when the file names no mode. The error is a short reason for the Settings card.
+pub(crate) fn parse(bytes: &[u8], light_marker: bool) -> Result<Colors, String> {
     if bytes.len() > MAX_COLORS_BYTES {
         return Err(format!(
             "colors.toml is larger than {} KiB",
@@ -73,84 +132,77 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Colors, String> {
         ));
     }
     let text = std::str::from_utf8(bytes).map_err(|_| "colors.toml is not UTF-8 text")?;
-    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let mut values = [None; KEYS.len()];
-    let mut mode = None;
-    // Keys after a `[table]` header belong to that table, not to the theme.
-    let mut in_table = false;
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if line.starts_with('[') {
-            in_table = true;
-            continue;
-        }
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        let Some(value) = string_value(value.trim()) else {
-            continue;
-        };
-        if in_table {
-            continue;
-        }
-        let key = key.trim();
-        if key == "mode" {
-            if value.eq_ignore_ascii_case("light") {
-                mode = Some(Mode::Light);
-            } else if value.eq_ignore_ascii_case("dark") {
-                mode = Some(Mode::Dark);
-            }
-            continue;
-        }
-        if let (Some(index), Some(color)) =
-            (KEYS.iter().position(|known| *known == key), hex(value))
-        {
-            values[index] = Some(color);
-        }
-    }
-    if let Some(missing) = (0..REQUIRED).find(|&index| values[index].is_none()) {
-        let key = KEYS[missing];
-        let article = if key.starts_with(['a', 'e', 'i', 'o', 'u']) {
+    let keys = Keys::read(text.strip_prefix('\u{feff}').unwrap_or(text));
+    let mut required = [0; REQUIRED.len()];
+    for ((name, names), color) in REQUIRED.iter().zip(&mut required) {
+        let article = if name.starts_with(['a', 'e', 'i', 'o', 'u']) {
             "an"
         } else {
             "a"
         };
-        return Err(format!("colors.toml is missing {article} {key} color"));
+        let (key, value) = keys.first(names).ok_or_else(|| match names {
+            [_] => format!("colors.toml is missing {article} {name} color"),
+            [aliases @ .., last] => format!(
+                "colors.toml is missing {article} {name} color ({} or {last})",
+                aliases.join(", ")
+            ),
+            [] => unreachable!("every required color has a key"),
+        })?;
+        *color = hex(value).ok_or_else(|| format!("colors.toml's {key} is not a #rrggbb color"))?;
     }
-    let required = |index: usize| values[index].unwrap_or_default();
+    let [
+        background,
+        foreground,
+        accent,
+        red,
+        green,
+        yellow,
+        blue,
+        magenta,
+    ] = required;
+    // `omarchy-theme-color` resolves these after the required ones; `color0` has become the
+    // background by then.
+    let color = |names: &[&'static str], then: Option<u32>| match keys.first(names) {
+        Some((_, value)) => hex(value),
+        None => then,
+    };
+    let dark_foreground = color(&["dark_foreground", "dark_fg", "color8"], Some(foreground));
+    let mode = match keys.first(&["mode", "theme_type"]) {
+        // Omarchy's consumers compare the mode with "light" exactly.
+        Some((_, "light")) => Mode::Light,
+        Some(_) => Mode::Dark,
+        None if light_marker => Mode::Light,
+        None => {
+            let sum = [16, 8, 0]
+                .into_iter()
+                .map(|shift| (background >> shift) & 0xff)
+                .sum::<u32>();
+            if sum > 382 { Mode::Light } else { Mode::Dark }
+        }
+    };
     Ok(Colors {
         mode,
-        background: required(0),
-        foreground: required(1),
-        accent: required(2),
-        red: required(3),
-        green: required(4),
-        yellow: required(5),
-        blue: required(6),
-        magenta: required(7),
-        selection: values[8],
-        muted: values[9],
-        dark_background: values[10],
-        lighter_background: values[11],
-        dark_foreground: values[12],
-        orange: values[13],
+        background,
+        foreground,
+        accent,
+        red,
+        green,
+        yellow,
+        blue,
+        magenta,
+        selection: color(
+            &["selection", "selection_background", "color8"],
+            Some(background),
+        ),
+        muted: color(&["muted", "color8"], dark_foreground),
+        dark_background: color(
+            &["dark_background", "dark_bg"],
+            Some(mix(background, BLACK, 0.25)),
+        ),
+        lighter_background: color(&["lighter_background", "lighter_bg"], Some(background)),
+        dark_foreground,
+        orange: color(&["orange"], Some(yellow)),
     })
-}
-
-/// The contents of a one-line TOML string (`"…"` or `'…'`), followed by nothing but an
-/// optional comment.
-fn string_value(value: &str) -> Option<&str> {
-    let quote = value
-        .chars()
-        .next()
-        .filter(|quote| matches!(quote, '"' | '\''))?;
-    let rest = &value[1..];
-    let end = rest.find(quote)?;
-    let after = rest[end + 1..].trim_start();
-    (after.is_empty() || after.starts_with('#')).then_some(&rest[..end])
 }
 
 /// `#rrggbb` in either case; anything else, including shorthand and alpha, is not a color.
@@ -172,12 +224,11 @@ pub(crate) struct Mapped {
 /// The palette a theme applies: the fitted palette, or the mode's default built-in when
 /// the fit still leaves a readability finding.
 pub(crate) fn map(colors: &Colors) -> Mapped {
-    let mode = mode(colors);
-    let fitted = fit(colors, mode);
+    let fitted = fit(colors);
     let palette = if fitted.readability_issues().is_empty() {
         fitted
     } else {
-        match mode {
+        match colors.mode {
             Mode::Light => ThemeChoice::Daylight.palette(),
             Mode::Dark => ThemeChoice::Midnight.palette(),
         }
@@ -186,18 +237,6 @@ pub(crate) fn map(colors: &Colors) -> Mapped {
         palette,
         is_light: palette.is_light(),
     }
-}
-
-/// The theme's own mode, or else light when its background contrasts more with black than
-/// with white.
-pub(crate) fn mode(colors: &Colors) -> Mode {
-    colors.mode.unwrap_or_else(|| {
-        if contrast(colors.background, BLACK) > contrast(colors.background, WHITE) {
-            Mode::Light
-        } else {
-            Mode::Dark
-        }
-    })
 }
 
 const BLACK: u32 = 0x000000;
@@ -273,10 +312,10 @@ impl Judge {
     }
 }
 
-/// The fitted palette for `colors` in `mode`, before the readability check.
-pub(crate) fn fit(colors: &Colors, mode: Mode) -> Palette {
+/// The fitted palette for `colors`, before the readability check.
+pub(crate) fn fit(colors: &Colors) -> Palette {
     let judge = Judge {
-        dark: mode == Mode::Dark,
+        dark: colors.mode == Mode::Dark,
     };
     let lanes = crate::graph::lane_colors(!judge.dark);
     // Every row surface keeps the lanes at `LANE_TARGET`: in a dark palette a surface is at
@@ -718,7 +757,7 @@ mod tests {
             .iter()
             .find(|(theme, _, _)| *theme == name)
             .expect("a bundled theme");
-        parse(bytes).expect("bundled themes parse")
+        parse(bytes, false).expect("bundled themes parse")
     }
 
     fn own(mode: Mode) -> Palette {
@@ -733,10 +772,9 @@ mod tests {
     #[test]
     fn every_bundled_theme_maps_in_its_own_mode_without_findings() {
         for (name, bytes, declared) in BUNDLED {
-            let colors = parse(bytes).unwrap_or_else(|error| panic!("{name}: {error}"));
-            assert_eq!(colors.mode, Some(declared), "{name}");
-            assert_eq!(mode(&colors), declared, "{name}");
-            let fitted = fit(&colors, declared);
+            let colors = parse(bytes, false).unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert_eq!(colors.mode, declared, "{name}");
+            let fitted = fit(&colors);
             assert_eq!(
                 fitted.readability_issues(),
                 Vec::new(),
@@ -799,14 +837,13 @@ mod tests {
                 },
             ),
         ] {
-            let mode = mode(&colors);
-            let palette = fit(&colors, mode);
+            let palette = fit(&colors);
             assert!(
                 !distinguishable(colors.red, colors.green),
                 "{name}'s red and green look alike"
             );
             assert_eq!(palette.readability_issues(), Vec::new(), "{name}");
-            let own = own(mode);
+            let own = own(colors.mode);
             for (token, color, gitturtle) in [
                 ("added", palette.added, own.added),
                 ("removed", palette.removed, own.removed),
@@ -858,10 +895,10 @@ mod tests {
         let mut fitted = 0;
         for case in 0..total {
             let mut colors = Colors {
-                mode: match inputs.next() % 3 {
-                    0 => Some(Mode::Light),
-                    1 => Some(Mode::Dark),
-                    _ => None,
+                mode: if inputs.next().is_multiple_of(2) {
+                    Mode::Light
+                } else {
+                    Mode::Dark
                 },
                 background: inputs.color(),
                 foreground: inputs.color(),
@@ -883,16 +920,15 @@ mod tests {
                 1 => colors.green = colors.red ^ 0x010101,
                 _ => {}
             }
-            let mode = mode(&colors);
             let mapped = map(&colors);
             assert_eq!(
                 mapped.palette.readability_issues(),
                 Vec::new(),
                 "case {case}: {colors:x?}"
             );
-            assert_eq!(mapped.is_light, mode == Mode::Light, "case {case}");
+            assert_eq!(mapped.is_light, colors.mode == Mode::Light, "case {case}");
             assert_eq!(mapped.palette.is_light(), mapped.is_light, "case {case}");
-            if fit(&colors, mode).readability_issues().is_empty() {
+            if fit(&colors).readability_issues().is_empty() {
                 fitted += 1;
             }
         }
@@ -907,44 +943,206 @@ mod tests {
         String::from_utf8(bytes.to_vec()).unwrap()
     }
 
-    /// Each required color, missing or malformed, is refused with a reason naming it.
+    /// Each required color is refused by name when neither it nor an alias Omarchy tries has a
+    /// value, and by the key that gave it when that value is not `#rrggbb`. A value Omarchy
+    /// would skip for its characters, or an empty one, leaves the aliases to decide.
     #[test]
     fn a_missing_or_malformed_required_color_is_refused_by_name() {
         let source = tokyo_night_source();
-        for key in &KEYS[..REQUIRED] {
-            let article = if *key == "accent" { "an" } else { "a" };
-            let expected = format!("colors.toml is missing {article} {key} color");
-            let without = source
-                .lines()
-                .filter(|line| !line.starts_with(&format!("{key} ")))
-                .collect::<Vec<_>>()
-                .join("\n");
-            assert_eq!(parse(without.as_bytes()), Err(expected.clone()), "{key}");
-            for malformed in [
-                "#1a1b2",
-                "#1a1b2g",
-                "1a1b26",
-                "#1a1b26ff",
-                "rgb(1, 2, 3)",
-                "",
-            ] {
-                let edited = source
+        for (key, names) in REQUIRED {
+            let article = if key == "accent" { "an" } else { "a" };
+            let missing = match names {
+                [_] => format!("colors.toml is missing {article} {key} color"),
+                _ => format!(
+                    "colors.toml is missing {article} {key} color ({} or {})",
+                    names[..names.len() - 1].join(", "),
+                    names[names.len() - 1]
+                ),
+            };
+            let edit = |value: Option<&str>| {
+                source
                     .lines()
-                    .map(|line| {
-                        if line.starts_with(&format!("{key} ")) {
-                            format!("{key} = \"{malformed}\"")
-                        } else {
-                            line.to_owned()
-                        }
+                    .filter_map(|line| match value {
+                        _ if !line.starts_with(&format!("{key} ")) => Some(line.to_owned()),
+                        Some(value) => Some(format!("{key} = \"{value}\"")),
+                        None => None,
                     })
                     .collect::<Vec<_>>()
-                    .join("\n");
+                    .join("\n")
+            };
+            assert_eq!(
+                parse(edit(None).as_bytes(), false),
+                Err(missing.clone()),
+                "{key}"
+            );
+            for skipped in ["", "#1a1b26;", "#1a1b26\\"] {
                 assert_eq!(
-                    parse(edited.as_bytes()),
-                    Err(expected.clone()),
+                    parse(edit(Some(skipped)).as_bytes(), false),
+                    Err(missing.clone()),
+                    "{key} = {skipped}"
+                );
+            }
+            for malformed in ["#1a1b2", "#1a1b2g", "1a1b26", "#1a1b26ff", "rgb(1, 2, 3)"] {
+                assert_eq!(
+                    parse(edit(Some(malformed)).as_bytes(), false),
+                    Err(format!("colors.toml's {key} is not a #rrggbb color")),
                     "{key} = {malformed}"
                 );
             }
+        }
+    }
+
+    /// A theme with only `alacritty.toml` gets the `colors.toml` that
+    /// `omarchy-theme-colors-from-alacritty` writes: accent, selection, background, foreground
+    /// and `color0`…`color15`, with no named colors and no mode. Built here by hand in that
+    /// shape (the script itself is never run), a dark and a light one resolve as Omarchy
+    /// resolves them and fit without a single readability finding.
+    #[test]
+    fn a_theme_generated_from_alacritty_resolves_through_omarchys_aliases() {
+        for (bytes, mode) in [
+            (
+                &include_bytes!("../../../tests/fixtures/omarchy/alacritty-dark.toml")[..],
+                Mode::Dark,
+            ),
+            (
+                &include_bytes!("../../../tests/fixtures/omarchy/alacritty-light.toml")[..],
+                Mode::Light,
+            ),
+        ] {
+            let text = std::str::from_utf8(bytes).unwrap();
+            let file = |key: &str| {
+                text.lines()
+                    .find_map(|line| line.strip_prefix(&format!("{key} = \"#")))
+                    .map(|value| u32::from_str_radix(&value[..6], 16).unwrap())
+                    .unwrap_or_else(|| panic!("the generated file has {key}"))
+            };
+            let colors = parse(bytes, false).unwrap();
+            assert_eq!(
+                colors,
+                Colors {
+                    // By the background's channel sum, as neither a mode nor light.mode says.
+                    mode,
+                    background: file("background"),
+                    foreground: file("foreground"),
+                    accent: file("accent"),
+                    red: file("color1"),
+                    green: file("color2"),
+                    yellow: file("color3"),
+                    blue: file("color4"),
+                    magenta: file("color5"),
+                    selection: Some(file("selection")),
+                    muted: Some(file("color8")),
+                    dark_background: Some(mix(file("background"), BLACK, 0.25)),
+                    lighter_background: Some(file("color0")),
+                    dark_foreground: Some(file("color8")),
+                    orange: Some(file("color3")),
+                }
+            );
+            assert_eq!(fit(&colors).readability_issues(), Vec::new(), "{mode:?}");
+            assert_eq!(map(&colors).is_light, mode == Mode::Light);
+        }
+    }
+
+    /// The rest of `omarchy-theme-color`'s cascade for the keys GitTurtle reads, and its mode
+    /// precedence: `mode`, then `theme_type`, then a `light.mode` file, then the background's
+    /// channel sum above 382, with only the exact value "light" meaning light.
+    #[test]
+    fn omarchys_aliases_and_mode_precedence_decide_as_omarchy_does() {
+        let theme = |lines: &str, marker: bool| {
+            parse(format!("accent = \"#7aa2f7\"\n{lines}").as_bytes(), marker)
+        };
+        let legacy = theme(
+            "bg = \"#101010\"\nfg = \"#e0e0e0\"\ndark_bg = \"#080808\"\n\
+             lighter_bg = \"#202020\"\ndark_fg = \"#808080\"\ncolor1 = \"#e05050\"\n\
+             color2 = \"#50e050\"\ncolor3 = \"#e0e050\"\ncolor4 = \"#5050e0\"\n\
+             purple = \"#b050e0\"\nselection_background = \"#303030\"\n",
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            (legacy.background, legacy.foreground, legacy.magenta),
+            (0x101010, 0xe0e0e0, 0xb050e0)
+        );
+        assert_eq!(legacy.dark_background, Some(0x080808));
+        assert_eq!(legacy.lighter_background, Some(0x202020));
+        assert_eq!(legacy.dark_foreground, Some(0x808080));
+        assert_eq!(
+            legacy.muted,
+            Some(0x808080),
+            "muted falls back to dark_foreground"
+        );
+        assert_eq!(legacy.selection, Some(0x303030));
+        assert_eq!(legacy.orange, Some(0xe0e050), "orange falls back to yellow");
+
+        // Canonical names win over their aliases; color5 over purple.
+        let both = theme(
+            "background = \"#111111\"\nbg = \"#222222\"\ncolor0 = \"#333333\"\n\
+             foreground = \"#dddddd\"\nred = \"#e05050\"\ncolor1 = \"#ff0000\"\n\
+             green = \"#50e050\"\nyellow = \"#e0e050\"\nblue = \"#5050e0\"\n\
+             color5 = \"#c050c0\"\npurple = \"#b050e0\"\ncolor8 = \"#707070\"\n",
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            (both.background, both.red, both.magenta),
+            (0x111111, 0xe05050, 0xc050c0)
+        );
+        // color0 is the background by then, and color8 serves selection, muted and dim text.
+        assert_eq!(both.lighter_background, Some(0x111111));
+        assert_eq!(both.selection, Some(0x707070));
+        assert_eq!(both.muted, Some(0x707070));
+        assert_eq!(both.dark_foreground, Some(0x707070));
+        assert_eq!(
+            both.dark_background,
+            Some(0x0d0d0d),
+            "25% toward black, rounded"
+        );
+
+        // A value Omarchy keeps blocks its aliases even when it is not a color; one it skips
+        // for its characters, or an empty one, does not.
+        let base = "background = \"#111111\"\nforeground = \"#dddddd\"\ngreen = \"#50e050\"\n\
+                    yellow = \"#e0e050\"\nblue = \"#5050e0\"\nmagenta = \"#c050c0\"\n\
+                    color1 = \"#e05050\"\n";
+        assert_eq!(
+            theme(&format!("{base}red = \"rgb(1, 2, 3)\"\n"), false),
+            Err("colors.toml's red is not a #rrggbb color".into())
+        );
+        for skipped in ["red = \"#ff0000;\"", "red = \"\"", "# red = \"#ff0000\""] {
+            assert_eq!(
+                theme(&format!("{base}{skipped}\n"), false).unwrap().red,
+                0xe05050
+            );
+        }
+        // An unquoted value and a quoted key are read as Omarchy reads them.
+        let loose = theme(
+            &format!("{base}red = #ff0000\n\"muted\" = '#404040'\n"),
+            false,
+        )
+        .unwrap();
+        assert_eq!((loose.red, loose.muted), (0xff0000, Some(0x404040)));
+
+        let mode =
+            |lines: &str, marker: bool| theme(&format!("{base}{lines}"), marker).unwrap().mode;
+        assert_eq!(mode("mode = \"light\"\n", false), Mode::Light);
+        assert_eq!(
+            mode("mode = \"Light\"\n", true),
+            Mode::Dark,
+            "only \"light\" is light"
+        );
+        assert_eq!(
+            mode("mode = \"dark\"\ntheme_type = \"light\"\n", true),
+            Mode::Dark
+        );
+        assert_eq!(mode("theme_type = \"light\"\n", false), Mode::Light);
+        assert_eq!(
+            mode("mode = \"\"\n", true),
+            Mode::Light,
+            "light.mode, when nothing names one"
+        );
+        assert_eq!(mode("", false), Mode::Dark);
+        for (background, expected) in [("#808080", Mode::Light), ("#7f7f7f", Mode::Dark)] {
+            let lines = base.replace("#111111", background);
+            assert_eq!(theme(&lines, false).unwrap().mode, expected, "{background}");
         }
     }
 
@@ -957,29 +1155,35 @@ mod tests {
         let mut oversized = source.clone().into_bytes();
         oversized.resize(MAX_COLORS_BYTES + 1, b'\n');
         assert_eq!(
-            parse(&oversized),
+            parse(&oversized, false),
             Err("colors.toml is larger than 16 KiB".into())
         );
         let mut at_limit = source.clone().into_bytes();
         at_limit.resize(MAX_COLORS_BYTES, b'\n');
-        assert!(parse(&at_limit).is_ok());
+        assert!(parse(&at_limit, false).is_ok());
 
         let mut invalid = source.clone().into_bytes();
         invalid.extend_from_slice(b"\nname = \"\xff\xfe\"\n");
-        assert_eq!(parse(&invalid), Err("colors.toml is not UTF-8 text".into()));
+        assert_eq!(
+            parse(&invalid, false),
+            Err("colors.toml is not UTF-8 text".into())
+        );
         let binary = [
             0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, 0xc3,
         ];
-        assert_eq!(parse(&binary), Err("colors.toml is not UTF-8 text".into()));
+        assert_eq!(
+            parse(&binary, false),
+            Err("colors.toml is not UTF-8 text".into())
+        );
 
         let table = format!("[colors]\n{source}");
         assert_eq!(
-            parse(table.as_bytes()),
-            Err("colors.toml is missing a background color".into())
+            parse(table.as_bytes(), false),
+            Err("colors.toml is missing a background color (background, bg or color0)".into())
         );
         // A table after the theme's own keys does not hide them.
         let trailing = format!("{source}\n[extra]\naccent = \"#000000\"\n");
-        assert_eq!(parse(trailing.as_bytes()).unwrap().accent, 0x7aa2f7);
+        assert_eq!(parse(trailing.as_bytes(), false).unwrap().accent, 0x7aa2f7);
 
         let written = "\u{feff}# A theme\n\nmode = \"Dark\"\nbackground=\"#1A1B26\"\n\
             foreground = '#a9b1d6'\naccent = \"rgba(26a269ee) rgba(2ec27eee) 45deg\"\n\
@@ -987,32 +1191,23 @@ mod tests {
             yellow = \"#e0af68\"\nblue = \"#7aa2f7\"\nmagenta = \"#ad8ee6\"\n\
             orange = \"#eb927\"\nhyprland_active_border = \"rgba(26a269ee) rgba(2ec27eee) 45deg\"\n\
             active_tab_background = \"#6fb8e3\"\nnot a key\ncyan = \"#449dab\" trailing\n";
-        let colors = parse(written.as_bytes()).unwrap();
-        assert_eq!(colors.mode, Some(Mode::Dark));
+        let colors = parse(written.as_bytes(), false).unwrap();
+        assert_eq!(colors.mode, Mode::Dark);
         assert_eq!(colors.background, 0x1a1b26);
         assert_eq!(colors.foreground, 0xa9b1d6);
         assert_eq!(colors.accent, 0x7aa2f7);
-        assert_eq!(colors.orange, None, "a malformed optional color is ignored");
-        assert_eq!(colors.selection, None);
-        // Without orange the warning takes yellow; without optional surfaces the fit derives them.
+        assert_eq!(
+            colors.orange, None,
+            "a malformed optional color is not used"
+        );
+        assert_eq!(colors.selection, Some(colors.background));
+        // Without a usable orange the warning takes yellow.
         let palette = map(&colors).palette;
         assert_eq!(palette.warning, colors.yellow);
         assert_eq!(palette.readability_issues(), Vec::new());
 
-        // Without a usable mode, the background decides.
-        for (unusable, expected) in [("dim", Mode::Dark), ("", Mode::Dark)] {
-            let edited = source.replace("mode = \"dark\"", &format!("mode = \"{unusable}\""));
-            let colors = parse(edited.as_bytes()).unwrap();
-            assert_eq!(colors.mode, None);
-            assert_eq!(mode(&colors), expected);
-        }
-        let latte = bundled("catppuccin-latte");
-        assert_eq!(
-            mode(&Colors {
-                mode: None,
-                ..latte
-            }),
-            Mode::Light
-        );
+        // A mode that is not "light" is dark, whatever the background.
+        let edited = source.replace("mode = \"dark\"", "mode = \"dim\"");
+        assert_eq!(parse(edited.as_bytes(), false).unwrap().mode, Mode::Dark);
     }
 }

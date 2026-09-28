@@ -28,6 +28,8 @@ const NAME_FILE: &str = "theme.name";
 /// The directory `omarchy-theme-set` replaces on each switch.
 const THEME_DIRECTORY: &str = "theme";
 const COLORS_FILE: &str = "colors.toml";
+/// Omarchy's legacy marker beside `colors.toml` for a light theme that names no mode.
+const LIGHT_MARKER: &str = "light.mode";
 /// `theme.name` holds one short name; anything longer is not one.
 const MAX_NAME_FILE_BYTES: usize = 1024;
 /// The longest theme name the card shows.
@@ -61,12 +63,18 @@ struct Reading {
 fn read(root: &Path) -> Reading {
     let started = Instant::now();
     let name = read_name(&root.join(NAME_FILE));
-    let reading = match read_colors(&root.join(THEME_DIRECTORY).join(COLORS_FILE)) {
-        Ok(bytes) => Reading {
-            available: true,
-            name,
-            outcome: palette::parse(&bytes).map(|colors| palette::map(&colors)),
-        },
+    let theme = root.join(THEME_DIRECTORY);
+    let reading = match read_colors(&theme.join(COLORS_FILE)) {
+        Ok(bytes) => {
+            // `omarchy-theme-color` tests it with `-f`: a regular file, links followed.
+            let light = std::fs::metadata(theme.join(LIGHT_MARKER))
+                .is_ok_and(|metadata| metadata.is_file());
+            Reading {
+                available: true,
+                name,
+                outcome: palette::parse(&bytes, light).map(|colors| palette::map(&colors)),
+            }
+        }
         Err((available, problem)) => Reading {
             available,
             name,
@@ -82,43 +90,53 @@ fn read(root: &Path) -> Reading {
     reading
 }
 
+/// Why a bounded read returned nothing.
+enum Unread {
+    /// A directory, FIFO, device or socket.
+    NotRegular,
+    Io(std::io::Error),
+}
+
+impl From<std::io::Error> for Unread {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
 /// Open `path` as a regular file, following links, and read at most `limit` bytes plus one.
 /// A directory, FIFO or device is refused before it is opened and again after, and the
 /// nonblocking open keeps a FIFO swapped in between from stalling the read.
-fn read_bounded(path: &Path, limit: usize) -> std::io::Result<Vec<u8>> {
+fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, Unread> {
     use std::os::unix::fs::OpenOptionsExt as _;
-    let not_regular = || std::io::Error::other("not a regular file");
     if !std::fs::metadata(path)?.is_file() {
-        return Err(not_regular());
+        return Err(Unread::NotRegular);
     }
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
         .open(path)?;
     if !file.metadata()?.is_file() {
-        return Err(not_regular());
+        return Err(Unread::NotRegular);
     }
     let mut bytes = Vec::new();
     file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
     Ok(bytes)
 }
 
-/// `colors.toml`'s bytes, or whether it is still a regular file and why it cannot be used.
+/// `colors.toml`'s bytes, or whether the card is still offered and why the file cannot be
+/// used. Only a missing file or one that is not regular withdraws the card; any other
+/// failure, such as a permission problem, keeps it with the error's kind.
 fn read_colors(path: &Path) -> Result<Vec<u8>, (bool, String)> {
     match read_bounded(path, palette::MAX_COLORS_BYTES) {
         Ok(bytes) => Ok(bytes),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        Err(Unread::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
             Err((false, format!("{COLORS_FILE} is missing")))
         }
-        Err(error) => {
-            let regular = std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file());
-            let problem = if regular {
-                format!("{COLORS_FILE} could not be read ({})", error.kind())
-            } else {
-                format!("{COLORS_FILE} is not a regular file")
-            };
-            Err((regular, problem))
-        }
+        Err(Unread::NotRegular) => Err((false, format!("{COLORS_FILE} is not a regular file"))),
+        Err(Unread::Io(error)) => Err((
+            true,
+            format!("{COLORS_FILE} could not be read ({})", error.kind()),
+        )),
     }
 }
 
@@ -228,8 +246,8 @@ struct Follower {
     requests: mpsc::UnboundedSender<Request>,
     following: bool,
     watch: Watch,
-    /// Bumped whenever following starts or stops, so a watcher that finishes starting after
-    /// that is dropped.
+    /// Bumped whenever following starts or stops and whenever a watch starts, so a watcher
+    /// that finishes starting after that is dropped, and a lost watch is only the current one.
     epoch: u64,
     /// Launch's wait for the first read.
     ready: Option<oneshot::Sender<()>>,
@@ -257,8 +275,13 @@ enum Watch {
 enum Request {
     /// Read once the writes under `current/` settle.
     Settled,
-    /// Read now: launch, focus return, or the theme was just selected.
+    /// Read now: launch, focus return, or the theme was just selected. While writes are
+    /// settling it joins them instead.
     Now,
+    /// `current/` itself was removed or moved (as a migration of Omarchy's state does), so
+    /// the watch of that epoch sees nothing more: read once the writes settle, and let the
+    /// next focus return watch again.
+    Lost(u64),
 }
 
 /// Launch's wait for the first read (see [`ready`]).
@@ -266,9 +289,15 @@ pub(crate) struct Initial(Option<oneshot::Receiver<()>>);
 
 /// Read the desktop's Omarchy theme and follow it while it is `selected`.
 pub(crate) fn start(selected: bool, cx: &mut App) -> Initial {
-    let initial = install(default_root(), cx);
+    start_at(default_root(), selected, cx)
+}
+
+/// [`start`] for `root`. Launch waits only for a read it will apply: with another theme
+/// selected, the first read still offers the card, but nothing waits for it.
+fn start_at(root: Option<PathBuf>, selected: bool, cx: &mut App) -> Initial {
+    let initial = install(root, cx);
     follow(selected, cx);
-    initial
+    if selected { initial } else { Initial(None) }
 }
 
 /// Launch waits this long at most for the first read, so the first frame already shows a
@@ -313,24 +342,46 @@ pub(crate) fn install(root: Option<PathBuf>, cx: &mut App) -> Initial {
     Initial(Some(first))
 }
 
-/// One reread at a time: a watched write waits for the quiet period (or a `Now`), and
-/// everything queued meanwhile joins that reread.
+/// One reread at a time: a watched write waits for the quiet period, which each further
+/// write restarts, up to [`LONGEST_SETTLE`]; a `Now` reads at once, or joins a quiet period
+/// already running, so a focus return in the middle of a switch never reads it half done.
+/// Everything queued meanwhile joins that reread.
 async fn reread(mut requests: mpsc::UnboundedReceiver<Request>, cx: &mut AsyncApp) {
     while let Some(request) = requests.next().await {
-        if request == Request::Settled {
+        let mut lost = Vec::new();
+        if let Request::Lost(epoch) = request {
+            lost.push(epoch);
+        }
+        if request != Request::Now {
             let executor = cx.background_executor().clone();
             let first = executor.now();
+            let mut quiet = executor.timer(QUIET_PERIOD);
             loop {
-                let quiet = executor.timer(QUIET_PERIOD);
-                match futures::future::select(requests.next(), quiet).await {
+                match futures::future::select(requests.next(), &mut quiet).await {
                     Either::Left((None, _)) => return,
-                    Either::Left((Some(Request::Settled), _))
-                        if executor.now().duration_since(first) < LONGEST_SETTLE => {}
-                    Either::Left(_) | Either::Right(_) => break,
+                    Either::Right(_) => break,
+                    Either::Left((Some(request), _)) => {
+                        if let Request::Lost(epoch) = request {
+                            lost.push(epoch);
+                        }
+                        if executor.now().duration_since(first) >= LONGEST_SETTLE {
+                            break;
+                        }
+                        if request != Request::Now {
+                            quiet = executor.timer(QUIET_PERIOD);
+                        }
+                    }
                 }
             }
         }
-        while requests.try_recv().is_ok() {}
+        while let Ok(request) = requests.try_recv() {
+            if let Request::Lost(epoch) = request {
+                lost.push(epoch);
+            }
+        }
+        for epoch in lost {
+            cx.update(|cx| lose_watch(epoch, cx));
+        }
         let Some((generation, root)) = cx.update(begin) else {
             return;
         };
@@ -339,6 +390,17 @@ async fn reread(mut requests: mpsc::UnboundedReceiver<Request>, cx: &mut AsyncAp
             .spawn(async move { read(&root) })
             .await;
         cx.update(|cx| finish(generation, reading, cx));
+    }
+}
+
+/// The watch of `epoch` lost `current/`: mark it failed, so the next focus return watches
+/// the directory again, unless following has moved on since.
+fn lose_watch(epoch: u64, cx: &mut App) {
+    if cx
+        .try_global::<Follower>()
+        .is_some_and(|follower| follower.following && follower.epoch == epoch)
+    {
+        cx.global_mut::<Follower>().watch = Watch::Failed;
     }
 }
 
@@ -410,6 +472,7 @@ pub(crate) fn refresh(cx: &mut App) {
 fn start_watch(cx: &mut App) {
     let follower = cx.global_mut::<Follower>();
     follower.watch = Watch::Starting;
+    follower.epoch += 1;
     let epoch = follower.epoch;
     let root = follower.root.clone();
     let requests = follower.requests.clone();
@@ -418,6 +481,7 @@ fn start_watch(cx: &mut App) {
     let starting = cx.background_executor().spawn(async move {
         watch(
             root,
+            epoch,
             requests,
             #[cfg(test)]
             delivered,
@@ -440,19 +504,21 @@ fn start_watch(cx: &mut App) {
 
 fn watch(
     root: PathBuf,
+    epoch: u64,
     requests: mpsc::UnboundedSender<Request>,
     #[cfg(test)] delivered: Delivered,
 ) -> notify::Result<notify::RecommendedWatcher> {
     use notify::Watcher as _;
     let watched = root.clone();
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        let asks = match &event {
-            Ok(event) => settles(&watched, event),
+        let request = match &event {
+            Ok(event) if lost(&watched, event) => Some(Request::Lost(epoch)),
+            Ok(event) => settles(&watched, event).then_some(Request::Settled),
             // An error may have lost events: read again to be sure.
-            Err(_) => true,
+            Err(_) => Some(Request::Settled),
         };
-        if asks {
-            let _ = requests.unbounded_send(Request::Settled);
+        if let Some(request) = request {
+            let _ = requests.unbounded_send(request);
         }
         // Recorded after the request is queued, so a test that sees the path knows it is.
         #[cfg(test)]
@@ -465,6 +531,16 @@ fn watch(
     })?;
     watcher.watch(&root, notify::RecursiveMode::NonRecursive)?;
     Ok(watcher)
+}
+
+/// Whether `current/` itself was removed or moved away: inotify then reports the watched
+/// directory's own path, and the watch sees nothing of a directory that replaces it.
+fn lost(root: &Path, event: &notify::Event) -> bool {
+    matches!(
+        event.kind,
+        notify::EventKind::Remove(_)
+            | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
+    ) && event.paths.iter().any(|path| path == root)
 }
 
 /// Whether an event in `current/` can change the theme: one on `theme/`, which a switch
@@ -542,7 +618,7 @@ mod tests {
     const LATTE: &[u8] = include_bytes!("../../tests/fixtures/omarchy/catppuccin-latte.toml");
 
     fn mapped(bytes: &[u8]) -> Mapped {
-        palette::map(&palette::parse(bytes).unwrap())
+        palette::map(&palette::parse(bytes, false).unwrap())
     }
 
     /// A stand-in for `current/`: `theme/colors.toml`, `theme.name` and a `background` link.
@@ -637,9 +713,38 @@ mod tests {
             seen(&root),
             (
                 true,
-                Err("colors.toml is missing a background color".into())
+                Err("colors.toml is missing a background color (background, bg or color0)".into())
             )
         );
+
+        // A light theme that names no mode is light when light.mode sits beside it.
+        let unnamed = std::str::from_utf8(TOKYO_NIGHT)
+            .unwrap()
+            .replace("mode = \"dark\"", "");
+        std::fs::write(&colors, &unnamed).unwrap();
+        assert!(!read(&root).outcome.unwrap().is_light);
+        std::fs::write(root.join(THEME_DIRECTORY).join(LIGHT_MARKER), b"").unwrap();
+        assert!(read(&root).outcome.unwrap().is_light);
+
+        // A file it may not read keeps the card, with the error's kind as the reason, as does
+        // a theme directory it may not search. Root reads either, so this needs a user.
+        if unsafe { libc::geteuid() } != 0 {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = |path: &Path, mode| {
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap()
+            };
+            let denied = (
+                true,
+                Err("colors.toml could not be read (permission denied)".into()),
+            );
+            mode(&colors, 0o000);
+            assert_eq!(seen(&root), denied);
+            mode(&colors, 0o600);
+            let theme = root.join(THEME_DIRECTORY);
+            mode(&theme, 0o000);
+            assert_eq!(seen(&root), denied);
+            mode(&theme, 0o700);
+        }
 
         std::fs::write(&colors, TOKYO_NIGHT).unwrap();
         for unusable in [&b""[..], b"\xff\xfe", &[b'a'; MAX_NAME_FILE_BYTES + 1]] {
@@ -754,7 +859,7 @@ mod tests {
     /// Wait (in real time, bounded) until the watcher has delivered an event for `path`.
     /// Inotify keeps a watch's events in order, so every earlier write's event, and the
     /// reread it asked for, is queued by then.
-    fn delivered(cx: &mut VisualTestContext, path: &Path) {
+    fn delivered(cx: &TestAppContext, path: &Path) {
         for _ in 0..500 {
             let seen = cx.read(|cx| {
                 cx.global::<Follower>()
@@ -858,5 +963,122 @@ mod tests {
         });
         cx.run_until_parked();
         assert!(cx.read(|cx| matches!(cx.global::<Follower>().watch, Watch::Off)));
+    }
+
+    /// Launch waits for the first read only when it will apply it; with another theme
+    /// selected the read still runs and offers the card.
+    #[gpui::test]
+    fn launch_waits_only_for_a_selected_theme(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = current(fixture.path(), TOKYO_NIGHT, "tokyo-night");
+        let unselected = cx.update(|cx| start_at(Some(root.clone()), false, cx));
+        assert!(unselected.0.is_none());
+        cx.run_until_parked();
+        assert!(cx.read(|cx| card(cx).unwrap().offered));
+        let selected = cx.update(|cx| start_at(Some(root), true, cx));
+        assert!(selected.0.is_some());
+    }
+
+    /// When `current/` itself goes (moved aside, as a migration of Omarchy's state does), the
+    /// watch sees nothing more of the directory that replaces it: the loss is read once the
+    /// writes settle and marks the watch failed, and the next focus return watches the new
+    /// directory, which then follows a switch again.
+    #[gpui::test]
+    fn a_lost_directory_is_read_and_watched_again_on_focus_return(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let fixture = tempfile::tempdir().unwrap();
+        let root = current(fixture.path(), TOKYO_NIGHT, "tokyo-night");
+        cx.update(|cx| {
+            drop(install(Some(root.clone()), cx));
+            follow(true, cx);
+        });
+        cx.run_until_parked();
+        let watch_on = |cx: &TestAppContext| {
+            cx.read(|cx| matches!(cx.global::<Follower>().watch, Watch::On(_)))
+        };
+        assert!(watch_on(cx));
+        let caption = |cx: &TestAppContext| cx.read(|cx| card(cx).unwrap().description);
+        assert_eq!(caption(cx), "Follows Tokyo Night");
+
+        std::fs::rename(&root, fixture.path().join("current.old")).unwrap();
+        delivered(cx, &root);
+        cx.run_until_parked();
+        cx.executor().advance_clock(QUIET_PERIOD);
+        cx.run_until_parked();
+        assert!(cx.read(|cx| matches!(cx.global::<Follower>().watch, Watch::Failed)));
+        assert_eq!(
+            caption(cx),
+            "Unavailable: colors.toml is missing. Keeping Tokyo Night."
+        );
+
+        current(fixture.path(), WHITE, "white");
+        cx.update(refresh);
+        cx.run_until_parked();
+        assert!(watch_on(cx), "focus return watches the new directory");
+        assert_eq!(caption(cx), "Follows White");
+        switch(&root, LATTE, "catppuccin-latte", "switched");
+        delivered(cx, &root.join("switched"));
+        cx.executor().advance_clock(QUIET_PERIOD);
+        cx.run_until_parked();
+        assert_eq!(caption(cx), "Follows Catppuccin Latte");
+    }
+
+    /// A window regaining focus between `omarchy-theme-set` removing `theme/` and moving the
+    /// next one into place joins the settling writes instead of reading the half-done
+    /// switch: the switch still applies once, and the card never says the theme is gone.
+    #[gpui::test]
+    fn a_focus_return_mid_switch_joins_the_settling_writes(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = current(fixture.path(), TOKYO_NIGHT, "tokyo-night");
+        cx.update(|cx| drop(install(Some(root.clone()), cx)));
+        let (app, cx) = open_app(cx);
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.choose_theme(ThemeSelection::Omarchy, window, cx)
+            })
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            cx.read(|cx| *cx.global::<Palette>()),
+            mapped(TOKYO_NIGHT).palette
+        );
+        let applied = Rc::new(Cell::new(0));
+        let captions = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let (count, seen) = (applied.clone(), captions.clone());
+        cx.update(|_, cx| {
+            cx.observe_global::<Palette>(move |_| count.set(count.get() + 1))
+                .detach();
+            cx.observe_global::<Omarchy>(move |cx| {
+                seen.borrow_mut().push(card(cx).unwrap().description)
+            })
+            .detach();
+        });
+
+        let next = root.join("next-theme");
+        std::fs::create_dir(&next).unwrap();
+        std::fs::write(next.join(COLORS_FILE), WHITE).unwrap();
+        std::fs::remove_dir_all(root.join(THEME_DIRECTORY)).unwrap();
+        std::fs::write(root.join("removed"), b"").unwrap();
+        delivered(cx, &root.join("removed"));
+        cx.update(|_, cx| refresh(cx));
+        cx.run_until_parked();
+        std::fs::rename(&next, root.join(THEME_DIRECTORY)).unwrap();
+        std::fs::write(root.join(NAME_FILE), "white\n").unwrap();
+        std::fs::write(root.join("moved"), b"").unwrap();
+        delivered(cx, &root.join("moved"));
+        cx.executor().advance_clock(QUIET_PERIOD);
+        cx.run_until_parked();
+
+        assert_eq!(applied.get(), 1, "the switch applies once");
+        assert_eq!(cx.read(|cx| *cx.global::<Palette>()), mapped(WHITE).palette);
+        let captions = captions.borrow();
+        assert!(
+            captions
+                .iter()
+                .all(|caption| !caption.starts_with("Unavailable")),
+            "{captions:?}"
+        );
+        assert_eq!(captions.last().map(String::as_str), Some("Follows White"));
     }
 }

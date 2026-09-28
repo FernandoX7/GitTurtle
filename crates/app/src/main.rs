@@ -2044,8 +2044,7 @@ fn main() {
         theme_editor::init(cx);
         preferences
             .settings
-            .resolved_theme(cx.window_appearance(), &preferences.custom_themes)
-            .with_desktop(cx)
+            .effective_theme(cx, &preferences.custom_themes)
             .apply(None, cx);
         shortcuts::bind_keys(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());

@@ -84,18 +84,47 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
-    /// The theme to apply. Without following the system this is the selection's
-    /// palette; a custom id missing from `custom_themes` resolves to the default
-    /// theme. Following the system, a light appearance selects Braden and a dark
-    /// one keeps a dark selection (built-in or custom) and otherwise Midnight.
-    /// The Omarchy theme follows the desktop instead, whatever `follow_system`
-    /// says; its palette comes from `appearance::omarchy::resolve`.
+    /// The theme to apply on this desktop: the rule of [`Self::resolve_selection`]
+    /// for the selection the desktop honours (`ThemeSelection::on_desktop`), with the
+    /// desktop's Omarchy palette on Linux.
+    pub fn effective_theme(
+        &self,
+        cx: &gpui_kit::App,
+        custom_themes: &[CustomTheme],
+    ) -> ResolvedTheme {
+        self.resolve_selection(
+            self.theme.on_desktop(cx),
+            cx.window_appearance(),
+            custom_themes,
+        )
+        .with_desktop(cx)
+    }
+
+    /// The rule for the stored selection as it is, for tests that exercise it
+    /// without an application.
+    #[cfg(test)]
     pub fn resolved_theme(
         &self,
         appearance: gpui_kit::WindowAppearance,
         custom_themes: &[CustomTheme],
     ) -> ResolvedTheme {
-        let chosen = self.theme.resolve(custom_themes);
+        self.resolve_selection(self.theme, appearance, custom_themes)
+    }
+
+    /// The theme to apply for `selection`. Without following the system this is
+    /// the selection's palette; a custom id missing from `custom_themes` resolves
+    /// to the default theme. Following the system, a light appearance selects
+    /// Braden and a dark one keeps a dark selection (built-in or custom) and
+    /// otherwise Midnight. The Omarchy theme follows the desktop instead,
+    /// whatever `follow_system` says; its palette comes from
+    /// `appearance::omarchy::resolve`.
+    fn resolve_selection(
+        &self,
+        selection: ThemeSelection,
+        appearance: gpui_kit::WindowAppearance,
+        custom_themes: &[CustomTheme],
+    ) -> ResolvedTheme {
+        let chosen = selection.resolve(custom_themes);
         if !self.follow_system || chosen.selection == ThemeSelection::Omarchy {
             return chosen;
         }

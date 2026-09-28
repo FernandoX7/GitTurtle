@@ -6494,7 +6494,7 @@ mod tests {
         cx.update(|window, _| window.activate_window());
         settle(cx);
         let selected = cx
-            .read(|cx| app.read(cx).selected_theme_card())
+            .read(|cx| app.read(cx).selected_theme_card(cx))
             .expect("a card is selected");
         click(cx, "custom-themes-new");
         let form = form(cx, &app);
@@ -6534,7 +6534,7 @@ mod tests {
         cx.update(|window, _| window.activate_window());
         settle(cx);
         let from = cx
-            .read(|cx| app.read(cx).selected_theme_card())
+            .read(|cx| app.read(cx).selected_theme_card(cx))
             .expect("a card is selected");
         let to = ThemeChoice::ALL
             .into_iter()

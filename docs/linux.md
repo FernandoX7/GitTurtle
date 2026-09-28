@@ -243,11 +243,17 @@ monospace font** is turned on in Settings, which follows Omarchy's font
 **Settings** offers an **Omarchy** theme in a **Desktop** group above the other
 themes. It follows your current Omarchy theme, including each switch while it
 is selected, and turns **Follow system appearance** off while in use. GitTurtle
-only reads `~/.local/state/omarchy/current/theme/colors.toml` and `theme.name`
-there; it never writes under `~/.local/state/omarchy`. The card appears only
-when that `colors.toml` exists, and a missing or unusable file keeps the last
-colors read (or Midnight) with the reason on the card. The
-[user guide](user-guide.md) describes the theme.
+reads `~/.local/state/omarchy/current/theme/colors.toml`, the `theme.name` file
+beside `theme/`, and whether the theme has a `light.mode` file. It reads them at
+launch and whenever its window regains focus, and never writes under
+`~/.local/state/omarchy`. Colors resolve the way Omarchy's own
+`omarchy-theme-color` resolves them. That includes themes whose `colors.toml`
+Omarchy generated from an `alacritty.toml`, which name only `color0` to
+`color15`, and the older short names such as `bg` and `fg`. The card appears
+only when that `colors.toml` exists. A file that cannot be used keeps the last
+colors read (or Midnight) and shows the reason on the card, such as a missing
+color or a permission problem. The [user guide](user-guide.md) describes the
+theme.
 
 On Hyprland:
 
