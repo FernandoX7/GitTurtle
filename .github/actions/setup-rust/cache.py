@@ -20,9 +20,9 @@ MAX_CLEAN_PACKAGES = 8
 # source pruning, the verification scan and the whole-target fallback.
 BUDGET_SECONDS = 90
 FINALIZE_SECONDS = 90
-# Logical pre-registration limits sized from hosted payloads and local
-# compression ratios (docs/ci.md); the combined mode is the sum of both.
-PROFILE_LIMITS = {"debug": 6 * 1024**3, "release": 3584 * 1024**2, "debug-release": 9728 * 1024**2}
+# Logical pre-registration limits sized from hosted payloads and archive
+# sizes (docs/ci.md); the combined mode is the sum of both.
+PROFILE_LIMITS = {"debug": 7 * 1024**3, "release": 3584 * 1024**2, "debug-release": 10752 * 1024**2}
 # Pinned upstream rust-cache SAVE_TARGETS: only library-kind target names name
 # dependency artifacts. Test, example, bench, bin and build-script names do not.
 LIBRARY_KINDS = {"lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"}
