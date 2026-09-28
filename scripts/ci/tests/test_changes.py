@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -12,6 +13,7 @@ import unittest
 from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "changes.py"
+QUALITY = Path(__file__).resolve().parents[3] / ".github/workflows/quality.yml"
 SPEC = importlib.util.spec_from_file_location("ci_changes", SCRIPT)
 changes = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(changes)
@@ -19,6 +21,13 @@ SPEC.loader.exec_module(changes)
 
 def privacy(status="scanned", result="success"):
     return {"image-privacy": {"result": result, "outputs": {"status": status}}}
+
+
+def workflow_jobs():
+    """Quality's top-level job blocks by id, read as text (no YAML dependency)."""
+    body = QUALITY.read_text(encoding="utf-8").split("\njobs:\n", 1)[1]
+    parts = re.split(r"^  ([a-z][a-z0-9-]*):\n", body, flags=re.M)
+    return dict(zip(parts[1::2], parts[2::2]))
 
 
 def needs_for(plan):
@@ -88,7 +97,7 @@ class GateTests(unittest.TestCase):
                 needs = {"changes": needs_for(plan)["changes"], **privacy(),
                          **{job: {"result": result} for job, result in case["results"].items()}}
                 if case["accept"]:
-                    self.assertEqual(len(changes.gate(needs)), 6)
+                    self.assertEqual(len(changes.gate(needs)), 7)
                 else:
                     with self.assertRaises(changes.PolicyError):
                         changes.gate(needs)
@@ -97,7 +106,7 @@ class GateTests(unittest.TestCase):
         for paths in [[b"docs/user-guide.md"], [b"website/check.py"], [b"scripts/ci/metrics.py"],
                       [b"crates/app/src/main.rs"]]:
             with self.subTest(paths=paths):
-                self.assertEqual(len(changes.gate(needs_for(changes.classify_paths(paths)))), 6)
+                self.assertEqual(len(changes.gate(needs_for(changes.classify_paths(paths)))), 7)
 
     def test_required_failure_cancellation_and_skip_each_fail(self):
         baseline = needs_for(changes.full_plan("full"))
@@ -111,17 +120,31 @@ class GateTests(unittest.TestCase):
 
     def test_unneeded_failure_is_not_silently_ignored(self):
         baseline = needs_for(changes.classify_paths([b"README.md"]))
-        for result in ["failure", "cancelled"]:
-            needs = copy.deepcopy(baseline)
-            needs["rust-release"]["result"] = result
-            with self.assertRaises(changes.PolicyError):
-                changes.gate(needs)
+        for job in ["rust-release", "rust-arch"]:
+            for result in ["failure", "cancelled"]:
+                with self.subTest(job=job, result=result):
+                    needs = copy.deepcopy(baseline)
+                    needs[job]["result"] = result
+                    with self.assertRaises(changes.PolicyError):
+                        changes.gate(needs)
+
+    def test_workflow_gate_waits_for_every_required_job_and_each_job_follows_its_lane(self):
+        # The gate refuses a needs payload with a missing or unknown job, so the
+        # workflow's list and JOBS must agree or every Quality run fails.
+        jobs = workflow_jobs()
+        needs = re.search(r"^    needs: \[(.*)\]$", jobs["quality"], re.M)
+        self.assertIsNotNone(needs)
+        self.assertEqual({name.strip() for name in needs.group(1).split(",")},
+                         {"changes", changes.PRIVACY_JOB, *changes.JOBS})
+        for job, lane in changes.JOBS.items():
+            with self.subTest(job=job):
+                self.assertIn(f"\n    if: needs.changes.outputs.{lane} == 'true'\n", "\n" + jobs[job])
 
     def test_extra_successful_coverage_is_harmless(self):
         needs = needs_for(changes.classify_paths([b"README.md"]))
         for job in changes.JOBS:
             needs[job]["result"] = "success"
-        self.assertEqual(len(changes.gate(needs)), 6)
+        self.assertEqual(len(changes.gate(needs)), 7)
 
     def test_absent_and_unknown_jobs_fail(self):
         baseline = needs_for(changes.full_plan("full"))

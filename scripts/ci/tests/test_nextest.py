@@ -41,6 +41,16 @@ def rust_debug_steps():
     return job, job.split("\n      - ")[1:]
 
 
+def quality_job_steps(name):
+    text = (ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8")
+    job = re.split(r"\n  [a-z][a-z0-9-]*:\n", text.split(f"\n  {name}:\n", 1)[1], maxsplit=1)[0]
+    return job, job.split("\n      - ")[1:]
+
+
+def step_index(steps, markers):
+    return {name: next(i for i, step in enumerate(steps) if marker in step) for name, marker in markers.items()}
+
+
 class InstallerTests(unittest.TestCase):
     def test_pins_are_exact_versioned_release_archives(self):
         self.assertRegex(tools.NEXTEST_VERSION, r"^\d+\.\d+\.\d+$")
@@ -146,6 +156,48 @@ class WorkflowPolicyTests(unittest.TestCase):
         for name in ("install", "tests", "doctests"):
             self.assertNotIn("\n        if:", steps[index[name]])
         self.assertNotIn("permissions:", job)
+
+    def test_arch_job_runs_the_debug_test_phases_unprivileged_in_a_pinned_image_without_a_cache(self):
+        job, steps = quality_job_steps("rust-arch")
+        _, debug_steps = rust_debug_steps()
+        self.assertRegex(job, r"\n    container:\n      image: archlinux:base-devel@sha256:[0-9a-f]{64}\n")
+        # No cache action or setup-rust: nothing is restored or saved, so no
+        # pull request can seed an entry that main would trust.
+        self.assertEqual({use.split("@")[0] for use in re.findall(r"\buses: (\S+)", job)},
+                         {"actions/checkout", "actions/upload-artifact"})
+        self.assertRegex(job, r"\n    timeout-minutes: \d+\n")
+        # Root bypasses file permissions, which permission-refusal tests rely on;
+        # only package installation and ownership setup keep the root shell.
+        self.assertIn("\n        shell: setpriv --reuid=builder --regid=builder --init-groups -- bash ", job)
+        root = [step for step in steps if "\n        shell: " in step]
+        self.assertEqual(len(root), 3)
+        for step in root:
+            self.assertTrue(any(command in step for command in ("pacman -Su", "useradd ", "chown -R builder")), step)
+        index = step_index(steps, {
+            "packages": "pacman -Su",
+            "user": "useradd ",
+            "checkout": "uses: actions/checkout@",
+            "owner": "chown -R builder",
+            "refs": "git pack-refs --all --no-prune",
+            "toolchain": "rustup toolchain install",
+            "install": "scripts/ci/tools.py install-nextest",
+            "tests": "cargo nextest run",
+            "doctests": "--name doctests ",
+        })
+        self.assertEqual(sorted(index, key=index.get), list(index))
+        # Git must be installed before checkout, or checkout downloads no .git.
+        self.assertRegex(steps[index["packages"]], r"\bgit\b")
+        self.assertIn("persist-credentials: false", steps[index["checkout"]])
+        debug = step_index(debug_steps, {
+            "install": "scripts/ci/tools.py install-nextest",
+            "tests": "cargo nextest run",
+            "doctests": "--name doctests ",
+        })
+        # The same commands as the Ubuntu and macOS test phases; a comment that
+        # introduces the next step is not part of this one.
+        for name, position in debug.items():
+            self.assertEqual(steps[index[name]].split("\n      #")[0].rstrip(),
+                             debug_steps[position].split("\n      #")[0].rstrip(), name)
 
     def test_quality_keeps_read_only_permissions_and_no_third_party_installer(self):
         text = (ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8")

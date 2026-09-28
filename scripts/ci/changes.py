@@ -20,9 +20,10 @@ MAX_INPUT_BYTES = 4 * 1024 * 1024
 MAX_PATHS = 10000
 LANES = ("product", "tooling", "website")
 # Keep each independent required phase explicit. A successful debug matrix
-# cannot compensate for a missing/cancelled release matrix or formatter.
+# cannot compensate for a missing/cancelled release matrix, formatter or the
+# Arch Linux container job.
 JOBS = {"rust-format": "product", "rust-debug": "product", "rust-release": "product",
-        "agent-tooling": "tooling", "website": "website"}
+        "rust-arch": "product", "agent-tooling": "tooling", "website": "website"}
 # The image privacy job always runs and reports what it did. Only "scanned" is a
 # scan; the other results succeed without claiming one, and the gate says so.
 PRIVACY_JOB = "image-privacy"
