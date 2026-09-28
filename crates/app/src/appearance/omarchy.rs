@@ -7,8 +7,9 @@
 //!
 //! Nothing here writes or spawns a process. Every read runs on the background executor: once
 //! at launch, when a window regains focus, when the theme is chosen (which applies only what
-//! that read finds), when a watch starts, and, while the theme is selected or Settings shows
-//! its card, once the writes of a switch settle under a non-recursive watch of `current/`.
+//! that read finds), when a watch starts, and, while the theme is selected or Settings is
+//! open (starting while it shows the card), once the writes of a switch settle under a
+//! non-recursive watch of `current/`.
 //! [`Omarchy`] is the one owner of what the reads found. The picker card, the Follow system
 //! switch and `apply_appearance` all read it, and it changes (notifying its observers) only
 //! when what it holds changes, so a reread that finds the same theme applies nothing.
@@ -235,10 +236,10 @@ impl Shown {
 
     fn following(&self) -> String {
         if self.pending {
-            return "Reading your Omarchy theme…".into();
+            return "Reading your theme…".into();
         }
         self.name.as_ref().map_or_else(
-            || "Follows your Omarchy theme".into(),
+            || "Follows your desktop".into(),
             |name| format!("Follows {name}"),
         )
     }
@@ -501,7 +502,8 @@ pub(crate) fn follow(selected: bool, cx: &mut App) {
 
 /// Settings opened or closed. While it is open and the card is offered, `current/` is
 /// watched as for a selected theme, so the card's caption and miniature stay current; a
-/// reread then applies nothing unless the theme is selected.
+/// reread then applies nothing unless the theme is selected. The watch lasts while Settings
+/// stays open, even when the card goes ([`wanted`]).
 pub(crate) fn show(open: bool, cx: &mut App) {
     let Some(follower) = cx.try_global::<Follower>() else {
         return;
@@ -513,14 +515,19 @@ pub(crate) fn show(open: bool, cx: &mut App) {
     sync_watch(cx);
 }
 
-/// Whether `current/` is watched: while the theme is selected, and while Settings shows
-/// the card, which it offers only while `colors.toml` is there.
+/// Whether `current/` is watched: while the theme is selected, and while Settings is open.
+/// Settings starts a watch only while it offers the card, which it does while `colors.toml`
+/// is there, but keeps one already running when the card goes: a read that lands between a
+/// switch removing `theme/` and moving the next one into place (a pause longer than the
+/// quiet period, or a migration of Omarchy's state) withdraws the card, and the watch then
+/// sees the theme come back. Closing Settings drops it unless the theme is selected.
 fn wanted(follower: &Follower, cx: &App) -> bool {
     follower.following
         || (follower.showing
-            && cx
-                .try_global::<Omarchy>()
-                .is_some_and(|state| state.shown.available))
+            && (!matches!(follower.watch, Watch::Off)
+                || cx
+                    .try_global::<Omarchy>()
+                    .is_some_and(|state| state.shown.available)))
 }
 
 /// Start or stop the watch to match [`wanted`]. A watch that starts reads `current/` once,
@@ -683,6 +690,50 @@ pub(crate) struct Card {
     pub reason: Option<String>,
     pub revision: u64,
     pub arrived: Option<Instant>,
+}
+
+/// Test-only: every description the card can show, for a theme named `name`: reading,
+/// following it or an unnamed theme, and, unavailable, using the default, keeping it or
+/// keeping unnamed colors.
+#[cfg(test)]
+pub(crate) fn every_description(name: &str) -> Vec<String> {
+    let kept = |name: Option<&str>| {
+        let palette = super::ThemeChoice::default().palette();
+        let mapped = Mapped {
+            palette,
+            is_light: palette.is_light(),
+        };
+        Some((mapped, name.map(str::to_owned)))
+    };
+    let problem = Some("colors.toml is missing".to_owned());
+    [
+        Shown {
+            pending: true,
+            ..Shown::default()
+        },
+        Shown {
+            name: Some(name.to_owned()),
+            ..Shown::default()
+        },
+        Shown::default(),
+        Shown {
+            problem: problem.clone(),
+            ..Shown::default()
+        },
+        Shown {
+            problem: problem.clone(),
+            last_good: kept(Some(name)),
+            ..Shown::default()
+        },
+        Shown {
+            problem,
+            last_good: kept(None),
+            ..Shown::default()
+        },
+    ]
+    .iter()
+    .map(Shown::description)
+    .collect()
 }
 
 /// The card, or `None` when nothing is read on this desktop.
@@ -864,7 +915,7 @@ mod tests {
         assert_eq!(reading.name, None);
         assert_eq!(
             Shown::default().after(reading).description(),
-            "Follows your Omarchy theme"
+            "Follows your desktop"
         );
     }
 
@@ -884,7 +935,7 @@ mod tests {
                 .map(|problem| format!("{problem}."));
             (shown.description(), shown.status(), reason)
         };
-        let reading = "Reading your Omarchy theme…".to_owned();
+        let reading = "Reading your theme…".to_owned();
         assert_eq!(texts(&pending), (reading.clone(), reading, None));
         let problem = || Reading {
             available: true,
@@ -1199,6 +1250,70 @@ mod tests {
         assert_eq!(watch_state(cx), "on", "a selected theme stays watched");
     }
 
+    /// With Settings open and another theme selected, a read that lands while `theme/` is
+    /// gone (a switch pausing longer than the quiet period between removing it and moving the
+    /// next one in) withdraws the card but keeps the watch, so the theme coming back offers
+    /// the card again, current, without a focus return, and applies nothing. Closing
+    /// Settings while the card is withdrawn drops the watch.
+    #[gpui::test]
+    fn open_settings_keep_watching_while_the_theme_is_gone(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = current(fixture.path(), TOKYO_NIGHT, "tokyo-night");
+        cx.update(|cx| drop(install(Some(root.clone()), cx)));
+        let (app, cx) = open_app(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        cx.run_until_parked();
+        assert_eq!(watch_state(cx), "on");
+        let applied = applications(cx);
+        let offered = |cx: &mut VisualTestContext| {
+            let drawn = crate::settings::page_shows(cx, "settings-theme-omarchy");
+            (cx.read(|cx| card(cx).unwrap().offered), drawn)
+        };
+        assert_eq!(offered(cx), (true, true));
+        let remove = |cx: &mut VisualTestContext, sentinel: &str| {
+            std::fs::remove_dir_all(root.join(THEME_DIRECTORY)).unwrap();
+            std::fs::write(root.join(sentinel), b"").unwrap();
+            delivered(cx, &root.join(sentinel));
+            cx.executor().advance_clock(QUIET_PERIOD);
+            cx.run_until_parked();
+        };
+
+        remove(cx, "removed");
+        assert_eq!(offered(cx), (false, false), "no colors.toml, no card");
+        assert_eq!(watch_state(cx), "on", "open Settings keeps watching");
+
+        let next = root.join("next-theme");
+        std::fs::create_dir_all(next.join("backgrounds")).unwrap();
+        std::fs::write(next.join(COLORS_FILE), WHITE).unwrap();
+        std::fs::rename(&next, root.join(THEME_DIRECTORY)).unwrap();
+        std::fs::write(root.join(NAME_FILE), "white\n").unwrap();
+        std::fs::write(root.join("moved"), b"").unwrap();
+        delivered(cx, &root.join("moved"));
+        cx.executor().advance_clock(QUIET_PERIOD);
+        cx.run_until_parked();
+        assert_eq!(offered(cx), (true, true), "the card is back");
+        let miniature = cx.read(|cx| {
+            app.read(cx)
+                .theme_preview_body(ThemeSelection::Omarchy)
+                .read(cx)
+                .palette()
+        });
+        assert_eq!(
+            (cx.read(|cx| card(cx).unwrap().description), miniature),
+            ("Follows White".into(), mapped(WHITE).palette)
+        );
+        assert!(
+            applied.borrow().is_empty(),
+            "an unselected card applies nothing"
+        );
+
+        remove(cx, "removed-again");
+        assert_eq!(watch_state(cx), "on");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+        cx.run_until_parked();
+        assert_eq!(watch_state(cx), "off", "closing Settings drops the watch");
+    }
+
     /// Choosing the card reads `current/` first: after a switch nothing saw (Settings
     /// closed, no focus return), the card still shows the old theme, and the choice applies
     /// the new one once, when its read lands, never the stale one. Chosen again while that
@@ -1287,6 +1402,63 @@ mod tests {
         assert!(cx.read(|cx| card(cx).unwrap().offered));
         let selected = cx.update(|cx| start_at(Some(root), true, cx));
         assert!(selected.0.is_some());
+    }
+
+    /// With the Omarchy theme stored, launch applies the stored selection before its read
+    /// lands (the default palette) and waits for the read; one that beats the wait is applied
+    /// by the window's first take of it, deferred from `GitTurtle::new`, before opening the
+    /// window returns to the event loop. The draw `open_window` makes first is never
+    /// presented: that application marks the window dirty, so the first frame the platform
+    /// requests draws again, in the Omarchy palette, before it presents. That first take is
+    /// not a switch, so `omarchy_apply_frame_ms` does not print for it.
+    #[gpui::test]
+    fn a_launch_read_applies_before_the_first_frame(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = current(fixture.path(), TOKYO_NIGHT, "tokyo-night");
+        cx.executor().allow_parking();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::image_lifetime::init(cx);
+            crate::theme_editor::init(cx);
+        });
+        let mut preferences = crate::Preferences::default();
+        preferences.settings.theme = ThemeSelection::Omarchy;
+        let applied = |cx: &mut TestAppContext| cx.read(|cx| *cx.global::<Palette>());
+        let initial = cx.update(|cx| start_at(Some(root), true, cx));
+        assert!(initial.0.is_some(), "launch waits for this read");
+        cx.update(|cx| {
+            preferences
+                .settings
+                .effective_theme(cx, &preferences.custom_themes)
+                .apply(None, cx)
+        });
+        let before = applied(cx);
+        assert_ne!(before, mapped(TOKYO_NIGHT).palette);
+        cx.run_until_parked();
+        assert_eq!(
+            cx.read(|cx| card(cx).unwrap().description),
+            "Follows Tokyo Night"
+        );
+        assert_eq!(applied(cx), before, "no window has applied the read yet");
+
+        cx.update(|cx| {
+            cx.open_window(Default::default(), |window, cx| {
+                let app = cx.new(|cx| {
+                    crate::GitTurtle::new(
+                        None,
+                        preferences,
+                        crate::repository_tabs::Session::default(),
+                        crate::activity::State::default(),
+                        crate::recovery_drafts::State::default(),
+                        window,
+                        cx,
+                    )
+                });
+                cx.new(|cx| gpui_kit::component::Root::new(app, window, cx))
+            })
+            .unwrap();
+        });
+        assert_eq!(applied(cx), mapped(TOKYO_NIGHT).palette);
     }
 
     /// When `current/` itself goes (moved aside, as a migration of Omarchy's state does), the

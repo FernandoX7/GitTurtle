@@ -763,7 +763,10 @@ impl GitTurtle {
     /// through the one application path (not while the theme editor previews
     /// a draft, whose close applies the saved selection); anything else only
     /// redraws the picker card. `gitturtle.omarchy_apply_frame_ms` measures an
-    /// application from the read's arrival to the next frame callback.
+    /// application from the read's arrival to the next frame callback, except
+    /// the window's first take (deferred from `GitTurtle::new`): that applies
+    /// what launch read before the window existed, before its first frame is
+    /// requested, and is no switch.
     #[cfg(target_os = "linux")]
     pub(super) fn omarchy_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(revision) = appearance::omarchy::card(cx).map(|card| card.revision) else {
@@ -772,6 +775,7 @@ impl GitTurtle {
         if self.omarchy_revision == Some(revision) {
             return;
         }
+        let first = self.omarchy_revision.is_none();
         self.omarchy_revision = Some(revision);
         let Some(card) = self.sync_omarchy_card(cx) else {
             return;
@@ -784,7 +788,7 @@ impl GitTurtle {
             && self.effective_theme(cx).palette != palette(cx)
         {
             self.apply_appearance(window, cx);
-            if let (true, Some(arrived)) = (trace_enabled(), card.arrived) {
+            if let (true, false, Some(arrived)) = (trace_enabled(), first, card.arrived) {
                 Self::trace_next_frame("omarchy_apply_frame_ms", arrived, window);
             }
         } else {
@@ -3442,8 +3446,6 @@ fn focused_theme_card(card: Button, accent: u32) -> AnyElement {
         .into_any_element()
 }
 
-/// What a picker card shows: the theme it selects, the palette its miniature
-/// draws, its caption and the count of its readability findings.
 /// How long choosing the Omarchy card waits for its read before the cached
 /// palette applies (`GitTurtle::choose_omarchy`).
 #[cfg(target_os = "linux")]
@@ -3461,6 +3463,8 @@ pub(super) struct OmarchyChoice {
     waiting: Option<(u64, Option<std::time::Instant>)>,
 }
 
+/// What a picker card shows: the theme it selects, the palette its miniature
+/// draws, its caption and the count of its readability findings.
 struct ThemeCard {
     selection: ThemeSelection,
     palette: appearance::Palette,
@@ -4623,7 +4627,8 @@ mod picker_tests {
         );
         assert_eq!(cx.read(palette), mapped);
         let kept = caption(cx).1;
-        unavailable_caption_fits(cx, &app, &kept);
+        assert!(appearance::omarchy::every_description("Tokyo Night").contains(&kept));
+        omarchy_captions_fit(cx, &app);
 
         // Another card releases Follow system, and the unavailable card goes.
         choose(
@@ -4645,15 +4650,16 @@ mod picker_tests {
         assert!(cx.read(|cx| app.read(cx).settings.follow_system));
     }
 
-    /// An unavailable Omarchy card's caption fits its card at the default
-    /// interface size in a 1,400 px window, for the longest bundled theme
-    /// name: the name line holds "Omarchy", "Unavailable" and the check
-    /// badge, and the description (`kept`, Tokyo Night's) with Catppuccin
-    /// Latte in its place, each shaped narrower than the box that lays it
-    /// out, so neither is cut. The test text system gives every character
-    /// 0.6 em, wider than the interface font's letters on average.
+    /// The Omarchy card's caption fits its card at the default interface size
+    /// in a 1,400 px window, for the longest bundled theme name (Catppuccin
+    /// Latte): an unavailable card's name line holds "Omarchy", "Unavailable"
+    /// and the check badge, and every description the card can show, from
+    /// "Reading your theme…" to "Keeping the last colors", is shaped narrower
+    /// than the box that lays it out, so none is cut. The test text system
+    /// gives every character 0.6 em, wider than the interface font's letters
+    /// on average.
     #[cfg(target_os = "linux")]
-    fn unavailable_caption_fits(cx: &mut VisualTestContext, app: &Entity<GitTurtle>, kept: &str) {
+    fn omarchy_captions_fit(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) {
         let omarchy = ThemeSelection::Omarchy;
         cx.simulate_resize(size(px(1400.), px(2400.)));
         settle(cx);
@@ -4675,13 +4681,15 @@ mod picker_tests {
                     .width()
             })
         };
-        let longest = kept.replace("Tokyo Night", "Catppuccin Latte");
-        let longest = longest.as_str();
         let description = drawn(cx, format!("theme-description-{body}")).expect("a description");
-        assert!(
-            width(cx, longest, 10.) <= description.size.width,
-            "{longest:?} fits {description:?}"
-        );
+        let descriptions = appearance::omarchy::every_description("Catppuccin Latte");
+        assert!(descriptions.contains(&"Reading your theme…".to_owned()));
+        for shown in descriptions {
+            assert!(
+                width(cx, &shown, 10.) <= description.size.width,
+                "{shown:?} fits {description:?}"
+            );
+        }
         let name = drawn(cx, format!("theme-name-{body}")).expect("a name");
         let tag = drawn(cx, format!("theme-tag-{body}")).expect("the Unavailable tag");
         assert!(width(cx, "Omarchy", 12.) <= name.size.width, "{name:?}");

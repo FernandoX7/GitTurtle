@@ -267,6 +267,11 @@ pub(crate) const DIFF_MIN_HUE: f64 = 60.;
 /// beside added at 7° and 5°); 30° also takes Everforest's two dusty pinks at 29.5°, and the
 /// closest pair kept is Flexoki Light's modified and added at 31°.
 pub(crate) const STATUS_MIN_HUE: f64 = 30.;
+/// The OKLCH hues a hunk header keeps the theme's `blue` in: GitTurtle's own hunk colors
+/// span 188° (Solarized's cyan) to 305° (Rosé Pine's iris). Among the bundled themes the
+/// blues run from Gruvbox's aqua at 179° to Ethereal's periwinkle at 280°, and the colors
+/// that are no blue sit at 163° (Osaka Jade's green) and below.
+const HUNK_HUES: std::ops::RangeInclusive<f64> = 175.0..=310.0;
 /// A `lighter_background` this close to the background is flat, not a lighter surface: the
 /// bundled themes that mean one keep at least 1.045:1 (Lupine), and those without one repeat
 /// the background exactly (Last Horizon, Solitude, and `color0` in a generated theme).
@@ -279,6 +284,10 @@ const FLAT_SURFACE: f64 = 1.03;
 /// pressed-step rule still win.
 const SUBTLE_CAP: f64 = 1.15;
 const SELECTED_CAP: f64 = 1.45;
+/// The least subtle stands off the canvas, and off the panel where it can, toward the
+/// foreground: the step the flat-surface fallback gives, and the hover's step off the panel.
+/// It wins over `SUBTLE_CAP`.
+const SUBTLE_FLOOR: f64 = 1.08;
 
 /// The rules' foreground and background contrast checks, with the side of the surface the
 /// foreground must be on: lighter in a dark palette, darker in a light one.
@@ -397,6 +406,33 @@ pub(crate) fn fit(colors: &Colors) -> Palette {
         panel,
         SUBTLE_CAP,
     );
+    // The floor, which wins over the cap: subtle stands `SUBTLE_FLOOR` off the canvas toward
+    // the foreground, where a canvas already well off the panel left the capped subtle at or
+    // under it (Nord, Everforest, Gruvbox), and off the panel as well, where a subtle between
+    // canvas and panel all but vanished on it (Rosé Pine, Catppuccin Latte). Either step is
+    // taken only while subtle stays within the lanes' limit and leaves the selected row, which
+    // lifts at most `SELECTED_CAP` off the canvas, the same step beyond it: a panel far off
+    // the canvas (a generated light theme's, 1.32:1) would otherwise put the grouped surfaces
+    // beside the selected row.
+    let floored = |references: &[u32]| {
+        let clears = |candidate: u32, margin: f64| {
+            judge.clears(candidate, &[(references, SUBTLE_FLOOR)], margin)
+        };
+        if clears(subtle, 0.) {
+            return Some(subtle);
+        }
+        let lifted = toward(subtle, judge.foreground_extreme(), |candidate| {
+            clears(candidate, SURFACE_MARGIN)
+        });
+        let room = SELECTED_CAP / SUBTLE_FLOOR;
+        (clears(lifted, SURFACE_MARGIN)
+            && within(lifted, 1.)
+            && !judge.clears(lifted, &[(&[canvas], room)], 0.))
+        .then_some(lifted)
+    };
+    let subtle = floored(&[canvas, panel])
+        .or_else(|| floored(&[canvas]))
+        .unwrap_or(subtle);
     // The selected row's own step off the panel wins over the cap.
     let selected = lift(
         cap(
@@ -531,9 +567,9 @@ pub(crate) fn fit(colors: &Colors) -> Palette {
         DIFF_TINT_LIGHT
     };
     // The four file statuses from added and removed: the diff tiles and the colors on them,
-    // then modified and renamed as the theme's yellow and magenta where they stand apart
-    // from the others, and otherwise GitTurtle's own.
-    let statuses = |added: u32, removed: u32| {
+    // then modified and renamed as `yellow` and `magenta` where they stand apart from the
+    // others, and otherwise GitTurtle's own.
+    let statuses = |added: u32, removed: u32, yellow: u32, magenta: u32| {
         let added_background = settle(mix(canvas, added, tint));
         let removed_background = settle(mix(canvas, removed, tint));
         let tiles = [added_background, removed_background];
@@ -541,13 +577,13 @@ pub(crate) fn fit(colors: &Colors) -> Palette {
         let removed = status(removed, &[(&[removed_background], 4.5)]);
         let icon =
             |color: u32| judge.tune(color, &[(&surfaces, 3.0), (&tiles, 3.0)], CONTRAST_MARGIN);
-        let theirs = icon(colors.yellow);
+        let theirs = icon(yellow);
         let modified = if apart(theirs, &[added, removed]) {
             theirs
         } else {
             icon(own.modified)
         };
-        let theirs = icon(colors.magenta);
+        let theirs = icon(magenta);
         let renamed = if apart(theirs, &[added, removed, modified]) {
             theirs
         } else {
@@ -555,25 +591,30 @@ pub(crate) fn fit(colors: &Colors) -> Palette {
         };
         (tiles, [added, removed, modified, renamed])
     };
+    let stand_apart = |(_, [added, removed, modified, renamed]): &([u32; 2], [u32; 4])| {
+        apart(*added, &[*removed, *modified, *renamed])
+            && apart(*removed, &[*modified, *renamed])
+            && apart(*modified, &[*renamed])
+    };
     let red = status(colors.red, &[]);
     let green = status(colors.green, &[]);
-    let gitturtles = || statuses(status(own.added, &[]), status(own.removed, &[]));
-    let mut set = if distinguishable(red, green) {
-        statuses(green, red)
-    } else {
-        gitturtles()
-    };
-    // The theme's red and green keep the diff only while the four statuses stand apart: when
-    // GitTurtle's own modified or renamed would sit beside them (Matte Black's amber added
-    // beside GitTurtle's amber modified), the diff takes GitTurtle's hues as well.
-    let [added, removed, modified, renamed] = set.1;
-    if !(apart(added, &[removed, modified, renamed])
-        && apart(removed, &[modified, renamed])
-        && apart(modified, &[renamed]))
-    {
-        set = gitturtles();
-    }
-    let ([added_background, removed_background], [added, removed, modified, renamed]) = set;
+    let (own_added, own_removed) = (status(own.added, &[]), status(own.removed, &[]));
+    // The first set whose four statuses stand apart: the theme's red and green where they
+    // are distinguishable, then GitTurtle's (when GitTurtle's own modified or renamed would
+    // sit beside the theme's, as Matte Black's amber added beside GitTurtle's amber
+    // modified), each with the theme's yellow and magenta where those stand apart. A
+    // replacement is not checked against the color kept beside it (a theme whose yellow and
+    // magenta are both GitTurtle's violet renamed), so when neither set stands apart, all
+    // four are GitTurtle's own.
+    let ([added_background, removed_background], [added, removed, modified, renamed]) =
+        distinguishable(red, green)
+            .then(|| statuses(green, red, colors.yellow, colors.magenta))
+            .into_iter()
+            .chain(std::iter::once_with(|| {
+                statuses(own_added, own_removed, colors.yellow, colors.magenta)
+            }))
+            .find(stand_apart)
+            .unwrap_or_else(|| statuses(own_added, own_removed, own.modified, own.renamed));
     palette.added_background = added_background;
     palette.removed_background = removed_background;
     palette.added = added;
@@ -594,8 +635,11 @@ pub(crate) fn fit(colors: &Colors) -> Palette {
     let text_rules: [(&[u32], f64); 2] = [(&surfaces, 4.5), (&tiles, 4.5)];
     let text = judge.tune(colors.foreground, &text_rules, CONTRAST_MARGIN);
     palette.text = text;
-    // Hunk headers stay blue and apart from the code text: a blue without chroma, or one that
-    // differs from the text only in lightness, takes GitTurtle's.
+    // Hunk headers stay blue and apart from the code text: a `blue` without chroma, outside
+    // `HUNK_HUES` (Matte Black's orange, Osaka Jade's green), or one that differs from the
+    // text only in lightness, takes GitTurtle's. GitTurtle's can sit beside a blue text too,
+    // closer than the theme's blue; the header then keeps whichever of the two blues stands
+    // farther from the text.
     let hunk = |color: u32| {
         judge.tune(
             color,
@@ -606,13 +650,22 @@ pub(crate) fn fit(colors: &Colors) -> Palette {
             CONTRAST_MARGIN,
         )
     };
+    let apart_from_text = |color: u32| tint_distance(color, text) >= DIFF_MIN_CHROMA;
     let theirs = hunk(colors.blue);
-    palette.hunk =
-        if oklch(theirs).0 >= DIFF_MIN_CHROMA && tint_distance(theirs, text) >= DIFF_MIN_CHROMA {
-            theirs
+    let blue = oklch(theirs).0 >= DIFF_MIN_CHROMA && HUNK_HUES.contains(&oklch(theirs).1);
+    palette.hunk = if blue && apart_from_text(theirs) {
+        theirs
+    } else {
+        let gitturtles = hunk(own.hunk);
+        if !blue
+            || apart_from_text(gitturtles)
+            || tint_distance(gitturtles, text) >= tint_distance(theirs, text)
+        {
+            gitturtles
         } else {
-            hunk(own.hunk)
-        };
+            theirs
+        }
+    };
     let dim = colors
         .dark_foreground
         .unwrap_or_else(|| mix(colors.foreground, canvas, 0.4));
@@ -903,7 +956,8 @@ mod tests {
     /// background, selection, accent, status colors and foreground, as GitTurtle's own
     /// Tokyo Night keeps the same upstream hues; its dim foreground (2.9:1) is lifted toward
     /// the foreground only until secondary text reads on every surface. Its lighter
-    /// background, 1.26:1 off the panel, is brought back to the subtle cap in lightness only.
+    /// background, 1.26:1 off the panel, is brought back toward the panel in lightness only,
+    /// as far as the subtle floor off its canvas allows.
     #[test]
     fn a_passing_theme_keeps_its_own_colors() {
         let colors = bundled("tokyo-night");
@@ -912,7 +966,13 @@ mod tests {
         assert_eq!(Some(palette.panel), colors.dark_background);
         let lighter = colors.lighter_background.unwrap();
         assert!(contrast(lighter, palette.panel) > SUBTLE_CAP + 0.1);
-        assert!(contrast(palette.subtle, palette.panel) <= SUBTLE_CAP);
+        assert!(contrast(palette.subtle, palette.panel) < contrast(lighter, palette.panel));
+        let floor = SUBTLE_FLOOR + SURFACE_MARGIN;
+        let off_canvas = contrast(palette.subtle, palette.canvas);
+        assert!(
+            (floor..floor + 0.02).contains(&off_canvas),
+            "{off_canvas:.3}"
+        );
         let (hue, saturation, _) = to_hsl(palette.subtle);
         let (theirs, their_saturation, _) = to_hsl(lighter);
         assert!((hue - theirs).abs() < 0.01 && (saturation - their_saturation).abs() < 0.05);
@@ -1090,10 +1150,63 @@ mod tests {
         );
     }
 
+    /// Whether four statuses (added, removed, modified, renamed) stand pairwise apart.
+    fn stand_apart([added, removed, modified, renamed]: [u32; 4]) -> bool {
+        apart(added, &[removed, modified, renamed])
+            && apart(removed, &[modified, renamed])
+            && apart(modified, &[renamed])
+    }
+
+    fn statuses(palette: &Palette) -> [u32; 4] {
+        [
+            palette.added,
+            palette.removed,
+            palette.modified,
+            palette.renamed,
+        ]
+    }
+
+    /// GitTurtle's own four statuses for the mode, fitted to `colors`' surfaces: the fit of
+    /// the same theme with GitTurtle's colors as its red, green, yellow and magenta.
+    fn gitturtles_statuses(colors: &Colors) -> [u32; 4] {
+        let own = own(colors.mode);
+        statuses(&fit(&Colors {
+            red: own.removed,
+            green: own.added,
+            yellow: own.modified,
+            magenta: own.renamed,
+            ..*colors
+        }))
+    }
+
+    /// A replacement is never checked against the theme color kept beside it, so when
+    /// neither the theme's diff nor GitTurtle's leaves the four statuses apart, all four are
+    /// GitTurtle's own: a Tokyo Night whose yellow and magenta are both GitTurtle's violet
+    /// renamed `#C1A5F5` kept that violet as modified and took GitTurtle's renamed, the same
+    /// violet, beside it.
+    #[test]
+    fn statuses_that_still_sit_together_are_all_gitturtles_own() {
+        let violet = own(Mode::Dark).renamed;
+        let colors = Colors {
+            yellow: violet,
+            magenta: violet,
+            ..bundled("tokyo-night")
+        };
+        let palette = fit(&colors);
+        assert!(
+            stand_apart(statuses(&palette)),
+            "{:06x?}",
+            statuses(&palette)
+        );
+        assert_eq!(statuses(&palette), gitturtles_statuses(&colors));
+        assert_ne!(palette.modified, violet);
+        assert_eq!(palette.readability_issues(), Vec::new());
+    }
+
     /// A `lighter_background` within `FLAT_SURFACE` of the background is no surface of its
     /// own: Last Horizon and Solitude repeat their background, and a generated theme's
     /// `color0` is its background, so each takes the canvas 6% toward the foreground and its
-    /// grouped surfaces show. Lupine's, 1.045:1 off its background, is kept.
+    /// grouped surfaces show. Lupine's, 1.045:1 off its background, is not flat.
     #[test]
     fn a_flat_lighter_background_counts_as_absent() {
         for (name, colors) in fixtures() {
@@ -1120,23 +1233,25 @@ mod tests {
                 );
             }
         }
-        assert_eq!(
-            fit(&bundled("lupine")).subtle,
-            bundled("lupine").lighter_background.unwrap()
-        );
     }
 
     /// Hunk headers stay blue and apart from the code text: White's, Vantablack's,
-    /// Solitude's and Last Horizon's blue is a grey and Nord's keeps 0.045 chroma once fitted,
-    /// so each takes GitTurtle's hunk color; Matte Black's `blue` is an orange, with chroma and
-    /// apart from its grey text, and is kept. A blue that differs from a blue text only in
-    /// lightness takes GitTurtle's too.
+    /// Solitude's and Last Horizon's blue is a grey, and Nord's and Rosé Pine's keep 0.045 and
+    /// 0.049 chroma once fitted, so each takes GitTurtle's hunk color. Matte Black's `blue` is
+    /// an orange (its accent), Ristretto's a salmon beside its removed, Osaka Jade's a green
+    /// beside its added and Miasma's an olive beside its text: outside `HUNK_HUES`, they take
+    /// it too, while Everforest's and Retro-82's teal and Gruvbox's aqua (179°) are kept.
+    /// Beside a blue text GitTurtle's can be as close
+    /// as the theme's: the header keeps whichever stands farther from the text, the theme's
+    /// `#6F9AF7` 0.026 from `#8FB0FF` over GitTurtle's `#95BAFF` at 0.015, and GitTurtle's
+    /// over a blue that is the text itself.
     #[test]
     fn hunk_headers_stay_blue_and_apart_from_the_text() {
         let mut took = Vec::new();
         for (name, colors) in fixtures() {
             let palette = fit(&colors);
             assert!(oklch(palette.hunk).0 >= DIFF_MIN_CHROMA, "{name}");
+            assert!(HUNK_HUES.contains(&oklch(palette.hunk).1), "{name}");
             assert!(
                 tint_distance(palette.hunk, palette.text) >= DIFF_MIN_CHROMA,
                 "{name}"
@@ -1148,27 +1263,54 @@ mod tests {
         }
         assert_eq!(
             took,
-            ["last-horizon", "nord", "solitude", "vantablack", "white"]
+            [
+                "last-horizon",
+                "matte-black",
+                "miasma",
+                "nord",
+                "osaka-jade",
+                "ristretto",
+                "rose-pine",
+                "solitude",
+                "vantablack",
+                "white"
+            ]
         );
-        let tokyo = bundled("tokyo-night");
         let blue_text = Colors {
             foreground: 0x8fb0ff,
             blue: 0x6f9af7,
-            ..tokyo
+            ..bundled("tokyo-night")
         };
-        assert!(oklch(blue_text.blue).0 >= DIFF_MIN_CHROMA);
-        let theirs = fit(&blue_text).hunk;
-        assert_ne!(theirs, blue_text.blue);
-        let gitturtles = Colors {
+        let gitturtles = fit(&Colors {
             blue: own(Mode::Dark).hunk,
             ..blue_text
+        })
+        .hunk;
+        let palette = fit(&blue_text);
+        assert_eq!(palette.text, blue_text.foreground);
+        let from_text = |color: u32| tint_distance(color, palette.text);
+        assert!(oklch(blue_text.blue).0 >= DIFF_MIN_CHROMA);
+        assert!(
+            from_text(gitturtles) < from_text(blue_text.blue)
+                && from_text(blue_text.blue) < DIFF_MIN_CHROMA,
+            "GitTurtle's {:.3} and the theme's {:.3} both sit beside the text",
+            from_text(gitturtles),
+            from_text(blue_text.blue)
+        );
+        assert_eq!(palette.hunk, blue_text.blue, "the theme's, the farther");
+        assert_eq!(from_text(palette.hunk), from_text(blue_text.blue));
+        let the_text = Colors {
+            blue: blue_text.foreground,
+            ..blue_text
         };
-        assert_eq!(theirs, fit(&gitturtles).hunk);
+        let palette = fit(&the_text);
+        assert_eq!(palette.hunk, gitturtles, "GitTurtle's, the farther");
+        assert!(from_text(palette.hunk) > from_text(the_text.blue));
     }
 
-    /// Subtle surfaces lift at most `SUBTLE_CAP` off the panel and the selected row at most
-    /// `SELECTED_CAP` off the canvas unless its own step off the panel needs more, brought
-    /// back in lightness only: White's subtle and
+    /// Subtle surfaces lift at most `SUBTLE_CAP` off the panel unless the subtle floor off the
+    /// canvas needs more, and the selected row at most `SELECTED_CAP` off the canvas unless its
+    /// own step off the panel needs more, brought back in lightness only: White's subtle and
     /// selected were both `#c0c0c0` (1.67:1 off its panel, 1.82:1 off its canvas) and Last
     /// Horizon's selected row 2.45:1 off its canvas. On those rows every graph lane keeps at
     /// least 4:1.
@@ -1185,7 +1327,17 @@ mod tests {
             let lifted = |surface: u32, from: u32, cap: f64| {
                 judge.clears(surface, &[(&[from], cap + 0.005)], 0.)
             };
-            assert!(!lifted(palette.subtle, palette.panel, SUBTLE_CAP), "{name}");
+            // The floor wins, lifting no further than it needs: one lightness step past its
+            // margin.
+            assert!(
+                !lifted(palette.subtle, palette.panel, SUBTLE_CAP)
+                    || !lifted(
+                        palette.subtle,
+                        palette.canvas,
+                        SUBTLE_FLOOR + SURFACE_MARGIN + 0.02
+                    ),
+                "{name}"
+            );
             // The selected row's own step off the panel wins: a generated light theme's
             // panel is dark enough that 1.15:1 below it is 1.55:1 below its canvas.
             assert!(
@@ -1212,6 +1364,40 @@ mod tests {
         }
     }
 
+    /// Subtle stands at least `SUBTLE_FLOOR` off the canvas toward the foreground in every
+    /// fixture. The cap alone left it at or under the canvas where the canvas sits well off
+    /// the panel: Nord's and Everforest's 1.057:1 and 1.062:1 below it, Gruvbox's and
+    /// Ristretto's 1.008:1 and 1.013:1 above. It stands as far off the panel where that leaves
+    /// the selected row room, as for Rosé Pine's (1.023:1 lighter than its panel) and
+    /// Catppuccin Latte's (1.041:1). A generated light theme's panel sits 1.32:1 below its
+    /// canvas, where that step would put subtle beside the selected row; its subtle stays on
+    /// the canvas side, clearly lighter than the panel.
+    #[test]
+    fn subtle_stands_off_the_canvas_and_the_panel() {
+        for (name, colors) in fixtures() {
+            let palette = fit(&colors);
+            let judge = Judge {
+                dark: colors.mode == Mode::Dark,
+            };
+            let off =
+                |reference: u32| judge.clears(palette.subtle, &[(&[reference], SUBTLE_FLOOR)], 0.);
+            assert!(
+                off(palette.canvas),
+                "{name}'s subtle {:06x} on its canvas {:06x}",
+                palette.subtle,
+                palette.canvas
+            );
+            assert_eq!(off(palette.panel), name != "alacritty-light", "{name}");
+            assert_eq!(palette.readability_issues(), Vec::new(), "{name}");
+        }
+        let generated = fixtures()
+            .into_iter()
+            .find_map(|(name, colors)| (name == "alacritty-light").then(|| fit(&colors)))
+            .unwrap();
+        assert!(contrast(generated.subtle, generated.panel) >= SUBTLE_FLOOR);
+        assert!(contrast(generated.selected, generated.subtle) >= SUBTLE_FLOOR);
+    }
+
     /// A small xorshift generator, so the property test needs no new dependency and every run
     /// sees the same inputs.
     struct Inputs(u64);
@@ -1235,8 +1421,9 @@ mod tests {
 
     /// 600 arbitrary themes, a fifth of them with foreground equal to background and a fifth
     /// with red and green one step apart, in every mode: each maps to a palette with no
-    /// readability finding, whose lightness matches its mode. The fit itself (before the
-    /// built-in fallback) must carry at least 97% of them.
+    /// readability finding, whose lightness matches its mode, and its fit's four statuses
+    /// stand pairwise apart or are GitTurtle's own. The fit itself (before the built-in
+    /// fallback) must carry at least 97% of them.
     #[test]
     fn arbitrary_themes_always_map_to_a_readable_palette() {
         let mut inputs = Inputs(0x9e37_79b9_7f4a_7c15);
@@ -1277,7 +1464,13 @@ mod tests {
             );
             assert_eq!(mapped.is_light, colors.mode == Mode::Light, "case {case}");
             assert_eq!(mapped.palette.is_light(), mapped.is_light, "case {case}");
-            if fit(&colors).readability_issues().is_empty() {
+            let fit = fit(&colors);
+            assert!(
+                stand_apart(statuses(&fit)) || statuses(&fit) == gitturtles_statuses(&colors),
+                "case {case}: {:06x?}",
+                statuses(&fit)
+            );
+            if fit.readability_issues().is_empty() {
                 fitted += 1;
             }
         }
