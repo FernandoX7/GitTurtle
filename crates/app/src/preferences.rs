@@ -88,13 +88,15 @@ impl AppSettings {
     /// palette; a custom id missing from `custom_themes` resolves to the default
     /// theme. Following the system, a light appearance selects Braden and a dark
     /// one keeps a dark selection (built-in or custom) and otherwise Midnight.
+    /// The Omarchy theme follows the desktop instead, whatever `follow_system`
+    /// says; its palette comes from `appearance::omarchy::resolve`.
     pub fn resolved_theme(
         &self,
         appearance: gpui_kit::WindowAppearance,
         custom_themes: &[CustomTheme],
     ) -> ResolvedTheme {
         let chosen = self.theme.resolve(custom_themes);
-        if !self.follow_system {
+        if !self.follow_system || chosen.selection == ThemeSelection::Omarchy {
             return chosen;
         }
         match appearance {
@@ -1189,6 +1191,94 @@ mod tests {
             (11, 24)
         );
         changed.validate().unwrap();
+    }
+
+    /// The Omarchy theme round-trips in the version-6 store as the bare string
+    /// "omarchy" beside every other setting. A build without it, whose selection
+    /// is a built-in or a custom reference, reads the same settings object with
+    /// that string as Midnight and every other setting intact.
+    #[test]
+    fn an_omarchy_selection_round_trips_and_older_builds_keep_the_other_settings() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("preferences.json");
+        let saved = Preferences {
+            settings: AppSettings {
+                theme: ThemeSelection::Omarchy,
+                density: Density::Compact,
+                graph_spacing: 24,
+                interface_text_size: 15,
+                code_text_size: 14,
+                external_editor: "code".into(),
+                default_branch: "trunk".into(),
+                project_pane: true,
+                ..AppSettings::default()
+            },
+            ..Preferences::default()
+        };
+        saved.save_to(&path).unwrap();
+        let stored: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stored["version"], STORE_VERSION);
+        assert_eq!(stored["settings"]["theme"], "omarchy");
+        assert_eq!(
+            Preferences::load_from(&path).unwrap().settings,
+            saved.settings
+        );
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum OlderSelection {
+            Custom {
+                #[allow(dead_code, reason = "only its shape matters")]
+                custom: u32,
+            },
+            BuiltIn(ThemeChoice),
+        }
+        #[derive(Deserialize)]
+        struct OlderSettings {
+            theme: OlderSelection,
+            #[serde(flatten)]
+            rest: AppSettings,
+        }
+        let older: OlderSettings = serde_json::from_value(stored["settings"].clone()).unwrap();
+        assert!(matches!(
+            older.theme,
+            OlderSelection::BuiltIn(ThemeChoice::Midnight)
+        ));
+        assert_eq!(
+            older.rest,
+            AppSettings {
+                theme: ThemeSelection::default(),
+                ..saved.settings
+            }
+        );
+    }
+
+    /// Follow system never overrides the Omarchy theme on Linux; elsewhere the
+    /// selection is the default theme, which follows the system as any other.
+    #[test]
+    fn follow_system_never_overrides_an_omarchy_selection() {
+        use gpui_kit::WindowAppearance::{Dark, Light, VibrantDark, VibrantLight};
+        let mut settings = AppSettings {
+            theme: ThemeSelection::Omarchy,
+            ..AppSettings::default()
+        };
+        for appearance in [Light, VibrantLight, Dark, VibrantDark] {
+            for follow in [false, true] {
+                settings.follow_system = follow;
+                let resolved = settings.resolved_theme(appearance, &[]);
+                let expected = if cfg!(target_os = "linux") {
+                    ThemeSelection::Omarchy
+                } else if follow && matches!(appearance, Light | VibrantLight) {
+                    ThemeSelection::BuiltIn(ThemeChoice::Daylight)
+                } else {
+                    ThemeSelection::BuiltIn(ThemeChoice::Midnight)
+                };
+                assert_eq!(
+                    resolved.selection, expected,
+                    "{appearance:?} follow={follow}"
+                );
+            }
+        }
     }
 
     static TEST_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);

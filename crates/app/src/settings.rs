@@ -689,7 +689,7 @@ impl GitTurtle {
     /// drawn without its miniature.
     pub(super) fn set_custom_themes(&mut self, themes: Vec<CustomTheme>, cx: &mut Context<Self>) {
         let kept = |drawn: &ThemeSelection| match drawn {
-            ThemeSelection::BuiltIn(_) => true,
+            ThemeSelection::BuiltIn(_) | ThemeSelection::Omarchy => true,
             ThemeSelection::Custom(id) => themes.iter().any(|theme| theme.id == *id),
         };
         self.theme_previews.retain(|(drawn, _)| kept(drawn));
@@ -731,6 +731,64 @@ impl GitTurtle {
             }
         }
         self.custom_themes = themes;
+    }
+
+    /// Linux: keep the Omarchy card's miniature, body and focus handle in step
+    /// with what [`appearance::omarchy`] read, creating them the first time
+    /// there is anything to show. Called when that state changes and when the
+    /// window opens; returns the card.
+    #[cfg(target_os = "linux")]
+    fn sync_omarchy_card(&mut self, cx: &mut Context<Self>) -> Option<appearance::omarchy::Card> {
+        let card = appearance::omarchy::card(cx)?;
+        let selection = ThemeSelection::Omarchy;
+        let retained = self
+            .theme_previews
+            .iter()
+            .find_map(|(drawn, body)| (*drawn == selection).then(|| body.clone()));
+        match retained {
+            Some(body) => body.update(cx, |body, cx| body.set_palette(card.palette, cx)),
+            None => {
+                let body = cx.new(|_| ThemePreviewBody::new(card.palette));
+                let miniature = body.entity_id();
+                self.theme_previews.push((selection, body));
+                self.theme_card_bodies
+                    .push((selection, cx.new(|_| ThemeCardBody::new(miniature))));
+                self.theme_card_focus.push((selection, cx.focus_handle()));
+            }
+        }
+        Some(card)
+    }
+
+    /// Linux: the desktop's Omarchy theme was read again and something it
+    /// shows changed. A selected Omarchy theme whose palette moved is applied
+    /// through the one application path (not while the theme editor previews
+    /// a draft, whose close applies the saved selection); anything else only
+    /// redraws the picker card. `gitturtle.omarchy_apply_frame_ms` measures an
+    /// application from the read's arrival to the next frame callback.
+    #[cfg(target_os = "linux")]
+    pub(super) fn omarchy_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(revision) = appearance::omarchy::card(cx).map(|card| card.revision) else {
+            return;
+        };
+        if self.omarchy_revision == Some(revision) {
+            return;
+        }
+        self.omarchy_revision = Some(revision);
+        let Some(card) = self.sync_omarchy_card(cx) else {
+            return;
+        };
+        if self.settings.theme == ThemeSelection::Omarchy
+            && self.theme_editor.preview().is_none()
+            && self.effective_theme(cx).palette != palette(cx)
+        {
+            self.apply_appearance(window, cx);
+            if let (true, Some(arrived)) = (trace_enabled(), card.arrived) {
+                Self::trace_next_frame("omarchy_apply_frame_ms", arrived, window);
+            }
+        } else {
+            self.notify_settings_page(cx);
+            cx.notify();
+        }
     }
 
     /// The cached body of `selection`'s picker card, found by the selection
@@ -920,12 +978,49 @@ impl GitTurtle {
     /// custom theme shows the default it resolves to; following the system
     /// marks no card.
     pub(super) fn selected_theme_card(&self) -> Option<ThemeSelection> {
-        (!self.settings.follow_system)
-            .then(|| self.settings.theme.resolve(&self.custom_themes).selection)
+        let selected = self.settings.theme.resolve(&self.custom_themes).selection;
+        (!self.settings.follow_system || selected == ThemeSelection::Omarchy).then_some(selected)
+    }
+
+    /// Whether the Omarchy theme is the selection, which Follow system never
+    /// overrides; always false where it resolves to the default theme.
+    pub(super) fn follows_desktop_theme(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            self.settings.theme == ThemeSelection::Omarchy
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
+    }
+
+    /// The Desktop group: on Linux, the Omarchy card while the desktop has an
+    /// Omarchy theme, or while it is the selection, which then stays visible
+    /// with the reason the theme cannot be read.
+    fn desktop_theme_cards(&self, cx: &App) -> Vec<ThemeCard> {
+        #[cfg(target_os = "linux")]
+        if let Some(card) = appearance::omarchy::card(cx)
+            && (card.offered || self.follows_desktop_theme())
+            && self
+                .theme_card_bodies
+                .iter()
+                .any(|(drawn, _)| *drawn == ThemeSelection::Omarchy)
+        {
+            return vec![ThemeCard {
+                selection: ThemeSelection::Omarchy,
+                palette: card.palette,
+                name: "Omarchy".into(),
+                description: card.description.into(),
+                warnings: 0,
+            }];
+        }
+        let _ = cx;
+        Vec::new()
     }
 
     /// The picker's groups and their cards, in display order.
-    fn theme_card_groups(&self) -> [(&'static str, &'static str, Vec<ThemeCard>); 3] {
+    fn theme_card_groups(&self, cx: &App) -> [(&'static str, &'static str, Vec<ThemeCard>); 4] {
         let built_in = |light: bool| {
             ThemeChoice::ALL
                 .into_iter()
@@ -954,6 +1049,7 @@ impl GitTurtle {
             })
             .collect::<Vec<_>>();
         [
+            ("desktop", "Desktop", self.desktop_theme_cards(cx)),
             ("light", "Light palettes", built_in(true)),
             ("dark", "Dark palettes", built_in(false)),
             ("custom", "Your themes", custom),
@@ -968,7 +1064,7 @@ impl GitTurtle {
     pub(super) fn sync_theme_cards(&self, cx: &mut App) {
         let active = palette(cx);
         let selected = self.selected_theme_card();
-        for (_, _, cards) in self.theme_card_groups() {
+        for (_, _, cards) in self.theme_card_groups(cx) {
             for card in cards {
                 let key = CardKey::new(
                     card.palette,
@@ -1006,7 +1102,7 @@ impl GitTurtle {
             .flatten();
         #[cfg(test)]
         self.card_names.borrow_mut().clear();
-        let groups = self.theme_card_groups();
+        let groups = self.theme_card_groups(cx);
         div()
             .debug_selector(|| "settings-theme-picker".into())
             .flex()
@@ -1072,10 +1168,12 @@ impl GitTurtle {
         let id = match selection {
             ThemeSelection::BuiltIn(choice) => ElementId::from(("settings-theme", choice as usize)),
             ThemeSelection::Custom(id) => ElementId::from(("settings-custom-theme", id as usize)),
+            ThemeSelection::Omarchy => ElementId::from("settings-theme-omarchy"),
         };
         let selector = move || match selection {
             ThemeSelection::BuiltIn(choice) => format!("settings-theme-{}", choice as usize),
             ThemeSelection::Custom(id) => format!("settings-custom-theme-{id}"),
+            ThemeSelection::Omarchy => "settings-theme-omarchy".into(),
         };
         let accessible_name = format!("{} theme", card.name);
         #[cfg(test)]
@@ -1678,6 +1776,21 @@ impl GitTurtle {
             .repository
             .as_ref()
             .map(|repository| self.project_name(repository.path()));
+        // While the Omarchy theme is selected, Follow system shows off and
+        // cannot be turned on: the desktop decides the theme.
+        let desktop_theme = self.follows_desktop_theme();
+        let follow_checked = self.settings.follow_system && !desktop_theme;
+        let follow_description: SharedString = if desktop_theme {
+            "Omarchy follows your desktop theme".into()
+        } else {
+            "Braden in Light Mode; your selected dark palette in Dark Mode.".into()
+        };
+        #[cfg(test)]
+        self.follow_system_row.replace(Some((
+            follow_checked,
+            desktop_theme,
+            follow_description.clone(),
+        )));
         let appearance = div()
             .flex()
             .flex_col()
@@ -1690,18 +1803,27 @@ impl GitTurtle {
                     .gap_3()
                     .child(setting_description(
                         "Follow system appearance",
-                        "Braden in Light Mode; your selected dark palette in Dark Mode.",
+                        follow_description.clone(),
                         cx,
                     ))
                     .child(
-                        Switch::new("follow-system")
-                            .checked(self.settings.follow_system)
-                            .label("Follow system appearance")
-                            .on_click(cx.listener(|this, checked, window, cx| {
-                                this.settings.follow_system = *checked;
-                                this.apply_appearance(window, cx);
-                                this.save_preferences(window, cx);
-                            })),
+                        div()
+                            .debug_selector(|| "follow-system-switch".into())
+                            .child(
+                                Switch::new("follow-system")
+                                    .checked(follow_checked)
+                                    .disabled(desktop_theme)
+                                    .label("Follow system appearance")
+                                    .on_click(cx.listener(|this, checked, window, cx| {
+                                        // The Omarchy theme follows the desktop instead.
+                                        if this.follows_desktop_theme() {
+                                            return;
+                                        }
+                                        this.settings.follow_system = *checked;
+                                        this.apply_appearance(window, cx);
+                                        this.save_preferences(window, cx);
+                                    })),
+                            ),
                     ),
             )
             .child(self.render_theme_picker(theme_columns, window, cx))
@@ -4026,6 +4148,7 @@ mod picker_tests {
         let selector = |selection: ThemeSelection| match selection {
             ThemeSelection::BuiltIn(choice) => format!("settings-theme-{}", choice as usize),
             ThemeSelection::Custom(id) => format!("settings-custom-theme-{id}"),
+            ThemeSelection::Omarchy => "settings-theme-omarchy".into(),
         };
         let focused = |cx: &mut VisualTestContext| {
             cx.update(|window, cx| {
@@ -4197,6 +4320,135 @@ mod picker_tests {
         assert_eq!(state(cx), (true, SystemCodeFont::Pending, bundled.clone()));
         toggle(cx);
         assert_eq!(state(cx), (false, SystemCodeFont::Off, bundled));
+    }
+
+    /// Linux: with the desktop's Omarchy theme read, Settings offers it as the
+    /// one card of a Desktop group above the palettes, named "Omarchy theme",
+    /// its caption naming the desktop's theme and its miniature drawing the
+    /// mapped palette. Choosing it applies that palette, turns Follow system
+    /// off and locks it with the reason; choosing another card releases it.
+    /// The card stays while it is selected even when the file is gone, and
+    /// says why; unselected, it goes with the file.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn the_omarchy_card_selects_and_locks_follow_system(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("current");
+        std::fs::create_dir_all(root.join("theme")).unwrap();
+        let colors = include_bytes!("../tests/fixtures/omarchy/tokyo-night.toml");
+        std::fs::write(root.join("theme/colors.toml"), colors).unwrap();
+        std::fs::write(root.join("theme.name"), "tokyo-night\n").unwrap();
+        cx.update(|cx| drop(appearance::omarchy::install(Some(root.clone()), cx)));
+        let (app, cx) = open_app(cx);
+        settle(cx);
+        let omarchy = ThemeSelection::Omarchy;
+        let mapped = cx.read(|cx| appearance::omarchy::card(cx).unwrap().palette);
+        assert_ne!(mapped, ThemeChoice::default().palette());
+
+        // The Desktop group sits above the light and dark palettes.
+        let group = |cx: &mut VisualTestContext, key: &str| {
+            drawn(cx, format!("settings-theme-group-{key}")).expect("a group title")
+        };
+        let desktop = group(cx, "desktop");
+        let card = drawn(cx, "settings-theme-omarchy".into()).expect("the Omarchy card");
+        let light = group(cx, "light");
+        assert!(desktop.bottom() <= card.top() && card.bottom() <= light.top());
+        assert!(light.bottom() <= group(cx, "dark").top());
+        assert!(
+            cx.read(|cx| app.read(cx).card_names.borrow().clone())
+                .contains(&("settings-theme-omarchy".into(), "Omarchy theme".into()))
+        );
+        let caption = |cx: &mut VisualTestContext| {
+            cx.read(|cx| {
+                let app = app.read(cx);
+                let key = app.theme_card_body(omarchy).read(cx).key.clone().unwrap();
+                (
+                    key.name.to_string(),
+                    key.description.to_string(),
+                    key.palette,
+                )
+            })
+        };
+        assert_eq!(
+            caption(cx),
+            ("Omarchy".into(), "Follows Tokyo Night".into(), mapped)
+        );
+        assert_eq!(
+            cx.read(|cx| app.read(cx).theme_preview_body(omarchy).read(cx).palette()),
+            mapped
+        );
+
+        let follow = |cx: &mut VisualTestContext| {
+            page_shows(cx, "follow-system-switch");
+            let row = cx.read(|cx| app.read(cx).follow_system_row.borrow().clone().unwrap());
+            (row.0, row.1, row.2.to_string())
+        };
+        let toggle_follow = |cx: &mut VisualTestContext| {
+            let switch = shown(cx, "follow-system-switch").expect("the Follow system switch");
+            cx.simulate_click(switch.center(), Modifiers::default());
+            settle(cx);
+        };
+        let choose = |cx: &mut VisualTestContext, selector: &str| {
+            let card = shown(cx, selector.to_owned().leak()).expect("a picker card");
+            cx.simulate_click(card.center(), Modifiers::default());
+            settle(cx);
+        };
+        let unlocked = "Braden in Light Mode; your selected dark palette in Dark Mode.";
+        toggle_follow(cx);
+        assert!(cx.read(|cx| app.read(cx).settings.follow_system));
+        assert_eq!(follow(cx), (true, false, unlocked.into()));
+
+        choose(cx, "settings-theme-omarchy");
+        let state = |cx: &mut VisualTestContext| {
+            cx.read(|cx| {
+                let app = app.read(cx);
+                (
+                    app.settings.theme,
+                    app.settings.follow_system,
+                    app.selected_theme_card(),
+                )
+            })
+        };
+        assert_eq!(state(cx), (omarchy, false, Some(omarchy)));
+        assert_eq!(cx.read(palette), mapped);
+        let locked = (false, true, "Omarchy follows your desktop theme".to_owned());
+        assert_eq!(follow(cx), locked);
+        let miniature = miniature(cx, &app, omarchy);
+        assert!(drawn(cx, format!("theme-check-{miniature}")).is_some());
+        // The disabled switch does nothing.
+        toggle_follow(cx);
+        assert_eq!(state(cx), (omarchy, false, Some(omarchy)));
+        assert_eq!(follow(cx), locked);
+
+        // Selected, the card stays when the file goes, keeping the last palette.
+        std::fs::remove_file(root.join("theme/colors.toml")).unwrap();
+        cx.update(|_, cx| appearance::omarchy::refresh(cx));
+        settle(cx);
+        assert!(drawn(cx, "settings-theme-omarchy".into()).is_some());
+        assert_eq!(
+            caption(cx).1,
+            "Unavailable: colors.toml is missing. Keeping Tokyo Night."
+        );
+        assert_eq!(cx.read(palette), mapped);
+
+        // Another card releases Follow system, and the unavailable card goes.
+        choose(
+            cx,
+            &format!("settings-theme-{}", ThemeChoice::Nord as usize),
+        );
+        assert_eq!(
+            state(cx),
+            (
+                ThemeSelection::BuiltIn(ThemeChoice::Nord),
+                false,
+                Some(ThemeSelection::BuiltIn(ThemeChoice::Nord))
+            )
+        );
+        assert_eq!(follow(cx), (false, false, unlocked.into()));
+        assert!(!page_shows(cx, "settings-theme-omarchy"));
+        assert!(!page_shows(cx, "settings-theme-group-desktop"));
+        toggle_follow(cx);
+        assert!(cx.read(|cx| app.read(cx).settings.follow_system));
     }
 
     /// At the 32-theme bound New theme… and Import… are disabled, so their

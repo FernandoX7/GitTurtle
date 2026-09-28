@@ -104,6 +104,9 @@ GLB samples retain their [per-file notices and immutable source hashes](crates/p
 BoxInterleaved and RiggedSimple are © 2017 Cesium, CC-BY-4.0; Avocado is Microsoft,
 2017, CC0-1.0. Their copied documentation is CC-BY-4.0. The meshopt Avocado fixture
 is a modified geometry-only derivative, as its provenance records explain.
+The [Omarchy theme fixtures](crates/app/tests/fixtures/omarchy/README.md) are
+unmodified copies of Omarchy's bundled `colors.toml` files, MIT licensed,
+Copyright (c) David Heinemeier Hansson; their README carries the license text.
 
 These fixtures are source/test assets and are not copied into application
 packages. Keep attribution with any redistributed fixture or screenshot that

@@ -275,6 +275,7 @@ impl GitTurtle {
     pub(super) fn effective_theme(&self, cx: &App) -> appearance::custom::ResolvedTheme {
         self.settings
             .resolved_theme(cx.window_appearance(), &self.custom_themes)
+            .with_desktop(cx)
     }
     /// The one appearance application path: a Settings switch, a system
     /// appearance change and every theme-editor live-preview edit end here.
@@ -288,6 +289,12 @@ impl GitTurtle {
     /// without altering a pixel they draw. Reusing them is most of the
     /// difference between the frame budget and a full rebuild of the picker.
     pub(super) fn apply_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The desktop's Omarchy theme is watched only while it is the selection.
+        #[cfg(target_os = "linux")]
+        appearance::omarchy::follow(
+            self.settings.theme == appearance::custom::ThemeSelection::Omarchy,
+            cx,
+        );
         // An open theme editor shows its draft through the same path.
         match self.theme_editor.preview() {
             Some(draft) => draft.apply(draft.is_light(), None, cx),
@@ -368,14 +375,19 @@ impl GitTurtle {
     }
     pub(super) fn about(&self, window: &mut Window, cx: &mut Context<Self>) {
         // Diagnostics report built-in keys only: a custom theme reports its base,
-        // so a user-chosen theme name never enters a copied bug report.
-        let theme = match self.effective_theme(cx).selection {
+        // so a user-chosen theme name never enters a copied bug report, and the
+        // Omarchy theme the built-in of its lightness.
+        let effective = self.effective_theme(cx);
+        let theme = match effective.selection {
             appearance::custom::ThemeSelection::BuiltIn(choice) => choice,
             appearance::custom::ThemeSelection::Custom(id) => self
                 .custom_themes
                 .iter()
                 .find(|theme| theme.id == id)
                 .map_or_else(appearance::ThemeChoice::default, |theme| theme.base),
+            appearance::custom::ThemeSelection::Omarchy => {
+                appearance::custom::fallback_base(effective.palette)
+            }
         };
         let report = build_info::diagnostics(
             window.scale_factor(),

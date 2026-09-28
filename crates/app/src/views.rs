@@ -2041,6 +2041,7 @@ impl Render for GitTurtle {
                 let configured_theme = match layout.1 {
                     appearance::custom::ThemeSelection::BuiltIn(choice) => format!("{choice:?}"),
                     appearance::custom::ThemeSelection::Custom(id) => format!("custom:{id}"),
+                    appearance::custom::ThemeSelection::Omarchy => "omarchy".into(),
                 };
                 eprintln!(
                     "gitturtle.layout viewport={:.0}x{:.0} configured_theme={} density={:?} interface={} code={} targets={}",

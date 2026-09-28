@@ -240,6 +240,15 @@ code text, which uses the embedded DejaVu Sans Mono unless **Use the desktop's
 monospace font** is turned on in Settings, which follows Omarchy's font
 (JetBrainsMono Nerd Font by default).
 
+**Settings** offers an **Omarchy** theme in a **Desktop** group above the other
+themes. It follows your current Omarchy theme, including each switch while it
+is selected, and turns **Follow system appearance** off while in use. GitTurtle
+only reads `~/.local/state/omarchy/current/theme/colors.toml` and `theme.name`
+there; it never writes under `~/.local/state/omarchy`. The card appears only
+when that `colors.toml` exists, and a missing or unusable file keeps the last
+colors read (or Midnight) with the reason on the card. The
+[user guide](user-guide.md) describes the theme.
+
 On Hyprland:
 
 - The compositor supplies server-side decorations and draws no title bar, so

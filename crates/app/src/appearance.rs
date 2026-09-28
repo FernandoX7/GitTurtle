@@ -21,6 +21,10 @@ mod sources;
 #[cfg_attr(not(test), allow(dead_code))]
 pub mod custom;
 
+// Linux only: the palette of the desktop's current Omarchy theme, for the Omarchy selection.
+#[cfg(target_os = "linux")]
+pub(crate) mod omarchy;
+
 pub const DEFAULT_INTERFACE_TEXT_SIZE: u8 = 13;
 pub const DEFAULT_CODE_TEXT_SIZE: u8 = 12;
 pub const INTERFACE_TEXT_RANGE: std::ops::RangeInclusive<u8> = 11..=18;
@@ -1093,6 +1097,20 @@ impl custom::ResolvedTheme {
     /// Apply the resolved built-in or custom palette through the one application path.
     pub fn apply(self, window: Option<&mut Window>, cx: &mut App) {
         self.palette.apply(self.is_light, window, cx);
+    }
+
+    /// On Linux, a resolved Omarchy selection with the palette the desktop's theme maps to
+    /// once it has been read ([`omarchy::resolve`]); otherwise unchanged.
+    pub fn with_desktop(self, cx: &App) -> Self {
+        #[cfg(target_os = "linux")]
+        {
+            omarchy::resolve(self, cx)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = cx;
+            self
+        }
     }
 }
 

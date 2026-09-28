@@ -24,11 +24,12 @@ pub(super) fn colors(cx: &App) -> [u32; 6] {
 /// Lane set for a palette; `Palette::readability_issues` judges the same colors.
 pub(crate) fn palette_colors(palette: Palette) -> [u32; 6] {
     // Keep palette selection cheap for each visible row and paint callback.
-    if palette.is_light() {
-        LIGHT_COLORS
-    } else {
-        DARK_COLORS
-    }
+    lane_colors(palette.is_light())
+}
+
+/// The lane set of a light or a dark palette.
+pub(crate) fn lane_colors(light: bool) -> [u32; 6] {
+    if light { LIGHT_COLORS } else { DARK_COLORS }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -314,6 +314,15 @@ struct GitTurtle {
     /// (`theme_editor::tests::custom_themes_form_a_third_picker_group`).
     #[cfg(test)]
     card_names: std::cell::RefCell<Vec<(String, String)>>,
+    /// Linux: the `appearance::omarchy` revision this window last took, or
+    /// `None` before it took any (`GitTurtle::omarchy_changed`).
+    #[cfg(target_os = "linux")]
+    omarchy_revision: Option<u64>,
+    /// Test-only: whether the last Settings build drew Follow system on, off
+    /// and disabled for the Omarchy theme, and its description
+    /// (`settings::picker_tests::the_omarchy_card_selects_and_locks_follow_system`).
+    #[cfg(test)]
+    follow_system_row: std::cell::RefCell<Option<(bool, bool, SharedString)>>,
     /// Test-only: the debug selector and accessible name of every Your themes
     /// action the last Settings build drew: New theme…, Import… and each drawn
     /// row's Edit…, Export… and Delete…
@@ -632,6 +641,10 @@ impl GitTurtle {
             draws: Vec::new(),
             #[cfg(test)]
             card_names: Default::default(),
+            #[cfg(target_os = "linux")]
+            omarchy_revision: None,
+            #[cfg(test)]
+            follow_system_row: Default::default(),
             #[cfg(test)]
             theme_action_names: Default::default(),
             #[cfg(test)]
@@ -851,12 +864,26 @@ impl GitTurtle {
                 .push(cx.observe(panels, |_, _, cx| cx.notify()));
         }
         this.subscribe_settings_inputs(window, cx);
+        // Linux: the desktop's Omarchy theme, read at launch and followed while
+        // it is selected, reaches this window through its one owner.
+        #[cfg(target_os = "linux")]
+        {
+            this.subscriptions.push(
+                cx.observe_global_in::<appearance::omarchy::Omarchy>(window, |this, window, cx| {
+                    this.omarchy_changed(window, cx)
+                }),
+            );
+            // What launch already read, applied once the window is assembled.
+            cx.defer_in(window, |this, window, cx| this.omarchy_changed(window, cx));
+        }
         this._display_preferences_task = native_accessibility::observe_display_preferences(cx);
         this.subscriptions
             .push(cx.observe_window_activation(window, |this, window, cx| {
                 if window.is_window_active() {
                     native_accessibility::sync_preferences(cx);
                     desktop_text::refresh(cx);
+                    #[cfg(target_os = "linux")]
+                    appearance::omarchy::refresh(cx);
                     this.apply_motion_preferences(cx);
                 }
                 if window.is_window_active() && this.repository.is_some() {
@@ -2006,6 +2033,11 @@ fn main() {
         desktop_text::register_code_font(cx);
         native_accessibility::sync_preferences(cx);
         let desktop_text = desktop_text::start(system_code_font, cx);
+        #[cfg(target_os = "linux")]
+        let omarchy = appearance::omarchy::start(
+            preferences.settings.theme == appearance::custom::ThemeSelection::Omarchy,
+            cx,
+        );
         native_accessibility::bind_keys(cx);
         image_lifetime::init(cx);
         interactive_rebase::init(cx);
@@ -2013,6 +2045,7 @@ fn main() {
         preferences
             .settings
             .resolved_theme(cx.window_appearance(), &preferences.custom_themes)
+            .with_desktop(cx)
             .apply(None, cx);
         shortcuts::bind_keys(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());
@@ -2030,6 +2063,10 @@ fn main() {
         cx.activate(true);
         cx.spawn(async move |cx| {
             desktop_text::ready(desktop_text, cx).await;
+            // The window's first frame shows a selected Omarchy theme when its
+            // read finishes in time (`GitTurtle::new` applies it).
+            #[cfg(target_os = "linux")]
+            appearance::omarchy::ready(omarchy, cx).await;
             let opened = cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
