@@ -16,7 +16,8 @@ const FOCUS_RING_OPACITY: f32 = 0.5;
 /// The default is the ring every control in the kit draws: 3px of the theme's
 /// `ring` colour at half opacity, directly outside the border.
 /// [`crate::Theme::button_focus_ring`] lets an application draw a different one
-/// around Buttons alone.
+/// around Buttons alone. Width and gap are expected to be non-negative: a
+/// negative gap paints the ring over the element's own fill.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FocusRing {
     /// How wide the ring is.

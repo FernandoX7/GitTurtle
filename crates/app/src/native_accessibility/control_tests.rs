@@ -222,12 +222,13 @@ fn own_radii(quads: &[PaintedQuad], element: Bounds<Pixels>, device: Pixels) -> 
         .collect()
 }
 
-/// `element` draws exactly one ring, `width` wide and `gap` outside its edge,
-/// in `ring` at `alpha`.
+/// `element`, rounded by `radius`, draws exactly one ring, `width` wide and
+/// `gap` outside its edge, with corners concentric with its own, in `ring` at
+/// `alpha`.
 fn assert_ring(
     name: &str,
     quads: &[PaintedQuad],
-    element: Bounds<Pixels>,
+    (element, radius): (Bounds<Pixels>, Pixels),
     (width, gap, alpha): (f32, f32, f32),
     ring: Hsla,
     device: Pixels,
@@ -247,6 +248,16 @@ fn assert_ring(
         near(drawn.inner, inner, device),
         "{name}: ring's inner edge {:?}, expected {inner:?}",
         drawn.inner
+    );
+    // Radii are not snapped to device pixels, so they match exactly.
+    let corners = radius + px(gap + width);
+    assert!(
+        drawn
+            .radii
+            .iter()
+            .all(|drawn| (*drawn - corners).abs() < px(0.01)),
+        "{name}: ring's corner radii {:?}, expected {corners:?}",
+        drawn.radii
     );
     let expected = ring.alpha(alpha);
     let channels = |color: Hsla| [color.h, color.s, color.l, color.a];
@@ -280,7 +291,8 @@ fn focused_buttons_draw_the_theme_button_focus_ring(cx: &mut TestAppContext) {
         cx.run_until_parked();
     };
     let device = cx.update(|window, _| px(1. / window.scale_factor()));
-    let ring = cx.read(|cx| Theme::global(cx).ring);
+    // Every probe Button is rounded by the theme radius.
+    let (ring, radius) = cx.read(|cx| (Theme::global(cx).ring, Theme::global(cx).radius));
     let kit_ring = (3., 0., 0.5);
     let adopted = FocusRing {
         width: px(2.),
@@ -302,9 +314,23 @@ fn focused_buttons_draw_the_theme_button_focus_ring(cx: &mut TestAppContext) {
                 rings_around(&quads, bounds, device).is_empty(),
                 "unfocused {id} draws no ring under {setting:?}"
             );
-            (bounds, label, own_radii(&quads, bounds, device))
+            let radii = own_radii(&quads, bounds, device);
+            // A resting ghost Button paints no quad of its own, so its radius
+            // shows only in the ring's concentric corners; the primary and the
+            // bordered disabled Button paint theirs.
+            assert_eq!(
+                radii.is_empty(),
+                id == "ring-ghost",
+                "{id} paints {radii:?}"
+            );
+            assert!(
+                radii.iter().all(|corners| *corners == [radius; 4]),
+                "{id} rounded by {radii:?}"
+            );
+            (bounds, label, radii)
         });
         let kit = cx.debug_bounds("ring-kit").expect("rendered kit ring");
+        let kit = (kit, own_radii(&quads, kit, device)[0][0]);
         assert_ring("focus_ring_style", &quads, kit, kit_ring, ring, device);
 
         for (index, (id, label_id)) in RING_BUTTONS.into_iter().enumerate() {
@@ -322,7 +348,7 @@ fn focused_buttons_draw_the_theme_button_focus_ring(cx: &mut TestAppContext) {
                 "{name}: label"
             );
             assert_eq!(&own_radii(&quads, *bounds, device), radii, "{name}: radius");
-            assert_ring(&name, &quads, *bounds, expected, ring, device);
+            assert_ring(&name, &quads, (*bounds, radius), expected, ring, device);
             assert_ring("focus_ring_style", &quads, kit, kit_ring, ring, device);
         }
     }
