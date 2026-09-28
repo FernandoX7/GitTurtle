@@ -3821,6 +3821,56 @@ mod tests {
         assert_eq!(marked(&contrast), [Selected, Muted]);
     }
 
+    /// The rows a step warning marks are the tokens its measure reads, derived
+    /// from `Palette::readability_issues` rather than copied from it: every
+    /// token, one channel at a time through every value, is changed alone,
+    /// and a token counts when some change moves the step or clears it. In
+    /// the start palette the step is below its minimum, so the issue reports
+    /// it, and the fills' opacities differ (hover's is set by green and the
+    /// pressed fill's by blue, both near the top of the channel), so each
+    /// surface it composites over, the hovered selected row's accent share
+    /// included, can become the smallest step.
+    #[test]
+    fn a_step_warning_marks_the_tokens_its_measure_reads() {
+        use TokenKind::*;
+        let step = |palette: Palette| {
+            palette
+                .readability_issues()
+                .into_iter()
+                .find(|issue| issue.measure == ReadabilityMeasure::Step)
+        };
+        let mut start = ThemeChoice::Midnight.palette();
+        for (kind, color) in [
+            (Panel, 0x80fafa),
+            (Canvas, 0x80fafa),
+            (Subtle, 0x80fafa),
+            (Hover, 0x7efbfa),
+            (Selected, 0x83fafc),
+            (Accent, 0x83fafc),
+        ] {
+            start.set(kind, color);
+        }
+        let issue = step(start).expect("the start palette has a step warning");
+        let read: Vec<TokenKind> = TokenKind::ALL
+            .into_iter()
+            .filter(|&kind| {
+                [16, 8, 0].into_iter().any(|shift| {
+                    (0..=255).any(|value| {
+                        let mut palette = start;
+                        let color = start.get(kind) & !(0xff << shift) | (value << shift);
+                        palette.set(kind, color);
+                        step(palette).map(|issue| issue.ratio) != Some(issue.ratio)
+                    })
+                })
+            })
+            .collect();
+        let marked: Vec<TokenKind> = TokenKind::ALL
+            .into_iter()
+            .filter(|&kind| issue_tokens(&issue).any(|token| token == kind))
+            .collect();
+        assert_eq!(read, marked, "{issue}");
+    }
+
     /// With no warnings the Readability list says every rule is met, which
     /// names the whole rule set: the pressed step is not a contrast minimum.
     /// Hover set to Selected leaves only the step warning, which replaces the
