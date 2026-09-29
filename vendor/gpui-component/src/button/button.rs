@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use crate::ThemeStyled as _;
+use crate::styled::apply_focus_ring;
 use crate::{
     ActiveTheme, Colorize as _, Disableable, Icon, RoleOverride, Selectable, Sizable, Size,
     StyleSized, StyledExt,
@@ -802,7 +802,7 @@ impl RenderOnce for Button {
             }
         })
         .when(is_focused && self.focus_ring_enabled, |this| {
-            this.focus_ring_style(window, cx)
+            apply_focus_ring(this, cx.theme().button_focus_ring, window, cx)
         })
     }
 }

@@ -47,3 +47,39 @@ lands and the ring the focused card draws.
 Remove this part of the patch when upstream Button honors a caller-owned focus
 handle, or when the Settings picker and the Your themes rows no longer need to
 own their Buttons' focus.
+
+The Button focus-ring patch modifies `src/styled.rs`, `src/theme/mod.rs` and
+`src/button/button.rs`. Upstream Button draws its focus ring through
+`focus_ring_style`, the ring every control shares: 3 px of the theme's `ring`
+at half opacity directly outside the border, which takes full `ring`. Primary,
+danger, ghost and custom Buttons draw no border, so for them the half-opacity
+ring is the whole focus indicator, and on the surfaces GitTurtle places Buttons
+on it falls below 3:1 in most palettes. Upstream offers no way to change the
+ring for Buttons alone.
+
+`Theme::button_focus_ring` is a `FocusRing` of `width`, `gap` outside the
+border and `opacity` of `ring`, set in code and skipped when a theme file is
+read or written. Its default is the shared ring, 3 px, no gap and 0.5, so an
+application that leaves it alone draws exactly the upstream ring. A focused
+Button, disabled or not, draws the setting through the same absolutely
+positioned child `focus_ring_style` draws, which takes no layout space.
+`focus_ring_style` passes the default through that shared code, so it and its
+other callers (Input, Select, Checkbox, Radio, Combobox, NumberInput,
+DatePicker and OtpInput) draw as before, and the focused Button's tinted border
+is unchanged. `Theme::focus_ring = false` and `Button::focus_ring(false)` still
+draw no ring.
+
+`cargo test --locked -p gitturtle focused_buttons_draw_the_theme_button_focus_ring`
+focuses a borderless, a primary and a disabled Button in a synthetic GPUI
+window and reads the ring each paints from the rendered scene, at the default
+and at 2 px, 1 px outside and full opacity. It also requires the Buttons' and
+labels' bounds and the Buttons' radii not to move when focused, an unfocused
+Button to draw no ring, `focus_ring_style` to keep the default ring under
+either setting, and both switches to turn the ring off. How the ring renders
+in the real window still needs native inspection.
+
+The app adopts the setting where its palette application sets `ring`
+(`crates/app/src/appearance.rs`), in task `app-button-focus-ring`; until then
+it keeps the default. Remove this part of the patch when upstream Button draws
+a focus indicator of at least 3:1 against its surroundings or offers an
+equivalent setting.
