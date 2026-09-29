@@ -1680,20 +1680,42 @@ impl ThemeForm {
             .max(appearance::ui_size(240.))
     }
 
-    /// The tallest the form may be: the window less the alert's fixed chrome.
-    /// The alert opens a tenth of the way down and sizes to its content; around
-    /// the form it adds its 1 px border and 16 px padding above and below, the
-    /// title at one rem with the kit's half-rem gap under it, a 16 px gap
-    /// above the footer and the scaled 28 px footer buttons, and 16 px stay
-    /// under the panel. Each term keeps its own unit: the rem terms and the
-    /// buttons follow the interface text size, and the pixel terms do not.
-    /// The body takes what the header and base question leave, by layout.
+    /// The tallest the form may be: the window less the alert's fixed chrome,
+    /// each term drawn at a whole device pixel as the window's layout snaps it.
     fn max_height(window: &Window) -> Pixels {
-        let viewport = window.viewport_size().height;
-        let chrome = viewport / 10.
-            + px(2. * (1. + 16.) + 16. + 16.)
-            + window.rem_size() * 1.5
-            + appearance::ui_size(28.);
+        Self::max_height_for(
+            window.viewport_size().height,
+            window.rem_size(),
+            appearance::ui_size(28.),
+            |length| window.pixel_snap(length),
+        )
+    }
+
+    /// [`Self::max_height`] for a window `viewport` tall whose layout snaps a
+    /// length with `snap`, with the alert's text at `rem` and its footer
+    /// buttons `button` tall. The alert opens a tenth of the way down and
+    /// sizes to its content; around the form it adds its 1 px border and
+    /// 16 px padding above and below, the title's one-rem line with the kit's
+    /// half-rem gap under it, a 16 px gap above the footer and the footer
+    /// buttons, and 16 px stay under the panel. The rem terms and the buttons
+    /// follow the interface text size, and the pixel terms do not. GPUI draws
+    /// each term at the nearest device pixel, halves toward zero, so each is
+    /// counted that way (at scale 1 the 6.5 px gap at 13 pt is 6 px), and the
+    /// cap, whole device pixels in turn, is drawn as computed. The body takes
+    /// what the header and base question leave, by layout.
+    fn max_height_for(
+        viewport: Pixels,
+        rem: Pixels,
+        button: Pixels,
+        snap: impl Fn(Pixels) -> Pixels,
+    ) -> Pixels {
+        let chrome = snap(viewport / 10.)
+            + (snap(px(1.)) + snap(px(16.))) * 2.
+            + snap(rem)
+            + snap(rem * 0.5)
+            + snap(px(16.))
+            + snap(button)
+            + snap(px(16.));
         (viewport - chrome).max(px(200.))
     }
 
@@ -3742,12 +3764,14 @@ mod tests {
     }
 
     /// With the rows overflowing, the panel ends 16 px above the window's
-    /// bottom edge at every interface text size (`DESIGN.md`). The alert's
-    /// title and the gap under it are in rems and its footer holds the scaled
-    /// 28 px buttons, while its padding, its border and the margin below stay
-    /// in pixels, so the form's cap counts each in its own unit. The panel
-    /// ends under Save by the 16 px padding and the 1 px border; the window is
-    /// at 2x, so the edge may land half a device pixel off.
+    /// bottom edge at every interface text size (`DESIGN.md`), whole sizes
+    /// and those whose half-rem gap or scaled buttons fall between pixels.
+    /// The alert's title and the gap under it are in rems and its footer
+    /// holds the scaled 28 px buttons, while its padding, its border and the
+    /// margin below stay in pixels, so the form's cap counts each in its own
+    /// unit. The panel ends under Save by the 16 px padding and the 1 px
+    /// border. The test window is at 2x;
+    /// `the_cap_leaves_16_px_under_the_panel_at_scale_1_and_2` covers 1x.
     #[gpui::test]
     fn the_panel_ends_16_px_above_the_window_at_every_text_size(cx: &mut TestAppContext) {
         let (app, cx) = open_app(cx);
@@ -3755,11 +3779,7 @@ mod tests {
         cx.update(|_, cx| cx.set_reduce_motion(true));
         for viewport in [size(px(1000.), px(680.)), size(px(1440.), px(900.))] {
             cx.simulate_resize(viewport);
-            for text_size in [
-                *appearance::INTERFACE_TEXT_RANGE.start(),
-                appearance::DEFAULT_INTERFACE_TEXT_SIZE,
-                *appearance::INTERFACE_TEXT_RANGE.end(),
-            ] {
+            for text_size in [11, 13, 14, 15, 18] {
                 cx.update(|window, cx| {
                     app.update(cx, |app, _| app.settings.interface_text_size = text_size);
                     appearance::apply_text_sizes(text_size, 12, window, cx);
@@ -3775,8 +3795,9 @@ mod tests {
                 );
                 let save = bounds(cx, "theme-editor-save".into());
                 let inset = viewport.height - (save.bottom() + px(16. + 1.));
-                assert!(
-                    (inset - px(16.)).abs() <= px(0.25),
+                assert_eq!(
+                    inset,
+                    px(16.),
                     "at {text_size} pt in {viewport:?} the panel ends {inset:?} above the window's bottom edge"
                 );
 
@@ -3869,6 +3890,42 @@ mod tests {
             .filter(|&kind| issue_tokens(&issue).any(|token| token == kind))
             .collect();
         assert_eq!(read, marked, "{issue}");
+    }
+
+    /// The cap leaves the panel 16 px above the window's bottom edge at
+    /// scale 1 as at 2. The test platform draws only at 2x, so this places the
+    /// alert as GPUI's layout does at either scale (`Window::pixel_snap`):
+    /// each authored length and the title's line at the nearest device pixel,
+    /// halves toward zero, and the form at its cap, itself an authored length.
+    /// At 2x these are the positions the view test measures. At 1x a cap that
+    /// counts the 13 pt title gap as 6.5 px, where the layout draws 6, has a
+    /// half pixel the layout drops, which ended the panel 17 px up.
+    #[test]
+    fn the_cap_leaves_16_px_under_the_panel_at_scale_1_and_2() {
+        for scale in [1., 2.] {
+            let snap =
+                |length: Pixels| px(((f32::from(length) * scale).abs() - 0.5).ceil() / scale);
+            for viewport in [px(675.), px(680.), px(900.)] {
+                for size in [11_u8, 13, 14, 15, 18] {
+                    let ui = |base: f32| px(base * (f32::from(size) / 13.));
+                    let (rem, button) = (ui(13.), ui(28.));
+                    let form = snap(ThemeForm::max_height_for(viewport, rem, button, snap));
+                    let bottom = snap(viewport / 10.)
+                        + px(1. + 16.)
+                        + snap(rem)
+                        + snap(rem * 0.5)
+                        + form
+                        + px(16.)
+                        + snap(button)
+                        + px(16. + 1.);
+                    assert_eq!(
+                        viewport - bottom,
+                        px(16.),
+                        "at {size} pt and scale {scale} in a window {viewport:?} tall"
+                    );
+                }
+            }
+        }
     }
 
     /// With no warnings the Readability list says every rule is met, which
