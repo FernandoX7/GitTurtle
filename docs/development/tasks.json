@@ -1508,6 +1508,74 @@
         "performance"
       ],
       "commit": "perf(fonts): skip features the bundled code font cannot use"
+    },
+    {
+      "id": "omarchy-git-writes-evidence",
+      "title": "Check Git writes and network actions natively on Omarchy",
+      "description": "Queued by the owner on 2026-09-29 (Omarchy session 6). docs/linux.md says Git writes and network actions have no recorded check on Omarchy. Check them natively on Omarchy (native Wayland, Hyprland) with the release build, and record the result. Evidence only: if a step fails, record it and ask the owner before changing product code. Writes act only on disposable fixtures under /tmp/gitturtle-evidence/ with the `GitTurtle QA <qa@example.invalid>` identity, and network actions only on disposable remotes on this host: a bare repository over file:// and a smart-HTTP remote served by `git http-backend` on 127.0.0.1 behind throwaway Basic credentials. Never a real account, a real remote, or a repository of the owner's.",
+      "depends_on": [],
+      "scope": [
+        "docs/linux.md",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "writes",
+          "description": "In a disposable fixture, staging a whole file and a single hunk, unstaging, committing, and creating, switching and deleting a branch each succeed from the native app, and the fixture's `git status --porcelain=v2` and `git log --format='%H %an %s'` after each step, recorded beside the frames, match the action."
+        },
+        {
+          "id": "network",
+          "description": "Fetch, pull and push succeed against the file:// remote, and against the 127.0.0.1 smart-HTTP remote, where GitTurtle's authentication prompt appears natively and is answered with the throwaway credentials; the remote's refs after each push are recorded, and no credential appears in preferences, logs or diagnostics under the launch's HOME (a recorded grep)."
+        },
+        {
+          "id": "record",
+          "description": "Native frames of each step's result and of the authentication prompt, privacy-scanned on their committed bytes, and a dated docs/validation.md entry naming Omarchy's and Hyprland's versions, the build's identity, the fixtures and the remotes."
+        },
+        {
+          "id": "doc",
+          "description": "docs/linux.md's Omarchy paragraph states that Git writes and network actions were checked, and links the entry."
+        }
+      ],
+      "profiles": [
+        "docs",
+        "native"
+      ],
+      "commit": "docs(linux): record Git writes and network actions on Omarchy"
+    },
+    {
+      "id": "omarchy-xwayland-evidence",
+      "title": "Check GitTurtle under XWayland on Omarchy",
+      "description": "Queued by the owner on 2026-09-29 (Omarchy session 6). docs/linux.md says running under XWayland has no recorded check on Omarchy; its troubleshooting table suggests `env -u WAYLAND_DISPLAY` for an X11 comparison. Launch the release build that way on Omarchy and record how the window, scale, text, input, clipboard and the Omarchy theme behave. Evidence only: if something is wrong, record it and ask the owner before changing product code. Fixtures are disposable, under /tmp/gitturtle-evidence/, with the `GitTurtle QA <qa@example.invalid>` identity and a fresh HOME.",
+      "depends_on": [],
+      "scope": [
+        "docs/linux.md",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "x11",
+          "description": "`hyprctl clients -j` shows the GitTurtle window with `xwayland: true`, and native frames of History, Compare and Settings with the Omarchy card selected are taken at scale 1 and on a headless output at scale 1.25, with Hyprland's `xwayland:force_zero_scaling` value recorded."
+        },
+        {
+          "id": "input",
+          "description": "Ctrl+B, the command palette, Ctrl+, and typing into the commit message field work under XWayland, and Copy source's text reads back unchanged through `wl-paste`; each is recorded."
+        },
+        {
+          "id": "record",
+          "description": "The frames are privacy-scanned on their committed bytes, and a dated docs/validation.md entry names Omarchy's and Hyprland's versions, the build's identity and what differs from native Wayland."
+        },
+        {
+          "id": "doc",
+          "description": "docs/linux.md's Omarchy paragraph states what was checked under XWayland and any difference a user should expect."
+        }
+      ],
+      "profiles": [
+        "docs",
+        "native"
+      ],
+      "commit": "docs(linux): record GitTurtle under XWayland on Omarchy"
     }
   ]
 }
