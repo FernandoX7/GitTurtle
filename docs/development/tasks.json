@@ -1615,6 +1615,251 @@
         "tooling"
       ],
       "commit": "ci: cache Rust builds in the Arch Linux container job"
+    },
+    {
+      "id": "repository-tab-strip-focus-ring",
+      "title": "Keep a focused repository tab's ring inside the tab strip",
+      "description": "Owner request of 2026-09-29, from the #85 design review; the owner keeps DESIGN.md's promise that a focused Button's ring (2 px of full accent 1 px outside the edge, `BUTTON_FOCUS_RING` in crates/app/src/appearance.rs) is whole everywhere, so the product is fixed rather than the text. The repository tab list (crates/app/src/repository_tabs.rs ~1915-1920, `div().id(\"repository-tabs\")…gap_1().overflow_x_scroll()`) has no padding, and GPUI masks an element with any hidden or scrolling axis to its own bounds on both axes (gpui-pre 0.3.4 src/style.rs `overflow_mask`), so a focused tab keeps only its right arc and a focused close button (`close-repository-tab`, ~1975) loses its top and bottom. Pad the list by the ring's 3 px footprint (width plus gap, read from the setting, not a copied constant) on every side, with an equal negative margin so the strip's layout does not move. No committed frame shows a focused repository tab today.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/repository_tabs.rs",
+        "crates/app/src/repository_tabs/**",
+        "docs/validation.md",
+        "docs/evidence/**"
+      ],
+      "acceptance": [
+        {
+          "id": "footprint",
+          "description": "A GPUI view test in crates/app lays out the tab strip with at least two tabs and asserts that the tab list's content mask contains every tab's and close button's bounds grown by the installed ring's width plus gap on all four sides; it fails on origin/main and passes after the change."
+        },
+        {
+          "id": "no-shift",
+          "description": "Unfocused strips keep their pixels: masked `scripts/native_qa/qa.py compare` of the resting and hovered strip against the same-session base shows no difference apart from timing digits."
+        },
+        {
+          "id": "native",
+          "description": "Native frames on Linux X11 at scale factor 1, base (origin/main when the task starts) and candidate launched in the same session (`scripts/native_qa/qa.py`, each binary in its own CARGO_TARGET_DIR and checked with `qa.py identity`), show a focused first, middle and last tab and a focused close button in a dark and a light palette. docs/validation.md counts ring pixels on all four sides of each (each side present, strongest ring pixel at least 3:1 against the same pixel unfocused); frames committed under docs/evidence/, privacy-scanned, with a new dated entry naming any committed frame the fix changes and a design review of every non-timing difference."
+        },
+        {
+          "id": "gates",
+          "description": "`python3 scripts/gate.py fast` passes, and `cargo test --locked -p gitturtle` and `cargo clippy --locked --workspace --all-targets -- -D warnings` pass."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(tabs): keep a focused repository tab's ring inside the strip"
+    },
+    {
+      "id": "your-themes-rows-whole-focus-ring",
+      "title": "Keep a focused Your themes row action's ring whole",
+      "description": "Owner request of 2026-09-29, from the `button-focus-ring-recapture` finding (docs/validation.md, \"September 29 frames retaken under the solid focus ring\"; frames docs/evidence/themes/linux-gaps/imported-*-focus-*-highlight.png). The owner keeps DESIGN.md's whole-ring promise. Two faults in Settings' Your themes list (crates/app/src/settings.rs `render_custom_theme_row` ~1724-1830; rows 30 px high with no gap). Paint order: a focused row action (Edit…, Export, Delete) directly above the import highlight loses its ring's bottom edge, because the highlighted row's fill (`.when(imported == Some(id), |row| row.bg(rgb(p.selected)))`, ~1763) paints after it. Reveal margin: a row revealed flush against the status bar loses the ring to the Settings page viewport, because reveal (`theme_editor.rs` `reveal_focused_row` ~314-325, `scroll_to_item(row, ScrollStrategy::Nearest)`, mirrored by `settings.rs` `rows_off_boundary` ~55-95) keeps no margin for the ring's 3 px footprint. Fix both without moving unfocused rows; keep `rows_off_boundary` in step with the reveal it mirrors.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/settings.rs",
+        "crates/app/src/settings/**",
+        "crates/app/src/theme_editor.rs",
+        "crates/app/src/theme_editor/**",
+        "docs/validation.md",
+        "docs/evidence/**"
+      ],
+      "acceptance": [
+        {
+          "id": "paint-order",
+          "description": "A GPUI view test composes a focused row action directly above the imported (highlighted) row and asserts that no later-painted fill covers the ring's bottom edge, reading the ring's width and gap from the installed setting; it fails on origin/main and passes after the change."
+        },
+        {
+          "id": "reveal-margin",
+          "description": "A test reveals the first and last rows at the list's top and bottom boundaries and asserts that each focused action's bounds grown by the ring footprint lie inside the Settings page viewport, and that `rows_off_boundary` agrees with the reveal; it fails on origin/main and passes after the change."
+        },
+        {
+          "id": "no-shift",
+          "description": "Masked `scripts/native_qa/qa.py compare` of the unfocused Your themes list, with and without the import highlight, against the same-session base shows no difference apart from timing digits and any scroll offset the new margin gives a revealed row, which the design review rules on."
+        },
+        {
+          "id": "native",
+          "description": "Native frames on Linux X11 at scale factor 1, base (origin/main when the task starts) and candidate launched in the same session (`scripts/native_qa/qa.py`, each binary in its own CARGO_TARGET_DIR and checked with `qa.py identity`), retake the imported-*-focus-*-highlight frames under docs/evidence/themes/linux-gaps/ and add a focused row flush against the status bar. docs/validation.md counts ring pixels on all four sides of each (each side present, strongest ring pixel at least 3:1 against the same pixel unfocused) in a new dated entry that names the recaptured frames; frames privacy-scanned and design-reviewed."
+        },
+        {
+          "id": "gates",
+          "description": "`python3 scripts/gate.py fast` passes, and `cargo test --locked -p gitturtle` and `cargo clippy --locked --workspace --all-targets -- -D warnings` pass."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(settings): keep a focused theme row action's ring whole"
+    },
+    {
+      "id": "tags-reflog-focus-ring",
+      "title": "Keep focused Tags and Reflog controls' rings whole",
+      "description": "Owner request of 2026-09-29, from the #85 design review; the owner keeps DESIGN.md's whole-ring promise. The Tags dialog body (crates/app/src/tags.rs `TagBrowser` root ~288, `div().flex().flex_col().gap_3()` with no padding, which the dialog clips) cuts the top of a focused Create tag… (~289). The Tags list (~293, `overflow_y_scroll()…gap_1()`, no padding) and the Reflog list (crates/app/src/reflog.rs ~260, same shape) clip their full-width rows (`Button::new((\"tag-row\", index)).ghost().w_full()` ~295, `(\"reflog-entry\", index)` ~262) to the list's bounds on both axes (gpui-pre 0.3.4 `overflow_mask`), so a focused Tags row keeps only corner stubs and Reflog rows lose their sides. Reserve the ring's 3 px footprint (read from the installed setting) inside each container, with negative margins where the layout must not move.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/tags.rs",
+        "crates/app/src/reflog.rs",
+        "docs/validation.md",
+        "docs/evidence/**"
+      ],
+      "acceptance": [
+        {
+          "id": "footprint",
+          "description": "A GPUI view test lays out the Tags dialog body with tags and the Reflog list with entries and asserts that Create tag…, the first and last Tags row and the first and last Reflog row, each grown by the installed ring's width plus gap, lie inside every ancestor content mask; it fails on origin/main and passes after the change."
+        },
+        {
+          "id": "no-shift",
+          "description": "Masked `scripts/native_qa/qa.py compare` of the unfocused Tags dialog and Reflog against the same-session base shows no difference apart from timing digits and any inset the reserved footprint gives the rows, which the design review rules on."
+        },
+        {
+          "id": "native",
+          "description": "Native frames on Linux X11 at scale factor 1, base (origin/main when the task starts) and candidate launched in the same session (`scripts/native_qa/qa.py`, each binary in its own CARGO_TARGET_DIR and checked with `qa.py identity`), show a focused Create tag…, a focused first and last Tags row and a focused Reflog row in a dark and a light palette. docs/validation.md counts ring pixels on all four sides of each (each side present, strongest ring pixel at least 3:1 against the same pixel unfocused) in a new dated entry naming any committed frame the fix changes; frames privacy-scanned and design-reviewed."
+        },
+        {
+          "id": "gates",
+          "description": "`python3 scripts/gate.py fast` passes, and `cargo test --locked -p gitturtle` and `cargo clippy --locked --workspace --all-targets -- -D warnings` pass."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(tags): keep focused tag and reflog controls' rings whole"
+    },
+    {
+      "id": "selected-segment-hover-helper",
+      "title": "Hover the density and project-mode segments with the shared selected helper",
+      "description": "Owner request of 2026-09-29, from the #85 design review. Two selected segments still dim the whole element to 0.9 on hover, and with it any focus ring: Settings' density segments (crates/app/src/settings.rs ~1986) and the project mode segments (crates/app/src/projects.rs ~727), both `button.hover(|style| style.opacity(0.9))`. The shared `button()` helper (crates/app/src/main.rs ~1884) and the History segments hover a selected Button with `appearance::control_selected_hover` (crates/app/src/appearance.rs ~245), which keeps opacity 1 and paints `selected_hover`. Use that helper at both sites; no other segment changes.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/settings.rs",
+        "crates/app/src/projects.rs",
+        "crates/app/src/appearance.rs",
+        "docs/validation.md",
+        "docs/evidence/**"
+      ],
+      "acceptance": [
+        {
+          "id": "helper",
+          "description": "A test asserts that a hovered selected density segment and a hovered selected project-mode segment keep opacity 1 and paint the palette's `selected_hover`, like `control_selected_hover`; it fails on origin/main and passes after the change, and no `opacity(0.9)` hover remains on a selected segment in crates/app."
+        },
+        {
+          "id": "native",
+          "description": "Native frames on Linux X11 at scale factor 1, base (origin/main when the task starts) and candidate launched in the same session (`scripts/native_qa/qa.py`, each binary in its own CARGO_TARGET_DIR and checked with `qa.py identity`), show both segments selected and hovered, and selected, hovered and focused, in a dark and a light palette; masked `qa.py compare` shows no difference from the base outside the hovered segment; docs/validation.md counts the focused segment's ring pixels on all four sides in a new dated entry; frames privacy-scanned and design-reviewed."
+        },
+        {
+          "id": "gates",
+          "description": "`python3 scripts/gate.py fast` passes, and `cargo test --locked -p gitturtle` and `cargo clippy --locked --workspace --all-targets -- -D warnings` pass."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(settings): hover selected segments with the shared helper"
+    },
+    {
+      "id": "disabled-focus-tab-trap",
+      "title": "Let Tab leave a focused Button that turns disabled",
+      "description": "Owner request of 2026-09-29, from the #85 design review; a keyboard trap on macOS and Linux builds. In Targets (crates/app/src/workspace.rs ~1503, `button(\"checkout-branch\", \"Switch\", …).disabled(busy || branch_empty)`), a focused Switch turns disabled while it switches and stays disabled once the branch field is cleared; Tab and Shift+Tab then leave focus on it until a pointer click. GPUI's `Window::focus_next` and `focus_prev` (gpui-pre 0.3.4 src/window.rs ~2243/2256) resolve the next stop from the rendered frame's tab stops (src/tab_stop.rs ~111-133, which fall back to the first stop when the focused id is absent), so the likely fault is earlier: the keystroke may not reach the Tab binding when the focused handle is no longer in the rendered dispatch tree. Find the actual cause, in the app or the vendored kit (vendor/gpui-component), and fix it there; a fix that moves focus must pick a reasonable neighbour, never the window root. Expected hard: investigate before editing.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/**",
+        "vendor/gpui-component/src/**",
+        "vendor/gpui-component/GITTURTLE-PATCH.md",
+        "docs/validation.md",
+        "docs/evidence/**"
+      ],
+      "acceptance": [
+        {
+          "id": "cause",
+          "description": "The pull request names the root cause with file:line references (where the keystroke or the next-stop lookup stops) and why the fix site is the right owner."
+        },
+        {
+          "id": "view-test",
+          "description": "A GPUI view test focuses a Button, disables it the way Targets does, and asserts that Tab and Shift+Tab (sent as keystrokes, not by calling `focus_next`) each move focus to another tab stop; it fails on origin/main and passes after the change."
+        },
+        {
+          "id": "native",
+          "description": "A native keyboard run on Linux (X11 at scale factor 1, input through the host's supported path; no XTest on hosts whose XWayland routes it through the RemoteDesktop portal) reproduces the trap on the same-session base and shows Tab and Shift+Tab leaving the disabled Switch on the candidate, with the focus order recorded in a new dated docs/validation.md entry; any committed frame is privacy-scanned."
+        },
+        {
+          "id": "gates",
+          "description": "`python3 scripts/gate.py fast` passes, `cargo test --locked --workspace` and `cargo clippy --locked --workspace --all-targets -- -D warnings` pass, and a vendor/ change is recorded in vendor/gpui-component/GITTURTLE-PATCH.md with its consumer and removal condition."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(focus): let tab leave a focused button that turns disabled"
+    },
+    {
+      "id": "linux-text-antialias-without-portal",
+      "title": "Settle Linux text antialiasing when no settings portal answers",
+      "description": "Owner request of 2026-09-29, low priority: investigate first. In the no-portal frames of the `button-focus-ring-recapture` session (a private session bus, so no XDG settings portal), labels render with subpixel antialiasing. DESIGN.md (~116) says Linux \"follows the desktop's antialiasing preference (grayscale unless the session asks for subpixel rendering)\". The fallback in crates/app/src/desktop_text.rs (~400-407) tries GNOME's setting, then fontconfig (`rendering_from_fontconfig`), then grayscale, so the host's fontconfig configuration may be what asks for subpixel. Establish which source chose subpixel in those frames. Then either fix the fallback so it matches DESIGN.md, or, if fontconfig is the session's own request, make DESIGN.md say which sources count and in what order; the owner decides between them if the evidence is ambiguous.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/desktop_text.rs",
+        "crates/app/src/desktop_text/**",
+        "DESIGN.md",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "source",
+          "description": "The pull request records which source (portal, GNOME setting, fontconfig match, default) chose the no-portal frames' rendering, with the command output that shows it (for example `fc-match -v sans-serif` fields `antialias`, `rgba` and `lcdfilter`)."
+        },
+        {
+          "id": "tests",
+          "description": "Unit tests cover the fallback order with each source absent in turn and fontconfig answering grayscale, subpixel and nothing; they pass, and any behaviour change has a test that fails on origin/main."
+        },
+        {
+          "id": "design",
+          "description": "DESIGN.md and the code agree on which sources decide Linux antialiasing and their order."
+        },
+        {
+          "id": "gates",
+          "description": "`python3 scripts/gate.py fast` passes, and `cargo test --locked -p gitturtle` and `cargo clippy --locked --workspace --all-targets -- -D warnings` pass."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "docs"
+      ],
+      "commit": "fix(text): settle Linux antialiasing when no settings portal answers"
+    },
+    {
+      "id": "native-qa-mutter-input",
+      "title": "Send native-QA input through Mutter RemoteDesktop",
+      "description": "Owner request of 2026-09-29. On GNOME hosts whose XWayland runs with `-enable-ei-portal` (the Ubuntu 26.04 GNOME 50 host), XTest goes through the RemoteDesktop portal, whose \"Allow Remote Interaction\" prompt swallows keys, so `scripts/native_qa` (XTest through python-xlib, x11.py) cannot drive the app there. The last session's local drivers (`.local/recapture-2026-09-29/tools/mutter_input.py`, a `MutterDriver(x11.Driver)` over `org.gnome.Mutter.RemoteDesktop`, and `qaflow.py`'s focus-checked flow) are the working reference: pointer anchored at the bottom-right corner, monitor scale 1.0, keys only while X focus is on the app, and under Mutter the first wheel click of each batch is dropped. Port that backend into scripts/native_qa: `launch --input mutter`, the default where XWayland's command line has `-enable-ei-portal` if that is detectable. portal.py also finds the FileChooser when Nautilus hosts it (AT-SPI application `org.gnome.Nautilus`), matched by exact dialog title only (\"Open File\", \"Save File\"). Keep the guards: keys only with verified X focus on the app, and dialog keys only while a widget inside the dialog holds focus. Never XTest on such a host.",
+      "depends_on": [],
+      "scope": [
+        "scripts/native_qa/**"
+      ],
+      "acceptance": [
+        {
+          "id": "backend",
+          "description": "`qa.py launch` accepts `--input mutter` (and `xtest`), and selects mutter by default when XWayland's command line has `-enable-ei-portal`; unit tests cover the selection from a fixture process list and refuse XTest on such a host."
+        },
+        {
+          "id": "guards",
+          "description": "Unit tests with a fake D-Bus session and fake X focus show that keys are refused unless X focus is on the app's window, dialog keys are refused unless a widget inside the matched dialog holds focus, and the first wheel click of a batch is compensated."
+        },
+        {
+          "id": "portal",
+          "description": "portal.py finds a FileChooser hosted by `org.gnome.Nautilus` by exact title (\"Open File\" or \"Save File\") and ignores other Nautilus windows, covered by unit tests over a fake AT-SPI tree."
+        },
+        {
+          "id": "docs-and-tests",
+          "description": "scripts/native_qa/README.md documents the backend, its default, the guards and the known Mutter quirks; `python3 -m unittest discover -s scripts/native_qa -t scripts -p 'test_*.py'` passes without a display."
+        }
+      ],
+      "profiles": [
+        "tooling"
+      ],
+      "commit": "feat(native-qa): send input through Mutter RemoteDesktop"
     }
   ]
 }
