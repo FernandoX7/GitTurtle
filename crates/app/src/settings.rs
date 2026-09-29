@@ -1084,6 +1084,7 @@ impl GitTurtle {
                 detail: Some(card.status.into()),
                 accessible_name: Some(card.accessible_name.into()),
                 tag: card.unavailable.then(|| "Unavailable".into()),
+                wrap: true,
             }];
         }
         let _ = cx;
@@ -1105,6 +1106,7 @@ impl GitTurtle {
                     detail: None,
                     accessible_name: None,
                     tag: None,
+                    wrap: false,
                 })
                 .collect::<Vec<_>>()
         };
@@ -1123,6 +1125,7 @@ impl GitTurtle {
                 detail: None,
                 accessible_name: None,
                 tag: None,
+                wrap: false,
             })
             .collect::<Vec<_>>();
         [
@@ -1143,15 +1146,18 @@ impl GitTurtle {
         let selected = self.selected_theme_card(cx);
         for (_, _, cards) in self.theme_card_groups(cx) {
             for card in cards {
-                let key = CardKey::new(
-                    card.palette,
-                    card.name,
-                    card.description,
-                    card.warnings,
-                    card.tag,
-                    selected == Some(card.selection),
-                    active,
-                );
+                let key = CardKey {
+                    wrap: card.wrap,
+                    ..CardKey::new(
+                        card.palette,
+                        card.name,
+                        card.description,
+                        card.warnings,
+                        card.tag,
+                        selected == Some(card.selection),
+                        active,
+                    )
+                };
                 self.theme_card_body(card.selection)
                     .update(cx, |body, cx| body.set_key(key, active, cx));
             }
@@ -2618,6 +2624,10 @@ pub(super) struct CardKey {
     description: SharedString,
     warnings: usize,
     tag: Option<SharedString>,
+    /// The description takes a second line when one cannot hold it, before
+    /// it ends in an ellipsis: the Omarchy card's. Every other card keeps
+    /// its description to one line.
+    wrap: bool,
     /// The applied accent, accent foreground and canvas, which draw the
     /// check badge and its ring; absent on a card that is not selected,
     /// which draws no badge.
@@ -2643,6 +2653,7 @@ impl CardKey {
             description,
             warnings,
             tag,
+            wrap: false,
             badge: selected.then_some((active.accent, active.accent_foreground, active.canvas)),
             marks: (warnings > 0).then_some((active.warning, active.canvas)),
         }
@@ -2951,6 +2962,16 @@ fn pinned_text(style: &TextStyle, color: u32) -> TextStyleRefinement {
     }
 }
 
+/// A picker card body's last layout, which [`LayerCard`] draws around: the
+/// miniature's box, the caption, and whether the caption's description took
+/// a second line ([`CardKey`]'s `wrap`), so the caption grew into that box.
+#[derive(Clone, Copy, Default)]
+struct CardParts {
+    place: Bounds<Pixels>,
+    caption: Bounds<Pixels>,
+    wrapped: bool,
+}
+
 /// One card of [`CardLayer`], painted in the order the card's own div tree
 /// painted it: the cached miniature, the caption's fill, the cached body (the
 /// caption's text, marks, swatches and top border), and last the preview's
@@ -2973,7 +2994,7 @@ struct LayerCard {
     body: AnyElement,
     miniature: Option<AnyElement>,
     /// The miniature box and the caption, as the body last laid them out.
-    parts: std::rc::Rc<std::cell::Cell<(Bounds<Pixels>, Bounds<Pixels>)>>,
+    parts: std::rc::Rc<std::cell::Cell<CardParts>>,
     view: Entity<ThemePreviewBody>,
     palette: appearance::Palette,
     accent: u32,
@@ -3043,12 +3064,14 @@ impl Element for LayerCard {
                 self.body.prepaint(window, cx);
                 // The body has laid its miniature box out by now, this frame or
                 // in the frame it replays, which had the same bounds.
-                let (place, _) = self.parts.get();
+                let CardParts { place, wrapped, .. } = self.parts.get();
                 let mut miniature = div()
                     .w(place.size.width)
                     .h(place.size.height)
                     // Pinned as in the body: nothing inside draws text.
                     .text_color(rgb(self.palette.text))
+                    // Read back by [`whole_rows`].
+                    .when(wrapped, |this| this.italic())
                     .child(
                         self.view
                             .clone()
@@ -3088,7 +3111,7 @@ impl Element for LayerCard {
         } else {
             p.panel
         };
-        let (_, caption) = self.parts.get();
+        let caption = self.parts.get().caption;
         let text = self.text.clone();
         let mask = self.content_mask();
         window.with_content_mask(Some(mask), |window| {
@@ -3178,10 +3201,14 @@ pub(super) struct ThemeCardBody {
     active: appearance::Palette,
     /// The card's miniature, which names the body's selectors.
     miniature: EntityId,
-    parts: std::rc::Rc<std::cell::Cell<(Bounds<Pixels>, Bounds<Pixels>)>>,
+    parts: std::rc::Rc<std::cell::Cell<CardParts>>,
     /// Test-only: builds of this body.
     #[cfg(test)]
     renders: usize,
+    /// Test-only: the description's text as the last build laid it out, so
+    /// a test reads the lines it wrapped to and where an ellipsis cut it.
+    #[cfg(all(test, target_os = "linux"))]
+    description: TextLayout,
 }
 
 impl ThemeCardBody {
@@ -3193,12 +3220,20 @@ impl ThemeCardBody {
             parts: std::rc::Rc::default(),
             #[cfg(test)]
             renders: 0,
+            #[cfg(all(test, target_os = "linux"))]
+            description: TextLayout::default(),
         }
     }
 
     #[cfg(test)]
     pub(super) fn renders(&self) -> usize {
         self.renders
+    }
+
+    /// Test-only: the description as drawn, one line per wrapped line.
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn drawn_description(&self) -> String {
+        self.description.wrapped_text()
     }
 
     fn set_key(&mut self, key: CardKey, active: appearance::Palette, cx: &mut Context<Self>) {
@@ -3221,13 +3256,33 @@ impl Render for ThemeCardBody {
         };
         let parts = std::rc::Rc::clone(&self.parts);
         let miniature = self.miniature;
+        let description = StyledText::new(key.description);
+        let text = description.layout().clone();
+        #[cfg(all(test, target_os = "linux"))]
+        {
+            self.description = text.clone();
+        }
+        let wrap = key.wrap;
         div()
             .size_full()
             .flex()
             .flex_col()
             .on_children_prepainted(move |bounds, _, _| {
                 if let [place, caption] = bounds[..] {
-                    parts.set((place, caption));
+                    // The description was measured when the body was laid
+                    // out, before this prepaint.
+                    let wrapped = wrap
+                        && text
+                            .line_layouts()
+                            .iter()
+                            .map(|line| line.wrap_boundaries().len() + 1)
+                            .sum::<usize>()
+                            > 1;
+                    parts.set(CardParts {
+                        place,
+                        caption,
+                        wrapped,
+                    });
                 }
             })
             .child(
@@ -3239,7 +3294,8 @@ impl Render for ThemeCardBody {
             .child(preview_caption(
                 key.palette,
                 key.name,
-                key.description,
+                description,
+                key.wrap,
                 key.badge.is_some(),
                 key.warnings,
                 key.tag,
@@ -3273,6 +3329,9 @@ pub(super) struct ThemePreviewBody {
     /// miniatures a save invalidated.
     #[cfg(test)]
     palette_changes: usize,
+    /// Test-only: the changed-file rows the last paint drew.
+    #[cfg(all(test, target_os = "linux"))]
+    painted_rows: std::rc::Rc<std::cell::RefCell<Vec<Bounds<Pixels>>>>,
 }
 
 impl ThemePreviewBody {
@@ -3283,7 +3342,15 @@ impl ThemePreviewBody {
             renders: 0,
             #[cfg(test)]
             palette_changes: 0,
+            #[cfg(all(test, target_os = "linux"))]
+            painted_rows: std::rc::Rc::default(),
         }
+    }
+
+    /// Test-only: the changed-file rows the last paint drew, top to bottom.
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn painted_rows(&self) -> Vec<Bounds<Pixels>> {
+        self.painted_rows.borrow().clone()
     }
 
     #[cfg(test)]
@@ -3323,15 +3390,39 @@ impl Render for ThemePreviewBody {
             self.renders += 1;
         }
         let p = self.palette;
+        #[cfg(all(test, target_os = "linux"))]
+        let painted = std::rc::Rc::clone(&self.painted_rows);
         // One painted element, like `swatch_run`: a frame that rebuilds every
         // card, as a switch's click or a Tab's focus does through
         // `Window::refresh`, lays out one node per miniature, not forty.
         canvas(
             |_, _, _| (),
-            move |bounds, _, window, _| paint_miniature(bounds, p, window),
+            move |bounds, _, window, _| {
+                let whole = whole_rows(&window.text_style());
+                #[cfg(all(test, target_os = "linux"))]
+                let mut drawn = Vec::new();
+                paint_miniature(bounds, p, whole, window, |_row| {
+                    #[cfg(all(test, target_os = "linux"))]
+                    drawn.push(_row);
+                });
+                #[cfg(all(test, target_os = "linux"))]
+                painted.replace(drawn);
+            },
         )
         .size_full()
     }
+}
+
+/// Whether a picker card's miniature draws only the rows its box holds whole:
+/// once the card's caption has taken a second line ([`CardParts`]'s
+/// `wrapped`) and grown into the box, a row it has no room for is left out
+/// rather than cut short by the caption; with one line the miniature draws as
+/// every other card's. [`LayerCard`] says so through the text style it draws
+/// the miniature under, italic, since nothing in the miniature draws text and
+/// GPUI's reuse key for the cached miniature compares that style, so a change
+/// draws the miniature again.
+fn whole_rows(style: &TextStyle) -> bool {
+    style.font_style == FontStyle::Italic
 }
 
 /// Paint the miniature workspace into `bounds` on palette `p`, as the boxes a
@@ -3347,7 +3438,18 @@ impl Render for ThemePreviewBody {
 /// in from either edge with a 9 px graph column (a 2 px line under a 5 px
 /// node) and a text stripe 6 px on; the second row is selected and its stripe
 /// muted.
-fn paint_miniature(bounds: Bounds<Pixels>, p: appearance::Palette, window: &mut Window) {
+///
+/// With `whole_rows` a row or stripe that would end below the box is left
+/// out, so the Omarchy card's two-line caption, which takes about 12 px of
+/// its 70 px box, leaves three whole rows rather than a fourth cut short.
+/// `on_row` is given each changed-file row it draws.
+fn paint_miniature(
+    bounds: Bounds<Pixels>,
+    p: appearance::Palette,
+    whole_rows: bool,
+    window: &mut Window,
+    mut on_row: impl FnMut(Bounds<Pixels>),
+) {
     let mut quad = |x: Pixels, y: Pixels, w: Pixels, h: Pixels, color: u32, radius: Pixels| {
         window.paint_quad(
             gpui::fill(
@@ -3386,14 +3488,24 @@ fn paint_miniature(bounds: Bounds<Pixels>, p: appearance::Palette, window: &mut 
     let body = height - bar;
     quad(px(0.), bar, px(26.), body, p.subtle, px(0.));
     quad(px(25.), bar, one, body, p.border, px(0.));
+    let fits = |top: Pixels, tall: Pixels| !whole_rows || top + tall <= height;
     for row in 0..4 {
         let color = if row == 1 { p.accent } else { p.border };
         let y = bar + px(5.) + px(8.) * row as f32;
-        quad(px(5.), y, px(15.), px(3.), color, px(1.5));
+        if fits(y, px(3.)) {
+            quad(px(5.), y, px(15.), px(3.), color, px(1.5));
+        }
     }
     let stripe_width = width - px(57.);
     for row in 0..4 {
         let top = bar + px(5.) + px(10.) * row as f32;
+        if !fits(top, px(10.)) {
+            break;
+        }
+        on_row(Bounds::new(
+            bounds.origin + point(px(26.), top),
+            size(width - px(26.), px(10.)),
+        ));
         let color = [p.added, p.accent, p.renamed, p.modified][row];
         if row == 1 {
             quad(px(26.), top, width - px(26.), px(10.), p.selected, px(0.));
@@ -3481,6 +3593,9 @@ struct ThemeCard {
     /// A muted word beside the name, "Unavailable" on an Omarchy card whose
     /// theme cannot be read; the description then names the palette in use.
     tag: Option<SharedString>,
+    /// The description takes a second line when one cannot hold it: the
+    /// Omarchy card's, which names a desktop theme up to 64 bytes long.
+    wrap: bool,
 }
 
 /// A tiny workspace built from native elements stays crisp at any display scale
@@ -3544,7 +3659,8 @@ pub(super) fn theme_preview(
             preview_caption(
                 p,
                 label.into(),
-                description.into(),
+                StyledText::new(description),
+                false,
                 selected,
                 warnings,
                 None,
@@ -3560,12 +3676,15 @@ pub(super) fn theme_preview(
 
 /// A theme preview's caption, without the background that follows the
 /// pointer: [`theme_preview`] styles it, and a picker card's caption is
-/// filled by [`LayerCard`], outside its cached body.
+/// filled by [`LayerCard`], outside its cached body. `wrap` lets the
+/// description take a second line; otherwise it is one line, cut short with
+/// an ellipsis.
 #[allow(clippy::too_many_arguments)]
 fn preview_caption(
     p: appearance::Palette,
     label: SharedString,
-    description: SharedString,
+    description: StyledText,
+    wrap: bool,
     selected: bool,
     warnings: usize,
     tag: Option<SharedString>,
@@ -3662,16 +3781,31 @@ fn preview_caption(
                 name
             }
         })
-        .child(
-            div()
+        .child({
+            let line = div()
                 .debug_selector(move || format!("theme-description-{miniature}"))
                 .text_size(crate::appearance::ui_text(10.))
                 .line_height(relative(1.3))
                 .font_weight(FontWeight::NORMAL)
-                .text_color(rgb(p.muted))
-                .truncate()
-                .child(description),
-        )
+                .text_color(rgb(p.muted));
+            if wrap {
+                // Wrapped at word boundaries into a second line when one
+                // cannot hold it, then ended in an ellipsis. The caption
+                // grows by the second line and the miniature above gives it
+                // the room ([`whole_rows`]); the card keeps its height. The
+                // card's inherited text style does not wrap
+                // (the toolkit button's, which [`LayerCard`] pins), so the
+                // line sets its own, and clips to its box as `truncate`
+                // does for one line.
+                line.overflow_hidden()
+                    .whitespace_normal()
+                    .line_clamp(2)
+                    .text_ellipsis()
+            } else {
+                line.truncate()
+            }
+            .child(description)
+        })
         .child(swatch_run(
             [p.accent, p.added, p.hunk, p.renamed, p.modified, p.removed],
             px(5.),
@@ -4697,6 +4831,274 @@ mod picker_tests {
         assert!(name.right() <= tag.left());
         cx.simulate_resize(size(px(1440.), px(2400.)));
         settle(cx);
+    }
+
+    /// Linux: the Omarchy card's description takes a second line when one
+    /// cannot hold it and ends in an ellipsis only when two cannot, at
+    /// 1,400 px and at the window's 1,000 px minimum, for the longest name
+    /// the card shows (64 bytes), while the theme is read ("Follows …") and
+    /// while it is not ("Keeping …"). The card keeps its height and place
+    /// and nothing below it moves: a two-line caption grows into the
+    /// miniature, which then draws three whole changed-file rows instead of
+    /// four, and a one-line caption is laid out as a built-in card's, four
+    /// rows included. At the smallest and largest interface text sizes the
+    /// one-line caption still matches a built-in card's, the fourth row the
+    /// caption covers at 11 pt included, and a two-line caption's rows are
+    /// whole. The test text system's 0.6 em characters are wider
+    /// than the interface font's, so a name cut here may fit on screen.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_long_omarchy_caption_takes_a_second_line(cx: &mut TestAppContext) {
+        #[derive(Debug)]
+        struct Layout {
+            card: Bounds<Pixels>,
+            light: Pixels,
+            caption: Bounds<Pixels>,
+            description: Bounds<Pixels>,
+            place: Bounds<Pixels>,
+            rows: Vec<Bounds<Pixels>>,
+        }
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("current");
+        std::fs::create_dir_all(root.join("theme")).unwrap();
+        let colors = include_bytes!("../tests/fixtures/omarchy/tokyo-night.toml");
+        std::fs::write(root.join("theme/colors.toml"), colors).unwrap();
+        std::fs::write(root.join("theme.name"), "tokyo-night\n").unwrap();
+        cx.update(|cx| drop(appearance::omarchy::install(Some(root.clone()), cx)));
+        let (app, cx) = open_app(cx);
+        let omarchy = ThemeSelection::Omarchy;
+        let body = miniature(cx, &app, omarchy);
+        // An unselected built-in card, laid out as every card was before.
+        let nord = ThemeSelection::BuiltIn(ThemeChoice::Nord);
+        let nord_body = miniature(cx, &app, nord);
+        // 64 bytes once title-cased.
+        let long = "aurora-borealis-over-the-northern-fjords-at-midnight-in-deep-win";
+        let long_title = "Aurora Borealis Over The Northern Fjords At Midnight In Deep Win";
+        assert_eq!(long_title.len(), 64);
+        // The card's description once a read of `name` has landed and, when
+        // `broken`, once a further read finds `colors.toml` malformed, which
+        // keeps the card offered and names the palette it keeps. Settings
+        // watches `current/`, so a write can also start the watch's quiet
+        // period, which a refresh joins: each try advances the clock past
+        // it, and waits in real time for the watcher's thread.
+        // Returns the description and, laid out by then, the lines it drew.
+        let show = |cx: &mut VisualTestContext, name: &str, title: &str, broken: bool| {
+            let body = |cx: &mut VisualTestContext| {
+                cx.read(|cx| app.read(cx).theme_card_body(omarchy).clone())
+            };
+            let described = |cx: &mut VisualTestContext| {
+                let body = body(cx);
+                cx.read(|cx| {
+                    body.read(cx)
+                        .key
+                        .as_ref()
+                        .map(|key| key.description.to_string())
+                })
+            };
+            let landed = |cx: &mut VisualTestContext, description: String| {
+                for _ in 0..500 {
+                    cx.update(|_, cx| appearance::omarchy::refresh(cx));
+                    settle(cx);
+                    cx.executor()
+                        .advance_clock(appearance::omarchy::QUIET_PERIOD);
+                    settle(cx);
+                    if described(cx).as_ref() == Some(&description) {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                panic!("the card never showed {description:?}");
+            };
+            std::fs::write(root.join("theme/colors.toml"), colors).unwrap();
+            std::fs::write(root.join("theme.name"), name).unwrap();
+            landed(cx, format!("Follows {title}"));
+            if broken {
+                std::fs::write(
+                    root.join("theme/colors.toml"),
+                    "[colors]\nbackground = \"#000000\"\n",
+                )
+                .unwrap();
+                landed(cx, format!("Keeping {title}"));
+            }
+            let body = body(cx);
+            cx.read(|cx| {
+                let body = body.read(cx);
+                let description = body.key.as_ref().unwrap().description.to_string();
+                (description, body.drawn_description())
+            })
+        };
+        let layout = |cx: &mut VisualTestContext,
+                      card: String,
+                      miniature: EntityId,
+                      selection: ThemeSelection| {
+            let bounds = |cx: &mut VisualTestContext, selector: String| {
+                drawn(cx, selector.clone()).unwrap_or_else(|| panic!("{selector} is drawn"))
+            };
+            Layout {
+                card: bounds(cx, card),
+                light: bounds(cx, "settings-theme-group-light".into()).top(),
+                caption: bounds(cx, format!("theme-caption-{miniature}")),
+                description: bounds(cx, format!("theme-description-{miniature}")),
+                place: bounds(cx, format!("theme-miniature-{miniature}")),
+                rows: cx.read(|cx| {
+                    app.read(cx)
+                        .theme_preview_body(selection)
+                        .read(cx)
+                        .painted_rows()
+                }),
+            }
+        };
+        let omarchy_layout =
+            |cx: &mut VisualTestContext| layout(cx, "settings-theme-omarchy".into(), body, omarchy);
+        let nord_layout = |cx: &mut VisualTestContext| {
+            let card = format!("settings-theme-{}", ThemeChoice::Nord as usize);
+            layout(cx, card, nord_body, nord)
+        };
+        // The lines `text` wraps to in `width` with no limit, in the font the
+        // Omarchy card's description is drawn in: its slot's text style,
+        // which [`LayerCard`] pins, at the description's normal weight.
+        let needed = |cx: &mut VisualTestContext, text: &str, width: Pixels| {
+            cx.update(|window, cx| {
+                let slots = app.read(cx).picker_cards.0.borrow();
+                let slot = slots
+                    .iter()
+                    .find(|slot| slot.miniature.entity_id() == body)
+                    .expect("the Omarchy card has a slot");
+                let mut style = slot.text.clone();
+                style.font_weight = FontWeight::NORMAL;
+                let run = TextRun {
+                    len: text.len(),
+                    font: style.font(),
+                    color: gpui::black(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                window
+                    .text_system()
+                    .shape_text(
+                        text.to_owned().into(),
+                        appearance::ui_text(10.),
+                        &[run],
+                        Some(width),
+                        None,
+                    )
+                    .unwrap()
+                    .iter()
+                    .map(|line| line.wrap_boundaries().len() + 1)
+                    .sum::<usize>()
+            })
+        };
+        // Every drawn row lies whole inside the miniature's box, above the
+        // caption, and inside the card.
+        let whole = |layout: &Layout| {
+            for row in &layout.rows {
+                assert!(
+                    layout.place.top() <= row.top()
+                        && row.bottom() <= layout.place.bottom()
+                        && row.bottom() <= layout.caption.top()
+                        && layout.card.left() <= row.left()
+                        && row.right() <= layout.card.right(),
+                    "{row:?} is whole in {layout:?}"
+                );
+            }
+        };
+        // Offsets from the card's top and heights, which a width leaves
+        // alone, in hundredths of a pixel: cards at different heights round
+        // the same offset differently in the last bits.
+        let vertical = |layout: &Layout| {
+            let top = layout.card.top();
+            let at = |part: &Bounds<Pixels>| {
+                [part.top() - top, part.size.height]
+                    .map(|length| (f32::from(length) * 100.).round() as i32)
+            };
+            (
+                at(&layout.card),
+                [layout.caption, layout.description, layout.place].map(|part| at(&part)),
+                layout.rows.iter().map(at).collect::<Vec<_>>(),
+            )
+        };
+        let line = f32::from(appearance::ui_text(10.)) * 1.3;
+        for broken in [false, true] {
+            for width in [1400., 1000.] {
+                cx.simulate_resize(size(px(width), px(2400.)));
+                settle(cx);
+                let short = show(cx, "tokyo-night", "Tokyo Night", broken);
+                let one = omarchy_layout(cx);
+                let wrapped = show(cx, long, long_title, broken);
+                let two = omarchy_layout(cx);
+                let at = format!("{} at {width} px", if broken { "kept" } else { "read" });
+                let verb = if broken { "Keeping" } else { "Follows" };
+                assert_eq!(short.0, format!("{verb} Tokyo Night"), "{at}");
+                assert_eq!(wrapped.0, format!("{verb} {long_title}"), "{at}");
+                for ((text, lines_drawn), layout) in [(&short, &one), (&wrapped, &two)] {
+                    let lines = lines_drawn.lines().count();
+                    let height = f32::from(layout.description.size.height);
+                    let needed = needed(cx, text, layout.description.size.width);
+                    assert!((1..=2).contains(&lines), "{at}: {lines_drawn:?}");
+                    assert!(
+                        (height - line * lines as f32).abs() < 0.01,
+                        "{at}: {layout:?}"
+                    );
+                    if needed <= 2 {
+                        assert_eq!(lines, needed, "{at}: {lines_drawn:?}");
+                        assert_eq!(lines_drawn.replace('\n', ""), *text, "{at}: nothing is cut");
+                    } else {
+                        assert_eq!(lines, 2, "{at}: {lines_drawn:?}");
+                        let kept = lines_drawn.replace('\n', "");
+                        let kept = kept.strip_suffix('…').expect("an ellipsis ends the cut");
+                        assert!(text.starts_with(kept), "{at}: {lines_drawn:?}");
+                    }
+                }
+                // The short name takes one line; the long one two, cut at
+                // 1,400 px and whole at the minimum width.
+                assert_eq!(short.1.lines().count(), 1, "{at}");
+                assert_eq!(wrapped.1.lines().count(), 2, "{at}");
+                assert_eq!(
+                    wrapped.1.ends_with('…'),
+                    width == 1400.,
+                    "{at}: {:?}",
+                    wrapped.1
+                );
+
+                // The card neither grows nor moves, and nor does the group
+                // below it; the miniature gives the second line its fourth
+                // row, and with one line it is laid out as a built-in card's.
+                assert_eq!(one.card, two.card, "{at}");
+                assert_eq!(one.card.size.height, appearance::ui_size(132.), "{at}");
+                assert_eq!(one.light, two.light, "{at}");
+                assert_eq!((one.rows.len(), two.rows.len()), (4, 3), "{at}");
+                whole(&two);
+                assert_eq!(vertical(&one), vertical(&nord_layout(cx)), "{at}");
+            }
+        }
+
+        let code = cx.read(|cx| app.read(cx).settings.code_text_size);
+        cx.simulate_resize(size(px(1400.), px(2400.)));
+        for interface in [11, 18] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.interface_text_size = interface;
+                    appearance::apply_text_sizes(interface, code, window, cx);
+                    cx.notify();
+                })
+            });
+            settle(cx);
+            let at = format!("at {interface} pt");
+            // One line, then two, then one again.
+            show(cx, "tokyo-night", "Tokyo Night", false);
+            let one = omarchy_layout(cx);
+            assert_eq!(vertical(&one), vertical(&nord_layout(cx)), "{at}");
+            show(cx, long, long_title, false);
+            let two = omarchy_layout(cx);
+            assert_eq!(one.card, two.card, "{at}");
+            assert!(one.caption.size.height < two.caption.size.height, "{at}");
+            assert!(!two.rows.is_empty(), "{at}: {two:?}");
+            whole(&two);
+            show(cx, "tokyo-night", "Tokyo Night", false);
+            let again = omarchy_layout(cx);
+            assert_eq!(vertical(&again), vertical(&one), "{at}");
+        }
     }
 
     /// Without the Omarchy reader (no absolute `$HOME` on Linux, or another
