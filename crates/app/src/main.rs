@@ -1877,14 +1877,11 @@ fn button(
         .rounded(appearance::ui_size(7.))
         .selected(active)
         .text_size(crate::appearance::ui_text(12.));
-    if let Some(edge) = appearance::control_focus_edge() {
-        // Full accent inside the kit's half-opacity focus ring.
-        button = button.focus(move |style| style.shadow(vec![edge]));
-    }
     if active {
-        // The kit omits variant hover styles for selected controls. Keep their
-        // selected surface and expose gentle pointer feedback explicitly.
-        button = button.hover(|style| style.opacity(appearance::CONTROL_SELECTED_HOVER_OPACITY));
+        // The kit omits variant hover styles for selected controls. Tint their
+        // selected surface for gentle pointer feedback that leaves the focus
+        // ring alone.
+        button = button.hover(appearance::control_selected_hover);
     }
     if label.is_empty() {
         button = button
@@ -2200,14 +2197,56 @@ mod shared_button_tests {
         }
     }
 
-    /// Focus marks the helper with an inset shadow, so a focused helper, at
-    /// rest or hovered, keeps the box it had unfocused.
+    /// The bordered quads the last frame painted wholly outside `element`, the
+    /// ring a focused Button draws, as outer and inner bounds in logical pixels
+    /// and border color. A border-only quad is painted once per side.
+    fn rings_around(
+        cx: &mut VisualTestContext,
+        element: Bounds<Pixels>,
+    ) -> Vec<(Bounds<Pixels>, Bounds<Pixels>, Hsla)> {
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+            let mut rings = Vec::new();
+            for quad in window.painted_quads() {
+                let (bounds, widths) = (quad.bounds, quad.border_widths);
+                let outer = Bounds::from_corners(
+                    point(logical(bounds.left()), logical(bounds.top())),
+                    point(logical(bounds.right()), logical(bounds.bottom())),
+                );
+                let inner = Bounds::from_corners(
+                    point(
+                        outer.left() + logical(widths.left),
+                        outer.top() + logical(widths.top),
+                    ),
+                    point(
+                        outer.right() - logical(widths.right),
+                        outer.bottom() - logical(widths.bottom),
+                    ),
+                );
+                let ring = (outer, inner, quad.border_color);
+                if inner != outer
+                    && outer.left() < element.left()
+                    && outer.top() < element.top()
+                    && outer.right() > element.right()
+                    && outer.bottom() > element.bottom()
+                    && !rings.contains(&ring)
+                {
+                    rings.push(ring);
+                }
+            }
+            rings
+        })
+    }
+
+    /// A focused helper, at rest or hovered and selected or not, keeps the box
+    /// it had unfocused and draws the palette's ring, 2 px of full accent 1 px
+    /// outside its edge: hovering a selected helper does not dim the ring.
     #[gpui::test]
     fn focusing_the_shared_button_keeps_its_box(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_kit::init(cx);
             appearance::ThemeChoice::Porcelain.apply(None, cx);
-            assert!(appearance::control_focus_edge().is_some());
         });
         let (probe, cx) = cx.add_window_view(|_, cx| Probe {
             icon: cx.focus_handle(),
@@ -2220,9 +2259,22 @@ mod shared_button_tests {
             });
             cx.run_until_parked();
         };
+        let ring = cx.read(|cx| gpui_kit::component::Theme::global(cx).colors.ring);
+        let device = cx.update(|window, _| px(1. / window.scale_factor()));
+        let near = |drawn: Bounds<Pixels>, expected: Bounds<Pixels>| {
+            [
+                (drawn.left(), expected.left()),
+                (drawn.top(), expected.top()),
+                (drawn.right(), expected.right()),
+                (drawn.bottom(), expected.bottom()),
+            ]
+            .into_iter()
+            .all(|(edge, expected)| (edge - expected).abs() <= device)
+        };
         draw(cx);
         for selector in ["probe-icon", "probe-label"] {
             let resting = cx.debug_bounds(selector).expect("rendered helper");
+            assert!(rings_around(cx, resting).is_empty(), "{selector} unfocused");
             let handle = cx.read(|cx| {
                 let probe = probe.read(cx);
                 if selector == "probe-icon" {
@@ -2237,18 +2289,26 @@ mod shared_button_tests {
                 cx.update(|window, _| handle.is_focused(window)),
                 "{selector}"
             );
-            assert_eq!(
-                cx.debug_bounds(selector),
-                Some(resting),
-                "{selector} focused"
-            );
-            cx.simulate_mouse_move(resting.center(), None, Modifiers::default());
-            draw(cx);
-            assert_eq!(
-                cx.debug_bounds(selector),
-                Some(resting),
-                "{selector} focused and hovered"
-            );
+            for state in ["focused", "focused and hovered"] {
+                if state == "focused and hovered" {
+                    cx.simulate_mouse_move(resting.center(), None, Modifiers::default());
+                    draw(cx);
+                }
+                assert_eq!(
+                    cx.debug_bounds(selector),
+                    Some(resting),
+                    "{selector} {state}"
+                );
+                let rings = rings_around(cx, resting);
+                let [(outer, inner, color)] = rings.as_slice() else {
+                    panic!("{selector} {state} draws one ring, drew {rings:?}");
+                };
+                assert!(
+                    near(*outer, resting.dilate(px(3.))) && near(*inner, resting.dilate(px(1.))),
+                    "{selector} {state}: ring from {inner:?} to {outer:?} around {resting:?}"
+                );
+                assert_eq!(*color, ring, "{selector} {state}");
+            }
             cx.simulate_mouse_move(point(px(0.), px(0.)), None, Modifiers::default());
             draw(cx);
         }
