@@ -67,20 +67,42 @@ The [CI workflow](../.github/workflows/quality.yml) configures locked workspace 
 
 ## September 29 Omarchy caption on two lines
 
-The Omarchy card's caption, "Follows ‹Theme›", "Keeping ‹Theme›" or the reason it shows, was cut to one line, so a long custom theme name lost most of itself. Following the owner's "grow on demand" decision, a caption that needs a second line takes it, wrapped at word boundaries, and ends in an ellipsis only when two lines cannot hold it. The miniature above it then draws only whole rows, three instead of four at the default size. A one-line caption paints as before, and the card stays 132 px tall and in place. `settings::picker_tests::a_long_omarchy_caption_takes_a_second_line` drives a 64-byte `theme.name` at 1,400 and 1,000 px and at 11 and 18 pt. It checks the drawn lines and the ellipsis, and that the card's bounds and the group below it do not move. It also checks that the rows go from four to three, all whole, and that a one-line card lays out like Nord's. It does not build on `main`, which lacks its test hooks, and `main`'s one-line cut would fail its two-line check. `docs/development/themes/spec.md` states the rule.
+The Omarchy card's caption ("Follows ‹Theme›", "Keeping ‹Theme›" or "Using Midnight") was cut to one line, so a long custom theme name lost most of itself. Following the owner's "grow on demand" decision, a caption that needs a second line takes it, wrapped at word boundaries, and ends in an ellipsis only when two lines cannot hold it. The miniature above it then draws only whole rows, three instead of four at the default size. A one-line caption paints as before, and the card stays 132 px tall and in place. `docs/development/themes/spec.md` states the rule.
+
+`settings::picker_tests::a_long_omarchy_caption_takes_a_second_line` drives a 64-byte `theme.name` at 1,400 and 1,000 px and at 11 and 18 pt, and checks:
+- the drawn lines and the ellipsis;
+- that the card's bounds and the group below it do not move;
+- that the rows go from four to three, all whole, and back after the name shortens;
+- that a one-line card lays out like Nord's.
+It does not build on `main`, which lacks its test hooks, and `main`'s one-line cut would fail its two-line check.
 
 Native evidence, full tier, on Omarchy 4.0.4 (Hyprland 0.56.2, native Wayland):
 - Output: a temporary headless output at 1400 × 800 and at the 1000 × 680 minimum, scale 1, fullscreen, with a fresh HOME per launch and the `GitTurtle QA` identity.
-- Builds, both release from clean trees: the base `d553cc0` (sha256 `1f1fed5a…`) and the candidate `483b92e` (sha256 `126cb7c0…`), the branch with `main` at `0a7d995` merged in.
+- Fixture: the disposable `demo` repository at `/tmp/gitturtle-evidence/omarchy-d/demo`.
+- Builds: `python3 scripts/native_qa/qa.py identity` reports both as clean release builds. The base is `d553cc0` (sha256 `1f1fed5a…`), and the candidate is `483b92e` (sha256 `126cb7c0…`), the branch with `main` at `0a7d995` merged in.
 - Theme state: each launch had a fake `~/.local/state/omarchy/current/` with the preference set to Omarchy, and opened Settings with Ctrl+,.
-- States: Tokyo Night's stock `theme.name`; the test's 64-byte `aurora-borealis-over-the-northern-fjords-at-midnight-in-deep-win`; and an Unavailable caption, from a staged Tokyo Night whose `colors.toml` has no background.
-- Frames are in `docs/evidence/omarchy-caption/`. `python3 scripts/native_qa/qa.py compare` found the stock and Unavailable frames identical to the base at both sizes, 0 px different.
-- With the long name, only the card's region differs:
-  - At 1400 × 800 the base shows "Follows Aurora Borealis Over…", and the candidate wraps to "Follows Aurora Borealis Over / The Northern Fjords At Midnig…".
+- States: Tokyo Night's stock `theme.name`; the test's 64-byte `aurora-borealis-over-the-northern-fjords-at-midnight-in-deep-win`; and "Unavailable" with "Using Midnight", from a staged Tokyo Night whose `colors.toml` has no background.
+- Frames are in `docs/evidence/omarchy-caption/`, compared with `python3 scripts/native_qa/qa.py compare BASE CANDIDATE`:
+  - The stock and Unavailable frames are identical to the base at both sizes (0 px).
+  - With the long name, the difference is inside the card only: 4,603 px in `[141, 349, 313, 412]` at 1400 × 800, and 6,999 px in `[40, 349, 335, 412]` at 1000 × 680.
+  - At 1400 × 800 the base shows "Follows Aurora Borealis Over…", and the candidate "Follows Aurora Borealis Over / The Northern Fjords At Midnig…".
   - At 1000 × 680, where the cards are wider, the base cuts it at "…At Mi…", and the candidate shows the whole name on two lines.
-  - The candidate's miniature draws three whole rows, and the card's outline, its swatches and the Light palettes group below stay where they were.
+  - The card's outline and the Light palettes group stay where they were. The swatch row sits 1 px lower: a one-line caption has 1.4 px of spare room under its 54 px minimum, and the second line takes it.
+- Live changes: one launch per build with Settings open, rewriting `theme.name` as `omarchy-theme-set` does. The sequence was the stock name, the long name, the stock name again, the long name again, and then the long-named theme with its `colors.toml` background removed.
+  - The frames with the stock name are identical to the base and to each other in each build, so the miniature takes back its fourth row.
+  - The long-name frames differ from the base only inside the card.
+  - The last frame shows "Unavailable" with "Keeping Aurora Borealis Over / The Northern Fjords At Midnig…" over three whole rows, where the base cuts it after one line.
 
-`python3 scripts/native_qa/qa.py privacy scan --redacted --jobs 2` on the committed bytes found 6 clean frames, and each was viewed at full size. Not covered: macOS, where there is no Omarchy card; fractional scales and an 18 pt interface text size natively, which the test covers; a name that the unkerned width check cuts although its shaped text would just fit on two lines (GPUI decides a line limit from per-character widths, as the Desktop reason line already does).
+`python3 scripts/native_qa/qa.py privacy scan --redacted --jobs 2` on the committed bytes found 9 clean frames, and each was viewed at full size. A `design-reviewer` pass approved, and measured the committed frames:
+- The card's outline, the Light palettes group and everything above the miniature's fourth row are pixel-identical to the base.
+- The wrapped caption keeps the one-line card's spacing: 10 px from the border to the name, 17 px from the name's baseline to the description's, and 7 px from the last baseline to the swatches. Its lines are set 13 px apart on the name's left edge, and its ellipsis ends inside the padding.
+- The miniature's third row ends 3 px above a one-pixel caption border, with nothing of a fourth row left.
+- The muted caption measures 7.9:1 on the caption surface (5.9:1 hovered, 5.4:1 pressed).
+
+Not covered:
+- macOS, where there is no Omarchy card.
+- Natively: an unselected, hovered or focused card with a long caption, fractional scales and an 18 pt interface text size. The test covers the layout of each.
+- A name that the unkerned width check cuts although its shaped text would just fit on two lines. GPUI decides a line limit from per-character widths, as the Desktop reason line already does.
 
 ## September 29 code font in Markdown, review and rich previews
 
