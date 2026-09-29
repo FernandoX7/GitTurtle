@@ -232,7 +232,8 @@ After classification, the selected jobs have no build dependencies on each other
   These checks do not establish an interactive native desktop or notarized build.
 - `Rust tests · archlinux` runs the same nextest and doctest commands as the debug
   jobs inside a digest-pinned Arch Linux container, against that day's Arch
-  packages and without a Rust cache. See
+  packages, with a Rust cache keyed on the Arch packages that reach compiled
+  output. See
   [Arch Linux container job](#arch-linux-container-job).
 - Only macOS optimized compilation and packaging use the standard ARM64 macOS 26
   runner. Tests, doctests, strict Clippy and development tooling remain on macOS 15.
@@ -433,8 +434,8 @@ Steps, in order:
    folder to be refused would fail, and the discard test that needs an unreadable
    file skips itself for root.
 3. Point `GIT_CONFIG_GLOBAL` at a fresh file under `RUNNER_TEMP`, as the other
-   Rust jobs do (with `GIT_CONFIG_NOSYSTEM=1`), and keep `RUSTUP_HOME` and
-   `CARGO_HOME` under `RUNNER_TEMP`.
+   Rust jobs do (with `GIT_CONFIG_NOSYSTEM=1`), and keep `RUSTUP_HOME` under
+   `RUNNER_TEMP`. The setup action sets `CARGO_HOME` to its own isolated root.
 4. Check out with `persist-credentials: false`, then `chown -R builder` the
    workspace. Checkout runs as root and adds only the workspace path as
    `safe.directory`, in that isolated file; after the `chown`, `builder` owns the
@@ -442,9 +443,15 @@ Steps, in order:
    ownership check without the exception.
 5. `rustup toolchain install` reads `rust-toolchain.toml`, so the job builds with the
    same Rust 1.98.0 as the other runners.
+6. Call the [setup action](#bounded-rust-dependency-caching) with `profile: debug`,
+   `vendor-reuse: true`, `container: archlinux` and `run-as: builder`, which keys
+   and restores the cache (below), then install nextest and run the tests. After the
+   doctests, the action's `finish` phase bounds the payload and, on a push to
+   `main` only, registers the save.
 
 The job keeps the workflow's `contents: read` permission, reads no secret and uses
-only the pinned `actions/checkout` and `actions/upload-artifact`. Its measurements
+only the pinned `actions/checkout` and `actions/upload-artifact` and the setup
+action, whose one third-party action is the pinned `Swatinem/rust-cache`. Its measurements
 and sanitized logs go into the same three-day diagnostics artifact as the other
 jobs (`ci-diagnostics-rust-arch-…`), including a `rust-toolchain` measurement.
 
@@ -484,22 +491,79 @@ rather than the change under test. Compare the printed package versions of a
 failing run with the last passing one before blaming the change. A mirror or
 keyring failure fails the job; nothing retries it.
 
-**No cache.** The job restores and saves no Rust or pacman cache. The
-[setup action](#bounded-rust-dependency-caching) installs Ubuntu packages with
-`apt-get` and keys native identity on `dpkg-query`, neither of which exists in the
-container. A key that did capture the pacman inventory would change with nearly
-every Arch update, so each new entry would be cold on first use while it took space
-from the 10 GB repository quota and evicted the useful Ubuntu and macOS entries.
-Without a cache, no pull request can write an entry that `main` trusts.
+**Cache.** The job shares the other lanes' mechanism: the [setup
+action](#bounded-rust-dependency-caching) and its pinned `rust-cache`, with the same
+`debug` payload limit, cleanup, vendored reuse and main-only save. Its
+`container: archlinux` input changes three things.
 
-**Cost.** Every run is cold: an image pull (about 308 MB compressed), the package
-upgrade and install, the toolchain download, a full debug build of every
-dependency, then the tests. The September 15 baseline spent 10m49s compiling the
-workspace tests cold on Ubuntu; expect this job to take at least that plus its
-setup, on one more runner for every product pull request and `main` push. Its
-first five hosted runs, on September 28, 2026, all passed in 12m22s to 16m06s:
-runs 36395638428 (pull request #69), 36431876305, 36452704324 and 36458949036
-(`main` at `1a9fc3e`, `7184b08` and `8b9fd3d`) and 36501903050 (pull request #74).
+- *Key.* The native part of the key is `pacman -Q` over a fixed list of packages
+  whose versions reach compiled output, `ARCH_NATIVE_PACKAGES` in the
+  [helper](../.github/actions/setup-rust/cache.py): the C toolchain and its
+  headers (`binutils clang cmake gcc gcc-libs glibc linux-api-headers llvm-libs
+  make pkgconf`), and the libraries that build scripts probe or the test binaries
+  link (`fontconfig freetype2 libx11 libxcb libxkbcommon libxkbcommon-x11 openssl
+  wayland`). `freetype-sys` links the system FreeType, `yeslogic-fontconfig-sys`
+  and `aws-lc-sys` probe pkg-config (the latter for `libcrypto` and `openssl`),
+  and the app links `libxcb` and `libxkbcommon`. The job's other libraries,
+  `vulkan-headers`, `vulkan-icd-loader` and `zstd` (`ARCH_RUNTIME_PACKAGES`), are
+  used only at run time and by its `pkg-config --exists` check. No build script
+  probes them and nothing links them at build time. Nothing else in the rolling
+  inventory is keyed, so an update to, say, `git`, `python`, `systemd` or Vulkan
+  keeps the entry. An update to any listed package gives a new key and a full cold
+  build, never objects built against the old libraries. A test compares both
+  lists with the job's install line, so a library added to the job but in neither
+  list fails. `pacman -Q` fails the step if a listed package is missing. The setup step
+  prints the keyed versions (`Keyed Arch packages: …`) next to the upgrade step's
+  own list. The key string reads `debug-archlinux-<hash>`, so the entry is told
+  apart from the Ubuntu debug entry in the cache list, although both run on Linux
+  x64 runners.
+- *Setup.* The action installs no `apt` packages and no toolchain: the job's own
+  steps install both first, and the toolchain must exist before the key is
+  computed because the key hashes `rustc -vV`.
+- *Account.* The container starts as root. The helper becomes `builder` (every
+  user and group ID, which also clears its capabilities, and it refuses to run as
+  root, and requires the account's primary group to share its name, as
+  `useradd --user-group` gives `builder`) before it touches Cargo storage, and
+  upstream's `rustc` and `cargo`
+  commands run through `setpriv --reuid=builder` via its `cmd-format` input.
+  Cargo run as root would leave root-owned registry, lock and target files that
+  `builder` cannot update. Upstream's archive extraction itself runs as root and
+  keeps the archived owners, so a root step hands everything under the target
+  and Cargo home to `builder` (`chown -R -h -P`, never following a link) before
+  the helper checks the restore. The job still runs every test as `builder`
+  and stores no credential.
+
+Every run still upgrades to that day's packages first, behind the unchanged
+signature check, so between two `main` pushes a pull request whose keyed packages
+moved in Arch restores nothing and builds cold; the next successful `main` push
+seeds the new key. The [hosted record](benchmarks/2026-09-29-ci-arch-warm-cache.md)
+gives the cold baseline. A pull request cannot save an entry, so the `main` seed,
+the entry's size, the repository total after it and a warm pull-request run can
+only be measured after the change merges; they are added to that record.
+
+**Budget.** The Arch payload is held to the `debug` limit (7 GiB of logical bytes
+before registration) by the same helper and upstream cleanup as the Ubuntu debug
+lane, whose archive is about 1.42 GB. Only a successful push to `main` registers a
+save, and only when no entry has that exact key, so the lane adds one entry per
+new key that `main` builds: a keyed package update or a keyed source change. GitHub removes an entry 7 days after its last
+access and, once the repository is over its 10 GB limit, evicts by last access. An
+Arch entry superseded by a package update is no longer restored, so it goes before
+the Ubuntu and macOS entries that every product run restores. The repository was
+already over the limit before the first Arch entry: at 22:48 UTC on September 29,
+2026, it held 11 entries, 11.36 GB. The four other lanes' keys also move with the
+runners' native inventories, and in five hours `main` saved 11 of their entries
+with no keyed source change (the record has the list).
+
+**Cost.** Before the cache, every run was cold: an image pull (about 308 MB
+compressed), the package upgrade and install, the toolchain download, a full debug
+build of every dependency, then the tests. Its first five hosted runs, on
+September 28, 2026, took 12m22s to 16m06s: runs 36395638428 (pull request #69),
+36431876305, 36452704324 and 36458949036 (`main` at `1a9fc3e`, `7184b08` and
+`8b9fd3d`) and 36501903050 (pull request #74). In run 36622842027 the container
+start took 16 s, the upgrade and install 10 s and the toolchain 6 s, while the
+nextest step took 902 s, almost all of it compiling dependencies. With an exact
+hit the image pull, upgrade and toolchain remain, the dependencies are restored
+fresh, and only the workspace members and tests compile, as on the Ubuntu lane.
 
 **Docker Hub limits.** The runner pulls the image from Docker Hub without
 credentials. Docker [counts unauthenticated pulls](https://docs.docker.com/docker-hub/usage/pulls/)
@@ -987,9 +1051,9 @@ and [Cargo build timings](https://doc.rust-lang.org/cargo/reference/timings.html
 ## Bounded Rust dependency caching
 
 Quality's [Rust setup action](../.github/actions/setup-rust/action.yml) owns native
-setup and the lifetime of optional compilation caches. The
-[Arch Linux container job](#arch-linux-container-job) does not use it and has no
-cache. Each other compilation job calls its
+setup and the lifetime of optional compilation caches. Each compilation job,
+including the [Arch Linux container job](#arch-linux-container-job) in its
+`container: archlinux` mode, calls its
 `setup` phase before validation and its matching `finish` phase **after every
 consumer of `target`**, including package construction and installation checks.
 Finish may remove compiled outputs to bound a successful main cache. Keep future
@@ -1041,8 +1105,8 @@ compatibility is unchanged.
 
 Kept outputs alone would still rebuild. Cargo treats a path package as dirty when
 any source listed in its dep-info is newer than that dep-info, and checkout gives
-every file the current time. Quality's two compilation jobs therefore pass the
-action's `vendor-reuse: true` input, and setup rewinds every tracked file under
+every file the current time. Quality's three compilation jobs (`rust-debug`,
+`rust-release` and `rust-arch`) therefore pass the action's `vendor-reuse: true` input, and setup rewinds every tracked file under
 `vendor/`, and each directory up to `vendor/` (a build script may watch a
 directory), to one fixed time: Cargo's own deterministic registry timestamp,
 2006-07-24. It runs in the prepare step, after the key is computed and before the
@@ -1081,8 +1145,18 @@ hashes:
 - Linux's installed package/version/architecture inventory, Clang, CMake and
   pkg-config versions, or macOS's Xcode version, SDK version/build, selected Clang
   and OS build. This includes native ABI/SDK changes and conservative hosted-image
-  updates. `SDKROOT`, deployment target, pkg-config, library/linker and archiver
-  environment inputs also participate through upstream's flag hashing.
+  updates. The Arch container keys only its listed packages' pacman versions
+  instead ([Arch cache](#arch-linux-container-job)).
+- The active compiler's full `rustc -vV` and the target triple it reports as
+  `host` (each keyed job compiles for its host), and the build flags set in the
+  environment by name: `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`, `RUSTDOCFLAGS`,
+  `RUSTC`, `RUSTC_WRAPPER`, `RUSTC_BOOTSTRAP`, `CARGO_INCREMENTAL`, `CC`, `CXX`,
+  `AR`, `CFLAGS`, `CXXFLAGS`, `CPPFLAGS`, `LDFLAGS`, `LIBRARY_PATH`, `SDKROOT`,
+  `MACOSX_DEPLOYMENT_TARGET`, and any `CARGO_BUILD_*`, `CARGO_PROFILE_*`,
+  `CARGO_TARGET_*` (except `CARGO_TARGET_DIR`), `CMAKE*`, `PKG_CONFIG*` and
+  per-target `CC_*`, `CXX_*`, `AR_*`, `CFLAGS_*` or `CXXFLAGS_*` variable. Upstream's
+  own key hashes the same compiler and much of the same environment; these are
+  in the local key too, so the helper's tests can show each one invalidates.
 
 The raw manifest/lock digest is part of the compatibility prefix; unlike upstream's
 broader fallback, this deliberately does not restore an older dependency graph.

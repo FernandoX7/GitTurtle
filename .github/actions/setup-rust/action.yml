@@ -13,6 +13,12 @@ inputs:
   vendor-reuse:
     description: true rewinds vendor/ source times so restored vendored outputs stay fresh (Quality only); release builds keep the default and compile vendored crates from source
     default: "false"
+  container:
+    description: archlinux when the job runs in the Arch Linux container, which installs its own packages and toolchain; the key then takes pacman versions instead of the runner's
+    default: ""
+  run-as:
+    description: Unprivileged account that runs the helper and Cargo when the job starts as root (required with container); it must own the checkout
+    default: ""
 outputs:
   cache-hit:
     description: True only for an exact restored entry; false also includes fallback or unavailable cache
@@ -27,14 +33,19 @@ runs:
         CACHE_PROFILE: ${{ inputs.profile }}
         CACHE_TARGET: ${{ inputs.target }}
         CACHE_VENDOR_REUSE: ${{ inputs.vendor-reuse }}
+        CACHE_CONTAINER: ${{ inputs.container }}
+        CACHE_RUN_AS: ${{ inputs.run-as }}
       run: |
         set -euo pipefail
         case "$CACHE_PHASE" in setup|finish) ;; *) exit 2 ;; esac
         case "$CACHE_VENDOR_REUSE" in true|false) ;; *) exit 2 ;; esac
         case "$CACHE_PROFILE" in debug|release|debug-release) ;; *) exit 2 ;; esac
         case "$CACHE_TARGET" in "") ;; [!A-Za-z0-9]*|*[!A-Za-z0-9_.-]*) exit 2 ;; esac
+        case "$CACHE_CONTAINER" in ""|archlinux) ;; *) exit 2 ;; esac
+        case "$CACHE_RUN_AS" in "") ;; [!a-z_]*|*[!a-z0-9_-]*) exit 2 ;; esac
+        if [ -n "$CACHE_CONTAINER" ] && [ -z "$CACHE_RUN_AS" ]; then exit 2; fi
     - name: Install Linux native build dependencies
-      if: inputs.phase == 'setup' && runner.os == 'Linux'
+      if: inputs.phase == 'setup' && runner.os == 'Linux' && inputs.container == ''
       shell: bash
       run: |
         set -euo pipefail
@@ -45,8 +56,9 @@ runs:
           libssl-dev libzstd-dev libvulkan-dev \
           python3 python3-pil desktop-file-utils xdg-utils
         pkg-config --exists xkbcommon-x11 x11-xcb
+    # A container job installs the toolchain as its build account first.
     - name: Install pinned workspace Rust toolchain
-      if: inputs.phase == 'setup'
+      if: inputs.phase == 'setup' && inputs.container == ''
       shell: bash
       run: |
         set -euo pipefail
@@ -59,10 +71,14 @@ runs:
       env:
         CACHE_PROFILE: ${{ inputs.profile }}
         CACHE_VENDOR_REUSE: ${{ inputs.vendor-reuse }}
+        CACHE_CONTAINER: ${{ inputs.container }}
+        CACHE_RUN_AS: ${{ inputs.run-as }}
       run: python3 .github/actions/setup-rust/cache.py prepare
     - name: Start cache restore observation
       if: inputs.phase == 'setup'
       shell: bash
+      env:
+        CACHE_RUN_AS: ${{ inputs.run-as }}
       run: python3 .github/actions/setup-rust/cache.py start
     - name: Restore Rust dependencies
       if: inputs.phase == 'setup'
@@ -82,12 +98,27 @@ runs:
         cache-on-failure: false
         save-if: false
         env-vars: SDKROOT MACOSX_DEPLOYMENT_TARGET PKG_CONFIG LIBRARY_PATH LDFLAGS AR
+        # Upstream's rustc and cargo commands run as the build account too.
+        cmd-format: ${{ inputs.run-as != '' && format('setpriv --reuid={0} --regid={0} --init-groups -- {{0}}', inputs.run-as) || '{0}' }}
+    # Extraction runs as root, which keeps the archived owners: hand the
+    # account everything under the two roots before anything reads them.
+    - name: Give the build account the restored cache
+      if: inputs.phase == 'setup' && inputs.run-as != ''
+      shell: bash
+      env:
+        CACHE_RUN_AS: ${{ inputs.run-as }}
+      run: |
+        set -euo pipefail
+        for root in "$CARGO_TARGET_DIR" "$CARGO_HOME"; do
+          if [ -e "$root" ]; then chown -R -h -P -- "$CACHE_RUN_AS:$CACHE_RUN_AS" "$root"; fi
+        done
     - name: Record restore and recover an unusable entry
       if: inputs.phase == 'setup'
       shell: bash
       env:
         CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
         CACHE_OUTCOME: ${{ steps.restore.outcome }}
+        CACHE_RUN_AS: ${{ inputs.run-as }}
       run: python3 .github/actions/setup-rust/cache.py restored
     - name: Bound dependency cache after successful validation
       if: inputs.phase == 'finish' && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'FernandoX7/GitTurtle'
@@ -96,6 +127,7 @@ runs:
       env:
         CACHE_PROFILE: ${{ inputs.profile }}
         CACHE_TARGET: ${{ inputs.target }}
+        CACHE_RUN_AS: ${{ inputs.run-as }}
       run: python3 .github/actions/setup-rust/cache.py bound
     - name: Register successful main cache save
       if: inputs.phase == 'finish' && steps.bounded.outputs.save == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'FernandoX7/GitTurtle'
@@ -115,3 +147,4 @@ runs:
         lookup-only: true
         save-if: true
         env-vars: SDKROOT MACOSX_DEPLOYMENT_TARGET PKG_CONFIG LIBRARY_PATH LDFLAGS AR
+        cmd-format: ${{ inputs.run-as != '' && format('setpriv --reuid={0} --regid={0} --init-groups -- {{0}}', inputs.run-as) || '{0}' }}
