@@ -4,12 +4,13 @@
 
 use crate::appearance::palette;
 use gpui_kit::{
-    App, AppContext, Context, DefiniteLength, Entity, EntityId, FocusHandle, Focusable, Global,
-    HighlightStyle, InteractiveElement, IntoElement, ParentElement, Pixels, Render, RenderOnce,
-    SharedString, StyleRefinement, Styled, Subscription, UnderlineStyle, WeakEntity, Window,
+    App, AppContext, Context, DefiniteLength, Entity, EntityId, FocusHandle, Focusable,
+    FontFeatures, Global, HighlightStyle, InteractiveElement, IntoElement, ParentElement, Pixels,
+    Render, RenderOnce, SharedString, StyleRefinement, Styled, Subscription, UnderlineStyle,
+    WeakEntity, Window,
     base::ElementExt,
     component::{
-        Disableable, Sizable,
+        Disableable, Sizable, Theme,
         button::{Button, ButtonVariants},
         checkbox::Checkbox,
         input::{
@@ -227,14 +228,18 @@ impl Editor {
     pub fn new(state: &Entity<EditorState>) -> Self {
         Self {
             state: state.clone(),
-            // The kit editor supplies the code family; code keeps its
-            // characters as typed in every family.
-            native: NativeEditor::new(state)
-                .text_size(crate::appearance::code_text())
-                .font_features(crate::appearance::code_font_features()),
+            native: NativeEditor::new(state).text_size(crate::appearance::code_text()),
             height: relative(1.),
             label: "File text".into(),
         }
+    }
+    /// Code keeps its characters as typed in every family. The kit editor
+    /// draws in the theme's code family unless a caller refined another, so
+    /// the features follow that family when the editor renders.
+    fn code_features(&mut self, cx: &App) -> FontFeatures {
+        let family = self.native.style().text.font_family.clone();
+        let family = family.unwrap_or_else(|| Theme::global(cx).mono_font_family.clone());
+        crate::appearance::code_font_features_for(&family)
     }
     pub fn h(mut self, height: impl Into<DefiniteLength>) -> Self {
         self.height = height.into();
@@ -260,7 +265,8 @@ impl Styled for Editor {
     }
 }
 impl RenderOnce for Editor {
-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let code_features = self.code_features(cx);
         let owner = window.current_view();
         let existing = panel(&self.state, cx);
         if let Some(panel) = &existing {
@@ -302,7 +308,12 @@ impl RenderOnce for Editor {
                 }
             })
             .children(existing.filter(|bar| bar.read(cx).open))
-            .child(div().flex_1().min_h_0().child(self.native.h(relative(1.))))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.native.h(relative(1.)).font_features(code_features)),
+            )
     }
 }
 
@@ -850,7 +861,8 @@ mod tests {
 
     /// Every app editor (patches, files, conflicts and review text) draws code
     /// as typed: the wrapper refines the kit editor's code family with the
-    /// code features, whichever family the desktop supplies.
+    /// code features of the family it draws in, whichever the desktop
+    /// supplies, and the bundled family, which has no ligatures, with none.
     #[gpui_kit::test]
     fn editors_draw_code_without_ligatures(cx: &mut gpui_kit::TestAppContext) {
         use gpui_kit::{AppContext as _, Styled as _, component::input::EditorState};
@@ -858,10 +870,24 @@ mod tests {
         cx.update(gpui_kit::init);
         let cx = cx.add_empty_window();
         let state = cx.update(|window, cx| cx.new(|cx| EditorState::new(window, cx)));
-        let mut editor = super::Editor::new(&state);
-        assert_eq!(
-            editor.style().text.font_features,
-            Some(crate::appearance::code_font_features())
-        );
+        let features = |family: &'static str, cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|_, cx| {
+                super::Theme::global_mut(cx).mono_font_family = family.into();
+                super::Editor::new(&state).code_features(cx)
+            })
+        };
+
+        let desktop = features("Desktop Mono", cx);
+        assert_eq!(desktop.is_calt_enabled(), Some(false));
+        assert!(desktop.tag_value_list().contains(&("liga".into(), 0)));
+        let bundled = features(crate::desktop_text::BUNDLED_CODE_FAMILY, cx);
+        assert!(bundled.tag_value_list().is_empty(), "{bundled:?}");
+
+        // A family the caller refined on the editor is the one it draws in.
+        let refined = cx.update(|_, cx| {
+            let mut editor = super::Editor::new(&state).font_family("Desktop Mono");
+            editor.code_features(cx)
+        });
+        assert_eq!(refined.is_calt_enabled(), Some(false));
     }
 }

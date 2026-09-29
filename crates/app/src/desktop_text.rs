@@ -120,6 +120,13 @@ pub(super) async fn ready(initial: Initial, cx: &AsyncApp) {
 #[cfg(not(target_os = "linux"))]
 pub(super) async fn ready(_initial: Initial, _cx: &AsyncApp) {}
 
+/// The family name of the code font bundled on Linux ([`CODE_FONT_FACES`]).
+/// It has no contextual alternates, and its only standard ligature is Arabic
+/// lam-alef, which its required ligatures (`rlig`) form anyway, so code text in
+/// it needs no font features
+/// ([`code_font_features_for`](crate::appearance::code_font_features_for)).
+pub(crate) const BUNDLED_CODE_FAMILY: &str = "DejaVu Sans Mono";
+
 /// DejaVu Sans Mono 2.37 (`assets/fonts/dejavu-sans-mono`). The toolkit's Linux
 /// text system matches family names exactly and ignores fontconfig aliases, so
 /// a session without the installed family (Arch and Omarchy by default) drew
@@ -1022,7 +1029,10 @@ mod tests {
         use gpui_kit::{FontStyle, FontWeight, PlatformTextSystem as _};
         use gpui_wgpu::CosmicTextSystem;
 
-        let code = gpui_kit::font(crate::mono());
+        // The faces register under the name the default code family names,
+        // which is the one that skips the code font features.
+        assert_eq!(crate::mono(), BUNDLED_CODE_FAMILY);
+        let code = gpui_kit::font(BUNDLED_CODE_FAMILY);
         // What a session without the installed family saw before the bundle.
         let bare = CosmicTextSystem::new_without_system_fonts("IBM Plex Sans");
         assert!(bare.font_id(&code).is_err());
@@ -1047,6 +1057,53 @@ mod tests {
             }
         }
         assert_eq!(faces.len(), 4, "each style has its own bundled face");
+    }
+
+    /// Code text in the bundled family skips the features that keep a desktop
+    /// family's ligatures off, and that changes no glyph in any bundled face:
+    /// none has contextual alternates, and the one standard ligature, Arabic
+    /// lam-alef, is also a required one.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bundled_code_font_draws_the_same_glyphs_without_features() {
+        use crate::appearance::code_font_features_for;
+        use gpui_kit::{FontFeatures, FontRun, FontStyle, FontWeight, PlatformTextSystem as _};
+        use gpui_wgpu::CosmicTextSystem;
+
+        let text = CosmicTextSystem::new_without_system_fonts("IBM Plex Sans");
+        text.add_fonts(code_font_faces()).unwrap();
+        let line = "fn f(a: &str) -> bool { a != \"--\" && b == c || d <= e >= f => g::h // www fi ffl \u{644}\u{627} }";
+        let bundled = code_font_features_for(BUNDLED_CODE_FAMILY);
+        let desktop = code_font_features_for("Desktop Mono");
+        assert_ne!(bundled, desktop);
+        for weight in [FontWeight::NORMAL, FontWeight::BOLD] {
+            for style in [FontStyle::Normal, FontStyle::Italic] {
+                let glyphs = |features: &FontFeatures| {
+                    let font = gpui_kit::Font {
+                        weight,
+                        style,
+                        features: features.clone(),
+                        ..gpui_kit::font(BUNDLED_CODE_FAMILY)
+                    };
+                    let font_id = text.font_id(&font).unwrap();
+                    let runs = [FontRun {
+                        len: line.len(),
+                        font_id,
+                    }];
+                    text.layout_line(line, gpui_kit::px(12.), &runs)
+                        .runs
+                        .into_iter()
+                        .flat_map(|run| run.glyphs)
+                        .map(|glyph| (glyph.id, glyph.index))
+                        .collect::<Vec<_>>()
+                };
+                let drawn = glyphs(&bundled);
+                assert_eq!(drawn, glyphs(&desktop), "{weight:?} {style:?}");
+                // The comparison sees a feature that the faces do use.
+                let discretionary = FontFeatures(std::sync::Arc::new(vec![("dlig".into(), 1)]));
+                assert_ne!(drawn, glyphs(&discretionary), "{weight:?} {style:?}");
+            }
+        }
     }
 
     #[test]

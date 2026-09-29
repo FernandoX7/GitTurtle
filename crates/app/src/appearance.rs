@@ -136,22 +136,31 @@ pub fn code_scale() -> f32 {
     f32::from(code_text()) / f32::from(DEFAULT_CODE_TEXT_SIZE)
 }
 
-/// The font features of code text. Code shows the characters as typed, so a
-/// ligature font such as JetBrains Mono never joins `--`, `->` or `!=` into one
-/// glyph. Fonts put programming ligatures in contextual alternates (`calt`,
-/// as JetBrains Mono and Fira Code do) or in standard ligatures (`liga`), so
-/// both are off.
-pub fn code_font_features() -> FontFeatures {
-    static FEATURES: LazyLock<FontFeatures> =
+/// The font features of code text drawn in `family`. Code shows the characters
+/// as typed, so a ligature font such as JetBrains Mono never joins `--`, `->`
+/// or `!=` into one glyph. Fonts put programming ligatures in contextual
+/// alternates (`calt`, as JetBrains Mono and Fira Code do) or in standard
+/// ligatures (`liga`), so both are off. The bundled
+/// [`BUNDLED_CODE_FAMILY`](crate::desktop_text::BUNDLED_CODE_FAMILY) has no
+/// such ligatures, and any explicit feature slows shaping it
+/// (`docs/benchmarks/2026-09-29-code-font-features`), so it gets none.
+pub fn code_font_features_for(family: &str) -> FontFeatures {
+    static NONE: LazyLock<FontFeatures> = LazyLock::new(FontFeatures::default);
+    static WITHOUT_LIGATURES: LazyLock<FontFeatures> =
         LazyLock::new(|| FontFeatures(Arc::new(vec![("calt".into(), 0), ("liga".into(), 0)])));
-    FEATURES.clone()
+    if family == crate::desktop_text::BUNDLED_CODE_FAMILY {
+        NONE.clone()
+    } else {
+        WITHOUT_LIGATURES.clone()
+    }
 }
 
-/// Code text: the code family with [`code_font_features`].
+/// Code text: the code family, with its [`code_font_features_for`].
 pub trait CodeFont: Styled + Sized {
     fn code_font(self, cx: &App) -> Self {
-        self.font_family(Theme::global(cx).mono_font_family.clone())
-            .font_features(code_font_features())
+        let family = Theme::global(cx).mono_font_family.clone();
+        let features = code_font_features_for(&family);
+        self.font_family(family).font_features(features)
     }
 }
 impl<T: Styled> CodeFont for T {}
@@ -1911,11 +1920,10 @@ mod tests {
         }
     }
 
-    /// Code text draws what was typed. An element under [`CodeFont`] hands its
-    /// descendants the font that the kit's editor and the diff gutter shape
-    /// with (`window.text_style().font()`): the code family, ligatures off.
-    #[gpui::test]
-    fn code_text_shapes_the_code_family_without_ligatures(cx: &mut gpui::TestAppContext) {
+    /// The font that an element under [`CodeFont`] hands its descendants, and
+    /// so the font that the kit's editor and the diff gutter shape with
+    /// (`window.text_style().font()`), while the code family is `family`.
+    fn code_text_font(cx: &mut gpui::TestAppContext, family: &'static str) -> gpui_kit::Font {
         use gpui_kit::{Context, Font, IntoElement, ParentElement, Render, canvas, div};
         use std::{cell::RefCell, rc::Rc};
 
@@ -1935,15 +1943,32 @@ mod tests {
         }
         cx.update(|cx| {
             gpui_kit::init(cx);
-            Theme::global_mut(cx).mono_font_family = "Desktop Mono".into();
+            Theme::global_mut(cx).mono_font_family = family.into();
         });
         let seen = Rc::new(RefCell::new(None));
         let probe = Probe(seen.clone());
         let (_, cx) = cx.add_window_view(move |_, _| probe);
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        let font = seen.borrow().clone().expect("the probe painted");
+        seen.borrow().clone().expect("the probe painted")
+    }
+
+    /// Code text draws what was typed: a desktop family shapes with its
+    /// ligatures off.
+    #[gpui::test]
+    fn code_text_shapes_the_code_family_without_ligatures(cx: &mut gpui::TestAppContext) {
+        let font = code_text_font(cx, "Desktop Mono");
         assert_eq!(font.family, "Desktop Mono");
         assert_eq!(font.features.is_calt_enabled(), Some(false));
         assert!(font.features.tag_value_list().contains(&("liga".into(), 0)));
+    }
+
+    /// The bundled family has no ligatures to turn off, so its code text
+    /// shapes with no explicit feature, which is faster.
+    #[gpui::test]
+    fn code_text_in_the_bundled_family_shapes_without_features(cx: &mut gpui::TestAppContext) {
+        let bundled = crate::desktop_text::BUNDLED_CODE_FAMILY;
+        let font = code_text_font(cx, bundled);
+        assert_eq!(font.family, bundled);
+        assert!(font.features.tag_value_list().is_empty(), "{font:?}");
     }
 }
