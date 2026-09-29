@@ -157,14 +157,22 @@ class WorkflowPolicyTests(unittest.TestCase):
             self.assertNotIn("\n        if:", steps[index[name]])
         self.assertNotIn("permissions:", job)
 
-    def test_arch_job_runs_the_debug_test_phases_unprivileged_in_a_pinned_image_without_a_cache(self):
+    def test_arch_job_runs_the_debug_test_phases_unprivileged_in_a_pinned_image_with_the_shared_cache(self):
         job, steps = quality_job_steps("rust-arch")
         _, debug_steps = rust_debug_steps()
         self.assertRegex(job, r"\n    container:\n      image: archlinux:base-devel@sha256:[0-9a-f]{64}\n")
-        # No cache action or setup-rust: nothing is restored or saved, so no
-        # pull request can seed an entry that main would trust.
+        # The cache goes only through setup-rust, whose save is main-only.
         self.assertEqual({use.split("@")[0] for use in re.findall(r"\buses: (\S+)", job)},
-                         {"actions/checkout", "actions/upload-artifact"})
+                         {"actions/checkout", "actions/upload-artifact", "./.github/actions/setup-rust"})
+        setup = [step for step in steps if "uses: ./.github/actions/setup-rust" in step]
+        self.assertEqual(len(setup), 2)
+        for step in setup:
+            options = {line.strip() for line in step.splitlines()}
+            self.assertLessEqual({"profile: debug", "container: archlinux", "run-as: builder"}, options)
+        self.assertIn("          vendor-reuse: true", setup[0].splitlines())
+        self.assertIn("          phase: finish", setup[1].splitlines())
+        # The action owns CARGO_HOME; the job keeps only rustup's home.
+        self.assertNotIn("CARGO_HOME=", job)
         self.assertRegex(job, r"\n    timeout-minutes: \d+\n")
         # Root bypasses file permissions, which permission-refusal tests rely on;
         # only package installation and ownership setup keep the root shell.
@@ -180,9 +188,12 @@ class WorkflowPolicyTests(unittest.TestCase):
             "owner": "chown -R builder",
             "refs": "git pack-refs --all --no-prune",
             "toolchain": "rustup toolchain install",
+            "setup": "vendor-reuse: true",
             "install": "scripts/ci/tools.py install-nextest",
             "tests": "cargo nextest run",
             "doctests": "--name doctests ",
+            "finish": "phase: finish",
+            "summary": "metrics.py summary",
         })
         self.assertEqual(sorted(index, key=index.get), list(index))
         # Git must be installed before checkout, or checkout downloads no .git.
