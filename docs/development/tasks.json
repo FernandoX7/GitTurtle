@@ -1576,6 +1576,45 @@
         "native"
       ],
       "commit": "docs(linux): record GitTurtle under XWayland on Omarchy"
+    },
+    {
+      "id": "ci-arch-warm-cache",
+      "title": "Warm the Arch Linux container job with a trusted Rust cache",
+      "description": "Owner request of 2026-09-29. `Rust tests · archlinux` is cold on every run: 15m43s to 15m47s in quality runs 36599383720, 36608513381, 36618045403, 36620122201 and 36622842027. The warm Ubuntu and macOS test jobs took 3m13s to 5m47s in the same runs whenever their caches hit, so Arch decides when a product pull request goes green. Setup is not the cost: in run 36622842027, container start took 16 s, the pacman upgrade and install 10 s, and the toolchain 6 s. The nextest step took 902 s, almost all of it compiling the whole dependency graph. The lever is a build cache. docs/ci.md (\"No cache\") explains why there is none yet. The setup action keys native identity on `dpkg-query`, which does not exist in the container. A key over the full pacman inventory would churn with nearly every Arch update and evict the Ubuntu and macOS entries from the 10 GB repository quota. And no pull request may write an entry that `main` trusts. Design a key over the inputs that actually change compiled output. Keep Arch's rolling-release coverage. Measure the result on hosted runs. Source and local checks are not enough: this needs hosted cold and warm runs.",
+      "depends_on": [],
+      "scope": [
+        ".github/workflows/quality.yml",
+        ".github/actions/**",
+        "scripts/ci/**",
+        "docs/ci.md",
+        "docs/benchmarks/**"
+      ],
+      "acceptance": [
+        {
+          "id": "cache-identity",
+          "description": "The Arch job restores and saves a Rust build cache. The key names the target and the pinned toolchain (`rustc -vV`), the lockfile and manifests, `vendor/` contents, the profile and flags, and the Arch native inputs that reach compiled output: at least the C compiler, glibc and the linked native libraries' versions, not the whole pacman inventory. `scripts/ci` tests show that changing each keyed input gives a new key and a rebuild. A hit never skips a build or test step. A missing or corrupt cache falls back to a correct cold run."
+        },
+        {
+          "id": "trust-and-budget",
+          "description": "Only pushes to `main` save the Arch entry; pull requests restore it and never write an entry that `main` restores. The entry's size and retention are bounded. docs/ci.md records its size and the repository's cache total against the 10 GB limit, and shows the Ubuntu and macOS entries are not evicted continuously. The job still runs as the unprivileged `builder` account, and no credential is stored."
+        },
+        {
+          "id": "rolling-release",
+          "description": "Every run still upgrades to that day's Arch packages behind the unchanged pacman signature check, and prints the package versions. A change in a keyed native input invalidates the cache instead of reusing objects built against the old libraries."
+        },
+        {
+          "id": "measured",
+          "description": "A dated record under docs/benchmarks/ gives the Arch job's duration and its nextest step's, cold and warm, before and after, with run IDs, hit or miss, restore and save times, and the entry size. On a warm pull-request run with the lockfile, `vendor/` and the toolchain unchanged, the Arch job finishes within 2 minutes of the slowest warm `Rust tests and Clippy` job of the same run, and its `--timings` show the dependencies fresh."
+        },
+        {
+          "id": "documented",
+          "description": "docs/ci.md's Arch section describes the mechanism, the key and its invalidation, replacing the \"No cache\" and \"Cost\" paragraphs. The workflow passes the repository's Actions lint and `scripts/ci` test suite. Action revisions stay pinned by commit."
+        }
+      ],
+      "profiles": [
+        "tooling"
+      ],
+      "commit": "ci: cache Rust builds in the Arch Linux container job"
     }
   ]
 }
