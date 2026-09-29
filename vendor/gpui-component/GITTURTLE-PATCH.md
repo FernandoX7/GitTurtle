@@ -83,3 +83,25 @@ The app adopts the setting where its palette application sets `ring`
 it keeps the default. Remove this part of the patch when upstream Button draws
 a focus indicator of at least 3:1 against its surroundings or offers an
 equivalent setting.
+
+The disabled-hover patch also modifies `src/button/button.rs`. A caller's
+`hover` on a Button is GPUI's `InteractiveElement::hover`, which GPUI refines
+over the element's base style, where the disabled style lives; the kit gates
+only its own variant hover on the Button being enabled. A disabled Button with
+a caller hover therefore lit up under the pointer as though it were available,
+and the app cannot clear the style because `Interactivity::hover_style` is
+private to GPUI. `Button::hover` now takes the caller's style with the same
+signature, shadowing the trait method at every call site on a Button, and
+applies it in the same order as before while the Button is enabled. While it is
+disabled the hover stays registered but refines nothing, so the Button keeps its
+disabled look under the pointer and while pressed. Enabled Buttons are
+unchanged, and group hover styles are not affected.
+
+`cargo test --locked -p gitturtle caller_hover_styles_only_enabled_buttons`
+hovers and presses an enabled and a disabled selected Button, each with a
+caller hover fill, in a synthetic GPUI window and reads their fills from the
+rendered scene. Four app call sites resolve to the method: the shared `button`
+helper's selected hover (`crates/app/src/main.rs`) and the selected mode,
+density and worktree Buttons in `projects.rs`, `settings.rs` and
+`worktrees.rs`. Remove this part of the patch when upstream Button keeps caller
+hover styles off a disabled Button, or GPUI lets the kit clear them.
