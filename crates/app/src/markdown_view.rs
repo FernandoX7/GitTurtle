@@ -1,6 +1,6 @@
 //! Worker-prepared CommonMark/GFM blocks, painted by a bounded native list.
 //! Source remains the only text used for copying and staging.
-use crate::*;
+use crate::{appearance::CodeFont, *};
 use markdown::mdast::Node;
 use std::ops::Range;
 
@@ -1079,14 +1079,7 @@ impl View {
                             .text_color(rgb(colors.muted))
                             .child(format!("{language} · line {}", block.line)),
                     )
-                    .child(
-                        div()
-                            .id(("markdown-code", index))
-                            .overflow_x_scroll()
-                            .font_family("Menlo")
-                            .text_size(appearance::code_text())
-                            .child(source.clone()),
-                    );
+                    .child(code_block(index, source, cx));
             }
             Kind::Table(cells, header) => {
                 row = row
@@ -1189,6 +1182,14 @@ impl View {
         }
         row.into_any_element()
     }
+}
+fn code_block(index: usize, source: &str, cx: &App) -> Stateful<Div> {
+    div()
+        .id(("markdown-code", index))
+        .overflow_x_scroll()
+        .code_font(cx)
+        .text_size(appearance::code_text())
+        .child(source.to_owned())
 }
 impl Drop for View {
     fn drop(&mut self) {
@@ -1504,6 +1505,17 @@ impl Render for View {
 mod tests {
     use super::*;
     use core::prelude::v1::test;
+    #[gpui::test]
+    fn markdown_code_blocks_use_the_code_font(cx: &mut TestAppContext) {
+        let font = shaped_code_font(cx, |probe, cx| {
+            code_block(0, "a != b -> c", cx)
+                .child(probe)
+                .into_any_element()
+        });
+        assert_eq!(font.family, "Desktop Mono");
+        assert_eq!(font.features.is_calt_enabled(), Some(false));
+        assert!(font.features.tag_value_list().contains(&("liga".into(), 0)));
+    }
     #[gpui::test]
     fn captured_document_source_find_keeps_modal_focus_and_repository_context(
         cx: &mut TestAppContext,
