@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import hashlib
 import json
 import os
+import pwd
 import re
 from pathlib import Path
 import shutil
@@ -33,6 +34,26 @@ LIBRARY_SUFFIXES = {".rlib", ".rmeta", ".a", ".so", ".dylib", ".dll"}
 # deterministic registry timestamp (2006-07-24) before any Cargo command.
 VENDOR_PREFIX = "vendor/"
 VENDOR_MTIME_NS = 1_153_704_088 * 10**9
+# The Arch container's inputs to compiled output, by pacman package: the C
+# toolchain and its headers, then every library the job installs for GPUI's
+# build scripts. The rest of the rolling inventory stays out of the key, so
+# an unrelated update does not discard the entry. Keep this in step with the
+# job's install list (a test compares them).
+ARCH_NATIVE_PACKAGES = (
+    "binutils", "clang", "cmake", "gcc", "gcc-libs", "glibc", "linux-api-headers", "llvm-libs", "make", "pkgconf",
+    "fontconfig", "freetype2", "libx11", "libxcb", "libxkbcommon", "libxkbcommon-x11", "openssl",
+    "vulkan-headers", "vulkan-icd-loader", "wayland", "zstd",
+)
+# Environment that changes what rustc, build scripts or cc emit. Paths the
+# action fixes itself (CARGO_HOME, CARGO_TARGET_DIR) are not flags.
+FLAG_NAMES = {"AR", "CC", "CXX", "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "LIBRARY_PATH",
+              "RUSTC", "RUSTC_WRAPPER", "RUSTC_BOOTSTRAP", "RUSTFLAGS", "RUSTDOCFLAGS",
+              "CARGO_ENCODED_RUSTFLAGS", "CARGO_INCREMENTAL", "SDKROOT", "MACOSX_DEPLOYMENT_TARGET"}
+FLAG_PREFIXES = ("AR_", "CC_", "CXX_", "CFLAGS_", "CXXFLAGS_", "CMAKE", "PKG_CONFIG",
+                 "CARGO_BUILD_", "CARGO_PROFILE_", "CARGO_TARGET_")
+FLAG_EXCLUDED = {"CARGO_TARGET_DIR"}
+TRIPLE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
+ACCOUNT = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
 
 
 def profile_limit(profile):
@@ -134,9 +155,62 @@ def native_identity(platform):
         commands = [["xcodebuild", "-version"], ["xcrun", "--sdk", "macosx", "--show-sdk-version"],
                     ["xcrun", "--sdk", "macosx", "--show-sdk-build-version"],
                     ["xcrun", "clang", "--version"], ["sw_vers", "-buildVersion"]]
+    elif platform == "archlinux":
+        # Named packages only: `pacman -Q` fails the step if one is missing,
+        # rather than keying on whatever happened to be installed.
+        commands = [["pacman", "-Q", *sorted(ARCH_NATIVE_PACKAGES)]]
     else:
         raise ValueError("Rust cache supports only the native Quality platforms")
-    return digest(b"\0".join(run(command) for command in commands))
+    outputs = [run(command) for command in commands]
+    if platform == "archlinux":
+        # The day's rolling versions this key was built against, for comparing runs.
+        print("Keyed Arch packages:", " ".join(outputs[0].decode("utf-8", "replace").split()))
+    return digest(b"\0".join(outputs))
+
+
+def toolchain_identity():
+    """The active compiler's full `rustc -vV` and the target triple it builds for.
+
+    The Quality jobs that key a cache compile for the host, so the host line is
+    the target.
+    """
+    output = run(["rustc", "-vV"])
+    hosts = [line.split(b":", 1)[1].strip().decode() for line in output.splitlines() if line.startswith(b"host:")]
+    if len(hosts) != 1 or not TRIPLE.fullmatch(hosts[0]):
+        raise ValueError("rustc reported no single host target")
+    return {"rustc": digest(output), "target": hosts[0]}
+
+
+def flags_identity(environ):
+    """Compiler, linker and Cargo profile settings from the environment, by name."""
+    selected = sorted((name, value) for name, value in environ.items()
+                      if value and name not in FLAG_EXCLUDED
+                      and (name in FLAG_NAMES or name.startswith(FLAG_PREFIXES)))
+    return digest(json.dumps(selected).encode())
+
+
+def run_as(account):
+    """Become the job's unprivileged account before any Cargo storage is touched.
+
+    A container job starts as root. Cargo run as root would leave root-owned
+    registry, lock and target files that the build account cannot update, and
+    permission-refusal tests pass only for an unprivileged user. Changing every
+    user ID from root also clears the effective capabilities.
+    """
+    if not ACCOUNT.fullmatch(account):
+        raise ValueError("unsupported cache account name")
+    entry = pwd.getpwnam(account)
+    if entry.pw_uid == 0:
+        raise ValueError("cache helper refuses to run as root")
+    if os.geteuid() == 0:
+        os.initgroups(account, entry.pw_gid)
+        os.setgid(entry.pw_gid)
+        os.setuid(entry.pw_uid)
+    if (os.getuid(), os.geteuid(), os.getgid(), os.getegid()) != (entry.pw_uid, entry.pw_uid, entry.pw_gid, entry.pw_gid):
+        raise ValueError("cache helper is not running as its account")
+    status = Path("/proc/self/status")
+    if status.exists() and not re.search(r"^CapEff:\s+0+$", status.read_text(), re.MULTILINE):
+        raise ValueError("cache helper kept effective capabilities")
 
 
 def output_file(name, fields):
@@ -460,9 +534,14 @@ def prepare():
     cargo.mkdir(exist_ok=True)
     if cargo.is_symlink() or (root / "target").is_symlink():
         raise ValueError("symlinked cache roots refused")
+    container = os.environ.get("CACHE_CONTAINER", "")
+    if container not in {"", "archlinux"}:
+        raise ValueError("unsupported cache container")
     inputs = keyed_inputs(root)
     identity = digest(json.dumps({"profile": profile, "source": source_identity(root, inputs),
-                                 "native": native_identity(os.environ["RUNNER_OS"])}, sort_keys=True).encode())
+                                 "native": native_identity(container or os.environ["RUNNER_OS"]),
+                                 "toolchain": toolchain_identity(), "flags": flags_identity(os.environ)},
+                                 sort_keys=True).encode())
     if vendor_reuse == "false":
         # Release builds must not link vendored objects from an earlier run:
         # checkout times leave any restored vendored output dirty, so Cargo
@@ -475,7 +554,9 @@ def prepare():
             # A refusal rewinds nothing; a later I/O error may leave some sources
             # at checkout time. Either way those packages rebuild: slower, never stale.
             vendor_mtimes = "refused"
-    output_file("GITHUB_ENV", {"CI_RUST_CACHE_KEY": f"{profile}-{identity}",
+    # The container name keeps its entries apart from the Ubuntu job's in the
+    # cache list; both run on Linux x64 runners.
+    output_file("GITHUB_ENV", {"CI_RUST_CACHE_KEY": "-".join(filter(None, (profile, container, identity))),
                               "CI_RUST_CACHE_PROFILE": profile,
                               "CI_RUST_CACHE_VENDOR_MTIMES": vendor_mtimes,
                               "CI_RUST_CACHE_LOCK": digest((root / "Cargo.lock").read_bytes()),
@@ -504,6 +585,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=("prepare", "start", "restored", "bound"))
     args = parser.parse_args()
+    if os.environ.get("CACHE_RUN_AS"):
+        run_as(os.environ["CACHE_RUN_AS"])
     if args.phase == "prepare":
         prepare()
     elif args.phase == "start":

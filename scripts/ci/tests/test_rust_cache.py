@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -14,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[3]
 SPEC = importlib.util.spec_from_file_location("rust_cache", ROOT / ".github/actions/setup-rust/cache.py")
 cache = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(cache)
+SPEC_TOOLCHAIN = cache.toolchain_identity
 
 
 class FakeClock:
@@ -45,6 +47,10 @@ class CacheFixture(unittest.TestCase):
         self.patch = patch.dict(os.environ, self.env)
         self.patch.start()
         self.addCleanup(self.patch.stop)
+        # prepare keys on `rustc -vV`; tests that vary it patch it themselves.
+        toolchain = patch.object(cache, "toolchain_identity", return_value={"rustc": "rustc", "target": "x86_64-unknown-linux-gnu"})
+        toolchain.start()
+        self.addCleanup(toolchain.stop)
 
     def file(self, path, content=b"x"):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -171,7 +177,8 @@ class CacheFixture(unittest.TestCase):
                     [step for step in steps if "phase: finish" in step])
 
         quality_setup, quality_finish = setup_steps("quality.yml")
-        self.assertEqual(len(quality_setup), 2)
+        # The Ubuntu and macOS debug, their release builds and Arch.
+        self.assertEqual(len(quality_setup), 3)
         self.assertTrue(all("vendor-reuse: true" in step for step in quality_setup))
         self.assertFalse(any("vendor-reuse" in step for step in quality_finish))
         release_setup, _ = setup_steps("release.yml")
@@ -196,6 +203,157 @@ class CacheFixture(unittest.TestCase):
             self.assertIn("if: inputs.phase == 'setup'", steps[index])
         self.assertIn("CACHE_VENDOR_REUSE: ${{ inputs.vendor-reuse }}", steps[prepare])
         self.assertEqual(sum("CACHE_VENDOR_REUSE" in step for step in steps), 2)
+
+    def arch_key(self, versions, rustc, profile="debug", environ=None):
+        """prepare's key in the Arch container, with pacman and rustc answered by the fixture."""
+        real = cache.run
+        commands = []
+
+        def answer(command, **kwargs):
+            commands.append(command)
+            if command[:2] == ["pacman", "-Q"]:
+                return "".join(f"{name} {versions[name]}\n" for name in command[2:]).encode()
+            if command == ["rustc", "-vV"]:
+                return rustc.encode()
+            return real(command, **kwargs)
+
+        settings = {"CACHE_PROFILE": profile, "RUNNER_OS": "Linux", "CACHE_CONTAINER": "archlinux",
+                    "CACHE_VENDOR_REUSE": "true", **(environ or {})}
+        with patch.dict(os.environ, settings), patch.object(cache, "run", side_effect=answer), \
+                patch.object(cache, "toolchain_identity", side_effect=SPEC_TOOLCHAIN), patch("builtins.print"):
+            cache.prepare()
+        lines = Path(self.env["GITHUB_ENV"]).read_text().splitlines()
+        Path(self.env["GITHUB_ENV"]).write_text("")
+        self.assertIn(["pacman", "-Q", *sorted(cache.ARCH_NATIVE_PACKAGES)], commands)
+        return dict(line.split("=", 1) for line in lines)["CI_RUST_CACHE_KEY"]
+
+    def test_arch_key_changes_with_every_keyed_input_and_the_old_entry_is_not_reused(self):
+        self.init_git()
+        versions = {name: "1.0-1" for name in cache.ARCH_NATIVE_PACKAGES}
+        rustc = "rustc 1.98.0 (abc 2026-09-01)\nbinary: rustc\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.0\n"
+        baseline = self.arch_key(versions, rustc)
+        self.assertRegex(baseline, r"^debug-archlinux-[0-9a-f]{64}$")
+        # Checkout times, product sources, unkeyed packages and unrelated
+        # environment keep the entry.
+        self.file(self.root / "crates/app/src/main.rs", b"changed product source")
+        self.assertEqual(baseline, self.arch_key(versions, rustc, environ={"CARGO_TERM_COLOR": "always", "GITHUB_SHA": "f" * 40,
+                                                                            "CARGO_TARGET_DIR": str(self.base / "elsewhere")}))
+        changes = {
+            "target": lambda: (versions, rustc.replace("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"), "debug", None),
+            "toolchain": lambda: (versions, rustc.replace("1.98.0", "1.99.0"), "debug", None),
+            "profile": lambda: (versions, rustc, "release", None),
+            **{f"flag {name}": (lambda name=name: (versions, rustc, "debug", {name: "-C changed"}))
+               for name in ("RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_PROFILE_DEV_DEBUG", "CARGO_INCREMENTAL",
+                            "CC", "CFLAGS", "LDFLAGS", "CMAKE_GENERATOR", "PKG_CONFIG_PATH")},
+            **{f"package {name}": (lambda name=name: ({**versions, name: "1.0-2"}, rustc, "debug", None))
+               for name in cache.ARCH_NATIVE_PACKAGES},
+        }
+        keys = {baseline}
+        for label, change in changes.items():
+            with self.subTest(change=label):
+                changed_versions, changed_rustc, profile, environ = change()
+                key = self.arch_key(changed_versions, changed_rustc, profile, environ)
+                self.assertNotIn(key, keys)
+                keys.add(key)
+        for path in ("Cargo.lock", "Cargo.toml", "crates/app/Cargo.toml", "vendor/tool/native/source.c"):
+            with self.subTest(change=path):
+                self.file(self.root / path, b"changed " + path.encode())
+                key = self.arch_key(versions, rustc)
+                self.assertNotIn(key, keys)
+                keys.add(key)
+        # A changed key finds at best an older entry by prefix, never the exact
+        # one: upstream reports that as no hit, and the helper deletes the
+        # restored payload before Cargo runs, so every crate rebuilds.
+        args = self.restore(hit="false")
+        self.assertFalse(any(path.exists() for path in self.paths))
+        self.assertFalse(args.kwargs["cache"]["hit"])
+
+    def test_toolchain_identity_names_the_full_version_and_one_target(self):
+        verbose = b"rustc 1.98.0\nhost: x86_64-unknown-linux-gnu\nLLVM version: 21.1.0\n"
+        with patch.object(cache, "run", return_value=verbose):
+            identity = SPEC_TOOLCHAIN()
+        self.assertEqual(identity["target"], "x86_64-unknown-linux-gnu")
+        with patch.object(cache, "run", return_value=verbose.replace(b"21.1.0", b"21.1.1")):
+            self.assertNotEqual(SPEC_TOOLCHAIN()["rustc"], identity["rustc"])
+        for output in (b"rustc 1.98.0\n", verbose + b"host: aarch64-unknown-linux-gnu\n", b"host: x86 64\n"):
+            with self.subTest(output=output), patch.object(cache, "run", return_value=output):
+                with self.assertRaises(ValueError):
+                    SPEC_TOOLCHAIN()
+
+    def test_arch_keys_every_library_the_job_installs_and_never_the_whole_inventory(self):
+        text = (ROOT / ".github/workflows/quality.yml").read_text()
+        job = text.split("\n  rust-arch:\n", 1)[1].split("\n  image-privacy:\n", 1)[0]
+        command = re.search(r"pacman -Su ((?:[^\n]*\\\n)+[^\n]*)\n", job).group(1)
+        installed = set(command.replace("\\", " ").split()) - {"--noconfirm", "--noprogressbar", "--needed"}
+        # Tools whose versions never reach compiled output; rustup's toolchain
+        # is keyed by `rustc -vV` instead.
+        tools = {"base-devel", "git", "openssh", "python", "rustup", "ca-certificates"}
+        self.assertLessEqual(installed - tools, set(cache.ARCH_NATIVE_PACKAGES))
+        self.assertLessEqual({"gcc", "glibc", "binutils", "clang", "linux-api-headers"}, set(cache.ARCH_NATIVE_PACKAGES))
+        with patch.object(cache, "run", return_value=b"gcc 15.2.1-1\n") as run, patch("builtins.print") as shown:
+            cache.native_identity("archlinux")
+        self.assertEqual(run.call_args.args[0], ["pacman", "-Q", *sorted(cache.ARCH_NATIVE_PACKAGES)])
+        self.assertEqual(shown.call_args.args, ("Keyed Arch packages:", "gcc 15.2.1-1"))
+
+    def test_run_as_becomes_the_account_and_refuses_root_or_a_different_user(self):
+        account = type("Entry", (), {"pw_uid": 1001, "pw_gid": 1001})()
+        ids = {"uid": 0, "gid": 0}
+        calls = []
+
+        def become(kind):
+            def change(value):
+                calls.append((kind, value))
+                ids[kind] = value
+            return change
+
+        with patch.object(cache.pwd, "getpwnam", return_value=account), \
+                patch.object(os, "geteuid", side_effect=lambda: ids["uid"]), patch.object(os, "getuid", side_effect=lambda: ids["uid"]), \
+                patch.object(os, "getegid", side_effect=lambda: ids["gid"]), patch.object(os, "getgid", side_effect=lambda: ids["gid"]), \
+                patch.object(os, "initgroups", side_effect=lambda name, gid: calls.append(("groups", name, gid)), create=True), \
+                patch.object(os, "setgid", side_effect=become("gid")), patch.object(os, "setuid", side_effect=become("uid")):
+            cache.run_as("builder")
+            # Groups and group before the user, which gives up the right to change them.
+            self.assertEqual(calls, [("groups", "builder", 1001), ("gid", 1001), ("uid", 1001)])
+            calls.clear()
+            cache.run_as("builder")
+            self.assertEqual(calls, [])
+            ids.update(uid=1002, gid=1002)
+            with self.assertRaises(ValueError):
+                cache.run_as("builder")
+            account.pw_uid = 0
+            with self.assertRaises(ValueError):
+                cache.run_as("builder")
+        for name in ("", "Builder", "builder;id", "-builder", "b" * 33):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                cache.run_as(name)
+
+    def test_container_mode_hands_every_cargo_command_and_the_restore_to_the_account(self):
+        text = (ROOT / ".github/actions/setup-rust/action.yml").read_text()
+        steps = text.split("\nruns:\n", 1)[1].split("\n    - name: ")[1:]
+        helper = [step for step in steps if "cache.py " in step]
+        self.assertEqual(len(helper), 4)
+        for step in helper:
+            with self.subTest(step=step.splitlines()[0]):
+                self.assertIn("CACHE_RUN_AS: ${{ inputs.run-as }}", step)
+        upstream = [step for step in steps if "uses: Swatinem/rust-cache@" in step]
+        for step in upstream:
+            self.assertIn("cmd-format: ${{ inputs.run-as != '' && format('setpriv --reuid={0} --regid={0} --init-groups -- {{0}}', inputs.run-as) || '{0}' }}", step)
+        index = {name: next(i for i, step in enumerate(steps) if marker in step) for name, marker in {
+            "restore": "id: restore", "owner": "chown -R -h -P", "restored": "cache.py restored"}.items()}
+        self.assertEqual(sorted(index, key=index.get), list(index))
+        self.assertIn("if: inputs.phase == 'setup' && inputs.run-as != ''", steps[index["owner"]])
+        # The container brings its own packages and toolchain.
+        for marker in ("apt-get install", "rustup show active-toolchain"):
+            step = next(step for step in steps if marker in step)
+            self.assertIn("&& inputs.container == ''", step.split("\n", 2)[1])
+        validation = steps[0]
+        self.assertIn('case "$CACHE_CONTAINER" in ""|archlinux) ;; *) exit 2 ;; esac', validation)
+        self.assertIn('if [ -n "$CACHE_CONTAINER" ] && [ -z "$CACHE_RUN_AS" ]; then exit 2; fi', validation)
+        self.init_git()
+        with patch.dict(os.environ, {"CACHE_PROFILE": "debug", "RUNNER_OS": "Linux", "CACHE_CONTAINER": "alpine"}), \
+                patch.object(cache, "native_identity", return_value="native"):
+            with self.assertRaises(ValueError):
+                cache.prepare()
 
     def test_native_versions_are_part_of_compatibility(self):
         for platform in ("Linux", "macOS"):

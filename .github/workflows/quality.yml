@@ -305,7 +305,8 @@ jobs:
   # official image is pinned by digest: tag base-devel, pushed 2026-09-21 and
   # read from the Docker Hub registry on 2026-09-28. Arch is a rolling release,
   # so `pacman -Syu` still installs that day's packages; docs/ci.md explains how
-  # to refresh the pin. No Rust cache is restored or saved (see docs/ci.md).
+  # to refresh the pin. Its Rust cache is keyed on the pacman versions of the
+  # packages that reach compiled output, and only main saves it (docs/ci.md).
   rust-arch:
     needs: changes
     if: needs.changes.outputs.product == 'true'
@@ -318,13 +319,15 @@ jobs:
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: 1
       GIT_CONFIG_NOSYSTEM: 1
-      # The cached Rust jobs get this from rust-cache; this job has no cache.
+      # rust-cache also exports this after its restore; set here, it holds for
+      # the toolchain step and when that restore step fails.
       CARGO_INCREMENTAL: 0
       LANG: C.UTF-8
     # The container starts as root, which ignores file permissions: the tests
     # that expect a refused write would fail and others skip themselves. Every
     # run step therefore executes as an unprivileged user that owns the
-    # checkout. Only the three setup steps that name their shell run as root.
+    # checkout. Only the three setup steps that name their shell run as root;
+    # the setup action runs its helper and Cargo as the same account.
     defaults:
       run:
         shell: setpriv --reuid=builder --regid=builder --init-groups -- bash --noprofile --norc -euo pipefail {0}
@@ -373,10 +376,11 @@ jobs:
           setpriv --reuid=builder --regid=builder --init-groups -- id
           # setpriv also sets the saved UID, so the kernel drops every capability.
           setpriv --reuid=builder --regid=builder --init-groups -- grep -qE '^CapEff:[[:space:]]+0+$' /proc/self/status
+      # The setup action sets CARGO_HOME to its own isolated cache root.
       - name: Isolate CI Git configuration and Rust storage
         run: |
           printf 'GIT_CONFIG_GLOBAL=%s/gitturtle-ci-gitconfig\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
-          printf 'RUSTUP_HOME=%s/rustup\nCARGO_HOME=%s/cargo\n' "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'RUSTUP_HOME=%s/rustup\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       # Checkout runs as root and records only this workspace as safe.directory
       # in the isolated file above. After the chown the build user owns the
       # repository, so its Git commands pass the ownership check on their own.
@@ -398,6 +402,14 @@ jobs:
           rustup show active-toolchain
           rustc --version
           cargo --version
+      # After the toolchain, whose `rustc -vV` is part of the key.
+      - name: Prepare Rust and restore bounded dependencies
+        uses: ./.github/actions/setup-rust
+        with:
+          profile: debug
+          vendor-reuse: true
+          container: archlinux
+          run-as: builder
       - name: Install pinned, checksum-verified cargo-nextest
         run: python3 scripts/ci/metrics.py measure --name nextest-install --directory "$RUNNER_TEMP/ci-metrics" -- python3 scripts/ci/tools.py install-nextest --directory "$RUNNER_TEMP/cargo-nextest" --path-file "$GITHUB_PATH"
       # The same two phases as rust-debug, which explains the doctest filter.
@@ -405,6 +417,13 @@ jobs:
         run: python3 scripts/ci/metrics.py measure --name tests --directory "$RUNNER_TEMP/ci-metrics" -- cargo nextest run --locked --workspace -P ci --no-fail-fast --timings
       - name: Locked workspace doctests
         run: python3 scripts/ci/metrics.py measure --name doctests --directory "$RUNNER_TEMP/ci-metrics" -- cargo test --locked --workspace --timings -- "(line "
+      - name: Prepare bounded successful-main debug cache save
+        uses: ./.github/actions/setup-rust
+        with:
+          phase: finish
+          profile: debug
+          container: archlinux
+          run-as: builder
       - name: Summarize CI measurements
         if: always()
         run: python3 scripts/ci/metrics.py summary --directory "$RUNNER_TEMP/ci-metrics" >> "$GITHUB_STEP_SUMMARY"
