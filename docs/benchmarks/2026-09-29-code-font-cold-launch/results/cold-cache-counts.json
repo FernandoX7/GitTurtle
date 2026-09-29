@@ -1,0 +1,222 @@
+{
+ "counted": "after the runs, from each cold launch's cache directory; the driver does not record them",
+ "launches": [
+  {
+   "run": 1,
+   "round": 0,
+   "lookup_finished": false,
+   "cache_files": 28,
+   "directories": 7,
+   "cache_bytes_unique": 155686,
+   "symlinks": 21
+  },
+  {
+   "run": 1,
+   "round": 1,
+   "lookup_finished": true,
+   "cache_files": 48,
+   "directories": 12,
+   "cache_bytes_unique": 1507552,
+   "symlinks": 36
+  },
+  {
+   "run": 1,
+   "round": 2,
+   "lookup_finished": true,
+   "cache_files": 48,
+   "directories": 12,
+   "cache_bytes_unique": 1507552,
+   "symlinks": 36
+  },
+  {
+   "run": 1,
+   "round": 3,
+   "lookup_finished": true,
+   "cache_files": 48,
+   "directories": 12,
+   "cache_bytes_unique": 1507552,
+   "symlinks": 36
+  },
+  {
+   "run": 1,
+   "round": 4,
+   "lookup_finished": true,
+   "cache_files": 48,
+   "directories": 12,
+   "cache_bytes_unique": 1507552,
+   "symlinks": 36
+  },
+  {
+   "run": 1,
+   "round": 5,
+   "lookup_finished": true,
+   "cache_files": 48,
+   "directories": 12,
+   "cache_bytes_unique": 1507552,
+   "symlinks": 36
+  },
+  {
+   "run": 1,
+   "round": 6,
+   "lookup_finished": true,
+   "cache_files": 48,
+   "directories": 12,
+   "cache_bytes_unique": 1507552,
+   "symlinks": 36
+  },
+  {
+   "run": 1,
+   "round": 7,
+   "lookup_finished": true,
+   "cache_files": 48,
+   "directories": 12,
+   "cache_bytes_unique": 1507552,
+   "symlinks": 36
+  },
+  {
+   "run": 1,
+   "round": 8,
+   "lookup_finished": true,
+   "cache_files": 48,
+   "directories": 12,
+   "cache_bytes_unique": 1507552,
+   "symlinks": 36
+  },
+  {
+   "run": 1,
+   "round": 9,
+   "lookup_finished": true,
+   "cache_files": 48,
+   "directories": 12,
+   "cache_bytes_unique": 1507552,
+   "symlinks": 36
+  },
+  {
+   "run": 1,
+   "round": 10,
+   "lookup_finished": true,
+   "cache_files": 48,
+   "directories": 12,
+   "cache_bytes_unique": 1507552,
+   "symlinks": 36
+  },
+  {
+   "run": 1,
+   "round": 11,
+   "lookup_finished": true,
+   "cache_files": 48,
+   "directories": 12,
+   "cache_bytes_unique": 1507552,
+   "symlinks": 36
+  },
+  {
+   "run": 2,
+   "round": 0,
+   "lookup_finished": false,
+   "cache_files": 28,
+   "directories": 7,
+   "cache_bytes_unique": 155686,
+   "symlinks": 21
+  },
+  {
+   "run": 2,
+   "round": 1,
+   "lookup_finished": true,
+   "cache_files": 48,
+   "directories": 12,
+   "cache_bytes_unique": 1507552,
+   "symlinks": 36
+  },
+  {
+   "run": 2,
+   "round": 2,
+   "lookup_finished": true,
+   "cache_files": 48,
+   "directories": 12,
+   "cache_bytes_unique": 1507552,
+   "symlinks": 36
+  },
+  {
+   "run": 2,
+   "round": 3,
+   "lookup_finished": true,
+   "cache_files": 48,
+   "directories": 12,
+   "cache_bytes_unique": 1507552,
+   "symlinks": 36
+  },
+  {
+   "run": 2,
+   "round": 4,
+   "lookup_finished": true,
+   "cache_files": 48,
+   "directories": 12,
+   "cache_bytes_unique": 1507552,
+   "symlinks": 36
+  },
+  {
+   "run": 2,
+   "round": 5,
+   "lookup_finished": true,
+   "cache_files": 48,
+   "directories": 12,
+   "cache_bytes_unique": 1507552,
+   "symlinks": 36
+  },
+  {
+   "run": 2,
+   "round": 6,
+   "lookup_finished": true,
+   "cache_files": 48,
+   "directories": 12,
+   "cache_bytes_unique": 1507552,
+   "symlinks": 36
+  },
+  {
+   "run": 2,
+   "round": 7,
+   "lookup_finished": true,
+   "cache_files": 48,
+   "directories": 12,
+   "cache_bytes_unique": 1507552,
+   "symlinks": 36
+  },
+  {
+   "run": 2,
+   "round": 8,
+   "lookup_finished": true,
+   "cache_files": 48,
+   "directories": 12,
+   "cache_bytes_unique": 1507552,
+   "symlinks": 36
+  },
+  {
+   "run": 2,
+   "round": 9,
+   "lookup_finished": true,
+   "cache_files": 48,
+   "directories": 12,
+   "cache_bytes_unique": 1507552,
+   "symlinks": 36
+  },
+  {
+   "run": 2,
+   "round": 10,
+   "lookup_finished": true,
+   "cache_files": 48,
+   "directories": 12,
+   "cache_bytes_unique": 1507552,
+   "symlinks": 36
+  },
+  {
+   "run": 2,
+   "round": 11,
+   "lookup_finished": true,
+   "cache_files": 48,
+   "directories": 12,
+   "cache_bytes_unique": 1507552,
+   "symlinks": 36
+  }
+ ],
+ "note": "cache_files counts directory entries: fontconfig writes one cache file per scanned directory plus three versioned symlinks to it; cache_bytes_unique sums the distinct files"
+}
