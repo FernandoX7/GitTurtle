@@ -339,6 +339,49 @@ pub struct ReadabilityIssue {
     pub minimum: f64,
 }
 
+impl ReadabilityForeground {
+    /// The palette tokens this color is read from: the token itself, or for a
+    /// graph lane the canvas and text whose brightness chooses the lane set
+    /// ([`Palette::is_light`]).
+    pub fn tokens(self) -> impl Iterator<Item = TokenKind> {
+        match self {
+            Self::Token(kind) => [Some(kind), None],
+            Self::Lane(_) => [Some(TokenKind::Canvas), Some(TokenKind::Text)],
+        }
+        .into_iter()
+        .flatten()
+    }
+}
+
+impl ReadabilityBackground {
+    /// The palette tokens this surface is read from: the token itself, or for
+    /// the hovered selected row the selected and accent it blends.
+    pub fn tokens(self) -> impl Iterator<Item = TokenKind> {
+        match self {
+            Self::Token(kind) => [Some(kind), None],
+            Self::SelectedRowHover => [Some(TokenKind::Selected), Some(TokenKind::Accent)],
+        }
+        .into_iter()
+        .flatten()
+    }
+}
+
+impl ReadabilityIssue {
+    /// Every palette token the issue's measure reads, so an edit to any of
+    /// them can move or clear it: both colors' tokens, and for the pressed
+    /// step every surface the two fills are composited over.
+    pub fn tokens(&self) -> impl Iterator<Item = TokenKind> {
+        let surfaces: &[ReadabilityBackground] = match self.measure {
+            ReadabilityMeasure::Contrast => &[],
+            ReadabilityMeasure::Step => &SURFACES,
+        };
+        self.foreground
+            .tokens()
+            .chain(self.background.tokens())
+            .chain(surfaces.iter().flat_map(|surface| surface.tokens()))
+    }
+}
+
 impl fmt::Display for ReadabilityForeground {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -376,6 +419,17 @@ impl fmt::Display for ReadabilityIssue {
     }
 }
 
+/// The surfaces text, icons and controls sit on, which several rules and the
+/// pressed step judge against.
+const SURFACES: [ReadabilityBackground; 6] = [
+    ReadabilityBackground::Token(TokenKind::Canvas),
+    ReadabilityBackground::Token(TokenKind::Panel),
+    ReadabilityBackground::Token(TokenKind::Subtle),
+    ReadabilityBackground::Token(TokenKind::Hover),
+    ReadabilityBackground::Token(TokenKind::Selected),
+    ReadabilityBackground::SelectedRowHover,
+];
+
 const TEXT: f64 = 4.5;
 pub(super) const GRAPHIC: f64 = 3.0;
 const SELECTED_SURFACE: f64 = 1.15;
@@ -400,23 +454,26 @@ impl Palette {
     /// where they are closest, in one 8-bit channel: the `selected` and `hover` layers of
     /// `Palette::control_fill`, which over `panel` are those tokens themselves, composited over
     /// each of the six row surfaces. A step in hue counts, so the measure is a channel.
+    /// `ReadabilityIssue::tokens` names these surfaces' tokens for the step.
     pub fn pressed_step(self) -> u32 {
         let (hover, pressed) = (
             self.control_fill(self.hover),
             self.control_fill(self.selected),
         );
-        [
-            self.canvas,
-            self.panel,
-            self.subtle,
-            self.hover,
-            self.selected,
-            self.row_hover(true),
-        ]
-        .into_iter()
-        .map(|surface| channel_distance(composite(pressed, surface), composite(hover, surface)))
-        .min()
-        .unwrap_or(0)
+        SURFACES
+            .into_iter()
+            .map(|surface| self.background_color(surface))
+            .map(|surface| channel_distance(composite(pressed, surface), composite(hover, surface)))
+            .min()
+            .unwrap_or(0)
+    }
+
+    /// The colour a readability rule measures against.
+    fn background_color(self, background: ReadabilityBackground) -> u32 {
+        match background {
+            ReadabilityBackground::Token(kind) => self.get(kind),
+            ReadabilityBackground::SelectedRowHover => self.row_hover(true),
+        }
     }
 
     /// Every pair in the readability rules that falls below its minimum, grouped by rule.
@@ -425,19 +482,9 @@ impl Palette {
         use ReadabilityBackground::SelectedRowHover;
         use TokenKind::*;
 
-        const SURFACES: [ReadabilityBackground; 6] = [
-            ReadabilityBackground::Token(Canvas),
-            ReadabilityBackground::Token(Panel),
-            ReadabilityBackground::Token(Subtle),
-            ReadabilityBackground::Token(Hover),
-            ReadabilityBackground::Token(Selected),
-            SelectedRowHover,
-        ];
         let token = ReadabilityBackground::Token;
-        let background_color = |background: ReadabilityBackground| match background {
-            ReadabilityBackground::Token(kind) => self.get(kind),
-            SelectedRowHover => self.row_hover(true),
-        };
+        let background_color =
+            |background: ReadabilityBackground| self.background_color(background);
 
         let mut issues = Vec::new();
         let mut check = |foreground: ReadabilityForeground,
@@ -1205,6 +1252,153 @@ mod tests {
             measure: ReadabilityMeasure::Contrast,
             ratio,
             minimum,
+        }
+    }
+
+    /// An issue marks the tokens it names, the selected and accent a hovered
+    /// selected row blends, the canvas and text that choose a graph lane's
+    /// set, and for the pressed step every surface its fills composite over.
+    #[test]
+    fn an_issue_marks_its_named_and_blended_tokens() {
+        use ReadabilityBackground::Token as On;
+        use ReadabilityForeground::{Lane, Token as Fg};
+        use ReadabilityMeasure::{Contrast, Step};
+        let marked = |foreground, background, measure| {
+            let issue = ReadabilityIssue {
+                foreground,
+                background,
+                measure,
+                ratio: 1.,
+                minimum: TEXT,
+            };
+            TokenKind::ALL
+                .into_iter()
+                .filter(|&kind| issue.tokens().any(|token| token == kind))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(marked(Fg(Muted), On(Selected), Contrast), [Selected, Muted]);
+        assert_eq!(
+            marked(Fg(Muted), SelectedRowHover, Contrast),
+            [Selected, Muted, Accent]
+        );
+        assert_eq!(marked(Lane(2), On(Hover), Contrast), [Canvas, Hover, Text]);
+        assert_eq!(
+            marked(Fg(Selected), On(Hover), Step),
+            [Canvas, Panel, Subtle, Hover, Selected, Accent]
+        );
+    }
+
+    /// Every issue marks exactly the tokens its measure reads, derived from
+    /// `readability_issues` rather than copied from it: each token is changed
+    /// alone, one channel at a time through every value, and an issue reads a
+    /// token when some change moves its value or clears it. An issue shows its
+    /// value only while it fails, so two palettes start the derivation. In an
+    /// all-gray palette every contrast pair is 1:1, and canvas and text tie,
+    /// so a one-step change to either flips the lane set; the pressed step is
+    /// 0 there and no surface can lower it. In the step palette the step is
+    /// below its minimum and the fills' opacities differ (hover's is set by
+    /// green and the pressed fill's by blue, both near the top of the
+    /// channel), so every surface, the hovered selected row's accent share
+    /// included, can become the smallest step.
+    #[test]
+    fn every_issue_marks_the_tokens_its_measure_reads() {
+        use std::collections::HashMap;
+        // Colors as numbers: tokens by discriminant, lanes and the hovered
+        // selected row past the last token.
+        let key = |issue: &ReadabilityIssue| {
+            let foreground = match issue.foreground {
+                ReadabilityForeground::Token(kind) => kind as usize,
+                ReadabilityForeground::Lane(index) => TokenKind::ALL.len() + index,
+            };
+            let background = match issue.background {
+                ReadabilityBackground::Token(kind) => kind as usize,
+                SelectedRowHover => TokenKind::ALL.len(),
+            };
+            (
+                foreground,
+                background,
+                issue.measure == ReadabilityMeasure::Step,
+                issue.minimum.to_bits(),
+            )
+        };
+        let mut gray = ThemeChoice::Midnight.palette();
+        for kind in TokenKind::ALL {
+            gray.set(kind, 0x808080);
+        }
+        let mut step = ThemeChoice::Midnight.palette();
+        for (kind, color) in [
+            (Panel, 0x80fafa),
+            (Canvas, 0x80fafa),
+            (Subtle, 0x80fafa),
+            (Hover, 0x7efbfa),
+            (Selected, 0x83fafc),
+            (Accent, 0x83fafc),
+        ] {
+            step.set(kind, color);
+        }
+        let gray_issues: Vec<_> = gray
+            .readability_issues()
+            .into_iter()
+            .filter(|issue| issue.measure == ReadabilityMeasure::Contrast)
+            .collect();
+        let lanes = gray_issues
+            .iter()
+            .filter(|issue| matches!(issue.foreground, ReadabilityForeground::Lane(_)))
+            .count();
+        // Every contrast pair in the rules, 77 token pairs and 24 lane pairs:
+        // a new rule changes this count, and one that passes at 1:1 (a
+        // minimum of 1 or less) is left out and needs its own start palette.
+        assert_eq!(
+            gray_issues.len(),
+            101,
+            "the gray palette fails every contrast pair"
+        );
+        assert_eq!(lanes, 6 * 4, "every lane fails on every gray row state");
+        assert!(
+            gray_issues
+                .iter()
+                .any(|issue| issue.background == SelectedRowHover),
+            "the gray palette judges the hovered selected row"
+        );
+        let step_issues = step.readability_issues();
+        assert!(
+            step_issues
+                .iter()
+                .any(|issue| issue.measure == ReadabilityMeasure::Step),
+            "the step palette has a step warning"
+        );
+
+        for (start, issues) in [(gray, gray_issues), (step, step_issues)] {
+            let mut read = vec![Vec::new(); issues.len()];
+            for kind in TokenKind::ALL {
+                let mut moved = vec![false; issues.len()];
+                for shift in [16, 8, 0] {
+                    for value in 0..=255 {
+                        let mut palette = start;
+                        palette.set(kind, start.get(kind) & !(0xff << shift) | (value << shift));
+                        let after: HashMap<_, _> = palette
+                            .readability_issues()
+                            .iter()
+                            .map(|issue| (key(issue), issue.ratio))
+                            .collect();
+                        for (moved, issue) in moved.iter_mut().zip(&issues) {
+                            *moved |= after.get(&key(issue)) != Some(&issue.ratio);
+                        }
+                    }
+                }
+                for (read, moved) in read.iter_mut().zip(moved) {
+                    if moved {
+                        read.push(kind);
+                    }
+                }
+            }
+            for (issue, read) in issues.iter().zip(read) {
+                let marked: Vec<TokenKind> = TokenKind::ALL
+                    .into_iter()
+                    .filter(|&kind| issue.tokens().any(|token| token == kind))
+                    .collect();
+                assert_eq!(read, marked, "{issue}");
+            }
         }
     }
 

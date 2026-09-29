@@ -343,6 +343,12 @@ struct GitTurtle {
     /// (`views::tests::narrow_history_keeps_the_navigation_choice`).
     #[cfg(test)]
     rail_navigation: std::cell::Cell<Option<(&'static str, &'static str, bool)>>,
+    /// Test-only: the refusal count and accessible name of the History rail's
+    /// polite status node as the last draw of the rail built it, or `None`
+    /// when it drew none
+    /// (`views::tests::narrow_history_announces_the_refused_toggle`).
+    #[cfg(test)]
+    rail_announcement: std::cell::Cell<Option<(usize, &'static str)>>,
     /// Test-only: the palette every draw of this view saw. A Settings theme
     /// switch and a live-preview edit each cost exactly one draw, which
     /// already shows the new palette; see
@@ -465,6 +471,12 @@ struct GitTurtle {
     status: String,
     sidebar: bool,
     history_sidebar: bool,
+    /// Toggle Sidebar presses refused because History is too narrow for its
+    /// navigation. The rail announces each one with a fresh polite status
+    /// node, so a repeated press is heard again. Window-lived and never
+    /// retained: render clears it once narrow History is not drawn, so
+    /// returning there announces nothing stale.
+    navigation_refusals: usize,
     history_width: f32,
     mode: WorkspaceMode,
     restore_commit: Option<String>,
@@ -657,6 +669,8 @@ impl GitTurtle {
             theme_action_tooltips: Default::default(),
             #[cfg(test)]
             rail_navigation: Default::default(),
+            #[cfg(test)]
+            rail_announcement: Default::default(),
             project_pane: project_pane::State::new(cx),
             rename_project: None,
             draft_saver: commit_drafts::DraftSaver::default(),
@@ -770,6 +784,7 @@ impl GitTurtle {
             status: "Open a repository to explore its history".into(),
             sidebar: true,
             history_sidebar: true,
+            navigation_refusals: 0,
             history_width: 900.,
             mode: WorkspaceMode::History,
             restore_commit: None,
