@@ -396,6 +396,29 @@ impl Palette {
         brightness(self.canvas) > brightness(self.text)
     }
 
+    /// How far the shared button's pressed layer stands from its hover layer on the surface
+    /// where they are closest, in one 8-bit channel: the `selected` and `hover` layers of
+    /// `Palette::control_fill`, which over `panel` are those tokens themselves, composited over
+    /// each of the six row surfaces. A step in hue counts, so the measure is a channel.
+    pub fn pressed_step(self) -> u32 {
+        let (hover, pressed) = (
+            self.control_fill(self.hover),
+            self.control_fill(self.selected),
+        );
+        [
+            self.canvas,
+            self.panel,
+            self.subtle,
+            self.hover,
+            self.selected,
+            self.row_hover(true),
+        ]
+        .into_iter()
+        .map(|surface| channel_distance(composite(pressed, surface), composite(hover, surface)))
+        .min()
+        .unwrap_or(0)
+    }
+
     /// Every pair in the readability rules that falls below its minimum, grouped by rule.
     /// Empty for every built-in palette; advisory for custom palettes.
     pub fn readability_issues(self) -> Vec<ReadabilityIssue> {
@@ -501,25 +524,7 @@ impl Palette {
             }
         }
 
-        // A pressed button stays apart from its hover on every surface it sits on: the
-        // `selected` and `hover` layers of `Palette::control_fill`, which over `panel` are
-        // those tokens themselves. A step in hue counts, so the measure is a channel.
-        let (hover, pressed) = (
-            self.control_fill(self.hover),
-            self.control_fill(self.selected),
-        );
-        let step = [
-            self.canvas,
-            self.panel,
-            self.subtle,
-            self.hover,
-            self.selected,
-            self.row_hover(true),
-        ]
-        .into_iter()
-        .map(|surface| channel_distance(composite(pressed, surface), composite(hover, surface)))
-        .min()
-        .unwrap_or(0);
+        let step = self.pressed_step();
         if step < PRESSED_STEP {
             issues.push(ReadabilityIssue {
                 foreground: ReadabilityForeground::Token(Selected),
@@ -688,12 +693,16 @@ pub struct CustomTheme {
 }
 
 /// Which theme the user chose. A built-in serializes as its bare existing string (`"nord"`),
-/// a custom theme as `{"custom": 7}`.
+/// a custom theme as `{"custom": 7}`, and the Omarchy theme as the bare string `"omarchy"`,
+/// which a build without it reads through `ThemeChoice`'s `#[serde(other)]` as Midnight.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "SelectionRepr", into = "SelectionRepr")]
 pub enum ThemeSelection {
     BuiltIn(ThemeChoice),
     Custom(u32),
+    /// Linux: follow the desktop's current Omarchy theme (`appearance::omarchy`). Other
+    /// platforms read and keep it but resolve it to the default theme.
+    Omarchy,
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -702,10 +711,19 @@ struct CustomReference {
     custom: u32,
 }
 
+/// The one string an Omarchy selection is stored as.
+#[derive(Clone, Copy, Serialize, Deserialize)]
+enum DesktopTheme {
+    #[serde(rename = "omarchy")]
+    Omarchy,
+}
+
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(untagged)]
 enum SelectionRepr {
     Custom(CustomReference),
+    // Before `BuiltIn`, whose `#[serde(other)]` would read "omarchy" as Midnight.
+    Desktop(DesktopTheme),
     BuiltIn(ThemeChoice),
 }
 
@@ -713,6 +731,7 @@ impl From<SelectionRepr> for ThemeSelection {
     fn from(repr: SelectionRepr) -> Self {
         match repr {
             SelectionRepr::Custom(reference) => Self::Custom(reference.custom),
+            SelectionRepr::Desktop(DesktopTheme::Omarchy) => Self::Omarchy,
             SelectionRepr::BuiltIn(choice) => Self::BuiltIn(choice),
         }
     }
@@ -722,6 +741,7 @@ impl From<ThemeSelection> for SelectionRepr {
     fn from(selection: ThemeSelection) -> Self {
         match selection {
             ThemeSelection::Custom(custom) => Self::Custom(CustomReference { custom }),
+            ThemeSelection::Omarchy => Self::Desktop(DesktopTheme::Omarchy),
             ThemeSelection::BuiltIn(choice) => Self::BuiltIn(choice),
         }
     }
@@ -741,7 +761,9 @@ impl From<ThemeChoice> for ThemeSelection {
 
 impl ThemeSelection {
     /// The palette this selection names. A custom id missing from `customs` resolves to the
-    /// default theme, which is then also the resolved selection.
+    /// default theme, which is then also the resolved selection. On Linux the Omarchy
+    /// selection stays selected with the default palette until `appearance::omarchy::resolve`
+    /// supplies the desktop's; elsewhere it resolves to the default theme.
     pub fn resolve(self, customs: &[CustomTheme]) -> ResolvedTheme {
         match self {
             Self::BuiltIn(choice) => ResolvedTheme::built_in(choice),
@@ -749,6 +771,13 @@ impl ThemeSelection {
                 || ResolvedTheme::built_in(ThemeChoice::default()),
                 ResolvedTheme::custom,
             ),
+            #[cfg(target_os = "linux")]
+            Self::Omarchy => ResolvedTheme {
+                selection: Self::Omarchy,
+                ..ResolvedTheme::built_in(ThemeChoice::default())
+            },
+            #[cfg(not(target_os = "linux"))]
+            Self::Omarchy => ResolvedTheme::built_in(ThemeChoice::default()),
         }
     }
 }
@@ -2088,6 +2117,45 @@ mod tests {
             ThemeSelection::default(),
             ThemeSelection::BuiltIn(ThemeChoice::default())
         );
+    }
+
+    /// The Omarchy theme is stored as the bare string `"omarchy"`. A build without it reads
+    /// that string through `ThemeChoice`'s `#[serde(other)]`, as Midnight.
+    #[test]
+    fn the_omarchy_selection_is_stored_as_a_string_older_builds_read_as_midnight() {
+        assert_eq!(
+            serde_json::to_string(&ThemeSelection::Omarchy).unwrap(),
+            r#""omarchy""#
+        );
+        assert_eq!(
+            serde_json::from_str::<ThemeSelection>(r#""omarchy""#).unwrap(),
+            ThemeSelection::Omarchy
+        );
+        assert_eq!(
+            serde_json::from_str::<ThemeChoice>(r#""omarchy""#).unwrap(),
+            ThemeChoice::Midnight
+        );
+        // Only that string: another spelling stays an unknown built-in.
+        assert_eq!(
+            serde_json::from_str::<ThemeSelection>(r#""Omarchy""#).unwrap(),
+            ThemeSelection::BuiltIn(ThemeChoice::Midnight)
+        );
+        assert!(serde_json::from_str::<ThemeSelection>(r#"{"omarchy": true}"#).is_err());
+        // Until the desktop's theme is read, the selection keeps the default palette on
+        // Linux; elsewhere it is the default theme.
+        let resolved = ThemeSelection::Omarchy.resolve(&[]);
+        let default = ResolvedTheme::built_in(ThemeChoice::default());
+        if cfg!(target_os = "linux") {
+            assert_eq!(
+                resolved,
+                ResolvedTheme {
+                    selection: ThemeSelection::Omarchy,
+                    ..default
+                }
+            );
+        } else {
+            assert_eq!(resolved, default);
+        }
     }
 
     #[test]

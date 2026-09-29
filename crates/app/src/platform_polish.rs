@@ -273,8 +273,7 @@ pub(super) fn menus(repository: bool, busy: bool, cx: &mut App) {
 
 impl GitTurtle {
     pub(super) fn effective_theme(&self, cx: &App) -> appearance::custom::ResolvedTheme {
-        self.settings
-            .resolved_theme(cx.window_appearance(), &self.custom_themes)
+        self.settings.effective_theme(cx, &self.custom_themes)
     }
     /// The one appearance application path: a Settings switch, a system
     /// appearance change and every theme-editor live-preview edit end here.
@@ -288,6 +287,13 @@ impl GitTurtle {
     /// without altering a pixel they draw. Reusing them is most of the
     /// difference between the frame budget and a full rebuild of the picker.
     pub(super) fn apply_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The desktop's Omarchy theme is followed while it is the selection
+        // (and watched, too, while Settings shows its card).
+        #[cfg(target_os = "linux")]
+        appearance::omarchy::follow(
+            self.settings.theme == appearance::custom::ThemeSelection::Omarchy,
+            cx,
+        );
         // An open theme editor shows its draft through the same path.
         match self.theme_editor.preview() {
             Some(draft) => draft.apply(draft.is_light(), None, cx),
@@ -367,15 +373,18 @@ impl GitTurtle {
         shortcuts::open_help(window, cx);
     }
     pub(super) fn about(&self, window: &mut Window, cx: &mut Context<Self>) {
-        // Diagnostics report built-in keys only: a custom theme reports its base,
-        // so a user-chosen theme name never enters a copied bug report.
+        // Diagnostics report fixed keys only: a custom theme reports its base,
+        // so a user-chosen theme name never enters a copied bug report, and the
+        // Omarchy theme reports "omarchy", not the desktop theme's name.
+        use appearance::custom::ThemeSelection;
         let theme = match self.effective_theme(cx).selection {
-            appearance::custom::ThemeSelection::BuiltIn(choice) => choice,
-            appearance::custom::ThemeSelection::Custom(id) => self
-                .custom_themes
-                .iter()
-                .find(|theme| theme.id == id)
-                .map_or_else(appearance::ThemeChoice::default, |theme| theme.base),
+            ThemeSelection::Custom(id) => ThemeSelection::BuiltIn(
+                self.custom_themes
+                    .iter()
+                    .find(|theme| theme.id == id)
+                    .map_or_else(appearance::ThemeChoice::default, |theme| theme.base),
+            ),
+            selection => selection,
         };
         let report = build_info::diagnostics(
             window.scale_factor(),

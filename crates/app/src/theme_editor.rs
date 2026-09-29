@@ -527,13 +527,16 @@ fn read_theme_document(path: &std::path::Path) -> Result<Vec<u8>, String> {
 impl GitTurtle {
     /// The built-in the active theme derives from: itself, or a custom theme's base.
     fn active_base(&self, cx: &App) -> ThemeChoice {
-        match self.effective_theme(cx).selection {
+        let effective = self.effective_theme(cx);
+        match effective.selection {
             ThemeSelection::BuiltIn(choice) => choice,
             ThemeSelection::Custom(id) => self
                 .custom_themes
                 .iter()
                 .find(|theme| theme.id == id)
                 .map_or_else(ThemeChoice::default, |theme| theme.base),
+            // The Omarchy theme has no base: the built-in of its lightness stands in.
+            ThemeSelection::Omarchy => appearance::custom::fallback_base(effective.palette),
         }
     }
 
@@ -2920,7 +2923,7 @@ mod tests {
                 .iter()
                 .filter_map(|(drawn, body)| match drawn {
                     ThemeSelection::Custom(id) => Some((*id, body.read(cx).renders())),
-                    ThemeSelection::BuiltIn(_) => None,
+                    ThemeSelection::BuiltIn(_) | ThemeSelection::Omarchy => None,
                 })
                 .collect()
         })
@@ -2937,7 +2940,7 @@ mod tests {
                 .iter()
                 .filter_map(|(drawn, body)| match drawn {
                     ThemeSelection::Custom(id) => Some((*id, body.read(cx).palette_changes())),
-                    ThemeSelection::BuiltIn(_) => None,
+                    ThemeSelection::BuiltIn(_) | ThemeSelection::Omarchy => None,
                 })
                 .collect()
         })
@@ -6491,7 +6494,7 @@ mod tests {
         cx.update(|window, _| window.activate_window());
         settle(cx);
         let selected = cx
-            .read(|cx| app.read(cx).selected_theme_card())
+            .read(|cx| app.read(cx).selected_theme_card(cx))
             .expect("a card is selected");
         click(cx, "custom-themes-new");
         let form = form(cx, &app);
@@ -6531,7 +6534,7 @@ mod tests {
         cx.update(|window, _| window.activate_window());
         settle(cx);
         let from = cx
-            .read(|cx| app.read(cx).selected_theme_card())
+            .read(|cx| app.read(cx).selected_theme_card(cx))
             .expect("a card is selected");
         let to = ThemeChoice::ALL
             .into_iter()
@@ -7270,6 +7273,7 @@ mod tests {
                         ThemeSelection::BuiltIn(choice) => {
                             format!("settings-theme-{}", choice as usize)
                         }
+                        ThemeSelection::Omarchy => "settings-theme-omarchy".into(),
                     },
                 );
                 let name = bounds(cx, format!("theme-name-{miniature}"));

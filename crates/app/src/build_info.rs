@@ -62,11 +62,18 @@ fn session_backend() -> &'static str {
 
 pub fn diagnostics(
     scale: f32,
-    theme: crate::appearance::ThemeChoice,
+    theme: crate::appearance::custom::ThemeSelection,
     density: crate::appearance::Density,
     interface_size: u8,
     code_size: u8,
 ) -> String {
+    use crate::appearance::custom::ThemeSelection;
+    let theme = match theme {
+        ThemeSelection::BuiltIn(choice) => json!(choice),
+        ThemeSelection::Omarchy => json!("omarchy"),
+        // The caller reports a custom theme by its base; an id alone names nothing.
+        ThemeSelection::Custom(_) => json!("custom"),
+    };
     let mut report = identity();
     report["display"] = json!({
         "backend": session_backend(),
@@ -89,14 +96,26 @@ mod tests {
 
     #[test]
     fn diagnostics_include_compiled_identity_and_only_allowlisted_display_settings() {
+        use crate::appearance::custom::ThemeSelection;
         let report: Value = serde_json::from_str(&diagnostics(
             1.25,
-            crate::appearance::ThemeChoice::Midnight,
+            ThemeSelection::BuiltIn(crate::appearance::ThemeChoice::Midnight),
             crate::appearance::Density::Compact,
             13,
             15,
         ))
         .unwrap();
+        assert_eq!(report["display"]["theme"], "midnight");
+        // The Omarchy theme is a fixed key, never the desktop theme's name.
+        let omarchy: Value = serde_json::from_str(&diagnostics(
+            1.,
+            ThemeSelection::Omarchy,
+            crate::appearance::Density::Comfortable,
+            13,
+            12,
+        ))
+        .unwrap();
+        assert_eq!(omarchy["display"]["theme"], "omarchy");
         assert_eq!(report["source_revision"], REVISION);
         assert_eq!(report["target"], TARGET);
         assert_eq!(report["profile"], PROFILE);

@@ -240,6 +240,23 @@ code text, which uses the embedded DejaVu Sans Mono unless **Use the desktop's
 monospace font** is turned on in Settings, which follows Omarchy's font
 (JetBrainsMono Nerd Font by default).
 
+**Settings** offers an **Omarchy** theme in a **Desktop** group above the other
+themes. It follows your current Omarchy theme, including each switch while it
+is selected, and turns **Follow system appearance** off while in use. GitTurtle
+reads `~/.local/state/omarchy/current/theme/colors.toml`, the `theme.name` file
+beside `theme/`, and whether the theme has a `light.mode` file. It reads them at
+launch, whenever its window regains focus and when you choose the card, watches
+them while the Omarchy theme is selected or Settings is open, and never writes
+under `~/.local/state/omarchy`. Colors resolve the way Omarchy's own
+`omarchy-theme-color` resolves them. That includes themes whose `colors.toml`
+Omarchy generated from an `alacritty.toml`, which name only `color0` to
+`color15`, and the older short names such as `bg` and `fg`. The card appears
+only when that `colors.toml` exists. A file that cannot be used keeps the last
+colors read (or Midnight): the card says it is unavailable and which colors it
+keeps, and a line under it gives the reason, such as a missing color or a
+permission problem. The [user guide](user-guide.md) describes the
+theme.
+
 Quality CI also builds the workspace and runs its tests in an `archlinux:base-devel`
 container against current Arch packages; see
 [Arch Linux container job](ci.md#arch-linux-container-job). That job has no display,
