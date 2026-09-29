@@ -1,5 +1,6 @@
 //! Native PR file navigation, precise inline selection and a durable collected review.
 use super::*;
+use crate::appearance::CodeFont;
 use crate::github::{
     CapturedPull, LineComment,
     review::{self as model, PullFile, UiTransport},
@@ -1003,7 +1004,7 @@ impl Panel {
         div().id("github-patch-focus").key_context("GitTurtleGithubPatch").on_action(cx.listener(|this,_:&ReviewUp,window,cx|{this.review_key("up",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewDown,window,cx|{this.review_key("down",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewHome,window,cx|{this.review_key("home",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewEnd,window,cx|{this.review_key("end",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewPageUp,window,cx|{this.review_key("pageup",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewPageDown,window,cx|{this.review_key("pagedown",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewExtendUp,window,cx|{this.review_key("up",true,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewExtendDown,window,cx|{this.review_key("down",true,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewAccept,window,cx|{this.review_key("enter",false,window,cx);cx.stop_propagation();})).h(px(246.)).min_w_0().border_1().border_color(rgb(p.border)).rounded(px(6.)).overflow_hidden().tab_stop(true).track_focus(&self.review.line_focus).focus_visible(|style|style.border_color(rgb(p.accent))).role(Role::ListBox).aria_label("Captured pull request patch lines").aria_description("Up and Down move through lines. Shift extends a same-side range. Return starts an inline comment. Source offers exact text selection and Find.")
 
             .child(uniform_list("github-patch-rows",file.rows.len(),cx.processor(|this,range:std::ops::Range<usize>,_,cx|range.map(|index|{let file=&this.review.files[this.review.selected_file.expect("visible file")];let row=&file.rows[index];let selected=this.review.anchor.zip(this.review.selected_row).is_some_and(|(a,b)|(a.min(b)..=a.max(b)).contains(&index));let p=palette(cx);let background=if selected{p.selected}else{match row.kind{b'+'=>p.added_background,b'-'=>p.removed_background,b'@'=>p.subtle,_=>p.canvas}};let row_label=format!("Before {} · After {} · {}",row.old.map(|n|n.to_string()).unwrap_or_default(),row.new.map(|n|n.to_string()).unwrap_or_default(),row.text);
-                div().id(("github-patch-line",index)).w_full().h(px(f32::from(appearance::code_text())*1.65)).px_2().flex().items_center().gap_2().bg(rgb(background)).border_l_2().border_color(rgb(if selected{p.accent}else{background})).role(Role::ListBoxOption).aria_label(row_label).aria_selected(selected).cursor_pointer().text_size(appearance::code_text()).font_family("Menlo")
+                patch_line(index,cx).w_full().h(px(f32::from(appearance::code_text())*1.65)).px_2().flex().items_center().gap_2().bg(rgb(background)).border_l_2().border_color(rgb(if selected{p.accent}else{background})).role(Role::ListBoxOption).aria_label(row_label).aria_selected(selected).cursor_pointer()
                     .child(div().w(px(36.)).flex_shrink_0().text_color(rgb(p.muted)).child(row.old.map(|n|n.to_string()).unwrap_or_default()))
                     .child(div().w(px(36.)).flex_shrink_0().text_color(rgb(p.muted)).child(row.new.map(|n|n.to_string()).unwrap_or_default()))
                     .child(div().min_w_0().flex_1().truncate().text_color(rgb(if row.kind==b'@'{p.hunk}else{p.text})).child(row.text.clone()))
@@ -1023,6 +1024,12 @@ impl Panel {
             .child(self.render_comment_composer(cx)).into_any_element()
     }
 }
+fn patch_line(index: usize, cx: &App) -> Stateful<Div> {
+    div()
+        .id(("github-patch-line", index))
+        .text_size(appearance::code_text())
+        .code_font(cx)
+}
 
 #[cfg(test)]
 mod tests {
@@ -1030,6 +1037,16 @@ mod tests {
     use core::prelude::v1::test;
     use gpui_kit::component::Root;
     use std::{cell::RefCell, rc::Rc};
+
+    #[gpui::test]
+    fn patch_lines_use_the_code_font(cx: &mut TestAppContext) {
+        let font = shaped_code_font(cx, |probe, cx| {
+            patch_line(0, cx).child(probe).into_any_element()
+        });
+        assert_eq!(font.family, "Desktop Mono");
+        assert_eq!(font.features.is_calt_enabled(), Some(false));
+        assert!(font.features.tag_value_list().contains(&("liga".into(), 0)));
+    }
 
     #[gpui::test]
     async fn native_review_keys_warm_context_and_destination_flush(cx: &mut TestAppContext) {

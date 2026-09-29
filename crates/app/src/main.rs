@@ -2130,6 +2130,40 @@ fn trace_enabled() -> bool {
     std::env::var_os("GITTURTLE_TRACE").is_some()
 }
 
+/// The font that text beside `probe` in `container` is shaped with
+/// (`window.text_style().font()`, as the kit's text elements read it) while
+/// the code family is "Desktop Mono".
+#[cfg(test)]
+fn shaped_code_font(
+    cx: &mut TestAppContext,
+    container: impl Fn(AnyElement, &App) -> AnyElement + 'static,
+) -> Font {
+    use std::{cell::RefCell, rc::Rc};
+
+    struct Probe<F>(F, Rc<RefCell<Option<Font>>>);
+    impl<F: Fn(AnyElement, &App) -> AnyElement + 'static> Render for Probe<F> {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let seen = self.1.clone();
+            let probe = canvas(
+                move |_, window, _| *seen.borrow_mut() = Some(window.text_style().font()),
+                |_, _, _, _| {},
+            )
+            .w(px(1.))
+            .h(px(1.));
+            (self.0)(probe.into_any_element(), cx)
+        }
+    }
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        gpui_kit::component::Theme::global_mut(cx).mono_font_family = "Desktop Mono".into();
+    });
+    let seen = Rc::new(RefCell::new(None));
+    let probe = Probe(container, seen.clone());
+    let (_, cx) = cx.add_window_view(move |_, _| probe);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    seen.borrow().clone().expect("the probe painted")
+}
+
 #[cfg(test)]
 mod repository_branch_input_tests {
     use super::{BranchInputScope, GitRepository};
