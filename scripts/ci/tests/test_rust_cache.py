@@ -242,9 +242,10 @@ class CacheFixture(unittest.TestCase):
             "target": lambda: (versions, rustc.replace("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"), "debug", None),
             "toolchain": lambda: (versions, rustc.replace("1.98.0", "1.99.0"), "debug", None),
             "profile": lambda: (versions, rustc, "release", None),
+            # Every named flag and one variable under every keyed prefix.
             **{f"flag {name}": (lambda name=name: (versions, rustc, "debug", {name: "-C changed"}))
-               for name in ("RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_PROFILE_DEV_DEBUG", "CARGO_INCREMENTAL",
-                            "CC", "CFLAGS", "LDFLAGS", "CMAKE_GENERATOR", "PKG_CONFIG_PATH")},
+               for name in sorted(cache.FLAG_NAMES) + [prefix + "X86_64_UNKNOWN_LINUX_GNU" if prefix.endswith("_") else prefix
+                                                       for prefix in cache.FLAG_PREFIXES]},
             **{f"package {name}": (lambda name=name: ({**versions, name: "1.0-2"}, rustc, "debug", None))
                for name in cache.ARCH_NATIVE_PACKAGES},
         }
@@ -288,7 +289,10 @@ class CacheFixture(unittest.TestCase):
         # Tools whose versions never reach compiled output; rustup's toolchain
         # is keyed by `rustc -vV` instead.
         tools = {"base-devel", "git", "openssh", "python", "rustup", "ca-certificates"}
-        self.assertLessEqual(installed - tools, set(cache.ARCH_NATIVE_PACKAGES))
+        runtime = set(cache.ARCH_RUNTIME_PACKAGES)
+        self.assertLessEqual(runtime, installed)
+        self.assertFalse(runtime & set(cache.ARCH_NATIVE_PACKAGES))
+        self.assertLessEqual(installed - tools - runtime, set(cache.ARCH_NATIVE_PACKAGES))
         self.assertLessEqual({"gcc", "glibc", "binutils", "clang", "linux-api-headers"}, set(cache.ARCH_NATIVE_PACKAGES))
         with patch.object(cache, "run", return_value=b"gcc 15.2.1-1\n") as run, patch("builtins.print") as shown:
             cache.native_identity("archlinux")
@@ -306,7 +310,8 @@ class CacheFixture(unittest.TestCase):
                 ids[kind] = value
             return change
 
-        with patch.object(cache.pwd, "getpwnam", return_value=account), \
+        group = type("Group", (), {"gr_gid": 1001})()
+        with patch.object(cache.pwd, "getpwnam", return_value=account), patch.object(cache.grp, "getgrnam", return_value=group), \
                 patch.object(os, "geteuid", side_effect=lambda: ids["uid"]), patch.object(os, "getuid", side_effect=lambda: ids["uid"]), \
                 patch.object(os, "getegid", side_effect=lambda: ids["gid"]), patch.object(os, "getgid", side_effect=lambda: ids["gid"]), \
                 patch.object(os, "initgroups", side_effect=lambda name, gid: calls.append(("groups", name, gid)), create=True), \
@@ -320,6 +325,12 @@ class CacheFixture(unittest.TestCase):
             ids.update(uid=1002, gid=1002)
             with self.assertRaises(ValueError):
                 cache.run_as("builder")
+            ids.update(uid=1001, gid=1001)
+            # setpriv and chown name the group after the account.
+            group.gr_gid = 1002
+            with self.assertRaises(ValueError):
+                cache.run_as("builder")
+            group.gr_gid = 1001
             account.pw_uid = 0
             with self.assertRaises(ValueError):
                 cache.run_as("builder")
@@ -645,6 +656,19 @@ class CacheFixture(unittest.TestCase):
         self.assertEqual(result["evicted_packages"], [{"metadata_index": 0, "name": "fixture", "cleanup_completed": True}])
         self.assertNotIn("private", json.dumps(result))
         self.assertEqual(Path(self.env["GITHUB_OUTPUT"]).read_text(), "save=false\n")
+
+    def test_finish_account_failure_refuses_the_save_without_failing_the_job(self):
+        # Tests already passed when finish runs; only the save may be lost.
+        for failure in (ValueError("cache helper is not running as its account"), KeyError("builder")):
+            with self.subTest(failure=type(failure).__name__):
+                Path(self.env["GITHUB_OUTPUT"]).write_text("")
+                with patch.dict(os.environ, {"CACHE_PROFILE": "debug", "CI_RUST_CACHE_PROFILE": "debug", "CACHE_RUN_AS": "builder"}), \
+                        patch("sys.argv", ["cache.py", "bound"]), patch.object(cache, "run_as", side_effect=failure), \
+                        patch.object(cache, "bound_payload") as bound, patch.object(cache, "record") as record, patch("builtins.print"):
+                    cache.main()
+                bound.assert_not_called()
+                self.assertFalse(record.call_args.kwargs["details"]["save"])
+                self.assertEqual(Path(self.env["GITHUB_OUTPUT"]).read_text(), "save=false\n")
 
     def test_profile_cleanup_failure_retains_fixed_stage_and_incomplete_group(self):
         self.file(self.paths[0] / "release/deps/libfixture-hash.rlib", b"artifact")

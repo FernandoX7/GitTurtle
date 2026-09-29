@@ -4,6 +4,7 @@ import argparse
 from contextlib import contextmanager
 import hashlib
 import json
+import grp
 import os
 import pwd
 import re
@@ -35,15 +36,18 @@ LIBRARY_SUFFIXES = {".rlib", ".rmeta", ".a", ".so", ".dylib", ".dll"}
 VENDOR_PREFIX = "vendor/"
 VENDOR_MTIME_NS = 1_153_704_088 * 10**9
 # The Arch container's inputs to compiled output, by pacman package: the C
-# toolchain and its headers, then every library the job installs for GPUI's
-# build scripts. The rest of the rolling inventory stays out of the key, so
-# an unrelated update does not discard the entry. Keep this in step with the
-# job's install list (a test compares them).
+# toolchain and its headers, then the libraries that build scripts probe or
+# the test binaries link (aws-lc-sys probes openssl's pkg-config files). The
+# rest of the rolling inventory stays out of the key, so an unrelated update
+# does not discard the entry. Keep this in step with the job's install list
+# (a test compares them).
 ARCH_NATIVE_PACKAGES = (
     "binutils", "clang", "cmake", "gcc", "gcc-libs", "glibc", "linux-api-headers", "llvm-libs", "make", "pkgconf",
-    "fontconfig", "freetype2", "libx11", "libxcb", "libxkbcommon", "libxkbcommon-x11", "openssl",
-    "vulkan-headers", "vulkan-icd-loader", "wayland", "zstd",
+    "fontconfig", "freetype2", "libx11", "libxcb", "libxkbcommon", "libxkbcommon-x11", "openssl", "wayland",
 )
+# Installed for the tests and the job's pkg-config check, and loaded only at
+# run time: no build script probes them and nothing links them at build time.
+ARCH_RUNTIME_PACKAGES = ("vulkan-headers", "vulkan-icd-loader", "zstd")
 # Environment that changes what rustc, build scripts or cc emit. Paths the
 # action fixes itself (CARGO_HOME, CARGO_TARGET_DIR) are not flags.
 FLAG_NAMES = {"AR", "CC", "CXX", "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "LIBRARY_PATH",
@@ -202,6 +206,9 @@ def run_as(account):
     entry = pwd.getpwnam(account)
     if entry.pw_uid == 0:
         raise ValueError("cache helper refuses to run as root")
+    # setpriv and chown name the group after the account; they must agree.
+    if grp.getgrnam(account).gr_gid != entry.pw_gid:
+        raise ValueError("cache account's primary group must share its name")
     if os.geteuid() == 0:
         os.initgroups(account, entry.pw_gid)
         os.setgid(entry.pw_gid)
@@ -585,8 +592,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=("prepare", "start", "restored", "bound"))
     args = parser.parse_args()
-    if os.environ.get("CACHE_RUN_AS"):
-        run_as(os.environ["CACHE_RUN_AS"])
+    account = os.environ.get("CACHE_RUN_AS")
+    if account and args.phase != "bound":
+        run_as(account)
     if args.phase == "prepare":
         prepare()
     elif args.phase == "start":
@@ -602,6 +610,10 @@ def main():
         diagnostics = {}
         target = os.environ.get("CACHE_TARGET", "")
         try:
+            # Inside the guard: after validation passed, an account failure
+            # only refuses the save.
+            if account:
+                run_as(account)
             if target and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", target):
                 raise ValueError("unsupported cache target triple")
             result = bound_payload(root, paths, os.environ["CACHE_PROFILE"], snapshots=snapshots, diagnostics=diagnostics,

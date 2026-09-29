@@ -500,14 +500,19 @@ action](#bounded-rust-dependency-caching) and its pinned `rust-cache`, with the 
   whose versions reach compiled output, `ARCH_NATIVE_PACKAGES` in the
   [helper](../.github/actions/setup-rust/cache.py): the C toolchain and its
   headers (`binutils clang cmake gcc gcc-libs glibc linux-api-headers llvm-libs
-  make pkgconf`) and every library the job installs for GPUI's build scripts
-  (`fontconfig freetype2 libx11 libxcb libxkbcommon libxkbcommon-x11 openssl
-  vulkan-headers vulkan-icd-loader wayland zstd`). Nothing else in the rolling
-  inventory is keyed, so an update to, say, `git`, `python` or `systemd` keeps the
-  entry, while an update to any listed package gives a new key and a full cold
-  build, never objects built against the old libraries. A test compares the list
-  with the job's install line, so a library added to the job without a key entry
-  fails. `pacman -Q` fails the step if a listed package is missing. The setup step
+  make pkgconf`), and the libraries that build scripts probe or the test binaries
+  link (`fontconfig freetype2 libx11 libxcb libxkbcommon libxkbcommon-x11 openssl
+  wayland`). `freetype-sys` links the system FreeType, `yeslogic-fontconfig-sys`
+  and `aws-lc-sys` probe pkg-config (the latter for `libcrypto` and `openssl`),
+  and the app links `libxcb` and `libxkbcommon`. The job's other libraries,
+  `vulkan-headers`, `vulkan-icd-loader` and `zstd` (`ARCH_RUNTIME_PACKAGES`), are
+  used only at run time and by its `pkg-config --exists` check. No build script
+  probes them and nothing links them at build time. Nothing else in the rolling
+  inventory is keyed, so an update to, say, `git`, `python`, `systemd` or Vulkan
+  keeps the entry. An update to any listed package gives a new key and a full cold
+  build, never objects built against the old libraries. A test compares both
+  lists with the job's install line, so a library added to the job but in neither
+  list fails. `pacman -Q` fails the step if a listed package is missing. The setup step
   prints the keyed versions (`Keyed Arch packages: …`) next to the upgrade step's
   own list. The key string reads `debug-archlinux-<hash>`, so the entry is told
   apart from the Ubuntu debug entry in the cache list, although both run on Linux
@@ -517,7 +522,9 @@ action](#bounded-rust-dependency-caching) and its pinned `rust-cache`, with the 
   computed because the key hashes `rustc -vV`.
 - *Account.* The container starts as root. The helper becomes `builder` (every
   user and group ID, which also clears its capabilities, and it refuses to run as
-  root) before it touches Cargo storage, and upstream's `rustc` and `cargo`
+  root, and requires the account's primary group to share its name, as
+  `useradd --user-group` gives `builder`) before it touches Cargo storage, and
+  upstream's `rustc` and `cargo`
   commands run through `setpriv --reuid=builder` via its `cmd-format` input.
   Cargo run as root would leave root-owned registry, lock and target files that
   `builder` cannot update. Upstream's archive extraction itself runs as root and
@@ -529,14 +536,16 @@ action](#bounded-rust-dependency-caching) and its pinned `rust-cache`, with the 
 Every run still upgrades to that day's packages first, behind the unchanged
 signature check, so between two `main` pushes a pull request whose keyed packages
 moved in Arch restores nothing and builds cold; the next successful `main` push
-seeds the new key. [Hosted measurements](benchmarks/2026-09-29-ci-arch-warm-cache.md)
-give the cold and warm durations, the entry's size and the repository total.
+seeds the new key. The [hosted record](benchmarks/2026-09-29-ci-arch-warm-cache.md)
+gives the cold baseline. A pull request cannot save an entry, so the `main` seed,
+the entry's size, the repository total after it and a warm pull-request run can
+only be measured after the change merges; they are added to that record.
 
 **Budget.** The Arch payload is held to the `debug` limit (7 GiB of logical bytes
 before registration) by the same helper and upstream cleanup as the Ubuntu debug
 lane, whose archive is about 1.42 GB. Only a successful push to `main` registers a
 save, and only when no entry has that exact key, so the lane adds one entry per
-keyed package set that `main` builds. GitHub removes an entry 7 days after its last
+new key that `main` builds: a keyed package update or a keyed source change. GitHub removes an entry 7 days after its last
 access and, once the repository is over its 10 GB limit, evicts by last access. An
 Arch entry superseded by a package update is no longer restored, so it goes before
 the Ubuntu and macOS entries that every product run restores. The repository was
@@ -1096,8 +1105,8 @@ compatibility is unchanged.
 
 Kept outputs alone would still rebuild. Cargo treats a path package as dirty when
 any source listed in its dep-info is newer than that dep-info, and checkout gives
-every file the current time. Quality's two compilation jobs therefore pass the
-action's `vendor-reuse: true` input, and setup rewinds every tracked file under
+every file the current time. Quality's three compilation jobs (`rust-debug`,
+`rust-release` and `rust-arch`) therefore pass the action's `vendor-reuse: true` input, and setup rewinds every tracked file under
 `vendor/`, and each directory up to `vendor/` (a build script may watch a
 directory), to one fixed time: Cargo's own deterministic registry timestamp,
 2006-07-24. It runs in the prepare step, after the key is computed and before the
