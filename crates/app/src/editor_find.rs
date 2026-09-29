@@ -4,10 +4,9 @@
 
 use crate::appearance::palette;
 use gpui_kit::{
-    App, AppContext, Context, DefiniteLength, Entity, EntityId, FocusHandle, Focusable,
-    FontFeatures, Global, HighlightStyle, InteractiveElement, IntoElement, ParentElement, Pixels,
-    Render, RenderOnce, SharedString, StyleRefinement, Styled, Subscription, UnderlineStyle,
-    WeakEntity, Window,
+    App, AppContext, Context, DefiniteLength, Entity, EntityId, FocusHandle, Focusable, Global,
+    HighlightStyle, InteractiveElement, IntoElement, ParentElement, Pixels, Render, RenderOnce,
+    SharedString, StyleRefinement, Styled, Subscription, UnderlineStyle, WeakEntity, Window,
     base::ElementExt,
     component::{
         Disableable, Sizable, Theme,
@@ -233,13 +232,19 @@ impl Editor {
             label: "File text".into(),
         }
     }
-    /// Code keeps its characters as typed in every family. The kit editor
-    /// draws in the theme's code family unless a caller refined another, so
-    /// the features follow that family when the editor renders.
-    fn code_features(&mut self, cx: &App) -> FontFeatures {
-        let family = self.native.style().text.font_family.clone();
+    /// The kit editor this wrapper renders. Code keeps its characters as
+    /// typed in every family: unless the caller refined the font features,
+    /// the editor gets the code features of the family it draws in, which is
+    /// the theme's code family unless the caller refined another.
+    fn native(mut self, cx: &App) -> NativeEditor {
+        let text = &self.native.style().text;
+        if text.font_features.is_some() {
+            return self.native;
+        }
+        let family = text.font_family.clone();
         let family = family.unwrap_or_else(|| Theme::global(cx).mono_font_family.clone());
-        crate::appearance::code_font_features_for(&family)
+        self.native
+            .font_features(crate::appearance::code_font_features_for(&family))
     }
     pub fn h(mut self, height: impl Into<DefiniteLength>) -> Self {
         self.height = height.into();
@@ -265,29 +270,30 @@ impl Styled for Editor {
     }
 }
 impl RenderOnce for Editor {
-    fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let code_features = self.code_features(cx);
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let (source, label, height) = (self.state.clone(), self.label.clone(), self.height);
+        let native = self.native(cx);
         let owner = window.current_view();
-        let existing = panel(&self.state, cx);
+        let existing = panel(&source, cx);
         if let Some(panel) = &existing {
             panel.update(cx, |bar, _| {
                 bar.owner = owner;
-                bar.label = self.label.clone();
+                bar.label = label.clone();
             });
         }
-        let state = self.state.downgrade();
+        let state = source.downgrade();
         let replacement = state.clone();
-        let replacement_label = self.label.clone();
+        let replacement_label = label.clone();
         let closing = existing.as_ref().map(Entity::downgrade);
         div()
             .w_full()
-            .h(self.height)
+            .h(height)
             .min_h_0()
             .flex()
             .flex_col()
             .capture_action(move |_: &Search, window, cx| {
                 if let Some(editor) = state.upgrade() {
-                    show(&editor, owner, self.label.clone(), window, cx);
+                    show(&editor, owner, label.clone(), window, cx);
                     cx.stop_propagation();
                 }
             })
@@ -308,12 +314,7 @@ impl RenderOnce for Editor {
                 }
             })
             .children(existing.filter(|bar| bar.read(cx).open))
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .child(self.native.h(relative(1.)).font_features(code_features)),
-            )
+            .child(div().flex_1().min_h_0().child(native.h(relative(1.))))
     }
 }
 
@@ -860,9 +861,9 @@ mod tests {
     }
 
     /// Every app editor (patches, files, conflicts and review text) draws code
-    /// as typed: the wrapper refines the kit editor's code family with the
-    /// code features of the family it draws in, whichever the desktop
-    /// supplies, and the bundled family, which has no ligatures, with none.
+    /// as typed: the kit editor the wrapper renders gets the code features of
+    /// the family it draws in, whichever the desktop supplies, and the bundled
+    /// family, which has no ligatures, none. Features a caller chose win.
     #[gpui_kit::test]
     fn editors_draw_code_without_ligatures(cx: &mut gpui_kit::TestAppContext) {
         use gpui_kit::{AppContext as _, Styled as _, component::input::EditorState};
@@ -870,24 +871,32 @@ mod tests {
         cx.update(gpui_kit::init);
         let cx = cx.add_empty_window();
         let state = cx.update(|window, cx| cx.new(|cx| EditorState::new(window, cx)));
-        let features = |family: &'static str, cx: &mut gpui_kit::VisualTestContext| {
-            cx.update(|_, cx| {
-                super::Theme::global_mut(cx).mono_font_family = family.into();
-                super::Editor::new(&state).code_features(cx)
-            })
+        let code_family = |family: &'static str, cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|_, cx| super::Theme::global_mut(cx).mono_font_family = family.into())
+        };
+        // The features on the style of the kit editor that the wrapper renders.
+        let rendered = |editor: super::Editor, cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|_, cx| editor.native(cx).style().text.font_features.clone())
         };
 
-        let desktop = features("Desktop Mono", cx);
+        code_family("Desktop Mono", cx);
+        let desktop = rendered(super::Editor::new(&state), cx).expect("code features");
         assert_eq!(desktop.is_calt_enabled(), Some(false));
         assert!(desktop.tag_value_list().contains(&("liga".into(), 0)));
-        let bundled = features(crate::desktop_text::BUNDLED_CODE_FAMILY, cx);
+
+        code_family(crate::desktop_text::BUNDLED_CODE_FAMILY, cx);
+        let bundled = rendered(super::Editor::new(&state), cx).expect("code features");
         assert!(bundled.tag_value_list().is_empty(), "{bundled:?}");
 
         // A family the caller refined on the editor is the one it draws in.
-        let refined = cx.update(|_, cx| {
-            let mut editor = super::Editor::new(&state).font_family("Desktop Mono");
-            editor.code_features(cx)
-        });
-        assert_eq!(refined.is_calt_enabled(), Some(false));
+        let refined = rendered(super::Editor::new(&state).font_family("Desktop Mono"), cx);
+        assert_eq!(
+            refined.expect("code features").is_calt_enabled(),
+            Some(false)
+        );
+
+        let chosen = gpui_kit::FontFeatures(std::sync::Arc::new(vec![("zero".into(), 1)]));
+        let kept = rendered(super::Editor::new(&state).font_features(chosen.clone()), cx);
+        assert_eq!(kept, Some(chosen));
     }
 }

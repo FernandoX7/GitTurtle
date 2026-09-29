@@ -120,7 +120,7 @@ pub(super) async fn ready(initial: Initial, cx: &AsyncApp) {
 #[cfg(not(target_os = "linux"))]
 pub(super) async fn ready(_initial: Initial, _cx: &AsyncApp) {}
 
-/// The family name of the code font bundled on Linux ([`CODE_FONT_FACES`]).
+/// The family name of the code font bundled on Linux (`CODE_FONT_FACES`).
 /// It has no contextual alternates, and its only standard ligature is Arabic
 /// lam-alef, which its required ligatures (`rlig`) form anyway, so code text in
 /// it needs no font features
@@ -1060,9 +1060,8 @@ mod tests {
     }
 
     /// Code text in the bundled family skips the features that keep a desktop
-    /// family's ligatures off, and that changes no glyph in any bundled face:
-    /// none has contextual alternates, and the one standard ligature, Arabic
-    /// lam-alef, is also a required one.
+    /// family's ligatures off, and that changes no glyph in any bundled face
+    /// (see [`BUNDLED_CODE_FAMILY`]).
     #[cfg(target_os = "linux")]
     #[test]
     fn bundled_code_font_draws_the_same_glyphs_without_features() {

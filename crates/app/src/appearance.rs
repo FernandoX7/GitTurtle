@@ -142,8 +142,9 @@ pub fn code_scale() -> f32 {
 /// alternates (`calt`, as JetBrains Mono and Fira Code do) or in standard
 /// ligatures (`liga`), so both are off. The bundled
 /// [`BUNDLED_CODE_FAMILY`](crate::desktop_text::BUNDLED_CODE_FAMILY) has no
-/// such ligatures, and any explicit feature slows shaping it
-/// (`docs/benchmarks/2026-09-29-code-font-features`), so it gets none.
+/// such ligatures, and turning `calt` and `liga` off costs it about 7% more
+/// shaping time per line (`docs/benchmarks/2026-09-29-code-font-features.md`),
+/// so it gets none.
 pub fn code_font_features_for(family: &str) -> FontFeatures {
     static NONE: LazyLock<FontFeatures> = LazyLock::new(FontFeatures::default);
     static WITHOUT_LIGATURES: LazyLock<FontFeatures> =

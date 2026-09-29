@@ -10,10 +10,14 @@
 //! attributes of every run, so this does too.
 
 use cosmic_text::{
-    Attrs, AttrsList, Ellipsize, Family, FeatureTag, FontFeatures, FontSystem, Hinting, LayoutLine,
-    ShapeBuffer, ShapeLine, Shaping, Stretch, Style, Weight, Wrap, fontdb,
+    Attrs, AttrsList, Ellipsize, Family, FeatureTag, FontFeatures, FontSystem, Hinting,
+    LayoutGlyph, LayoutLine, ShapeBuffer, ShapeLine, Shaping, Stretch, Style, Weight, Wrap, fontdb,
 };
-use std::{path::PathBuf, process::exit, time::Instant};
+use std::{
+    path::{Path, PathBuf},
+    process::{Command, exit},
+    time::Instant,
+};
 
 /// The bundled family, as `desktop_text::BUNDLED_CODE_FAMILY` names it.
 const BUNDLED_FAMILY: &str = "DejaVu Sans Mono";
@@ -33,6 +37,7 @@ struct Options {
     ligature_font: Option<PathBuf>,
     glyphs_only: bool,
     json: Option<PathBuf>,
+    commit: Option<String>,
 }
 
 /// One feature list as a GitTurtle build hands it to the text system.
@@ -63,14 +68,16 @@ fn features(tags: &[(&str, u16)]) -> FontFeatures {
     features
 }
 
-/// Shapes one line as GPUI's `layout_line` does and returns its glyph ids.
-fn shape(
+/// Shapes one line as GPUI's `layout_line` does and collects `glyph` of each
+/// laid-out glyph.
+fn shape<T>(
     fonts: &mut FontSystem,
     scratch: &mut ShapeBuffer,
     family: &str,
     features: &FontFeatures,
     line: &str,
-) -> Vec<u16> {
+    glyph: impl Fn(&LayoutGlyph) -> T,
+) -> Vec<T> {
     let attrs = Attrs::new()
         .metadata(0)
         .family(Family::Name(family))
@@ -95,8 +102,12 @@ fn shape(
     );
     layout
         .first()
-        .map(|line| line.glyphs.iter().map(|glyph| glyph.glyph_id).collect())
+        .map(|line| line.glyphs.iter().map(glyph).collect())
         .unwrap_or_default()
+}
+
+fn glyph_id(glyph: &LayoutGlyph) -> u16 {
+    glyph.glyph_id
 }
 
 fn main() {
@@ -165,8 +176,8 @@ fn check_ligature_font(fonts: &mut FontSystem, scratch: &mut ShapeBuffer, family
             .chars()
             .map(|ch| font.as_swash().charmap().map(ch))
             .collect();
-        let as_typed = shape(fonts, scratch, family, &off, pair);
-        let joined = shape(fonts, scratch, family, &default, pair);
+        let as_typed = shape(fonts, scratch, family, &off, pair, glyph_id);
+        let joined = shape(fonts, scratch, family, &default, pair, glyph_id);
         let separate = as_typed == nominal && as_typed.len() == pair.chars().count();
         println!(
             "  {pair:3} code features: {} glyphs {as_typed:?} ({}); defaults: {} glyphs {joined:?} ({})",
@@ -199,23 +210,49 @@ fn measure(options: &Options, fonts: &mut FontSystem, scratch: &mut ShapeBuffer)
             (hash ^ byte as u64).wrapping_mul(0x100_0000_01b3)
         })
     });
+    let (commit, corpus_clean) = revision(options);
+    println!(
+        "commit: {commit}, corpus {}",
+        match corpus_clean {
+            Some(true) => "unchanged from it",
+            Some(false) => "CHANGED from it",
+            None => "not in a Git work tree",
+        }
+    );
     let configs = [BASE, CANDIDATE];
     let feature_lists: Vec<FontFeatures> = configs.iter().map(|c| features(c.tags)).collect();
+    let regular = fonts
+        .db()
+        .faces()
+        .find(|face| {
+            face.families.iter().any(|(name, _)| name == BUNDLED_FAMILY)
+                && face.style == Style::Normal
+                && face.weight == Weight::NORMAL
+        })
+        .map(|face| face.id)
+        .unwrap_or_else(|| fail(&format!("no regular {BUNDLED_FAMILY} face")));
 
     // Skipping the features must not change what the bundled font draws.
-    let mut glyphs = 0;
+    let (mut glyphs, mut fallback, mut missing) = (0, 0, 0);
     for line in &lines {
-        let base = shape(fonts, scratch, BUNDLED_FAMILY, &feature_lists[0], line);
-        let candidate = shape(fonts, scratch, BUNDLED_FAMILY, &feature_lists[1], line);
+        let drawn = |fonts: &mut FontSystem, scratch: &mut ShapeBuffer, features: &FontFeatures| {
+            shape(fonts, scratch, BUNDLED_FAMILY, features, line, |glyph| {
+                (glyph.font_id, glyph.glyph_id)
+            })
+        };
+        let base = drawn(fonts, scratch, &feature_lists[0]);
+        let candidate = drawn(fonts, scratch, &feature_lists[1]);
         if base != candidate {
             fail(&format!(
                 "base and candidate draw different glyphs for {line:?}"
             ));
         }
         glyphs += base.len();
+        fallback += base.iter().filter(|(face, _)| *face != regular).count();
+        missing += base.iter().filter(|(_, glyph)| *glyph == 0).count();
     }
     println!(
-        "corpus: {} lines, {bytes} bytes, fnv1a {identity:016x}, {glyphs} glyphs, the same in both configurations",
+        "corpus: {} lines, {bytes} bytes, fnv1a {identity:016x}, {glyphs} glyphs ({fallback} from another face, {missing} missing), the same in both configurations",
         lines.len()
     );
 
@@ -228,7 +265,8 @@ fn measure(options: &Options, fonts: &mut FontSystem, scratch: &mut ShapeBuffer)
             let start = Instant::now();
             let mut count = 0;
             for line in &lines {
-                count += shape(fonts, scratch, BUNDLED_FAMILY, &feature_lists[index], line).len();
+                let features = &feature_lists[index];
+                count += shape(fonts, scratch, BUNDLED_FAMILY, features, line, glyph_id).len();
             }
             let ms = start.elapsed().as_secs_f64() * 1e3;
             assert_eq!(count, glyphs);
@@ -245,11 +283,9 @@ fn measure(options: &Options, fonts: &mut FontSystem, scratch: &mut ShapeBuffer)
     let per_line = |ms: f64| ms * 1e3 / lines.len() as f64;
     let mut summaries = Vec::new();
     for (config, samples) in configs.iter().zip(&totals) {
-        let mut sorted = samples.clone();
-        sorted.sort_by(f64::total_cmp);
-        // Nearest rank on the sorted samples.
-        let rank = |p: f64| sorted[((sorted.len() - 1) as f64 * p).round() as usize];
-        let (p50, p95, max) = (rank(0.5), rank(0.95), sorted[sorted.len() - 1]);
+        let sorted = sorted(samples);
+        let (p50, p95) = (nearest_rank(&sorted, 50), nearest_rank(&sorted, 95));
+        let max = sorted[sorted.len() - 1];
         println!(
             "{:9} {:?}: ms per corpus p50 {p50:.2} p95 {p95:.2} max {max:.2}; us per line p50 {:.2} p95 {:.2} max {:.2}",
             config.name,
@@ -276,6 +312,28 @@ fn measure(options: &Options, fonts: &mut FontSystem, scratch: &mut ShapeBuffer)
         candidate_p50 / base_p50,
         (candidate_p50 / base_p50 - 1.) * 100.
     );
+    // Both configurations of a round ran back to back, so their ratio pairs
+    // out slower drift of the host.
+    let ratios: Vec<f64> = totals[0]
+        .iter()
+        .zip(&totals[1])
+        .map(|(base, candidate)| candidate / base)
+        .collect();
+    let faster = ratios.iter().filter(|ratio| **ratio < 1.).count();
+    let sorted_ratios = sorted(&ratios);
+    let (q1, median, q3) = (
+        nearest_rank(&sorted_ratios, 25),
+        nearest_rank(&sorted_ratios, 50),
+        nearest_rank(&sorted_ratios, 75),
+    );
+    println!(
+        "candidate / base per round: median {median:.3}, quartiles {q1:.3} and {q3:.3}; candidate faster in {faster} of {} rounds",
+        ratios.len()
+    );
+    println!(
+        "          raw: {}",
+        join(ratios.iter().map(|r| format!("{r:.4}")))
+    );
 
     if let Some(path) = &options.json {
         let configurations = join(summaries.iter().map(|(config, samples, p50, p95, max)| {
@@ -291,9 +349,12 @@ fn measure(options: &Options, fonts: &mut FontSystem, scratch: &mut ShapeBuffer)
             )
         }));
         let json = format!(
-            "{{\"family\":\"{BUNDLED_FAMILY}\",\"font_size_px\":{FONT_SIZE},\"warm_up_rounds\":{WARM_UP_ROUNDS},\"samples\":{},\"percentile\":\"nearest rank\",\"corpus\":{{\"lines\":{},\"bytes\":{bytes},\"fnv1a\":\"{identity:016x}\",\"glyphs\":{glyphs}}},\"configurations\":[{configurations}]}}\n",
+            "{{\"commit\":\"{commit}\",\"family\":\"{BUNDLED_FAMILY}\",\"font_size_px\":{FONT_SIZE},\"warm_up_rounds\":{WARM_UP_ROUNDS},\"samples\":{},\"percentile\":\"nearest rank\",\"corpus\":{{\"lines\":{},\"bytes\":{bytes},\"fnv1a\":\"{identity:016x}\",\"clean\":{},\"glyphs\":{glyphs},\"fallback_glyphs\":{fallback},\"missing_glyphs\":{missing}}},\"configurations\":[{configurations}],\"paired_ratio\":{{\"q1\":{q1:.4},\"median\":{median:.4},\"q3\":{q3:.4},\"candidate_faster\":{faster},\"rounds\":{},\"raw\":[{}]}}}}\n",
             options.samples,
             lines.len(),
+            corpus_clean.map_or("null".into(), |clean| clean.to_string()),
+            ratios.len(),
+            join(ratios.iter().map(|r| format!("{r:.4}"))),
         );
         std::fs::write(path, json)
             .unwrap_or_else(|error| fail(&format!("{}: {error}", path.display())));
@@ -301,9 +362,45 @@ fn measure(options: &Options, fonts: &mut FontSystem, scratch: &mut ShapeBuffer)
     }
 }
 
+fn sorted(samples: &[f64]) -> Vec<f64> {
+    let mut sorted = samples.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    sorted
+}
+
+/// The `percent`th percentile by nearest rank: the ⌈percent/100 × n⌉th
+/// smallest of the `n` sorted samples.
+fn nearest_rank(sorted: &[f64], percent: usize) -> f64 {
+    let rank = (percent * sorted.len()).div_ceil(100).max(1);
+    sorted[rank - 1]
+}
+
+/// The commit the corpus comes from (`--commit`, else `git rev-parse HEAD`
+/// in the corpus directory), and whether the corpus is unchanged from it
+/// (unknown outside a Git work tree, such as a `git archive` export).
+fn revision(options: &Options) -> (String, Option<bool>) {
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(&options.corpus)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    };
+    let commit = options
+        .commit
+        .clone()
+        .or_else(|| git(&["rev-parse", "HEAD"]))
+        .unwrap_or_else(|| "unknown".into());
+    let clean = git(&["status", "--porcelain", "--", "."]).map(|status| status.is_empty());
+    (commit, clean)
+}
+
 /// The first `limit` non-empty lines of the `.rs` files directly in `dir`,
 /// in path order.
-fn corpus(dir: &PathBuf, limit: usize) -> Vec<String> {
+fn corpus(dir: &Path, limit: usize) -> Vec<String> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
         .unwrap_or_else(|error| fail(&format!("{}: {error}", dir.display())))
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
@@ -345,6 +442,7 @@ fn options() -> Options {
         ligature_font: None,
         glyphs_only: false,
         json: None,
+        commit: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -359,6 +457,7 @@ fn options() -> Options {
             "--samples" => options.samples = number(&value()),
             "--ligature-font" => options.ligature_font = Some(value().into()),
             "--json" => options.json = Some(value().into()),
+            "--commit" => options.commit = Some(value()),
             "--glyphs" => options.glyphs_only = true,
             "-h" | "--help" => usage(""),
             other => usage(&format!("unknown argument {other}")),
@@ -383,7 +482,7 @@ fn usage(problem: &str) -> ! {
     }
     eprintln!(
         "usage: code-font-features [--samples N] [--lines N] [--corpus DIR] [--fonts DIR] \
-         [--ligature-font FILE] [--glyphs] [--json FILE]"
+         [--ligature-font FILE] [--glyphs] [--json FILE] [--commit SHA]"
     );
     exit(if problem.is_empty() { 0 } else { 2 })
 }
