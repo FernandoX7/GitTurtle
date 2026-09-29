@@ -65,6 +65,26 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## September 29 bundled code font without features
+
+Code text turned `calt` and `liga` off for every code family. Any explicit feature makes cosmic-text shape the embedded DejaVu Sans Mono more slowly, although the font has no ligatures to turn off. `appearance::code_font_features_for` now returns no features for `desktop_text::BUNDLED_CODE_FAMILY` and keeps both off for every other family, in `CodeFont` and in the editor wrapper. The wrapper applies them in one `native` step at render time, from the family the kit editor draws in, unless the caller chose features.
+
+Tests:
+- `appearance::tests::code_text_in_the_bundled_family_shapes_without_features` and `appearance::tests::code_text_shapes_the_code_family_without_ligatures` pin both feature lists.
+- `editor_find::tests::editors_draw_code_without_ligatures` checks the style handed to the kit editor for a desktop family, the bundled family, a caller's family and a caller's features. With the wrapper's `native` step returning the kit editor unchanged, so that no code features are applied, the test failed at `editor_find.rs:883`, where the desktop family expects features.
+- `desktop_text::tests::bundled_code_font_draws_the_same_glyphs_without_features` shapes a line of operators, `fi`, `ffl` and Arabic lam-alef in all four bundled faces, with and without the features, and gets the same glyphs.
+
+Measurement, in the [benchmark record](benchmarks/2026-09-29-code-font-features.md) with its driver and raw samples:
+- Setup: release builds pinned to one core of the AMD 3020e, warm cache, the first 5,000 lines of `crates/app/src`, three runs of 30 interleaved rounds.
+- p50 per line: 29.03 to 29.62 µs with the features against 27.14 to 27.71 µs without, ratios of 0.926 to 0.936.
+- Paired by round, the median ratio is 0.934, and the candidate was faster in 83 of the 90 rounds. The largest samples of both lists fall in the same rounds, so the tails come from the host.
+- `performance-reviewer` accepted the method and an earlier set of three runs (ratios 0.924 to 0.931), which these runs agree with.
+
+JetBrainsMono Nerd Font under the desktop features still draws `->`, `!=`, `=>`, `==`, `<=`, `--` and `//` as separate glyphs. There is no visible change, since the bundled font's glyphs are identical, so there are no native frames. Not covered:
+- a cold cache, another host, or a code size other than 12 px;
+- macOS, whose code family is Menlo and keeps both features off;
+- a frame-level timing, which cannot resolve about 0.25 ms per 120 newly shown lines.
+
 ## September 29 Omarchy caption on two lines
 
 The Omarchy card's caption ("Follows ‹Theme›", "Keeping ‹Theme›" or "Using Midnight") was cut to one line, so a long custom theme name lost most of itself. Following the owner's "grow on demand" decision, a caption that needs a second line takes it, wrapped at word boundaries, and ends in an ellipsis only when two lines cannot hold it. The miniature above it then draws only whole rows, three instead of four at the default size. A one-line caption paints as before, and the card stays 132 px tall and in place. `docs/development/themes/spec.md` states the rule.
