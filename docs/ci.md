@@ -496,8 +496,10 @@ Without a cache, no pull request can write an entry that `main` trusts.
 upgrade and install, the toolchain download, a full debug build of every
 dependency, then the tests. The September 15 baseline spent 10m49s compiling the
 workspace tests cold on Ubuntu; expect this job to take at least that plus its
-setup, on one more runner for every product pull request and `main` push. As of
-September 28, 2026 no hosted run of this job has been observed or measured.
+setup, on one more runner for every product pull request and `main` push. Its
+first five hosted runs, on September 28, 2026, all passed in 12m22s to 16m06s:
+runs 36395638428 (pull request #69), 36431876305, 36452704324 and 36458949036
+(`main` at `1a9fc3e`, `7184b08` and `8b9fd3d`) and 36501903050 (pull request #74).
 
 **Docker Hub limits.** The runner pulls the image from Docker Hub without
 credentials. Docker [counts unauthenticated pulls](https://docs.docker.com/docker-hub/usage/pulls/)

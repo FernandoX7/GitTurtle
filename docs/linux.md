@@ -219,7 +219,9 @@ symlink in `target/` is not part of the supported installation.
 Checked on 2026-09-27 on Omarchy 4.0.4 (Arch; Hyprland 0.56.2 on native
 Wayland; AMD Radeon Vega with Mesa 26.2.2 and `vulkan-radeon`; one 1366 × 768
 display at scale 1). Other Arch-based desktops share the build requirements but
-have no recorded check.
+have no recorded check. On Omarchy itself, Git writes and network actions, more
+than one monitor, a physical HiDPI panel and running under XWayland have no
+recorded check yet; see the [validation record](validation.md#september-27-omarchy-and-hyprland).
 
 Omarchy already ships the native libraries, `clang`, `desktop-file-utils` and
 both portal backends. Install the three missing build tools, then use the same

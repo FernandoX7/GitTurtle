@@ -4,7 +4,7 @@
 
 GitTurtle is a native Git client built with Rust and GPUI for everyday Git work, history, code changes, and image comparisons. It uses your installed Git executable, with no Electron runtime or AI features. Browsing stays local; repository writes and network operations start from explicit actions.
 
-Native builds have been exercised on macOS; the [validation notes](validation.md) and [current milestone record](native-polish-milestone.md) identify the checked builds and limits. [Local Linux/aarch64 workspace tests, strict Clippy and release builds](benchmarks/native-polish-20260910/validation.json) were exercised for this milestone. A [Linux x86-64 installation and Wayland startup check](validation.md#september-14-linux-installation-and-wayland-startup) now records a running Pop!_OS build and user-confirmed window appearance; the [Ubuntu readiness checks](benchmarks/linux-ubuntu-20260914/README.md) add clean Ubuntu build/runtime installation and virtual X11/Wayland workflow coverage. Actual Ubuntu GNOME desktop acceptance remains pending. A [quality workflow](../.github/workflows/quality.yml) is configured for macOS and Linux; configuration does not establish a hosted run. Current source checks and exact identities are recorded separately. See [the design specification](../DESIGN.md) for the broader intended experience.
+Native builds have been exercised on macOS; the [validation notes](validation.md) and [current milestone record](native-polish-milestone.md) identify the checked builds and limits. [Local Linux/aarch64 workspace tests, strict Clippy and release builds](benchmarks/native-polish-20260910/validation.json) were exercised for this milestone. A [Linux x86-64 installation and Wayland startup check](validation.md#september-14-linux-installation-and-wayland-startup) now records a running Pop!_OS build and user-confirmed window appearance; the [Ubuntu readiness checks](benchmarks/linux-ubuntu-20260914/README.md) add clean Ubuntu build/runtime installation and virtual X11/Wayland workflow coverage. Actual Ubuntu GNOME desktop acceptance remains pending. The [quality workflow](../.github/workflows/quality.yml) runs on GitHub-hosted macOS and Linux runners, including an Arch Linux container; its [CI record](ci.md) describes the jobs and dated hosted results. Current source checks and exact identities are recorded separately. See [the design specification](../DESIGN.md) for the broader intended experience.
 
 ## Current source features
 
@@ -134,7 +134,7 @@ open dist/GitTurtle.app
 dist/GitTurtle.app/Contents/MacOS/gitturtle /path/to/repository
 ```
 
-This is local development packaging for native verification. The script produces a bundle for the build machine's architecture, includes the application assets, and applies a local ad-hoc signature. `--debug --no-build` packages an existing debug executable. An optional final argument changes the output `.app` path. This development bundle is not notarized and is not a universal binary.
+This is local development packaging for native verification. The script runs only on an Apple Silicon Mac and refuses Intel or universal output; it includes the application assets and applies a local ad-hoc signature. `--debug --no-build` packages an existing debug executable. An optional final argument changes the output `.app` path. This development bundle is not notarized.
 
 ## Keyboard controls
 
@@ -201,11 +201,11 @@ The [Git service documentation](../crates/git-core/README.md) describes passive-
 - Histories exceeding the graph's lane or edge budget show isolated commit nodes with an explanation. Selecting a branch can reduce the graph size while preserving access to commits and file previews.
 - Blame uses at most 2 MiB and 100,000 text lines; missing shallow history is marked, and unavailable objects never trigger a fetch. Working attribution includes the working file rather than an index-only snapshot.
 - The tag browser loads at most 10,000 tags; large annotations above 256 KiB retain identity/actions with an unavailable-content message. Ignore destinations are limited to 1 MiB and cannot express filenames containing line breaks.
-- Hosted CI, actual Ubuntu GNOME desktop acceptance, live-provider authentication, actual Keychain unlock and hardware-backed signing remain unverified here; local Linux build/test and initial Wayland startup evidence is recorded by source identity in the validation notes. Distribution packages, notarization and publishing are outside this milestone.
+- Actual Ubuntu GNOME desktop acceptance, live-provider authentication, actual Keychain unlock and hardware-backed signing remain unverified here; local Linux build/test and initial Wayland startup evidence is recorded by source identity in the validation notes. Distribution packages, notarization and publishing are outside this milestone.
 
 ## Development and measurement
 
-[The quality workflow](../.github/workflows/quality.yml) configures the following checks with Rust 1.98.0: workspace tests and strict Clippy on macOS 15 and Ubuntu 24.04, and release compilation and package checks on macOS 26 and Ubuntu 24.04. It retains diagnostics and withholds [binary artifacts](ci-artifacts.md) until complete-notice checks pass. See the [dated hosted results](benchmarks/2026-09-15-ci.md); configured jobs and local passes do not establish hosted or native acceptance.
+[The quality workflow](../.github/workflows/quality.yml) configures the following checks with Rust 1.98.0: workspace tests and strict Clippy on macOS 15 and Ubuntu 24.04, workspace tests on Arch Linux in a container, and release compilation and package checks on macOS 26 and Ubuntu 24.04. It retains diagnostics and withholds [binary artifacts](ci-artifacts.md) until complete-notice checks pass. See the [dated hosted results](benchmarks/2026-09-15-ci.md); configured jobs and local passes do not establish hosted or native acceptance.
 
 ```sh
 cargo fmt --all -- --check
