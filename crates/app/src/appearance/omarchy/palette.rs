@@ -700,31 +700,15 @@ pub(crate) fn fit(colors: &Colors) -> Palette {
         };
         (tiles, [added, removed, modified, renamed])
     };
-    let stand_apart = |(_, [added, removed, modified, renamed]): &([u32; 2], [u32; 4])| {
-        apart(*added, &[*removed, *modified, *renamed])
-            && apart(*removed, &[*modified, *renamed])
-            && apart(*modified, &[*renamed])
-    };
     let red = status(colors.red, &[]);
     let green = status(colors.green, &[]);
     let (own_added, own_removed) = (status(own.added, &[]), status(own.removed, &[]));
-    // The first set whose four statuses stand apart: the theme's red and green where they
-    // are distinguishable, then GitTurtle's (when GitTurtle's own modified or renamed would
-    // sit beside the theme's, as Matte Black's amber added beside GitTurtle's amber
-    // modified), each with the theme's yellow and magenta where those stand apart. A
-    // replacement is not checked against the color kept beside it, so when neither set stands
-    // apart, all four are GitTurtle's own. Since modified and renamed keep only amber and
-    // violet, no known theme reaches that step: a replacement violet renamed can no longer
-    // land on a kept modified.
-    let ([added_background, removed_background], [added, removed, modified, renamed]) =
-        distinguishable(red, green)
-            .then(|| statuses(green, red, colors.yellow, colors.magenta))
-            .into_iter()
-            .chain(std::iter::once_with(|| {
-                statuses(own_added, own_removed, colors.yellow, colors.magenta)
-            }))
-            .find(stand_apart)
-            .unwrap_or_else(|| statuses(own_added, own_removed, own.modified, own.renamed));
+    // The first set whose four statuses stand apart, or all four of GitTurtle's own.
+    let ([added_background, removed_background], [added, removed, modified, renamed]) = status_set(
+        statuses,
+        [green, red, colors.yellow, colors.magenta],
+        [own_added, own_removed, own.modified, own.renamed],
+    );
     palette.added_background = added_background;
     palette.removed_background = removed_background;
     palette.added = added;
@@ -846,6 +830,31 @@ fn accent_states(accent: u32, label: u32) -> (u32, u32) {
     (hover, active)
 }
 
+/// The diff tiles and four file statuses `statuses` fits from an added, removed, yellow and
+/// magenta, given the theme's and GitTurtle's colors in status order (added and removed
+/// already fitted). The first set whose four statuses stand apart: the theme's red and green
+/// where they are distinguishable, then GitTurtle's (when GitTurtle's own modified or renamed
+/// would sit beside the theme's, as Matte Black's amber added beside GitTurtle's amber
+/// modified), each with the theme's yellow and magenta where `statuses` keeps them. A replacement
+/// is not checked against the color kept beside it, so when neither set stands apart, all
+/// four are GitTurtle's own. Since modified and renamed keep only amber and violet, no known
+/// theme reaches that step: a replacement violet renamed can no longer land on a kept
+/// modified.
+fn status_set(
+    statuses: impl Fn(u32, u32, u32, u32) -> ([u32; 2], [u32; 4]),
+    [green, red, yellow, magenta]: [u32; 4],
+    [own_added, own_removed, own_modified, own_renamed]: [u32; 4],
+) -> ([u32; 2], [u32; 4]) {
+    distinguishable(red, green)
+        .then(|| statuses(green, red, yellow, magenta))
+        .into_iter()
+        .chain(std::iter::once_with(|| {
+            statuses(own_added, own_removed, yellow, magenta)
+        }))
+        .find(|&(_, set)| stand_apart(set))
+        .unwrap_or_else(|| statuses(own_added, own_removed, own_modified, own_renamed))
+}
+
 /// Whether a theme's fitted red and green are far enough apart to mark removed and added
 /// lines: both keep `DIFF_MIN_CHROMA` of OKLCH chroma and their hues are `DIFF_MIN_HUE`
 /// degrees apart.
@@ -860,6 +869,13 @@ fn apart(color: u32, others: &[u32]) -> bool {
         && others
             .iter()
             .all(|&other| hue_distance(color, other) >= STATUS_MIN_HUE)
+}
+
+/// Whether four statuses (added, removed, modified, renamed) stand pairwise apart.
+fn stand_apart([added, removed, modified, renamed]: [u32; 4]) -> bool {
+    apart(added, &[removed, modified, renamed])
+        && apart(removed, &[modified, renamed])
+        && apart(modified, &[renamed])
 }
 
 /// The angle between two colors' OKLCH hues, in degrees.
@@ -1271,11 +1287,39 @@ mod tests {
         );
     }
 
-    /// Whether four statuses (added, removed, modified, renamed) stand pairwise apart.
-    fn stand_apart([added, removed, modified, renamed]: [u32; 4]) -> bool {
-        apart(added, &[removed, modified, renamed])
-            && apart(removed, &[modified, renamed])
-            && apart(modified, &[renamed])
+    /// When neither the theme's set nor GitTurtle's added and removed with the theme's yellow
+    /// and magenta stands apart, the statuses are all four of the GitTurtle colors it is given,
+    /// here with a dark theme's colors and a light one's. No fixture or generated theme reaches
+    /// that step through `fit` (see `status_set`), so the choice is given a set fitter that
+    /// keeps the colors it is given, and a yellow equal to the theme's magenta fails both
+    /// earlier sets.
+    #[test]
+    fn statuses_that_never_stand_apart_take_all_four_of_gitturtles_own() {
+        for name in ["tokyo-night", "catppuccin-latte"] {
+            let colors = bundled(name);
+            let own = own(colors.mode);
+            let gitturtles = [own.added, own.removed, own.modified, own.renamed];
+            let theirs = [colors.green, colors.red, colors.magenta, colors.magenta];
+            assert!(distinguishable(colors.red, colors.green), "{name}");
+            let tried = std::cell::RefCell::new(Vec::new());
+            let (tiles, statuses) = status_set(
+                |added, removed, yellow, magenta| {
+                    let set = [added, removed, yellow, magenta];
+                    tried.borrow_mut().push(set);
+                    ([added, removed], set)
+                },
+                theirs,
+                gitturtles,
+            );
+            assert_eq!(statuses, gitturtles, "{name} takes GitTurtle's own four");
+            assert_eq!(tiles, [own.added, own.removed], "{name}");
+            let second = [own.added, own.removed, colors.magenta, colors.magenta];
+            assert_eq!(
+                tried.into_inner(),
+                [theirs, second, gitturtles],
+                "{name} tries the theme's set, then GitTurtle's diff with its yellow and magenta"
+            );
+        }
     }
 
     fn statuses(palette: &Palette) -> [u32; 4] {

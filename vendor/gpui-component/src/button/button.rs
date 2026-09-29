@@ -219,6 +219,7 @@ pub struct Button {
     tab_index: isize,
     tab_stop: bool,
     provided_focus_handle: Option<FocusHandle>,
+    hover_style: Option<StyleRefinement>,
 }
 
 impl From<Button> for AnyElement {
@@ -267,6 +268,7 @@ impl Button {
             tab_index: 0,
             tab_stop: true,
             provided_focus_handle: None,
+            hover_style: None,
         }
     }
 
@@ -438,6 +440,17 @@ impl Button {
         self
     }
 
+    /// Apply the given style while the pointer is over the Button, unless it is
+    /// disabled.
+    ///
+    /// This takes the place of [`InteractiveElement::hover`], which GPUI
+    /// refines over the disabled style, so a disabled Button would light up
+    /// under the pointer as though it were available.
+    pub fn hover(mut self, f: impl FnOnce(StyleRefinement) -> StyleRefinement) -> Self {
+        self.hover_style = Some(f(StyleRefinement::default()));
+        self
+    }
+
     /// Set to show a dropdown caret icon at the end of the button.
     pub fn dropdown_caret(mut self, dropdown_caret: bool) -> Self {
         self.dropdown_caret = dropdown_caret;
@@ -541,6 +554,18 @@ impl RenderOnce for Button {
         let hover_group = self.hover_group;
         let hover_group_held = self.hover_group_held;
         let mut base = self.base;
+        // The caller's hover goes on before the variant's and stays registered
+        // while disabled, as it did when set on the element directly, but a
+        // disabled Button refines nothing: it keeps its disabled look.
+        if let Some(hover_style) = self.hover_style {
+            base = base.hover(|_| {
+                if disabled {
+                    StyleRefinement::default()
+                } else {
+                    hover_style
+                }
+            });
+        }
         let children = self.children;
         let instance_style = base.style().clone();
         let normal_style = style.normal(self.outline, cx);
