@@ -23,8 +23,7 @@
 
 use crate::*;
 use appearance::custom::{
-    self, CustomTheme, ImportedTheme, ReadabilityBackground, ReadabilityForeground,
-    ReadabilityIssue, ReadabilityMeasure, ThemeSelection, TokenGroup, TokenKind,
+    self, CustomTheme, ImportedTheme, ReadabilityIssue, ThemeSelection, TokenGroup, TokenKind,
 };
 use appearance::{Palette, ThemeChoice};
 use gpui_kit::base::{FocusableExt, Scrollbar, ScrollbarMode};
@@ -404,39 +403,6 @@ struct DeleteFocus {
 /// The Readability list with no warnings. It names every rule rather than
 /// contrast alone: the pressed step is measured in one channel, not as a ratio.
 const NO_READABILITY_WARNINGS: &str = "Every readability rule is met.";
-
-/// The tokens a step warning marks beyond the Selected and Hover it names:
-/// `Palette::readability_issues` measures both fills over canvas, panel,
-/// subtle, hover, selected and the hovered selected row, which blends accent
-/// into selected, and the fills themselves are layers over panel. A change to
-/// any of them can cause or clear the warning.
-const STEP_SURFACES: [TokenKind; 4] = [
-    TokenKind::Canvas,
-    TokenKind::Panel,
-    TokenKind::Subtle,
-    TokenKind::Accent,
-];
-
-/// The tokens a readability issue names, and for a step warning every token
-/// its measure composites over, for the per-row warning glyphs.
-fn issue_tokens(issue: &ReadabilityIssue) -> impl Iterator<Item = TokenKind> {
-    let foreground = match issue.foreground {
-        ReadabilityForeground::Token(kind) => Some(kind),
-        ReadabilityForeground::Lane(_) => None,
-    };
-    let background = match issue.background {
-        ReadabilityBackground::Token(kind) => Some(kind),
-        ReadabilityBackground::SelectedRowHover => Some(TokenKind::Selected),
-    };
-    let surfaces: &[TokenKind] = match issue.measure {
-        ReadabilityMeasure::Contrast => &[],
-        ReadabilityMeasure::Step => &STEP_SURFACES,
-    };
-    foreground
-        .into_iter()
-        .chain(background)
-        .chain(surfaces.iter().copied())
-}
 
 fn hsla_rgb(color: Hsla) -> u32 {
     let color = color.to_rgb();
@@ -1822,7 +1788,7 @@ impl ThemeForm {
             flagged: self
                 .warnings
                 .iter()
-                .any(|issue| issue_tokens(issue).any(|kind| kind == row.kind)),
+                .any(|issue| issue.tokens().any(|kind| kind == row.kind)),
             pending: self.pending,
             active: palette(cx),
             rem: window.rem_size(),
@@ -2716,6 +2682,7 @@ impl Render for ThemeForm {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use appearance::custom::{ReadabilityBackground, ReadabilityForeground, ReadabilityMeasure};
     use core::prelude::v1::test;
     use std::{
         cell::RefCell,
@@ -3806,90 +3773,6 @@ mod tests {
                 assert!(cx.read(|cx| app.read(cx).theme_editor.form.is_none()));
             }
         }
-    }
-
-    /// A step warning marks the Selected and Hover rows it names and every
-    /// row whose token its measure composites over; a contrast warning marks
-    /// only the two tokens it names.
-    #[test]
-    fn a_step_warning_marks_every_token_its_measure_composites_over() {
-        use TokenKind::*;
-        let marked = |issue: &ReadabilityIssue| {
-            TokenKind::ALL
-                .into_iter()
-                .filter(|kind| issue_tokens(issue).any(|token| token == *kind))
-                .collect::<Vec<_>>()
-        };
-        let mut palette = ThemeChoice::Midnight.palette();
-        palette.hover = palette.selected;
-        let issues = palette.readability_issues();
-        let step = issues
-            .iter()
-            .find(|issue| issue.measure == ReadabilityMeasure::Step)
-            .expect("a hover fill equal to the pressed fill is a step warning");
-        assert_eq!(
-            marked(step),
-            [Canvas, Panel, Subtle, Hover, Selected, Accent],
-            "{step}"
-        );
-        let contrast = ReadabilityIssue {
-            foreground: ReadabilityForeground::Token(Muted),
-            background: ReadabilityBackground::Token(Selected),
-            measure: ReadabilityMeasure::Contrast,
-            ratio: 1.,
-            minimum: 4.5,
-        };
-        assert_eq!(marked(&contrast), [Selected, Muted]);
-    }
-
-    /// The rows a step warning marks are the tokens its measure reads, derived
-    /// from `Palette::readability_issues` rather than copied from it: every
-    /// token, one channel at a time through every value, is changed alone,
-    /// and a token counts when some change moves the step or clears it. In
-    /// the start palette the step is below its minimum, so the issue reports
-    /// it, and the fills' opacities differ (hover's is set by green and the
-    /// pressed fill's by blue, both near the top of the channel), so each
-    /// surface it composites over, the hovered selected row's accent share
-    /// included, can become the smallest step.
-    #[test]
-    fn a_step_warning_marks_the_tokens_its_measure_reads() {
-        use TokenKind::*;
-        let step = |palette: Palette| {
-            palette
-                .readability_issues()
-                .into_iter()
-                .find(|issue| issue.measure == ReadabilityMeasure::Step)
-        };
-        let mut start = ThemeChoice::Midnight.palette();
-        for (kind, color) in [
-            (Panel, 0x80fafa),
-            (Canvas, 0x80fafa),
-            (Subtle, 0x80fafa),
-            (Hover, 0x7efbfa),
-            (Selected, 0x83fafc),
-            (Accent, 0x83fafc),
-        ] {
-            start.set(kind, color);
-        }
-        let issue = step(start).expect("the start palette has a step warning");
-        let read: Vec<TokenKind> = TokenKind::ALL
-            .into_iter()
-            .filter(|&kind| {
-                [16, 8, 0].into_iter().any(|shift| {
-                    (0..=255).any(|value| {
-                        let mut palette = start;
-                        let color = start.get(kind) & !(0xff << shift) | (value << shift);
-                        palette.set(kind, color);
-                        step(palette).map(|issue| issue.ratio) != Some(issue.ratio)
-                    })
-                })
-            })
-            .collect();
-        let marked: Vec<TokenKind> = TokenKind::ALL
-            .into_iter()
-            .filter(|&kind| issue_tokens(&issue).any(|token| token == kind))
-            .collect();
-        assert_eq!(read, marked, "{issue}");
     }
 
     /// The cap leaves the panel 16 px above the window's bottom edge at
