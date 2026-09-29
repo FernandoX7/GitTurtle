@@ -368,6 +368,17 @@ impl GitTurtle {
                 };
                 #[cfg(test)]
                 self.rail_navigation.set(Some((name, tooltip, narrow)));
+                // A refused Toggle Sidebar changes nothing on screen, so it is
+                // announced politely. Each refusal gets a fresh node, which
+                // screen readers announce when it appears; it is out of flow
+                // and draws nothing. AT-SPI announces the node's name and
+                // AccessKit's macOS adapter its value, so both carry the text.
+                let announcement = (narrow && self.navigation_refusals > 0).then_some((
+                    self.navigation_refusals,
+                    "Branches and worktrees unavailable: widen the window",
+                ));
+                #[cfg(test)]
+                self.rail_announcement.set(announcement);
                 rail.child(
                     button("rail-sidebar", "", "commit", false)
                         .debug_selector(|| "rail-sidebar".into())
@@ -380,6 +391,20 @@ impl GitTurtle {
                             cx.notify();
                         })),
                 )
+                .when_some(announcement, |rail, (refusal, message)| {
+                    rail.child(
+                        div()
+                            .id(("history-navigation-unavailable", refusal))
+                            .debug_selector(|| "history-navigation-unavailable".into())
+                            .role(Role::Status)
+                            .a11y_synthetic_children(native_accessibility::polite)
+                            .aria_label(message)
+                            .aria_value(message)
+                            .absolute()
+                            .size(px(1.))
+                            .overflow_hidden(),
+                    )
+                })
             })
             .child(
                 button("rail-open", "", "folder", false)
@@ -1880,13 +1905,17 @@ impl GitTurtle {
     /// The shortcut, the menu bar and the command palette share this. Outside
     /// History it returns there. In History too narrow for navigation it keeps
     /// the saved choice, since flipping it would show nothing until the window
-    /// widens; the rail button and the palette entry are disabled there.
+    /// widens, and the rail announces why; the rail button and the palette
+    /// entry are disabled there.
     pub(super) fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.mode != WorkspaceMode::History {
             self.back_to_history(window, cx);
         } else if self.navigation_fits(window) {
             self.sidebar = !self.sidebar;
             self.history_sidebar = self.sidebar;
+            cx.notify();
+        } else {
+            self.navigation_refusals = self.navigation_refusals.wrapping_add(1);
             cx.notify();
         }
     }
@@ -2056,6 +2085,16 @@ impl Render for GitTurtle {
             }
         }
         image_lifetime::after_draw(window, cx);
+        // A refused Toggle Sidebar is announced only from the narrow History
+        // rail. Forget it once that is not drawn, so the node cannot reappear,
+        // and be announced again, when the window narrows or History returns.
+        if self.navigation_refusals > 0
+            && (self.page != AppPage::Repository
+                || self.mode != WorkspaceMode::History
+                || self.navigation_fits(window))
+        {
+            self.navigation_refusals = 0;
+        }
         if self.dialog_layer_subscription.is_none()
             && let Some(Some(root)) = window.root::<Root>()
         {
@@ -2857,6 +2896,80 @@ mod tests {
         assert!(cx.debug_bounds("history-sidebar").is_none());
         resize(cx, 1000., 680.);
         assert!(cx.debug_bounds("history-sidebar").is_some());
+    }
+
+    /// Toggle Sidebar in a History window too narrow for navigation changes
+    /// nothing on screen, so the rail announces why with a polite status node,
+    /// a fresh one for every press. A wide window announces nothing, and
+    /// neither does narrowing again after widening or leaving History.
+    #[gpui::test]
+    async fn narrow_history_announces_the_refused_toggle(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window(cx).await;
+        cx.update(|window, cx| {
+            crate::shortcuts::bind_keys(cx);
+            let focus = app.read(cx).app_focus.clone();
+            window.focus(&focus, cx);
+        });
+        let toggle = if cfg!(target_os = "macos") {
+            "cmd-b"
+        } else {
+            "ctrl-b"
+        };
+        let press_toggle = |cx: &mut VisualTestContext| {
+            cx.simulate_keystrokes(toggle);
+            draw(cx);
+        };
+        let resize = |cx: &mut VisualTestContext, width: f32, height: f32| {
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+        };
+        let choice = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| (app.sidebar, app.history_sidebar))
+        };
+        // The status node the last frame drew: its refusal and its name.
+        let announced = |cx: &mut VisualTestContext| {
+            cx.debug_bounds("history-navigation-unavailable")
+                .and_then(|_| app.read_with(cx, |app, _| app.rail_announcement.get()))
+        };
+        let message = "Branches and worktrees unavailable: widen the window";
+
+        // Wide, the shortcut hides and shows navigation without a word.
+        press_toggle(cx);
+        assert_eq!(choice(cx), (false, false));
+        assert_eq!(announced(cx), None);
+        press_toggle(cx);
+        assert_eq!(choice(cx), (true, true));
+        assert_eq!(announced(cx), None);
+
+        // Narrowing alone announces nothing. Each refused press keeps the
+        // choice and draws a fresh node, so it is heard again.
+        resize(cx, 600., 718.);
+        assert_eq!(announced(cx), None);
+        press_toggle(cx);
+        assert_eq!(choice(cx), (true, true));
+        assert_eq!(announced(cx), Some((1, message)));
+        press_toggle(cx);
+        assert_eq!(choice(cx), (true, true));
+        assert_eq!(announced(cx), Some((2, message)));
+
+        // Widening shows the navigation and forgets the refusals.
+        resize(cx, 1000., 680.);
+        assert!(cx.debug_bounds("history-sidebar").is_some());
+        assert_eq!(announced(cx), None);
+        resize(cx, 600., 718.);
+        assert_eq!(announced(cx), None);
+
+        // So does leaving History for Compare and coming back.
+        press_toggle(cx);
+        assert_eq!(announced(cx), Some((1, message)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        assert!(app.read_with(cx, |app, _| app.mode == WorkspaceMode::Compare));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.back_to_history(window, cx)));
+        settle(&app, cx).await;
+        assert!(app.read_with(cx, |app, _| app.mode == WorkspaceMode::History));
+        assert_eq!(announced(cx), None);
+        assert_eq!(choice(cx), (true, true));
     }
 
     #[gpui::test]
