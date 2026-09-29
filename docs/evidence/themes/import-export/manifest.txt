@@ -1,6 +1,9 @@
 # file  sha256  capture it was copied from. The PNGs were re-taken on 2026-09-24 from 5899e2a; their captures
 # are relative to <worktree>/.local/themes-evidence/evidence-followups-5899e2a/. The exported document is
 # from the 2026-09-19 run of 301d82a.
+# Note (2026-09-29): every transfer-, collision2-, lotus- and noportal- PNG listed here, and list32-1000x680-12, were retaken
+# from 650a76e (debug) under the solid focus ring; their sha256 and capture columns describe the earlier captures. See
+# docs/validation.md, "September 29 frames retaken under the solid focus ring".
 transfer-1000x680-06-app-while-save-dialog.png  009b20461fe5599519e0cc7c8c91df98aff7b983b97f717093bf6be4931f9bee  b2/runs/cand/ie/transfer1000/captures/06-app-while-save-dialog.png
     the app while the native Save File dialog is up: every Your themes action is disabled and the focus ring stays on Export…
 transfer-1000x680-07-exported.png  feaadbcb0f7888419f3024f27987d9e6c26bf812005904b9f93fef23b0f5ef35  b2/runs/cand/ie/transfer1000/captures/07-exported.png
