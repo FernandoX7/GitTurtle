@@ -3795,8 +3795,12 @@ fn preview_caption(
                 // the room ([`whole_rows`]); the card keeps its height. The
                 // card's inherited text style does not wrap
                 // (the toolkit button's, which [`LayerCard`] pins), so the
-                // line sets its own.
-                line.whitespace_normal().line_clamp(2).text_ellipsis()
+                // line sets its own, and clips to its box as `truncate`
+                // does for one line.
+                line.overflow_hidden()
+                    .whitespace_normal()
+                    .line_clamp(2)
+                    .text_ellipsis()
             } else {
                 line.truncate()
             }
@@ -4950,12 +4954,21 @@ mod picker_tests {
             let card = format!("settings-theme-{}", ThemeChoice::Nord as usize);
             layout(cx, card, nord_body, nord)
         };
-        // The lines `text` wraps to in `width` with no limit.
+        // The lines `text` wraps to in `width` with no limit, in the font the
+        // Omarchy card's description is drawn in: its slot's text style,
+        // which [`LayerCard`] pins, at the description's normal weight.
         let needed = |cx: &mut VisualTestContext, text: &str, width: Pixels| {
-            cx.update(|window, _| {
+            cx.update(|window, cx| {
+                let slots = app.read(cx).picker_cards.0.borrow();
+                let slot = slots
+                    .iter()
+                    .find(|slot| slot.miniature.entity_id() == body)
+                    .expect("the Omarchy card has a slot");
+                let mut style = slot.text.clone();
+                style.font_weight = FontWeight::NORMAL;
                 let run = TextRun {
                     len: text.len(),
-                    font: window.text_style().font(),
+                    font: style.font(),
                     color: gpui::black(),
                     background_color: None,
                     underline: None,
