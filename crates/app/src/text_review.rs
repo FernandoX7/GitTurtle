@@ -2,19 +2,21 @@
 //! is rebuilt from the original snapshot on the replaceable read worker.
 use crate::{
     AppPage, GitTurtle, TextMode, WorkspaceMode,
-    appearance::palette,
+    appearance::{self, palette},
     split_diff::{self, Row, SplitPresentation},
     text::PatchPresentation,
     worker::{Content, Job},
 };
 use anyhow::{Result, ensure};
 use gpui_kit::{
-    AnyElement, Context, IntoElement, ParentElement, Styled, Window,
+    AnyElement, App, Context, InteractiveElement, IntoElement, ParentElement, Pixels, Styled,
+    Window,
     component::{
-        Disableable, Sizable,
+        Disableable, Icon, Sizable,
         button::{Button, ButtonVariants},
+        menu::{DropdownMenu, PopupMenuItem},
     },
-    div, rgb,
+    div, percentage, rgb,
 };
 use std::{ops::Range, sync::Arc};
 
@@ -394,36 +396,182 @@ impl GitTurtle {
         cx.notify();
     }
 
-    pub(super) fn render_text_review(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// `column` is the width the row spans. Narrower than the row needs at
+    /// the interface size, the change buttons keep only their arrows and the
+    /// other options move into an Options menu, so the row stays one line
+    /// and the diff keeps its height.
+    pub(super) fn render_text_review(&self, column: Pixels, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
         let options = self.review.options;
         let busy = self.loading.is_some() || self.operation_busy.is_some();
         let has_changes = matches!(self.content.as_deref(), Some(Content::Text { presentation, .. }) if !presentation.change_rows.is_empty());
         let next_context = CONTEXT_STEPS.iter().copied().find(|&n| n > options.context);
         let modified = options != Options::default();
-        div().flex().flex_wrap().items_center().gap_1().px_3().py_1()
-            .bg(rgb(colors.panel)).border_b_1().border_color(rgb(colors.border))
-            .child(Button::new("previous-text-change").small().ghost().label("Previous change")
-                .tooltip("Previous change · Option/Alt-Up").disabled(busy || !has_changes)
-                .on_click(cx.listener(|this, _, window, cx| this.navigate_text_change(false, window, cx))))
-            .child(Button::new("next-text-change").small().ghost().label("Next change")
-                .tooltip("Next change · Option/Alt-Down").disabled(busy || !has_changes)
-                .on_click(cx.listener(|this, _, window, cx| this.navigate_text_change(true, window, cx))))
-            .child(Button::new("hide-whitespace-changes").small().ghost().label(if options.hide_whitespace { "Whitespace hidden" } else { "Hide whitespace" })
-                .toggled(options.hide_whitespace).disabled(busy)
-                .tooltip("Hide whitespace-only changes, including indentation and line endings. Source tabs keep exact content; partial staging requires the original diff.")
-                .on_click(cx.listener(move |this, _, window, cx| this.set_text_review(Options { hide_whitespace: !options.hide_whitespace, ..options }, window, cx))))
-            .child(Button::new("expand-text-context").small().ghost().label(format!("Context {} +", options.context))
-                .disabled(busy || next_context.is_none()).tooltip("Expand unchanged context around all hunks: 3, 12, 48, then 192 lines. Split and source tabs contain the full bounded preview.")
-                .on_click(cx.listener(move |this, _, window, cx| { if let Some(context) = next_context { this.set_text_review(Options { context, ..options }, window, cx); } })))
-            .child(Button::new("reset-text-review").small().ghost().label("Reset review")
-                .disabled(busy || (!modified && self.error.is_none()))
-                .on_click(cx.listener(|this, _, window, cx| this.set_text_review(Options::default(), window, cx))))
-            .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(if modified { colors.hunk } else { colors.muted }))
-                .child(if options.hide_whitespace { "Review filter active · exact source retained" }
-                    else if modified { "Expanded context · partial staging unavailable" } else { "Original Git diff" }))
+        let reset_disabled = busy || (!modified && self.error.is_none());
+        let row = div()
+            .debug_selector(|| "text-review-options".into())
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_1()
+            .px_3()
+            .py_1()
+            .bg(rgb(colors.panel))
+            .border_b_1()
+            .border_color(rgb(colors.border));
+        // The caption takes a small button's text inset, which the control
+        // before it gives back: beside that control nothing moves, and on a
+        // line of its own the caption starts where the buttons' labels do.
+        let caption = |text: gpui_kit::Div| {
+            div()
+                .pl_2()
+                .text_size(crate::appearance::ui_text(11.))
+                .text_color(rgb(if modified { colors.hunk } else { colors.muted }))
+                .child(text.debug_selector(|| "text-review-caption".into()).child(
+                    if options.hide_whitespace {
+                        "Review filter active · exact source retained"
+                    } else if modified {
+                        "Expanded context · partial staging unavailable"
+                    } else {
+                        "Original Git diff"
+                    },
+                ))
+        };
+        let previous = Button::new("previous-text-change")
+            .debug_selector(|| "previous-text-change".into())
+            .small()
+            .ghost()
+            .tooltip("Previous change · Option/Alt-Up")
+            .disabled(busy || !has_changes)
+            .on_click(
+                cx.listener(|this, _, window, cx| this.navigate_text_change(false, window, cx)),
+            );
+        let next = Button::new("next-text-change")
+            .debug_selector(|| "next-text-change".into())
+            .small()
+            .ghost()
+            .tooltip("Next change · Option/Alt-Down")
+            .disabled(busy || !has_changes)
+            .on_click(
+                cx.listener(|this, _, window, cx| this.navigate_text_change(true, window, cx)),
+            );
+        if column < options_row_width(cx) {
+            // The app's arrow, turned up and down.
+            let arrow = |turn: f32| {
+                Icon::default()
+                    .path("icons/arrow-left.svg")
+                    .size(appearance::ui_size(14.))
+                    .rotate(percentage(turn))
+            };
+            let owner = cx.entity().downgrade();
+            let menu = Button::new("text-review-menu")
+                .debug_selector(|| "text-review-menu".into())
+                .small()
+                .ghost()
+                .label("Options")
+                .dropdown_caret(true)
+                .mr_neg_2()
+                .accessibility_label("Review options")
+                .tooltip("Hide whitespace, expand context or reset the review")
+                .dropdown_menu(move |menu, _, _| {
+                    // Built when opened; each item acts on the review as it
+                    // is when chosen, as the buttons of the full row do.
+                    let item =
+                        |label: String,
+                         checked: bool,
+                         disabled: bool,
+                         change: fn(Options) -> Option<Options>| {
+                            let owner = owner.clone();
+                            PopupMenuItem::new(label)
+                                .checked(checked)
+                                .disabled(disabled)
+                                .on_click(move |_, window, cx| {
+                                    let _ = owner.update(cx, |this, cx| {
+                                        if this.page == AppPage::Repository
+                                            && let Some(options) = change(this.review.options)
+                                        {
+                                            this.set_text_review(options, window, cx);
+                                        }
+                                    });
+                                })
+                        };
+                    menu.item(item(
+                        "Hide whitespace".into(),
+                        options.hide_whitespace,
+                        busy,
+                        |options| {
+                            Some(Options {
+                                hide_whitespace: !options.hide_whitespace,
+                                ..options
+                            })
+                        },
+                    ))
+                    .item(item(
+                        format!("Context {} +", options.context),
+                        false,
+                        busy || next_context.is_none(),
+                        |options| {
+                            CONTEXT_STEPS
+                                .iter()
+                                .copied()
+                                .find(|&n| n > options.context)
+                                .map(|context| Options { context, ..options })
+                        },
+                    ))
+                    .item(item(
+                        "Reset review".into(),
+                        false,
+                        reset_disabled,
+                        |_| Some(Options::default()),
+                    ))
+                });
+            row.child(
+                previous
+                    .icon(arrow(0.25))
+                    .accessibility_label("Previous change"),
+            )
+            .child(next.icon(arrow(0.75)).accessibility_label("Next change"))
+            .child(menu)
+            .child(caption(div().truncate()).flex_1().min_w_0())
             .into_any_element()
+        } else {
+            row.child(previous.label("Previous change"))
+                .child(next.label("Next change"))
+                .child(Button::new("hide-whitespace-changes").debug_selector(|| "hide-whitespace-changes".into()).small().ghost().label(if options.hide_whitespace { "Whitespace hidden" } else { "Hide whitespace" })
+                    .toggled(options.hide_whitespace).disabled(busy)
+                    .tooltip("Hide whitespace-only changes, including indentation and line endings. Source tabs keep exact content; partial staging requires the original diff.")
+                    .on_click(cx.listener(move |this, _, window, cx| this.set_text_review(Options { hide_whitespace: !options.hide_whitespace, ..options }, window, cx))))
+                .child(Button::new("expand-text-context").small().ghost().label(format!("Context {} +", options.context))
+                    .disabled(busy || next_context.is_none()).tooltip("Expand unchanged context around all hunks: 3, 12, 48, then 192 lines. Split and source tabs contain the full bounded preview.")
+                    .on_click(cx.listener(move |this, _, window, cx| { if let Some(context) = next_context { this.set_text_review(Options { context, ..options }, window, cx); } })))
+                .child(Button::new("reset-text-review").small().ghost().label("Reset review")
+                    .disabled(reset_disabled).mr_neg_2()
+                    .on_click(cx.listener(|this, _, window, cx| this.set_text_review(Options::default(), window, cx))))
+                .child(caption(div()))
+                .into_any_element()
+        }
     }
+}
+
+/// The width the review options take on one row as they first appear, with
+/// "Original Git diff": 9.75 px of padding on each side, six items 3.25 px
+/// apart, and five small buttons with 6.5 px on either side of their label.
+/// Fixed labels keep the layout from switching when an option is chosen; a
+/// longer caption wraps to a line of its own.
+fn options_row_width(cx: &App) -> Pixels {
+    let label = appearance::ui_size(13. * 0.875);
+    appearance::ui_size(2. * 9.75 + 5. * 3.25 + 5. * 13.)
+        + crate::views::interface_text_width(
+            &[
+                ("Previous change", label),
+                ("Next change", label),
+                ("Hide whitespace", label),
+                ("Context 3 +", label),
+                ("Reset review", label),
+                ("Original Git diff", appearance::ui_text(11.)),
+            ],
+            cx,
+        )
 }
 
 /// A navigation action preserves selection/copy and horizontal scroll. Repeated

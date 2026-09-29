@@ -733,6 +733,159 @@ impl GitTurtle {
         }
     }
 
+    /// History's scope toolbar. Where the column is narrower than the
+    /// labelled row needs, Columns and the paging buttons keep only their
+    /// icons, tooltips and accessible names, and the scope name and count
+    /// yield first, so paging stays inside the column.
+    fn render_history_scope_toolbar(
+        &self,
+        scope: impl IntoElement,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = palette(cx);
+        let count = if self.history_search_active() {
+            format!("{} commits", self.visible.len())
+        } else {
+            format!(
+                "{}–{}",
+                self.history_paging.offset + usize::from(!self.visible.is_empty()),
+                self.history_paging.offset + self.visible.len()
+            )
+        };
+        let compact = px(self.history_width) < labelled_scope_toolbar_width(&count, cx);
+        // Compact, each keeps the app's own artwork, turned: `symbol` a
+        // quarter turn clockwise per 0.25 of `turn`.
+        let paging =
+            |id: &'static str, label: &'static str, labelled: &str, symbol: &str, turn: f32| {
+                if compact {
+                    button(id, "", "", false)
+                        .icon(
+                            Icon::default()
+                                .path(format!("icons/{symbol}.svg"))
+                                .size(appearance::ui_size(16.))
+                                .rotate(percentage(turn)),
+                        )
+                        .accessibility_label(label)
+                } else {
+                    button(id, label, labelled, false)
+                }
+            };
+        let columns = if compact {
+            button("columns", "", "columns", self.column_menu)
+                .accessibility_label("Columns")
+                .tooltip("Columns")
+        } else {
+            button("columns", "Columns", "columns", self.column_menu)
+        }
+        .debug_selector(|| "columns".into())
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.column_menu = !this.column_menu;
+            cx.notify();
+        }));
+        // Latest jumps to the top, where the newest rows are; Previous and
+        // Older page up and down.
+        let latest = paging("history-newest", "Latest", "", "arrow-left", 0.25)
+            .debug_selector(|| "history-newest".into())
+            .disabled(
+                self.repository.is_none()
+                    || self.loading.is_some()
+                    || self.operation_busy.is_some(),
+            )
+            .tooltip(
+                "Read current local history and show its newest rows; keeps the selected inspector",
+            )
+            .on_click(cx.listener(|this, _, window, cx| this.show_latest_history(window, cx)));
+        let previous = paging("history-previous", "Previous", "", "chevron", 0.75)
+            .debug_selector(|| "history-previous".into())
+            .disabled(
+                self.history_search_active()
+                    || self.loading.is_some()
+                    || self.history_paging.offset == 0,
+            )
+            .tooltip("Read the preceding page; your selected comparison remains available")
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.request_history_page(
+                    this.history_paging
+                        .offset
+                        .saturating_sub(history_paging::PAGE_SIZE),
+                    window,
+                    cx,
+                );
+            }));
+        let older = paging("load-more", "Older", "chevron", "chevron", 0.25)
+            .debug_selector(|| "load-more".into())
+            .disabled(
+                self.repository.is_none()
+                    || self.history_search_active()
+                    || self.loading.is_some()
+                    || self.history_paging.next_offset.is_none(),
+            )
+            .tooltip("Continue the captured history; retains up to 5,000 rows in a bounded window")
+            .on_click(cx.listener(|this, _, window, cx| {
+                if let Some(offset) = this.history_paging.next_offset {
+                    this.request_history_page(offset, window, cx);
+                }
+            }));
+        let name = div()
+            .max_w(px(190.))
+            .truncate()
+            .font_weight(FontWeight::MEDIUM)
+            .child(scope);
+        let count = div()
+            .text_size(crate::appearance::ui_text(10.))
+            .text_color(rgb(colors.muted))
+            .child(count);
+        let toolbar = div()
+            .debug_selector(|| "history-scope-toolbar".into())
+            .h(crate::appearance::ui_size(40.))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .px_3()
+            .gap_2()
+            .border_b_1()
+            .border_color(rgb(colors.border))
+            .child(icon("branch", 15., colors.accent));
+        if compact {
+            // The paging buttons sit a quarter rem apart, as the comparison
+            // path row's icon buttons do; in the narrowest column the name
+            // and count yield entirely.
+            toolbar
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(name.min_w_0())
+                        .child(count.min_w_0().truncate()),
+                )
+                .child(columns)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(latest)
+                        .child(previous)
+                        .child(older),
+                )
+                .into_any_element()
+        } else {
+            toolbar
+                .child(name)
+                .child(count)
+                .child(div().flex_1())
+                .child(columns)
+                .child(latest)
+                .child(previous)
+                .child(older)
+                .into_any_element()
+        }
+    }
+
     pub(super) fn render_history(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
         let scope = self
@@ -880,64 +1033,7 @@ impl GitTurtle {
                     }
                 });
             })
-            .child(
-                div()
-                    .h(crate::appearance::ui_size(40.))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .px_3()
-                    .gap_2()
-                    .border_b_1()
-                    .border_color(rgb(colors.border))
-                    .child(icon("branch", 15., colors.accent))
-                    .child(
-                        div()
-                            .max_w(px(190.))
-                            .truncate()
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(scope),
-                    )
-                    .child(
-                        div()
-                            .text_size(crate::appearance::ui_text(10.))
-                            .text_color(rgb(colors.muted))
-                            .child(if self.history_search_active() { format!("{} commits", self.visible.len()) } else { format!("{}–{}", self.history_paging.offset + usize::from(!self.visible.is_empty()), self.history_paging.offset + self.visible.len()) }),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        button("columns", "Columns", "columns", self.column_menu).on_click(
-                            cx.listener(|this, _, _, cx| {
-                                this.column_menu = !this.column_menu;
-                                cx.notify();
-                            }),
-                        ),
-                    )
-                    .child(
-                        button("history-newest", "Latest", "", false)
-                            .disabled(self.repository.is_none() || self.loading.is_some() || self.operation_busy.is_some())
-                            .tooltip("Read current local history and show its newest rows; keeps the selected inspector")
-                            .on_click(cx.listener(|this, _, window, cx| this.show_latest_history(window, cx))),
-                    )
-                    .child(
-                        button("history-previous", "Previous", "", false)
-                            .disabled(self.history_search_active() || self.loading.is_some() || self.history_paging.offset == 0)
-                            .tooltip("Read the preceding page; your selected comparison remains available")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.request_history_page(this.history_paging.offset.saturating_sub(history_paging::PAGE_SIZE), window, cx);
-                            })),
-                    )
-                    .child(
-                        button("load-more", "Older", "chevron", false)
-                            .disabled(self.repository.is_none() || self.history_search_active() || self.loading.is_some() || self.history_paging.next_offset.is_none())
-                            .tooltip("Continue the captured history; retains up to 5,000 rows in a bounded window")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                if let Some(offset) = this.history_paging.next_offset {
-                                    this.request_history_page(offset, window, cx);
-                                }
-                            })),
-                    ),
-            )
+            .child(self.render_history_scope_toolbar(scope, cx))
             .child(
                 div()
                     .h(crate::appearance::ui_size(38.))
@@ -967,38 +1063,38 @@ impl GitTurtle {
             })
             .child(history_scroll_viewport(
                 &self.history_horizontal,
+                div()
+                    .w(px(columns.content_width + 26.))
+                    .h_full()
+                    .flex_shrink_0()
+                    .flex()
+                    .flex_col()
+                    .child(header)
+                    .child(
                         div()
-                            .w(px(columns.content_width + 26.))
-                            .h_full()
-                            .flex_shrink_0()
-                            .flex()
-                            .flex_col()
-                            .child(header)
-                            .child(
-                                div()
-                                    .id("history-pane")
-                                    .role(Role::ListBox)
-                                    .aria_label("Commit history")
-                                    .tab_stop(true)
-                                    .key_context("GitTurtleList")
-                                    .track_focus(&self.focus)
-                                    .border_1()
-                                    .border_color(rgb(colors.border))
-                                    .focus_visible(|style| style.border_color(rgb(colors.accent)))
-                                    .relative()
-                                    .flex_1()
-                                    .min_h_0()
-                                    .overflow_hidden()
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _, window, cx| {
-                                            this.pane = Pane::History;
-                                            window.focus(&this.focus, cx);
-                                        }),
-                                    )
-                                    .child(history)
-                                    .child(self.list_viewport_probe(true, cx)),
-                            ),
+                            .id("history-pane")
+                            .role(Role::ListBox)
+                            .aria_label("Commit history")
+                            .tab_stop(true)
+                            .key_context("GitTurtleList")
+                            .track_focus(&self.focus)
+                            .border_1()
+                            .border_color(rgb(colors.border))
+                            .focus_visible(|style| style.border_color(rgb(colors.accent)))
+                            .relative()
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_hidden()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, window, cx| {
+                                    this.pane = Pane::History;
+                                    window.focus(&this.focus, cx);
+                                }),
+                            )
+                            .child(history)
+                            .child(self.list_viewport_probe(true, cx)),
+                    ),
             ))
             .child(Scrollbar::horizontal(&self.history_horizontal).mode(ScrollbarMode::Always))
             .into_any_element()
@@ -1550,8 +1646,14 @@ impl GitTurtle {
     }
     /// `column_min` is the preview column's narrowest width; the path row keeps
     /// 220 px before the modes wrap below it, but never more than that column
-    /// holds, and its buttons wrap below the path rather than clip.
-    pub(super) fn render_preview(&self, column_min: Pixels, cx: &mut Context<Self>) -> AnyElement {
+    /// holds, and its buttons wrap below the path rather than clip. `column`
+    /// is its width as last laid out, which the review options fit.
+    pub(super) fn render_preview(
+        &self,
+        column_min: Pixels,
+        column: Pixels,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         if self.blame.is_visible() {
             return self.render_blame(cx);
         }
@@ -1813,9 +1915,16 @@ impl GitTurtle {
                     && !self.blame.is_visible()
                     && !matches!(self.text_mode, TextMode::Diagrams | TextMode::Markdown)
                     && !quick_source,
-                |el| el.child(self.render_text_review(cx)),
+                |el| el.child(self.render_text_review(column, cx)),
             )
-            .child(div().flex_1().min_h_0().overflow_hidden().child(content))
+            .child(
+                div()
+                    .debug_selector(|| "preview-content".into())
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .child(content),
+            )
             .children(
                 self.content
                     .as_ref()
@@ -1887,6 +1996,47 @@ const TIGHT_CONTENT_MIN: f32 = 176.;
 /// Below this window width, at the interface text size, the header drops the
 /// Projects and profile labels so it stays on one row.
 const COMPACT_HEADER_WIDTH: f32 = 800.;
+/// The width History's scope toolbar needs to keep its labels, with the scope
+/// name yielded: 9.75 px of padding on each side, seven 6.5 px gaps, the
+/// fixed-size branch icon, the count, and the Columns, Latest, Previous and
+/// Older buttons, each the shared `button` helper's 10 px of padding on
+/// either side of its label, and Columns and Older a 16 px icon 6 px before
+/// it. In a narrower column the toolbar keeps only icons.
+fn labelled_scope_toolbar_width(count: &str, cx: &App) -> Pixels {
+    let label = appearance::ui_text(12.);
+    appearance::ui_size(2. * 9.75 + 7. * 6.5 + 4. * 20. + 2. * 22.)
+        + px(15.)
+        + interface_text_width(
+            &[
+                (count, appearance::ui_text(10.)),
+                ("Columns", label),
+                ("Latest", label),
+                ("Previous", label),
+                ("Older", label),
+            ],
+            cx,
+        )
+}
+
+/// The widths `texts` need as single lines in the interface font, summed: the
+/// glyph advances of each, rounded up to a whole pixel as a laid-out line is.
+/// Kerning only narrows a line, so this never falls short of the drawn text.
+pub(crate) fn interface_text_width(texts: &[(&str, Pixels)], cx: &App) -> Pixels {
+    let system = cx.text_system();
+    let font_id = system.resolve_font(&font(
+        gpui_kit::component::Theme::global(cx).font_family.clone(),
+    ));
+    texts
+        .iter()
+        .map(|(text, size)| {
+            text.chars()
+                .filter_map(|ch| system.advance(font_id, *size, ch).ok())
+                .map(|advance| advance.width)
+                .sum::<Pixels>()
+                .ceil()
+        })
+        .sum()
+}
 
 impl GitTurtle {
     /// A narrow window shrinks the project pane toward its minimum before the
@@ -1952,6 +2102,17 @@ impl GitTurtle {
             (px(520.), px(INSPECTOR_MIN))
         };
         let left = if self.mode != WorkspaceMode::History {
+            // The preview column as last laid out. Entering from History it is
+            // the column History left: its own, beside the rail or beside
+            // navigation. The state lives while this branch is drawn.
+            let measured = window.use_keyed_state("preview-column-width", cx, |_, _| None);
+            let column = measured.read(cx).unwrap_or_else(|| {
+                if self.history_sidebar && !narrow {
+                    px(self.settings.navigation_width + self.history_width) - rail
+                } else {
+                    px(self.history_width)
+                }
+            });
             div()
                 .size_full()
                 .flex()
@@ -1962,7 +2123,15 @@ impl GitTurtle {
                         .flex_1()
                         .min_w_0()
                         .h_full()
-                        .child(self.render_preview(content_min - rail, cx)),
+                        .on_prepaint(move |bounds, _, cx| {
+                            measured.update(cx, |width, cx| {
+                                if *width != Some(bounds.size.width) {
+                                    *width = Some(bounds.size.width);
+                                    cx.notify();
+                                }
+                            })
+                        })
+                        .child(self.render_preview(content_min - rail, column, cx)),
                 )
                 .into_any_element()
         } else if self.sidebar && !narrow {
@@ -2645,6 +2814,44 @@ mod tests {
     async fn history_window(
         cx: &mut TestAppContext,
     ) -> (tempfile::TempDir, Entity<GitTurtle>, &mut VisualTestContext) {
+        history_window_from(
+            cx,
+            "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 13\nfixture notes\nM 100644 inline notes.txt\ndata 6\nnotes\n\ndone\n",
+        )
+        .await
+    }
+
+    /// A `git fast-import` stream of `commits` commits on `main`, each
+    /// rewriting `notes.txt`; the newest writes `lines` numbered lines, so
+    /// its comparison has at least that many diff lines.
+    fn history_script(commits: usize, lines: usize) -> String {
+        let mut input = String::new();
+        for commit in 0..commits {
+            let notes: String = if commit + 1 == commits {
+                (1..=lines).map(|line| format!("note {line}\n")).collect()
+            } else {
+                format!("draft {commit}\n")
+            };
+            let message = format!("fixture notes {commit}");
+            input.push_str(&format!(
+                "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> {} +0000\ndata {}\n{message}\nM 100644 inline notes.txt\ndata {}\n{notes}\n",
+                1_700_000_000 + commit,
+                message.len(),
+                notes.len(),
+            ));
+        }
+        input + "done\n"
+    }
+
+    /// [`history_window`] on the repository `input` imports.
+    async fn history_window_from<'a>(
+        cx: &'a mut TestAppContext,
+        input: &str,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        &'a mut VisualTestContext,
+    ) {
         use gpui_kit::component::Root;
         use std::{
             cell::RefCell,
@@ -2660,7 +2867,6 @@ mod tests {
         });
         let fixture = tempfile::tempdir().unwrap();
         let repo = GitRepository::init(fixture.path().join("narrow"), "main").unwrap();
-        let input = "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 13\nfixture notes\nM 100644 inline notes.txt\ndata 6\nnotes\n\ndone\n";
         let mut command = Command::new("git");
         command
             .arg("-C")
@@ -2809,6 +3015,225 @@ mod tests {
                 "Blame under the inspector at {width}: {blame:?}, files {files:?}"
             );
         }
+    }
+
+    /// In a half tile of a display about 1,000 px wide, History's 176 px
+    /// column still holds Latest, Previous and Older, and each still acts.
+    #[gpui::test]
+    async fn narrow_history_keeps_paging_in_the_column(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) =
+            history_window_from(cx, &history_script(history_paging::PAGE_SIZE + 20, 1)).await;
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        let toolbar = cx.debug_bounds("history-scope-toolbar").unwrap();
+        for selector in ["columns", "history-newest", "history-previous", "load-more"] {
+            let control = cx.debug_bounds(selector).unwrap();
+            assert!(
+                control.left() >= toolbar.left()
+                    && control.right() <= toolbar.right()
+                    && control.right() <= px(461.),
+                "{selector} outside the {toolbar:?} column: {control:?}"
+            );
+            assert_eq!(control.size.height, appearance::ui_size(28.), "{selector}");
+        }
+        let paging = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                (
+                    app.history_paging.offset,
+                    app.visible.len(),
+                    app.history_paging.next_offset,
+                )
+            })
+        };
+        let click = |cx: &mut VisualTestContext, selector| {
+            let control = cx.debug_bounds(selector).unwrap();
+            cx.simulate_click(control.center(), Modifiers::default());
+        };
+        let page = history_paging::PAGE_SIZE;
+        // Older continues the captured history into the bounded window.
+        click(cx, "load-more");
+        settle(&app, cx).await;
+        assert_eq!(paging(cx), (0, page + 20, None), "after Older");
+        // Latest reads current history again and shows its newest rows.
+        click(cx, "history-newest");
+        settle(&app, cx).await;
+        assert_eq!(paging(cx), (0, page, Some(page)), "after Latest");
+        // Previous reads the preceding page of a window evicted past its
+        // first page.
+        app.update(cx, |app, cx| {
+            app.history_paging.offset = page;
+            cx.notify();
+        });
+        draw(cx);
+        click(cx, "history-previous");
+        settle(&app, cx).await;
+        assert_eq!(paging(cx), (0, page, Some(page)), "after Previous");
+    }
+
+    /// Visible diff lines: the patch editor's text within the preview's
+    /// content area and the window.
+    fn visible_diff_lines(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, height: f32) -> f32 {
+        let content = cx.debug_bounds("preview-content").unwrap();
+        let (line, text) = cx.update(|_, cx| {
+            let editor = app.read(cx).patch_editor.clone().expect("a unified diff");
+            let state = editor.read(cx);
+            (state.line_height().unwrap(), state.text_bounds().unwrap())
+        });
+        let bottom = text.bottom().min(content.bottom()).min(px(height));
+        ((bottom - text.top().max(content.top())) / line)
+            .floor()
+            .max(0.)
+    }
+
+    /// Beside the header and the Git action bar on two rows each, Compare's
+    /// review options collapse to one row so a 461 × 490 window still shows
+    /// the diff.
+    #[gpui::test]
+    async fn narrow_compare_keeps_three_diff_lines(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        for (width, height) in [(493., 526.), (461., 490.)] {
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let lines = visible_diff_lines(&app, cx, height);
+            assert!(lines >= 3., "{lines} diff lines at {width} × {height}");
+            let row = cx.debug_bounds("text-review-options").unwrap();
+            for selector in [
+                "previous-text-change",
+                "next-text-change",
+                "text-review-menu",
+            ] {
+                let control = cx.debug_bounds(selector).unwrap();
+                assert!(
+                    control.top() >= row.top()
+                        && control.bottom() <= row.bottom()
+                        && control.right() <= row.right(),
+                    "{selector} off the one options row at {width}: {control:?}, row {row:?}"
+                );
+                assert!(
+                    control.bottom() - control.top() > row.size.height / 2.,
+                    "{selector} {row:?}"
+                );
+            }
+        }
+    }
+
+    /// Hide whitespace, Context and Reset stay reachable from the keyboard
+    /// in the Options menu, each with its state.
+    #[gpui::test]
+    async fn narrow_review_options_act_from_the_menu(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        let options = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.review.options);
+        // Down selects the first enabled item; each further Down the next.
+        for (downs, expected) in [
+            (
+                1,
+                crate::text_review::Options {
+                    hide_whitespace: true,
+                    context: 3,
+                },
+            ),
+            (
+                2,
+                crate::text_review::Options {
+                    hide_whitespace: true,
+                    context: 12,
+                },
+            ),
+            (3, crate::text_review::Options::default()),
+        ] {
+            let menu = cx
+                .debug_bounds("text-review-menu")
+                .expect("the Options menu button");
+            cx.simulate_click(menu.center(), Modifiers::default());
+            draw(cx);
+            cx.update(|window, _| {
+                assert!(
+                    window
+                        .context_stack()
+                        .iter()
+                        .any(|context| context.contains("PopupMenu"))
+                )
+            });
+            for _ in 0..downs {
+                cx.simulate_keystrokes("down");
+            }
+            cx.simulate_keystrokes("enter");
+            settle(&app, cx).await;
+            assert_eq!(options(cx), expected, "after {downs} down");
+            assert!(cx.debug_bounds("hide-whitespace-changes").is_none());
+        }
+    }
+
+    /// "Original Git diff" and the other captions start where the buttons'
+    /// labels do when they wrap to a line of their own, and keep to the
+    /// Options row when the options collapse.
+    #[gpui::test]
+    async fn review_caption_aligns_with_the_button_labels(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        // The longer caption no longer fits beside the full row.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.set_text_review(
+                    crate::text_review::Options {
+                        hide_whitespace: true,
+                        context: 3,
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        settle(&app, cx).await;
+        let inset = cx.update(|window, _| window.rem_size() * 0.5);
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        draw(cx);
+        let first = cx.debug_bounds("previous-text-change").unwrap();
+        let caption = cx.debug_bounds("text-review-caption").unwrap();
+        assert!(
+            caption.top() >= first.bottom(),
+            "the caption wraps: {caption:?}"
+        );
+        assert_eq!(
+            caption.left(),
+            first.left() + inset,
+            "caption {caption:?}, first button {first:?}"
+        );
+
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        let menu = cx.debug_bounds("text-review-menu").unwrap();
+        let row = cx.debug_bounds("text-review-options").unwrap();
+        let caption = cx.debug_bounds("text-review-caption").unwrap();
+        assert!(
+            caption.top() < menu.bottom()
+                && caption.left() >= menu.right()
+                && caption.right() <= row.right(),
+            "caption {caption:?} beside Options {menu:?} in {row:?}"
+        );
+
+        // At 18 pt the collapsed row's caption wraps below the arrows, and
+        // lines up with the labels there too.
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(493.), px(526.)));
+        draw(cx);
+        let inset = cx.update(|window, _| window.rem_size() * 0.5);
+        let first = cx.debug_bounds("previous-text-change").unwrap();
+        let caption = cx.debug_bounds("text-review-caption").unwrap();
+        assert!(cx.debug_bounds("text-review-menu").is_some());
+        assert!(
+            caption.top() >= first.bottom(),
+            "the caption wraps: {caption:?}"
+        );
+        assert_eq!(caption.left(), first.left() + inset, "at 18 pt");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// With navigation hidden only by a narrow window, the shortcut, the rail
