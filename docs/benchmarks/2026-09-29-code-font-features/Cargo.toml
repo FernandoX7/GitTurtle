@@ -1,0 +1,20 @@
+# Standalone shaping driver for the bundled code font's feature skip; see
+# README.md. The empty [workspace] keeps it out of the GitTurtle workspace.
+[package]
+name = "code-font-features"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# The version, default features and (through Cargo.lock) transitive versions
+# that GPUI 0.3.4's Linux text system (gpui-pre-wgpu) links in the app.
+cosmic-text = "=0.19.0"
+
+# The app's release profile.
+[profile.release]
+lto = "thin"
+codegen-units = 8
+strip = "debuginfo"
+
+[workspace]
