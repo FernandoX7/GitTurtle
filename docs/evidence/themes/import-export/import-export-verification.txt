@@ -1,6 +1,8 @@
 Note (2026-09-24): this file records the September 19 run of 301d82a. The images beside it were re-taken
 from 5899e2a on 2026-09-24 and are described in docs/validation.md, "September 19 Theme export and import";
 this record was not regenerated for them.
+Note (2026-09-29): the transfer-, collision2-, lotus- and noportal- images and list32-1000x680-12 were retaken from 650a76e
+(debug) under the solid focus ring; see docs/validation.md, "September 29 frames retaken under the solid focus ring".
 
 Theme export and import — native verification (Linux/XWayland, 2026-09-19)
 

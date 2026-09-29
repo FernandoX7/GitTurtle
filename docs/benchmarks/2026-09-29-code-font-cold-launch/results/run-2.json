@@ -1,0 +1,1192 @@
+{
+ "host": {
+  "kernel": "7.2.5-3-omarchy",
+  "cpu": "AMD 3020e with Radeon Graphics",
+  "cores": 2,
+  "governor": "schedutil",
+  "fontconfig": "fontconfig version 2.18.3",
+  "hyprland": "Hyprland 0.56.2 built from branch v0.56.2 at commit efb50993780079460b0cbed1363e2166a2de1d9f clean ([gha] Nix: update inputs)."
+ },
+ "build": {
+  "binary": "gitturtle-d553cc0",
+  "sha256": "1f1fed5a25c1cb1c90f498db4159a032ae72a394628148ca98eadfee9a998004",
+  "build_info": "{\n  \"application\": \"GitTurtle\",\n  \"version\": \"0.1.0\",\n  \"source_revision\": \"d553cc09a2dbcb3e828db930f6b45232b7c4f2ab\",\n  \"source_tree\": \"clean\",\n  \"target\": \"x86_64-unknown-linux-gnu\",\n  \"profile\": \"release\",\n  \"rustc\": \"rustc 1.98.0 (88d9e12ae 2026-08-18)\",\n  \"build_unix_seconds\": \"1790705552\"\n}"
+ },
+ "fixture": "/tmp/gitturtle-evidence/omarchy-d/demo",
+ "rounds": 12,
+ "output": "QA 1480x800 scale 1",
+ "percentile": "nearest rank",
+ "started_utc": "2026-09-29T19:30:11Z",
+ "load_before": [
+  0.599609375,
+  0.8359375,
+  1.60302734375
+ ],
+ "ended_utc": "2026-09-29T19:35:12Z",
+ "load_after": [
+  2.16455078125,
+  1.345703125,
+  1.5751953125
+ ],
+ "summary": {
+  "on-cold": {
+   "window_ms": {
+    "n": 12,
+    "p50": 365.416,
+    "p95": 789.93,
+    "max": 789.93
+   },
+   "lookup_end_ms": {
+    "n": 11,
+    "p50": 812.898,
+    "p95": 896.841,
+    "max": 896.841
+   }
+  },
+  "off-cold": {
+   "window_ms": {
+    "n": 12,
+    "p50": 335.922,
+    "p95": 483.152,
+    "max": 483.152
+   }
+  },
+  "on-warm": {
+   "window_ms": {
+    "n": 12,
+    "p50": 337.353,
+    "p95": 565.862,
+    "max": 565.862
+   },
+   "lookup_end_ms": {
+    "n": 12,
+    "p50": 67.052,
+    "p95": 156.306,
+    "max": 156.306
+   }
+  },
+  "off-warm": {
+   "window_ms": {
+    "n": 12,
+    "p50": 330.464,
+    "p95": 347.459,
+    "max": 347.459
+   }
+  }
+ },
+ "samples": [
+  {
+   "setting": "on",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r00-on-cold",
+   "workspace": "9",
+   "window_ms": 789.93,
+   "lookup_start_ms": null,
+   "lookup_end_ms": null,
+   "lookup_exit": null,
+   "calls": [],
+   "unfinished": [
+    {
+     "start_ms": 92.786,
+     "args": "--format %{family} monospace"
+    },
+    {
+     "start_ms": 856.384,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "still_running": 0,
+   "exit": -15,
+   "round": 0,
+   "load1_before": 0.599609375,
+   "load1_after": 0.4443359375
+  },
+  {
+   "setting": "off",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r00-off-cold",
+   "workspace": "9",
+   "window_ms": 371.547,
+   "lookup_start_ms": null,
+   "lookup_end_ms": null,
+   "lookup_exit": null,
+   "calls": [],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 0,
+   "load1_before": 0.4443359375,
+   "load1_after": 0.40869140625
+  },
+  {
+   "setting": "on",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r00-on-warm",
+   "workspace": "9",
+   "window_ms": 337.353,
+   "lookup_start_ms": 47.298,
+   "lookup_end_ms": 89.945,
+   "lookup_exit": 0,
+   "calls": [
+    {
+     "start_ms": 47.298,
+     "end_ms": 89.945,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    },
+    {
+     "start_ms": 352.673,
+     "end_ms": 392.943,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 0,
+   "load1_before": 0.40869140625,
+   "load1_after": 1.7373046875
+  },
+  {
+   "setting": "off",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r00-off-warm",
+   "workspace": "9",
+   "window_ms": 326.36,
+   "lookup_start_ms": null,
+   "lookup_end_ms": null,
+   "lookup_exit": null,
+   "calls": [],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 0,
+   "load1_before": 1.7373046875,
+   "load1_after": 1.7373046875
+  },
+  {
+   "setting": "off",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r01-off-cold",
+   "workspace": "9",
+   "window_ms": 356.708,
+   "lookup_start_ms": null,
+   "lookup_end_ms": null,
+   "lookup_exit": null,
+   "calls": [],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 1,
+   "load1_before": 1.59814453125,
+   "load1_after": 1.59814453125
+  },
+  {
+   "setting": "on",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r01-on-warm",
+   "workspace": "9",
+   "window_ms": 367.478,
+   "lookup_start_ms": 52.968,
+   "lookup_end_ms": 73.215,
+   "lookup_exit": 0,
+   "calls": [
+    {
+     "start_ms": 52.968,
+     "end_ms": 73.215,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    },
+    {
+     "start_ms": 444.671,
+     "end_ms": 511.014,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 1,
+   "load1_before": 1.4697265625,
+   "load1_after": 1.4697265625
+  },
+  {
+   "setting": "off",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r01-off-warm",
+   "workspace": "9",
+   "window_ms": 330.464,
+   "lookup_start_ms": null,
+   "lookup_end_ms": null,
+   "lookup_exit": null,
+   "calls": [],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 1,
+   "load1_before": 1.3515625,
+   "load1_after": 1.3515625
+  },
+  {
+   "setting": "on",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r01-on-cold",
+   "workspace": "9",
+   "window_ms": 415.373,
+   "lookup_start_ms": 578.34,
+   "lookup_end_ms": 812.898,
+   "lookup_exit": 0,
+   "calls": [
+    {
+     "start_ms": 578.34,
+     "end_ms": 812.898,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "unfinished": [
+    {
+     "start_ms": 49.89,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "still_running": 0,
+   "exit": -15,
+   "round": 1,
+   "load1_before": 1.2431640625,
+   "load1_after": 1.2431640625
+  },
+  {
+   "setting": "on",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r02-on-warm",
+   "workspace": "9",
+   "window_ms": 335.97,
+   "lookup_start_ms": 49.863,
+   "lookup_end_ms": 72.574,
+   "lookup_exit": 0,
+   "calls": [
+    {
+     "start_ms": 49.863,
+     "end_ms": 72.574,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    },
+    {
+     "start_ms": 393.545,
+     "end_ms": 480.171,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 2,
+   "load1_before": 1.1435546875,
+   "load1_after": 1.1435546875
+  },
+  {
+   "setting": "off",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r02-off-warm",
+   "workspace": "9",
+   "window_ms": 325.872,
+   "lookup_start_ms": null,
+   "lookup_end_ms": null,
+   "lookup_exit": null,
+   "calls": [],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 2,
+   "load1_before": 1.0517578125,
+   "load1_after": 1.0517578125
+  },
+  {
+   "setting": "on",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r02-on-cold",
+   "workspace": "9",
+   "window_ms": 465.184,
+   "lookup_start_ms": 579.019,
+   "lookup_end_ms": 838.261,
+   "lookup_exit": 0,
+   "calls": [
+    {
+     "start_ms": 579.019,
+     "end_ms": 838.261,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "unfinished": [
+    {
+     "start_ms": 49.861,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "still_running": 0,
+   "exit": -15,
+   "round": 2,
+   "load1_before": 0.96728515625,
+   "load1_after": 0.96728515625
+  },
+  {
+   "setting": "off",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r02-off-cold",
+   "workspace": "9",
+   "window_ms": 338.09,
+   "lookup_start_ms": null,
+   "lookup_end_ms": null,
+   "lookup_exit": null,
+   "calls": [],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 2,
+   "load1_before": 0.8896484375,
+   "load1_after": 0.8896484375
+  },
+  {
+   "setting": "off",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r03-off-warm",
+   "workspace": "9",
+   "window_ms": 345.834,
+   "lookup_start_ms": null,
+   "lookup_end_ms": null,
+   "lookup_exit": null,
+   "calls": [],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 3,
+   "load1_before": 0.818359375,
+   "load1_after": 0.818359375
+  },
+  {
+   "setting": "on",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r03-on-cold",
+   "workspace": "9",
+   "window_ms": 403.077,
+   "lookup_start_ms": 565.328,
+   "lookup_end_ms": 797.559,
+   "lookup_exit": 0,
+   "calls": [
+    {
+     "start_ms": 565.328,
+     "end_ms": 797.559,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "unfinished": [
+    {
+     "start_ms": 43.068,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "still_running": 0,
+   "exit": -15,
+   "round": 3,
+   "load1_before": 0.75244140625,
+   "load1_after": 0.75244140625
+  },
+  {
+   "setting": "off",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r03-off-cold",
+   "workspace": "9",
+   "window_ms": 333.237,
+   "lookup_start_ms": null,
+   "lookup_end_ms": null,
+   "lookup_exit": null,
+   "calls": [],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 3,
+   "load1_before": 0.69189453125,
+   "load1_after": 0.69189453125
+  },
+  {
+   "setting": "on",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r03-on-warm",
+   "workspace": "9",
+   "window_ms": 333.496,
+   "lookup_start_ms": 48.353,
+   "lookup_end_ms": 68.57,
+   "lookup_exit": 0,
+   "calls": [
+    {
+     "start_ms": 48.353,
+     "end_ms": 68.57,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    },
+    {
+     "start_ms": 392.788,
+     "end_ms": 448.21,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 3,
+   "load1_before": 0.63623046875,
+   "load1_after": 0.63623046875
+  },
+  {
+   "setting": "on",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r04-on-cold",
+   "workspace": "9",
+   "window_ms": 365.976,
+   "lookup_start_ms": 555.276,
+   "lookup_end_ms": 776.432,
+   "lookup_exit": 0,
+   "calls": [
+    {
+     "start_ms": 555.276,
+     "end_ms": 776.432,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "unfinished": [
+    {
+     "start_ms": 48.773,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "still_running": 0,
+   "exit": -15,
+   "round": 4,
+   "load1_before": 0.5849609375,
+   "load1_after": 0.5849609375
+  },
+  {
+   "setting": "off",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r04-off-cold",
+   "workspace": "9",
+   "window_ms": 335.922,
+   "lookup_start_ms": null,
+   "lookup_end_ms": null,
+   "lookup_exit": null,
+   "calls": [],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 4,
+   "load1_before": 0.5380859375,
+   "load1_after": 0.5380859375
+  },
+  {
+   "setting": "on",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r04-on-warm",
+   "workspace": "9",
+   "window_ms": 338.651,
+   "lookup_start_ms": 44.809,
+   "lookup_end_ms": 65.062,
+   "lookup_exit": 0,
+   "calls": [
+    {
+     "start_ms": 44.809,
+     "end_ms": 65.062,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    },
+    {
+     "start_ms": 358.354,
+     "end_ms": 407.059,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 4,
+   "load1_before": 0.49462890625,
+   "load1_after": 0.49462890625
+  },
+  {
+   "setting": "off",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r04-off-warm",
+   "workspace": "9",
+   "window_ms": 333.607,
+   "lookup_start_ms": null,
+   "lookup_end_ms": null,
+   "lookup_exit": null,
+   "calls": [],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 4,
+   "load1_before": 0.45458984375,
+   "load1_after": 0.45458984375
+  },
+  {
+   "setting": "off",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r05-off-cold",
+   "workspace": "9",
+   "window_ms": 334.192,
+   "lookup_start_ms": null,
+   "lookup_end_ms": null,
+   "lookup_exit": null,
+   "calls": [],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 5,
+   "load1_before": 0.41796875,
+   "load1_after": 0.41796875
+  },
+  {
+   "setting": "on",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r05-on-warm",
+   "workspace": "9",
+   "window_ms": 339.158,
+   "lookup_start_ms": 49.654,
+   "lookup_end_ms": 72.144,
+   "lookup_exit": 0,
+   "calls": [
+    {
+     "start_ms": 49.654,
+     "end_ms": 72.144,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    },
+    {
+     "start_ms": 401.11,
+     "end_ms": 436.354,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 5,
+   "load1_before": 0.38427734375,
+   "load1_after": 0.38427734375
+  },
+  {
+   "setting": "off",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r05-off-warm",
+   "workspace": "9",
+   "window_ms": 347.459,
+   "lookup_start_ms": null,
+   "lookup_end_ms": null,
+   "lookup_exit": null,
+   "calls": [],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 5,
+   "load1_before": 0.43359375,
+   "load1_after": 0.43359375
+  },
+  {
+   "setting": "on",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r05-on-cold",
+   "workspace": "9",
+   "window_ms": 353.719,
+   "lookup_start_ms": 561.088,
+   "lookup_end_ms": 794.735,
+   "lookup_exit": 0,
+   "calls": [
+    {
+     "start_ms": 561.088,
+     "end_ms": 794.735,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "unfinished": [
+    {
+     "start_ms": 44.854,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "still_running": 0,
+   "exit": -15,
+   "round": 5,
+   "load1_before": 0.3984375,
+   "load1_after": 0.3984375
+  },
+  {
+   "setting": "on",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r06-on-warm",
+   "workspace": "9",
+   "window_ms": 328.057,
+   "lookup_start_ms": 39.914,
+   "lookup_end_ms": 62.735,
+   "lookup_exit": 0,
+   "calls": [
+    {
+     "start_ms": 39.914,
+     "end_ms": 62.735,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    },
+    {
+     "start_ms": 348.48,
+     "end_ms": 395.566,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 6,
+   "load1_before": 0.3662109375,
+   "load1_after": 0.3662109375
+  },
+  {
+   "setting": "off",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r06-off-warm",
+   "workspace": "9",
+   "window_ms": 323.613,
+   "lookup_start_ms": null,
+   "lookup_end_ms": null,
+   "lookup_exit": null,
+   "calls": [],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 6,
+   "load1_before": 0.3662109375,
+   "load1_after": 0.33642578125
+  },
+  {
+   "setting": "on",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r06-on-cold",
+   "workspace": "9",
+   "window_ms": 349.784,
+   "lookup_start_ms": 557.818,
+   "lookup_end_ms": 770.672,
+   "lookup_exit": 0,
+   "calls": [
+    {
+     "start_ms": 557.818,
+     "end_ms": 770.672,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "unfinished": [
+    {
+     "start_ms": 43.72,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "still_running": 0,
+   "exit": -15,
+   "round": 6,
+   "load1_before": 0.33642578125,
+   "load1_after": 0.5498046875
+  },
+  {
+   "setting": "off",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r06-off-cold",
+   "workspace": "9",
+   "window_ms": 325.168,
+   "lookup_start_ms": null,
+   "lookup_end_ms": null,
+   "lookup_exit": null,
+   "calls": [],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 6,
+   "load1_before": 0.5498046875,
+   "load1_after": 0.666015625
+  },
+  {
+   "setting": "off",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r07-off-warm",
+   "workspace": "9",
+   "window_ms": 317.578,
+   "lookup_start_ms": null,
+   "lookup_end_ms": null,
+   "lookup_exit": null,
+   "calls": [],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 7,
+   "load1_before": 0.666015625,
+   "load1_after": 0.77294921875
+  },
+  {
+   "setting": "on",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r07-on-cold",
+   "workspace": "9",
+   "window_ms": 348.39,
+   "lookup_start_ms": 559.334,
+   "lookup_end_ms": 789.389,
+   "lookup_exit": 0,
+   "calls": [
+    {
+     "start_ms": 559.334,
+     "end_ms": 789.389,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "unfinished": [
+    {
+     "start_ms": 41.449,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "still_running": 0,
+   "exit": -15,
+   "round": 7,
+   "load1_before": 0.77294921875,
+   "load1_after": 1.11181640625
+  },
+  {
+   "setting": "off",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r07-off-cold",
+   "workspace": "9",
+   "window_ms": 328.81,
+   "lookup_start_ms": null,
+   "lookup_end_ms": null,
+   "lookup_exit": null,
+   "calls": [],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 7,
+   "load1_before": 1.11181640625,
+   "load1_after": 1.1025390625
+  },
+  {
+   "setting": "on",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r07-on-warm",
+   "workspace": "9",
+   "window_ms": 565.862,
+   "lookup_start_ms": 60.307,
+   "lookup_end_ms": 156.306,
+   "lookup_exit": 0,
+   "calls": [
+    {
+     "start_ms": 60.307,
+     "end_ms": 156.306,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    },
+    {
+     "start_ms": 623.019,
+     "end_ms": 725.423,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 7,
+   "load1_before": 1.1025390625,
+   "load1_after": 1.3349609375
+  },
+  {
+   "setting": "on",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r08-on-cold",
+   "workspace": "9",
+   "window_ms": 483.135,
+   "lookup_start_ms": 575.599,
+   "lookup_end_ms": 865.217,
+   "lookup_exit": 0,
+   "calls": [
+    {
+     "start_ms": 575.599,
+     "end_ms": 865.217,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "unfinished": [
+    {
+     "start_ms": 44.923,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "still_running": 0,
+   "exit": -15,
+   "round": 8,
+   "load1_before": 1.3349609375,
+   "load1_after": 1.46875
+  },
+  {
+   "setting": "off",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r08-off-cold",
+   "workspace": "9",
+   "window_ms": 483.152,
+   "lookup_start_ms": null,
+   "lookup_end_ms": null,
+   "lookup_exit": null,
+   "calls": [],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 8,
+   "load1_before": 1.46875,
+   "load1_after": 1.591796875
+  },
+  {
+   "setting": "on",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r08-on-warm",
+   "workspace": "9",
+   "window_ms": 341.635,
+   "lookup_start_ms": 44.802,
+   "lookup_end_ms": 66.774,
+   "lookup_exit": 0,
+   "calls": [
+    {
+     "start_ms": 44.802,
+     "end_ms": 66.774,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    },
+    {
+     "start_ms": 373.579,
+     "end_ms": 448.08,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 8,
+   "load1_before": 1.591796875,
+   "load1_after": 2.10498046875
+  },
+  {
+   "setting": "off",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r08-off-warm",
+   "workspace": "9",
+   "window_ms": 335.134,
+   "lookup_start_ms": null,
+   "lookup_end_ms": null,
+   "lookup_exit": null,
+   "calls": [],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 8,
+   "load1_before": 2.10498046875,
+   "load1_after": 2.01611328125
+  },
+  {
+   "setting": "off",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r09-off-cold",
+   "workspace": "9",
+   "window_ms": 360.402,
+   "lookup_start_ms": null,
+   "lookup_end_ms": null,
+   "lookup_exit": null,
+   "calls": [],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 9,
+   "load1_before": 2.01611328125,
+   "load1_after": 2.0146484375
+  },
+  {
+   "setting": "on",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r09-on-warm",
+   "workspace": "9",
+   "window_ms": 337.885,
+   "lookup_start_ms": 38.461,
+   "lookup_end_ms": 59.668,
+   "lookup_exit": 0,
+   "calls": [
+    {
+     "start_ms": 38.461,
+     "end_ms": 59.668,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    },
+    {
+     "start_ms": 404.469,
+     "end_ms": 477.737,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 9,
+   "load1_before": 2.0146484375,
+   "load1_after": 1.93310546875
+  },
+  {
+   "setting": "off",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r09-off-warm",
+   "workspace": "9",
+   "window_ms": 335.4,
+   "lookup_start_ms": null,
+   "lookup_end_ms": null,
+   "lookup_exit": null,
+   "calls": [],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 9,
+   "load1_before": 1.93310546875,
+   "load1_after": 1.85791015625
+  },
+  {
+   "setting": "on",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r09-on-cold",
+   "workspace": "9",
+   "window_ms": 344.454,
+   "lookup_start_ms": 565.713,
+   "lookup_end_ms": 896.841,
+   "lookup_exit": 0,
+   "calls": [
+    {
+     "start_ms": 565.713,
+     "end_ms": 896.841,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "unfinished": [
+    {
+     "start_ms": 45.087,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "still_running": 0,
+   "exit": -15,
+   "round": 9,
+   "load1_before": 1.85791015625,
+   "load1_after": 2.10986328125
+  },
+  {
+   "setting": "on",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r10-on-warm",
+   "workspace": "9",
+   "window_ms": 334.979,
+   "lookup_start_ms": 39.164,
+   "lookup_end_ms": 58.341,
+   "lookup_exit": 0,
+   "calls": [
+    {
+     "start_ms": 39.164,
+     "end_ms": 58.341,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    },
+    {
+     "start_ms": 395.394,
+     "end_ms": 458.175,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 10,
+   "load1_before": 2.10986328125,
+   "load1_after": 2.34130859375
+  },
+  {
+   "setting": "off",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r10-off-warm",
+   "workspace": "9",
+   "window_ms": 333.469,
+   "lookup_start_ms": null,
+   "lookup_end_ms": null,
+   "lookup_exit": null,
+   "calls": [],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 10,
+   "load1_before": 2.34130859375,
+   "load1_after": 2.474609375
+  },
+  {
+   "setting": "on",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r10-on-cold",
+   "workspace": "9",
+   "window_ms": 362.304,
+   "lookup_start_ms": 577.227,
+   "lookup_end_ms": 851.252,
+   "lookup_exit": 0,
+   "calls": [
+    {
+     "start_ms": 577.227,
+     "end_ms": 851.252,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "unfinished": [
+    {
+     "start_ms": 52.009,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "still_running": 0,
+   "exit": -15,
+   "round": 10,
+   "load1_before": 2.474609375,
+   "load1_after": 2.67724609375
+  },
+  {
+   "setting": "off",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r10-off-cold",
+   "workspace": "9",
+   "window_ms": 339.52,
+   "lookup_start_ms": null,
+   "lookup_end_ms": null,
+   "lookup_exit": null,
+   "calls": [],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 10,
+   "load1_before": 2.67724609375,
+   "load1_after": 2.46240234375
+  },
+  {
+   "setting": "off",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r11-off-warm",
+   "workspace": "9",
+   "window_ms": 326.675,
+   "lookup_start_ms": null,
+   "lookup_end_ms": null,
+   "lookup_exit": null,
+   "calls": [],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 11,
+   "load1_before": 2.46240234375,
+   "load1_after": 2.26513671875
+  },
+  {
+   "setting": "on",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r11-on-cold",
+   "workspace": "9",
+   "window_ms": 365.416,
+   "lookup_start_ms": 565.171,
+   "lookup_end_ms": 840.904,
+   "lookup_exit": 0,
+   "calls": [
+    {
+     "start_ms": 565.171,
+     "end_ms": 840.904,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "unfinished": [
+    {
+     "start_ms": 48.529,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "still_running": 0,
+   "exit": -15,
+   "round": 11,
+   "load1_before": 2.26513671875,
+   "load1_after": 2.16357421875
+  },
+  {
+   "setting": "off",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r11-off-cold",
+   "workspace": "9",
+   "window_ms": 328.273,
+   "lookup_start_ms": null,
+   "lookup_end_ms": null,
+   "lookup_exit": null,
+   "calls": [],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 11,
+   "load1_before": 2.16357421875,
+   "load1_after": 1.990234375
+  },
+  {
+   "setting": "on",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-1790710210/r11-on-warm",
+   "workspace": "9",
+   "window_ms": 327.958,
+   "lookup_start_ms": 45.226,
+   "lookup_end_ms": 67.052,
+   "lookup_exit": 0,
+   "calls": [
+    {
+     "start_ms": 45.226,
+     "end_ms": 67.052,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    },
+    {
+     "start_ms": 343.6,
+     "end_ms": 370.742,
+     "exit": 0,
+     "args": "--format %{family} monospace"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "round": 11,
+   "load1_before": 1.990234375,
+   "load1_after": 1.83056640625
+  }
+ ]
+}

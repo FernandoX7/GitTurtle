@@ -65,6 +65,48 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## September 29 desktop code font at a cold launch
+
+Measurement only, in the [benchmark record](benchmarks/2026-09-29-code-font-cold-launch.md) with its driver, raw samples and cache counts.
+
+Setup:
+- Build: `d553cc0`, release, clean, sha256 `1f1fed5a…`.
+- Host and output: the two-core AMD 3020e on Omarchy (Hyprland 0.56.2, fontconfig 2.18.3), with a temporary 1480 × 800 headless output.
+- Launches: two runs of 12 interleaved rounds, each round launching with **Use the desktop's monospace font** on and off, and with a cold fontconfig cache (an empty cache directory per launch) and a warm one. Every launch had fresh HOME and XDG directories, so Mesa's shader cache was cold in all four configurations.
+- Timings: launch to Hyprland's `openwindow` event, and launch to the end of the app's `fc-match monospace` call, through a timing wrapper on `PATH`. That end is a lower bound for the family's application; the frame that applies it is not observed.
+
+Does the setting delay the first window? Slightly at p50, more with a cold cache:
+- With a warm cache it adds 7 ms at p50 (338 against 331 ms, and 337 against 330 ms), within the launch-to-launch spread.
+- With a cold cache it adds 23 to 29 ms at p50 (355 against 332 ms, and 365 against 336 ms), in 22 of 24 rounds.
+- The two slowest windows, 1,104 and 790 ms, were the first launch of each run, cold with the setting on. Every run started with that configuration, so a first-launch effect cannot be separated from it.
+- Run 2's tails overlap a fetch and merge in another worktree; run 1 is the quiet reference.
+
+With a warm cache the family is known 58 to 156 ms after spawn, before the window. With a cold cache, the first lookup outlived the app's 500 ms bound in all 24 launches, and the app does not retry a failed lookup:
+- In 22 launches, the lookup requested by the window's activation, which ran as soon as the killed call returned, found the family 771 to 897 ms after spawn.
+- In 2 launches, the first of each run, the window mapped after the kill and its lookup was killed too. The code stayed in the bundled family for the about 60 s observed after the window, with no further lookup.
+
+That cold-cache miss is reported for its own task, not changed here. Not covered: the frame that applies the family, a warm GPU shader cache, a cold kernel page cache, a launch without window activation, X11 or XWayland, GNOME, other hosts and macOS.
+
+## September 29 bundled code font without features
+
+Code text turned `calt` and `liga` off for every code family. Any explicit feature makes cosmic-text shape the embedded DejaVu Sans Mono more slowly, although the font has no ligatures to turn off. `appearance::code_font_features_for` now returns no features for `desktop_text::BUNDLED_CODE_FAMILY` and keeps both off for every other family, in `CodeFont` and in the editor wrapper. The wrapper applies them in one `native` step at render time, from the family the kit editor draws in, unless the caller chose features.
+
+Tests:
+- `appearance::tests::code_text_in_the_bundled_family_shapes_without_features` and `appearance::tests::code_text_shapes_the_code_family_without_ligatures` pin both feature lists.
+- `editor_find::tests::editors_draw_code_without_ligatures` checks the style handed to the kit editor for a desktop family, the bundled family, a caller's family and a caller's features. With the wrapper's `native` step returning the kit editor unchanged, so that no code features are applied, the test failed at `editor_find.rs:883`, where the desktop family expects features.
+- `desktop_text::tests::bundled_code_font_draws_the_same_glyphs_without_features` shapes a line of operators, `fi`, `ffl` and Arabic lam-alef in all four bundled faces, with and without the features, and gets the same glyphs.
+
+Measurement, in the [benchmark record](benchmarks/2026-09-29-code-font-features.md) with its driver and raw samples:
+- Setup: release builds pinned to one core of the AMD 3020e, warm cache, the first 5,000 lines of `crates/app/src`, three runs of 30 interleaved rounds.
+- p50 per line: 29.03 to 29.62 µs with the features against 27.14 to 27.71 µs without, ratios of 0.926 to 0.936.
+- Paired by round, the median ratio is 0.934, and the candidate was faster in 83 of the 90 rounds. The largest samples of both lists fall in the same rounds, so the tails come from the host.
+- `performance-reviewer` accepted the method and an earlier set of three runs (ratios 0.924 to 0.931), which these runs agree with.
+
+JetBrainsMono Nerd Font under the desktop features still draws `->`, `!=`, `=>`, `==`, `<=`, `--` and `//` as separate glyphs. There is no visible change, since the bundled font's glyphs are identical, so there are no native frames. Not covered:
+- a cold cache, another host, or a code size other than 12 px;
+- macOS, whose code family is Menlo and keeps both features off;
+- a frame-level timing, which cannot resolve about 0.25 ms per 120 newly shown lines.
+
 ## September 29 Omarchy caption on two lines
 
 The Omarchy card's caption ("Follows ‹Theme›", "Keeping ‹Theme›" or "Using Midnight") was cut to one line, so a long custom theme name lost most of itself. Following the owner's "grow on demand" decision, a caption that needs a second line takes it, wrapped at word boundaries, and ends in an ellipsis only when two lines cannot hold it. The miniature above it then draws only whole rows, three instead of four at the default size. A one-line caption paints as before, and the card stays 132 px tall and in place. `docs/development/themes/spec.md` states the rule.
@@ -115,6 +157,88 @@ Native evidence, full tier, on Omarchy 4.0.4 (Hyprland 0.56.2, native Wayland) o
 
 `python3 scripts/native_qa/qa.py privacy scan --redacted --jobs 2` on the committed bytes found 5 clean frames, and each was viewed at full size. A `design-reviewer` pass approved: pitch stays 19 px in all three fonts, the code panel keeps its 85 px and x 602 origin, code ink starts flush with the language label, nothing clips or scrolls, and contrast is unchanged (14.32:1 on the Markdown code panel). It noted two older issues outside this task: the review's line-number columns stay 36 px wide at larger code sizes (`github_view/review.rs:1008-1009`), and blame's source text still uses the fixed `mono()` family (`blame.rs:598`). The longer status message pushes its timing past the named mask; a later run should mask `96,782,240,793`. Not covered: macOS, where Menlo is the code family and the Markdown and review sites already drew it; other palettes and sizes, which share the code font path; the review excerpt natively.
 
+## September 29 frames retaken under the solid focus ring
+
+Task `button-focus-ring-recapture` retakes the 64 committed frames that showed a focused Button drawn before the [solid focus ring](#september-29-solid-focus-ring-outside-every-button): the 49 that the [September 27 helper focus ring entry](#september-27-helper-focus-ring-at-full-accent) lists (30 it did not recapture and 19 it replaced) and 15 more that the sweep below found. No product code changed.
+
+Native runs took place on 2026-09-29 (accepted pairs 17:10 to 19:25 UTC, draw-cost runs 19:40 to 19:48 UTC) on a different host from the earlier theme evidence: Ubuntu 26.04, GNOME Shell 50 on Wayland, NVIDIA RTX 3090, and the app under XWayland (`DISPLAY=:0`, `WAYLAND_DISPLAY` unset, `GPUI_X11_SCALE_FACTOR=1`) at the size in each file name. Every replaced frame attests the adopted build `650a76e` (origin/main with #85), debug, sha256 `aec59c36…7e63`, with `--build-info` reporting a clean source tree. Its same-session base was `105ef2f` (origin/main before #85), debug, sha256 `aa82fb14…24ba`, also clean.
+
+The fixture is `scripts/create-demo-repo.py`'s repository at HEAD `52f471a1` (`theme-fixture`, under `/tmp/gitturtle-evidence/`), unchanged by every launch. Every launch had a fresh HOME and XDG directories and the `GitTurtle QA <qa@example.invalid>` identity.
+
+The stores came from three sources:
+- The 32-theme store was regenerated byte for byte (`9deaa6ee…04d23a`).
+- Harbor Dusk comes from the committed export document.
+- Every other store was rebuilt from what its committed frame shows, recorded by sha256 in the local bundle.
+
+The drivers are new: the earlier host's drivers and bundle were not available here.
+
+Two host differences shaped the runs:
+- **Input.** XWayland here routes XTest through the RemoteDesktop portal (`-enable-ei-portal`). GNOME raised an "Allow Remote Interaction" prompt partway through; it held back the pending keys, and the owner denied it. From then on every key, pointer move, click and wheel step went through Mutter's `org.gnome.Mutter.RemoteDesktop`, and a key was sent only while the app held X focus.
+- **File chooser.** The FileChooser is Nautilus 50 through xdg-desktop-portal-gnome 50:
+  - Save opened in the launch's HOME with the suggested name.
+  - Open took the typed path and two Returns.
+  - The symbolic link came back unresolved and was refused.
+  - The folder was navigated into, and nothing reached the app.
+  - The no-portal frames used a private session bus without a portal.
+  - Keys went to a dialog only while a widget inside it held focus, and no dialog was captured.
+
+Each frame ran on base and then the adopted build in the same session, with the same steps and run directory. The exported path therefore reads as the committed text does. Each pair was compared with the status timing masked:
+- **Focused Buttons.** In every pair the only difference is one region, the focused Button's box plus 3 px on each side (478 to 1,408 px): the ring's footprint.
+- **Theme picker cards.** The four picker frames differ by 44 px, in 5x5 patches at the card's corners where its own accent border meets the ring; the outer ring is unchanged. A picker card is a Button (`settings.rs`, `theme_card`).
+- **Focused disabled Buttons** now show the solid ring: Export… while the Save dialog is up, and Save while saving. On base both had the 3 px half-accent ring without #66's inner band.
+
+Outside the ring each replaced frame equals its same-session base capture. Apart from the later changes listed below, both are within 2 levels of the frame they replace. The exception is `transfer-1000x680-25-unknown-base`, whose Aurora Light store was rebuilt from the committed frame's pixels: its card title renders up to 5 levels lighter. Two base runs here were identical. A probe against `button-focus-ring/midnight-1000x680-history-rest.png` differed by up to 11 levels at glyph edges, so that set is not a byte-for-byte reference on this host.
+
+Every base capture showed the committed frame's state and focused control. They also show later changes:
+- #65's "Use the desktop's monospace font" row in Settings (`transfer-1000x680-11`, the four `transfer-1440x900` frames, the editor `04` and `16` frames, and the other 1440x900 editor frames).
+- #81's Readability copy and inset.
+- #83's mark on the Accent row.
+
+**Sweep.** Two passes looked for further focused Buttons:
+- **By name.** `git ls-files 'docs/evidence/*.png'` (357 files), filtered with `grep -iE 'focus|confirm|sav(e|ing)|cancel|delet|refus|kept|chosen|tab-|question|replaced|dialog|guidance|alert|pressed|keyboard'`, gives 99 outside `helper-focus-ring/` and `button-focus-ring/`.
+- **By eye.** Every frame outside those two directories was viewed on contact sheets, and at full size wherever a ring was plausible.
+
+Beyond the 49, the sweep found 15 frames with a focused Button:
+- `themes/editor/{dark,light}-{1000x680,1440x900}-04-base-chosen` and `fixes-1440x900-07-kept-focus-on-base` (Base).
+- `themes/linux-gaps/editor-{midnight,daylight}-1000x680-{replace-question,colors-replaced}` (Base).
+- `themes/linux-gaps/editor-{midnight,daylight}-1000x680-saving` (the disabled Save).
+- `themes/picker/comfortable-{1000x680-03,1000x680-03a,1440x900-05,1440x900-05a}-*focus*`.
+
+The daylight `replace-question`'s half-strength Braden ring on its `#304050` canvas was faint enough to miss on the contact sheet; the base-against-adopted pair showed it. Its adopted ring reads 1.88:1 there. That canvas belongs to a custom draft with readability findings on its Canvas and Accent rows, outside the built-in palettes' 3:1 guarantee, so the frame is no evidence for that rule.
+
+These were rechecked and are unchanged, identical to base apart from the status timing:
+- `themes/linux-gaps/editor-{midnight,daylight}-1000x680-{edited,reset-to-base,delete-failed}`.
+- `themes/picker/comfortable-1440x900-03-hover-custom`, whose heavier border is the card's hover state, not focus.
+- The editor's Readability list focused (the `07-warnings-focused` state in the editor flows).
+- A focused History "Filter changed paths" field in Porcelain.
+
+Not rechecked, because their focus is on a control the Button ring does not style: the History filter field (`*-history-focus` in four theme directories), the editor's Name and hex fields (among them `editor/*-10-edit-reopened`, `*-06-invalid-focused`, `*-11-edit-return-commits`, `followups-*`, `marks-*`, `overflow-*`, `text18-*`, `linux-gaps/editor-*-text18*` and `linux-gaps/scale2-*-editor`), and the Readability list in `fixes-1000x680-04-readability-focused`, whose `07-warnings-focused` counterpart was rechecked. The first two kinds were spot-checked identical. `worktree-removal/protected-worktree.png` shows a selected worktree row without keyboard focus, so no ring. `helper-focus-ring/` and `button-focus-ring/` are untouched.
+
+**Finding: the ring loses its bottom edge next to the import highlight.** In the four `linux-gaps/imported-*-focus-*-highlight` frames, the adopted ring on the Your themes row's Edit… keeps its top edge but has no accent pixels along its bottom edge:
+- On the row above the highlight ("beside"), the highlighted row's fill paints over the 2 px where the ring falls.
+- On the highlighted row itself ("on"), the imported row sits flush against the status bar, and the Settings page's viewport cuts the ring at the status bar's top border. The list itself keeps 3 px below its last row: row 32's Delete… in `list32-…-12` is whole.
+
+Base still showed its inner band and 1 px of its half-accent ring there, so these frames show less focus than base did. The design reviewer placed "beside" with `DESIGN.md`'s adjacent-segment case: a later sibling painting over the ring, fixed by paint order rather than container room. They placed "on" as a scroll-into-view margin question. `DESIGN.md` still says a focused row action's ring "is whole in every slot", and neither `DESIGN.md`'s nor the theme spec's open list names these cases. This task changes no contract text, so both are left for the owner.
+
+**Theme draw-cost procedure.** Step 2 of the [draw-cost procedure](benchmarks/2026-09-22-theme-draw-cost.md#procedure) found row 1's Edit… by the old ring's colour. It is re-pointed to the solid ring and re-implemented as `draw_cost_focus.py` (sha256 `2ef19e3b…af73`), because the original driver was not on this host. The procedure's lineage paragraph records the adaptation; no recorded measurement changed.
+
+- **Adopted build.** On release `650a76e` (sha256 `394c5d17…cbac`) at scale 2, it lands on row 1's Edit…: 480 ring pixels, box [1378, 1313, 1497, 1372]. That takes 25 wheel steps and 60 Tabs, because the picker now has a card per custom theme.
+- **Controls.** The old colour finds 1144 pixels on base and 16 on the adopted build.
+
+A privacy scan of the 64 committed files with the local template set (28 crops made on this host) came back clean in 57 s. Every frame was also viewed at full size: each shows only the QA identity, theme names, `theme-fixture` and `/tmp/gitturtle-evidence` paths.
+
+Frames replaced, all attesting `650a76e`:
+- **The 30 not recaptured on September 27:**
+  - `themes/import-export/transfer-1000x680-{06,07,08,11,13,14,15,16,17,18,19,20,21,22,23,24,25}-*.png` and `transfer-1440x900-{07,13,21,25}-*.png`
+  - `collision2-1000x680-02-collision-2.png`, `lotus-1000x680-01-refuse-notjson.png` and `noportal-1000x680-{01-export,03-import}-guidance.png`
+  - `themes/linux-gaps/imported-{midnight,porcelain}-1000x680-focus-{beside,on}-highlight.png`
+  - `button-states/kanagawa_lotus-1000x680-imported-button-hover.png`
+- **The 19 replaced on September 27:**
+  - `themes/editor/{dark,light}-{1000x680,1440x900}-{08-saved,13-cancelled,16-deleted}.png` and `themes/editor/light-1000x680-{12-cancel-focused,15-delete-confirm}.png`
+  - `themes/linux-gaps/editor-{midnight,daylight}-1000x680-{delete-confirm,save-refused}.png`
+  - `themes/import-export/list32-1000x680-12-tab-reveals-row32-delete.png`
+- **The 15 from the sweep,** listed above.
+
 ## September 29 solid focus ring outside every Button
 
 Task `app-button-focus-ring`, approved by the owner on 2026-09-28. Where the palette application sets `ring`, it now installs `BUTTON_FOCUS_RING` through the toolkit setting from the [toolkit focus ring setting](#september-29-toolkit-button-focus-ring-setting): 2 px of full `accent`, 1 px outside the edge of every focused Button. That covers primary and danger helpers, the Buttons built without the helper (Tags, Reflog, find, recovery, project pane and project rows) with no edit at those sites, the focused disabled helper and the row exception. The #66 inset band (`control_focus_edge`, its width constant and the helper's focus shadow) is gone, and so is the 2.5:1 row exception. The selected helper's hover no longer dims the whole Button, ring included, to 0.9 opacity; it paints `Palette::row_hover(true)`, the selected fill blended 7 % toward accent, which a test holds to the pressed step and 4.5:1 labels. The Omarchy theme needs no case of its own: a fitted Omarchy palette is used only when it has no readability issue, so its accent clears 3:1 on all six surfaces, and so does the ring drawn in it.
@@ -140,7 +264,7 @@ Clipping: the ring is whole on the History segments, Workspaces, dialog footers,
 
 Frames: [`evidence/themes/button-focus-ring/`](evidence/themes/button-focus-ring/), 68 files. They are the candidate at every captured state; the unfocused references; crops of each clipping container; and the base's three regressed crops and Solarized Light pair. A privacy scan of every proposed frame with the local template set came back clean. A `design-reviewer` pass accepted the ring, the selected hover and the disabled-hover pair. It asked for the clipped containers to be listed as open in `DESIGN.md` and the spec, which they are, and for a follow-up that gives the tab strip, the Tags body and the Tags and Reflog lists room for the footprint, starting with the repository tab. It also noted that the density and project-mode segments (`settings.rs`, `projects.rs`) still dim to 0.9 when selected and hovered, so two kinds of selected segment now answer the pointer differently. [`helper-focus-ring/`](evidence/themes/helper-focus-ring/) stays as the superseded #66 record.
 
-Still open: macOS rendering, fractional scale factors, the clipping containers above, the two 0.9 dims, the keyboard trap, and the 49 committed frames that `button-focus-ring-recapture` retakes under the new ring.
+Still open: macOS rendering, fractional scale factors, the clipping containers above, the two 0.9 dims, the keyboard trap, and the Your themes rows beside the import highlight, where the next row's fill paints over the ring's bottom edge (a row flush against the status bar loses it to the page viewport). The 49 stale frames, and 15 more a sweep found, were [retaken under the solid ring](#september-29-frames-retaken-under-the-solid-focus-ring), which is where that clipping showed.
 
 ## September 29 narrow History Ctrl+B announcement
 
@@ -280,13 +404,13 @@ The active History segment, focused and hovered, reads 4.57, 3.86 and 6.63. Of 3
 Frames changed and why:
 - [`evidence/themes/helper-focus-ring/`](evidence/themes/helper-focus-ring/) (27) is new. For Porcelain, Sandstone and Midnight it holds a focused helper on each surface: `history-projects` and `history-settings` (panel), `history-latest` (canvas), `history-tab` and `settings-edit` (subtle), `changes-stage` (selected row), `history-local` (the active sidebar item) and `history-tab-focus-hover`. It adds `porcelain-…-delete-confirm-danger-focus`, `porcelain-…-editor-save-focus` and `kanagawa_lotus-…-changes-stage-focus-hover`, described below.
 - 19 committed frames are replaced; each changes only by the band. They are `themes/editor/{dark,light}-{1000x680,1440x900}-{08-saved,13-cancelled,16-deleted}.png`, `themes/editor/light-1000x680-{12-cancel-focused,15-delete-confirm}.png`, `themes/linux-gaps/editor-{midnight,daylight}-1000x680-{delete-confirm,save-refused}.png` and `themes/import-export/list32-1000x680-12-tab-reveals-row32-delete.png`. Base reproduced each of them byte for byte first.
-- 30 committed frames that show a focused helper predate the band and were not recaptured, because they need the FileChooser portal or the no-portal flow: `themes/import-export/transfer-1000x680-{06,07,08,11,13…25}`, `transfer-1440x900-{07,13,21,25}`, `collision2-1000x680-02-collision-2`, `lotus-1000x680-01-refuse-notjson`, `noportal-1000x680-{01-export,03-import}-guidance`, `themes/linux-gaps/imported-{midnight,porcelain}-1000x680-focus-{beside,on}-highlight` and `button-states/kanagawa_lotus-1000x680-imported-button-hover`. The new `changes-stage` frames show the helper on the selected surface that the import-highlight frames showed.
+- 30 committed frames that show a focused helper predate the band and were not recaptured, because they need the FileChooser portal or the no-portal flow: `themes/import-export/transfer-1000x680-{06,07,08,11,13…25}`, `transfer-1440x900-{07,13,21,25}`, `collision2-1000x680-02-collision-2`, `lotus-1000x680-01-refuse-notjson`, `noportal-1000x680-{01-export,03-import}-guidance`, `themes/linux-gaps/imported-{midnight,porcelain}-1000x680-focus-{beside,on}-highlight` and `button-states/kanagawa_lotus-1000x680-imported-button-hover`. All 49 frames named here were retaken on September 29 ([frames retaken under the solid focus ring](#september-29-frames-retaken-under-the-solid-focus-ring)). The new `changes-stage` frames show the helper on the selected surface that the import-highlight frames showed.
 
 Helpers that a caller turns into another variant also get the band. On the danger fill of the Delete theme confirmation it reads at most 1.50 in Porcelain and 1.68 in Midnight. On a primary button such as the editor's Save it is accent on accent, and only 48 corner pixels change. Both still rely on the toolkit's half-opacity ring, which reads 2.27 in Porcelain (unchanged) and 3.74 in Midnight. In Kanagawa Lotus the Changes Stage helper reads 3.73 focused on the selected row, and 2.71 focused and hovered: the documented row exception, where the base ring alone models at about 1.75. A focused helper that is disabled paints no band: the editor's `saving` frames, whose disabled Save shows a ring, are identical to base.
 
 The design reviewer accepted the change. At 4x and 12x the band reads as the crisp inner edge of a two-tone ring on every surface, and the 7 px corners follow the arc without gaps. All 19 replacements were accepted; the reviewer's own diff found nothing else changed. On the danger fill the line is continuous and clear of the label and reads as part of the ring, but it adds no contrast and slightly muddies the corners (mauve in Porcelain, grey in Midnight), which a follow-up may revisit. The primary button was accepted unchanged, and the row exception was accepted as documented because it holds only while the pointer is on the button.
 
-Still open: macOS, where the inset shadow, the first in the app or toolkit, has not been rendered; scale factors other than 1, where the band is one device pixel and can be under one logical pixel; primary, danger and directly built borderless buttons, whose half-opacity ring alone is below 3:1 in 16 of 20 palettes, and the row exception, both needing an outside stroke through a vendored Button change; the 30 frames listed above; and the focused disabled helper. The theme draw-cost driver finds row 1's Edit… by the old ring's pixels ([benchmark notes](benchmarks/2026-09-22-theme-draw-cost.md)) and may need re-pointing before its next run.
+Still open: macOS, where the inset shadow, the first in the app or toolkit, has not been rendered; scale factors other than 1, where the band is one device pixel and can be under one logical pixel; primary, danger and directly built borderless buttons, whose half-opacity ring alone is below 3:1 in 16 of 20 palettes, and the row exception, both needing an outside stroke through a vendored Button change; the 30 frames listed above (retaken on September 29, [frames retaken under the solid focus ring](#september-29-frames-retaken-under-the-solid-focus-ring)); and the focused disabled helper. The theme draw-cost driver finds row 1's Edit… by the old ring's pixels ([benchmark notes](benchmarks/2026-09-22-theme-draw-cost.md)) and may need re-pointing before its next run. It was re-pointed on September 29 ([frames retaken under the solid focus ring](#september-29-frames-retaken-under-the-solid-focus-ring)).
 
 ## September 27 desktop monospace font on Linux
 
