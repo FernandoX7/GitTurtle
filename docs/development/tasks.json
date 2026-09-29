@@ -1094,6 +1094,420 @@
         "native"
       ],
       "commit": "docs(evidence): recapture frames that show the solid button focus ring"
+    },
+    {
+      "id": "switch-disabled-thumb",
+      "title": "Fade a disabled Switch's thumb with its track",
+      "description": "Omarchy follow-up D1 (design finding F7 of the 2026-09-28 Omarchy theme review), queued by the owner on 2026-09-29, who chose to fade the thumb with the track. While the Omarchy card is selected, Settings disables the Follow system appearance switch (crates/app/src/settings.rs:1928-1931, `.disabled(desktop_theme)`). The vendored Switch fades only its track (`disabled_bg` at opacity 0.5, vendor/gpui-component/src/switch.rs:128-134) and paints the thumb in `switch_thumb`, the palette's text (crates/app/src/appearance.rs:1270), at full strength, so the locked switch reads as live. Fade the thumb by the same 0.5 whenever a Switch is disabled, in the vendored Switch so every disabled Switch gets it, and record the patch in vendor/gpui-component/GITTURTLE-PATCH.md. DESIGN.md has no disabled-control rule yet; add one line. The other Settings switches (settings.rs ~543, ~2016, ~2039) change only while disabled.",
+      "depends_on": [],
+      "scope": [
+        "vendor/gpui-component/src/switch.rs",
+        "vendor/gpui-component/GITTURTLE-PATCH.md",
+        "crates/app/src/settings.rs",
+        "DESIGN.md",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "thumb",
+          "description": "A disabled Switch paints its thumb at the track's 0.5 opacity and an enabled Switch paints exactly as before, asserted by a test that fails on origin/main."
+        },
+        {
+          "id": "patch-note",
+          "description": "vendor/gpui-component/GITTURTLE-PATCH.md records the change, its consuming path (Settings' Follow system appearance switch while the Omarchy card is selected) and when it can be removed."
+        },
+        {
+          "id": "design",
+          "description": "DESIGN.md states the rule for disabled controls that the thumb now follows."
+        },
+        {
+          "id": "native",
+          "description": "Native frames on Linux of Settings with the Omarchy card selected (switch disabled) and with Midnight selected (switch enabled), in a dark and a light palette, against a same-session base; privacy-scanned, a design review of every non-timing difference, and a dated docs/validation.md entry."
+        }
+      ],
+      "profiles": [
+        "vendor",
+        "rust",
+        "native"
+      ],
+      "commit": "fix(vendor): fade a disabled switch's thumb with its track"
+    },
+    {
+      "id": "omarchy-caption-two-lines",
+      "title": "Wrap the Omarchy card's caption to two lines before truncating",
+      "description": "Omarchy follow-up D4, queued by the owner on 2026-09-29, who chose a two-line caption. The Omarchy card's caption, \"Follows <Theme>\" or \"Keeping <Theme>\" from `theme.name` (crates/app/src/appearance/omarchy.rs:236-254; names bounded at MAX_NAME_BYTES, 64 bytes), is truncated to one line (crates/app/src/settings.rs ~3591, `.truncate()`) in about 150 px of text width at 1,400 px, so a long custom Omarchy theme name is cut short. The tooltip (settings.rs:1296-1310) and the accessible name carry it in full. Let the caption take a second line before it truncates, without changing the card's height or moving it when the caption's length changes, and record the rule in docs/development/themes/spec.md.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/settings.rs",
+        "crates/app/src/appearance/omarchy.rs",
+        "docs/development/themes/spec.md",
+        "DESIGN.md",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "wrap",
+          "description": "`settings::picker_tests::omarchy_captions_fit`, or a test beside it, sets a 64-byte theme name and asserts that the caption uses at most two lines and is truncated only when two lines cannot hold it, at 1,400 px and at the window's minimum width; it fails on origin/main."
+        },
+        {
+          "id": "stable",
+          "description": "The same test asserts that the card's height and position are equal for a one-line and a two-line caption."
+        },
+        {
+          "id": "spec",
+          "description": "docs/development/themes/spec.md states the two-line caption rule."
+        },
+        {
+          "id": "native",
+          "description": "Native frames on Hyprland, with a fake Omarchy state inside a fresh HOME, of the card with a stock theme name, a 64-byte name and an Unavailable caption, against a same-session base; privacy-scanned, a design review, and a dated docs/validation.md entry."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(settings): wrap the Omarchy card's caption to two lines"
+    },
+    {
+      "id": "builtin-light-hover-lift",
+      "title": "Lift hover off subtle in GitTurtle's light built-in palettes",
+      "description": "Omarchy follow-up D5, queued by the owner on 2026-09-29. The Omarchy fitter holds a secondary control's hover at least 1.08:1 off its resting subtle fill (HOVER_STEP, crates/app/src/appearance/omarchy/palette.rs:317), which restores DESIGN.md's rule that hover stays distinguishable. Five of GitTurtle's own light palettes in crates/app/src/appearance.rs sit closer: One Light 1.010:1, Rosé Pine Dawn 1.032, Braden 1.047, Alucard 1.056 and Porcelain 1.076. The existing `shared_button_fills_lift_every_surface_and_keep_the_label_readable` (appearance.rs ~1550) checks the composited `control_fill(hover)` against surfaces at 1.07:1 (CONTROL_HOVER_LIFT), not the raw hover-to-subtle step. Retune those palettes' hover, and subtle only where required, keeping every existing readability, pressed-step and focus-ring rule, and hold all twenty built-ins to the same rule. Braden is also the Omarchy light fallback, so the Omarchy tests must still pass. Committed frames under docs/evidence that show these palettes' hover or subtle fills move, and are re-taken in the same change. Ordered after `app-button-focus-ring`, whose ring contrast on hovered rows this retune changes.",
+      "depends_on": [
+        "app-button-focus-ring"
+      ],
+      "scope": [
+        "crates/app/src/appearance.rs",
+        "crates/app/src/appearance/**",
+        "DESIGN.md",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "rule-test",
+          "description": "A unit test asserts that every built-in palette's hover is at least 1.08:1 off its subtle; it fails on origin/main for the five palettes named and passes after."
+        },
+        {
+          "id": "rules-held",
+          "description": "`cargo test --locked -p gitturtle appearance::` passes, including the focus-ring, pressed-step, label-readability and Omarchy mapping tests."
+        },
+        {
+          "id": "native",
+          "description": "Full-tier native evidence on Linux: a same-session base and candidate pair of History, Settings and the hovered branch and profile pickers in the five palettes, `qa.py compare --mask status-timing`, measured rest-to-hover ratios, and a design review of every non-timing difference."
+        },
+        {
+          "id": "frames",
+          "description": "Every committed frame the retune moves is re-taken, privacy-scanned on its committed bytes, and listed with the measured ratios in a dated docs/validation.md entry."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(themes): lift hover off subtle in the light built-in palettes"
+    },
+    {
+      "id": "diff-syntax-colours-from-palette",
+      "title": "Take diff header and syntax colours on changed lines from the palette",
+      "description": "Omarchy follow-ups D2 and D6 (design findings of the 2026-09-28 review; both predate the Omarchy theme), queued by the owner on 2026-09-29. Expected hard. The diff editor (`.language(\"diff\")`, crates/app/src/text.rs:81) paints added, removed and hunk ranges from the palette (`theme_decorations`, text.rs ~130-170), but the first `@@`, `---` and `+++` lines keep fixed colours, and syntax token colours on changed lines come from the toolkit's default highlight theme: crates/app/src/appearance.rs:1286-1291 overrides only the editor background, gutter, active line, line number and foreground, and `readability_issues` (crates/app/src/appearance/custom.rs:424) does not measure syntax tokens. Some tokens therefore sit on the added and removed tints with too little contrast in some palettes. Where the header colours come from, and why only the first `@@` differs, is unconfirmed; establish it first. Derive these colours from each palette (built-in, custom and Omarchy-mapped) so they stay readable on the editor background and on the added, removed and hunk tints, through app-side theme overrides. If only a vendor change can do it, report that as a blocker rather than editing vendor/. Custom themes' `readability_issues` gains a matching rule only if the new colours depend on tokens a user edits.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/appearance.rs",
+        "crates/app/src/appearance/**",
+        "crates/app/src/text.rs",
+        "DESIGN.md",
+        "docs/development/themes/spec.md",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "cause",
+          "description": "docs/development/themes/spec.md records, with file:line references, where the first `@@`, `---` and `+++` lines and the syntax tokens took their colours on origin/main."
+        },
+        {
+          "id": "headers",
+          "description": "A test asserts that the `@@`, `---` and `+++` lines draw palette-derived colours in every built-in palette; it fails on origin/main."
+        },
+        {
+          "id": "contrast",
+          "description": "A test measures every syntax token colour the diff and source editors use against the editor background and the added, removed and hunk tints of all twenty built-ins, the embedded Omarchy theme fixtures and a generated custom theme, and holds each to 4.5:1; it fails on origin/main."
+        },
+        {
+          "id": "native",
+          "description": "Full-tier native evidence on Linux: same-session base and candidate frames of Compare on a syntax-highlighted text diff in at least one dark, one light and one Omarchy-mapped palette, `qa.py compare --mask status-timing`, privacy-scanned, and a design review of every non-timing difference."
+        },
+        {
+          "id": "record",
+          "description": "A dated docs/validation.md entry names the builds, fixture and palettes and the lowest measured token contrast before and after."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(themes): take diff header and syntax colours from the palette"
+    },
+    {
+      "id": "omarchy-status-fallback-test",
+      "title": "Reach the Omarchy mapping's last status fallback in a test",
+      "description": "Omarchy follow-up D7, queued by the owner on 2026-09-29. When no combination of a theme's colours lets New, Deleted, Modified and Renamed stand apart, the mapping takes GitTurtle's full status set for the mode (crates/app/src/appearance/omarchy/palette.rs ~706-725, `.unwrap_or_else(|| statuses(own_added, own_removed, own.modified, own.renamed))`). Its comment notes that no known theme reaches that step since Modified and Renamed keep only their amber and violet hue windows, and no test reaches it: `status_colors_stand_apart_or_take_gitturtles_own`, `warning_and_renamed_keep_their_hues_or_take_gitturtles_own` and `a_violet_yellow_leaves_modified_and_renamed_apart` stop at earlier steps. Add a test that reaches it, from a synthetic colours input if one can, otherwise by factoring the status choice into a function the test calls with inputs that fail every earlier step. No mapped palette may change.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/appearance/omarchy/palette.rs",
+        "crates/app/src/appearance/omarchy.rs",
+        "docs/development/themes/spec.md"
+      ],
+      "acceptance": [
+        {
+          "id": "reach",
+          "description": "A new test drives the status choice into GitTurtle's full-set fallback and asserts the four colours it returns."
+        },
+        {
+          "id": "mutant",
+          "description": "Replacing the fallback's result with the theme's own colours makes that test fail, shown by a mutant run recorded in the handoff."
+        },
+        {
+          "id": "unchanged",
+          "description": "The mapped palettes of every embedded Omarchy fixture are identical before and after, shown by the existing mapping tests or a comparison recorded in the handoff, and `cargo test --locked -p gitturtle appearance::` passes."
+        }
+      ],
+      "profiles": [
+        "rust"
+      ],
+      "commit": "test(appearance): reach the Omarchy status fallback"
+    },
+    {
+      "id": "narrow-window-compare-height",
+      "title": "Keep History's paging and Compare's diff usable in 461-pixel windows",
+      "description": "Omarchy follow-up A, queued by the owner on 2026-09-29, from the 2026-09-27 fractional-scales design review (docs/validation.md, \"September 27 fractional scales on Hyprland\"). Side-by-side tiles on a display about 1,000 logical pixels wide are 461 to 493 px wide. There, History's 176 px content column hides its paging buttons (crates/app/src/views.rs ~880-910). At 461 x 490 Compare's review options wrap one per row and, with the header and Git action bar on two rows each below 640 px, leave the diff no visible line (two show at 493 x 526). \"Original Git diff\" (crates/app/src/text_review.rs:424) sits 6 px left of the wrapped buttons. The composer's heading scrolled out of view at 461 x 490, which was not checked with staged files, and an enlarged interface text size was not checked. Keep paging reachable, collapse or move the review options, mode group or second header and action rows so the diff keeps its height, align the caption, and check the composer and an 18 pt interface text size. Wider layouts must not change.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/views.rs",
+        "crates/app/src/views/**",
+        "crates/app/src/text_review.rs",
+        "crates/app/src/workspace.rs",
+        "DESIGN.md",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "paging",
+          "description": "In a 461 x 490 window, History's Latest, Previous and Older controls are visible and operable, asserted by a view test that fails on origin/main."
+        },
+        {
+          "id": "diff-height",
+          "description": "In a 461 x 490 window, Compare on a text diff shows at least three diff lines, asserted by extending `views::tests::narrow_windows_keep_the_inspector_whole_and_the_header_on_one_row` or a test beside it; it fails on origin/main."
+        },
+        {
+          "id": "caption",
+          "description": "\"Original Git diff\" aligns with the wrapped buttons' left edge, asserted by a layout test or measured in a native frame."
+        },
+        {
+          "id": "wide-unchanged",
+          "description": "At 1000 x 680 and 1480 x 800, History, Compare and Changes frames are identical to a same-session base under `qa.py compare --mask status-timing`."
+        },
+        {
+          "id": "native",
+          "description": "Native frames on Hyprland at 461 x 490 (scale 2) and 493 x 526 (scale 1.25) of History, Compare and Changes with staged files and the composer heading, and at 461 x 490 with an 18 pt interface text size, against a same-session base; privacy-scanned, a design review, and a dated docs/validation.md entry."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(layout): keep paging and the diff usable in narrow windows"
+    },
+    {
+      "id": "narrow-navigation-announcement",
+      "title": "Announce why Ctrl+B leaves navigation closed in a narrow History window",
+      "description": "Omarchy follow-up B, queued by the owner on 2026-09-29. In a History window too narrow for navigation, the `ToggleSidebar` action (Ctrl+B, also reached from the command palette, crates/app/src/command_palette.rs:677) keeps the navigation choice but changes nothing visible (crates/app/src/views.rs:1884-1892, the `navigation_fits` branch; the action at ~2372-2381), and nothing is announced. Post a polite status message through the existing mechanism (`native_accessibility::polite` with `Role::Status`, as crates/app/src/history_updates.rs:431 and conflicts.rs:682 do) saying that navigation needs a wider window and that the choice is kept. The copy follows DESIGN.md's voice and gets a design review.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/views.rs",
+        "crates/app/src/views/**",
+        "DESIGN.md",
+        "docs/accessibility*.md",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "announce",
+          "description": "Ctrl+B in a History window narrower than navigation's minimum exposes a polite status node with the message, asserted by extending `views::tests::narrow_history_keeps_the_navigation_choice`; it fails on origin/main."
+        },
+        {
+          "id": "quiet",
+          "description": "No message appears when navigation fits, and a second press does not add a second node, asserted in the same test."
+        },
+        {
+          "id": "copy",
+          "description": "DESIGN.md records the message's copy, and a design review approves it."
+        },
+        {
+          "id": "native",
+          "description": "An AT-SPI read on Linux (org.a11y.Status IsEnabled set for one launch, then restored and read back) shows the status node after Ctrl+B in a window about 461 px wide, recorded in a dated docs/validation.md entry."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(a11y): announce why navigation stays closed in narrow History"
+    },
+    {
+      "id": "code-font-row-evidence",
+      "title": "Test the desktop code font row's copy and capture its states natively",
+      "description": "Omarchy follow-up C, queued by the owner on 2026-09-29, from docs/validation.md \"September 27 desktop monospace font on Linux\". Settings' Use the desktop's monospace font row (crates/app/src/settings.rs ~543, `settings-system-code-font`) has no test of its description in the off, pending and on states, and its native evidence lacks the pending, off, hover and focus states, a light theme, the stacked layout, an enlarged interface text size and a fractional scale. Evidence only unless a check finds a defect, which is reported rather than fixed here.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/settings.rs",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "copy-test",
+          "description": "A view test beside `settings::picker_tests::the_code_font_switch_saves_the_choice_and_starts_the_lookup` asserts the row's description in the off, pending and on states."
+        },
+        {
+          "id": "native",
+          "description": "Native frames on Linux of the row pending, off, hovered and focused, in a dark and a light palette, in the stacked layout, at an 18 pt interface text size and at a fractional scale, privacy-scanned on their committed bytes, with a design review."
+        },
+        {
+          "id": "record",
+          "description": "A dated docs/validation.md entry names the build, fixture, backend and scale of each frame and any defect found."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "test(settings): cover the desktop code font row's states"
+    },
+    {
+      "id": "code-font-cold-launch",
+      "title": "Measure launch time with the desktop code font on from a cold fontconfig cache",
+      "description": "Omarchy follow-up C, queued by the owner on 2026-09-29. With Use the desktop's monospace font on, GitTurtle resolves fontconfig's `monospace` alias off the UI thread after launch (crates/app/src/desktop_text.rs, `code_font_family` ~193 and `sync_code_font` ~229). Its launch cost was measured only with warm caches. Measure it from a cold fontconfig cache as well, in release builds, following the performance skill. Measurement only; a regression it finds is reported for its own task.",
+      "depends_on": [],
+      "scope": [
+        "docs/benchmarks/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "measure",
+          "description": "Release-mode timings of launch to first window and launch to the code font's application, at least ten interleaved launches each with the setting on and off, from a cold fontconfig cache (fresh XDG_CACHE_HOME and fontconfig cache) and a warm one, with raw samples, p50, p95 and max, host, load, cache state and build identity."
+        },
+        {
+          "id": "record",
+          "description": "A benchmark record under docs/benchmarks/ with its raw samples, and a dated docs/validation.md entry that states whether the setting delays the first window, with no claim beyond the data."
+        }
+      ],
+      "profiles": [
+        "performance",
+        "docs"
+      ],
+      "commit": "docs(benchmarks): measure the desktop code font's cold launch"
+    },
+    {
+      "id": "gnome-monospace-evidence",
+      "title": "Check whether GNOME's monospace setting reaches GitTurtle's code font",
+      "description": "Omarchy follow-up C, queued by the owner on 2026-09-29, who chose evidence only: no new product behaviour. GitTurtle follows fontconfig's `monospace` alias (crates/app/src/desktop_text.rs), while GNOME stores the user's choice in the gsettings key `org.gnome.desktop.interface monospace-font-name`. On a GNOME desktop (Ubuntu 24.04 GNOME is the reference Linux target), check whether changing that key changes what the alias resolves to and what GitTurtle draws with the setting on, and document the result, and any step a GNOME user needs, in docs/linux.md. Needs a GNOME desktop, not Omarchy.",
+      "depends_on": [],
+      "scope": [
+        "docs/linux.md",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "check",
+          "description": "On a GNOME desktop, with the key set to two different monospace fonts in turn, `fc-match monospace` and GitTurtle's drawn code text are recorded for each, with native frames privacy-scanned on their committed bytes."
+        },
+        {
+          "id": "doc",
+          "description": "docs/linux.md states whether GNOME's monospace setting reaches GitTurtle and what a user does if it does not."
+        },
+        {
+          "id": "record",
+          "description": "A dated docs/validation.md entry names the desktop, its versions, the build and the frames."
+        }
+      ],
+      "profiles": [
+        "docs",
+        "native"
+      ],
+      "commit": "docs(linux): record how GNOME's monospace setting reaches GitTurtle"
+    },
+    {
+      "id": "code-font-remaining-sites",
+      "title": "Draw Markdown, review and rich-preview code in the code font",
+      "description": "Omarchy follow-up C2, queued by the owner on 2026-09-29, from docs/validation.md \"September 27 code text without ligatures\". Two call sites hard-code the family \"Menlo\" (crates/app/src/markdown_view.rs:1086 and crates/app/src/github_view/review.rs:1006), so on Linux their code falls back to another family and ignores the desktop code font setting and the disabled ligature features. Decoded source in rich previews uses the fixed bundled family (crates/app/src/rich_preview.rs:362, `mono()` at crates/app/src/main.rs:1990). Use `.code_font(cx)` (the `CodeFont` trait, crates/app/src/appearance.rs:151) at all three.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/markdown_view.rs",
+        "crates/app/src/github_view/**",
+        "crates/app/src/rich_preview.rs",
+        "crates/app/src/main.rs",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "sites",
+          "description": "No view in crates/app sets a literal \"Menlo\" family outside `mono()`, and the Markdown code block, the review code excerpt and rich-preview decoded source use `.code_font(cx)`."
+        },
+        {
+          "id": "tests",
+          "description": "A test for each of the three sites asserts the code family and the disabled ligature features, following `appearance::tests::code_text_shapes_the_code_family_without_ligatures`; each fails on origin/main."
+        },
+        {
+          "id": "native",
+          "description": "Native frames on Linux of a Markdown code block and a rich preview with the desktop monospace font off and on, against a same-session base, privacy-scanned, with a design review and a dated docs/validation.md entry; the review excerpt is covered by its test when no live GitHub account is available."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(fonts): draw Markdown, review and preview code in the code font"
+    },
+    {
+      "id": "bundled-font-feature-skip",
+      "title": "Skip font features the embedded DejaVu Sans Mono cannot use",
+      "description": "Omarchy follow-up C2, queued by the owner on 2026-09-29. `.code_font(cx)` turns `calt` and `liga` off for every code family (crates/app/src/appearance.rs:144-148, `code_font_features`). The embedded DejaVu Sans Mono has no ligatures to turn off, yet any explicit feature costs it about 11% more shaping time (23.8 to 26.5 microseconds per line at p50; docs/validation.md \"September 27 code text without ligatures\", measured with an uncommitted scratch binary). Send the features only when the code family is not the embedded one, keeping ligatures off for desktop fonts that have them. Shaping is on the diff and source views' hot path. Ordered after `code-font-remaining-sites`, so every code site shares the helper.",
+      "depends_on": [
+        "code-font-remaining-sites"
+      ],
+      "scope": [
+        "crates/app/src/appearance.rs",
+        "crates/app/src/desktop_text.rs",
+        "crates/app/src/editor_find.rs",
+        "docs/benchmarks/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "skip",
+          "description": "With the embedded family the code font applies no explicit features, and with a desktop family `calt` and `liga` stay off; unit tests assert both, and the first fails on origin/main."
+        },
+        {
+          "id": "ligatures",
+          "description": "`appearance::tests::code_text_shapes_the_code_family_without_ligatures` and `editor_find::tests::editors_draw_code_without_ligatures` pass, and a desktop font with ligatures still draws `->` and `!=` as separate glyphs."
+        },
+        {
+          "id": "measure",
+          "description": "A same-session release measurement of per-line shaping time with the embedded family, base against candidate, with raw samples, p50, p95 and max, host and cache state, committed under docs/benchmarks/ with its driver or procedure."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "performance"
+      ],
+      "commit": "perf(fonts): skip features the bundled code font cannot use"
     }
   ]
 }
