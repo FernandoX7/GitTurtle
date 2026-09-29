@@ -1,5 +1,5 @@
 //! Captured-byte document and media information, with static native PDF pages.
-use crate::*;
+use crate::{appearance::CodeFont, *};
 use gitturtle_preview::{MAX_INPUT_BYTES, metadata};
 use std::{
     path::Path,
@@ -359,11 +359,18 @@ pub(super) fn render_comparison<T: 'static>(
                 let copied=source.clone();
                 body=body.child(button(("copy-decoded-source",index),"Copy source","copy",false).on_click(move|_,_,cx|cx.write_to_clipboard(ClipboardItem::new_string(copied.to_string()))));
                 let mut end=source.len().min(16*1024); while !source.is_char_boundary(end) { end-=1; }
-                body=body.child(div().font_family(mono()).text_size(appearance::code_text()).child(source[..end].to_owned()));
+                body=body.child(decoded_source(&source[..end],cx));
                 if end<source.len() { body=body.child(div().text_color(rgb(colors.muted)).child("Excerpt limited to 16 KiB; Copy source includes the complete available text.")); }
             }
             div().flex_1().min_w_0().h_full().flex().flex_col().border_r_1().border_color(rgb(colors.border)).child(header).child(body)
         })).into_any_element()
+}
+
+fn decoded_source(excerpt: &str, cx: &App) -> Div {
+    div()
+        .code_font(cx)
+        .text_size(appearance::code_text())
+        .child(excerpt.to_owned())
 }
 
 impl GitTurtle {
@@ -560,6 +567,17 @@ fn captured_copy(bytes: &[u8], name: &Path) -> anyhow::Result<(tempfile::TempDir
 mod tests {
     use super::*;
     use core::prelude::v1::test;
+    #[gpui::test]
+    fn decoded_source_excerpts_use_the_code_font(cx: &mut TestAppContext) {
+        let font = shaped_code_font(cx, |probe, cx| {
+            decoded_source("a != b -> c", cx)
+                .child(probe)
+                .into_any_element()
+        });
+        assert_eq!(font.family, "Desktop Mono");
+        assert_eq!(font.features.is_calt_enabled(), Some(false));
+        assert!(font.features.tag_value_list().contains(&("liga".into(), 0)));
+    }
     #[test]
     fn successful_model_decode_replaces_generic_uncertainty_and_keeps_real_details() {
         let mut binary_stl = vec![0; 80];
