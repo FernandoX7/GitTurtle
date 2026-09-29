@@ -129,6 +129,7 @@ struct PaintedQuad {
     outer: Bounds<Pixels>,
     /// The outer bounds less the border: the inner edge of a ring.
     inner: Bounds<Pixels>,
+    fill: Background,
     border: Hsla,
     radii: [Pixels; 4],
 }
@@ -163,6 +164,7 @@ fn painted_quads(cx: &mut VisualTestContext) -> Vec<PaintedQuad> {
                 PaintedQuad {
                     outer,
                     inner,
+                    fill: quad.background,
                     border: quad.border_color,
                     radii: [
                         radii.top_left,
@@ -379,4 +381,77 @@ fn focused_buttons_draw_the_theme_button_focus_ring(cx: &mut TestAppContext) {
         rings_around(&quads, ghost, device).is_empty(),
         "Button::focus_ring(false)"
     );
+}
+
+/// A caller's hover styles a Button only while it is enabled: a disabled
+/// Button keeps its disabled fill under the pointer and while pressed, and an
+/// enabled one still takes the hover.
+#[gpui::test]
+fn caller_hover_styles_only_enabled_buttons(cx: &mut TestAppContext) {
+    const BUTTONS: [(&str, bool); 2] = [("hover-enabled", false), ("hover-disabled", true)];
+    fn mark() -> Hsla {
+        hsla(0.83, 1., 0.5, 1.)
+    }
+    struct Probe;
+    impl Render for Probe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .p_8()
+                .flex()
+                .gap_8()
+                .children(BUTTONS.map(|(id, disabled)| {
+                    // Selected, like the shared helper's active control, so the kit
+                    // registers no hover of its own.
+                    Button::new(id)
+                        .selected(true)
+                        .disabled(disabled)
+                        .label("Open")
+                        .hover(|style| style.bg(mark()))
+                        .debug_selector(|| id.into())
+                }))
+        }
+    }
+    cx.update(gpui_kit::init);
+    let (_, cx) = cx.add_window_view(|_, _| Probe);
+    let draw = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        cx.run_until_parked();
+    };
+    let device = cx.update(|window, _| px(1. / window.scale_factor()));
+    let fills = |cx: &mut VisualTestContext, bounds: Bounds<Pixels>| {
+        painted_quads(cx)
+            .into_iter()
+            .filter(|quad| near(quad.outer, bounds, device))
+            .map(|quad| quad.fill)
+            .collect::<Vec<_>>()
+    };
+    let mark = Background::from(mark());
+    draw(cx);
+    for (id, disabled) in BUTTONS {
+        let bounds = cx.debug_bounds(id).expect("rendered Button");
+        let resting = fills(cx, bounds);
+        assert!(!resting.contains(&mark), "{id} at rest paints {resting:?}");
+
+        cx.simulate_mouse_move(bounds.center(), None, Modifiers::default());
+        draw(cx);
+        let hovered = fills(cx, bounds);
+        if disabled {
+            assert_eq!(hovered, resting, "{id} hovered");
+        } else {
+            assert!(hovered.contains(&mark), "{id} hovered paints {hovered:?}");
+        }
+
+        cx.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
+        draw(cx);
+        if disabled {
+            assert_eq!(fills(cx, bounds), resting, "{id} pressed");
+        }
+        cx.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(point(px(0.), px(0.)), None, Modifiers::default());
+        draw(cx);
+        assert_eq!(fills(cx, bounds), resting, "{id} after the pointer leaves");
+    }
 }
