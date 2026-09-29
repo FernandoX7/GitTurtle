@@ -65,6 +65,28 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## September 29 desktop code font at a cold launch
+
+Measurement only, in the [benchmark record](benchmarks/2026-09-29-code-font-cold-launch.md) with its driver, raw samples and cache counts.
+
+Setup:
+- Build: `d553cc0`, release, clean, sha256 `1f1fed5a…`.
+- Host and output: the two-core AMD 3020e on Omarchy (Hyprland 0.56.2, fontconfig 2.18.3), with a temporary 1480 × 800 headless output.
+- Launches: two runs of 12 interleaved rounds, each round launching with **Use the desktop's monospace font** on and off, and with a cold fontconfig cache (an empty cache directory per launch) and a warm one. Every launch had fresh HOME and XDG directories, so Mesa's shader cache was cold in all four configurations.
+- Timings: launch to Hyprland's `openwindow` event, and launch to the end of the app's `fc-match monospace` call, through a timing wrapper on `PATH`. That end is a lower bound for the family's application; the frame that applies it is not observed.
+
+Does the setting delay the first window? Slightly at p50, more with a cold cache:
+- With a warm cache it adds 7 ms at p50 (338 against 331 ms, and 337 against 330 ms), within the launch-to-launch spread.
+- With a cold cache it adds 23 to 29 ms at p50 (355 against 332 ms, and 365 against 336 ms), in 22 of 24 rounds.
+- The two slowest windows, 1,104 and 790 ms, were the first launch of each run, cold with the setting on. Every run started with that configuration, so a first-launch effect cannot be separated from it.
+- Run 2's tails overlap a fetch and merge in another worktree; run 1 is the quiet reference.
+
+With a warm cache the family is known 58 to 156 ms after spawn, before the window. With a cold cache, the first lookup outlived the app's 500 ms bound in all 24 launches, and the app does not retry a failed lookup:
+- In 22 launches, the lookup requested by the window's activation, which ran as soon as the killed call returned, found the family 771 to 897 ms after spawn.
+- In 2 launches, the first of each run, the window mapped after the kill and its lookup was killed too. The code stayed in the bundled family for the about 60 s observed after the window, with no further lookup.
+
+That cold-cache miss is reported for its own task, not changed here. Not covered: the frame that applies the family, a warm GPU shader cache, a cold kernel page cache, a launch without window activation, X11 or XWayland, GNOME, other hosts and macOS.
+
 ## September 29 Omarchy caption on two lines
 
 The Omarchy card's caption ("Follows ‹Theme›", "Keeping ‹Theme›" or "Using Midnight") was cut to one line, so a long custom theme name lost most of itself. Following the owner's "grow on demand" decision, a caption that needs a second line takes it, wrapped at word boundaries, and ends in an ellipsis only when two lines cannot hold it. The miniature above it then draws only whole rows, three instead of four at the default size. A one-line caption paints as before, and the card stays 132 px tall and in place. `docs/development/themes/spec.md` states the rule.
