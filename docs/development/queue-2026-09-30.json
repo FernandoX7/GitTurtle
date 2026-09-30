@@ -1,0 +1,273 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "git-core-signing-test-isolation",
+      "title": "Isolate the git-core signing-failure tests from host Git configuration",
+      "description": "Owner request of 2026-09-30 (docs/development/HANDOFF.md, Next). Queued in docs/development/queue-2026-09-30.json, a self-contained queue with no dependency into tasks.json. Two git-core integration tests fail in a plain `cargo test` on a host whose global Git configuration sets `commit.gpgSign` and `tag.gpgSign` true, `gpg.format=ssh` and a `user.signingKey`, as the Ubuntu GNOME 50 host's does. The planner reproduced both on 2026-09-30 at ca7b826 with `cargo test --locked -p gitturtle-core --no-fail-fast` outside the gate's isolation: `annotation_inspection_preserves_message_and_never_bypasses_signing` (crates/git-core/tests/tags_ignore.rs:110, the tag is created) and `configured_signing_failure_is_reported_instead_of_creating_unsigned_commit` (crates/git-core/tests/workflow.rs:584, `unwrap_err` on an `Ok`: the commit is created, signed). Each sets only `gpg.program=/usr/bin/false` in the fixture's local configuration (tags_ignore.rs:104, workflow.rs:578), so the inherited `gpg.format=ssh` sends signing to `gpg.ssh.program` and the host's key, and the signer the test means to fail succeeds. Both pass under `scripts/gate.py`, whose test stages set `GIT_CONFIG_NOSYSTEM=1` and an empty `GIT_CONFIG_GLOBAL` (gitturtle-gates skill). The gates skill says to isolate such a test in the test itself. Here the product spawns Git through `GitRepository::execute`, and its write path reads the user's global configuration on purpose (signing, hooks, identity; root AGENTS.md), so a fixture `Command`'s environment (signing.rs:54-72, repository.rs:39-40) cannot reach it. Pin in each fixture's repository-local configuration every key the assertion depends on, the signing format and the program for it, as signing.rs does for its whole setup. Product code does not change. This task comes first because it also unblocks unattended runs on this host: the controller's workspace-tests gate runs plain `cargo test --locked --workspace` in the caller's environment (scripts/agent_loop/runner.py `gates`), so every Rust candidate's gate is red here until these tests are isolated.",
+      "depends_on": [],
+      "scope": [
+        "crates/git-core/tests/**"
+      ],
+      "acceptance": [
+        {
+          "id": "reproduce",
+          "description": "Under a temporary global configuration (`GIT_CONFIG_GLOBAL` naming a file in a temporary directory) that sets `commit.gpgSign` and `tag.gpgSign` true, `gpg.format` ssh, a `user.signingKey` and a `gpg.ssh.program` fixture script that writes a non-empty signature, both named tests fail on origin/main and pass after the change. The pull request records the commands and the file's contents; no real key is used."
+        },
+        {
+          "id": "host",
+          "description": "On a host whose own global configuration sets those keys, plain `cargo test --locked -p gitturtle-core` passes without the gate's isolation. The whole git-core suite is also run under the temporary configuration above, and the pull request names any other test it finds host-dependent, isolated the same way."
+        },
+        {
+          "id": "product-unchanged",
+          "description": "No file under crates/git-core/src changes. Each test keeps every assertion it has on origin/main: a failing configured signer makes the write fail and creates no tag or commit."
+        },
+        {
+          "id": "gates",
+          "description": "`python3 scripts/gate.py fast` passes, and `cargo test --locked -p gitturtle-core` and `cargo clippy --locked --workspace --all-targets -- -D warnings` pass."
+        }
+      ],
+      "profiles": [
+        "rust"
+      ],
+      "commit": "test(core): isolate signing-failure tests from host Git config"
+    },
+    {
+      "id": "refresh-cw-icon",
+      "title": "Draw an icon on the six buttons that name the missing refresh-cw",
+      "description": "Owner request of 2026-09-30, from docs/validation.md \"September 29 whole focus ring in Tags and Reflog\" (found on the way). Queued in docs/development/queue-2026-09-30.json, a self-contained queue with no dependency into tasks.json. Six buttons pass the symbol `refresh-cw` to the shared `button` helpers (crates/app/src/main.rs:1860; github_view.rs:33 has its own), which load `icons/refresh-cw.svg`. They are Read log (reflog.rs:284), the worktree manager's Refresh (worktrees.rs:519), Refresh PRs (github_view.rs:1060), Read configured source (lfs_download.rs:290), Refresh conversations (github_view/conversations.rs:483) and the thread reload (conversations.rs:512). The app's `Assets` tries the embedded assets/icons/ first and then gpui-kit-assets 0.6.0 (main.rs:137-153). Neither has refresh-cw (the kit has Lucide's rotate-cw), so each button draws an empty icon slot. The app's own original refresh.svg already serves the other refresh and retry buttons (workspace.rs:948, blame.rs:501, file_history.rs:852, recovery.rs:1369): use it at the six sites. Planner decision of 2026-09-30: no new artwork. Any change under assets/ makes the controller require a package attestation (docs/development/README.md, Verification profiles), and a distinct clockwise glyph, if the design review asks for one, is a separate assets task. First in the native chain: it is the smallest native change, and later tasks then recapture Reflog and worktree frames with the icon drawn. Depends on `git-core-signing-test-isolation` (the controller's gate on this host) and, for scheduling only, on `native-qa-mutter-input`. That keeps both unattended tasks ahead of every native candidate, so neither acceptance restales one.",
+      "depends_on": [
+        "git-core-signing-test-isolation"
+      ],
+      "scope": [
+        "crates/app/src/main.rs",
+        "crates/app/src/reflog.rs",
+        "crates/app/src/worktrees.rs",
+        "crates/app/src/github_view.rs",
+        "crates/app/src/github_view/conversations.rs",
+        "crates/app/src/lfs_download.rs",
+        "docs/validation.md",
+        "docs/evidence/**"
+      ],
+      "acceptance": [
+        {
+          "id": "resolves",
+          "description": "No crates/app source names `refresh-cw`, and only the icon symbol changes at the six sites: label, accessible name, tooltip, disabled state and action stay as they were. A test resolves every literal icon symbol that crates/app passes to its `button` helpers or names as an `icons/<name>.svg` path, through the app's `Assets` (the embedded set, then the kit bundle). It fails on origin/main naming `refresh-cw` and passes after the change."
+        },
+        {
+          "id": "native",
+          "description": "Native frames on Linux X11 at scale factor 1, base (origin/main when the task starts) and candidate launched in the same session (`scripts/native_qa/qa.py`, each binary in its own CARGO_TARGET_DIR and checked with `qa.py identity`), input through Mutter RemoteDesktop with verified X focus on this GNOME host (never XTest where XWayland runs with `-enable-ei-portal`). Full tier: six controls across five views is not the light tier's one control. The frames show Read log and the worktree manager's Refresh at rest in a dark and a light palette, plus every other of the six that a disposable offline fixture reaches (GitHub fixture mode, a local LFS source). Each committed frame under docs/evidence/ that shows one of these buttons is either recaptured and compared (`qa.py compare --mask status-timing --mask <button box>`) or named in the entry as its build's record. A new dated docs/validation.md entry names the tier, builds, fixtures and compares; masked `qa.py compare` against the base shows changes only in the icon slots, or the design review rules on any width change. Frames are privacy-scanned and design-reviewed."
+        },
+        {
+          "id": "gates",
+          "description": "`python3 scripts/gate.py fast` passes, and `cargo test --locked -p gitturtle` and `cargo clippy --locked --workspace --all-targets -- -D warnings` pass."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(icons): draw the refresh icon on six refresh buttons"
+    },
+    {
+      "id": "reflog-selected-entry-collapse",
+      "title": "Keep the Reflog lists and message whole when an entry is selected",
+      "description": "Owner request of 2026-09-30, from docs/validation.md \"September 29 whole focus ring in Tags and Reflog\" (found on the way). Queued in docs/development/queue-2026-09-30.json, a self-contained queue with no dependency into tasks.json. Frames docs/evidence/tags-focus-ring/{midnight,porcelain}-1000x680-reflog-selected-rest.png record the defect on both builds. At 1000x680, selecting a Reflog entry collapses the entry list and the changed-file list to nothing: the metadata says \"3 changed files\" and none shows. The message editor collapses to its two borders, so its first line paints over \"Create a new branch at this commit…\". The dialog growing to its height bound is expected. The content (crates/app/src/reflog.rs:282, `reflog-browser-content`, a `flex_col` with `max_h(px(590.).min(body_height) + room)` and `overflow_y_scroll`) holds four children: the entry list's `min_h_0()` wrapper around `reflog-list` (:289), the metadata (:300), the read-only message editor (:301, `h(px(110.))`) and `reflog-commit-files` (:302, `max_h(px(110.))`). The likely cause is unverified: the children keep the default flex-shrink and have no automatic minimum height, so the column shrinks them instead of scrolling. Find the cause first. Then make the content scroll while each child keeps its size, and keep #99's ring room (reflog.rs:14 `ring_room`) and the unselected layout. Put new frames under docs/evidence/reflog-selected/; the #99 frames stay that build's record of the defect. The worktree manager's content (worktrees.rs:515) has the same shape: check it and record the result without changing it here. Depends on `refresh-cw-icon` for scheduling only: one native candidate at a time.",
+      "depends_on": [
+        "refresh-cw-icon"
+      ],
+      "scope": [
+        "crates/app/src/reflog.rs",
+        "docs/validation.md",
+        "docs/evidence/**"
+      ],
+      "acceptance": [
+        {
+          "id": "cause",
+          "description": "The pull request names the cause with file:line references and why the fix site is the right owner."
+        },
+        {
+          "id": "view-test",
+          "description": "A GPUI view test opens the Reflog at 1000x680 at the default text size, with an entry selected whose commit changes at least three files. It asserts that the entry list shows at least one whole entry, the changed-file list at least one whole file row, and the message editor its 110 px, that none of them overlaps another, and that the content scrolls to reach the branch form. It fails on origin/main and passes after the change. `reflog::tests::reflog_browser_keeps_room_for_every_focus_ring` passes unchanged."
+        },
+        {
+          "id": "native",
+          "description": "Native frames on Linux X11 at scale factor 1, base (origin/main when the task starts) and candidate launched in the same session (`scripts/native_qa/qa.py`, each binary in its own CARGO_TARGET_DIR and checked with `qa.py identity`), input through Mutter RemoteDesktop with verified X focus on this GNOME host (never XTest where XWayland runs with `-enable-ei-portal`). On the #99 fixture (16 tags, 12 HEAD reflog entries), the frames show the Reflog with an entry selected, at rest and with the content scrolled to its end, in Midnight and Porcelain. Masked `qa.py compare --mask status-timing` of the unselected Reflog finds it identical to the base. A new dated docs/validation.md entry names the frames and the worktree manager's result. Frames are privacy-scanned and design-reviewed."
+        },
+        {
+          "id": "gates",
+          "description": "`python3 scripts/gate.py fast` passes, and `cargo test --locked -p gitturtle` and `cargo clippy --locked --workspace --all-targets -- -D warnings` pass."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(reflog): keep the lists and message whole for a selected entry"
+    },
+    {
+      "id": "segments-unselected-like-history",
+      "title": "Give unselected density and project-mode segments the shared helper's unselected look",
+      "description": "Owner request and decision of 2026-09-30. It partly reverses #100's \"unselected segments stay ghost\"; see docs/validation.md \"September 30 selected segments like the shared helper\" and its design review. Queued in docs/development/queue-2026-09-30.json, a self-contained queue with no dependency into tasks.json. Unselected segments get the kit's ghost at two sites: Settings' density segments (crates/app/src/settings.rs ~2127-2137, `button.ghost()`) and the project hub's mode segments (crates/app/src/projects.rs ~717-725). History's segments use the shared `button()` helper (main.rs:1872), whose unselected look is `appearance::control_button_variant(false)` (appearance.rs:383). The mix causes two faults. First, pressing an unselected segment shows the ghost's translucent pressed fill, which on release flips to `selected_hover` and then `selected`: computed 1.65:1, 1.26:1 and 1.03:1 with a hue change in Midnight, Porcelain and Kanagawa Lotus. History's unselected segments press to almost their selected fill (1.05 to 1.16:1). Second, in Kanagawa Lotus and One Dark the selected label takes `control_label` while its ghost neighbours keep `text`. Give unselected segments `control_button_variant(false)` at both sites. While the hub is busy every mode keeps the ghost's disabled look (projects.rs `self.unavailable()`). Two tests assert the ghost through `appearance::assert_ghost_button` and must move to the helper's unselected look: `settings::segment_tests::a_selected_density_rests_and_hovers_like_the_shared_helper_and_the_others_like_the_ghost` (settings.rs:5458; calls at 5534 and 5537) and `projects::tests::a_selected_mode_rests_and_hovers_like_the_shared_helper_and_the_others_like_the_ghost` (projects.rs:1903; calls at 1962 and 1965). Remove `assert_ghost_button` if nothing else uses it. DESIGN.md does not describe the ghost look; add a line only if the design review asks for one. Depends on `reflog-selected-entry-collapse` for scheduling only.",
+      "depends_on": [
+        "reflog-selected-entry-collapse"
+      ],
+      "scope": [
+        "crates/app/src/settings.rs",
+        "crates/app/src/settings/**",
+        "crates/app/src/projects.rs",
+        "crates/app/src/appearance.rs",
+        "DESIGN.md",
+        "docs/validation.md",
+        "docs/evidence/**"
+      ],
+      "acceptance": [
+        {
+          "id": "helper",
+          "description": "A test runs in Midnight, Porcelain, Kanagawa Lotus and One Dark. It asserts that an unselected density segment and an unselected project-mode segment rest, hover and, under a held simulated press, press with the fills of `control_button_variant(false)`, as History's unselected segment does. It also asserts that the selected segments keep #100's look and that a busy hub's modes keep the ghost's disabled look. It fails on origin/main and passes after the change."
+        },
+        {
+          "id": "native",
+          "description": "Native frames on Linux X11 at scale factor 1, base (origin/main when the task starts) and candidate launched in the same session (`scripts/native_qa/qa.py`, each binary in its own CARGO_TARGET_DIR and checked with `qa.py identity`), input through Mutter RemoteDesktop with verified X focus on this GNOME host (never XTest where XWayland runs with `-enable-ei-portal`). The frames show both controls at rest, with an unselected segment hovered and with one held pressed, in Midnight, Porcelain, Kanagawa Lotus and One Dark. Masked `qa.py compare` shows changes only inside the unselected segments' boxes. A new dated docs/validation.md entry records, for each palette, the pressed-to-selected step and the selected and unselected label colors sampled from the frames. Mode frames are action-panel crops, since full hub frames fail the local scan. Frames are privacy-scanned and design-reviewed."
+        },
+        {
+          "id": "gates",
+          "description": "`python3 scripts/gate.py fast` passes, and `cargo test --locked -p gitturtle` and `cargo clippy --locked --workspace --all-targets -- -D warnings` pass."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(settings): give unselected segments the shared helper's look"
+    },
+    {
+      "id": "ring-room-helper",
+      "title": "Share one focus-ring room helper that follows the installed ring",
+      "description": "Owner request of 2026-09-30: cleanups after #94, #96 and #99. Queued in docs/development/queue-2026-09-30.json, a self-contained queue with no dependency into tasks.json. (1) Four clips keep room for the ring a focused Button draws outside its edge, and each computes that room on its own. The repository tab strip does it at crates/app/src/repository_tabs.rs:1902-1903, `tags::ring_room` at tags.rs:15 and `reflog::ring_room` at reflog.rs:14. Your themes rows use settings.rs:1595 `const ROW_RING_ROOM: Pixels = px(3.)`, while the Settings page reveal for those rows reads the installed ring (settings.rs:1630-1631). Add one helper in appearance.rs, beside `BUTTON_FOCUS_RING` and `painted_button`, that returns the installed `Theme::button_focus_ring`'s gap plus width, and use it at all four sites. ROW_RING_ROOM goes, and the rows' room (settings.rs:1673, 1685-1686, 1790, 1807-1811) follows a non-default ring as the reveal does. Keep `rows_off_boundary` (settings.rs:61) and theme_editor.rs:325 `reveal_focused_row` in step. (2) The Your themes rows' fill layer decides hover with `!cx.has_active_drag() && row.hitbox.is_hovered(window)` (settings.rs:1731). GPUI's own hover styles also skip hover after touch input (gpui-pre 0.3.4 elements/div.rs:3374-3395, `!window.last_input_was_touch()`), but `Window::last_input_was_touch` is `pub(crate)` (window.rs:3010). Derive the same modality without patching GPUI: GPUI sets it from the last `PlatformInput` (window.rs:5220-5222). If that proves impossible, report why. (3) At the default ring (2 px width and 1 px gap, so 3 px) nothing moves. Native evidence: the controller adds the native profile to any app Rust change that can render (scripts/agent_loop/rust_surface.py), so this task needs a native attestation whatever it declares. The change is meant to be pixel-neutral at the installed ring, so the evidence is a same-session compare that finds the four sites identical, not a design pass over new pixels. #99's zero-ring tests proved the same for Tags and Reflog. Touch cannot be exercised natively on this host; the view test covers it. Depends on `segments-unselected-like-history` for scheduling only.",
+      "depends_on": [
+        "segments-unselected-like-history"
+      ],
+      "scope": [
+        "crates/app/src/appearance.rs",
+        "crates/app/src/repository_tabs.rs",
+        "crates/app/src/settings.rs",
+        "crates/app/src/settings/**",
+        "crates/app/src/tags.rs",
+        "crates/app/src/reflog.rs",
+        "crates/app/src/theme_editor.rs",
+        "crates/app/src/theme_editor/**",
+        "docs/validation.md",
+        "docs/evidence/**"
+      ],
+      "acceptance": [
+        {
+          "id": "helper",
+          "description": "One appearance.rs helper returns the installed ring's gap plus width. repository_tabs.rs, tags.rs, reflog.rs and settings.rs use it and no longer compute the room themselves, and `ROW_RING_ROOM` is gone. A view test installs a ring of another size, as tags.rs:640 does, and asserts two things: each of the four clips keeps exactly that room, and the Your themes list's room agrees with the page reveal and `rows_off_boundary`. It fails on origin/main and passes after the change."
+        },
+        {
+          "id": "touch",
+          "description": "A GPUI view test hovers a Your themes row with the mouse and then sends a touch event over it. It asserts that after the touch the fill layer paints the row's resting fill (or the import highlight's resting fill), as GPUI's own hover styles do, and that the next mouse move brings the hover fill back. It fails on origin/main and passes after the change."
+        },
+        {
+          "id": "no-shift",
+          "description": "At the default ring the change is pixel-neutral. The existing ring-room tests pass unchanged, among them `tags::tests::tag_browser_keeps_room_for_every_focus_ring`, `reflog::tests::reflog_browser_keeps_room_for_every_focus_ring`, theme_editor.rs `strips_cover_the_ring_room_while_the_rows_stand_off_a_boundary` and the tab strip's ring tests. Native frames on Linux X11 at scale factor 1, base (origin/main when the task starts) and candidate launched in the same session (`scripts/native_qa/qa.py`, each binary in its own CARGO_TARGET_DIR and checked with `qa.py identity`), input through Mutter RemoteDesktop with verified X focus on this GNOME host (never XTest where XWayland runs with `-enable-ei-portal`). In Midnight, the frames of a focused repository tab, a focused Your themes row action above the import highlight and one flush against the status bar, a focused Tags row and a focused Reflog entry are identical under `qa.py compare --mask status-timing`. Any difference escalates to the full tier with a design review. A new dated docs/validation.md entry records the builds, fixture and compares, and states that touch was not exercised natively. Any committed frame is privacy-scanned."
+        },
+        {
+          "id": "gates",
+          "description": "`python3 scripts/gate.py fast` passes, and `cargo test --locked -p gitturtle` and `cargo clippy --locked --workspace --all-targets -- -D warnings` pass."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(appearance): share one ring room helper that follows the ring"
+    },
+    {
+      "id": "ring-clipping-lists",
+      "title": "Keep focused rows' rings whole in the branch chooser, worktree manager and Push to… list",
+      "description": "Owner request of 2026-09-30, from docs/validation.md \"September 29 whole focus ring in Tags and Reflog\". DESIGN.md:27 names these as containers that still clip the ring's 3 px footprint. Queued in docs/development/queue-2026-09-30.json, a self-contained queue with no dependency into tasks.json. A scrolling container masks its children to its own bounds on both axes (gpui-pre 0.3.4 `Style::overflow_mask`), and a kit dialog clips its body, so a focused full-width row loses its sides and its top or bottom edge. The three sites: the branch chooser's list (crates/app/src/branch_actions.rs:1007, `branch-chooser-list`, `overflow_y_scroll()…gap_1()`, rows `Button::new((\"branch-choice\", index)).ghost().w_full()` at 1011, in the column at 1004); the worktree manager, where the scrolling `worktree-manager-content` (worktrees.rs:515) holds Manage, Create worktree… and Refresh at its edge and the `managed-worktree-list` (:524, rows at :526); and the tag inspector's Push to… list (tags.rs:161, `tag-remote-list`, buttons at :163). Apply #99's pattern from tags.rs and reflog.rs. Keep the installed ring's gap plus width as room inside each clip, through the helper from `ring-room-helper`, and give it back through margins, or a dialog's gap above its footer where the clip borders one, so nothing moves unfocused. Update DESIGN.md:27. Scrolling a focused row into view stays out of scope. Depends on `ring-room-helper` for that helper.",
+      "depends_on": [
+        "ring-room-helper"
+      ],
+      "scope": [
+        "crates/app/src/branch_actions.rs",
+        "crates/app/src/branch_actions/**",
+        "crates/app/src/worktrees.rs",
+        "crates/app/src/tags.rs",
+        "DESIGN.md",
+        "docs/validation.md",
+        "docs/evidence/**"
+      ],
+      "acceptance": [
+        {
+          "id": "footprint",
+          "description": "A GPUI view test lays out three views: the branch chooser with enough branches to scroll, the worktree manager with several worktrees, and the tag inspector with at least two remotes. It asserts that each list's first and last row, and the worktree manager's Manage, Create worktree… and Refresh, each grown by the installed ring's gap plus width, lie inside every ancestor content mask. With a zero-width ring, every painted rectangle and named element stays where it was. It fails on origin/main and passes after the change."
+        },
+        {
+          "id": "native",
+          "description": "Native frames on Linux X11 at scale factor 1, base (origin/main when the task starts) and candidate launched in the same session (`scripts/native_qa/qa.py`, each binary in its own CARGO_TARGET_DIR and checked with `qa.py identity`), input through Mutter RemoteDesktop with verified X focus on this GNOME host (never XTest where XWayland runs with `-enable-ei-portal`). The fixtures are disposable, with local bare remotes and no network. The frames show a focused first and last branch-chooser row, a focused worktree row and Manage, and a focused Push to… button, in a dark and a light palette. Masked `qa.py compare` of each unfocused container against the base shows no difference apart from timing digits and any inset the design review accepts. A new dated docs/validation.md entry counts ring pixels on all four sides of each focused control: each side is present, with its strongest ring pixel at least 3:1 against the same pixel unfocused. Frames are privacy-scanned and design-reviewed."
+        },
+        {
+          "id": "design",
+          "description": "DESIGN.md:27 lists these containers among those that keep the ring's room and no longer names them as still open."
+        },
+        {
+          "id": "gates",
+          "description": "`python3 scripts/gate.py fast` passes, and `cargo test --locked -p gitturtle` and `cargo clippy --locked --workspace --all-targets -- -D warnings` pass."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(focus): keep rings whole in chooser, worktree and push lists"
+    },
+    {
+      "id": "gpui-base-sibling-focus-traps",
+      "title": "Let Tab leave a focused kit Checkbox, Switch, Radio, Toggle, Link or ColorPicker that turns disabled",
+      "description": "Owner request of 2026-09-30, from docs/validation.md \"September 30 Tab leaves a focused Button that turns disabled\" (Still open). For focus the owner asked for what is absolutely necessary. Queued in docs/development/queue-2026-09-30.json, a self-contained queue with no dependency into tasks.json. gpui-base tracks these controls' focus handles only while enabled: `.when(!disabled, |this| this.track_focus(…))` at vendor/gpui-base/src/checkbox.rs:380, switch.rs:362, radio.rs:219, toggle.rs:188, link.rs:178 and color_picker.rs:760 (the swatch). #102 fixed the same trap for Buttons. Once a focused control leaves the rendered frame, GPUI dispatches keys from the root node, above the kit `Root` context that binds Tab and Shift+Tab (vendor/gpui-component/src/root.rs:24-25), so Tab does nothing until a pointer click. #102's disabled-focus patch (vendor/gpui-component/GITTURTLE-PATCH.md ~109, `src/button/button.rs`) keeps a focused disabled Button's handle in the frame as a target that is not a tab stop. The app's `gpui_kit::component` Checkbox and Switch wrap gpui-base's (vendor/gpui-component/src/checkbox.rs ~245 passes `track_focus` into the base element). App sites that disable one while it can hold focus: Settings' Follow system Switch while the Omarchy card is selected (crates/app/src/settings.rs:2078, `.disabled(desktop_theme)` at :2080, which persists); the diff view's partial-line Checkbox while a stage runs (diff_view.rs:489, :492); the ignore dialog's Checkbox while its plan is prepared (ignore.rs:153); and the profile editor's signing Checkbox while it saves (profiles.rs:563). The Subject column's Checkbox (settings.rs:1051) is always disabled. Apply #102's rule to all six controls in the owner that drops the handle: gpui-base, or gpui-component's wrappers where that is the right site, as it was for #102. Enabled controls and unfocused disabled ones stay as they are, and Tab never lands on a disabled control. Depends on `ring-clipping-lists` for scheduling only; it sits late in the chain because a vendor patch is the likeliest to need a second attempt.",
+      "depends_on": [
+        "ring-clipping-lists"
+      ],
+      "scope": [
+        "vendor/gpui-base/src/**",
+        "vendor/gpui-base/GITTURTLE-PATCH.md",
+        "vendor/gpui-component/src/**",
+        "vendor/gpui-component/GITTURTLE-PATCH.md",
+        "crates/app/src/**",
+        "docs/validation.md",
+        "docs/evidence/**"
+      ],
+      "acceptance": [
+        {
+          "id": "view-test",
+          "description": "A GPUI view test focuses Settings' Follow system Switch, selects the Omarchy theme as a click on its seeded card does without moving keyboard focus (the existing Omarchy tests show the seeding), and sends real `tab` and `shift-tab` keystrokes. It follows `workspace::targets_focus_tests::tab_and_shift_tab_leave_a_focused_switch_that_turns_disabled` (workspace.rs:1703) and asserts that each key moves focus to a neighbouring tab stop. A second test does the same for one Checkbox site (diff, ignore or profile). Both fail on origin/main and pass after the change."
+        },
+        {
+          "id": "reach",
+          "description": "A test renders a bare kit Radio, Toggle, Link and ColorPicker swatch. It focuses each, disables it, and asserts that Tab and Shift+Tab leave it, and that Tab skips each while it is disabled and unfocused. It fails on origin/main for each control whose guard changes and passes after the change."
+        },
+        {
+          "id": "patch-note",
+          "description": "vendor/gpui-base/GITTURTLE-PATCH.md records the change, as does vendor/gpui-component/GITTURTLE-PATCH.md if a wrapper changes. The record names the modified files, the app paths above as consumers, the relation to the Button disabled-focus patch and the removal condition, and keeps runtime and test-only changes apart (vendor/AGENTS.md)."
+        },
+        {
+          "id": "native",
+          "description": "A native keyboard run on Linux X11 at scale factor 1, with input through Mutter RemoteDesktop and verified X focus on this GNOME host (never XTest), base and candidate in the same session and `qa.py identity` on both. On the base it reproduces the trap at Settings' Follow system Switch with the Omarchy card selected, using an Omarchy theme seeded in the launch's HOME or, if detection does not allow that, the Omarchy host. On the candidate it shows Tab and Shift+Tab leaving the Switch. A new dated docs/validation.md entry records the focus order and AT-SPI's focused node. Any committed frame is privacy-scanned."
+        },
+        {
+          "id": "gates",
+          "description": "`python3 scripts/gate.py fast` passes, and `cargo test --locked --workspace` and `cargo clippy --locked --workspace --all-targets -- -D warnings` pass."
+        }
+      ],
+      "profiles": [
+        "vendor",
+        "rust",
+        "native"
+      ],
+      "commit": "fix(focus): let tab leave focused kit controls that turn disabled"
+    }
+  ]
+}
