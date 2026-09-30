@@ -117,8 +117,10 @@ NEXTEST_STATUS = re.compile(r"^\s*([A-Z][A-Z0-9 /]*?)\s+\[\s*[0-9.]+s\]\s+(?:\(\
 NEXTEST_BLOCK = re.compile(r"^(?:--- (?:STDOUT|STDERR):|\s*(?:stdout|stderr) ─)")
 NEXTEST_RULE = re.compile(r"^\s*(?:-{6,}|─{6,})\s*$")
 CARGO_TEST_FAILED = re.compile(r"^test (\S+) \.\.\. FAILED$")
-REMOVED_TEST = re.compile(r"^-\s*#\[(?:test\b|gpui::test\b|tokio::test\b)")
-GPUI_TEST_FN = re.compile(r"#\[gpui::test[^\]]*\]\s*(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)")
+REMOVED_TEST = re.compile(r"^-\s*#\[(?:test\b|gpui::test\b|gpui_kit::test\b|tokio::test\b)")
+# `gpui_kit::test` is GPUI's own attribute re-exported by the toolkit, so it
+# honours the same ITERATIONS rerun.
+GPUI_TEST_FN = re.compile(r"#\[(?:gpui|gpui_kit)::test[^\]]*\]\s*(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)")
 
 
 class GateUsage(Exception):

@@ -73,9 +73,11 @@ class ScopeTests(unittest.TestCase):
             (src / "views.rs").write_text(
                 "#[gpui::test]\nfn first(cx: &mut TestAppContext) {}\n"
                 "#[gpui::test(iterations = 3)]\nasync fn second(cx: &mut TestAppContext) {}\n"
+                "#[gpui_kit::test]\nasync fn third(cx: &mut gpui_kit::TestAppContext) {}\n"
                 "#[test]\nfn plain() {}\n"
+                "#[other_kit::test]\nfn foreign() {}\n"
             )
-            self.assertEqual(gate.gpui_test_names(root, ("crates/app/src/views.rs", "missing.rs")), ["first", "second"])
+            self.assertEqual(gate.gpui_test_names(root, ("crates/app/src/views.rs", "missing.rs")), ["first", "second", "third"])
 
 
 class FilterTests(unittest.TestCase):
@@ -534,12 +536,12 @@ class ReportTests(unittest.TestCase):
             subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
             subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=root, check=True)
             subprocess.run(["git", "config", "user.name", "t"], cwd=root, check=True)
-            (root / "lib.rs").write_text("#[test]\nfn a() {}\n#[gpui::test]\nfn b() {}\n#[tokio::test]\nasync fn c() {}\n")
+            (root / "lib.rs").write_text("#[test]\nfn a() {}\n#[gpui::test]\nfn b() {}\n#[tokio::test]\nasync fn c() {}\n#[gpui_kit::test]\nfn d() {}\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True)
             subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=root, check=True)
             base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
-            (root / "lib.rs").write_text("fn a() {}\n#[gpui::test]\nfn b() {}\n")
-            self.assertEqual(gate.removed_tests(root, base), 2)
+            (root / "lib.rs").write_text("fn a() {}\n#[gpui::test]\nfn b() {}\nfn d() {}\n")
+            self.assertEqual(gate.removed_tests(root, base), 3)
             self.assertEqual(gate.removed_tests(root, None), 0)
 
 
