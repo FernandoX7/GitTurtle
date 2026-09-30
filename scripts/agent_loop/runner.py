@@ -17,7 +17,7 @@ import sys
 import time
 import uuid
 
-from .claude import Claude, UsageLimited, snapshot_files as claude_snapshot_files
+from .claude import CLAUDE_EFFORTS, Claude, UsageLimited, snapshot_files as claude_snapshot_files
 from .codex import Codex, validate_review
 from .git import changed_paths, clean, clone, commit, committed_paths, git, head, identity, source_root, untracked_paths, within, write_limits
 from .process import EnvironmentBlocked, LoopError, MalformedResponse, atomic_json, digest, read_json, run_process, reconcile_processes
@@ -35,7 +35,10 @@ MIRRORS = (".codex", ".agents/skills")
 EVIDENCE_KINDS = {"native", "performance", "package", "vendor"}
 EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
 TOOLS = ("codex", "claude")
-CLAUDE_OPTIONS = ("retry_effort", "hard_model", "light_model", "max_turns", "review_max_turns", "sandbox")
+CLAUDE_OPTIONS = (
+    "retry_effort", "hard_model", "light_model", "hard_effort", "light_effort", "review_effort",
+    "max_turns", "review_max_turns", "sandbox",
+)
 
 
 def now() -> str:
@@ -152,7 +155,10 @@ def make_adapter(controller: Path, settings: dict):
         return Claude(
             controller, settings["model"], settings["effort"],
             retry_effort=settings.get("retry_effort"), hard_model=settings.get("hard_model", "fable"),
-            light_model=settings.get("light_model", "sonnet"), max_turns=settings.get("max_turns") or 200,
+            light_model=settings.get("light_model", "sonnet"),
+            # A run saved before these options kept the hard step and reviews at the base effort.
+            hard_effort=settings.get("hard_effort", settings["effort"]), light_effort=settings.get("light_effort", "medium"),
+            review_effort=settings.get("review_effort"), max_turns=settings.get("max_turns") or 200,
             review_max_turns=settings.get("review_max_turns") or 120, sandbox=settings.get("sandbox") or "auto",
             settings_sha256=settings.get("claude_settings_sha256"),
         )
@@ -712,6 +718,10 @@ def create_run(repo: Path, spec_path: Path, controller: Path, options: dict) -> 
     tool = options.get("tool") or "codex"
     if tool not in TOOLS:
         raise LoopError(f"unknown session tool {tool!r}")
+    if tool == "claude":
+        # Record the base selection a step defaults to, so the saved run names every session's model and effort.
+        defaults = {"hard_model": options["model"], "light_model": options["model"], "review_effort": options["effort"]}
+        options = options | {key: value for key, value in defaults.items() if key in options and options[key] is None}
     adapter = make_adapter(controller, options | {"tool": tool})
     adapter.preflight()
     state_parent = root / ".local" / "agent-loop"
@@ -815,9 +825,12 @@ def main(argv=None) -> int:
             command.add_argument("--max-output-tokens", type=positive)
             command.add_argument("--tool", choices=TOOLS, default="codex", help="session CLI: codex (default) or claude")
             claude = command.add_argument_group("claude", "options used only with --tool claude")
-            claude.add_argument("--retry-effort", choices=EFFORTS[:5], help="effort for attempt 2 (default: one step above --effort)")
-            claude.add_argument("--hard-model", default="fable", help="model for attempt 3 onward via the implementer-hard agent; none disables")
-            claude.add_argument("--light-model", default="sonnet", help="model for docs/tooling-only tasks on attempt 1; none disables")
+            claude.add_argument("--retry-effort", choices=CLAUDE_EFFORTS, help="effort for attempt 2 (default: one step above --effort)")
+            claude.add_argument("--hard-model", help="model for attempt 3 onward via the implementer-hard agent (default: --model); none disables")
+            claude.add_argument("--hard-effort", choices=CLAUDE_EFFORTS, default="max", help="effort for attempt 3 onward (default: max)")
+            claude.add_argument("--light-model", help="model for docs/tooling-only tasks on attempt 1 (default: --model); none disables")
+            claude.add_argument("--light-effort", choices=CLAUDE_EFFORTS, default="medium", help="effort for docs/tooling-only tasks on attempt 1 (default: medium)")
+            claude.add_argument("--review-effort", choices=CLAUDE_EFFORTS, help="effort for verifier and security-review sessions (default: --effort)")
             claude.add_argument("--max-turns", type=positive, default=200, help="turn cap per implementer session")
             claude.add_argument("--review-max-turns", type=positive, default=120, help="turn cap per review session")
             claude.add_argument("--sandbox", choices=("auto", "on", "off"), default="auto", help="Bash sandbox for implementer sessions")

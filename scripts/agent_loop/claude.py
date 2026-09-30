@@ -125,13 +125,15 @@ class Claude:
 
     def __init__(
         self, controller: Path, model: str, effort: str, *, retry_effort: str | None = None,
-        hard_model: str | None = "fable", light_model: str | None = "sonnet", max_turns: int = 200,
+        hard_model: str | None = None, light_model: str | None = None, hard_effort: str = "max",
+        light_effort: str = "medium", review_effort: str | None = None, max_turns: int = 200,
         review_max_turns: int = 120, sandbox: str = "auto", settings_sha256: str | None = None,
     ):
         if effort not in CLAUDE_EFFORTS:
             raise LoopError(f"Claude Code effort must be one of {', '.join(CLAUDE_EFFORTS)}")
-        if retry_effort is not None and retry_effort not in CLAUDE_EFFORTS:
-            raise LoopError(f"retry effort must be one of {', '.join(CLAUDE_EFFORTS)}")
+        for name, value in (("retry", retry_effort), ("hard", hard_effort), ("light", light_effort), ("review", review_effort)):
+            if value is not None and value not in CLAUDE_EFFORTS:
+                raise LoopError(f"{name} effort must be one of {', '.join(CLAUDE_EFFORTS)}")
         if sandbox not in {"auto", "on", "off"}:
             raise LoopError("sandbox must be auto, on or off")
         if not model or not isinstance(model, str):
@@ -140,8 +142,12 @@ class Claude:
         self.model = model
         self.effort = effort
         self.retry_effort = retry_effort or effort_above(effort)
-        self.hard_model = None if hard_model in (None, "", "none") else hard_model
-        self.light_model = None if light_model in (None, "", "none") else light_model
+        # One model serves every step unless another is named; `none` disables a step.
+        self.hard_model = None if hard_model in ("", "none") else hard_model or model
+        self.light_model = None if light_model in ("", "none") else light_model or model
+        self.hard_effort = hard_effort
+        self.light_effort = light_effort
+        self.review_effort = review_effort or effort
         self.max_turns = max_turns
         self.review_max_turns = review_max_turns
         self.sandbox = sandbox
@@ -231,23 +237,27 @@ class Claude:
     def configure_attempt(self, task: Task, attempt: int) -> dict:
         """Choose agent, model and effort for one implementation attempt.
 
-        Attempt 1 uses the operator's selection (or the light model for tasks that
+        Attempt 1 uses the operator's selection (or the light step for tasks that
         declare only docs/tooling profiles), attempt 2 raises effort on the same
-        model, and attempt 3 onward hands the task to the hard model's agent.
+        model, and attempt 3 onward hands the task to the hard step's agent.
         The task schema has no hardness field, so routing is by attempt only.
+        The returned record also names the selection the attempt's reviews use.
         """
         light = self.light_model is not None and set(task.profiles) <= LIGHT_PROFILES
         if attempt >= 3 and self.hard_model:
-            selection = {"agent": "implementer-hard", "model": self.hard_model, "effort": self.effort}
+            selection = {"agent": "implementer-hard", "model": self.hard_model, "effort": self.hard_effort}
         elif attempt == 1 and light:
-            selection = {"agent": "implementer", "model": self.light_model, "effort": "medium"}
+            selection = {"agent": "implementer", "model": self.light_model, "effort": self.light_effort}
         elif attempt == 1 or (attempt == 2 and light):
             selection = {"agent": "implementer", "model": self.model, "effort": self.effort}
         else:
             selection = {"agent": "implementer", "model": self.model, "effort": self.retry_effort}
         selection["max_turns"] = self.max_turns
         self.selection = selection
-        return dict(selection)
+        return dict(selection, review=self.review_selection())
+
+    def review_selection(self) -> dict:
+        return {"model": self.model, "effort": self.review_effort, "max_turns": self.review_max_turns}
 
     # -- sessions ------------------------------------------------------------
 
@@ -266,7 +276,7 @@ class Claude:
         if role == "implementer":
             selection = self.selection or {"agent": "implementer", "model": self.model, "effort": self.effort, "max_turns": self.max_turns}
         else:
-            selection = {"agent": role, "model": self.model, "effort": self.effort, "max_turns": self.review_max_turns}
+            selection = {"agent": role, **self.review_selection()}
         self.selection = None
         agent = selection["agent"]
         pinned = self.controller / ".claude" / "agents" / f"{agent}.md"
