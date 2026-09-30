@@ -723,8 +723,11 @@ impl ProjectHub {
                                 )
                                 .selected(self.mode == mode)
                                 .disabled(self.unavailable())
+                                .debug_selector(move || format!("project-mode-{label}"))
+                                // Tint the fill, as the shared helper does: an
+                                // opacity would fade the focus ring with it.
                                 .when(self.mode == mode && !self.unavailable(), |button| {
-                                    button.hover(|style| style.opacity(0.9))
+                                    button.hover(crate::appearance::control_selected_hover)
                                 })
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.change_mode(mode, window, cx)
@@ -1874,6 +1877,46 @@ mod tests {
             recent,
             vec![PathBuf::from("/tmp/b"), PathBuf::from("/tmp/a")]
         );
+    }
+
+    /// The selected mode hovers as the shared helper's selected button does:
+    /// its fill tints to the palette's `selected_hover` and the whole Button,
+    /// focus ring included, keeps full opacity, in a dark and a light palette.
+    #[gpui::test]
+    fn a_hovered_selected_mode_keeps_its_focus_ring(cx: &mut TestAppContext) {
+        use crate::appearance::{ThemeChoice, assert_selected_hover};
+        fn draw(cx: &mut VisualTestContext) {
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            cx.run_until_parked();
+        }
+        cx.update(gpui_kit::init);
+        let (hub, cx) = cx.add_window_view(|window, cx| {
+            ProjectHub::new(vec![], HashMap::new(), "main".into(), window, cx)
+        });
+        for choice in [ThemeChoice::Midnight, ThemeChoice::KanagawaLotus] {
+            cx.update(|window, cx| choice.apply(Some(window), cx));
+            draw(cx);
+            let open = cx
+                .debug_bounds("project-mode-Open")
+                .expect("rendered Open mode");
+            let name = format!("{choice:?} Open mode");
+            cx.simulate_mouse_move(open.center(), None, Modifiers::default());
+            draw(cx);
+            assert_selected_hover(cx, &name, open, false);
+            // The mode list is no tab stop itself; the next one is its first mode.
+            cx.update(|window, cx| {
+                window.focus(&hub.read(cx).action_tabs_focus.clone(), cx);
+                window.focus_next(cx);
+            });
+            draw(cx);
+            assert_selected_hover(cx, &name, open, true);
+            cx.update(|window, cx| window.blur(cx));
+            cx.simulate_mouse_move(point(px(0.), px(0.)), None, Modifiers::default());
+            draw(cx);
+        }
     }
 
     #[cfg(unix)]

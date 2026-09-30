@@ -249,6 +249,80 @@ pub fn control_selected_hover(style: StyleRefinement) -> StyleRefinement {
     }
 }
 
+/// What the last frame painted for the Button at `element`, for tests: the
+/// visible fills on its bounds and the colors of the focus rings drawn around
+/// it, at the footprint of the applied `Theme::button_focus_ring`. GPUI paints
+/// a border-only quad once per side, so each ring color counts once.
+#[cfg(test)]
+pub(crate) fn painted_button(
+    cx: &mut gpui_kit::VisualTestContext,
+    element: gpui_kit::Bounds<Pixels>,
+) -> (Vec<gpui_kit::Background>, Vec<gpui_kit::Hsla>) {
+    use gpui_kit::{Bounds, ScaledPixels, point};
+    cx.update(|window, cx| {
+        let scale = window.scale_factor();
+        let device = px(1. / scale);
+        let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+        let near = |drawn: Bounds<Pixels>, expected: Bounds<Pixels>| {
+            [
+                (drawn.left(), expected.left()),
+                (drawn.top(), expected.top()),
+                (drawn.right(), expected.right()),
+                (drawn.bottom(), expected.bottom()),
+            ]
+            .into_iter()
+            .all(|(edge, expected)| (edge - expected).abs() <= device)
+        };
+        let setting = Theme::global(cx).button_focus_ring;
+        let footprint = element.dilate(setting.gap + setting.width);
+        let (mut fills, mut rings) = (Vec::new(), Vec::new());
+        for quad in window.painted_quads() {
+            let bounds = quad.bounds;
+            let drawn = Bounds::from_corners(
+                point(logical(bounds.left()), logical(bounds.top())),
+                point(logical(bounds.right()), logical(bounds.bottom())),
+            );
+            let widths = quad.border_widths;
+            let bordered = [widths.top, widths.right, widths.bottom, widths.left]
+                .into_iter()
+                .any(|width| width.as_f32() > 0.);
+            if near(drawn, element) && !quad.background.is_transparent() {
+                fills.push(quad.background);
+            } else if bordered && near(drawn, footprint) && !rings.contains(&quad.border_color) {
+                rings.push(quad.border_color);
+            }
+        }
+        (fills, rings)
+    })
+}
+
+/// For tests of a selected Button that hovers with [`control_selected_hover`]:
+/// asserts that the last frame, with the pointer over `element`, filled its
+/// bounds with nothing but that hover's `selected_hover` of the applied
+/// palette, and drew a focus ring around it in full `ring` exactly when
+/// `focused`. A hover that fades the whole Button fails both, since the fade
+/// reaches its fill and its ring alike.
+#[cfg(test)]
+pub(crate) fn assert_selected_hover(
+    cx: &mut gpui_kit::VisualTestContext,
+    name: &str,
+    element: gpui_kit::Bounds<Pixels>,
+    focused: bool,
+) {
+    let expected = control_selected_hover(StyleRefinement::default())
+        .background
+        .and_then(|fill| fill.color())
+        .expect("a palette is applied");
+    let ring = cx.update(|_, cx| Theme::global(cx).ring);
+    let (fills, rings) = painted_button(cx, element);
+    assert_eq!(fills, [expected], "{name} hovered paints {fills:?}");
+    if focused {
+        assert_eq!(rings, [ring], "{name} focused and hovered draws {rings:?}");
+    } else {
+        assert!(rings.is_empty(), "{name} unfocused draws {rings:?}");
+    }
+}
+
 /// The shared compact button's variant: the applied palette's control fills,
 /// or the kit's ghost before any palette is applied. A selected button keeps
 /// the kit's secondary, which paints `selected` with `text`, unless the palette

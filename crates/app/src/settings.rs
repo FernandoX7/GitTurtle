@@ -1982,8 +1982,11 @@ impl GitTurtle {
                                         .label(density.label())
                                         .selected(self.settings.density == density)
                                         .toggled(self.settings.density == density)
+                                        .debug_selector(move || format!("settings-density-{index}"))
+                                        // Tint the fill, as the shared helper does: an
+                                        // opacity would fade the focus ring with it.
                                         .when(self.settings.density == density, |button| {
-                                            button.hover(|style| style.opacity(0.9))
+                                            button.hover(appearance::control_selected_hover)
                                         })
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             if this.settings.density != density {
@@ -4291,7 +4294,7 @@ mod picker_tests {
     use core::prelude::v1::test;
     use std::{cell::RefCell, rc::Rc};
 
-    fn open_app(cx: &mut TestAppContext) -> (Entity<GitTurtle>, &mut VisualTestContext) {
+    pub(super) fn open_app(cx: &mut TestAppContext) -> (Entity<GitTurtle>, &mut VisualTestContext) {
         // GitTurtle::new starts a real preferences worker; saves reply from it.
         cx.executor().allow_parking();
         cx.update(|cx| {
@@ -4329,7 +4332,7 @@ mod picker_tests {
         (app, cx)
     }
 
-    fn settle(cx: &mut VisualTestContext) {
+    pub(super) fn settle(cx: &mut VisualTestContext) {
         for _ in 0..2 {
             cx.update(|window, cx| window.draw(cx).clear(cx));
             cx.run_until_parked();
@@ -5206,6 +5209,63 @@ mod picker_tests {
                 assert_eq!(editor.preview(), None, "{selector}");
                 assert!(!editor.transfer_pending(), "{selector}");
             });
+        }
+    }
+}
+
+/// Settings' own segmented controls as a real window draws them.
+#[cfg(test)]
+mod segment_tests {
+    use super::picker_tests::{open_app, settle};
+    use super::*;
+    use core::prelude::v1::test;
+
+    /// The selected density hovers as the shared helper's selected button
+    /// does: its fill tints to the palette's `selected_hover` and the whole
+    /// Button, focus ring included, keeps full opacity, in a dark and a light
+    /// palette.
+    #[gpui::test]
+    fn a_hovered_selected_density_keeps_its_focus_ring(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        let selected = cx.read(|cx| app.read(cx).settings.density);
+        let index = Density::ALL.iter().position(|density| *density == selected);
+        let selector: &'static str = format!("settings-density-{}", index.unwrap()).leak();
+        let mut focus: Option<FocusHandle> = None;
+        for choice in [ThemeChoice::Midnight, ThemeChoice::KanagawaLotus] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.follow_system = false;
+                    app.settings.theme = ThemeSelection::BuiltIn(choice);
+                    app.apply_appearance(window, cx);
+                })
+            });
+            settle(cx);
+            let segment = shown(cx, selector).expect("the selected density is drawn");
+            let name = format!("{choice:?} {} density", selected.label());
+            cx.simulate_mouse_move(segment.center(), None, Modifiers::default());
+            settle(cx);
+            appearance::assert_selected_hover(cx, &name, segment, false);
+            if let Some(handle) = &focus {
+                cx.update(|window, cx| window.focus(handle, cx));
+                settle(cx);
+            } else {
+                // Tab from the Your themes card passes the text size controls
+                // before it reaches the density segments.
+                let card = cx.read(|cx| app.read(cx).theme_editor.card_focus(cx));
+                cx.update(|window, cx| window.focus(&card, cx));
+                for _ in 0..24 {
+                    cx.update(|window, cx| window.focus_next(cx));
+                    settle(cx);
+                    if !appearance::painted_button(cx, segment).1.is_empty() {
+                        break;
+                    }
+                }
+                focus = cx.update(|window, cx| window.focused(cx));
+            }
+            appearance::assert_selected_hover(cx, &name, segment, true);
+            cx.update(|window, cx| window.blur(cx));
+            cx.simulate_mouse_move(point(px(0.), px(0.)), None, Modifiers::default());
+            settle(cx);
         }
     }
 }
