@@ -54,13 +54,10 @@ pub(super) fn rescale_list_scroll(scroll: &UniformListScrollHandle, ratio: f32) 
 
 /// Whether the Your themes rows stand off a row boundary in the frame being
 /// drawn, so that a row partly scrolled out of the viewport crosses the focus
-/// ring's room at one end of it. The list applies a pending `scroll_to_item`
-/// in its prepaint, after this render, so the answer is taken from where the
-/// list will stand and not from where it stood: `reveal_focused_row`'s
-/// Nearest scroll leaves the offset alone while the row is whole in the
-/// viewport and otherwise lands the row's top or bottom on the viewport's, a
-/// row boundary, as the list itself resolves it. Within half a device pixel
-/// of a boundary counts as on it, since no painted edge moves.
+/// ring's room at one end of it. The answer is taken from where the list will
+/// stand ([`planned_rows_top`]), which the page reveal of a focused row reads
+/// too (`reveal_in_page`). Within half a device pixel of a boundary counts as
+/// on it, since no painted edge moves.
 fn rows_off_boundary(
     scroll: &UniformListScrollHandle,
     row: Pixels,
@@ -68,6 +65,24 @@ fn rows_off_boundary(
     rows: usize,
     window: &Window,
 ) -> bool {
+    let top = planned_rows_top(scroll, row, viewport, rows);
+    let row = f32::from(row);
+    let phase = f32::from(top).rem_euclid(row);
+    phase.min(row - phase) > 0.5 / window.scale_factor()
+}
+
+/// How far the Your themes list will be scrolled in the frame being drawn.
+/// The list applies a pending `scroll_to_item` in its prepaint, after this
+/// render, so the answer is where the list will stand and not where it stood:
+/// `reveal_focused_row`'s Nearest scroll leaves the offset alone while the row
+/// is whole in the viewport and otherwise lands the row's top or bottom on the
+/// viewport's, a row boundary, as the list itself resolves it.
+fn planned_rows_top(
+    scroll: &UniformListScrollHandle,
+    row: Pixels,
+    viewport: Pixels,
+    rows: usize,
+) -> Pixels {
     use gpui::ScrollStrategy::{Bottom, Center, Nearest, Top};
     let state = scroll.0.borrow();
     let mut top = -state.base_handle.offset().y;
@@ -92,9 +107,45 @@ fn rows_off_boundary(
             top = target.max(Pixels::ZERO).min(reach);
         }
     }
-    let row = f32::from(row);
-    let phase = f32::from(top).rem_euclid(row);
-    phase.min(row - phase) > 0.5 / window.scale_factor()
+    top
+}
+
+/// Scroll the Settings page the least that brings the span from window y
+/// `top` to `bottom`, measured at the page's current offset, inside the
+/// page's viewport, as the Your themes list's own Nearest reveal does inside
+/// the list: nothing while it fits, else its top onto the viewport's top or
+/// its bottom onto the viewport's bottom, the top when it is taller than the
+/// viewport. The viewport is the page's from the last frame it was
+/// prepainted in, which a focus change does not move; GPUI clamps the offset
+/// to the page's reach.
+fn reveal_in_page(page: &ScrollHandle, top: Pixels, bottom: Pixels) {
+    let viewport = page.bounds();
+    if viewport.size.height <= Pixels::ZERO {
+        return;
+    }
+    let delta = if top < viewport.top() || bottom - top > viewport.size.height {
+        viewport.top() - top
+    } else if bottom > viewport.bottom() {
+        viewport.bottom() - bottom
+    } else {
+        return;
+    };
+    let offset = page.offset();
+    page.set_offset(point(offset.x, offset.y + delta));
+}
+
+/// The Your themes rows' corner radius.
+const ROW_RADIUS: Pixels = px(6.);
+
+/// Where a Your themes row is drawn in the frame being prepainted, for the
+/// fill the list paints beneath the rows: the row's bounds, its content mask,
+/// a hitbox of the row's own bounds, which is hovered exactly when the row
+/// is, and whether the row is the just-imported one.
+struct RowFill {
+    bounds: Bounds<Pixels>,
+    mask: ContentMask<Pixels>,
+    hitbox: Hitbox,
+    imported: bool,
 }
 
 /// Baselines distinguish a saved value moving externally from an unfinished edit.
@@ -291,6 +342,7 @@ impl GitTurtle {
     pub(super) fn show_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.page != AppPage::Settings {
             self.page_origin = self.page;
+            self.theme_editor.settings_entered();
         }
         self.capture_page_return_focus(window, cx);
         self.cancel_branch_action();
@@ -1558,22 +1610,43 @@ impl GitTurtle {
                     .focus_scrolled_out(&self.custom_themes, focused, window, cx)
             })
             .map(|(_, handle)| handle.clone());
-        self.theme_editor.reveal_focused_row(focused);
+        let revealed = self.theme_editor.reveal_focused_row(focused);
         let scroll = self.theme_editor.rows_scroll().clone();
+        let row_height = appearance::ui_size(30.);
+        let viewport = appearance::ui_size(30. * VISIBLE_ROWS as f32);
+        // The Settings page scrolls too, and its viewport clips the ring of a
+        // row the list has revealed as surely as the list would: the row
+        // holding focus is revealed in the page as well, once per focus
+        // change as in the list, with the installed ring's footprint of room
+        // above and below it. It is placed where the list will stand once
+        // its own reveal lands (`planned_rows_top`, as `rows_off_boundary`
+        // judges the strips), from where the page last laid the rows out.
+        if let Some(row) = revealed
+            && let Some(anchor) = self.theme_editor.rows_anchor().get()
+        {
+            let page = self.theme_editor.page_scroll();
+            let top = anchor + page.offset().y + row_height * row as f32
+                - planned_rows_top(&scroll, row_height, viewport, rows);
+            let ring = gpui_kit::component::Theme::global(cx).button_focus_ring;
+            let room = ring.gap + ring.width;
+            reveal_in_page(page, top - room, top + row_height + room);
+        }
         // The list clips at its own bounds, the ring's room included, so a
         // row partly scrolled out of the viewport paints into that room. Two
         // strips of the card's surface cover the room while the rows stand
         // off a row boundary; on a boundary the rows fill the viewport
         // exactly and the room is the ring's alone (`rows_off_boundary`).
-        let strips = scrolls
-            && rows_off_boundary(
-                &scroll,
-                appearance::ui_size(30.),
-                appearance::ui_size(30. * VISIBLE_ROWS as f32),
-                rows,
-                window,
-            );
-        let surface = rgb(palette(cx).subtle);
+        let strips = scrolls && rows_off_boundary(&scroll, row_height, viewport, rows, window);
+        let p = palette(cx);
+        let surface = rgb(p.subtle);
+        // Every row's fill, the import highlight and the hover surface, is
+        // painted beneath all the rows rather than as the row's own
+        // background: a row paints after the row above it, so its own fill
+        // covered the bottom edge of the ring around a focused action on the
+        // row above (`render_custom_theme_row` records where each row is
+        // drawn, at most the nine rows the viewport can show).
+        let drawn = std::rc::Rc::new(std::cell::RefCell::new(Vec::<RowFill>::new()));
+        let fills = drawn.clone();
         // The box the rows occupy in the card's column: exactly the rows, so
         // the card, the row pitch and everything below the card stay where
         // the plain stack put them. The list itself is positioned over it 3
@@ -1583,6 +1656,8 @@ impl GitTurtle {
         // contribution below its flex basis collapses the card's content
         // height under max-content sizing (taffy 0.13 scales that negative
         // difference by the item's inner flex basis).
+        let page = self.theme_editor.page_scroll().clone();
+        let anchor = self.theme_editor.rows_anchor().clone();
         div()
             .debug_selector(|| "custom-themes-rows-box".into())
             .relative()
@@ -1591,6 +1666,13 @@ impl GitTurtle {
             .mx(appearance::ui_size(-8.))
             .h(appearance::ui_size(30. * rows.min(VISIBLE_ROWS) as f32))
             .flex_shrink_0()
+            // The first row starts the ring's room below the list's top; the
+            // page's offset, applied to these bounds, is taken back out.
+            .on_children_prepainted(move |children, _, _| {
+                if let Some(list) = children.first() {
+                    anchor.set(Some(list.top() + ROW_RING_ROOM - page.offset().y));
+                }
+            })
             .child(
                 div()
                     .debug_selector(|| "custom-themes-rows".into())
@@ -1636,10 +1718,45 @@ impl GitTurtle {
                         }
                     })
                     .child(
+                        canvas(
+                            |_, _, _| (),
+                            move |_, (), window, cx| {
+                                for row in fills.take() {
+                                    // What the row's own background and hover
+                                    // style painted: the plain hover surface
+                                    // under the pointer, and on the imported
+                                    // row the selected surface, blended as a
+                                    // hovered selected row under the pointer.
+                                    let hover =
+                                        !cx.has_active_drag() && row.hitbox.is_hovered(window);
+                                    let color = match (row.imported, hover) {
+                                        (imported, true) => p.row_hover(imported),
+                                        (true, false) => p.selected,
+                                        (false, false) => continue,
+                                    };
+                                    let color = Hsla::from(rgb(color));
+                                    window.with_content_mask(Some(row.mask), |window| {
+                                        window.paint_quad(quad(
+                                            row.bounds,
+                                            Corners::all(ROW_RADIUS)
+                                                .clamp_radii_for_quad_size(row.bounds.size),
+                                            color,
+                                            Edges::default(),
+                                            color.alpha(0.),
+                                            BorderStyle::default(),
+                                        ))
+                                    });
+                                }
+                            },
+                        )
+                        .absolute()
+                        .size_full(),
+                    )
+                    .child(
                         uniform_list(
                             "custom-theme-rows",
                             rows,
-                            cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
+                            cx.processor(move |this, range: std::ops::Range<usize>, window, cx| {
                                 // Tab across the viewport boundary asked for a
                                 // row this render draws: its actions are tab
                                 // stops from this frame on, so the next frame
@@ -1661,7 +1778,7 @@ impl GitTurtle {
                                 range
                                     .filter_map(|index| {
                                         let count = warnings.get(index).copied().unwrap_or(0);
-                                        this.render_custom_theme_row(index, count, cx)
+                                        this.render_custom_theme_row(index, count, &drawn, cx)
                                     })
                                     .collect::<Vec<_>>()
                             }),
@@ -1722,10 +1839,13 @@ impl GitTurtle {
     }
 
     /// One Your themes row, built only while it is in the list's viewport.
+    /// The row records where it is drawn in `drawn`, and the list paints its
+    /// fill beneath the rows (`render_custom_theme_rows`).
     fn render_custom_theme_row(
         &self,
         index: usize,
         warnings: usize,
+        drawn: &std::rc::Rc<std::cell::RefCell<Vec<RowFill>>>,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let theme = self.custom_themes.get(index)?;
@@ -1755,14 +1875,38 @@ impl GitTurtle {
             .w_full()
             .h(appearance::ui_size(30.))
             .px(appearance::ui_size(8.))
-            .rounded(px(6.))
-            // A just-imported theme is highlighted on the selected
-            // surface. It is added, not applied: the checkmark still
-            // marks the theme the window uses. Hovering the row is not
-            // a card action, so it keeps the highlight rather than
-            // replacing it with the plain hover surface.
-            .when(imported == Some(id), |row| row.bg(rgb(p.selected)))
-            .hover(|row| row.bg(rgb(p.row_hover(imported == Some(id)))))
+            .rounded(ROW_RADIUS)
+            // A hovered row takes the hover surface. A just-imported theme
+            // is highlighted on the selected surface. It is added, not
+            // applied: the checkmark still marks the theme the window
+            // uses. Hovering the row is not a card action, so it keeps
+            // the highlight, blended as a hovered selected row, rather
+            // than replacing it with the plain hover surface. The list
+            // paints every one of these fills beneath all the rows from
+            // what this probe records, so no row paints a fill of its own
+            // over the ring of a focused action on the row above. The
+            // empty hover style still has GPUI draw the page again when
+            // the pointer enters or leaves the row.
+            .child({
+                let drawn = drawn.clone();
+                let imported = imported == Some(id);
+                canvas(
+                    move |bounds, window, _| {
+                        drawn.borrow_mut().push(RowFill {
+                            bounds,
+                            mask: window.content_mask(),
+                            hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
+                            imported,
+                        })
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+            })
+            .hover(|row| row)
             .flex()
             .items_center()
             .gap_2()
@@ -1976,14 +2120,27 @@ impl GitTurtle {
                             .bg(rgb(p.canvas))
                             .children(Density::ALL.into_iter().enumerate().map(
                                 |(index, density)| {
+                                    let selected = self.settings.density == density;
+                                    // Selected, the shared helper's look: the `selected`
+                                    // surface, tinted on hover rather than faded, which
+                                    // would fade the focus ring with it.
                                     Button::new(("settings-density", index))
                                         .small()
-                                        .ghost()
+                                        .map(|button| {
+                                            if selected {
+                                                button.with_variant(
+                                                    appearance::control_button_variant(true),
+                                                )
+                                            } else {
+                                                button.ghost()
+                                            }
+                                        })
                                         .label(density.label())
-                                        .selected(self.settings.density == density)
-                                        .toggled(self.settings.density == density)
-                                        .when(self.settings.density == density, |button| {
-                                            button.hover(|style| style.opacity(0.9))
+                                        .selected(selected)
+                                        .toggled(selected)
+                                        .debug_selector(move || format!("settings-density-{index}"))
+                                        .when(selected, |button| {
+                                            button.hover(appearance::control_selected_hover)
                                         })
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             if this.settings.density != density {
@@ -2218,9 +2375,13 @@ impl GitTurtle {
             .child(
                 div()
                     .id("settings-scroll")
+                    .debug_selector(|| "settings-scroll".into())
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
+                    // Tracked so that the Your themes row holding focus is
+                    // revealed here too (`reveal_in_page`).
+                    .track_scroll(self.theme_editor.page_scroll())
                     .p_6()
                     .when(narrow, |body| body.p_4())
                     .child(
@@ -4291,7 +4452,7 @@ mod picker_tests {
     use core::prelude::v1::test;
     use std::{cell::RefCell, rc::Rc};
 
-    fn open_app(cx: &mut TestAppContext) -> (Entity<GitTurtle>, &mut VisualTestContext) {
+    pub(super) fn open_app(cx: &mut TestAppContext) -> (Entity<GitTurtle>, &mut VisualTestContext) {
         // GitTurtle::new starts a real preferences worker; saves reply from it.
         cx.executor().allow_parking();
         cx.update(|cx| {
@@ -4329,7 +4490,7 @@ mod picker_tests {
         (app, cx)
     }
 
-    fn settle(cx: &mut VisualTestContext) {
+    pub(super) fn settle(cx: &mut VisualTestContext) {
         for _ in 0..2 {
             cx.update(|window, cx| window.draw(cx).clear(cx));
             cx.run_until_parked();
@@ -5206,6 +5367,125 @@ mod picker_tests {
                 assert_eq!(editor.preview(), None, "{selector}");
                 assert!(!editor.transfer_pending(), "{selector}");
             });
+        }
+    }
+}
+
+/// Settings' own segmented controls as a real window draws them.
+#[cfg(test)]
+mod segment_tests {
+    use super::picker_tests::{open_app, settle};
+    use super::*;
+    use core::prelude::v1::test;
+
+    /// In a dark and two light palettes, a selected density has the shared
+    /// helper's selected look: it rests on the palette's `selected`, hovers to
+    /// its `selected_hover`, and keeps the whole Button, focus ring included, at
+    /// full opacity. An unselected density keeps the kit's ghost look: no fill
+    /// at rest and the ghost's hover under the pointer, which the helper's
+    /// unselected look does not paint. Only fills and rings are checked; the
+    /// test platform paints no text, so a label's color goes unchecked.
+    #[gpui::test]
+    fn a_selected_density_rests_and_hovers_like_the_shared_helper_and_the_others_like_the_ghost(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, cx) = open_app(cx);
+        assert_eq!(
+            cx.read(|cx| app.read(cx).settings.density),
+            Density::Comfortable
+        );
+        let selector_of = |wanted: Density| -> &'static str {
+            let index = Density::ALL.iter().position(|density| *density == wanted);
+            format!("settings-density-{}", index.unwrap()).leak()
+        };
+        let (selector, comfortable) = (
+            selector_of(Density::Compact),
+            selector_of(Density::Comfortable),
+        );
+        let unselected = shown(cx, selector).expect("the Compact density is drawn");
+        // Tab from the Your themes card passes the text size controls before it
+        // reaches the density segments; Space selecting Compact shows that is
+        // where focus is.
+        let card = cx.read(|cx| app.read(cx).theme_editor.card_focus(cx));
+        cx.update(|window, cx| window.focus(&card, cx));
+        let mut reached = false;
+        for _ in 0..24 {
+            cx.update(|window, cx| window.focus_next(cx));
+            settle(cx);
+            if !appearance::painted_button(cx, unselected).1.is_empty() {
+                reached = true;
+                break;
+            }
+        }
+        assert!(
+            reached,
+            "Tab from the Your themes card reaches Compact within 24 stops"
+        );
+        let compact = cx
+            .update(|window, cx| window.focused(cx))
+            .expect("a focused density");
+        let space = Keystroke::parse("space").expect("a keystroke");
+        cx.simulate_event(KeyDownEvent {
+            keystroke: space.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(KeyUpEvent { keystroke: space });
+        settle(cx);
+        assert_eq!(
+            cx.read(|cx| app.read(cx).settings.density),
+            Density::Compact,
+            "Space on the focused density selects Compact"
+        );
+        for choice in [
+            ThemeChoice::Midnight,
+            ThemeChoice::Porcelain,
+            ThemeChoice::KanagawaLotus,
+        ] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.follow_system = false;
+                    app.settings.theme = ThemeSelection::BuiltIn(choice);
+                    app.apply_appearance(window, cx);
+                });
+                window.blur(cx);
+            });
+            cx.simulate_mouse_move(point(px(0.), px(0.)), None, Modifiers::default());
+            settle(cx);
+            let segment = shown(cx, selector).expect("the selected density is drawn");
+            let ghost = shown(cx, comfortable).expect("the Comfortable density is drawn");
+            let name = format!("{choice:?} Compact density");
+            let ghost_name = format!("{choice:?} Comfortable density");
+            appearance::assert_selected_button(
+                cx,
+                &name,
+                segment,
+                appearance::SelectedState::Resting,
+            );
+            appearance::assert_ghost_button(cx, &ghost_name, ghost, false);
+            cx.simulate_mouse_move(ghost.center(), None, Modifiers::default());
+            settle(cx);
+            appearance::assert_ghost_button(cx, &ghost_name, ghost, true);
+            cx.simulate_mouse_move(segment.center(), None, Modifiers::default());
+            settle(cx);
+            appearance::assert_selected_button(
+                cx,
+                &name,
+                segment,
+                appearance::SelectedState::Hovered,
+            );
+            cx.update(|window, cx| window.focus(&compact, cx));
+            settle(cx);
+            assert!(
+                cx.update(|window, _| compact.is_focused(window)),
+                "{name} takes focus back"
+            );
+            appearance::assert_selected_button(
+                cx,
+                &name,
+                segment,
+                appearance::SelectedState::FocusedAndHovered,
+            );
         }
     }
 }

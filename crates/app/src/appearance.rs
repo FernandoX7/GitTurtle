@@ -237,16 +237,143 @@ pub const BUTTON_FOCUS_RING: FocusRing = FocusRing {
     opacity: 1.,
 };
 
-/// A selected shared button's hover: the kit gives a selected control no hover
-/// surface, so the helper paints its `selected` fill blended toward `accent`,
-/// as a hovered selected row does. It changes the fill alone, so the focus
-/// ring keeps full opacity, and it stays [`custom::PRESSED_STEP`] from the
-/// resting fill. Before any palette is applied it leaves the style alone.
+/// The hover of a Button that is selected in the shared helper's look,
+/// [`control_button_variant`]`(true)`: the helper itself, the Settings density
+/// segments and the project hub's mode segments. The kit gives a selected
+/// control no hover surface, so this paints the resting `selected` fill
+/// blended toward `accent`, as a hovered selected row does. It changes the
+/// fill alone, so the focus ring keeps full opacity, and it stays
+/// [`custom::PRESSED_STEP`] from the resting fill. Before any palette is
+/// applied it leaves the style alone.
 pub fn control_selected_hover(style: StyleRefinement) -> StyleRefinement {
     match CONTROL_BUTTON.get() {
         Some(control) => style.bg(rgb(control.selected_hover)),
         None => style,
     }
+}
+
+/// What the last frame painted for the Button at `element`, for tests: the
+/// visible fills on its bounds and the colors of the focus rings drawn around
+/// it, at the footprint of the applied `Theme::button_focus_ring`. The kit
+/// offsets the ring by the Button's own border, so a bordered Button's ring
+/// has the same footprint (`focused_buttons_draw_the_theme_button_focus_ring`
+/// checks the default variant's 1 px border). GPUI paints a border-only quad
+/// once per side, so each ring color counts once.
+#[cfg(test)]
+pub(crate) fn painted_button(
+    cx: &mut gpui_kit::VisualTestContext,
+    element: gpui_kit::Bounds<Pixels>,
+) -> (Vec<gpui_kit::Background>, Vec<gpui_kit::Hsla>) {
+    use gpui_kit::{Bounds, ScaledPixels, point};
+    cx.update(|window, cx| {
+        let scale = window.scale_factor();
+        let device = px(1. / scale);
+        let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+        let near = |drawn: Bounds<Pixels>, expected: Bounds<Pixels>| {
+            [
+                (drawn.left(), expected.left()),
+                (drawn.top(), expected.top()),
+                (drawn.right(), expected.right()),
+                (drawn.bottom(), expected.bottom()),
+            ]
+            .into_iter()
+            .all(|(edge, expected)| (edge - expected).abs() <= device)
+        };
+        let setting = Theme::global(cx).button_focus_ring;
+        let footprint = element.dilate(setting.gap + setting.width);
+        let (mut fills, mut rings) = (Vec::new(), Vec::new());
+        for quad in window.painted_quads() {
+            let bounds = quad.bounds;
+            let drawn = Bounds::from_corners(
+                point(logical(bounds.left()), logical(bounds.top())),
+                point(logical(bounds.right()), logical(bounds.bottom())),
+            );
+            let widths = quad.border_widths;
+            let bordered = [widths.top, widths.right, widths.bottom, widths.left]
+                .into_iter()
+                .any(|width| width.as_f32() > 0.);
+            if near(drawn, element) && !quad.background.is_transparent() {
+                fills.push(quad.background);
+            } else if bordered && near(drawn, footprint) && !rings.contains(&quad.border_color) {
+                rings.push(quad.border_color);
+            }
+        }
+        (fills, rings)
+    })
+}
+
+/// The state [`assert_selected_button`] checks a selected Button in.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SelectedState {
+    Resting,
+    Hovered,
+    FocusedAndHovered,
+}
+
+/// For tests of a Button selected in the shared helper's look,
+/// [`control_button_variant`]`(true)` hovered with [`control_selected_hover`]:
+/// asserts that the last frame filled `element`'s bounds with nothing but the
+/// applied palette's opaque `selected` at rest or its `selected_hover` under
+/// the pointer, and drew a focus ring around it in full `ring` exactly when it
+/// is focused. A hover that fades the whole Button fails both, since the fade
+/// reaches its fill and its ring alike.
+#[cfg(test)]
+pub(crate) fn assert_selected_button(
+    cx: &mut gpui_kit::VisualTestContext,
+    name: &str,
+    element: gpui_kit::Bounds<Pixels>,
+    state: SelectedState,
+) {
+    let (selected, ring) = cx.update(|_, cx| (palette(cx).selected, Theme::global(cx).ring));
+    let expected = if state == SelectedState::Resting {
+        gpui_kit::Background::from(gpui_kit::Hsla::from(rgb(selected)))
+    } else {
+        control_selected_hover(StyleRefinement::default())
+            .background
+            .and_then(|fill| fill.color())
+            .expect("a palette is applied")
+    };
+    let (fills, rings) = painted_button(cx, element);
+    assert_eq!(fills, [expected], "{name} {state:?} paints {fills:?}");
+    if state == SelectedState::FocusedAndHovered {
+        assert_eq!(rings, [ring], "{name} {state:?} draws {rings:?}");
+    } else {
+        assert!(rings.is_empty(), "{name} {state:?} draws {rings:?}");
+    }
+}
+
+/// For tests of an unfocused Button in the kit's ghost look: asserts that the
+/// last frame drew no focus ring around `element` and filled its bounds with
+/// nothing at rest, or with nothing but the ghost's hover under the pointer,
+/// the applied `secondary` lightened in a dark mode or darkened in a light one
+/// by 0.1 at 0.8 opacity, as the kit computes it. The shared helper's
+/// unselected look, [`control_button_variant`]`(false)`, rests without a fill
+/// as well, so only the hover tells the two apart.
+#[cfg(test)]
+pub(crate) fn assert_ghost_button(
+    cx: &mut gpui_kit::VisualTestContext,
+    name: &str,
+    element: gpui_kit::Bounds<Pixels>,
+    hovered: bool,
+) {
+    let hover = cx.update(|_, cx| {
+        let theme = Theme::global(cx);
+        let hover = if theme.mode.is_dark() {
+            theme.secondary.lighten(0.1)
+        } else {
+            theme.secondary.darken(0.1)
+        };
+        gpui_kit::Background::from(hover.opacity(0.8))
+    });
+    let state = if hovered { "hovered" } else { "at rest" };
+    let (fills, rings) = painted_button(cx, element);
+    if hovered {
+        assert_eq!(fills, [hover], "{name} {state} paints {fills:?}");
+    } else {
+        assert!(fills.is_empty(), "{name} {state} paints {fills:?}");
+    }
+    assert!(rings.is_empty(), "{name} {state} draws {rings:?}");
 }
 
 /// The shared compact button's variant: the applied palette's control fills,
