@@ -772,6 +772,22 @@ impl RenderOnce for Button {
         .track_focus(&focus_handle)
         .tab_index(self.tab_index)
         .tab_stop(self.tab_stop)
+        // GitTurtle patch: gpui-base tracks the handle only while enabled, so a
+        // Button disabled while focused left the frame with focus still on it,
+        // and GPUI then dispatched keys from the window root, above `Root`'s
+        // Tab bindings. While focused, a disabled Button keeps its handle as a
+        // target Tab never stops at, so Tab and Shift+Tab move on from its
+        // place. The `InteractiveElement` method reaches the element directly;
+        // gpui-base's disabled path leaves it alone and adds no activation.
+        .when(disabled && is_focused, |this| {
+            InteractiveElement::track_focus(
+                this,
+                &focus_handle
+                    .clone()
+                    .tab_index(self.tab_index)
+                    .tab_stop(false),
+            )
+        })
         .child(content)
         // Fade the whole button while loading, so every variant is dimmed by
         // the same amount. Fading `bg`, `border` and `fg` one by one instead
