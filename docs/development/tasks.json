@@ -1364,6 +1364,7 @@
       "depends_on": [],
       "scope": [
         "crates/app/src/settings.rs",
+        "crates/app/src/desktop_text.rs",
         "docs/evidence/**",
         "docs/validation.md"
       ],

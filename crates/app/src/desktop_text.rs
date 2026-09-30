@@ -286,17 +286,23 @@ fn apply_code_font(
     sync_code_font(cx) || shown
 }
 
-/// Tests: the worker's reply to the current code font lookup, through the
-/// same generation check and window refresh as a real reply.
+/// Tests: the lookup a worker reply would carry now, as `CodeFontLookup`
+/// reads it; 0 while the setting is off.
+#[cfg(all(test, target_os = "linux"))]
+pub(super) fn code_font_lookup_generation(cx: &mut gpui_kit::App) -> u64 {
+    cx.default_global::<CodeFont>()
+        .generation
+        .load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Tests: the worker's reply to lookup `generation`, through the same
+/// generation check and window refresh as a real reply.
 #[cfg(all(test, target_os = "linux"))]
 pub(super) fn answer_code_font_lookup(
+    generation: u64,
     found: Result<gpui_kit::SharedString, String>,
     cx: &mut gpui_kit::App,
 ) -> bool {
-    let generation = cx
-        .default_global::<CodeFont>()
-        .generation
-        .load(std::sync::atomic::Ordering::Acquire);
     let changed = apply_code_font(generation, found, cx);
     if changed {
         cx.refresh_windows();

@@ -4625,7 +4625,9 @@ mod picker_tests {
     /// Linux: the row's description, read from its accessible name, names the
     /// bundled font while off, the lookup while pending, the desktop's family
     /// once found, and why the bundled font stays when the family is unusable.
-    /// A reply that arrives after the setting turned off leaves the row off.
+    /// A late reply for an earlier lookup is dropped: after the setting turned
+    /// off the row stays off, and once it is on again the row stays pending
+    /// until the current lookup answers.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     fn the_code_font_row_describes_off_pending_and_on(cx: &mut TestAppContext) {
@@ -4645,27 +4647,45 @@ mod picker_tests {
             cx.simulate_click(switch.center(), Modifiers::default());
             settle(cx);
         };
-        let answer = |cx: &mut VisualTestContext, found: Result<SharedString, String>| {
-            let changed = cx.update(|_, cx| desktop_text::answer_code_font_lookup(found, cx));
-            settle(cx);
-            changed
+        // The lookup a worker started now would answer for.
+        let lookup = |cx: &mut VisualTestContext| {
+            cx.update(|_, cx| desktop_text::code_font_lookup_generation(cx))
         };
+        let answer =
+            |cx: &mut VisualTestContext, generation: u64, found: Result<SharedString, String>| {
+                let changed =
+                    cx.update(|_, cx| desktop_text::answer_code_font_lookup(generation, found, cx));
+                settle(cx);
+                changed
+            };
         let bundled = crate::mono();
         let off = format!(
             "Code uses the bundled {bundled}. Turn on to use fontconfig's monospace font when it is fixed-width."
         );
+        let pending = "Looking up the desktop's monospace font…";
         describes(cx, &off);
         toggle(cx);
-        describes(cx, "Looking up the desktop's monospace font…");
-        assert!(answer(cx, Ok("Desktop Mono".into())));
+        describes(cx, pending);
+        let first = lookup(cx);
+        assert_ne!(first, 0, "a lookup runs while the setting is on");
+        assert!(answer(cx, first, Ok("Desktop Mono".into())));
         describes(cx, "Code uses Desktop Mono, the desktop's monospace font.");
-        let reason = "Proportional Sans is not monospace.";
-        assert!(answer(cx, Err(reason.into())));
-        describes(cx, &format!("{reason} Code uses the bundled {bundled}."));
+
+        // The first lookup answers again after the setting turned off.
         toggle(cx);
         describes(cx, &off);
-        assert!(!answer(cx, Ok("Desktop Mono".into())));
+        assert!(!answer(cx, first, Ok("Other Mono".into())));
         describes(cx, &off);
+
+        // On again: the first lookup's reply is stale, the second's is shown.
+        toggle(cx);
+        let second = lookup(cx);
+        assert_ne!(second, first);
+        assert!(!answer(cx, first, Ok("Desktop Mono".into())));
+        describes(cx, pending);
+        let reason = "Proportional Sans is not monospace.";
+        assert!(answer(cx, second, Err(reason.into())));
+        describes(cx, &format!("{reason} Code uses the bundled {bundled}."));
     }
 
     /// Linux: with the desktop's Omarchy theme read, Settings offers it as the
