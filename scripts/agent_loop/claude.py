@@ -56,6 +56,16 @@ CHILD_ENVIRONMENT = {
     "INSTA_UPDATE": "no",
     "CARGO_TERM_COLOR": "never",
 }
+# Claude Code variables that can replace the explicit --model/--effort a session is
+# launched and recorded with: CLAUDE_CODE_EFFORT_LEVEL even outranks --effort,
+# MAX_THINKING_TOKENS=0 lowers the effort sent to some models, and the rest move
+# alias, default, background or subagent models.
+SELECTION_OVERRIDES = (
+    "CLAUDE_CODE_EFFORT_LEVEL", "MAX_THINKING_TOKENS", "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_MODEL",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL",
+    "CLAUDE_CODE_SUBAGENT_MODEL_FORCE",
+)
 LIMIT_PATTERN = re.compile(
     r"usage limit|rate limit|session limit|weekly limit|fable limit|hit your (?:\w+ )?limit"
     r"|reached your (?:\w+ )?limit|limit reached|try again (?:at|in|after)|out of (?:extra )?usage"
@@ -71,6 +81,25 @@ class UsageLimited(EnvironmentBlocked):
 def effort_above(effort: str) -> str:
     index = CLAUDE_EFFORTS.index(effort)
     return CLAUDE_EFFORTS[min(index + 1, len(CLAUDE_EFFORTS) - 1)]
+
+
+def resolve_selection(model: str, effort: str, chosen: dict) -> dict:
+    """Every step's model and effort, from the operator's choices and the base selection.
+
+    A run resolves this once so its state records the concrete values each
+    session uses. By default one model serves every step: the retry is one
+    effort step up, the hard step matches the retry, the light step runs at
+    medium and reviews at the base effort. `none` keeps a step disabled.
+    """
+    def pick(key, default):
+        return default if chosen.get(key) is None else chosen[key]
+
+    retry = pick("retry_effort", effort_above(effort) if effort in CLAUDE_EFFORTS else None)
+    return {
+        "retry_effort": retry, "hard_effort": pick("hard_effort", retry), "light_effort": pick("light_effort", "medium"),
+        "review_effort": pick("review_effort", effort), "hard_model": pick("hard_model", model),
+        "light_model": pick("light_model", model),
+    }
 
 
 def parse_version(text: str) -> tuple[int, int, int]:
@@ -124,30 +153,31 @@ class Claude:
     branch_prefix = "claude/agent-"
 
     def __init__(
-        self, controller: Path, model: str, effort: str, *, retry_effort: str | None = None,
-        hard_model: str | None = None, light_model: str | None = None, hard_effort: str = "max",
-        light_effort: str = "medium", review_effort: str | None = None, max_turns: int = 200,
+        self, controller: Path, model: str, effort: str, *, retry_effort: str, hard_effort: str,
+        light_effort: str, review_effort: str, hard_model: str, light_model: str, max_turns: int = 200,
         review_max_turns: int = 120, sandbox: str = "auto", settings_sha256: str | None = None,
     ):
+        # Every step arrives resolved (see resolve_selection); a missing value is
+        # refused rather than launched as `--effort None`.
         if effort not in CLAUDE_EFFORTS:
             raise LoopError(f"Claude Code effort must be one of {', '.join(CLAUDE_EFFORTS)}")
         for name, value in (("retry", retry_effort), ("hard", hard_effort), ("light", light_effort), ("review", review_effort)):
-            if value is not None and value not in CLAUDE_EFFORTS:
+            if value not in CLAUDE_EFFORTS:
                 raise LoopError(f"{name} effort must be one of {', '.join(CLAUDE_EFFORTS)}")
         if sandbox not in {"auto", "on", "off"}:
             raise LoopError("sandbox must be auto, on or off")
-        if not model or not isinstance(model, str):
-            raise LoopError("Claude Code sessions require an explicit model")
+        for value in (model, hard_model, light_model):
+            if not value or not isinstance(value, str):
+                raise LoopError("Claude Code sessions require an explicit model for every step")
         self.controller = controller
         self.model = model
         self.effort = effort
-        self.retry_effort = retry_effort or effort_above(effort)
-        # One model serves every step unless another is named; `none` disables a step.
-        self.hard_model = None if hard_model in ("", "none") else hard_model or model
-        self.light_model = None if light_model in ("", "none") else light_model or model
+        self.retry_effort = retry_effort
+        self.hard_model = None if hard_model == "none" else hard_model
+        self.light_model = None if light_model == "none" else light_model
         self.hard_effort = hard_effort
         self.light_effort = light_effort
-        self.review_effort = review_effort or effort
+        self.review_effort = review_effort
         self.max_turns = max_turns
         self.review_max_turns = review_max_turns
         self.sandbox = sandbox
@@ -238,8 +268,8 @@ class Claude:
         """Choose agent, model and effort for one implementation attempt.
 
         Attempt 1 uses the operator's selection (or the light step for tasks that
-        declare only docs/tooling profiles), attempt 2 raises effort on the same
-        model, and attempt 3 onward hands the task to the hard step's agent.
+        declare only docs/tooling profiles), attempt 2 moves to the retry effort
+        on the base model, and attempt 3 onward hands the task to the hard step's agent.
         The task schema has no hardness field, so routing is by attempt only.
         The returned record also names the selection the attempt's reviews use.
         """
@@ -248,10 +278,12 @@ class Claude:
             selection = {"agent": "implementer-hard", "model": self.hard_model, "effort": self.hard_effort}
         elif attempt == 1 and light:
             selection = {"agent": "implementer", "model": self.light_model, "effort": self.light_effort}
-        elif attempt == 1 or (attempt == 2 and light):
+        elif attempt == 1:
             selection = {"agent": "implementer", "model": self.model, "effort": self.effort}
         else:
-            selection = {"agent": "implementer", "model": self.model, "effort": self.retry_effort}
+            # A docs/tooling retry never runs below the effort its first attempt used.
+            effort = max(self.retry_effort, self.light_effort, key=CLAUDE_EFFORTS.index) if light else self.retry_effort
+            selection = {"agent": "implementer", "model": self.model, "effort": effort}
         selection["max_turns"] = self.max_turns
         self.selection = selection
         return dict(selection, review=self.review_selection())
@@ -354,7 +386,7 @@ class Claude:
         if role != "implementer":
             # Variadic list options come last so nothing after them is swallowed.
             args += ["--tools", REVIEW_TOOLS, "--disallowedTools", REVIEW_DISALLOWED, "--allowedTools", *REVIEW_ALLOWED]
-        environment = os.environ.copy()
+        environment = {key: value for key, value in os.environ.items() if key not in SELECTION_OVERRIDES}
         environment.update(CHILD_ENVIRONMENT)
         environment["GITTURTLE_TASK_CONTEXT"] = str(contract_path)
         environment["CARGO_TARGET_DIR"] = str(self.controller.parent / "build")

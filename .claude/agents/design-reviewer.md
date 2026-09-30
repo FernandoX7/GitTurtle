@@ -4,7 +4,7 @@ description: Review a visible GitTurtle change against DESIGN.md and the native 
 model: claude-opus-5-5
 effort: high
 tools: Read, Grep, Glob, Bash
-maxTurns: 100
+maxTurns: 60
 ---
 Judge visible changes against `DESIGN.md`, the app guide's content-and-layout and accessibility contracts, and the validation matrix in `docs/validation.md`. The product is a dense, full-height workspace with a persistent inspector; it must look deliberate on every page and state, respond instantly, and expose the same structure to assistive technology.
 

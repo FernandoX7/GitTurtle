@@ -17,7 +17,7 @@ import sys
 import time
 import uuid
 
-from .claude import CLAUDE_EFFORTS, Claude, UsageLimited, snapshot_files as claude_snapshot_files
+from .claude import CLAUDE_EFFORTS, Claude, UsageLimited, resolve_selection, snapshot_files as claude_snapshot_files
 from .codex import Codex, validate_review
 from .git import changed_paths, clean, clone, commit, committed_paths, git, head, identity, source_root, untracked_paths, within, write_limits
 from .process import EnvironmentBlocked, LoopError, MalformedResponse, atomic_json, digest, read_json, run_process, reconcile_processes
@@ -154,11 +154,9 @@ def make_adapter(controller: Path, settings: dict):
     if tool == "claude":
         return Claude(
             controller, settings["model"], settings["effort"],
-            retry_effort=settings.get("retry_effort"), hard_model=settings.get("hard_model", "fable"),
-            light_model=settings.get("light_model", "sonnet"),
-            # A run saved before these options kept the hard step and reviews at the base effort.
-            hard_effort=settings.get("hard_effort", settings["effort"]), light_effort=settings.get("light_effort", "medium"),
-            review_effort=settings.get("review_effort"), max_turns=settings.get("max_turns") or 200,
+            # create_run resolved these; a run saved by another controller resumes with its own snapshot.
+            **{key: settings.get(key) for key in ("retry_effort", "hard_effort", "light_effort", "review_effort", "hard_model", "light_model")},
+            max_turns=settings.get("max_turns") or 200,
             review_max_turns=settings.get("review_max_turns") or 120, sandbox=settings.get("sandbox") or "auto",
             settings_sha256=settings.get("claude_settings_sha256"),
         )
@@ -719,9 +717,8 @@ def create_run(repo: Path, spec_path: Path, controller: Path, options: dict) -> 
     if tool not in TOOLS:
         raise LoopError(f"unknown session tool {tool!r}")
     if tool == "claude":
-        # Record the base selection a step defaults to, so the saved run names every session's model and effort.
-        defaults = {"hard_model": options["model"], "light_model": options["model"], "review_effort": options["effort"]}
-        options = options | {key: value for key, value in defaults.items() if key in options and options[key] is None}
+        # Resolve every step once, so the saved run names each session's model and effort.
+        options = options | resolve_selection(options["model"], options["effort"], options)
     adapter = make_adapter(controller, options | {"tool": tool})
     adapter.preflight()
     state_parent = root / ".local" / "agent-loop"
@@ -827,9 +824,9 @@ def main(argv=None) -> int:
             claude = command.add_argument_group("claude", "options used only with --tool claude")
             claude.add_argument("--retry-effort", choices=CLAUDE_EFFORTS, help="effort for attempt 2 (default: one step above --effort)")
             claude.add_argument("--hard-model", help="model for attempt 3 onward via the implementer-hard agent (default: --model); none disables")
-            claude.add_argument("--hard-effort", choices=CLAUDE_EFFORTS, default="max", help="effort for attempt 3 onward (default: max)")
+            claude.add_argument("--hard-effort", choices=CLAUDE_EFFORTS, help="effort for attempt 3 onward (default: the retry effort)")
             claude.add_argument("--light-model", help="model for docs/tooling-only tasks on attempt 1 (default: --model); none disables")
-            claude.add_argument("--light-effort", choices=CLAUDE_EFFORTS, default="medium", help="effort for docs/tooling-only tasks on attempt 1 (default: medium)")
+            claude.add_argument("--light-effort", choices=CLAUDE_EFFORTS, help="effort for docs/tooling-only tasks on attempt 1 (default: medium)")
             claude.add_argument("--review-effort", choices=CLAUDE_EFFORTS, help="effort for verifier and security-review sessions (default: --effort)")
             claude.add_argument("--max-turns", type=positive, default=200, help="turn cap per implementer session")
             claude.add_argument("--review-max-turns", type=positive, default=120, help="turn cap per review session")

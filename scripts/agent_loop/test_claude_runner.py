@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from agent_loop import test_runner as fixtures
-from agent_loop.claude import UsageLimited
+from agent_loop.claude import UsageLimited, resolve_selection
 from agent_loop.git import git
 from agent_loop.process import LoopError, read_json
 from agent_loop.runner import Runner, controlled, create_run, main, make_adapter
@@ -51,7 +51,7 @@ class ClaudeRunnerTests(unittest.TestCase):
     def create(self, tasks=None, **overrides):
         specification = self.prepare(tasks)
         options = self.options | {"tool": "claude", "model": "claude-opus-5-5", "effort": "high", "hard_model": None,
-                                  "light_model": None, "hard_effort": "max", "light_effort": "medium", "review_effort": None,
+                                  "light_model": None, "hard_effort": None, "light_effort": None, "review_effort": None,
                                   "max_turns": 200, "review_max_turns": 120, "sandbox": "off", "retry_effort": None} | overrides
         with patch("agent_loop.runner.Claude.preflight", return_value="2.1.274 (Claude Code)"):
             return create_run(self.root, specification, fixtures.CONTROLLER, options)
@@ -61,9 +61,9 @@ class ClaudeRunnerTests(unittest.TestCase):
         state = read_json(directory / "state.json")
         self.assertEqual(state["tool"], "claude")
         # Steps without their own selection record the base model and effort they run on.
-        self.assertEqual({key: state[key] for key in ("hard_model", "light_model", "hard_effort", "light_effort", "review_effort")},
-                         {"hard_model": "claude-opus-5-5", "light_model": "claude-opus-5-5", "hard_effort": "max",
-                          "light_effort": "medium", "review_effort": "high"})
+        self.assertEqual({key: state[key] for key in ("retry_effort", "hard_model", "light_model", "hard_effort", "light_effort", "review_effort")},
+                         {"retry_effort": "xhigh", "hard_model": "claude-opus-5-5", "light_model": "claude-opus-5-5",
+                          "hard_effort": "xhigh", "light_effort": "medium", "review_effort": "high"})
         self.assertEqual(state["sandbox"], "off")
         self.assertIs(state["sandbox_enabled"], False)
         self.assertIn(".claude/agents/implementer.md", state["controller_files"])
@@ -94,11 +94,14 @@ class ClaudeRunnerTests(unittest.TestCase):
                     patch.object(Runner, "execute", lambda runner: runner.state | {"phase": "complete"}), redirect_stdout(output):
                 self.assertEqual(main(base + extra), 0, output.getvalue())
             states.append(read_json(Path(output.getvalue().splitlines()[0].removeprefix("run: ")) / "state.json"))
+        # The run records concrete efforts; nothing is left for a later resume to default.
+        self.assertEqual({key: states[0][key] for key in ("retry_effort", "hard_effort", "light_effort", "review_effort")},
+                         {"retry_effort": "xhigh", "hard_effort": "xhigh", "light_effort": "medium", "review_effort": "high"})
         adapter = make_adapter(Path("."), states[0])
         self.assertEqual([(s["agent"], s["model"], s["effort"]) for s in (adapter.configure_attempt(light_task(), 1),
                           *(adapter.configure_attempt(example_task(), attempt) for attempt in (1, 2, 3)))],
                          [("implementer", "claude-opus-5-5", "medium"), ("implementer", "claude-opus-5-5", "high"),
-                          ("implementer", "claude-opus-5-5", "xhigh"), ("implementer-hard", "claude-opus-5-5", "max")])
+                          ("implementer", "claude-opus-5-5", "xhigh"), ("implementer-hard", "claude-opus-5-5", "xhigh")])
         self.assertEqual(adapter.review_selection()["effort"], "high")
         self.assertEqual((states[1]["hard_model"], states[1]["light_model"], states[1]["review_effort"]), ("none", "sonnet", "max"))
         adapter = make_adapter(Path("."), states[1])
@@ -106,17 +109,6 @@ class ClaudeRunnerTests(unittest.TestCase):
         self.assertEqual((adapter.configure_attempt(light_task(), 1)["model"], adapter.configure_attempt(light_task(), 1)["effort"]),
                          ("sonnet", "low"))
         self.assertEqual(adapter.review_selection()["effort"], "max")
-
-    def test_a_run_saved_before_effort_routing_resumes_with_its_original_selection(self):
-        saved = {"tool": "claude", "model": "opus", "effort": "high", "retry_effort": None, "hard_model": "fable",
-                 "light_model": "sonnet", "max_turns": 200, "review_max_turns": 120, "sandbox": "off"}
-        for settings in (saved, {key: value for key, value in saved.items() if key not in {"hard_model", "light_model"}}):
-            adapter = make_adapter(Path("."), settings)
-            self.assertEqual({key: value for key, value in adapter.configure_attempt(example_task(), 3).items() if key != "review"},
-                             {"agent": "implementer-hard", "model": "fable", "effort": "high", "max_turns": 200})
-            light = adapter.configure_attempt(light_task(), 1)
-            self.assertEqual((light["model"], light["effort"]), ("sonnet", "medium"))
-            self.assertEqual(adapter.review_selection(), {"model": "opus", "effort": "high", "max_turns": 120})
 
     def test_usage_limit_pauses_the_run_and_resumes_the_same_task(self):
         directory = self.create([fixtures.task(), fixtures.task("two")])
@@ -148,7 +140,11 @@ class ClaudeRunnerTests(unittest.TestCase):
 
     def test_adapter_selection_defaults_to_codex_and_rejects_unknown_tools(self):
         self.assertEqual(type(make_adapter(Path("."), {"model": "m", "effort": "high"})).__name__, "Codex")
-        self.assertEqual(type(make_adapter(Path("."), {"model": "m", "effort": "high", "tool": "claude"})).__name__, "Claude")
+        resolved = resolve_selection("m", "high", {})
+        self.assertEqual(type(make_adapter(Path("."), {"model": "m", "effort": "high", "tool": "claude"} | resolved)).__name__, "Claude")
+        # Only a run this controller created reaches make_adapter, and it records every step.
+        with self.assertRaisesRegex(LoopError, "effort must be one of"):
+            make_adapter(Path("."), {"model": "m", "effort": "high", "tool": "claude"})
         with self.assertRaisesRegex(LoopError, "unknown session tool"):
             make_adapter(Path("."), {"model": "m", "effort": "high", "tool": "cursor"})
         with self.assertRaisesRegex(LoopError, "unknown session tool"):

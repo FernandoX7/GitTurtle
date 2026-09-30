@@ -1,6 +1,6 @@
 ---
 name: implementer-hard
-description: Implement a GitTurtle task that has already defeated earlier attempts or that the planner marked hard. Same contract and boundaries as implementer, with instructions tuned for a long autonomous session at the highest effort. Use on a controller retry or when the owner assigns a hard task explicitly.
+description: Implement a GitTurtle task that has already defeated earlier attempts or that the planner marked hard. Same contract and boundaries as implementer, with instructions tuned for a long autonomous session at the hard step's effort. Use on a controller retry or when the owner assigns a hard task explicitly.
 skills: gitturtle-feature-work, gitturtle-gates
 maxTurns: 200
 ---
