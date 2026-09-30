@@ -123,9 +123,19 @@ and `focus_next` and `focus_prev` step from the Button's own place in the tab
 order to its neighbours; Tab never lands on a disabled Button. The Button gains
 no click, Enter or Space activation, a press on it still stops at its disabled
 mouse-down handler, and it keeps the focus ring it already drew. AccessKit
-reports the focused, disabled Button instead of falling back to the window
-root. Once focus leaves, and for every enabled or unfocused Button, rendering is
-unchanged.
+reports the focused, disabled Button, with its Focus action and no Click,
+instead of falling back to the window root. Every ancestor key binding reaches
+it again, as for an enabled focused Button; no handler relies on a disabled
+Button to block a write. Setting `tab_stop(false)` on the handle also writes
+its window-wide record, which gpui-base's enabled path rewrites on every render,
+so a Button that is enabled again is a tab stop again. Once focus leaves, and
+for every enabled or unfocused Button, rendering is unchanged.
+
+gpui-base's Checkbox, Switch, Radio, Toggle, Link and ColorPicker keep the same
+enabled-only focus guard and are not patched here. The app disables a focused
+Switch or Checkbox in Settings' Follow system (while the Omarchy theme is
+selected), the diff view's partial-line Checkbox, the ignore dialog and the
+profile editor.
 
 `cargo test --locked -p gitturtle tab_and_shift_tab_leave_a_focused_switch_that_turns_disabled`
 renders the application's Targets, tabs onto Switch, clears the branch field,

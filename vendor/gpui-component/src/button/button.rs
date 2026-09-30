@@ -779,6 +779,9 @@ impl RenderOnce for Button {
         // target Tab never stops at, so Tab and Shift+Tab move on from its
         // place. The `InteractiveElement` method reaches the element directly;
         // gpui-base's disabled path leaves it alone and adds no activation.
+        // `tab_stop(false)` also writes the handle's window-wide record, which
+        // gpui-base's enabled path rewrites on every render, so a Button that
+        // is enabled again is a tab stop again.
         .when(disabled && is_focused, |this| {
             InteractiveElement::track_focus(
                 this,
