@@ -3,7 +3,10 @@ use crate::*;
 use anyhow::{Context as _, Result, ensure};
 use futures::FutureExt;
 use gpui_kit::{
-    component::menu::{DropdownMenu, PopupMenuItem},
+    component::{
+        Theme,
+        menu::{DropdownMenu, PopupMenuItem},
+    },
     prelude::FluentBuilder,
 };
 use serde::{Deserialize, Serialize};
@@ -1892,6 +1895,12 @@ impl GitTurtle {
                 (None::<AnyElement>, None::<AnyElement>, None::<AnyElement>)
             }
         };
+        // The scrolling tab list clips its children to its own bounds on both
+        // axes, so it keeps room inside for the ring a focused tab or close
+        // button draws outside its edge, and gives the room back through its
+        // margin so the tabs do not move.
+        let ring = Theme::global(cx).button_focus_ring;
+        let ring_room = ring.gap + ring.width;
         div()
             .flex()
             .items_center()
@@ -1917,6 +1926,8 @@ impl GitTurtle {
                     .flex()
                     .items_center()
                     .gap_1()
+                    .p(ring_room)
+                    .m(-ring_room)
                     .overflow_x_scroll()
                     .children(
                         self.repository_tabs
@@ -2905,6 +2916,192 @@ mod tests {
             );
         });
         settle_tab_test(&app, window_cx).await;
+    }
+
+    /// The tab list scrolls, so GPUI clips everything in it to the list's own
+    /// bounds on both axes. The list keeps room inside that clip for the
+    /// installed Button focus ring: each tab's and close button's ring, `gap +
+    /// width` outside its edge, lies within the content mask the list paints
+    /// its tabs in. The list's margin gives the room back, so every tab sits
+    /// where a list without the room puts it.
+    #[gpui::test]
+    async fn repository_tab_list_keeps_room_for_every_focus_ring(cx: &mut TestAppContext) {
+        use gpui_kit::component::{FocusRing, Root};
+        use std::{cell::RefCell, rc::Rc};
+
+        /// Each tab with its close button.
+        const TABS: [[&str; 2]; 2] = [
+            ["repository-tab-0", "repository-tab-close-0"],
+            ["repository-tab-1", "repository-tab-close-1"],
+        ];
+        fn draw(cx: &mut VisualTestContext) {
+            for _ in 0..3 {
+                cx.update(|window, cx| {
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                });
+                cx.executor().run_until_parked();
+            }
+        }
+        fn rendered(cx: &mut VisualTestContext, selector: &'static str) -> Bounds<Pixels> {
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("rendered {selector}"))
+        }
+        /// Every tab control, then the header below the strip.
+        fn layout(cx: &mut VisualTestContext) -> Vec<Bounds<Pixels>> {
+            TABS.into_iter()
+                .flatten()
+                .chain(["repository-header"])
+                .map(|selector| rendered(cx, selector))
+                .collect()
+        }
+        /// The content mask the tab list paints its tabs in, read from the
+        /// fill behind the selected tab and its close button: GPUI keeps a
+        /// filled quad's mask whole, and nothing between the list and that
+        /// fill clips.
+        fn tab_list_mask(
+            cx: &mut VisualTestContext,
+            [tab, close]: [&'static str; 2],
+        ) -> Bounds<Pixels> {
+            let surface = rendered(cx, tab).union(&rendered(cx, close));
+            cx.update(|window, _| {
+                let scale = window.scale_factor();
+                let logical = |bounds: Bounds<ScaledPixels>| {
+                    let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+                    Bounds::from_corners(
+                        point(logical(bounds.left()), logical(bounds.top())),
+                        point(logical(bounds.right()), logical(bounds.bottom())),
+                    )
+                };
+                let device = px(1. / scale);
+                let masks = window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| {
+                        let drawn = logical(quad.bounds);
+                        !quad.background.is_transparent()
+                            && [
+                                (drawn.left(), surface.left()),
+                                (drawn.top(), surface.top()),
+                                (drawn.right(), surface.right()),
+                                (drawn.bottom(), surface.bottom()),
+                            ]
+                            .into_iter()
+                            .all(|(drawn, expected)| (drawn - expected).abs() < device)
+                    })
+                    .map(|quad| logical(quad.content_mask.bounds))
+                    .collect::<Vec<_>>();
+                match masks.as_slice() {
+                    [mask, rest @ ..] if rest.iter().all(|other| other == mask) => *mask,
+                    _ => panic!("one selected tab surface at {surface:?}, masked by {masks:?}"),
+                }
+            })
+        }
+        /// `mask` holds `ring`, within float error of the device pixels both
+        /// lie on.
+        fn holds(mask: Bounds<Pixels>, ring: Bounds<Pixels>) -> bool {
+            let slack = px(0.01);
+            mask.left() <= ring.left() + slack
+                && mask.top() <= ring.top() + slack
+                && mask.right() + slack >= ring.right()
+                && mask.bottom() + slack >= ring.bottom()
+        }
+
+        cx.executor().allow_parking();
+        let fixture = tempfile::tempdir().unwrap();
+        let paths = (0..TABS.len())
+            .map(|index| {
+                GitRepository::init(fixture.path().join(format!("repository-{index}")), "main")
+                    .unwrap()
+                    .path()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        let initial = paths[0].clone();
+        let destination = fixture.path().join("isolated-session.json");
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+        });
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let observed = captured.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let app = cx.new(|cx| {
+                let mut app = GitTurtle::new(
+                    Some(initial),
+                    Preferences::default(),
+                    Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                );
+                app.repository_tabs.save_path = Some(destination);
+                app
+            });
+            *captured.borrow_mut() = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let app = observed.borrow_mut().take().unwrap();
+        settle_tab_test(&app, cx).await;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.apply_appearance(window, cx);
+                app.open_repository_tab(paths[1].clone(), window, cx);
+            })
+        });
+        settle_tab_test(&app, cx).await;
+        let installed = cx.read(|cx| Theme::global(cx).button_focus_ring);
+        assert_eq!(installed, appearance::BUTTON_FOCUS_RING);
+        let footprint = installed.gap + installed.width;
+
+        // The tab opened last is selected, then the first.
+        for selected in [1, 0] {
+            if selected == 0 {
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx))
+                });
+                settle_tab_test(&app, cx).await;
+            }
+            draw(cx);
+            let mask = tab_list_mask(cx, TABS[selected]);
+            for selector in TABS.into_iter().flatten() {
+                let ring = rendered(cx, selector).dilate(footprint);
+                assert!(
+                    holds(mask, ring),
+                    "tab {selected} selected: the ring around {selector}, {ring:?}, \
+                     lies outside the tab list's content mask {mask:?}"
+                );
+            }
+        }
+
+        // Without the room the tabs lay out exactly as they do with it, and
+        // the list clips every ring: the room alone keeps them whole.
+        let with_room = layout(cx);
+        cx.update(|window, cx| {
+            Theme::global_mut(cx).button_focus_ring = FocusRing {
+                width: px(0.),
+                gap: px(0.),
+                ..installed
+            };
+            app.update(cx, |_, cx| cx.notify());
+            window.refresh();
+        });
+        draw(cx);
+        assert_eq!(layout(cx), with_room, "the margin gives the room back");
+        let mask = tab_list_mask(cx, TABS[0]);
+        for selector in TABS.into_iter().flatten() {
+            let ring = rendered(cx, selector).dilate(footprint);
+            assert!(
+                !holds(mask, ring),
+                "without room the list clips the ring around {selector}, {ring:?}, to {mask:?}"
+            );
+        }
+        cx.update(|window, cx| {
+            Theme::global_mut(cx).button_focus_ring = installed;
+            window.refresh();
+        });
+        settle_tab_test(&app, cx).await;
     }
 
     #[gpui::test]
