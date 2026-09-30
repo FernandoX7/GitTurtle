@@ -1,7 +1,7 @@
 ---
 name: Explore
-description: Fast read-only exploration of the GitTurtle codebase that returns locations and short excerpts, not file dumps. Overrides the built-in Explore agent to keep searches on a cheaper model.
-model: sonnet
+description: Fast read-only exploration of the GitTurtle codebase that returns locations and short excerpts, not file dumps. Overrides the built-in Explore agent to keep searches at low effort.
+model: claude-opus-5-5
 effort: low
 tools: Read, Grep, Glob, Bash
 maxTurns: 40
