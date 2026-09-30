@@ -1,7 +1,6 @@
 ---
 name: security-reviewer
 description: Independently review a GitTurtle candidate's trust boundaries and evidence before integration under docs/development/security-review.md. Read-only. Use for controller security sessions or when a change touches Git command construction, credentials, decoders, filesystem or symlink handling, CI trust, dependencies or packaging.
-model: opus
 tools: Read, Grep, Glob, Bash
 permissionMode: dontAsk
 maxTurns: 120

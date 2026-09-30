@@ -1,7 +1,8 @@
 ---
 name: code-reviewer
 description: Review a GitTurtle diff for correctness bugs, regressions and contract violations with file:line findings, read-only. Use after a change is drafted and before it is handed to the verifier, or when the owner asks for a code review of a branch or PR; not for style-only commentary.
-model: opus
+model: claude-opus-5-5
+effort: high
 tools: Read, Grep, Glob, Bash
 maxTurns: 80
 ---
