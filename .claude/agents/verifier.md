@@ -1,7 +1,6 @@
 ---
 name: verifier
 description: Independently assess one GitTurtle candidate against its acceptance contract and gate evidence, read-only, and return the controller's verdict JSON. Use for controller review sessions or when the owner asks for an independent check of a finished change; never for implementation.
-model: opus
 tools: Read, Grep, Glob, Bash
 permissionMode: dontAsk
 maxTurns: 120
