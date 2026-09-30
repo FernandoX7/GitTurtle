@@ -709,9 +709,22 @@ impl ProjectHub {
                             (ProjectMode::Create, "Create", "branch-add"),
                         ]
                         .map(|(mode, label, symbol)| {
+                            // Selected, the shared helper's look: the `selected`
+                            // surface, tinted on hover rather than faded, which
+                            // would fade the focus ring with it. While the hub is
+                            // busy every mode keeps the ghost's disabled look.
+                            let selected = self.mode == mode && !self.unavailable();
                             Button::new(label)
                                 .role(Role::Tab)
-                                .ghost()
+                                .map(|button| {
+                                    if selected {
+                                        button.with_variant(
+                                            crate::appearance::control_button_variant(true),
+                                        )
+                                    } else {
+                                        button.ghost()
+                                    }
+                                })
                                 .flex_1()
                                 .h(crate::appearance::ui_size(32.))
                                 .rounded(px(7.))
@@ -723,8 +736,9 @@ impl ProjectHub {
                                 )
                                 .selected(self.mode == mode)
                                 .disabled(self.unavailable())
-                                .when(self.mode == mode && !self.unavailable(), |button| {
-                                    button.hover(|style| style.opacity(0.9))
+                                .debug_selector(move || format!("project-mode-{label}"))
+                                .when(selected, |button| {
+                                    button.hover(crate::appearance::control_selected_hover)
                                 })
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.change_mode(mode, window, cx)
@@ -1874,6 +1888,111 @@ mod tests {
             recent,
             vec![PathBuf::from("/tmp/b"), PathBuf::from("/tmp/a")]
         );
+    }
+
+    /// In a dark and two light palettes, a selected mode has the shared helper's
+    /// selected look: it rests on the palette's `selected`, hovers to its
+    /// `selected_hover`, and keeps the whole Button, focus ring included, at
+    /// full opacity. An unselected mode keeps the kit's ghost look: no fill at
+    /// rest and the ghost's hover under the pointer, which the helper's
+    /// unselected look does not paint. While the hub is busy the selected mode
+    /// paints no fill, at rest or under the pointer. Only fills and rings are
+    /// checked; the test platform paints no text, so a label's color goes
+    /// unchecked.
+    #[gpui::test]
+    fn a_selected_mode_rests_and_hovers_like_the_shared_helper_and_the_others_like_the_ghost(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::appearance::{
+            SelectedState, ThemeChoice, assert_ghost_button, assert_selected_button,
+        };
+        fn draw(cx: &mut VisualTestContext) {
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            cx.run_until_parked();
+        }
+        cx.update(gpui_kit::init);
+        let (hub, cx) = cx.add_window_view(|window, cx| {
+            ProjectHub::new(vec![], HashMap::new(), "main".into(), window, cx)
+        });
+        draw(cx);
+        // Tab from the mode list, which is no tab stop itself, passes Open to
+        // reach Clone. Space selecting Clone shows that is where focus is.
+        let clone = cx.update(|window, cx| {
+            window.focus(&hub.read(cx).action_tabs_focus.clone(), cx);
+            window.focus_next(cx);
+            window.focus_next(cx);
+            window.focused(cx).expect("Tab reaches a mode")
+        });
+        draw(cx);
+        let space = Keystroke::parse("space").expect("a keystroke");
+        cx.simulate_event(KeyDownEvent {
+            keystroke: space.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(KeyUpEvent { keystroke: space });
+        draw(cx);
+        assert!(
+            cx.read(|cx| hub.read(cx).mode == ProjectMode::Clone),
+            "Tab from the mode list reaches Clone, and Space selects it"
+        );
+        for choice in [
+            ThemeChoice::Midnight,
+            ThemeChoice::Porcelain,
+            ThemeChoice::KanagawaLotus,
+        ] {
+            cx.update(|window, cx| {
+                choice.apply(Some(window), cx);
+                window.blur(cx);
+            });
+            cx.simulate_mouse_move(point(px(0.), px(0.)), None, Modifiers::default());
+            draw(cx);
+            let segment = cx
+                .debug_bounds("project-mode-Clone")
+                .expect("rendered Clone mode");
+            let ghost = cx
+                .debug_bounds("project-mode-Open")
+                .expect("rendered Open mode");
+            let name = format!("{choice:?} Clone mode");
+            let ghost_name = format!("{choice:?} Open mode");
+            assert_selected_button(cx, &name, segment, SelectedState::Resting);
+            assert_ghost_button(cx, &ghost_name, ghost, false);
+            cx.simulate_mouse_move(ghost.center(), None, Modifiers::default());
+            draw(cx);
+            assert_ghost_button(cx, &ghost_name, ghost, true);
+            cx.simulate_mouse_move(segment.center(), None, Modifiers::default());
+            draw(cx);
+            assert_selected_button(cx, &name, segment, SelectedState::Hovered);
+            cx.update(|window, cx| window.focus(&clone, cx));
+            draw(cx);
+            assert!(
+                cx.update(|window, _| clone.is_focused(window)),
+                "{name} takes focus back"
+            );
+            assert_selected_button(cx, &name, segment, SelectedState::FocusedAndHovered);
+            // While the hub is busy the selected mode keeps the ghost's
+            // disabled look, transparent at rest and under the pointer.
+            let busy = |cx: &mut VisualTestContext, busy| {
+                cx.update(|window, cx| {
+                    hub.update(cx, |hub, cx| {
+                        hub.busy = busy;
+                        cx.notify();
+                    });
+                    window.blur(cx);
+                })
+            };
+            busy(cx, true);
+            for position in [point(px(0.), px(0.)), segment.center()] {
+                cx.simulate_mouse_move(position, None, Modifiers::default());
+                draw(cx);
+                let (fills, _) = crate::appearance::painted_button(cx, segment);
+                assert!(fills.is_empty(), "{name} busy paints {fills:?}");
+            }
+            busy(cx, false);
+        }
     }
 
     #[cfg(unix)]
