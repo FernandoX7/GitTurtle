@@ -73,9 +73,11 @@ class ScopeTests(unittest.TestCase):
             (src / "views.rs").write_text(
                 "#[gpui::test]\nfn first(cx: &mut TestAppContext) {}\n"
                 "#[gpui::test(iterations = 3)]\nasync fn second(cx: &mut TestAppContext) {}\n"
+                "#[gpui_kit::test]\nasync fn third(cx: &mut gpui_kit::TestAppContext) {}\n"
                 "#[test]\nfn plain() {}\n"
+                "#[other_kit::test]\nfn foreign() {}\n"
             )
-            self.assertEqual(gate.gpui_test_names(root, ("crates/app/src/views.rs", "missing.rs")), ["first", "second"])
+            self.assertEqual(gate.gpui_test_names(root, ("crates/app/src/views.rs", "missing.rs")), ["first", "second", "third"])
 
 
 class FilterTests(unittest.TestCase):
