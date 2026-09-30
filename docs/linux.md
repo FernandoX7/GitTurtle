@@ -224,13 +224,15 @@ than one monitor and a physical HiDPI panel have no recorded check yet; see the
 [validation record](validation.md#september-27-omarchy-and-hyprland).
 
 Under XWayland (launched with `env -u WAYLAND_DISPLAY`), History, Compare,
-Settings with the Omarchy theme, the command palette, shortcuts, typing and the
-clipboard behave as on native Wayland. The difference to expect is size: an X11
-window takes its scale from `GPUI_X11_SCALE_FACTOR`, then `Xft.dpi`, then the
-monitor's physical size, not from Hyprland's output scale. On a 1366 × 768 panel
-that measures 310 × 170 mm, GitTurtle drew about 17% larger than native at scale 1,
-and about 7% smaller than native on an output at scale 1.25. `GPUI_X11_SCALE_FACTOR`
-overrides that choice; see the
+Settings with the Omarchy theme, the command palette, shortcuts and typing
+behave as on native Wayland, and Copy source pastes unchanged, though the
+clipboard offers different type names. Pointer hover was not checked there. The
+difference to expect is size. With Omarchy's `xwayland:force_zero_scaling` on,
+Hyprland does not scale an X11 window, and GitTurtle takes its scale from
+`GPUI_X11_SCALE_FACTOR`, then `Xft.dpi`, then the monitor's physical size. On a
+1366 × 768 panel that measures 310 × 170 mm, it drew about 17% larger than
+native at scale 1, and about 7% smaller than native on an output at scale 1.25.
+`GPUI_X11_SCALE_FACTOR` overrides that choice; see the
 [XWayland record](validation.md#september-29-gitturtle-under-xwayland-on-omarchy).
 
 Omarchy already ships the native libraries, `clang`, `desktop-file-utils` and
