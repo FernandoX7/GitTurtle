@@ -92,6 +92,16 @@ pub(super) struct State {
     /// undone by the next render while Tab onto another of its actions
     /// reveals the row again.
     revealed_row: std::cell::RefCell<Option<(usize, WeakFocusHandle)>>,
+    /// The Settings page's own scroll (`settings.rs`), so that revealing the
+    /// row holding focus also brings it, with its focus ring's room, into the
+    /// page's viewport and not only into the list's. The page starts at its
+    /// top whenever Settings is entered (`settings_entered`), as it did while
+    /// the offset lived in the page's element state.
+    page_scroll: ScrollHandle,
+    /// The window y of the first Your themes row with the page and the list
+    /// both at offset zero, recorded each time the page is prepainted: the
+    /// page reveal places a row from it before the frame lays the page out.
+    rows_anchor: std::rc::Rc<std::cell::Cell<Option<Pixels>>>,
     /// The first live-preview edit, or the open, since the last traced frame,
     /// stamped at its handler's entry. The root render takes it into the
     /// probe that ends `gitturtle.theme_edit_frame_ms`
@@ -310,11 +320,15 @@ impl State {
     /// Scroll the row holding focus into view once per focus change
     /// (`ScrollStrategy::Nearest`), a move to another action of the same row
     /// included; a wheel or scrollbar scroll away from it afterwards is left
-    /// alone.
-    pub(super) fn reveal_focused_row(&self, focused: Option<(usize, FocusHandle)>) {
+    /// alone. Returns the row scrolled to, which the caller also reveals in
+    /// the Settings page (`settings.rs`, `reveal_in_page`).
+    pub(super) fn reveal_focused_row(
+        &self,
+        focused: Option<(usize, FocusHandle)>,
+    ) -> Option<usize> {
         let focused = focused.map(|(row, handle)| (row, handle.downgrade()));
         if *self.revealed_row.borrow() == focused {
-            return;
+            return None;
         }
         let row = focused.as_ref().map(|(row, _)| *row);
         *self.revealed_row.borrow_mut() = focused;
@@ -322,6 +336,25 @@ impl State {
             self.rows_scroll
                 .scroll_to_item(row, ScrollStrategy::Nearest);
         }
+        row
+    }
+
+    /// The Settings page's scroll handle.
+    pub(super) fn page_scroll(&self) -> &ScrollHandle {
+        &self.page_scroll
+    }
+
+    /// Where the first Your themes row stands with the page and the list at
+    /// offset zero, as the page last prepainted it.
+    pub(super) fn rows_anchor(&self) -> &std::rc::Rc<std::cell::Cell<Option<Pixels>>> {
+        &self.rows_anchor
+    }
+
+    /// Settings was entered from another page: the page starts at its top and
+    /// the rows' anchor waits for the page's first prepaint.
+    pub(super) fn settings_entered(&self) {
+        self.page_scroll.set_offset(Point::default());
+        self.rows_anchor.set(None);
     }
 }
 
@@ -5299,6 +5332,9 @@ mod tests {
                 .scroll_to_item(31, ScrollStrategy::Top)
         });
         native_frame(cx);
+        // Revealing the eighth row's Delete… brought the list's end into the
+        // Settings page, which this window does not show whole with 32 themes.
+        let list = bounds(cx, "custom-themes-rows".into());
         let last = bounds(cx, "custom-theme-32".into());
         assert_eq!(
             last.bottom(),
@@ -5921,6 +5957,10 @@ mod tests {
             "the reveal lands the ninth row's bottom on the viewport's"
         );
         assert!(strips(cx).is_none(), "which is a boundary: no strip");
+        // The reveal also brought the row into the Settings page, which this
+        // window does not show whole with 32 themes: the list moved with it.
+        let list = bounds(cx, "custom-themes-rows".into());
+        let rows_box = bounds(cx, "custom-themes-rows-box".into());
         let delete = bounds(cx, "delete-custom-theme-9".into());
         assert!(
             delete.bottom() + RING <= list.bottom() && delete.bottom() + RING > rows_box.bottom(),
@@ -5931,6 +5971,572 @@ mod tests {
             built_strips(cx).is_none(),
             "and none once the frame has settled"
         );
+    }
+
+    /// A quad of the last frame's scene, in logical pixels: its draw order
+    /// (a higher order is drawn over a lower one where they overlap), its
+    /// bounds, the part of them its content mask lets show, its fill and its
+    /// bottom border.
+    #[derive(Debug)]
+    struct PaintedQuad {
+        order: u32,
+        bounds: Bounds<Pixels>,
+        mask: Bounds<Pixels>,
+        background: Background,
+        border: Pixels,
+        radius: Pixels,
+    }
+
+    fn painted_quads(cx: &mut VisualTestContext) -> Vec<PaintedQuad> {
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+            let bounds = |bounds: Bounds<ScaledPixels>| {
+                Bounds::from_corners(
+                    gpui::point(logical(bounds.left()), logical(bounds.top())),
+                    gpui::point(logical(bounds.right()), logical(bounds.bottom())),
+                )
+            };
+            window
+                .painted_quads()
+                .into_iter()
+                .map(|quad| PaintedQuad {
+                    order: quad.order,
+                    bounds: bounds(quad.bounds),
+                    mask: bounds(quad.content_mask.bounds),
+                    background: quad.background,
+                    border: logical(quad.border_widths.bottom),
+                    radius: logical(quad.corner_radii.top_left),
+                })
+                .collect()
+        })
+    }
+
+    /// The installed Button focus ring, which the palette installs, and its
+    /// footprint outside a focused Button's edge.
+    fn installed_ring(cx: &mut VisualTestContext) -> (gpui_kit::component::FocusRing, Pixels) {
+        let ring = cx.read(|cx| gpui_kit::component::Theme::global(cx).button_focus_ring);
+        assert_eq!(ring, appearance::BUTTON_FOCUS_RING, "the palette's ring");
+        (ring, ring.gap + ring.width)
+    }
+
+    /// The installed ring painted around a focused Button. GPUI paints a
+    /// bordered quad as one quad per edge, each masked to its own part of
+    /// the border, so the ring is the part of each such quad its mask lets
+    /// show, with the quad's draw order.
+    struct PaintedRing {
+        outer: Bounds<Pixels>,
+        parts: Vec<(u32, Bounds<Pixels>)>,
+    }
+
+    impl PaintedRing {
+        /// The quads that paint the ring `footprint` outside `button`'s edge:
+        /// transparent and bordered, on the ring's outer bounds.
+        fn around(quads: &[PaintedQuad], button: Bounds<Pixels>, footprint: Pixels) -> Self {
+            let outer = button.dilate(footprint);
+            let near = |a: Pixels, b: Pixels| (a - b).abs() < px(0.01);
+            let parts = quads
+                .iter()
+                .filter(|quad| {
+                    quad.background.is_transparent()
+                        && quad.border > Pixels::ZERO
+                        && near(quad.bounds.left(), outer.left())
+                        && near(quad.bounds.top(), outer.top())
+                        && near(quad.bounds.right(), outer.right())
+                        && near(quad.bounds.bottom(), outer.bottom())
+                })
+                .map(|quad| (quad.order, quad.bounds.intersect(&quad.mask)))
+                .collect::<Vec<_>>();
+            assert!(!parts.is_empty(), "a ring painted at {outer:?}");
+            Self { outer, parts }
+        }
+
+        /// The ring's four edges, `width` deep, corners included.
+        fn edges(&self, width: Pixels) -> [(&'static str, Bounds<Pixels>); 4] {
+            let outer = self.outer;
+            [
+                (
+                    "top",
+                    Bounds::from_corners(
+                        outer.origin,
+                        gpui::point(outer.right(), outer.top() + width),
+                    ),
+                ),
+                (
+                    "bottom",
+                    Bounds::from_corners(
+                        gpui::point(outer.left(), outer.bottom() - width),
+                        outer.bottom_right(),
+                    ),
+                ),
+                (
+                    "left",
+                    Bounds::from_corners(
+                        outer.origin,
+                        gpui::point(outer.left() + width, outer.bottom()),
+                    ),
+                ),
+                (
+                    "right",
+                    Bounds::from_corners(
+                        gpui::point(outer.right() - width, outer.top()),
+                        outer.bottom_right(),
+                    ),
+                ),
+            ]
+        }
+
+        /// Whether the ring's parts show all of `band`, sampled every
+        /// quarter pixel.
+        fn shows(&self, band: Bounds<Pixels>) -> bool {
+            let step = 0.25;
+            let columns = (f32::from(band.size.width) / step).ceil() as usize;
+            let rows = (f32::from(band.size.height) / step).ceil() as usize;
+            (0..columns).all(|column| {
+                (0..rows).all(|row| {
+                    let sample = gpui::point(
+                        band.left() + px((column as f32 + 0.5) * step),
+                        band.top() + px((row as f32 + 0.5) * step),
+                    );
+                    self.parts.iter().any(|(_, part)| part.contains(&sample))
+                })
+            })
+        }
+
+        /// The earliest draw order among the parts that paint `band`.
+        fn order(&self, band: Bounds<Pixels>) -> u32 {
+            self.parts
+                .iter()
+                .filter(|(_, part)| part.intersects(&band))
+                .map(|(order, _)| *order)
+                .min()
+                .expect("a part paints the band")
+        }
+    }
+
+    /// `outer` holds `inner`, within float error of the pixels both lie on.
+    fn holds(outer: Bounds<Pixels>, inner: Bounds<Pixels>) -> bool {
+        let slack = px(0.01);
+        outer.left() <= inner.left() + slack
+            && outer.top() <= inner.top() + slack
+            && outer.right() + slack >= inner.right()
+            && outer.bottom() + slack >= inner.bottom()
+    }
+
+    /// Every row's fill, the import highlight and the hover surface, is drawn
+    /// beneath the rows, so a focused action on the row directly above a
+    /// highlighted or hovered row keeps its ring's bottom edge (`DESIGN.md`,
+    /// Your themes: the ring is whole in every slot). With theme 3 just
+    /// imported, each action on the first three rows draws the installed ring
+    /// with all four edges shown and no fill drawn after the ring over an
+    /// edge: with the pointer off the rows, on the highlighted row, and on
+    /// the plain rows below a focused action (the fourth, below the
+    /// highlighted row, and the second, below the first). The fills keep
+    /// their look: one quad per filled row on the row's bounds and 6 px
+    /// corners, the selected surface on the highlighted row, its hover blend
+    /// under the pointer, and the plain hover surface on a hovered plain row,
+    /// each clipped to the list, while the rows keep their pitch and actions. The pointer alone, with
+    /// no focus change to rebuild the page, brings each hover fill and takes
+    /// it away again.
+    #[gpui::test]
+    fn a_focused_row_actions_ring_is_whole_beside_the_import_highlight(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|window, _| window.activate_window());
+        seed_themes(cx, &app, 4);
+        // Theme 3 was just imported: its row is the one below theme 2's.
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.theme_editor.imported = Some(3);
+                app.notify_settings_page(cx);
+                cx.notify();
+            })
+        });
+        settle(cx);
+        let (ring, footprint) = installed_ring(cx);
+        let p = cx.read(appearance::palette);
+        let rows = [1, 2, 3, 4].map(|id| bounds(cx, format!("custom-theme-{id}")));
+        let rows_box = bounds(cx, "custom-themes-rows-box".into());
+        // Each row's fill is clipped to the list, as the rows' content is.
+        let list = bounds(cx, "custom-themes-rows".into());
+        let header = bounds(cx, "custom-themes-header".into());
+        for pair in rows.windows(2) {
+            assert_eq!(pair[1].top(), pair[0].bottom(), "the rows keep their pitch");
+        }
+        for name in ["edit", "export", "delete"] {
+            let plain = bounds(cx, format!("{name}-custom-theme-2"));
+            let highlighted = bounds(cx, format!("{name}-custom-theme-3"));
+            assert_eq!(
+                (plain.left(), plain.size),
+                (highlighted.left(), highlighted.size),
+                "{name} sits on the highlighted row where it sits on a plain one"
+            );
+        }
+        // The pointer over theme `id`'s row spacer, clear of its actions, or
+        // over the card's description, clear of every row.
+        let pointer = |id: Option<u32>| match id {
+            Some(id) => {
+                let row = rows[id as usize - 1];
+                gpui::point(row.left() + row.size.width / 2., row.center().y)
+            }
+            None => gpui::point(header.left() + px(20.), header.center().y),
+        };
+        // The fills the rows' box shows with the pointer over `hovered`: one
+        // quad per filled row, on its bounds, with 6 px corners and clipped
+        // to the list.
+        let expected = |hovered: Option<u32>| {
+            [1, 2, 3, 4]
+                .into_iter()
+                .filter_map(|id| {
+                    let color = match (id == 3, hovered == Some(id)) {
+                        (imported, true) => p.row_hover(imported),
+                        (true, false) => p.selected,
+                        (false, false) => return None,
+                    };
+                    Some((
+                        rows[id as usize - 1],
+                        Background::from(rgb(color)),
+                        px(6.),
+                        list,
+                    ))
+                })
+                .collect::<Vec<_>>()
+        };
+        let fills = |quads: &[PaintedQuad]| {
+            quads
+                .iter()
+                .filter(|quad| {
+                    !quad.background.is_transparent()
+                        && quad.bounds.intersects(&rows_box)
+                        && rows.contains(&quad.bounds)
+                })
+                .map(|quad| (quad.bounds, quad.background, quad.radius, quad.mask))
+                .collect::<Vec<_>>()
+        };
+
+        for hovered in [None, Some(3), Some(4), Some(2)] {
+            cx.simulate_mouse_move(pointer(hovered), None, Modifiers::default());
+            settle(cx);
+            for id in [1, 2, 3] {
+                for action in 0..3 {
+                    let handle = cx.update(|_, cx| app.read(cx).theme_editor.row_focus(id, cx));
+                    cx.update(|window, cx| {
+                        State::focus_row_action(&handle, RowFocus::Action(action), window, cx)
+                    });
+                    native_frame(cx);
+                    let name = ["edit", "export", "delete"][action];
+                    let context = format!("{name} of theme {id}, pointer over {hovered:?}");
+                    let button = bounds(cx, format!("{name}-custom-theme-{id}"));
+                    assert_eq!(
+                        [1, 2, 3, 4].map(|id| bounds(cx, format!("custom-theme-{id}"))),
+                        rows,
+                        "{context}: no row moves"
+                    );
+                    let quads = painted_quads(cx);
+                    assert_eq!(
+                        fills(&quads),
+                        expected(hovered),
+                        "{context}: the rows' fills"
+                    );
+                    let drawn = PaintedRing::around(&quads, button, footprint);
+                    for (side, band) in drawn.edges(ring.width) {
+                        assert!(
+                            drawn.shows(band),
+                            "{context}: the ring's {side} edge {band:?} is clipped: {:?}",
+                            drawn.parts
+                        );
+                        let order = drawn.order(band);
+                        for later in quads
+                            .iter()
+                            .filter(|quad| quad.order > order && !quad.background.is_transparent())
+                        {
+                            let covered = later.bounds.intersect(&later.mask).intersect(&band);
+                            assert!(
+                                covered.size.width <= px(0.01) || covered.size.height <= px(0.01),
+                                "{context}: a fill drawn after the ring covers its {side} edge: {later:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // The pointer alone: onto the highlighted row and off the rows, then
+        // onto a plain row and off again. Focus stays on the first row's
+        // Edit… throughout, so only the rows' own hover styles can have the
+        // cached page drawn again; the scene is read as drawn, without a
+        // frame that rebuilds every view.
+        let handle = cx.update(|_, cx| app.read(cx).theme_editor.row_focus(1, cx));
+        cx.update(|window, cx| State::focus_row_action(&handle, RowFocus::Action(0), window, cx));
+        cx.simulate_mouse_move(pointer(None), None, Modifiers::default());
+        settle(cx);
+        let focus = cx.update(|window, cx| window.focused(cx));
+        for hovered in [Some(3), None, Some(4), None] {
+            cx.simulate_mouse_move(pointer(hovered), None, Modifiers::default());
+            settle(cx);
+            assert_eq!(
+                fills(&painted_quads(cx)),
+                expected(hovered),
+                "the pointer alone, now over {hovered:?}, changes the rows' fills"
+            );
+            assert_eq!(
+                cx.update(|window, cx| window.focused(cx)),
+                focus,
+                "with no focus change"
+            );
+        }
+    }
+
+    /// Revealing the row that holds focus brings the row, with the installed
+    /// ring's footprint of room above and below it, into the Settings page's
+    /// viewport as well as the list's, so the page does not cut the ring of
+    /// a row revealed flush against the status bar. The native frames' store
+    /// of four themes, with the last row flush against the page's bottom and
+    /// then the first flush against its top; and 32 themes, whose first and
+    /// last rows are revealed at the list's top and bottom boundaries with
+    /// the rows' box flush against the page's edge, the list and the page
+    /// moving in the same frame. Each reveal moves the page only as far as
+    /// the room, the list lands where `rows_off_boundary` judged it would
+    /// (a boundary, so no strip), a reveal that fits moves nothing, a page
+    /// scroll afterwards is left alone, and Settings entered again starts at
+    /// its top.
+    #[gpui::test]
+    fn a_revealed_row_keeps_its_ring_inside_the_settings_page(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|window, _| window.activate_window());
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        settle(cx);
+        let (ring, _) = installed_ring(cx);
+        let row_height = appearance::ui_size(30.);
+        fn page_offset(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) -> Pixels {
+            cx.read(|cx| app.read(cx).theme_editor.page_scroll().offset().y)
+        }
+        fn list_offset(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) -> Pixels {
+            cx.read(|cx| {
+                app.read(cx)
+                    .theme_editor
+                    .rows_scroll()
+                    .0
+                    .borrow()
+                    .base_handle
+                    .offset()
+                    .y
+            })
+        }
+        /// Move the page as a wheel step does, which notifies the page.
+        fn scroll_page(cx: &mut VisualTestContext, app: &Entity<GitTurtle>, y: Pixels) {
+            cx.update(|_, cx| {
+                app.update(cx, |app, cx| {
+                    app.theme_editor
+                        .page_scroll()
+                        .set_offset(gpui::point(Pixels::ZERO, y));
+                    app.notify_settings_page(cx);
+                })
+            });
+            native_frame(cx);
+        }
+        /// Scroll the page so that `selector`'s top or bottom lies on the
+        /// viewport's.
+        fn flush(
+            cx: &mut VisualTestContext,
+            app: &Entity<GitTurtle>,
+            selector: &str,
+            bottom: bool,
+        ) {
+            let viewport = bounds(cx, "settings-scroll".into());
+            let target = bounds(cx, selector.into());
+            let delta = if bottom {
+                viewport.bottom() - target.bottom()
+            } else {
+                viewport.top() - target.top()
+            };
+            let offset = page_offset(cx, app);
+            scroll_page(cx, app, offset + delta);
+            let target = bounds(cx, selector.into());
+            let edge = if bottom {
+                target.bottom()
+            } else {
+                target.top()
+            };
+            let wanted = if bottom {
+                viewport.bottom()
+            } else {
+                viewport.top()
+            };
+            assert_eq!(edge, wanted, "{selector} is flush against the page's edge");
+        }
+        /// Focus a row action: through its row once drawn, or its own handle
+        /// when a scroll has taken the row out of the list.
+        fn focus(cx: &mut VisualTestContext, app: &Entity<GitTurtle>, id: u32, action: usize) {
+            let drawn = settings::page_shows(cx, format!("custom-theme-{id}").leak());
+            cx.update(|window, cx| {
+                let editor = &app.read(cx).theme_editor;
+                if drawn {
+                    let handle = editor.row_focus(id, cx);
+                    State::focus_row_action(&handle, RowFocus::Action(action), window, cx)
+                } else {
+                    editor.action_focus(id, action, cx).focus(window, cx)
+                }
+            });
+            native_frame(cx);
+        }
+        /// The focused action's ring lies inside the page's viewport and is
+        /// painted whole, and the revealed row stands the ring's room inside
+        /// the viewport's `edge` (`Some(true)` bottom, `Some(false)` top).
+        fn assert_revealed(
+            cx: &mut VisualTestContext,
+            selector: String,
+            row: String,
+            ring: gpui_kit::component::FocusRing,
+            edge: Option<bool>,
+        ) {
+            let (footprint, ring_width) = (ring.gap + ring.width, ring.width);
+            let viewport = bounds(cx, "settings-scroll".into());
+            let button = bounds(cx, selector.clone());
+            let row = bounds(cx, row);
+            let ring = button.dilate(footprint);
+            assert!(
+                holds(viewport, ring),
+                "{selector}: the ring {ring:?} lies inside the page's viewport {viewport:?}"
+            );
+            let quads = painted_quads(cx);
+            let drawn = PaintedRing::around(&quads, button, footprint);
+            for (side, band) in drawn.edges(ring_width) {
+                assert!(
+                    drawn.shows(band),
+                    "{selector}: the ring's {side} edge {band:?} is painted whole: {:?}",
+                    drawn.parts
+                );
+            }
+            match edge {
+                Some(true) => assert_eq!(
+                    row.bottom() + footprint,
+                    viewport.bottom(),
+                    "{selector}: bottom room"
+                ),
+                Some(false) => assert_eq!(
+                    row.top() - footprint,
+                    viewport.top(),
+                    "{selector}: top room"
+                ),
+                None => {}
+            }
+        }
+
+        // The native frames' store: the last row flush against the page's
+        // bottom. Delete… on the row above fits and moves nothing; Tab onto
+        // the last row's Edit… moves the page by the ring's room.
+        seed_themes(cx, &app, 4);
+        let card = bounds(cx, "custom-themes-card".into());
+        flush(cx, &app, "custom-theme-4", true);
+        let stand = page_offset(cx, &app);
+        focus(cx, &app, 3, 2);
+        assert_eq!(
+            page_offset(cx, &app),
+            stand,
+            "a row that fits moves nothing"
+        );
+        let (_, focused) = key_frames(
+            cx,
+            "tab",
+            |_, _| (),
+            |window, cx| focused_row(&app, window, cx),
+        );
+        assert_eq!(focused, Some((3, 0)));
+        assert_revealed(
+            cx,
+            "edit-custom-theme-4".into(),
+            "custom-theme-4".into(),
+            ring,
+            Some(true),
+        );
+        // A page scroll afterwards is the user's and stays.
+        let away = page_offset(cx, &app) - px(10.);
+        scroll_page(cx, &app, away);
+        settle(cx);
+        assert_eq!(page_offset(cx, &app), away, "the reveal is not repeated");
+        // The first row flush against the page's top, reached by Shift-Tab.
+        flush(cx, &app, "custom-theme-1", false);
+        focus(cx, &app, 2, 0);
+        let (_, focused) = key_frames(
+            cx,
+            "shift-tab",
+            |_, _| (),
+            |window, cx| focused_row(&app, window, cx),
+        );
+        assert_eq!(focused, Some((0, 2)));
+        assert_revealed(
+            cx,
+            "delete-custom-theme-1".into(),
+            "custom-theme-1".into(),
+            ring,
+            Some(false),
+        );
+
+        // 32 themes: the last row revealed at the list's bottom boundary while
+        // the rows' box is flush against the page's bottom. Its row is not
+        // drawn when focus arrives, so the list and the page move in the one
+        // frame, the page from where the list will stand.
+        seed_themes(cx, &app, 32);
+        cx.update(|_, cx| {
+            app.read(cx)
+                .theme_editor
+                .rows_scroll()
+                .scroll_to_item(0, ScrollStrategy::Top)
+        });
+        native_frame(cx);
+        flush(cx, &app, "custom-themes-rows-box", true);
+        assert!(!settings::page_shows(cx, "custom-theme-32"));
+        focus(cx, &app, 32, 2);
+        assert_eq!(
+            list_offset(cx, &app),
+            -row_height * 24.,
+            "the list lands on its last boundary, as `rows_off_boundary` judged"
+        );
+        assert!(
+            cx.debug_bounds("custom-themes-ring-room-bottom").is_none(),
+            "so the revealing frame draws no strip"
+        );
+        assert_revealed(
+            cx,
+            "delete-custom-theme-32".into(),
+            "custom-theme-32".into(),
+            ring,
+            Some(true),
+        );
+        // The first row at the list's top boundary, the rows' box flush
+        // against the page's top.
+        flush(cx, &app, "custom-themes-rows-box", false);
+        assert!(!settings::page_shows(cx, "custom-theme-1"));
+        focus(cx, &app, 1, 0);
+        assert_eq!(
+            list_offset(cx, &app),
+            Pixels::ZERO,
+            "the list lands on its first boundary"
+        );
+        assert!(
+            cx.debug_bounds("custom-themes-ring-room-top").is_none(),
+            "with no strip"
+        );
+        assert_revealed(
+            cx,
+            "edit-custom-theme-1".into(),
+            "custom-theme-1".into(),
+            ring,
+            Some(false),
+        );
+
+        // Entered again, Settings starts at its top, as it did before the
+        // page's offset had a handle.
+        seed_themes(cx, &app, 4);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.show_projects(window, cx);
+                app.show_settings(window, cx);
+            })
+        });
+        settle(cx);
+        assert_eq!(page_offset(cx, &app), Pixels::ZERO);
+        assert_eq!(bounds(cx, "custom-themes-card".into()).origin, card.origin);
     }
 
     /// Every picker card draws its own theme's miniature.

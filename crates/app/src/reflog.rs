@@ -2,14 +2,25 @@
 use crate::*;
 use gitturtle_core::{ReflogEntry, ReflogPage, ReflogRecoveryPlan, WriteCommand};
 use gpui_kit::{
-    component::{WindowExt, dialog::DialogButtonProps},
+    component::{Theme, WindowExt, dialog::DialogButtonProps},
     prelude::FluentBuilder,
 };
+
+/// The gap the kit's dialog leaves between its body and its footer, its
+/// default 16 px padding.
+const DIALOG_FOOTER_GAP: Pixels = px(16.);
+
+/// The room the installed Button focus ring takes outside a Button's edge.
+fn ring_room(cx: &App) -> Pixels {
+    let ring = Theme::global(cx).button_focus_ring;
+    ring.gap + ring.width
+}
 
 fn label(id: &'static str, value: impl Into<SharedString>) -> Stateful<Div> {
     let value = value.into();
     div()
         .id(id)
+        .debug_selector(|| id.into())
         .role(Role::Label)
         .aria_label(value.clone())
         .child(value)
@@ -26,14 +37,24 @@ impl GitTurtle {
         let owner = cx.entity().downgrade();
         let browser = cx.new(|cx| ReflogBrowser::new(owner, repo, window, cx));
         browser.update(cx, |this, cx| this.refresh(window, cx));
+        ReflogBrowser::show(browser, window, cx);
+    }
+}
+impl ReflogBrowser {
+    /// Opens `browser` in its dialog.
+    fn show(browser: Entity<Self>, window: &mut Window, cx: &mut App) {
         window.open_alert_dialog(cx, move |dialog, _, cx| {
             let done = browser.clone();
             let cancel = browser.clone();
             let closing = browser.downgrade();
             let closed = browser.read(cx).closed.clone();
+            // The dialog clips its body to the body's bounds, and the browser
+            // keeps the focus ring's room inside them below its last control.
+            // The footer's gap gives the room back, so the footer stays put.
             dialog
                 .title(label("reflog-title", "Local reflog and recovery"))
                 .width(px(740.))
+                .gap(DIALOG_FOOTER_GAP - ring_room(cx))
                 .child(browser.clone())
                 .button_props(DialogButtonProps::default().ok_text("Done"))
                 .on_ok(move |_, _, cx| {
@@ -250,17 +271,25 @@ impl Render for ReflogBrowser {
         let body_height = (window.viewport_size().height - px(240.)).max(px(120.));
         let matches = self.matches(cx);
         let unavailable = self.pending || !self.current(cx);
-        div().id("reflog-browser-content").flex().flex_col().gap_3().max_h(px(590.).min(body_height)).overflow_y_scroll()
+        // The content and its list scroll, so each clips to its bounds on both
+        // axes and keeps the focus ring's room inside: the content beside and
+        // below its controls, giving the sides back through its margin, and
+        // the list around its rows, giving it all back through its margin. The
+        // content counts each child's box in what it can scroll, so the list
+        // borrows through a wrapper, which shrinks as the list did. No control
+        // moves.
+        let room = ring_room(cx);
+        div().id("reflog-browser-content").flex().flex_col().gap_3().max_h(px(590.).min(body_height) + room).px(room).mx(-room).pb(room).overflow_y_scroll()
             .child(label("reflog-explanation", "Git records local reference movements here, including actions by other tools. HEAD belongs to this worktree; branch logs are shared. Entries expire, and unreachable objects may be pruned. This is not a permanent backup or a complete activity history.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
-            .child(div().flex().gap_2().child(div().flex_1().child(Input::new(&self.scope).aria_label("Reflog scope: HEAD or local branch name"))).child(button("refresh-reflog", "Read log", "refresh-cw", false).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx)))))
+            .child(div().flex().gap_2().child(div().flex_1().child(Input::new(&self.scope).aria_label("Reflog scope: HEAD or local branch name"))).child(button("refresh-reflog", "Read log", "refresh-cw", false).debug_selector(|| "refresh-reflog".into()).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx)))))
             .when_some(self.page.as_ref(), |element, page| element.child(label("reflog-scope-summary", format!("{} · {} retained entries · newest first", page.reference, page.entries.len())).text_size(crate::appearance::ui_text(12.))).when(page.truncated, |element| element.child(label("reflog-limit", "Showing the newest 1,000 records within a 4 MiB tail. Older records are outside this bounded view.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning)))))
             .child(Input::new(&self.query).aria_label("Filter loaded reflog entries").cleanable(true))
             .when(self.pending, |element| element.child(div().flex().gap_2().child(label("reflog-loading", "Reading local reflog or selected commit…").text_size(crate::appearance::ui_text(12.))).child(button("cancel-reflog-read", "Cancel", "", false).on_click(cx.listener(|this, _, _, cx| { this.cancel(); cx.notify(); })))))
             .children(self.error.as_ref().map(|error| label("reflog-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
-            .child(div().id("reflog-list").max_h(px(230.)).overflow_y_scroll().flex().flex_col().gap_1().children(matches.iter().take(100).enumerate().map(|(index, entry)| {
+            .child(div().flex().flex_col().min_h_0().child(div().id("reflog-list").max_h(px(230.) + room * 2.).p(room).m(-room).overflow_y_scroll().flex().flex_col().gap_1().children(matches.iter().take(100).enumerate().map(|(index, entry)| {
                 let entry = entry.clone(); let text = format!("{} · {} · {} · {}", entry.selector, short_oid(&entry.oid), full_date(entry.timestamp), if entry.message.is_empty() { "Reference updated" } else { &entry.message });
-                Button::new(("reflog-entry", index)).ghost().w_full().h_auto().min_h(crate::appearance::ui_size(36.)).label(text.clone()).accessibility_label(text).toggled(self.selected.as_ref() == Some(&entry)).on_click(cx.listener(move |this, _, window, cx| this.select(entry.clone(), window, cx)))
-            })).when(matches.is_empty() && self.page.is_some() && !self.pending, |element| element.child(label("reflog-empty", if self.page.as_ref().is_some_and(|page| page.entries.is_empty()) { "No local reflog records for this scope. Reflog recording may be disabled, the branch may not exist, or older entries may have expired." } else { "No loaded entries match this filter." }).text_size(crate::appearance::ui_text(12.)))))
+                Button::new(("reflog-entry", index)).debug_selector(move || format!("reflog-entry-{index}")).ghost().w_full().h_auto().min_h(crate::appearance::ui_size(36.)).label(text.clone()).accessibility_label(text).toggled(self.selected.as_ref() == Some(&entry)).on_click(cx.listener(move |this, _, window, cx| this.select(entry.clone(), window, cx)))
+            })).when(matches.is_empty() && self.page.is_some() && !self.pending, |element| element.child(label("reflog-empty", if self.page.as_ref().is_some_and(|page| page.entries.is_empty()) { "No local reflog records for this scope. Reflog recording may be disabled, the branch may not exist, or older entries may have expired." } else { "No loaded entries match this filter." }).text_size(crate::appearance::ui_text(12.))))))
             .when(matches.len() > 100, |element| element.child(label("reflog-match-limit", "Showing 100 matches. Narrow the filter to find another retained entry.").text_size(crate::appearance::ui_text(12.))))
             .when_some(self.selected.as_ref(), |element, entry| {
                 let oid = entry.oid.clone();
@@ -275,5 +304,52 @@ impl Render for ReflogBrowser {
                 .child(label("reflog-recovery-name-label", "Create a new branch at this commit to keep it reachable").text_size(crate::appearance::ui_text(12.)))
                 .child(Input::new(&self.name).aria_label("New recovery branch name"))
                 .child(button("review-reflog-recovery", "Review recovery branch…", "", false).disabled(unavailable).on_click(cx.listener(|this, _, window, cx| this.recover(window, cx)))))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tags::tests::{
+        assert_room_for_rings, draw, kit_dialog_footer_gap, tagged_repository, window,
+    };
+
+    /// The Reflog dialog gives its room back through the footer gap, taking it
+    /// to be the kit's default; any other default would move the footer.
+    #[gpui::test]
+    fn dialog_footer_gap_is_the_kits(cx: &mut TestAppContext) {
+        assert_eq!(kit_dialog_footer_gap(cx), DIALOG_FOOTER_GAP);
+    }
+    use ::core::prelude::v1::test;
+
+    /// The reflog's content and its list both scroll, so GPUI clips each to
+    /// its bounds on both axes. Read log, at the content's side, and the
+    /// first and last entries keep their rings whole, and nothing moves.
+    #[gpui::test]
+    async fn reflog_browser_keeps_room_for_every_focus_ring(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        let browser = cx.update(|window, cx| {
+            let browser =
+                cx.new(|cx| ReflogBrowser::new(app.downgrade(), repo.clone(), window, cx));
+            browser.update(cx, |this, cx| this.refresh(window, cx));
+            ReflogBrowser::show(browser.clone(), window, cx);
+            browser
+        });
+        let read = browser.update(cx, |this, _| this.task.take());
+        read.expect("the log is read").await;
+        draw(cx);
+        assert_room_for_rings(
+            cx,
+            &app,
+            &["refresh-reflog", "reflog-entry-0", "reflog-entry-2"],
+            &[
+                "reflog-title",
+                "reflog-explanation",
+                "reflog-scope-summary",
+                "reflog-entry-1",
+            ],
+        );
     }
 }
