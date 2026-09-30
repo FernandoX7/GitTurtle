@@ -431,8 +431,14 @@ class Runner:
             report = self.gates(self.repo, profiles, baseline)
             self.state["baseline_evidence"] = str(baseline / "gates.json")
             if not report["passed"] or not checkout_clean(self.repo):
-                self.state["phase"] = "baseline_failed"
-                self.state["budget_running"] = False
+                failed = next((check for check in report["checks"] if check.get("returncode") != 0), None)
+                if report["passed"]:
+                    reason = "baseline gates left the accepted checkout with changes"
+                elif failed:
+                    reason = f"baseline {failed['name']} gate failed; inspect {failed['log']}"
+                else:
+                    reason = f"baseline gates failed; inspect {baseline / 'gates.json'}"
+                self.state.update(phase="baseline_failed", reason=reason, budget_running=False)
                 self.save()
                 return self.state
             self.state["baseline_passed"] = True

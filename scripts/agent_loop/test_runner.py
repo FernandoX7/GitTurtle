@@ -364,7 +364,19 @@ class RunnerTests(unittest.TestCase):
         adapter = FakeCodex()
         state = self.execute(directory, adapter, lambda *_: {"passed": False, "checks": []})
         self.assertEqual(state["phase"], "baseline_failed")
+        self.assertRegex(state["reason"], r"^baseline gates failed; inspect .*gates\.json$")
         self.assertEqual(adapter.calls, [])
+
+    def test_baseline_failure_names_the_failed_gate_and_its_log(self):
+        directory = self.create()
+        checks = [
+            {"name": "format", "returncode": 0, "log": "/logs/format.log"},
+            {"name": "workspace-tests", "returncode": 101, "log": "/logs/workspace-tests.log"},
+        ]
+        state = self.execute(directory, FakeCodex(), lambda *_: {"passed": False, "checks": checks})
+        self.assertEqual(state["phase"], "baseline_failed")
+        self.assertEqual(state["reason"], "baseline workspace-tests gate failed; inspect /logs/workspace-tests.log")
+        self.assertFalse(state["budget_running"])
 
     def test_output_budget_stops_before_another_session(self):
         self.options["max_output_tokens"] = 10
