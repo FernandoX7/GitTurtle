@@ -4,6 +4,7 @@ use gpui_kit::base::ElementExt;
 use gpui_kit::base::{Scrollbar, ScrollbarMode};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder;
+use std::cell::RefCell;
 
 fn reveal_resized_selection(
     previous: &mut Option<(Size<Pixels>, Pixels)>,
@@ -740,6 +741,7 @@ impl GitTurtle {
     fn render_history_scope_toolbar(
         &self,
         scope: impl IntoElement,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = palette(cx);
@@ -752,7 +754,7 @@ impl GitTurtle {
                 self.history_paging.offset + self.visible.len()
             )
         };
-        let compact = px(self.history_width) < labelled_scope_toolbar_width(&count, cx);
+        let compact = px(self.history_width) < labelled_scope_toolbar_width(&count, window);
         // Compact, each keeps the app's own artwork, turned: `symbol` a
         // quarter turn clockwise per 0.25 of `turn`.
         let paging =
@@ -886,7 +888,7 @@ impl GitTurtle {
         }
     }
 
-    pub(super) fn render_history(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_history(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
         let scope = self
             .scope
@@ -1033,7 +1035,7 @@ impl GitTurtle {
                     }
                 });
             })
-            .child(self.render_history_scope_toolbar(scope, cx))
+            .child(self.render_history_scope_toolbar(scope, window, cx))
             .child(
                 div()
                     .h(crate::appearance::ui_size(38.))
@@ -1652,6 +1654,7 @@ impl GitTurtle {
         &self,
         column_min: Pixels,
         column: Pixels,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if self.blame.is_visible() {
@@ -1915,7 +1918,7 @@ impl GitTurtle {
                     && !self.blame.is_visible()
                     && !matches!(self.text_mode, TextMode::Diagrams | TextMode::Markdown)
                     && !quick_source,
-                |el| el.child(self.render_text_review(column, cx)),
+                |el| el.child(self.render_text_review(column, window, cx)),
             )
             .child(
                 div()
@@ -1997,42 +2000,108 @@ const TIGHT_CONTENT_MIN: f32 = 176.;
 /// Projects and profile labels so it stays on one row.
 const COMPACT_HEADER_WIDTH: f32 = 800.;
 /// The width History's scope toolbar needs to keep its labels, with the scope
-/// name yielded: 9.75 px of padding on each side, seven 6.5 px gaps, the
-/// fixed-size branch icon, the count, and the Columns, Latest, Previous and
-/// Older buttons, each the shared `button` helper's 10 px of padding on
-/// either side of its label, and Columns and Older a 16 px icon 6 px before
-/// it. In a narrower column the toolbar keeps only icons.
-fn labelled_scope_toolbar_width(count: &str, cx: &App) -> Pixels {
+/// name yielded: `px_3` on either side, seven `gap_2` gaps, the fixed-size
+/// branch icon, the count, and the Columns, Latest, Previous and Older
+/// buttons, each the shared `button` helper's 10 px of padding on either side
+/// of its label, and Columns and Older a 16 px icon 6 px before it. In a
+/// narrower column the toolbar keeps only icons.
+fn labelled_scope_toolbar_width(count: &str, window: &Window) -> Pixels {
+    let key = LineKey::current(window);
     let label = appearance::ui_text(12.);
-    appearance::ui_size(2. * 9.75 + 7. * 6.5 + 4. * 20. + 2. * 22.)
-        + px(15.)
-        + interface_text_width(
+    let labels = cached_width(&SCOPE_LABELS, &key, || {
+        line_widths(
             &[
-                (count, appearance::ui_text(10.)),
                 ("Columns", label),
                 ("Latest", label),
                 ("Previous", label),
                 ("Older", label),
             ],
-            cx,
+            window,
         )
+    });
+    // The count changes with the page and search; it is laid out again only
+    // then, and the labels only when the font or the sizes change.
+    let count = SCOPE_COUNT.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        match &*cache {
+            Some((cached, text, width)) if *cached == key && text == count => *width,
+            _ => {
+                let width = line_widths(&[(count, appearance::ui_text(10.))], window);
+                *cache = Some((key, count.to_owned(), width));
+                width
+            }
+        }
+    });
+    window.rem_size() * (2. * 0.75 + 7. * 0.5)
+        + appearance::ui_size(4. * 20. + 2. * 22.)
+        + px(15.)
+        + labels
+        + count
 }
 
-/// The widths `texts` need as single lines in the interface font, summed: the
-/// glyph advances of each, rounded up to a whole pixel as a laid-out line is.
-/// Kerning only narrows a line, so this never falls short of the drawn text.
-pub(crate) fn interface_text_width(texts: &[(&str, Pixels)], cx: &App) -> Pixels {
-    let system = cx.text_system();
-    let font_id = system.resolve_font(&font(
-        gpui_kit::component::Theme::global(cx).font_family.clone(),
-    ));
+/// What a line of interface text is laid out with besides its text: the
+/// inherited font, and the interface and rem sizes its text size comes from.
+#[derive(Clone, PartialEq)]
+pub(crate) struct LineKey {
+    font: Font,
+    scale: u32,
+    rem: u32,
+}
+
+impl LineKey {
+    pub(crate) fn current(window: &Window) -> Self {
+        Self {
+            font: window.text_style().font(),
+            scale: appearance::ui_scale().to_bits(),
+            rem: f32::from(window.rem_size()).to_bits(),
+        }
+    }
+}
+
+thread_local! {
+    static SCOPE_LABELS: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
+    static SCOPE_COUNT: RefCell<Option<(LineKey, String, Pixels)>> = const { RefCell::new(None) };
+}
+#[cfg(test)]
+thread_local! {
+    /// Lines [`line_widths`] has asked the text system to lay out.
+    pub(crate) static LINE_LAYOUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// `width` for `key`, computed again only when `key` changes, so a steady
+/// render asks the text system nothing.
+pub(crate) fn cached_width(
+    cache: &'static std::thread::LocalKey<RefCell<Option<(LineKey, Pixels)>>>,
+    key: &LineKey,
+    width: impl FnOnce() -> Pixels,
+) -> Pixels {
+    cache.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        match &*cache {
+            Some((cached, width)) if cached == key => *width,
+            _ => {
+                let width = width();
+                *cache = Some((key.clone(), width));
+                width
+            }
+        }
+    })
+}
+
+/// The widths `texts` take as single lines in the inherited interface font,
+/// summed: each shaped by the text system, kerning and fallback fonts
+/// included, and rounded up to a whole pixel as a text element sizes it.
+pub(crate) fn line_widths(texts: &[(&str, Pixels)], window: &Window) -> Pixels {
+    let style = window.text_style();
     texts
         .iter()
         .map(|(text, size)| {
-            text.chars()
-                .filter_map(|ch| system.advance(font_id, *size, ch).ok())
-                .map(|advance| advance.width)
-                .sum::<Pixels>()
+            #[cfg(test)]
+            LINE_LAYOUTS.with(|count| count.set(count.get() + 1));
+            window
+                .text_system()
+                .layout_line(text, *size, &[style.to_run(text.len())], None)
+                .width
                 .ceil()
         })
         .sum()
@@ -2131,7 +2200,7 @@ impl GitTurtle {
                                 }
                             })
                         })
-                        .child(self.render_preview(content_min - rail, column, cx)),
+                        .child(self.render_preview(content_min - rail, column, window, cx)),
                 )
                 .into_any_element()
         } else if self.sidebar && !narrow {
@@ -2158,7 +2227,7 @@ impl GitTurtle {
                 .child(
                     resizable_panel()
                         .size_range(px(320.)..px(10000.))
-                        .child(self.render_history(cx)),
+                        .child(self.render_history(window, cx)),
                 )
                 .into_any_element()
         } else {
@@ -2172,7 +2241,7 @@ impl GitTurtle {
                         .flex_1()
                         .min_w_0()
                         .h_full()
-                        .child(self.render_history(cx)),
+                        .child(self.render_history(window, cx)),
                 )
                 .into_any_element()
         };
@@ -3036,6 +3105,12 @@ mod tests {
             );
             assert_eq!(control.size.height, appearance::ui_size(28.), "{selector}");
         }
+        // A steady render lays out no text to decide the toolbar.
+        let layouts = || LINE_LAYOUTS.with(std::cell::Cell::get);
+        let before = layouts();
+        app.update(cx, |_, cx| cx.notify());
+        draw(cx);
+        assert_eq!(layouts(), before, "text laid out again by a steady render");
         let paging = |cx: &mut VisualTestContext| {
             app.read_with(cx, |app, _| {
                 (
@@ -3054,6 +3129,8 @@ mod tests {
         click(cx, "load-more");
         settle(&app, cx).await;
         assert_eq!(paging(cx), (0, page + 20, None), "after Older");
+        // Only the new count is laid out.
+        assert_eq!(layouts(), before + 1, "after Older");
         // Latest reads current history again and shows its newest rows.
         click(cx, "history-newest");
         settle(&app, cx).await;
@@ -3098,6 +3175,14 @@ mod tests {
             draw(cx);
             let lines = visible_diff_lines(&app, cx, height);
             assert!(lines >= 3., "{lines} diff lines at {width} × {height}");
+            let layouts = LINE_LAYOUTS.with(std::cell::Cell::get);
+            app.update(cx, |_, cx| cx.notify());
+            draw(cx);
+            assert_eq!(
+                LINE_LAYOUTS.with(std::cell::Cell::get),
+                layouts,
+                "text laid out again by a steady render at {width}"
+            );
             let row = cx.debug_bounds("text-review-options").unwrap();
             for selector in [
                 "previous-text-change",
@@ -3120,54 +3205,100 @@ mod tests {
     }
 
     /// Hide whitespace, Context and Reset stay reachable from the keyboard
-    /// in the Options menu, each with its state.
+    /// in the Options menu, with their buttons' disabled states; the menu
+    /// itself opens from the keyboard.
     #[gpui::test]
     async fn narrow_review_options_act_from_the_menu(cx: &mut TestAppContext) {
+        use crate::text_review::Options;
+
         let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
         cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
         settle(&app, cx).await;
         cx.simulate_resize(size(px(461.), px(490.)));
         draw(cx);
+        assert!(cx.debug_bounds("hide-whitespace-changes").is_none());
         let options = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.review.options);
-        // Down selects the first enabled item; each further Down the next.
-        for (downs, expected) in [
-            (
-                1,
-                crate::text_review::Options {
-                    hide_whitespace: true,
-                    context: 3,
-                },
-            ),
-            (
-                2,
-                crate::text_review::Options {
-                    hide_whitespace: true,
-                    context: 12,
-                },
-            ),
-            (3, crate::text_review::Options::default()),
-        ] {
+        let menu_open = |cx: &mut VisualTestContext| {
+            cx.update(|window, _| {
+                window
+                    .context_stack()
+                    .iter()
+                    .any(|context| context.contains("PopupMenu"))
+            })
+        };
+        let open = |cx: &mut VisualTestContext| {
             let menu = cx
                 .debug_bounds("text-review-menu")
                 .expect("the Options menu button");
             cx.simulate_click(menu.center(), Modifiers::default());
             draw(cx);
-            cx.update(|window, _| {
-                assert!(
-                    window
-                        .context_stack()
-                        .iter()
-                        .any(|context| context.contains("PopupMenu"))
-                )
-            });
+            assert!(menu_open(cx));
+        };
+        // Down selects the first enabled item, each further Down the next
+        // enabled one, wrapping; Enter chooses it.
+        let choose = |cx: &mut VisualTestContext, downs: usize| {
             for _ in 0..downs {
                 cx.simulate_keystrokes("down");
             }
             cx.simulate_keystrokes("enter");
+        };
+
+        // With the original diff, Reset review is disabled: the third Down
+        // passes over it back to Hide whitespace.
+        open(cx);
+        choose(cx, 3);
+        settle(&app, cx).await;
+        let hidden = Options {
+            hide_whitespace: true,
+            context: 3,
+        };
+        assert_eq!(options(cx), hidden);
+
+        // The Options button follows the arrows in the tab order, just before
+        // the diff, and Enter opens its menu.
+        cx.update(|window, cx| {
+            let editor = app.read(cx).patch_editor.clone().expect("a unified diff");
+            let focus = editor.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+        });
+        draw(cx);
+        cx.update(|window, cx| window.focus_prev(cx));
+        draw(cx);
+        cx.update(|window, _| {
+            assert!(
+                window
+                    .context_stack()
+                    .iter()
+                    .any(|context| context.contains("Popover")),
+                "focus on the Options trigger: {:?}",
+                window.context_stack()
+            )
+        });
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(menu_open(cx), "Enter opens the Options menu");
+        choose(cx, 2);
+        settle(&app, cx).await;
+        assert_eq!(
+            options(cx),
+            Options {
+                context: 12,
+                ..hidden
+            }
+        );
+
+        // Context steps to its last value, where it is disabled: the second
+        // Down passes over it to Reset review.
+        for context in [48, 192] {
+            open(cx);
+            choose(cx, 2);
             settle(&app, cx).await;
-            assert_eq!(options(cx), expected, "after {downs} down");
-            assert!(cx.debug_bounds("hide-whitespace-changes").is_none());
+            assert_eq!(options(cx), Options { context, ..hidden });
         }
+        open(cx);
+        choose(cx, 2);
+        settle(&app, cx).await;
+        assert_eq!(options(cx), Options::default());
     }
 
     /// "Original Git diff" and the other captions start where the buttons'
@@ -3195,6 +3326,16 @@ mod tests {
         let inset = cx.update(|window, _| window.rem_size() * 0.5);
         cx.simulate_resize(size(px(1000.), px(680.)));
         draw(cx);
+        // The full row, its caption on a line of its own: the column holds
+        // the row as it first appears, but not with the longer caption.
+        let column = cx.debug_bounds("preview-content").unwrap().size.width;
+        let needed = crate::text_review::OPTIONS_ROW
+            .with(|cache| cache.borrow().as_ref().map(|(_, labels)| *labels))
+            .expect("the row's laid-out labels")
+            + cx.update(|window, _| window.rem_size() * 7.75);
+        assert!(column >= needed, "column {column:?}, row {needed:?}");
+        assert!(cx.debug_bounds("hide-whitespace-changes").is_some());
+        assert!(cx.debug_bounds("text-review-menu").is_none());
         let first = cx.debug_bounds("previous-text-change").unwrap();
         let caption = cx.debug_bounds("text-review-caption").unwrap();
         assert!(

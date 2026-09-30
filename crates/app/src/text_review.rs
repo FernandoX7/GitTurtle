@@ -9,8 +9,7 @@ use crate::{
 };
 use anyhow::{Result, ensure};
 use gpui_kit::{
-    AnyElement, App, Context, InteractiveElement, IntoElement, ParentElement, Pixels, Styled,
-    Window,
+    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, Pixels, Styled, Window,
     component::{
         Disableable, Icon, Sizable,
         button::{Button, ButtonVariants},
@@ -400,7 +399,12 @@ impl GitTurtle {
     /// the interface size, the change buttons keep only their arrows and the
     /// other options move into an Options menu, so the row stays one line
     /// and the diff keeps its height.
-    pub(super) fn render_text_review(&self, column: Pixels, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_text_review(
+        &self,
+        column: Pixels,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = palette(cx);
         let options = self.review.options;
         let busy = self.loading.is_some() || self.operation_busy.is_some();
@@ -455,7 +459,7 @@ impl GitTurtle {
             .on_click(
                 cx.listener(|this, _, window, cx| this.navigate_text_change(true, window, cx)),
             );
-        if column < options_row_width(cx) {
+        if column < options_row_width(window) {
             // The app's arrow, turned up and down.
             let arrow = |turn: f32| {
                 Icon::default()
@@ -472,58 +476,34 @@ impl GitTurtle {
                 .dropdown_caret(true)
                 .mr_neg_2()
                 .accessibility_label("Review options")
-                .tooltip("Hide whitespace, expand context or reset the review")
+                .tooltip(
+                    "Hide whitespace-only changes, expand unchanged context (3, 12, 48, then 192 lines) \
+                     or reset to the original diff. Source tabs keep exact content; partial staging \
+                     requires the original diff.",
+                )
                 .dropdown_menu(move |menu, _, _| {
                     // Built when opened; each item acts on the review as it
                     // is when chosen, as the buttons of the full row do.
-                    let item =
-                        |label: String,
-                         checked: bool,
-                         disabled: bool,
-                         change: fn(Options) -> Option<Options>| {
+                    options_menu(options, busy, reset_disabled)
+                        .into_iter()
+                        .fold(menu, |menu, item| {
                             let owner = owner.clone();
-                            PopupMenuItem::new(label)
-                                .checked(checked)
-                                .disabled(disabled)
-                                .on_click(move |_, window, cx| {
-                                    let _ = owner.update(cx, |this, cx| {
-                                        if this.page == AppPage::Repository
-                                            && let Some(options) = change(this.review.options)
-                                        {
-                                            this.set_text_review(options, window, cx);
-                                        }
-                                    });
-                                })
-                        };
-                    menu.item(item(
-                        "Hide whitespace".into(),
-                        options.hide_whitespace,
-                        busy,
-                        |options| {
-                            Some(Options {
-                                hide_whitespace: !options.hide_whitespace,
-                                ..options
-                            })
-                        },
-                    ))
-                    .item(item(
-                        format!("Context {} +", options.context),
-                        false,
-                        busy || next_context.is_none(),
-                        |options| {
-                            CONTEXT_STEPS
-                                .iter()
-                                .copied()
-                                .find(|&n| n > options.context)
-                                .map(|context| Options { context, ..options })
-                        },
-                    ))
-                    .item(item(
-                        "Reset review".into(),
-                        false,
-                        reset_disabled,
-                        |_| Some(Options::default()),
-                    ))
+                            menu.item(
+                                PopupMenuItem::new(item.label)
+                                    .checked(item.checked)
+                                    .disabled(item.disabled)
+                                    .on_click(move |_, window, cx| {
+                                        let _ = owner.update(cx, |this, cx| {
+                                            if this.page == AppPage::Repository
+                                                && let Some(options) =
+                                                    (item.choose)(this.review.options)
+                                            {
+                                                this.set_text_review(options, window, cx);
+                                            }
+                                        });
+                                    }),
+                            )
+                        })
                 });
             row.child(
                 previous
@@ -553,25 +533,85 @@ impl GitTurtle {
     }
 }
 
+/// One item of the collapsed review options' menu.
+struct MenuItem {
+    label: String,
+    checked: bool,
+    disabled: bool,
+    /// The options it chooses, from those current when it is chosen.
+    choose: fn(Options) -> Option<Options>,
+}
+
+/// The Options menu, as the full row's Hide whitespace, Context and Reset
+/// review buttons: whitespace a checked item, context showing its value and
+/// disabled at its last step, reset disabled as its button is.
+fn options_menu(options: Options, busy: bool, reset_disabled: bool) -> [MenuItem; 3] {
+    let next_context = |options: Options| {
+        CONTEXT_STEPS
+            .iter()
+            .copied()
+            .find(|&n| n > options.context)
+            .map(|context| Options { context, ..options })
+    };
+    [
+        MenuItem {
+            label: "Hide whitespace".into(),
+            checked: options.hide_whitespace,
+            disabled: busy,
+            choose: |options| {
+                Some(Options {
+                    hide_whitespace: !options.hide_whitespace,
+                    ..options
+                })
+            },
+        },
+        MenuItem {
+            label: format!("Context {} +", options.context),
+            checked: false,
+            disabled: busy || next_context(options).is_none(),
+            choose: next_context,
+        },
+        MenuItem {
+            label: "Reset review".into(),
+            checked: false,
+            disabled: reset_disabled,
+            choose: |_| Some(Options::default()),
+        },
+    ]
+}
+
 /// The width the review options take on one row as they first appear, with
-/// "Original Git diff": 9.75 px of padding on each side, six items 3.25 px
-/// apart, and five small buttons with 6.5 px on either side of their label.
-/// Fixed labels keep the layout from switching when an option is chosen; a
-/// longer caption wraps to a line of its own.
-fn options_row_width(cx: &App) -> Pixels {
-    let label = appearance::ui_size(13. * 0.875);
-    appearance::ui_size(2. * 9.75 + 5. * 3.25 + 5. * 13.)
-        + crate::views::interface_text_width(
-            &[
-                ("Previous change", label),
-                ("Next change", label),
-                ("Hide whitespace", label),
-                ("Context 3 +", label),
-                ("Reset review", label),
-                ("Original Git diff", appearance::ui_text(11.)),
-            ],
-            cx,
+/// "Original Git diff": `px_3` on either side, six items `gap_1` apart, and
+/// five small buttons with `px_2` on either side of a `text_sm` label. Fixed
+/// labels keep the layout from switching when an option is chosen; a longer
+/// caption wraps to a line of its own.
+pub(crate) fn options_row_width(window: &Window) -> Pixels {
+    let rem = window.rem_size();
+    rem * (2. * 0.75 + 5. * 0.25 + 5. * 2. * 0.5)
+        + crate::views::cached_width(
+            &OPTIONS_ROW,
+            &crate::views::LineKey::current(window),
+            || {
+                let label = rem * 0.875;
+                crate::views::line_widths(
+                    &[
+                        ("Previous change", label),
+                        ("Next change", label),
+                        ("Hide whitespace", label),
+                        ("Context 3 +", label),
+                        ("Reset review", label),
+                        ("Original Git diff", appearance::ui_text(11.)),
+                    ],
+                    window,
+                )
+            },
         )
+}
+
+thread_local! {
+    /// The review options' laid-out labels, by font and size.
+    pub(crate) static OPTIONS_ROW: std::cell::RefCell<Option<(crate::views::LineKey, Pixels)>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// A navigation action preserves selection/copy and horizontal scroll. Repeated
@@ -605,6 +645,53 @@ pub(crate) fn next_change(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The collapsed Options menu carries each full-row button's state and
+    /// chooses what that button would.
+    #[test]
+    fn collapsed_options_menu_keeps_each_buttons_state() {
+        let states =
+            |menu: [MenuItem; 3]| menu.map(|item| (item.label, item.checked, item.disabled));
+        let original = Options::default();
+        assert_eq!(
+            states(options_menu(original, false, true)),
+            [
+                ("Hide whitespace".into(), false, false),
+                ("Context 3 +".into(), false, false),
+                ("Reset review".into(), false, true),
+            ]
+        );
+        let hidden = Options {
+            hide_whitespace: true,
+            context: 3,
+        };
+        let [whitespace, context, reset] = options_menu(hidden, false, false);
+        assert!(whitespace.checked && !reset.disabled);
+        assert_eq!((whitespace.choose)(hidden), Some(original));
+        assert_eq!(
+            (context.choose)(hidden),
+            Some(Options {
+                context: 12,
+                ..hidden
+            })
+        );
+        assert_eq!((reset.choose)(hidden), Some(original));
+        let widest = Options {
+            hide_whitespace: false,
+            context: 192,
+        };
+        let [_, context, _] = options_menu(widest, false, false);
+        assert_eq!(
+            (context.label.as_str(), context.disabled),
+            ("Context 192 +", true)
+        );
+        assert_eq!((context.choose)(widest), None);
+        assert!(
+            options_menu(hidden, true, true)
+                .iter()
+                .all(|item| item.disabled)
+        );
+    }
     #[test]
     fn review_removes_actionable_partial_ids_and_reset_retains_the_exact_snapshot() {
         use gitturtle_core::{ChangeArea, GitRepository, TextPreview};
