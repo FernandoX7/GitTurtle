@@ -65,6 +65,54 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## September 29 whole focus ring in Tags and Reflog
+
+Task `tags-reflog-focus-ring`, from the design review of the [solid focus ring](#september-29-solid-focus-ring-outside-every-button). The Tags dialog clips its body, and the Tags and Reflog lists scroll, so GPUI masks each to its own bounds on both axes (gpui-pre 0.3.4 `Style::overflow_mask`). A focused Create tag… lost its ring's top, a focused Tags row kept only its corners, and a Reflog entry lost its top or bottom and both sides. Each container now keeps the installed ring's gap plus width as room inside its clip and gives it back, so nothing moves unfocused (`tags.rs`, `reflog.rs`):
+- the Tags body through the title's margin and the dialog's gap above the footer;
+- the Reflog content through its side margins and that gap;
+- each list through its own margin, the Reflog list through a wrapper, because its scrolling parent counts each child's whole box.
+
+Tests:
+- `tags::tests::tag_browser_keeps_room_for_every_focus_ring` (Create tag…, the first and last rows) and `reflog::tests::reflog_browser_keeps_room_for_every_focus_ring` (Read log, the first and last entries) require each control, grown by the ring's gap plus width, to lie inside every ancestor content mask. With a zero-width ring, which is main's layout, they require every painted rectangle and named element to stay where it was, and a wheel step over each control to move nothing. On main's layout both failed, naming every control ("create-tag: ring … mask …").
+- `tags::tests::dialog_footer_gap_is_the_kits` and its Reflog twin measure a kit dialog's gap above the footer with no override, and require it to equal the 16 px the room is taken from.
+
+Native evidence, full tier:
+- Builds: base `703d900` (sha256 `0f2008b1…`) and candidate `6c61c45` (sha256 `8f15425e…`), both debug and clean; `qa.py identity` reported no problem. The later commit `7efc226` changes only tests. The branch then merged `main`, whose Settings change (#96) does not reach these dialogs.
+- Host: Ubuntu 26.04, GNOME 50 on Wayland, XWayland `:0` at scale factor 1, window 1000x680. Input went through Mutter RemoteDesktop with verified X focus, and a local qaflow driver, `drive_tags_pair.py` (sha256 `56fa10e4…`), took every frame.
+- Fixture: a `scripts/create-demo-repo.py` repository with 15 more tags under the QA identity, 16 in all, and 12 HEAD reflog entries (HEAD `52f471a`), unchanged by every launch. Both lists overflow: Tags shows rows 0 to 9 and Reflog rows 0 to 5, the last partly.
+- Route: the command palette's "browse and manage tags" and "browse reflog" open each dialog with nothing focused. In Tags, Tab 1 reaches the filter, 2 Create tag…, 3 the first row and 18 the last. In Reflog, Tab 1 reaches the scope, 2 Read log, 3 the filter, 4 the first entry and 15 the last. Neither list scrolls a focused row into view on either build, so for the last rows each list was first scrolled to its end with the wheel.
+- `qa.py compare <base> <candidate> --mask status-timing`, both palettes. These are identical: the Tags and Reflog rest frames, the Reflog with an entry selected, and both lists scrolled to their end unfocused. The lists now clip 3 px further out, but that band holds only the dialog's surface on both builds. Each focus frame differs only in the 3 px band around the focused control:
+  - 228 px for Create tag…, 1,286 for the first or last Tags row, 1,574 for the first or last Reflog entry and 62 for Read log;
+  - 1,339, 70 and 140 for the Tags filter, the Reflog scope and the Reflog filter, Inputs whose toolkit ring the containers also cut.
+
+Ring pixels in the 1 to 3 px band outside each focused Button, against the same build's unfocused frame at the same scroll. Each cell gives the differing pixels out of the band; the counts are the same in both palettes:
+
+| Control | Build | Top | Bottom | Left | Right |
+| --- | --- | --- | --- | --- | --- |
+| Create tag… | base | 0/333 | 228/333 | 62/84 | 62/84 |
+| | candidate | 228/333 | 228/333 | 62/84 | 62/84 |
+| First Tags row | base | 0/1,698 | 1,138/1,698 | 0/102 | 0/102 |
+| | candidate | 1,138/1,698 | 1,138/1,698 | 74/102 | 74/102 |
+| Last Tags row, list at its end | base | 1,138 | 0 | 0 | 0 |
+| | candidate | 1,138 | 1,138 | 74 | 74 |
+| First Reflog entry | base | 0/2,118 | 1,418/2,118 | 0/108 | 0/108 |
+| | candidate | 1,418/2,118 | 1,418/2,118 | 78/108 | 78/108 |
+| Last Reflog entry, list at its end | base | 1,418 | 0 | 0 | 0 |
+| | candidate | 1,418 | 1,418 | 78 | 78 |
+| Read log | base | 186/270 | 186/270 | 62/84 | 0/84 |
+| | candidate | 186/270 | 186/270 | 62/84 | 62/84 |
+
+The base's corner stubs are where the ring's rounded corners fall inside the row's box, which the band does not count. Every candidate Button side reads 11.43:1 in Midnight and 6.55:1 in Porcelain. The Inputs draw the toolkit's own focus style, unchanged: an accent border at 7.53:1 and 4.67:1 and a half-accent outer band at 3.69:1 and 2.27:1, now on all four sides.
+
+Frames: [`evidence/tags-focus-ring/`](evidence/tags-focus-ring/), the candidate's ten states in each palette (20 files): `tags-{rest,filter-focus,create-focus,row-first-focus,row-last-focus}` and `reflog-{rest,scope-focus,row-first-focus,row-last-focus,selected-rest}`. `qa.py privacy scan --redacted --jobs 8` with the local template set found all 20 clean. A full-resolution view shows only the demo repository's content and fictional author, the QA identity, a shortened `/tmp/gitturtl…` path and the `tags-reflog` tab. The fix changes the views in the #85 frames `evidence/themes/button-focus-ring/{,base-}porcelain-1000x680-clip-tags-create-tag.png`, `porcelain-1000x680-clip-tags-row.png`, `porcelain-1000x680-clip-reflog-row{1,2}.png` and `midnight-1000x680-reflog-row-focus.png`, which stay as that build's record of the defect.
+
+Found on the way, on both builds and not changed here:
+- Neither list scrolls a focused row into view. With the Reflog entry just below the list's view focused, the candidate draws the top of its ring as a 2 px accent line in the list's new room, where the base showed no focus at all.
+- Selecting a Reflog entry at 1000x680 collapses the entry list to nothing, lets the commit message editor overlap "Create a new branch at this commit…", and grows the dialog so that Done moves from y 513 to 572 (`reflog-selected-rest`).
+- The tag inspector's scrolling list of Push to… buttons keeps no room for the ring.
+
+Not covered: macOS, fractional scale factors (at 1.5 the room and the reduced gap snap separately, so the footer can rise one device pixel), release builds, the accessibility tree, and the branch menu's route to either dialog.
+
 ## September 29 whole focus ring on Your themes rows
 
 Task `your-themes-rows-whole-focus-ring`, from the finding in [frames retaken under the solid focus ring](#september-29-frames-retaken-under-the-solid-focus-ring); the owner kept `DESIGN.md`'s whole-ring promise. Three faults cut the bottom edge of the ring around a focused Edit…, Export… or Delete… in Settings' Your themes list:
