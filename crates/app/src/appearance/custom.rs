@@ -287,8 +287,12 @@ pub fn luminance(rgb: u32) -> f64 {
 
 /// WCAG contrast ratio between two `0xrrggbb` colors, from 1 to 21.
 pub fn contrast(a: u32, b: u32) -> f64 {
-    let a = luminance(a);
-    let b = luminance(b);
+    luminance_contrast(luminance(a), luminance(b))
+}
+
+/// WCAG contrast ratio between two relative luminances, for a caller that measures one color
+/// against many.
+pub fn luminance_contrast(a: f64, b: f64) -> f64 {
     (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 

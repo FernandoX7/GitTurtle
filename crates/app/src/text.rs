@@ -768,5 +768,7 @@ mod tests {
                 }
             }
         });
+        // The patch is drawn as the kit's plain text, which has no grammar to color it.
+        assert_eq!(language, "text");
     }
 }
