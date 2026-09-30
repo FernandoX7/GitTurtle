@@ -1,1 +1,2 @@
+# git -C /tmp/gitturtle-evidence/writes-10/http/lan.git for-each-ref --format='%(objectname) %(refname)' (2026-09-30, after the push, about 19:28 UTC)
 8fee510fb8e58bda5ac91ec4e881704d22fd177e refs/heads/main

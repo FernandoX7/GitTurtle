@@ -220,7 +220,7 @@ Checked on 2026-09-27 on Omarchy 4.0.4 (Arch; Hyprland 0.56.2 on native
 Wayland; AMD Radeon Vega with Mesa 26.2.2 and `vulkan-radeon`; one 1366 × 768
 display at scale 1). Other Arch-based desktops share the build requirements but
 have no recorded check. On Omarchy itself, Git writes and network actions were
-checked on 2026-09-30: staging a file and a single hunk, unstaging, committing,
+checked on 2026-09-30, on a headless 1480 × 800 output: staging a file and a single hunk, unstaging, committing,
 creating, switching and deleting a branch, and fetch, pull and push over
 `file://` and over HTTP with GitTurtle's authentication prompt; see the
 [Git writes record](validation.md#september-30-git-writes-and-network-actions-on-omarchy).
