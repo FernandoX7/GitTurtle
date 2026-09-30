@@ -207,3 +207,32 @@ Rendered tooltips across themes and interface sizes still require native
 inspection. Remove this part of the patch when upstream Tooltip keeps a popup
 wider than the window inside it, or its positioner constrains the popup's
 width.
+
+The disabled-switch patch modifies `src/switch.rs`. Upstream Switch fades a
+disabled Switch's track to half opacity (`disabled_bg`) and paints its thumb in
+`switch_thumb` at full strength. Its comment reasoned that the thumb is
+`background`, so fading the track alone lands on the pixels a grouped fade
+would, but the thumb is `switch_thumb`, which GitTurtle's palettes set to their
+text color (`crates/app/src/appearance.rs`). A disabled Switch therefore drew a
+full-strength thumb on a faded track and read as available. The consuming path
+is Settings' Follow system appearance switch, which Settings disables while the
+Omarchy card is selected (`.disabled(desktop_theme)` in
+`crates/app/src/settings.rs`); every other disabled Switch gets the same fade.
+
+While a Switch is disabled its thumb now takes `switch_thumb` at the track's
+0.5, through the thumb's disabled state style (`SwitchThumb::disabled`), and the
+comment names the thumb's actual token. GPUI multiplies each primitive's alpha
+instead of compositing the control as one group, so the faded track shows
+through the faded thumb; that is accepted. An enabled Switch paints exactly as
+before, on or off, and nothing else changes: geometry, the thumb's travel, the
+label, the disabled label color and cursor, activation and focus.
+
+`cargo test --locked -p gitturtle a_disabled_switch_fades_its_thumb_with_its_track`
+selects the Omarchy theme from a fixture in the application's Settings, which
+disables Follow system, and reads the switch's track and thumb fills from the
+rendered scene: both are the palette's at half opacity. With Midnight selected,
+off and on, the enabled switch paints its track and thumb at full strength. It
+runs on Linux only, where the Omarchy theme exists. How the faded switch renders
+in the real window still needs native inspection. Remove this part of the patch
+when upstream fades a disabled Switch's thumb with its track, and that
+regression passes without it.

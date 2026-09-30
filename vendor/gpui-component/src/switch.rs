@@ -125,12 +125,16 @@ impl RenderOnce for Switch {
             .map(Background::from)
             .unwrap_or(cx.theme().tokens.primary.into());
         let unchecked_bg: Background = cx.theme().tokens.switch.into();
-        // GPUI's element opacity multiplies each primitive's alpha instead of
-        // compositing the subtree as one group, so fading the whole control
-        // would let the track show through the thumb. Fading the track alone
-        // lands on the pixels a grouped fade would: the thumb is `background`.
-        let disabled_bg = if checked { checked_bg } else { unchecked_bg }.opacity(0.5);
+        // A disabled Switch fades its track and its thumb by the same factor.
+        // The thumb is `switch_thumb`, not the surface behind the track, so a
+        // thumb left at full strength on a faded track read as live. GPUI
+        // multiplies each primitive's alpha instead of compositing the control
+        // as one group, so the faded track shows through the faded thumb,
+        // which is accepted.
+        let disabled_opacity = 0.5;
+        let disabled_bg = if checked { checked_bg } else { unchecked_bg }.opacity(disabled_opacity);
         let toggle_bg: Background = cx.theme().tokens.switch_thumb.into();
+        let disabled_toggle_bg = toggle_bg.opacity(disabled_opacity);
         let disabled_label_color = cx.theme().muted_foreground;
 
         let (bg_width, bg_height) = match self.size {
@@ -209,10 +213,14 @@ impl RenderOnce for Switch {
                         .child(
                             // Switch Toggle
                             SwitchThumb::new(checked)
+                                .disabled(self.disabled)
                                 .rounded(radius)
                                 .size(bar_width)
                                 .left(thumb_x)
-                                .bg(toggle_bg),
+                                .bg(toggle_bg)
+                                .styles(|styles| {
+                                    styles.disabled(|style| style.bg(disabled_toggle_bg))
+                                }),
                         ),
                 )
                 .when_some(self.label, |this, label| {
