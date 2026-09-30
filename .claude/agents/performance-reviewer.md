@@ -1,7 +1,8 @@
 ---
 name: performance-reviewer
 description: Measure and review GitTurtle hot paths so the app stays fast: history, search, attribution, refresh, previews, scrolling, passive Git reads, scheduling and caches. Use for any change on those paths, for a performance attestation, or when the owner asks whether something got slower.
-model: opus
+model: claude-opus-5-5
+effort: high
 tools: Read, Grep, Glob, Bash
 maxTurns: 120
 skills: gitturtle-performance

@@ -1867,6 +1867,54 @@
         "tooling"
       ],
       "commit": "feat(native-qa): send input through Mutter RemoteDesktop"
+    },
+    {
+      "id": "atspi-disabled-state",
+      "title": "Report disabled Buttons as disabled to AT-SPI on Linux",
+      "description": "Hard; investigate before editing. Owner request of 2026-09-30. Queued in docs/development/queue-2026-09-30.json, a self-contained queue with no dependency into tasks.json. Interactive: if it vendors a crate it needs a row in vendor/AGENTS.md, which the unattended controller refuses to change (runner.py `controlled`). Run it in an interactive session, and stop an unattended run before it becomes eligible; it is last in the chain. On Linux every disabled Button reports `enabled` and `sensitive` to AT-SPI (docs/validation.md \"September 30 Tab leaves a focused Button that turns disabled\", Accessibility), and docs/native-accessibility.md:19 qualifies its claim. The cause is the pinned `accesskit_atspi_common` 0.19.1: `src/node.rs:373-377` adds `Enabled|Sensitive` unless the role supports read-only and the node is read-only or disabled, and `accesskit_consumer` 0.38.0 `is_read_only_supported` (`src/node.rs:844`) excludes Button. So gpui-base's `set_disabled()` (vendor/gpui-base/src/button.rs:332) never reaches AT-SPI. Planner research, checked 2026-09-30 on crates.io and in the published crates: AccessKit fixed this in accesskit_atspi_common 0.21.0 (2026-09-25; \"Expose non-disabled nodes as enabled and sensitive on Unix\", AccessKit/accesskit#788, commit 6ee0558b, +6/-4 in adapters/atspi-common/src/node.rs). 0.21.0 needs accesskit 0.25 and accesskit_consumer 0.39, and accesskit_unix 0.24.0 carries it. The workspace pins accesskit 0.24.1 and accesskit_unix 0.22.1 through gpui-pre-linux 0.3.4. Even gpui-pre-linux 0.3.7 (2026-09-28; gpui-kit 0.7.0 pins gpui-pre =0.3.7) still requires `accesskit ^0.24` and `accesskit_unix ^0.22`, so no compatible release carries the fix. accesskit_consumer 0.38.0 already has the `is_read_only()` (node.rs:452) the fix calls. Options: (a) vendor accesskit_atspi_common 0.19.1 (MIT OR Apache-2.0) with the #788 backport through `[patch.crates-io]`, like the four existing vendor patches; (b) ask upstream for a 0.19.x backport release, which only the owner can do; (c) wait for a gpui-pre release on accesskit 0.25. The planner favours (a), with (b) in parallel; re-check these facts first. A dependency change needs the independent security review (docs/development/security-review.md), license and advisory checks and THIRD_PARTY_NOTICES.md. deny.toml is a policy file and stays out of scope. Not covered: VoiceOver on macOS, which this Linux host cannot reach (the macOS adapter is untouched), Orca speech and Windows. Last in the queue and chain: it is the hardest and needs an owner decision on a new vendored crate.",
+      "depends_on": [],
+      "scope": [
+        "vendor/accesskit_atspi_common/**",
+        "vendor/AGENTS.md",
+        "Cargo.toml",
+        "Cargo.lock",
+        "THIRD_PARTY_NOTICES.md",
+        "crates/app/Cargo.toml",
+        "crates/app/src/native_accessibility.rs",
+        "crates/app/src/native_accessibility/**",
+        "docs/native-accessibility.md",
+        "docs/development/*-accesskit-atspi-disabled.md",
+        "docs/validation.md",
+        "docs/evidence/**"
+      ],
+      "acceptance": [
+        {
+          "id": "research",
+          "description": "A dated note, docs/development/YYYY-MM-DD-accesskit-atspi-disabled.md, follows docs/development/research-template.md. It re-checks the versions and the upstream fix above against crates.io and the AccessKit repository at a pinned revision, compares options (a) to (c), and states the recommendation and its removal condition. The pull request follows the note, or stops at it if the note recommends leaving dependencies unchanged for now."
+        },
+        {
+          "id": "fix",
+          "description": "Under option (a), vendor/accesskit_atspi_common holds the 0.19.1 source with only the #788 change applied. A `[patch.crates-io]` entry selects it, and the workspace excludes it like the other vendor patches. Its GITTURTLE-PATCH.md records the upstream crate version and checksum, the upstream commit, the modified file, the consuming path (gpui-pre-linux, then accesskit_unix, then this crate) and the removal condition (a gpui-pre release on accesskit_unix 0.24 or later). vendor/AGENTS.md's table, Cargo.lock and THIRD_PARTY_NOTICES.md are updated, and `cargo deny --locked check` passes."
+        },
+        {
+          "id": "test",
+          "description": "A test fails without the backport and passes with it. It maps an AccessKit tree with a disabled and an enabled Button, a disabled Switch and a disabled CheckBox through the adapter's state set. Disabled nodes carry none of Enabled, Sensitive or ReadOnly, and enabled ones keep Enabled and Sensitive. Vendored crates are excluded workspace members, so the test runs either with `--manifest-path` or as a Linux-only app test; its command is recorded."
+        },
+        {
+          "id": "native",
+          "description": "A native AT-SPI read on Linux X11 at scale factor 1, base and candidate in the same session, with `qa.py identity` on both and input through Mutter RemoteDesktop with verified X focus on this GNOME host (never XTest). `org.a11y.Status IsEnabled` is set for those launches only and read back afterwards. Disabled Buttons (Targets' Create and its unfocused Switch button; Fetch, Pull and Push without a remote) report `enabled` and `sensitive` on the base and neither on the candidate. Enabled Buttons keep their states, and Targets' focused disabled Switch button keeps `focusable` and `focused`. Any committed frame is privacy-scanned. docs/native-accessibility.md:19 and a new dated docs/validation.md entry say what changed and name VoiceOver on macOS and Orca speech as not covered."
+        },
+        {
+          "id": "gates",
+          "description": "`python3 scripts/gate.py full --base origin/main` passes, and the independent security review of the dependency change passes."
+        }
+      ],
+      "profiles": [
+        "vendor",
+        "rust",
+        "native"
+      ],
+      "commit": "fix(a11y): report disabled buttons as disabled to AT-SPI"
     }
   ]
 }

@@ -65,4 +65,4 @@ Template names can be private too. The interactive command prints them with each
 python3 -m unittest discover -s scripts/native_qa -t scripts -p 'test_*.py'
 ```
 
-They use temporary directories and never open a display or launch the app. Tests that need Pillow or a C compiler skip when those are missing.
+They use temporary directories and never open a display or launch the app. Tests that need Pillow or a C compiler skip when those are missing. The controller's tooling profile runs them as its `native-qa-tooling` gate, without the inherited `DISPLAY`, `WAYLAND_DISPLAY`, `WAYLAND_SOCKET` and `DBUS_SESSION_BUS_ADDRESS` and with an empty private `XDG_RUNTIME_DIR` removed afterwards. That withholds the operator's session only: a test that names a display itself, as the launch default `:1` does, could still reach it.
