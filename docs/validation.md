@@ -88,6 +88,67 @@ A `design-reviewer` pass found the frames complete. The title and muted descript
 
 Not covered: pointer clicks (no pointer-click tool on this host; the view test toggles the switch), the turning-off transition, and macOS, where the row does not exist.
 
+## September 29 GitTurtle under XWayland on Omarchy
+
+Task `omarchy-xwayland-evidence` checks the release build as an X11 client on Omarchy, launched as `docs/linux.md` suggests with `env -u WAYLAND_DISPLAY`. It is evidence only; no product code changed. The runs took place between 2026-09-29 23:17 and 2026-09-30 00:20 UTC.
+
+- Host: Omarchy 4.0.4-1, Hyprland 0.56.2 (`efb5099`), `xorg-xwayland` 24.1.13-1, on the 1366 × 768 panel (310 × 170 mm) at scale 1. `hyprctl getoption xwayland:force_zero_scaling` read `true` before and after.
+- Build: `main` `9f55de0`, release, clean, sha256 `0d053ea1…` (`qa.py identity`).
+- Outputs: temporary headless outputs at 1480 × 800 and scale 1, and at 1850 × 1000 and scale 1.25 (1480 × 800 logical), with the window fullscreen. `hyprctl monitors -j` matched its reading from before each run.
+- Launches: every launch had a fresh HOME and XDG directories, the `GitTurtle QA` identity, and a fake `~/.local/state/omarchy/current/` seeded from Tokyo Night, with the preference set to the Omarchy theme. For X11, only the app's environment dropped `WAYLAND_DISPLAY` (`DISPLAY=:0`, no `GPUI_X11_SCALE_FACTOR`). `hyprctl clients -j` listed the window as `com.gitturtle.desktop` with `"xwayland": true`, and every native launch with `false`.
+- Fixtures: a `scripts/create-demo-repo.py` repository with one staged file at `/tmp/gitturtle-evidence/xwayland-8/demo`, and a disposable repository whose commit `ee9b9ce` adds `badge.svg`. Neither changed during the runs: their HEAD, `git status --porcelain=v2` and index digest were the same after every launch.
+- Input: `wtype` cannot drive an X11 window here, because its keymap never reaches XWayland; a logging X11 window received its Down, Return and Ctrl+, as Escape. The checks therefore went through Hyprland's own `hl.dsp.send_shortcut({ mods, key, window = "pid:…" })`, each after checking the active window's PID. The same logging window received every key correctly under XWayland and under native Wayland. History and Compare frames at both scales opened from a seeded session restore (commit `e96f692`, `src/App.tsx`). On native Wayland, keyboard runs of the same flows matched the restored frames apart from the selected file row and a few pixels.
+
+Results under XWayland, each with a native Wayland run of the same flow for comparison:
+- **Theme.** The Omarchy card is selected and reads "Follows Tokyo Night" at both scales, and History, Compare and Settings draw the same three most common colours as native Wayland.
+- **Shortcuts.** Ctrl+B collapses the branch sidebar to the rail and brings it back. Ctrl+Shift+P opens the command palette with its search focused, and Escape closes it. Ctrl+, opens Settings.
+- **Typing.** On Changes (Ctrl+2, then Tab three times), "Add QA note" appeared in the commit title with the 11/72 count, and the button read "Commit 1 file". Nothing was committed.
+- **Clipboard.** On `badge.svg` in Compare, Shift+Tab 14 times focused **Copy After source**, and Space copied it. `wl-paste --no-newline` then returned 290 bytes, identical to `git show ee9b9ce:badge.svg`. The clipboard's earlier content was neither read nor kept.
+
+What differs from native Wayland:
+- **Scale.** An X11 window takes its scale from `GPUI_X11_SCALE_FACTOR`, then `Xft.dpi`, then the monitor's physical size (`gpui-pre-linux` 0.3.4, `linux/x11/client.rs`). It does not take Hyprland's output scale, which with `force_zero_scaling` on does not scale X11 windows either. With none set, GitTurtle drew at about 7/6 on both outputs, which matches this panel's 112 dpi. The full-width rules under the tab bar, the header and the branch bar sat at 41, 103 and 158 px, and the status bar was 29 px tall. Native Wayland drew them at 35, 89, 136 and 25 px at scale 1, and at 44, 109, 167 and 31 px at scale 1.25. So the X11 window is about 17% larger than native at scale 1 and about 7% smaller at 1.25. At 1480 × 800, History's SHA column no longer fits, the Local, Remote and Worktrees tabs wrap, and the inspector cuts off before the parent chip.
+- **Clipboard types.** While GitTurtle owned the clipboard, XWayland offered `SAVE_TARGETS` and `text/plain;charset=utf-8`/`UTF-8`, where native Wayland offered `text/plain;charset=utf-8`, `UTF8_STRING`, `text/plain` and a `pid/‹pid›` type. `wl-paste` received the same bytes either way.
+
+The 16 frames are in [`evidence/omarchy-xwayland/`](evidence/omarchy-xwayland/). They cover History, Compare and Settings on each backend at both scales, plus X11 frames of Ctrl+B, the palette, the typed commit title and the focused Copy After source. Every committed file's sha256 matches a frame that a privacy scan with the local template set passed, and each was viewed at full size.
+
+Not covered: pointer hover and clicks under XWayland (moving the pointer produced no hover, and this host has no click tool), `GPUI_X11_SCALE_FACTOR` or `Xft.dpi` set by hand, and a paste target that asks only for bare `text/plain`. Two observations outside this task: Copy After source gives no visible feedback on either backend, and on native Wayland, after Ctrl+B twice, History's Author, Date and SHA columns sat 1–2 px to the right of where they started.
+
+## September 29 focus ring inside the repository tab strip
+
+The repository tab list scrolls horizontally, and GPUI masks any scrolling element to its own bounds on both axes (gpui-pre 0.3.4 `Style::overflow_mask`). So the [solid focus ring](#september-29-solid-focus-ring-outside-every-button), 2 px of accent 1 px outside the Button, lost its top and bottom on every tab and close button, and the first tab lost its left side too. The list now keeps the installed ring's width plus gap as padding on every side and gives it back as a negative margin (`repository_tabs.rs`, `render_repository_tabs`), so no tab moves.
+
+Test: `repository_tabs::tests::repository_tab_list_keeps_room_for_every_focus_ring` opens two tabs, reads the tab list's content mask from the painted scene and requires every tab and close button, grown by the installed ring's gap plus width, to lie inside it, with either tab selected. With the ring's footprint set to zero, which is main's styling, it also requires identical bounds for every tab, close button and the header below. On main's layout it failed: "the ring around repository-tab-0 … lies outside the tab list's content mask".
+
+Native evidence, full tier:
+- Builds: base `8089625` (sha256 `5631d40c…`) and candidate `cf54ac7` (sha256 `e9c7d074…`), both debug and clean; `qa.py identity` reported no problem.
+- Host: Ubuntu 26.04.1, GNOME Shell 50.1 on Wayland, XWayland `:0` at scale factor 1, window 1000x680. Input went through Mutter RemoteDesktop with verified X focus.
+- Fixtures: three `scripts/create-demo-repo.py` repositories, `alpha`, `beta` and `gamma`, opened as tabs from a seeded `repository-session.json`. Stores: `qaflow.generated_store` for Midnight and Porcelain.
+- Focus: from the launch focus, Tab 7 reaches the first tab, 9 the middle tab, 10 its close button and 11 the last tab, the same order on both builds.
+- `qa.py compare <base>/captures <candidate>/captures --mask status-timing`: rest and hover frames identical in both palettes. Each focus frame differs only in the 3 px band around the focused control, 0 px inside its box or elsewhere: 274 px (first tab), 192 (middle), 124 (close button) and 252 (last), in both palettes.
+
+Ring pixels in the 1 to 3 px band outside each focused control, against the same build's unfocused frame. Each cell gives the differing pixels out of the band, then the strongest contrast:
+
+| Palette, control | Build | Top | Bottom | Left | Right |
+| --- | --- | --- | --- | --- | --- |
+| Midnight, first tab | base | 0/150 | 0/150 | 0/84 | 62/84, 7.48 |
+| | candidate | 106/150, 10.45 | 106/150, 10.45 | 62/84, 10.45 | 62/84, 7.48 |
+| Midnight, middle tab | base | 0/135 | 0/135 | 62/84, 10.45 | 62/84, 10.45 |
+| | candidate | 96/135, 10.45 | 96/135, 10.45 | 62/84, 10.45 | 62/84, 10.45 |
+| Midnight, close button | base | 0/84 | 0/84 | 62/84, 10.45 | 62/84, 10.45 |
+| | candidate | 62/84, 10.45 | 62/84, 10.45 | 62/84, 10.45 | 62/84, 10.45 |
+| Midnight, last tab | base | 0/180 | 0/180 | 62/84, 10.45 | 62/84, 10.45 |
+| | candidate | 126/180, 10.45 | 126/180, 10.45 | 62/84, 10.45 | 62/84, 10.45 |
+| Porcelain, first tab | base | 0/150 | 0/150 | 0/84 | 62/84, 5.57 |
+| | candidate | 106/150, 7.01 | 106/150, 7.01 | 62/84, 7.01 | 62/84, 5.57 |
+| Porcelain, middle tab, close button and last tab | base | 0 | 0 | 62/84, 7.01 | 62/84, 7.01 |
+| | candidate | 96/135, 62/84 and 126/180, 7.01 | the same | 62/84, 7.01 | 62/84, 7.01 |
+
+The first tab's right side lies on the selected fill, which explains its lower figure; every other side lies on the panel. The ring's rounded corners leave the band's 3 × 3 corner squares unchanged on both builds.
+
+Frames: [`evidence/tabs-focus-ring/`](evidence/tabs-focus-ring/), the candidate's rest and four focus frames in each palette (10 files). `qa.py privacy scan --redacted --jobs 8` with the local template set found them clean (26.3 s for 12 frames, and again on the 10 committed files), and a full-resolution view shows only the QA identity, `/tmp/gitturtle-evidence` paths and the fixture's synthetic author. The #85 crops `evidence/themes/button-focus-ring/{,base-}porcelain-1000x680-clip-{repository-tab,tab-close}.png` stay as that build's record of the defect; no other committed frame shows a focused repository tab. A `design-reviewer` pass accepted the frames: the ring is whole on every captured control, and every difference is the ring's band. It noted that the selected tab's own close button and the last close button were not captured natively (the view test covers both), and that the ring's top row is the window's first row. A read-only `verifier` pass recounted the bands and reran the compare, privacy scan, test, Clippy and the app tests, and passed all four criteria. DESIGN.md's controls paragraph drops the tab strip from the clipping containers.
+
+Not covered: macOS, fractional scale factors, text scales below about 0.875 (where the strip leaves less than 3 px above and below a tab, so the ring's top row would leave the window), release builds and the accessibility tree. With the tabs overflowing, a tab scrolled partly out of view is now cut 3 px further out, into the 4 px gap beside the menu and + buttons; no frame shows an overflowing strip.
+
 ## September 29 desktop code font at a cold launch
 
 Measurement only, in the [benchmark record](benchmarks/2026-09-29-code-font-cold-launch.md) with its driver, raw samples and cache counts.
