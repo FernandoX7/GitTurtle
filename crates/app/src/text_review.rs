@@ -5,15 +5,18 @@ use crate::{
     appearance::{self, palette},
     split_diff::{self, Row, SplitPresentation},
     text::PatchPresentation,
+    views::compact_control_name,
     worker::{Content, Job},
 };
 use anyhow::{Result, ensure};
 use gpui_kit::{
-    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, Pixels, Styled, Window,
+    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, Pixels, SharedString,
+    StatefulInteractiveElement, Styled, Window,
     component::{
         Disableable, Icon, Sizable,
         button::{Button, ButtonVariants},
         menu::{DropdownMenu, PopupMenuItem},
+        tooltip::Tooltip,
     },
     div, percentage, rgb,
 };
@@ -426,20 +429,19 @@ impl GitTurtle {
         // The caption takes a small button's text inset, which the control
         // before it gives back: beside that control nothing moves, and on a
         // line of its own the caption starts where the buttons' labels do.
-        let caption = |text: gpui_kit::Div| {
+        let caption_text = if options.hide_whitespace {
+            "Review filter active · exact source retained"
+        } else if modified {
+            "Expanded context · partial staging unavailable"
+        } else {
+            "Original Git diff"
+        };
+        let caption = |text: AnyElement| {
             div()
                 .pl_2()
                 .text_size(crate::appearance::ui_text(11.))
                 .text_color(rgb(if modified { colors.hunk } else { colors.muted }))
-                .child(text.debug_selector(|| "text-review-caption".into()).child(
-                    if options.hide_whitespace {
-                        "Review filter active · exact source retained"
-                    } else if modified {
-                        "Expanded context · partial staging unavailable"
-                    } else {
-                        "Original Git diff"
-                    },
-                ))
+                .child(text)
         };
         let previous = Button::new("previous-text-change")
             .debug_selector(|| "previous-text-change".into())
@@ -468,51 +470,75 @@ impl GitTurtle {
                     .rotate(percentage(turn))
             };
             let owner = cx.entity().downgrade();
-            let menu = Button::new("text-review-menu")
-                .debug_selector(|| "text-review-menu".into())
-                .small()
-                .ghost()
-                .label("Options")
-                .dropdown_caret(true)
-                .mr_neg_2()
-                .accessibility_label("Review options")
-                .tooltip(
-                    "Hide whitespace-only changes, expand unchanged context (3, 12, 48, then 192 lines) \
-                     or reset to the original diff. Source tabs keep exact content; partial staging \
-                     requires the original diff.",
-                )
-                .dropdown_menu(move |menu, _, _| {
-                    // Built when opened; each item acts on the review as it
-                    // is when chosen, as the buttons of the full row do.
-                    options_menu(options, busy, reset_disabled)
-                        .into_iter()
-                        .fold(menu, |menu, item| {
-                            let owner = owner.clone();
-                            menu.item(
-                                PopupMenuItem::new(item.label)
-                                    .checked(item.checked)
-                                    .disabled(item.disabled)
-                                    .on_click(move |_, window, cx| {
-                                        let _ = owner.update(cx, |this, cx| {
-                                            if this.page == AppPage::Repository
-                                                && let Some(options) =
-                                                    (item.choose)(this.review.options)
-                                            {
-                                                this.set_text_review(options, window, cx);
-                                            }
-                                        });
-                                    }),
-                            )
-                        })
-                });
-            row.child(
-                previous
-                    .icon(arrow(0.25))
-                    .accessibility_label("Previous change"),
+            let menu = compact_control_name(
+                Button::new("text-review-menu")
+                    .debug_selector(|| "text-review-menu".into())
+                    .small()
+                    .ghost()
+                    .label("Options")
+                    .dropdown_caret(true)
+                    .mr_neg_2(),
+                "text-review-menu",
+                "Review options",
             )
-            .child(next.icon(arrow(0.75)).accessibility_label("Next change"))
+            .tooltip(
+                "Hide whitespace-only changes, expand unchanged context (3, 12, 48, then 192 lines) \
+                 or reset to the original diff. Source tabs keep exact content; partial staging \
+                 requires the original diff.",
+            )
+            .dropdown_menu(move |menu, _, _| {
+                // Built when opened; each item acts on the review as it
+                // is when chosen, as the buttons of the full row do.
+                options_menu(options, busy, reset_disabled)
+                    .into_iter()
+                    .fold(menu, |menu, item| {
+                        let owner = owner.clone();
+                        menu.item(
+                            PopupMenuItem::new(item.label)
+                                .checked(item.checked)
+                                .disabled(item.disabled)
+                                .on_click(move |_, window, cx| {
+                                    let _ = owner.update(cx, |this, cx| {
+                                        if this.page == AppPage::Repository
+                                            && let Some(options) =
+                                                (item.choose)(this.review.options)
+                                        {
+                                            this.set_text_review(options, window, cx);
+                                        }
+                                    });
+                                }),
+                        )
+                    })
+            });
+            // The caption truncates here; its tooltip keeps the whole text.
+            let caption_text = SharedString::from(caption_text);
+            row.child(compact_control_name(
+                previous.icon(arrow(0.25)),
+                "previous-text-change",
+                "Previous change",
+            ))
+            .child(compact_control_name(
+                next.icon(arrow(0.75)),
+                "next-text-change",
+                "Next change",
+            ))
             .child(menu)
-            .child(caption(div().truncate()).flex_1().min_w_0())
+            .child(
+                caption(
+                    div()
+                        .id("text-review-caption")
+                        .debug_selector(|| "text-review-caption".into())
+                        .truncate()
+                        .tooltip({
+                            let text = caption_text.clone();
+                            move |window, cx| Tooltip::new(text.clone()).build(window, cx)
+                        })
+                        .child(caption_text)
+                        .into_any_element(),
+                )
+                .flex_1()
+                .min_w_0(),
+            )
             .into_any_element()
         } else {
             row.child(previous.label("Previous change"))
@@ -527,7 +553,7 @@ impl GitTurtle {
                 .child(Button::new("reset-text-review").small().ghost().label("Reset review")
                     .disabled(reset_disabled).mr_neg_2()
                     .on_click(cx.listener(|this, _, window, cx| this.set_text_review(Options::default(), window, cx))))
-                .child(caption(div()))
+                .child(caption(div().debug_selector(|| "text-review-caption".into()).child(caption_text).into_any_element()))
                 .into_any_element()
         }
     }
