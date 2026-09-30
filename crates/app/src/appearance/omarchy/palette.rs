@@ -2119,4 +2119,100 @@ mod tests {
         let edited = source.replace("mode = \"dark\"", "mode = \"dim\"");
         assert_eq!(parse(edited.as_bytes(), false).unwrap().mode, Mode::Dark);
     }
+
+    /// `#rrggbbaa`, as the kit serializes a color, as `0xrrggbb`.
+    fn serialized(color: &serde_json::Value) -> u32 {
+        let digits = color.as_str().expect("a serialized color");
+        u32::from_str_radix(&digits[1..7], 16).expect("hex digits")
+    }
+
+    /// Every color the source and patch editors draw text in under a configured theme, by
+    /// syntax field: each field's color, and the editor foreground, which a capture without a
+    /// syntax color and unstyled text take. `None` for a field without a color.
+    fn editor_text_colors(theme: &gpui_kit::component::Theme) -> Vec<(String, Option<u32>)> {
+        let syntax = serde_json::to_value(&theme.highlight_theme.style.syntax).unwrap();
+        let mut colors = syntax
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(field, style)| {
+                let color = style.get("color").filter(|color| !color.is_null());
+                (field.clone(), color.map(serialized))
+            })
+            .collect::<Vec<_>>();
+        colors.push((
+            "editor foreground".into(),
+            Some(serialized(
+                &serde_json::to_value(theme.colors.foreground).unwrap(),
+            )),
+        ));
+        colors
+    }
+
+    /// Every syntax color the diff and source editors use reads at 4.5:1 on each background
+    /// it is drawn on: the editor background, where hunk header lines draw too, the active
+    /// line, and the added and removed line tints. For the twenty built-ins, every bundled
+    /// and generated Omarchy fixture as it maps, and a custom theme whose keyword and type
+    /// colors sit just above the 3:1 status rule it is held to. On origin/main these were
+    /// the toolkit's default highlight theme's colors.
+    #[test]
+    fn syntax_colors_read_on_every_editor_background() {
+        use crate::appearance::custom::{CustomTheme, TokenKind};
+        let mut custom = CustomTheme::from_base(1, "Faint statuses", ThemeChoice::Porcelain);
+        custom.palette.set(TokenKind::Renamed, 0x8b62c4);
+        custom.palette.set(TokenKind::Modified, 0x9a6a1c);
+        assert_eq!(custom.palette.readability_issues(), Vec::new());
+
+        let cases = ThemeChoice::ALL
+            .into_iter()
+            .map(|choice| (format!("{choice:?}"), choice.palette(), choice.is_light()))
+            .chain(fixtures().into_iter().map(|(name, colors)| {
+                let mapped = map(&colors);
+                (format!("Omarchy {name}"), mapped.palette, mapped.is_light)
+            }))
+            .chain([(custom.name.clone(), custom.palette, custom.is_light())]);
+        let mut below = Vec::new();
+        let mut uncolored = Vec::new();
+        let mut measured = 0;
+        for (name, palette, is_light) in cases {
+            let theme = palette.configured_theme(is_light);
+            let style = &theme.highlight_theme.style;
+            let background = |color: Option<gpui_kit::Hsla>| {
+                serialized(&serde_json::to_value(color.expect("a configured color")).unwrap())
+            };
+            let backgrounds = [
+                ("editor background", background(style.editor_background)),
+                ("active line", background(style.editor_active_line)),
+                ("added lines", palette.added_background),
+                ("removed lines", palette.removed_background),
+            ];
+            for (token, color) in editor_text_colors(&theme) {
+                // Emphasis keeps its italic or weight and takes the color around it.
+                let Some(color) = color else {
+                    if !token.starts_with("emphasis") {
+                        uncolored.push(format!("{name}: {token}"));
+                    }
+                    continue;
+                };
+                for (surface, background) in backgrounds {
+                    measured += 1;
+                    let ratio = contrast(color, background);
+                    if ratio < 4.5 {
+                        below.push(format!(
+                            "{name}: {token} #{color:06x} on {surface} #{background:06x} {ratio:.2}:1"
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            below.is_empty(),
+            "{} of {measured} pairs below 4.5:1:\n{}",
+            below.len(),
+            below.join("\n")
+        );
+        // Every other field has a palette color, so no capture falls back to the toolkit's.
+        assert_eq!(uncolored, Vec::<String>::new());
+        assert_eq!(measured, 45 * 4 * 40);
+    }
 }

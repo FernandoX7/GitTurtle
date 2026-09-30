@@ -1,6 +1,7 @@
 //! Native presentation choices shared by history, previews, and settings.
 
 use gpui_kit::component::button::{ButtonCustomVariant, ButtonVariant};
+use gpui_kit::component::highlighter::SyntaxColors;
 use gpui_kit::component::{Colorize, FocusRing, Theme, ThemeMode};
 use gpui_kit::{App, FontFeatures, Global, Pixels, Rgba, StyleRefinement, Styled, Window, px, rgb};
 use serde::{Deserialize, Serialize};
@@ -1427,6 +1428,7 @@ impl Palette {
         syntax.style.editor_active_line = Some(rgb(palette.panel).into());
         syntax.style.editor_line_number = Some(rgb(palette.line_number).into());
         syntax.style.editor_foreground = Some(rgb(palette.text).into());
+        syntax.style.syntax = palette.syntax_colors(&syntax.style.syntax);
         theme.font_size = ui_text(13.);
         theme.mono_font_size = code_text();
         theme.radius = px(7.);
@@ -1435,6 +1437,152 @@ impl Palette {
         // while foregrounds still read ThemeColor. Sync both representations
         // before Theme::sync_base propagates them to native controls.
         theme.tokens = (&theme.colors).into();
+    }
+
+    /// The toolkit's syntax colors with each field's color replaced by its palette role, fitted
+    /// by [`Self::syntax_color`]; italic and weight stay as the toolkit set them. A capture
+    /// without a field of its own takes the field of its first segment (`variable.builtin`
+    /// takes `variable`) or, with none, the editor foreground, which is `text`, so every
+    /// capture a grammar emits draws in a palette color.
+    fn syntax_colors(self, defaults: &SyntaxColors) -> SyntaxColors {
+        use serde_json::{Map, Value};
+        // `ThemeStyle` keeps its fields private; its serialized form is the toolkit's theme
+        // format, which names every field.
+        let Ok(Value::Object(mut fields)) = serde_json::to_value(defaults) else {
+            return defaults.clone();
+        };
+        // Eight roles serve the forty-one fields; fit each role once.
+        let mut fitted: Vec<(u32, u32)> = Vec::with_capacity(8);
+        for (field, style) in &mut fields {
+            let mut entry = match style.take() {
+                Value::Object(entry) => entry,
+                _ => Map::new(),
+            };
+            match self.syntax_role(field) {
+                Some(role) => {
+                    let color = match fitted.iter().find(|(from, _)| *from == role) {
+                        Some(&(_, color)) => color,
+                        None => {
+                            let color = self.syntax_color(role);
+                            fitted.push((role, color));
+                            color
+                        }
+                    };
+                    entry.insert("color".into(), custom::format_hex(color).into());
+                }
+                None => {
+                    entry.remove("color");
+                }
+            }
+            *style = Value::Object(entry);
+        }
+        serde_json::from_value(Value::Object(fields)).unwrap_or_else(|_| defaults.clone())
+    }
+
+    /// The palette color a syntax field (by its name in the toolkit's theme format) is drawn
+    /// in before fitting, or `None` for emphasis, which keeps its italic or weight in the color
+    /// around it.
+    fn syntax_role(self, field: &str) -> Option<u32> {
+        Some(match field {
+            "keyword" | "preproc" => self.renamed,
+            "string"
+            | "string.escape"
+            | "string.regex"
+            | "string.special"
+            | "string.special.symbol"
+            | "text.literal"
+            | "text.code.span" => self.added,
+            "number" | "boolean" | "constant" => self.warning,
+            "type" | "constructor" | "enum" | "variant" => self.modified,
+            "function" => self.hunk,
+            "tag" | "tag.doctype" | "attribute" | "property" | "link_text" | "link_uri"
+            | "label" | "title" => self.accent,
+            "comment" | "comment_doc" | "hint" | "predictive" => self.muted,
+            "emphasis" | "emphasis.strong" => return None,
+            "variable"
+            | "variable.special"
+            | "embedded"
+            | "operator"
+            | "punctuation"
+            | "punctuation.bracket"
+            | "punctuation.delimiter"
+            | "punctuation.list_marker"
+            | "punctuation.special"
+            | "primary" => self.text,
+            // A field a later toolkit adds reads as body text until it is given a role.
+            _ => self.text,
+        })
+    }
+
+    /// The backgrounds syntax colors are drawn on: the editor background, which hunk header
+    /// lines keep (their decoration sets no background), the active line, and the added and
+    /// removed line tints of the unified and split diffs.
+    fn syntax_backgrounds(self) -> [u32; 4] {
+        [
+            self.canvas,
+            self.panel,
+            self.added_background,
+            self.removed_background,
+        ]
+    }
+
+    /// `color` moved toward `text` by the smallest step, in 256ths of each sRGB channel, that
+    /// reads on every syntax background at the text rule plus the rasterization margin, or at
+    /// `text`'s own contrast where that is lower. `text` itself meets that everywhere, so the
+    /// search always ends. A palette whose `text` is below the text rule on one of them, which
+    /// only a custom theme with a readability warning can be, draws its syntax in `text`.
+    fn syntax_color(self, color: u32) -> u32 {
+        let backgrounds = self.syntax_backgrounds();
+        if backgrounds
+            .iter()
+            .any(|&background| custom::contrast(self.text, background) < LABEL_RULE)
+        {
+            return self.text;
+        }
+        let reads = |candidate: u32| {
+            backgrounds.iter().all(|&background| {
+                custom::contrast(candidate, background)
+                    >= (LABEL_RULE + LABEL_MARGIN).min(custom::contrast(self.text, background))
+            })
+        };
+        if reads(color) {
+            return color;
+        }
+        let toward_text = |step: u32| {
+            [16, 8, 0].into_iter().fold(0, |mixed, shift| {
+                let (from, to) = ((color >> shift) & 0xff, (self.text >> shift) & 0xff);
+                mixed | (((from * (256 - step) + to * step + 128) / 256) << shift)
+            })
+        };
+        // `high` always reads (at 256 steps the color is `text`) and `low` never does.
+        let (mut low, mut high) = (0, 256);
+        while high - low > 1 {
+            let middle = (low + high) / 2;
+            if reads(toward_text(middle)) {
+                high = middle;
+            } else {
+                low = middle;
+            }
+        }
+        toward_text(high)
+    }
+
+    /// The kit theme [`Self::apply`] leaves for this palette, without an application:
+    /// `Theme::change` restores the mode's default theme, highlight theme included, and
+    /// `configure` then applies this palette over it.
+    #[cfg(test)]
+    pub(crate) fn configured_theme(self, is_light: bool) -> Theme {
+        use gpui_kit::component::highlighter::HighlightTheme;
+        let mut theme = Theme {
+            highlight_theme: if is_light {
+                HighlightTheme::default_light()
+            } else {
+                HighlightTheme::default_dark()
+            },
+            ..Theme::default()
+        };
+        self.configure(is_light, &mut theme);
+        theme
     }
 }
 

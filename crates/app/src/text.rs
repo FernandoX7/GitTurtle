@@ -54,6 +54,9 @@ impl PatchPresentation {
     }
 }
 
+/// The toolkit's name for its plain-text language, which has no grammar.
+const PLAIN_TEXT: &str = "text";
+
 /// Build only the currently requested editor. Decorations change presentation,
 /// while the editor receives one owned copy of the unmodified source text.
 pub fn editor(
@@ -66,6 +69,9 @@ pub fn editor(
     editor_with_decorations(value, language, diff, window, cx).0
 }
 
+/// A decorated patch is drawn as plain text: its decorations are then the only colors on it.
+/// A grammar's captures would compete with them for the same text, and GPUI's highlight fold
+/// leaves either color, by hash order rather than precedence.
 pub fn editor_with_decorations(
     value: &str,
     language: &str,
@@ -76,6 +82,7 @@ pub fn editor_with_decorations(
     Entity<EditorState>,
     Option<crate::editor_find::PatchDecorations>,
 ) {
+    let language = if diff.is_some() { PLAIN_TEXT } else { language };
     let editor = cx.new(|cx| {
         EditorState::new(window, cx)
             .language(language.to_owned())
@@ -166,6 +173,11 @@ fn theme_decorations(presentation: &PatchPresentation, cx: &App) -> Vec<TextDeco
                     font_weight: Some(FontWeight::MEDIUM),
                     ..Default::default()
                 },
+                Kind::Header => HighlightStyle {
+                    color: Some(rgb(palette.text).into()),
+                    font_weight: Some(FontWeight::MEDIUM),
+                    ..Default::default()
+                },
             };
             TextDecoration::new(decoration.range.clone(), style)
         })
@@ -179,6 +191,8 @@ enum Kind {
     Hunk,
     AddedWord,
     RemovedWord,
+    /// The `---` and `+++` file-header lines before the first hunk.
+    Header,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -373,11 +387,20 @@ fn review_ranges(patch: &str, rows: &[crate::diff_view::LineNumbers]) -> Vec<Dif
 
 /// Track unified hunk counts so `---` / `+++` file headers are not marked as
 /// changes, while real changed source beginning with those characters is.
-/// Byte offsets include existing line endings and are valid UTF-8 boundaries.
+/// The headers before the first hunk are marked as headers; other lines outside
+/// hunks stay neutral. Byte offsets include existing line endings and are valid
+/// UTF-8 boundaries.
 fn diff_ranges(value: &str) -> Vec<DiffRange> {
     let mut result: Vec<DiffRange> = Vec::new();
     let mut remaining: Option<(usize, usize)> = None;
     let mut offset = 0;
+    let first_hunk = value
+        .split_inclusive('\n')
+        .try_fold(0, |start, line| match hunk_counts(line) {
+            Some(_) => Err(start),
+            None => Ok(start + line.len()),
+        })
+        .err();
     for line in value.split_inclusive('\n') {
         let kind = if let Some(counts) = hunk_counts(line) {
             remaining = Some(counts);
@@ -403,6 +426,10 @@ fn diff_ranges(value: &str) -> Vec<DiffRange> {
                     None
                 }
             }
+        } else if first_hunk.is_some_and(|first| offset < first)
+            && (line.starts_with("--- ") || line.starts_with("+++ "))
+        {
+            Some(Kind::Header)
         } else {
             None
         };
@@ -582,6 +609,7 @@ mod tests {
         assert_eq!(
             decorated(patch),
             vec![
+                (Kind::Header, "--- a/你好\r\n+++ b/你好\r\n"),
                 (Kind::Hunk, "@@ -1,2 +1,2 @@ function\r\n"),
                 (Kind::Removed, "-héllo 🐢\r\n-adiós\r\n"),
                 (Kind::Added, "+你好\r\n+再见"),
@@ -590,11 +618,13 @@ mod tests {
     }
 
     #[test]
-    fn file_headers_are_neutral_but_similar_changed_content_is_colored() {
+    fn file_headers_are_headers_but_similar_changed_content_is_colored() {
         let patch = "--- a/file\n+++ b/file\n@@ -1,2 +1,2 @@\n--- removed code\n unchanged\n+++ added code\n--- a/next\n+++ b/next\n";
+        // Only the headers before the first hunk are headers; later ones stay neutral.
         assert_eq!(
             decorated(patch),
             vec![
+                (Kind::Header, "--- a/file\n+++ b/file\n"),
                 (Kind::Hunk, "@@ -1,2 +1,2 @@\n"),
                 (Kind::Removed, "--- removed code\n"),
                 (Kind::Added, "+++ added code\n"),
@@ -616,5 +646,127 @@ mod tests {
             ]
         );
         assert!(diff_ranges("+++ file\n--- file\n+not a hunk\n@@ broken @@\n").is_empty());
+    }
+
+    /// What the unified patch editor draws on each line under every built-in palette: the
+    /// syntax styles of the language the editor asks its highlighter for, in the applied
+    /// highlight theme, with the patch decorations composed over them as the kit's input
+    /// element composes them (`combine_highlights`, semantic styles first and decorations
+    /// last). On origin/main the editor asked for the diff grammar: file headers drew its
+    /// keyword and string colors, and hunk headers and changed lines the decoration's color
+    /// or the grammar's, as GPUI's unordered fold left them (the themes spec, "Diff and
+    /// syntax colors").
+    #[gpui_kit::test]
+    fn patch_headers_and_changes_draw_palette_colors_in_every_built_in(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::appearance::ThemeChoice;
+        use gpui_kit::{
+            Context, IntoElement, ParentElement, Render, Styled,
+            base::input::InputHighlighterFactory,
+            combine_highlights,
+            component::{
+                Rope, Theme,
+                highlighter::SyntaxHighlighter,
+                input::{Editor, EditorState},
+            },
+            div, px,
+        };
+        use std::{cell::RefCell, rc::Rc};
+
+        struct Probe(Entity<EditorState>);
+        impl Render for Probe {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .w(px(480.))
+                    .h(px(400.))
+                    .child(Editor::new(&self.0).w_full().h_full())
+            }
+        }
+
+        let patch = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,3 @@ fn main() {\n fn main() {\n-    let old = \"value\";\n+    let new = \"value\";\n }\n@@ -10,2 +10,2 @@\n-a\n+b\n@@ -20 +20 @@\n-c\n+d\n";
+        let presentation = PatchPresentation::prepare(patch);
+        cx.update(gpui_kit::init);
+        // The language the patch editor's highlighter is built for, as the editor asks.
+        let asked = Rc::new(RefCell::new(Vec::<String>::new()));
+        let record = asked.clone();
+        let factory: InputHighlighterFactory = Rc::new(move |language: &str| {
+            record.borrow_mut().push(language.to_owned());
+            None
+        });
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let editor = editor(patch, "diff", Some(&presentation), window, cx);
+            editor.update(cx, |state, cx| state.set_highlighter_factory(factory, cx));
+            Probe(editor)
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let language = asked.borrow().first().cloned().expect("the editor asked");
+        let hex =
+            |color: Option<gpui_kit::Hsla>| color.map(|color| serde_json::to_value(color).unwrap());
+
+        cx.update(|_, cx| {
+            for choice in ThemeChoice::ALL {
+                choice.apply(None, cx);
+                let palette = palette(cx);
+                let theme = Theme::global(cx).highlight_theme.clone();
+                // The contrast test reads the same highlight theme without an application.
+                assert_eq!(
+                    theme,
+                    palette.configured_theme(choice.is_light()).highlight_theme,
+                    "{choice:?}"
+                );
+                let mut highlighter = SyntaxHighlighter::new(&language);
+                highlighter.update(None, &Rope::from(patch), None);
+                let syntax = highlighter.styles(&(0..patch.len()), theme.as_ref());
+                let styles = combine_highlights(Vec::new(), syntax).collect::<Vec<_>>();
+                let decorations = theme_decorations(&presentation, cx);
+                let drawn = combine_highlights(
+                    styles,
+                    decorations
+                        .iter()
+                        .map(|decoration| (decoration.range.clone(), decoration.style)),
+                )
+                .collect::<Vec<_>>();
+
+                let color = |token: u32| Some(rgb(token).into());
+                let mut start = 0;
+                for line in patch.split_inclusive('\n') {
+                    let range = start..start + line.len();
+                    start = range.end;
+                    let expected = if line.starts_with("@@") {
+                        // Hunk lines draw on the editor background (canvas).
+                        (color(palette.hunk), Some(FontWeight::MEDIUM), true)
+                    } else if line.starts_with("--- a/") || line.starts_with("+++ b/") {
+                        (color(palette.text), Some(FontWeight::MEDIUM), true)
+                    } else if line.starts_with('-') {
+                        (color(palette.removed), None, false)
+                    } else if line.starts_with('+') {
+                        (color(palette.added), None, false)
+                    } else {
+                        // Neutral lines take the editor foreground, the palette's text.
+                        (None, None, true)
+                    };
+                    for (segment, style) in &drawn {
+                        if segment.end <= range.start || segment.start >= range.end {
+                            continue;
+                        }
+                        let (want_color, weight, no_background) = expected;
+                        assert!(
+                            style.color == want_color
+                                && style.font_weight == weight
+                                && (!no_background || style.background_color.is_none()),
+                            "{choice:?} draws {:?} of {:?} in {:?} at {:?} on {:?}, \
+                             wanted {:?} at {weight:?}",
+                            &patch[segment.start.max(range.start)..segment.end.min(range.end)],
+                            line.trim_end(),
+                            hex(style.color),
+                            style.font_weight,
+                            hex(style.background_color),
+                            hex(want_color),
+                        );
+                    }
+                }
+            }
+        });
     }
 }
