@@ -96,6 +96,7 @@ Results:
 - **18 pt at 461 × 490** (identical in the base): Latest and Previous are now reachable, but Older is cut off, because the 176 px column minimum does not scale with the interface size. Compare shows no diff line. The inspector's Hash is drawn over "Changed files" in History and Compare, History shows no rows, and in Changes the placeholder is cut and "Filter working paths…" runs past the right edge.
 - **Wide layouts.** At 1000 × 680 and 1480 × 800, History, Compare and Changes are identical to the base under `qa.py compare --mask status-timing`. At 1480 × 800 the first base launch differed from the candidate by one level of green in one glyph-edge pixel at (1305, 358); a second base launch matched the candidate, and two base launches differ at that pixel in the same way. The candidate's narrow frames match the previous round's build apart from the timing text and a 1–2 px glyph speck in the mode control, which two base launches also show.
 - **Changes** is identical to the base at every size.
+- **Scrolling.** A same-session release measurement of History scrolled by the wheel found no regression: at 1480 × 800 the candidate's scene time is indistinguishable from the base's (p50 9.624 against 9.692 ms, p95 11.129 against 11.923), and at 461 × 490, with the compact toolbar, it is not slower (p50 6.506 against 6.599 ms) ([record](benchmarks/2026-09-30-narrow-history-scroll.md)).
 
 The 26 frames are in [`evidence/narrow-window/`](evidence/narrow-window/): History, Compare and Changes for the base and the candidate at 461 × 490, 493 × 526 and 461 × 490 at 18 pt, and eight of the candidate's tooltips. A privacy scan of the committed files with the local template set came back clean, and each was viewed at full size.
 
@@ -107,6 +108,7 @@ A `design-reviewer` pass approved the final frames with notes, after two earlier
 - Element tooltips (the branch icon's, the caption's) appear at the pointer, and control tooltips above their control.
 - Disabled Previous and Older still describe their action, with no reason they are disabled (as in the base).
 - At 493 × 526, Compare leaves a 12 px band empty below its seventh row, where the base draws part of the next row.
+- In narrow History a vertical wheel also scrolls the table sideways, because the list's container scrolls only horizontally and GPUI turns vertical wheel movement into horizontal scrolling there (as in the base).
 - The kit's menu items do not expose a checked state (`vendor/gpui-component/src/menu/menu_item.rs` ~95-99), so the Options menu's Hide whitespace item cannot announce it.
 - A test cannot read a kit Button's AccessKit label; a `Button::accessible_name()` accessor in the kit would let one.
 - Residuals from code review, not observed: at a scale of 1.5, device-pixel snapping could leave the scope name a pixel or two short of its minimum just above the labelled breakpoint, and a first letter that kerns against the ellipsis could do the same; tooltip margins agree only to within about 1.5 px after rounding.
