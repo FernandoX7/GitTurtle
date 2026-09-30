@@ -1288,6 +1288,9 @@ mod tests {
         assert_eq!(rendering_from_fontconfig("True|5"), Some(Grayscale));
         assert_eq!(rendering_from_fontconfig("False|1"), Some(Grayscale));
         assert_eq!(rendering_from_fontconfig(""), None);
+        // What `fc-match` prints when no configuration sets either property.
+        assert_eq!(rendering_from_fontconfig("|"), None);
+        assert_eq!(rendering_from_fontconfig("True|"), None);
         assert_eq!(rendering_from_fontconfig("Maybe|1"), None);
         assert_eq!(rendering_from_fontconfig("True|rgb"), None);
         assert_eq!(rendering_from_fontconfig("True|9"), None);
@@ -1339,8 +1342,8 @@ mod tests {
 
     #[test]
     fn antialiasing_order_each_source_decides_once_the_earlier_ones_are_absent() {
-        // Every source present, each giving a different answer from the next:
-        // `font-rendering` "automatic" decides.
+        // Every source present, the first answering grayscale and the later
+        // ones subpixel: `font-rendering` "automatic" decides.
         assert_eq!(
             rendering_for(Some("automatic"), Some("rgba"), Some("True|1")),
             Grayscale
