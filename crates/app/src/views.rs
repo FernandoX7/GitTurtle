@@ -3661,21 +3661,26 @@ mod tests {
             assert_eq!(shown.len(), 1, "{selector} shows one tooltip: {shown:?}");
             (control, shown[0])
         };
-        let (rem, edge, device) = cx.update(|window, _| {
+        let (edge, device, line, one_line) = cx.update(|window, _| {
             let rem = window.rem_size();
             let inset = window.client_inset().unwrap_or_default();
+            // The popup's line: `text_sm` at the default line height, which
+            // the text element snaps to device pixels.
+            let font = rems(0.875).to_pixels(rem);
+            let line =
+                window.pixel_snap(TextStyle::default().line_height.to_pixels(font.into(), rem));
             (
-                rem,
                 POSITIONER_MARGIN + inset + rem * 0.75,
                 px(1. / window.scale_factor()),
+                line,
+                // Within the vertical padding (`py_0p5`) and border.
+                line + (rem * 0.125 + px(1.)) * 2.,
             )
         });
         let (_, columns) = hover(cx, "columns");
-        // Less the vertical padding (`py_0p5`) and border.
-        let line = columns.size.height - (rem * 0.125 + px(1.)) * 2.;
         assert!(
-            columns.size.width < px(WIDTH) - edge * 2. && line > px(0.),
-            "Columns on one line: {columns:?}"
+            (columns.size.height - one_line).abs() <= device,
+            "Columns on one line of {one_line:?}: {columns:?}"
         );
         let check = |selector: &str, control: Bounds<Pixels>, popup: Bounds<Pixels>| {
             let at = format!("{selector}: {popup:?} over {control:?}");
@@ -3685,10 +3690,7 @@ mod tests {
                     && (px(WIDTH) - popup.right() - edge).abs() <= device,
                 "inset by {edge:?} on both sides, {at}"
             );
-            assert!(
-                popup.size.height >= columns.size.height + line,
-                "wraps, {at}"
-            );
+            assert!(popup.size.height >= one_line + line - device, "wraps, {at}");
         };
         for selector in ["history-newest", "load-more"] {
             let (control, popup) = hover(cx, selector);
