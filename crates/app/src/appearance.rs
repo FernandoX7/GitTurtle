@@ -237,11 +237,14 @@ pub const BUTTON_FOCUS_RING: FocusRing = FocusRing {
     opacity: 1.,
 };
 
-/// A selected shared button's hover: the kit gives a selected control no hover
-/// surface, so the helper paints its `selected` fill blended toward `accent`,
-/// as a hovered selected row does. It changes the fill alone, so the focus
-/// ring keeps full opacity, and it stays [`custom::PRESSED_STEP`] from the
-/// resting fill. Before any palette is applied it leaves the style alone.
+/// The hover of a Button that is selected in the shared helper's look,
+/// [`control_button_variant`]`(true)`: the helper itself, the Settings density
+/// segments and the project hub's mode segments. The kit gives a selected
+/// control no hover surface, so this paints the resting `selected` fill
+/// blended toward `accent`, as a hovered selected row does. It changes the
+/// fill alone, so the focus ring keeps full opacity, and it stays
+/// [`custom::PRESSED_STEP`] from the resting fill. Before any palette is
+/// applied it leaves the style alone.
 pub fn control_selected_hover(style: StyleRefinement) -> StyleRefinement {
     match CONTROL_BUTTON.get() {
         Some(control) => style.bg(rgb(control.selected_hover)),
@@ -251,8 +254,11 @@ pub fn control_selected_hover(style: StyleRefinement) -> StyleRefinement {
 
 /// What the last frame painted for the Button at `element`, for tests: the
 /// visible fills on its bounds and the colors of the focus rings drawn around
-/// it, at the footprint of the applied `Theme::button_focus_ring`. GPUI paints
-/// a border-only quad once per side, so each ring color counts once.
+/// it, at the footprint of the applied `Theme::button_focus_ring`. The kit
+/// offsets the ring by the Button's own border, so a bordered Button's ring
+/// has the same footprint (`focused_buttons_draw_the_theme_button_focus_ring`
+/// checks the default variant's 1 px border). GPUI paints a border-only quad
+/// once per side, so each ring color counts once.
 #[cfg(test)]
 pub(crate) fn painted_button(
     cx: &mut gpui_kit::VisualTestContext,
@@ -296,30 +302,44 @@ pub(crate) fn painted_button(
     })
 }
 
-/// For tests of a selected Button that hovers with [`control_selected_hover`]:
-/// asserts that the last frame, with the pointer over `element`, filled its
-/// bounds with nothing but that hover's `selected_hover` of the applied
-/// palette, and drew a focus ring around it in full `ring` exactly when
-/// `focused`. A hover that fades the whole Button fails both, since the fade
+/// The state [`assert_selected_button`] checks a selected Button in.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SelectedState {
+    Resting,
+    Hovered,
+    FocusedAndHovered,
+}
+
+/// For tests of a Button selected in the shared helper's look,
+/// [`control_button_variant`]`(true)` hovered with [`control_selected_hover`]:
+/// asserts that the last frame filled `element`'s bounds with nothing but the
+/// applied palette's opaque `selected` at rest or its `selected_hover` under
+/// the pointer, and drew a focus ring around it in full `ring` exactly when it
+/// is focused. A hover that fades the whole Button fails both, since the fade
 /// reaches its fill and its ring alike.
 #[cfg(test)]
-pub(crate) fn assert_selected_hover(
+pub(crate) fn assert_selected_button(
     cx: &mut gpui_kit::VisualTestContext,
     name: &str,
     element: gpui_kit::Bounds<Pixels>,
-    focused: bool,
+    state: SelectedState,
 ) {
-    let expected = control_selected_hover(StyleRefinement::default())
-        .background
-        .and_then(|fill| fill.color())
-        .expect("a palette is applied");
-    let ring = cx.update(|_, cx| Theme::global(cx).ring);
-    let (fills, rings) = painted_button(cx, element);
-    assert_eq!(fills, [expected], "{name} hovered paints {fills:?}");
-    if focused {
-        assert_eq!(rings, [ring], "{name} focused and hovered draws {rings:?}");
+    let (selected, ring) = cx.update(|_, cx| (palette(cx).selected, Theme::global(cx).ring));
+    let expected = if state == SelectedState::Resting {
+        gpui_kit::Background::from(gpui_kit::Hsla::from(rgb(selected)))
     } else {
-        assert!(rings.is_empty(), "{name} unfocused draws {rings:?}");
+        control_selected_hover(StyleRefinement::default())
+            .background
+            .and_then(|fill| fill.color())
+            .expect("a palette is applied")
+    };
+    let (fills, rings) = painted_button(cx, element);
+    assert_eq!(fills, [expected], "{name} {state:?} paints {fills:?}");
+    if state == SelectedState::FocusedAndHovered {
+        assert_eq!(rings, [ring], "{name} {state:?} draws {rings:?}");
+    } else {
+        assert!(rings.is_empty(), "{name} {state:?} draws {rings:?}");
     }
 }
 

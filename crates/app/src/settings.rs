@@ -1976,16 +1976,26 @@ impl GitTurtle {
                             .bg(rgb(p.canvas))
                             .children(Density::ALL.into_iter().enumerate().map(
                                 |(index, density)| {
+                                    let selected = self.settings.density == density;
+                                    // Selected, the shared helper's look: the `selected`
+                                    // surface, tinted on hover rather than faded, which
+                                    // would fade the focus ring with it.
                                     Button::new(("settings-density", index))
                                         .small()
-                                        .ghost()
+                                        .map(|button| {
+                                            if selected {
+                                                button.with_variant(
+                                                    appearance::control_button_variant(true),
+                                                )
+                                            } else {
+                                                button.ghost()
+                                            }
+                                        })
                                         .label(density.label())
-                                        .selected(self.settings.density == density)
-                                        .toggled(self.settings.density == density)
+                                        .selected(selected)
+                                        .toggled(selected)
                                         .debug_selector(move || format!("settings-density-{index}"))
-                                        // Tint the fill, as the shared helper does: an
-                                        // opacity would fade the focus ring with it.
-                                        .when(self.settings.density == density, |button| {
+                                        .when(selected, |button| {
                                             button.hover(appearance::control_selected_hover)
                                         })
                                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -5220,52 +5230,99 @@ mod segment_tests {
     use super::*;
     use core::prelude::v1::test;
 
-    /// The selected density hovers as the shared helper's selected button
-    /// does: its fill tints to the palette's `selected_hover` and the whole
-    /// Button, focus ring included, keeps full opacity, in a dark and a light
-    /// palette.
+    /// A selected density has the shared helper's selected look: it rests on
+    /// the palette's `selected`, hovers to its `selected_hover`, and keeps the
+    /// whole Button, focus ring included, at full opacity, in a dark and two
+    /// light palettes, one of which moves the control label.
     #[gpui::test]
-    fn a_hovered_selected_density_keeps_its_focus_ring(cx: &mut TestAppContext) {
+    fn a_selected_density_rests_and_hovers_like_the_shared_helper(cx: &mut TestAppContext) {
         let (app, cx) = open_app(cx);
-        let selected = cx.read(|cx| app.read(cx).settings.density);
-        let index = Density::ALL.iter().position(|density| *density == selected);
+        assert_eq!(
+            cx.read(|cx| app.read(cx).settings.density),
+            Density::Comfortable
+        );
+        let index = Density::ALL
+            .iter()
+            .position(|density| *density == Density::Compact);
         let selector: &'static str = format!("settings-density-{}", index.unwrap()).leak();
-        let mut focus: Option<FocusHandle> = None;
-        for choice in [ThemeChoice::Midnight, ThemeChoice::KanagawaLotus] {
+        let unselected = shown(cx, selector).expect("the Compact density is drawn");
+        // Tab from the Your themes card passes the text size controls before it
+        // reaches the density segments; Space selecting Compact shows that is
+        // where focus is.
+        let card = cx.read(|cx| app.read(cx).theme_editor.card_focus(cx));
+        cx.update(|window, cx| window.focus(&card, cx));
+        let mut reached = false;
+        for _ in 0..24 {
+            cx.update(|window, cx| window.focus_next(cx));
+            settle(cx);
+            if !appearance::painted_button(cx, unselected).1.is_empty() {
+                reached = true;
+                break;
+            }
+        }
+        assert!(
+            reached,
+            "Tab from the Your themes card reaches Compact within 24 stops"
+        );
+        let compact = cx
+            .update(|window, cx| window.focused(cx))
+            .expect("a focused density");
+        let space = Keystroke::parse("space").expect("a keystroke");
+        cx.simulate_event(KeyDownEvent {
+            keystroke: space.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(KeyUpEvent { keystroke: space });
+        settle(cx);
+        assert_eq!(
+            cx.read(|cx| app.read(cx).settings.density),
+            Density::Compact,
+            "Space on the focused density selects Compact"
+        );
+        for choice in [
+            ThemeChoice::Midnight,
+            ThemeChoice::Porcelain,
+            ThemeChoice::KanagawaLotus,
+        ] {
             cx.update(|window, cx| {
                 app.update(cx, |app, cx| {
                     app.settings.follow_system = false;
                     app.settings.theme = ThemeSelection::BuiltIn(choice);
                     app.apply_appearance(window, cx);
-                })
+                });
+                window.blur(cx);
             });
-            settle(cx);
-            let segment = shown(cx, selector).expect("the selected density is drawn");
-            let name = format!("{choice:?} {} density", selected.label());
-            cx.simulate_mouse_move(segment.center(), None, Modifiers::default());
-            settle(cx);
-            appearance::assert_selected_hover(cx, &name, segment, false);
-            if let Some(handle) = &focus {
-                cx.update(|window, cx| window.focus(handle, cx));
-                settle(cx);
-            } else {
-                // Tab from the Your themes card passes the text size controls
-                // before it reaches the density segments.
-                let card = cx.read(|cx| app.read(cx).theme_editor.card_focus(cx));
-                cx.update(|window, cx| window.focus(&card, cx));
-                for _ in 0..24 {
-                    cx.update(|window, cx| window.focus_next(cx));
-                    settle(cx);
-                    if !appearance::painted_button(cx, segment).1.is_empty() {
-                        break;
-                    }
-                }
-                focus = cx.update(|window, cx| window.focused(cx));
-            }
-            appearance::assert_selected_hover(cx, &name, segment, true);
-            cx.update(|window, cx| window.blur(cx));
             cx.simulate_mouse_move(point(px(0.), px(0.)), None, Modifiers::default());
             settle(cx);
+            let segment = shown(cx, selector).expect("the selected density is drawn");
+            let name = format!("{choice:?} Compact density");
+            appearance::assert_selected_button(
+                cx,
+                &name,
+                segment,
+                appearance::SelectedState::Resting,
+            );
+            cx.simulate_mouse_move(segment.center(), None, Modifiers::default());
+            settle(cx);
+            appearance::assert_selected_button(
+                cx,
+                &name,
+                segment,
+                appearance::SelectedState::Hovered,
+            );
+            cx.update(|window, cx| window.focus(&compact, cx));
+            settle(cx);
+            assert!(
+                cx.update(|window, _| compact.is_focused(window)),
+                "{name} takes focus back"
+            );
+            appearance::assert_selected_button(
+                cx,
+                &name,
+                segment,
+                appearance::SelectedState::FocusedAndHovered,
+            );
         }
     }
 }
