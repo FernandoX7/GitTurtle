@@ -219,9 +219,13 @@ symlink in `target/` is not part of the supported installation.
 Checked on 2026-09-27 on Omarchy 4.0.4 (Arch; Hyprland 0.56.2 on native
 Wayland; AMD Radeon Vega with Mesa 26.2.2 and `vulkan-radeon`; one 1366 × 768
 display at scale 1). Other Arch-based desktops share the build requirements but
-have no recorded check. On Omarchy itself, Git writes and network actions, more
-than one monitor and a physical HiDPI panel have no recorded check yet; see the
-[validation record](validation.md#september-27-omarchy-and-hyprland).
+have no recorded check. On Omarchy itself, Git writes and network actions were
+checked on 2026-09-30: staging a file and a single hunk, unstaging, committing,
+creating, switching and deleting a branch, and fetch, pull and push over
+`file://` and over HTTP with GitTurtle's authentication prompt; see the
+[Git writes record](validation.md#september-30-git-writes-and-network-actions-on-omarchy).
+More than one monitor and a physical HiDPI panel have no recorded check yet; see
+the [validation record](validation.md#september-27-omarchy-and-hyprland).
 
 Under XWayland (launched with `env -u WAYLAND_DISPLAY`), History, Compare,
 Settings with the Omarchy theme, the command palette, shortcuts and typing
