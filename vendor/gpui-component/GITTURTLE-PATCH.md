@@ -105,3 +105,43 @@ helper's selected hover (`crates/app/src/main.rs`) and the selected mode,
 density and worktree Buttons in `projects.rs`, `settings.rs` and
 `worktrees.rs`. Remove this part of the patch when upstream Button keeps caller
 hover styles off a disabled Button, or GPUI lets the kit clear them.
+
+The disabled-focus patch also modifies `src/button/button.rs`. gpui-base's
+Button tracks its focus handle only while it is enabled (`gpui-base`
+`src/button.rs`, `.when(!disabled && self.focusable, …)`), so a Button that
+turns disabled while it holds focus drops out of the rendered frame with the
+window's focus still on it. GPUI 0.3.4 then dispatches keys from the window's
+root dispatch node (`Window::focus_node_id_in_rendered_frame`), which lies above
+`Root`'s `Root` key context, so Tab and Shift+Tab match no binding and focus
+stays on the dimmed Button until a pointer click. Targets' Switch reaches this
+after every completed switch, which clears the branch field that enables it.
+
+While a disabled Button holds focus, it now tracks its handle through
+`InteractiveElement::track_focus`, which gpui-base's disabled path leaves in
+place, as a target that is not a tab stop. Keys dispatch through `Root` again,
+and `focus_next` and `focus_prev` step from the Button's own place in the tab
+order to its neighbours; Tab never lands on a disabled Button. The Button gains
+no click, Enter or Space activation, a press on it still stops at its disabled
+mouse-down handler, and it keeps the focus ring it already drew. AccessKit
+reports the focused, disabled Button, with its Focus action and no Click,
+instead of falling back to the window root. Every ancestor key binding reaches
+it again, as for an enabled focused Button; no handler relies on a disabled
+Button to block a write. Setting `tab_stop(false)` on the handle also writes
+its window-wide record, which gpui-base's enabled path rewrites on every render,
+so a Button that is enabled again is a tab stop again. Once focus leaves, and
+for every enabled or unfocused Button, rendering is unchanged.
+
+gpui-base's Checkbox, Switch, Radio, Toggle, Link and ColorPicker keep the same
+enabled-only focus guard and are not patched here. The app disables a focused
+Switch or Checkbox in Settings' Follow system (while the Omarchy theme is
+selected), the diff view's partial-line Checkbox, the ignore dialog and the
+profile editor.
+
+`cargo test --locked -p gitturtle tab_and_shift_tab_leave_a_focused_switch_that_turns_disabled`
+renders the application's Targets, tabs onto Switch, clears the branch field,
+and sends Tab and Shift+Tab as keystrokes, requiring focus to reach the Remote
+field past the disabled Create and to return to the branch field. Native
+keyboard behavior needs its own run. Remove this part of the patch when
+gpui-base keeps a focused disabled Button's handle in the frame, or GPUI moves
+Tab and Shift+Tab on from a focused element that is no longer rendered, and
+that regression passes without it.
