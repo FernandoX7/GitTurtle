@@ -33,6 +33,37 @@
       "commit": "test(core): isolate signing-failure tests from host Git config"
     },
     {
+      "id": "native-qa-mutter-input",
+      "title": "Send native-QA input through Mutter RemoteDesktop",
+      "description": "Owner request of 2026-09-29. On GNOME hosts whose XWayland runs with `-enable-ei-portal` (the Ubuntu 26.04 GNOME 50 host), XTest goes through the RemoteDesktop portal, whose \"Allow Remote Interaction\" prompt swallows keys, so `scripts/native_qa` (XTest through python-xlib, x11.py) cannot drive the app there. The last session's local drivers (`.local/recapture-2026-09-29/tools/mutter_input.py`, a `MutterDriver(x11.Driver)` over `org.gnome.Mutter.RemoteDesktop`, and `qaflow.py`'s focus-checked flow) are the working reference: pointer anchored at the bottom-right corner, monitor scale 1.0, keys only while X focus is on the app, and under Mutter the first wheel click of each batch is dropped. Port that backend into scripts/native_qa: `launch --input mutter`, the default where XWayland's command line has `-enable-ei-portal` if that is detectable. portal.py also finds the FileChooser when Nautilus hosts it (AT-SPI application `org.gnome.Nautilus`), matched by exact dialog title only (\"Open File\", \"Save File\"). Keep the guards: keys only with verified X focus on the app, and dialog keys only while a widget inside the dialog holds focus. Never XTest on such a host. Queued in docs/development/queue-2026-09-30.json as well, since the controller's reviewers can run scripts/native_qa's tests and its tooling profile gates them: the `.local/` reference drivers named above exist only in the source checkout the run was started from, not in an attempt clone, so read them there without writing.",
+      "depends_on": [],
+      "scope": [
+        "scripts/native_qa/**"
+      ],
+      "acceptance": [
+        {
+          "id": "backend",
+          "description": "`qa.py launch` accepts `--input mutter` (and `xtest`), and selects mutter by default when XWayland's command line has `-enable-ei-portal`; unit tests cover the selection from a fixture process list and refuse XTest on such a host."
+        },
+        {
+          "id": "guards",
+          "description": "Unit tests with a fake D-Bus session and fake X focus show that keys are refused unless X focus is on the app's window, dialog keys are refused unless a widget inside the matched dialog holds focus, and the first wheel click of a batch is compensated."
+        },
+        {
+          "id": "portal",
+          "description": "portal.py finds a FileChooser hosted by `org.gnome.Nautilus` by exact title (\"Open File\" or \"Save File\") and ignores other Nautilus windows, covered by unit tests over a fake AT-SPI tree."
+        },
+        {
+          "id": "docs-and-tests",
+          "description": "scripts/native_qa/README.md documents the backend, its default, the guards and the known Mutter quirks; `python3 -m unittest discover -s scripts/native_qa -t scripts -p 'test_*.py'` passes without a display."
+        }
+      ],
+      "profiles": [
+        "tooling"
+      ],
+      "commit": "feat(native-qa): send input through Mutter RemoteDesktop"
+    },
+    {
       "id": "refresh-cw-icon",
       "title": "Draw an icon on the six buttons that name the missing refresh-cw",
       "description": "Owner request of 2026-09-30, from docs/validation.md \"September 29 whole focus ring in Tags and Reflog\" (found on the way). Queued in docs/development/queue-2026-09-30.json, a self-contained queue with no dependency into tasks.json. Six buttons pass the symbol `refresh-cw` to the shared `button` helpers (crates/app/src/main.rs:1860; github_view.rs:33 has its own), which load `icons/refresh-cw.svg`. They are Read log (reflog.rs:284), the worktree manager's Refresh (worktrees.rs:519), Refresh PRs (github_view.rs:1060), Read configured source (lfs_download.rs:290), Refresh conversations (github_view/conversations.rs:483) and the thread reload (conversations.rs:512). The app's `Assets` tries the embedded assets/icons/ first and then gpui-kit-assets 0.6.0 (main.rs:137-153). Neither has refresh-cw (the kit has Lucide's rotate-cw), so each button draws an empty icon slot. The app's own original refresh.svg already serves the other refresh and retry buttons (workspace.rs:948, blame.rs:501, file_history.rs:852, recovery.rs:1369): use it at the six sites. Planner decision of 2026-09-30: no new artwork. Any change under assets/ makes the controller require a package attestation (docs/development/README.md, Verification profiles), and a distinct clockwise glyph, if the design review asks for one, is a separate assets task. First in the native chain: it is the smallest native change, and later tasks then recapture Reflog and worktree frames with the icon drawn. Depends on `git-core-signing-test-isolation` (the controller's gate on this host) and, for scheduling only, on `native-qa-mutter-input`. That keeps both unattended tasks ahead of every native candidate, so neither acceptance restales one.",
