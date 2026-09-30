@@ -137,14 +137,15 @@ fn reveal_in_page(page: &ScrollHandle, top: Pixels, bottom: Pixels) {
 /// The Your themes rows' corner radius.
 const ROW_RADIUS: Pixels = px(6.);
 
-/// Where the just-imported Your themes row is drawn in the frame being
-/// prepainted, for the fill the list paints beneath the rows: the row's
-/// bounds, its content mask, and a hitbox of the row's own bounds, which is
-/// hovered exactly when the row is.
+/// Where a Your themes row is drawn in the frame being prepainted, for the
+/// fill the list paints beneath the rows: the row's bounds, its content mask,
+/// a hitbox of the row's own bounds, which is hovered exactly when the row
+/// is, and whether the row is the just-imported one.
 struct RowFill {
     bounds: Bounds<Pixels>,
     mask: ContentMask<Pixels>,
     hitbox: Hitbox,
+    imported: bool,
 }
 
 /// Baselines distinguish a saved value moving externally from an unfinished edit.
@@ -1638,14 +1639,14 @@ impl GitTurtle {
         let strips = scrolls && rows_off_boundary(&scroll, row_height, viewport, rows, window);
         let p = palette(cx);
         let surface = rgb(p.subtle);
-        // The import highlight's fill, painted beneath every row rather than
-        // as the highlighted row's own background: a row paints after the
-        // row above it, so that background covered the bottom edge of the
-        // ring around a focused action on the row above
-        // (`render_custom_theme_row` records where the row is drawn).
-        let highlight = std::rc::Rc::new(std::cell::Cell::new(None::<RowFill>));
-        let fill = highlight.clone();
-        let (selected, hovered) = (p.selected, p.row_hover(true));
+        // Every row's fill, the import highlight and the hover surface, is
+        // painted beneath all the rows rather than as the row's own
+        // background: a row paints after the row above it, so its own fill
+        // covered the bottom edge of the ring around a focused action on the
+        // row above (`render_custom_theme_row` records where each row is
+        // drawn, at most the nine rows the viewport can show).
+        let drawn = std::rc::Rc::new(std::cell::RefCell::new(Vec::<RowFill>::new()));
+        let fills = drawn.clone();
         // The box the rows occupy in the card's column: exactly the rows, so
         // the card, the row pitch and everything below the card stay where
         // the plain stack put them. The list itself is positioned over it 3
@@ -1720,25 +1721,32 @@ impl GitTurtle {
                         canvas(
                             |_, _, _| (),
                             move |_, (), window, cx| {
-                                let Some(row) = fill.take() else {
-                                    return;
-                                };
-                                // What the row's own background and hover
-                                // style painted: the selected surface, or its
-                                // hover blend under the pointer.
-                                let hover = !cx.has_active_drag() && row.hitbox.is_hovered(window);
-                                let color = Hsla::from(rgb(if hover { hovered } else { selected }));
-                                window.with_content_mask(Some(row.mask), |window| {
-                                    window.paint_quad(quad(
-                                        row.bounds,
-                                        Corners::all(ROW_RADIUS)
-                                            .clamp_radii_for_quad_size(row.bounds.size),
-                                        color,
-                                        Edges::default(),
-                                        color.alpha(0.),
-                                        BorderStyle::default(),
-                                    ))
-                                });
+                                for row in fills.take() {
+                                    // What the row's own background and hover
+                                    // style painted: the plain hover surface
+                                    // under the pointer, and on the imported
+                                    // row the selected surface, blended as a
+                                    // hovered selected row under the pointer.
+                                    let hover =
+                                        !cx.has_active_drag() && row.hitbox.is_hovered(window);
+                                    let color = match (row.imported, hover) {
+                                        (imported, true) => p.row_hover(imported),
+                                        (true, false) => p.selected,
+                                        (false, false) => continue,
+                                    };
+                                    let color = Hsla::from(rgb(color));
+                                    window.with_content_mask(Some(row.mask), |window| {
+                                        window.paint_quad(quad(
+                                            row.bounds,
+                                            Corners::all(ROW_RADIUS)
+                                                .clamp_radii_for_quad_size(row.bounds.size),
+                                            color,
+                                            Edges::default(),
+                                            color.alpha(0.),
+                                            BorderStyle::default(),
+                                        ))
+                                    });
+                                }
                             },
                         )
                         .absolute()
@@ -1770,7 +1778,7 @@ impl GitTurtle {
                                 range
                                     .filter_map(|index| {
                                         let count = warnings.get(index).copied().unwrap_or(0);
-                                        this.render_custom_theme_row(index, count, &highlight, cx)
+                                        this.render_custom_theme_row(index, count, &drawn, cx)
                                     })
                                     .collect::<Vec<_>>()
                             }),
@@ -1831,13 +1839,13 @@ impl GitTurtle {
     }
 
     /// One Your themes row, built only while it is in the list's viewport.
-    /// The just-imported row records where it is drawn in `highlight`, whose
-    /// fill the list paints beneath the rows (`render_custom_theme_rows`).
+    /// The row records where it is drawn in `drawn`, and the list paints its
+    /// fill beneath the rows (`render_custom_theme_rows`).
     fn render_custom_theme_row(
         &self,
         index: usize,
         warnings: usize,
-        highlight: &std::rc::Rc<std::cell::Cell<Option<RowFill>>>,
+        drawn: &std::rc::Rc<std::cell::RefCell<Vec<RowFill>>>,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let theme = self.custom_themes.get(index)?;
@@ -1868,39 +1876,37 @@ impl GitTurtle {
             .h(appearance::ui_size(30.))
             .px(appearance::ui_size(8.))
             .rounded(ROW_RADIUS)
-            // A just-imported theme is highlighted on the selected
-            // surface. It is added, not applied: the checkmark still
-            // marks the theme the window uses. Hovering the row is not
-            // a card action, so it keeps the highlight, blended as a
-            // hovered selected row, rather than replacing it with the
-            // plain hover surface. The list paints both beneath every
-            // row from what this probe records, so the row paints no
-            // fill of its own over the ring of a focused action on the
-            // row above. The empty hover style still has GPUI draw the
-            // page again when the pointer enters or leaves the row.
-            .when(imported == Some(id), |row| {
-                let highlight = highlight.clone();
-                row.child(
-                    canvas(
-                        move |bounds, window, _| {
-                            highlight.set(Some(RowFill {
-                                bounds,
-                                mask: window.content_mask(),
-                                hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
-                            }))
-                        },
-                        |_, _, _, _| {},
-                    )
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full(),
+            // A hovered row takes the hover surface. A just-imported theme
+            // is highlighted on the selected surface. It is added, not
+            // applied: the checkmark still marks the theme the window
+            // uses. Hovering the row is not a card action, so it keeps
+            // the highlight, blended as a hovered selected row, rather
+            // than replacing it with the plain hover surface. The list
+            // paints every one of these fills beneath all the rows from
+            // what this probe records, so no row paints a fill of its own
+            // over the ring of a focused action on the row above. The
+            // empty hover style still has GPUI draw the page again when
+            // the pointer enters or leaves the row.
+            .child({
+                let drawn = drawn.clone();
+                let imported = imported == Some(id);
+                canvas(
+                    move |bounds, window, _| {
+                        drawn.borrow_mut().push(RowFill {
+                            bounds,
+                            mask: window.content_mask(),
+                            hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
+                            imported,
+                        })
+                    },
+                    |_, _, _, _| {},
                 )
-                .hover(|row| row)
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
             })
-            .when(imported != Some(id), |row| {
-                row.hover(|row| row.bg(rgb(p.row_hover(false))))
-            })
+            .hover(|row| row)
             .flex()
             .items_center()
             .gap_2()

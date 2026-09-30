@@ -6123,15 +6123,21 @@ mod tests {
             && outer.bottom() + slack >= inner.bottom()
     }
 
-    /// The import highlight is drawn beneath the rows, so a focused action on
-    /// the row directly above the highlighted one keeps its ring's bottom
-    /// edge (`DESIGN.md`, Your themes: the ring is whole in every slot). Each
-    /// action on that row and on the highlighted row itself, at rest and with
-    /// the pointer over the highlighted row, draws the installed ring with
-    /// all four edges inside its content mask, and no fill drawn after the
-    /// ring overlaps an edge. The highlight keeps its look: one quad of the
-    /// selected surface, or its hover blend under the pointer, on the row's
-    /// bounds and 6 px corners, while the rows keep their pitch and actions.
+    /// Every row's fill, the import highlight and the hover surface, is drawn
+    /// beneath the rows, so a focused action on the row directly above a
+    /// highlighted or hovered row keeps its ring's bottom edge (`DESIGN.md`,
+    /// Your themes: the ring is whole in every slot). With theme 3 just
+    /// imported, each action on the first three rows draws the installed ring
+    /// with all four edges shown and no fill drawn after the ring over an
+    /// edge: with the pointer off the rows, on the highlighted row, and on
+    /// the plain rows below a focused action (the fourth, below the
+    /// highlighted row, and the second, below the first). The fills keep
+    /// their look: one quad per filled row on the row's bounds and 6 px
+    /// corners, the selected surface on the highlighted row, its hover blend
+    /// under the pointer, and the plain hover surface on a hovered plain row,
+    /// each clipped to the list, while the rows keep their pitch and actions. The pointer alone, with
+    /// no focus change to rebuild the page, brings each hover fill and takes
+    /// it away again.
     #[gpui::test]
     fn a_focused_row_actions_ring_is_whole_beside_the_import_highlight(cx: &mut TestAppContext) {
         let (app, cx) = open_app(cx);
@@ -6148,9 +6154,14 @@ mod tests {
         settle(cx);
         let (ring, footprint) = installed_ring(cx);
         let p = cx.read(appearance::palette);
-        let row = bounds(cx, "custom-theme-3".into());
-        let above = bounds(cx, "custom-theme-2".into());
-        assert_eq!(row.top(), above.bottom(), "the rows keep their pitch");
+        let rows = [1, 2, 3, 4].map(|id| bounds(cx, format!("custom-theme-{id}")));
+        let rows_box = bounds(cx, "custom-themes-rows-box".into());
+        // Each row's fill is clipped to the list, as the rows' content is.
+        let list = bounds(cx, "custom-themes-rows".into());
+        let header = bounds(cx, "custom-themes-header".into());
+        for pair in rows.windows(2) {
+            assert_eq!(pair[1].top(), pair[0].bottom(), "the rows keep their pitch");
+        }
         for name in ["edit", "export", "delete"] {
             let plain = bounds(cx, format!("{name}-custom-theme-2"));
             let highlighted = bounds(cx, format!("{name}-custom-theme-3"));
@@ -6160,66 +6171,118 @@ mod tests {
                 "{name} sits on the highlighted row where it sits on a plain one"
             );
         }
-
-        for hovered in [false, true] {
-            if hovered {
-                // Over the row's spacer, clear of its actions.
-                cx.simulate_mouse_move(
-                    gpui::point(row.left() + row.size.width / 2., row.center().y),
-                    None,
-                    Modifiers::default(),
-                );
-                settle(cx);
+        // The pointer over theme `id`'s row spacer, clear of its actions, or
+        // over the card's description, clear of every row.
+        let pointer = |id: Option<u32>| match id {
+            Some(id) => {
+                let row = rows[id as usize - 1];
+                gpui::point(row.left() + row.size.width / 2., row.center().y)
             }
-            let fill = Background::from(rgb(if hovered {
-                p.row_hover(true)
-            } else {
-                p.selected
-            }));
-            for (id, action) in [(2, 0), (2, 1), (2, 2), (3, 0), (3, 1), (3, 2)] {
-                let handle = cx.update(|_, cx| app.read(cx).theme_editor.row_focus(id, cx));
-                cx.update(|window, cx| {
-                    State::focus_row_action(&handle, RowFocus::Action(action), window, cx)
-                });
-                native_frame(cx);
-                let name = ["edit", "export", "delete"][action];
-                let context = format!("{name} of theme {id}, hovered {hovered}");
-                let button = bounds(cx, format!("{name}-custom-theme-{id}"));
-                assert_eq!(
-                    bounds(cx, "custom-theme-3".into()),
-                    row,
-                    "{context}: no row moves"
-                );
-                let quads = painted_quads(cx);
-                let rows_box = bounds(cx, "custom-themes-rows-box".into());
-                let highlights = quads
-                    .iter()
-                    .filter(|quad| quad.background == fill && quad.bounds.intersects(&rows_box))
-                    .collect::<Vec<_>>();
-                assert!(
-                    matches!(highlights.as_slice(), [quad] if quad.bounds == row && quad.radius == px(6.)),
-                    "{context}: the highlight is one fill on the row's bounds: {highlights:?}"
-                );
-                let drawn = PaintedRing::around(&quads, button, footprint);
-                for (side, band) in drawn.edges(ring.width) {
-                    assert!(
-                        drawn.shows(band),
-                        "{context}: the ring's {side} edge {band:?} is clipped: {:?}",
-                        drawn.parts
+            None => gpui::point(header.left() + px(20.), header.center().y),
+        };
+        // The fills the rows' box shows with the pointer over `hovered`: one
+        // quad per filled row, on its bounds, with 6 px corners and clipped
+        // to the list.
+        let expected = |hovered: Option<u32>| {
+            [1, 2, 3, 4]
+                .into_iter()
+                .filter_map(|id| {
+                    let color = match (id == 3, hovered == Some(id)) {
+                        (imported, true) => p.row_hover(imported),
+                        (true, false) => p.selected,
+                        (false, false) => return None,
+                    };
+                    Some((
+                        rows[id as usize - 1],
+                        Background::from(rgb(color)),
+                        px(6.),
+                        list,
+                    ))
+                })
+                .collect::<Vec<_>>()
+        };
+        let fills = |quads: &[PaintedQuad]| {
+            quads
+                .iter()
+                .filter(|quad| {
+                    !quad.background.is_transparent()
+                        && quad.bounds.intersects(&rows_box)
+                        && rows.contains(&quad.bounds)
+                })
+                .map(|quad| (quad.bounds, quad.background, quad.radius, quad.mask))
+                .collect::<Vec<_>>()
+        };
+
+        for hovered in [None, Some(3), Some(4), Some(2)] {
+            cx.simulate_mouse_move(pointer(hovered), None, Modifiers::default());
+            settle(cx);
+            for id in [1, 2, 3] {
+                for action in 0..3 {
+                    let handle = cx.update(|_, cx| app.read(cx).theme_editor.row_focus(id, cx));
+                    cx.update(|window, cx| {
+                        State::focus_row_action(&handle, RowFocus::Action(action), window, cx)
+                    });
+                    native_frame(cx);
+                    let name = ["edit", "export", "delete"][action];
+                    let context = format!("{name} of theme {id}, pointer over {hovered:?}");
+                    let button = bounds(cx, format!("{name}-custom-theme-{id}"));
+                    assert_eq!(
+                        [1, 2, 3, 4].map(|id| bounds(cx, format!("custom-theme-{id}"))),
+                        rows,
+                        "{context}: no row moves"
                     );
-                    let order = drawn.order(band);
-                    for later in quads
-                        .iter()
-                        .filter(|quad| quad.order > order && !quad.background.is_transparent())
-                    {
-                        let covered = later.bounds.intersect(&later.mask).intersect(&band);
+                    let quads = painted_quads(cx);
+                    assert_eq!(
+                        fills(&quads),
+                        expected(hovered),
+                        "{context}: the rows' fills"
+                    );
+                    let drawn = PaintedRing::around(&quads, button, footprint);
+                    for (side, band) in drawn.edges(ring.width) {
                         assert!(
-                            covered.size.width <= px(0.01) || covered.size.height <= px(0.01),
-                            "{context}: a fill drawn after the ring covers its {side} edge: {later:?}"
+                            drawn.shows(band),
+                            "{context}: the ring's {side} edge {band:?} is clipped: {:?}",
+                            drawn.parts
                         );
+                        let order = drawn.order(band);
+                        for later in quads
+                            .iter()
+                            .filter(|quad| quad.order > order && !quad.background.is_transparent())
+                        {
+                            let covered = later.bounds.intersect(&later.mask).intersect(&band);
+                            assert!(
+                                covered.size.width <= px(0.01) || covered.size.height <= px(0.01),
+                                "{context}: a fill drawn after the ring covers its {side} edge: {later:?}"
+                            );
+                        }
                     }
                 }
             }
+        }
+
+        // The pointer alone: onto the highlighted row and off the rows, then
+        // onto a plain row and off again. Focus stays on the first row's
+        // Edit… throughout, so only the rows' own hover styles can have the
+        // cached page drawn again; the scene is read as drawn, without a
+        // frame that rebuilds every view.
+        let handle = cx.update(|_, cx| app.read(cx).theme_editor.row_focus(1, cx));
+        cx.update(|window, cx| State::focus_row_action(&handle, RowFocus::Action(0), window, cx));
+        cx.simulate_mouse_move(pointer(None), None, Modifiers::default());
+        settle(cx);
+        let focus = cx.update(|window, cx| window.focused(cx));
+        for hovered in [Some(3), None, Some(4), None] {
+            cx.simulate_mouse_move(pointer(hovered), None, Modifiers::default());
+            settle(cx);
+            assert_eq!(
+                fills(&painted_quads(cx)),
+                expected(hovered),
+                "the pointer alone, now over {hovered:?}, changes the rows' fills"
+            );
+            assert_eq!(
+                cx.update(|window, cx| window.focused(cx)),
+                focus,
+                "with no focus change"
+            );
         }
     }
 
