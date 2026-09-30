@@ -65,6 +65,29 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## September 29 desktop code font row states
+
+Task `code-font-row-evidence` closes the open items of [the desktop monospace font check](#september-27-desktop-monospace-font-on-linux) for Settings' **Use the desktop's monospace font** row. No product code changed. `settings::picker_tests::the_code_font_row_describes_off_pending_and_on` asserts the row's description in the three states the setting passes through. Off reads "Code uses the bundled DejaVu Sans Mono. Turn on to use fontconfig's monospace font when it is fixed-width.", pending reads "Looking up the desktop's monospace font…", and on reads "Code uses ‹family›, the desktop's monospace font." It also asserts each state's accessible label.
+
+Native evidence, full tier, on Omarchy 4.0.4 (Hyprland 0.56.2, native Wayland):
+- Build: `main` `9f55de0`, release, clean, sha256 `0d053ea1…` (`qa.py identity`). The row's code is the same on the branch.
+- Outputs: temporary headless outputs, fullscreen, tall enough to hold the whole Settings page, because Settings does not scroll a control that Tab focuses into view (see the findings). Wide layout 1480 × 2000 at scale 1. Stacked layout, below the 1,060 px breakpoint, 1000 × 2400. An 18 pt interface text size at 1480 × 2600. Scale 1.25 on a 1850 × 2500 output (1480 × 2000 logical).
+- Launches: each had a fresh HOME with the `GitTurtle QA` identity and fresh XDG directories, and opened Settings with Ctrl+,. The fixture was a disposable `scripts/create-demo-repo.py` repository at `/tmp/gitturtle-evidence/narrow-8/demo`. The desktop's `monospace` alias resolves to JetBrainsMono Nerd Font.
+- Input: keyboard only, through `wtype` after checking the active window's PID. Tab 34 times from the Settings entry reaches the switch, and Space then toggles it. Hover moved the compositor's pointer onto the switch, and the pointer is drawn in those frames.
+- Pending: an `fc-match` wrapper on the launch's PATH answered after 0.42 s (0.3 s for the stacked Daylight run), within the app's 500 ms bound. Whole-output grabs every 50–170 ms caught the description in its pending text, with the knob still travelling in the switch's spring animation.
+- Frames: cropped from the whole-output grabs to the Code text size sample, the row and its separator. All 27 are in [`evidence/code-font-row/`](evidence/code-font-row/): wide Midnight and Daylight in off, off focused, pending, on focused, hovered on and hovered off; stacked Midnight and Daylight in off, pending and on; 18 pt Midnight and 1.25 Midnight in off, pending, on and hovered on. One stacked Daylight lookup overran the 500 ms bound while a build loaded the host, and its frame shows the unavailable state: "fontconfig did not answer. Code uses the bundled DejaVu Sans Mono." A privacy scan of the 27 committed files with the local template set came back clean, and each was viewed at full size.
+
+A `design-reviewer` pass found the frames complete. The title and muted description use the Settings helper's sizes. The title's left edge and the switch's right edge line up with the code sample in every layout, and the row's spacing is balanced. At 18 pt the description wraps without truncation, and at 1.25 the text, switch and separator edges are sharp.
+
+**Findings**, for the owner and not fixed here:
+- **No focus indication.** The focused switch draws no focus indication: `wide-midnight-off-focused` and `wide-daylight-off-focused` are byte-identical to their unfocused frames, and no focused frame shows a ring, against `DESIGN.md`'s visible focus rule. The Settings switches come from `vendor/gpui-component/src/switch.rs`, whose render sets no focus style, so all four Settings switches are affected.
+- **No hover change.** Hovering changes nothing but the pointer image, off or on.
+- **Low knob contrast.** The checked knob sits at 1.37:1 on its track in Midnight (`#E8EEF7` on `#75E0BB`) and 2.28:1 in Daylight (`#253247` on `#08755D`), under 3:1. The off track reads 1.39:1 against the card, though the knob outlines the control at 9–10:1. No palette test covers these switch tokens.
+- **The switch moves at 18 pt.** The off description wraps to two lines and the other states' take one, so toggling moves the switch 11 px up under the pointer.
+- **Focus outside the view.** Settings does not scroll a Tab-focused control into view. At 1480 × 800, 19 consecutive Tabs moved focus below the fold without changing a pixel.
+
+Not covered: pointer clicks (no pointer-click tool on this host; the view test toggles the switch), the turning-off transition, and macOS, where the row does not exist.
+
 ## September 29 desktop code font at a cold launch
 
 Measurement only, in the [benchmark record](benchmarks/2026-09-29-code-font-cold-launch.md) with its driver, raw samples and cache counts.
