@@ -1799,7 +1799,7 @@
     {
       "id": "linux-text-antialias-without-portal",
       "title": "Settle Linux text antialiasing when no settings portal answers",
-      "description": "Owner request of 2026-09-29, low priority: investigate first. In the no-portal frames of the `button-focus-ring-recapture` session (a private session bus, so no XDG settings portal), labels render with subpixel antialiasing. DESIGN.md (~116) says Linux \"follows the desktop's antialiasing preference (grayscale unless the session asks for subpixel rendering)\". The fallback in crates/app/src/desktop_text.rs (~400-407) tries GNOME's setting, then fontconfig (`rendering_from_fontconfig`), then grayscale, so the host's fontconfig configuration may be what asks for subpixel. Establish which source chose subpixel in those frames. Then either fix the fallback so it matches DESIGN.md, or, if fontconfig is the session's own request, make DESIGN.md say which sources count and in what order; the owner decides between them if the evidence is ambiguous.",
+      "description": "Owner request of 2026-09-29, low priority: investigate first. In the no-portal frames of the `button-focus-ring-recapture` session (a private session bus, so no XDG settings portal), labels render with subpixel antialiasing. DESIGN.md (~116) says Linux \"follows the desktop's antialiasing preference (grayscale unless the session asks for subpixel rendering)\". The fallback in crates/app/src/desktop_text.rs (~400-407) tries GNOME's setting, then fontconfig (`rendering_from_fontconfig`), then grayscale, so the host's fontconfig configuration may be what asks for subpixel. Establish which source chose subpixel in those frames. Then either fix the fallback so it matches DESIGN.md, or, if fontconfig is the session's own request, make DESIGN.md say which sources count and in what order; the owner decides between them if the evidence is ambiguous. Owner decision of 2026-09-30, after the investigation found fontconfig's distribution default (Ubuntu's `10-sub-pixel-rgb.conf`) behind the no-portal frames: keep the behaviour and state the order in DESIGN.md, since on KDE, wlroots and Omarchy fontconfig carries the desktop's preference.",
       "depends_on": [],
       "scope": [
         "crates/app/src/desktop_text.rs",
@@ -1829,7 +1829,7 @@
         "rust",
         "docs"
       ],
-      "commit": "fix(text): settle Linux antialiasing when no settings portal answers"
+      "commit": "docs(text): state where Linux antialiasing comes from"
     },
     {
       "id": "native-qa-mutter-input",
