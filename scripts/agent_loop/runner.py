@@ -35,10 +35,13 @@ CONTROLS = (".codex", ".agents", ".claude", "scripts/agent_loop", "scripts/agent
 MIRRORS = (".codex", ".agents/skills")
 # A squash merge's subject is the pull request title plus ` (#N)`; the ASCII
 # digit class keeps other numerals from standing in for a PR number.
-SQUASH_SUFFIX = re.compile(r"(.+) \(#[0-9]+\)")
-# What `git revert` and GitHub's Revert button write.
+SQUASH_SUFFIX = re.compile(r"(.+) \(#([0-9]+)\)")
+# What `git revert` writes, and what GitHub's Revert button leaves once its pull
+# request is squash-merged with its title and description: the subject
+# `Revert "<title>" (#M)` and the body line `Reverts <owner>/<repo>#N`.
 REVERT_SUBJECT = re.compile(r'Revert "(.+)"')
 REVERTS_COMMIT = re.compile(r"^This reverts commit ([0-9a-f]{40}|[0-9a-f]{64})\b", re.MULTILINE)
+REVERTS_PULL = re.compile(r"^Reverts (?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#([0-9]+)\b", re.MULTILINE)
 COORDINATOR_NOTES = "docs/development/HANDOFF.md"
 # The operator's display and session bus; the native-QA gate also gets an empty
 # private XDG_RUNTIME_DIR, so neither Wayland nor the default bus path resolves.
@@ -724,8 +727,11 @@ def landed_tasks(root: Path, base: str, tasks: list[Task], queue: str = "") -> d
     the scope check, so they can neither land a task alone nor refuse one.
 
     A later commit reverts an earlier one when its body says ``This reverts
-    commit <sha>`` or its subject is ``Revert "<subject>"``, optionally squashed.
-    A reverted commit is out of effect unless its revert was reverted in turn.
+    commit <sha>``, or ``Reverts <owner>/<repo>#N`` or ``Reverts #N`` for the
+    commit whose subject ends in `` (#N)``, or when its subject is ``Revert
+    "<subject>"``; either subject may carry a squash suffix, since GitHub titles
+    the revert of pull request #N after that request's title, which lacks it. A
+    reverted commit is out of effect unless its revert was reverted in turn.
     """
     commits = [record.split("\x1f", 2) for record in git(
         root, "log", "-z", "--no-merges", "--topo-order", "--format=%H%x1f%s%x1f%b", base,
@@ -740,15 +746,21 @@ def landed_tasks(root: Path, base: str, tasks: list[Task], queue: str = "") -> d
     # body naming a later or unknown commit is ignored, which rules out cycles.
     reverters: dict[str, list[str]] = {}
     latest: dict[str, str] = {}
+    pulls: dict[str, str] = {}
     seen: set[str] = set()
     for sha, subject, body in reversed(commits):
         targets = set(REVERTS_COMMIT.findall(body)) & seen
+        targets.update(pulls[number] for number in REVERTS_PULL.findall(body) if number in pulls)
         named = revert_target(subject)
         if named in latest:
             targets.add(latest[named])
         for target in targets:
             reverters.setdefault(target, []).append(sha)
         latest[subject] = sha
+        squashed = SQUASH_SUFFIX.fullmatch(subject)
+        if squashed:
+            latest[squashed[1]] = sha
+            pulls[squashed[2]] = sha
         seen.add(sha)
     in_effect: dict[str, bool] = {}
     for sha, _, _ in commits:  # newest first: every reverter is already decided

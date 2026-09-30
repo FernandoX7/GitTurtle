@@ -202,19 +202,29 @@ class RunnerTests(unittest.TestCase):
         return self.original_head
 
     def test_landed_detection_skips_reverted_squashes(self):
-        specification = self.prepare([task("one"), task("two"), task("three")])
+        names = ("one", "two", "three", "four", "five", "six")
+        specification = self.prepare([task(name) for name in names])
         # Reverted by sha in the body, under an unrelated subject.
         one = self.land(["docs/one.md"], "docs: explain one workflow (#41)")
         self.revert(f"docs: withdraw the one guide\n\nThis reverts commit {one}.")
-        # Reverted through GitHub's Revert button, itself squash-merged.
+        # GitHub's Revert button, squash-merged with its title and description:
+        # the title names the pull request's title, which has no `(#42)`.
         self.land(["docs/two.md"], "docs: explain two workflow (#42)")
-        self.revert('Revert "docs: explain two workflow (#42)" (#47)')
-        # Reverted, then the revert reverted: the change is back.
+        self.revert('Revert "docs: explain two workflow" (#47)\n\nReverts owner/GitTurtle#42')
+        # Each half of that shape is enough on its own.
+        self.land(["docs/four.md"], "docs: explain four workflow (#44)")
+        self.revert('Revert "docs: explain four workflow" (#50)')
+        self.land(["docs/five.md"], "docs: explain five workflow (#45)")
+        self.revert("docs: withdraw the five guide (#51)\n\nReverts #45")
+        # A revert whose subject quotes the squashed subject, as `git revert` does.
+        self.land(["docs/six.md"], "docs: explain six workflow (#46)")
+        self.revert('Revert "docs: explain six workflow (#46)" (#52)')
+        # Reverted, then the revert reverted through the button again: the change is back.
         three = self.land(["docs/three.md"], "docs: explain three workflow (#43)")
-        self.revert('Revert "docs: explain three workflow (#43)" (#48)')
-        self.revert('Revert "Revert "docs: explain three workflow (#43)" (#48)" (#49)')
+        self.revert('Revert "docs: explain three workflow" (#48)\n\nReverts owner/GitTurtle#43')
+        self.revert('Revert "Revert "docs: explain three workflow"" (#49)\n\nReverts owner/GitTurtle#48')
         self.assertEqual(self.landed_states(specification),
-                         {"one": ("pending", None), "two": ("pending", None), "three": ("accepted", three)})
+                         {name: ("accepted", three) if name == "three" else ("pending", None) for name in names})
 
     def test_tooling_gate_runs_both_python_suites_without_a_display(self):
         directory = self.create()
