@@ -36,11 +36,19 @@ REVIEW_TOOLS = "Read,Grep,Glob,Bash"
 REVIEW_DISALLOWED = "Edit,Write,NotebookEdit,Agent"
 # The verifier is asked to run the repository's own checks rather than trust a
 # recorded excerpt, so it reaches every script in scripts/ except the controller
-# itself, which claude-settings.json denies. The runner still requires the
-# checkout to be clean and at the candidate sha when the review returns.
+# itself, which claude-settings.json denies. The Python suites the tooling
+# profile documents run through `python3 -m unittest discover`, which that
+# pattern cannot reach, so each gets a prefix naming its start directory and no
+# other `python3 -m` form is allowed. A prefix cannot stop a later argument, such
+# as a second `-s`, from pointing discovery elsewhere; that reaches no further
+# than `cargo *` already does. The runner still requires the checkout to be
+# clean and at the candidate sha when the review returns.
 REVIEW_ALLOWED = (
     "Bash(cargo *)", "Bash(git diff *)", "Bash(git log *)", "Bash(git show *)",
     "Bash(git status *)", "Bash(python3 scripts/*)", "Bash(rustc -vV)",
+    "Bash(python3 -m unittest discover -s scripts/agent_loop *)",
+    "Bash(python3 -m unittest discover -s scripts/native_qa *)",
+    "Bash(python3 -m unittest discover -s scripts/ci/tests *)",
 )
 LIGHT_PROFILES = frozenset({"docs", "tooling"})
 # Paths pinned into the run snapshot and protected during unattended attempts.

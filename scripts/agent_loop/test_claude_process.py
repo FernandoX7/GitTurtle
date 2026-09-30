@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 from pathlib import Path
@@ -185,6 +186,24 @@ class ClaudeProcessTests(unittest.TestCase):
         deny = settings["permissions"]["deny"]
         self.assertIn("Bash(python3 scripts/agent-loop.py *)", deny)
         self.assertIn("Bash(python3 scripts/agent_loop/*)", deny)
+
+    def test_review_sessions_may_start_the_documented_python_suites(self):
+        # The tooling suites run as `python3 -m unittest discover`, which
+        # `python3 scripts/*` never matched, so a verifier could not rerun them.
+        # Claude Code's `*` matches any run of characters, as fnmatch's does, so
+        # this checks the start of a command, not every argument after it.
+        patterns = [rule[len("Bash("):-1] for rule in REVIEW_ALLOWED if rule.startswith("Bash(")]
+
+        def allowed(command):
+            return any(fnmatch.fnmatchcase(command, pattern) for pattern in patterns)
+
+        for suite in ("scripts/agent_loop -t scripts", "scripts/native_qa -t scripts", "scripts/ci/tests"):
+            self.assertTrue(allowed(f"python3 -m unittest discover -s {suite} -p 'test_*.py'"), suite)
+        for command in (
+            "python3 -m unittest discover -s scripts", "python3 -m unittest discover -s scripts/agent_loop_extra -t scripts",
+            "python3 -m unittest discover -s crates", "python3 -m pip install example", "python3 -c 'print(1)'",
+        ):
+            self.assertFalse(allowed(command), command)
 
     def test_a_review_is_told_which_commands_it_may_run(self):
         # The themes verifier probed a command form it was never allowed, was
