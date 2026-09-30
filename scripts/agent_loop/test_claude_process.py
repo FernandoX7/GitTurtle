@@ -12,8 +12,8 @@ import unittest
 from unittest.mock import patch
 
 from agent_loop.claude import (
-    CHILD_ENVIRONMENT, REVIEW_ALLOWED, SETTINGS_TEMPLATE, Claude, UsageLimited, effort_above, parse_version,
-    snapshot_files,
+    CHILD_ENVIRONMENT, REVIEW_ALLOWED, SELECTION_OVERRIDES, SETTINGS_TEMPLATE, Claude, UsageLimited, effort_above,
+    parse_version, resolve_selection, snapshot_files,
 )
 from agent_loop.codex import validate_review
 from agent_loop.process import EnvironmentBlocked, LoopError, MalformedResponse, atomic_json, digest
@@ -24,6 +24,12 @@ from agent_loop.test_support import setUpModule, tearDownModule
 
 
 AGENTS = ("implementer", "implementer-hard", "verifier", "security-reviewer")
+
+
+def claude_adapter(controller: Path, model: str = "opus", effort: str = "high", **chosen) -> Claude:
+    """An adapter whose steps are resolved the way create_run resolves them."""
+    turns = {key: chosen.pop(key) for key in ("max_turns", "review_max_turns", "sandbox", "settings_sha256") if key in chosen}
+    return Claude(controller, model, effort, **resolve_selection(model, effort, chosen), **turns)
 
 
 def light_task() -> Task:
@@ -52,8 +58,8 @@ class ClaudeProcessTests(unittest.TestCase):
                 )
         atomic_json(self.controller / "claude-settings.json", {"env": dict(CHILD_ENVIRONMENT)})
         self.task = example_task()
-        self.adapter = Claude(self.controller, "selected-model", "medium",
-                              settings_sha256=digest(self.controller / "claude-settings.json"))
+        self.adapter = claude_adapter(self.controller, "selected-model", "medium",
+                                      settings_sha256=digest(self.controller / "claude-settings.json"))
         self.invocation = self.root / "invocation.json"
 
     def fake_claude(self, *, result=None, structured=None, exitcode=0, stderr="", version="2.1.274 (Claude Code)",
@@ -87,7 +93,8 @@ class ClaudeProcessTests(unittest.TestCase):
             "        'HOME', 'PATH', 'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS',\n"
             "        'CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS', 'INSTA_UPDATE']\n"
             "capture = {'args': args, 'prompt': prompt, 'cwd': os.getcwd(),\n"
-            "           'environment': {k: os.environ[k] for k in keys if k in os.environ}}\n"
+            "           'environment': {k: v for k, v in os.environ.items()\n"
+            "                           if k in keys or k.startswith(('ANTHROPIC_', 'CLAUDE_', 'MAX_THINKING_'))}}\n"
             f"Path({str(self.invocation)!r}).write_text(json.dumps(capture))\n"
             "if config['stderr']:\n    print(config['stderr'], file=sys.stderr)\n"
             "if config['raw_stdout'] is not None:\n    sys.stdout.write(config['raw_stdout'])\n"
@@ -366,28 +373,54 @@ class ClaudeProcessTests(unittest.TestCase):
         self.assertFalse(self.invocation.exists())
 
     def test_attempt_routing_by_attempt_number_and_declared_profiles(self):
-        adapter = Claude(self.controller, "opus", "high")
-        expect = [("implementer", "opus", "high"), ("implementer", "opus", "xhigh"), ("implementer-hard", "fable", "high"),
-                  ("implementer-hard", "fable", "high")]
-        for attempt, (agent, model, effort) in enumerate(expect, start=1):
+        # One model serves every step by default; the steps differ only in effort.
+        model = "claude-opus-5-5"
+        self.assertEqual(resolve_selection(model, "high", {"hard_model": None, "review_effort": None}),
+                         {"retry_effort": "xhigh", "hard_effort": "xhigh", "light_effort": "medium", "review_effort": "high",
+                          "hard_model": model, "light_model": model})
+        adapter = claude_adapter(self.controller, model, "high")
+        review = {"model": model, "effort": "high", "max_turns": 120}
+        expect = [("implementer", "high"), ("implementer", "xhigh"), ("implementer-hard", "xhigh"), ("implementer-hard", "xhigh")]
+        for attempt, (agent, effort) in enumerate(expect, start=1):
             with self.subTest(attempt=attempt):
-                selection = adapter.configure_attempt(self.task, attempt)
-                self.assertEqual((selection["agent"], selection["model"], selection["effort"], selection["max_turns"]),
-                                 (agent, model, effort, 200))
-        light = [("implementer", "sonnet", "medium"), ("implementer", "opus", "high"), ("implementer-hard", "fable", "high")]
-        for attempt, (agent, model, effort) in enumerate(light, start=1):
+                self.assertEqual(adapter.configure_attempt(self.task, attempt),
+                                 {"agent": agent, "model": model, "effort": effort, "max_turns": 200, "review": review})
+        light = [("implementer", "medium"), ("implementer", "xhigh"), ("implementer-hard", "xhigh")]
+        for attempt, (agent, effort) in enumerate(light, start=1):
             with self.subTest(light=attempt):
                 selection = adapter.configure_attempt(light_task(), attempt)
                 self.assertEqual((selection["agent"], selection["model"], selection["effort"]), (agent, model, effort))
-        plain = Claude(self.controller, "opus", "max", hard_model="none", light_model="none", retry_effort="low")
+        # A docs/tooling retry never drops below its first attempt's effort.
+        eager = claude_adapter(self.controller, model, "low", light_effort="high", hard_model="none")
+        self.assertEqual([eager.configure_attempt(light_task(), attempt)["effort"] for attempt in (1, 2, 3)], ["high", "high", "high"])
+        self.assertEqual(eager.configure_attempt(self.task, 2)["effort"], "medium")
+        # An explicitly named model or effort still takes its step.
+        mixed = claude_adapter(self.controller, model, "high", hard_model="fable", light_model="sonnet",
+                               hard_effort="max", light_effort="low", review_effort="max")
+        for task, attempt, expected in ((self.task, 3, ("fable", "max")), (light_task(), 1, ("sonnet", "low"))):
+            selection = mixed.configure_attempt(task, attempt)
+            self.assertEqual((selection["model"], selection["effort"]), expected)
+        self.assertEqual(mixed.configure_attempt(self.task, 1)["review"], {"model": model, "effort": "max", "max_turns": 120})
+        plain = claude_adapter(self.controller, "opus", "max", hard_model="none", light_model="none", retry_effort="low")
+        self.assertEqual(plain.required_roles(), ("implementer", "verifier", "security-reviewer"))
         self.assertEqual(plain.configure_attempt(light_task(), 1)["model"], "opus")
         self.assertEqual(plain.configure_attempt(self.task, 2)["effort"], "low")
-        self.assertEqual(plain.configure_attempt(self.task, 3), {"agent": "implementer", "model": "opus", "effort": "low", "max_turns": 200})
+        self.assertEqual(plain.configure_attempt(self.task, 3), {"agent": "implementer", "model": "opus", "effort": "low", "max_turns": 200,
+                                                                 "review": {"model": "opus", "effort": "max", "max_turns": 120}})
         self.assertEqual(effort_above("max"), "max")
         self.assertEqual(effort_above("low"), "medium")
         self.assertEqual(parse_version("2.1.274 (Claude Code)"), (2, 1, 274))
-        with self.assertRaises(LoopError):
-            Claude(self.controller, "opus", "ultra")
+        with self.assertRaisesRegex(LoopError, "Claude Code effort must be one of"):
+            claude_adapter(self.controller, "opus", "ultra")
+        # An unresolved or unknown step is refused, never launched as `--effort None`.
+        resolved = resolve_selection("opus", "high", {})
+        for option in ("retry_effort", "hard_effort", "light_effort", "review_effort"):
+            for value in ("ultra", None):
+                with self.subTest(option=option, value=value), self.assertRaisesRegex(LoopError, "effort must be one of"):
+                    Claude(self.controller, "opus", "high", **(resolved | {option: value}))
+        for option in ("hard_model", "light_model"):
+            with self.subTest(option=option), self.assertRaisesRegex(LoopError, "explicit model for every step"):
+                Claude(self.controller, "opus", "high", **(resolved | {option: None}))
 
     def test_selection_is_consumed_by_the_next_implementer_session(self):
         self.fake_claude()
@@ -395,14 +428,38 @@ class ClaudeProcessTests(unittest.TestCase):
         self.session(directory="hard")
         args = self.capture()["args"]
         self.assertEqual(args[args.index("--agent") + 1], "implementer-hard")
-        self.assertEqual(args[args.index("--model") + 1], "fable")
+        self.assertEqual((args[args.index("--model") + 1], args[args.index("--effort") + 1]), ("selected-model", "high"))
         self.fake_claude(structured=passing_review())
         self.session("verifier", directory="review", candidate="a" * 40)
         args = self.capture()["args"]
-        self.assertEqual(args[args.index("--model") + 1], "selected-model")
+        self.assertEqual((args[args.index("--model") + 1], args[args.index("--effort") + 1]), ("selected-model", "medium"))
+        # Both review roles take the review effort, whatever the implementer used.
+        self.adapter.review_effort = "xhigh"
+        self.session("verifier", directory="review-effort", candidate="a" * 40)
+        args = self.capture()["args"]
+        self.assertEqual((args[args.index("--agent") + 1], args[args.index("--effort") + 1]), ("verifier", "xhigh"))
+        from agent_loop.test_security_review import passing_security
+        self.fake_claude(structured=passing_security(self.task.id, "b" * 40, "a" * 40))
+        self.session("security-reviewer", directory="security", candidate="a" * 40, base="b" * 40)
+        args = self.capture()["args"]
+        self.assertEqual((args[args.index("--agent") + 1], args[args.index("--model") + 1], args[args.index("--effort") + 1]),
+                         ("security-reviewer", "selected-model", "xhigh"))
         self.fake_claude()
         self.session(directory="plain")
         self.assertEqual(self.capture()["args"][2], "implementer")
+
+    def test_sessions_drop_variables_that_override_the_explicit_selection(self):
+        # CLAUDE_CODE_EFFORT_LEVEL outranks --effort, so an inherited value would make the recorded selection untrue.
+        self.fake_claude()
+        inherited = {name: "claude-fable-5-1" for name in SELECTION_OVERRIDES}
+        inherited |= {"CLAUDE_CODE_EFFORT_LEVEL": "low", "MAX_THINKING_TOKENS": "0", "ANTHROPIC_BASE_URL": "https://gateway.invalid"}
+        with patch.dict(os.environ, inherited):
+            self.session()
+        capture = self.capture()
+        self.assertEqual(set(SELECTION_OVERRIDES) & set(capture["environment"]), set())
+        self.assertEqual(capture["environment"]["ANTHROPIC_BASE_URL"], "https://gateway.invalid")
+        args = capture["args"]
+        self.assertEqual((args[args.index("--model") + 1], args[args.index("--effort") + 1]), ("selected-model", "medium"))
 
     def test_recover_usage_reads_session_records(self):
         attempts = self.root / "attempts"
@@ -420,7 +477,7 @@ class ClaudeProcessTests(unittest.TestCase):
         run = self.root / "run"
         template = run / "controller/scripts/agent_loop/claude-settings.json"
         atomic_json(template, {"permissions": {"deny": ["Bash(git push *)"]}, "env": {"KEEP": "1"}})
-        adapter = Claude(run / "controller", "opus", "high", sandbox="off")
+        adapter = claude_adapter(run / "controller", "opus", "high", sandbox="off")
         prepared = adapter.prepare_run(run)
         effective = json.loads((run / "controller/claude-settings.json").read_text())
         self.assertEqual(effective["permissions"]["deny"], ["Bash(git push *)"])

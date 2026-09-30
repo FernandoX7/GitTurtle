@@ -1,7 +1,7 @@
 ---
 name: librarian
 description: Keep GitTurtle's guidance, agent and skill definitions, rules, evidence links and development docs consistent with verified behavior. Use for documentation, guidance, skill and .claude configuration changes assigned by the owner; never for product code.
-model: sonnet
+model: claude-opus-5-5
 effort: medium
 tools: Read, Grep, Glob, Edit, Write, Bash
 maxTurns: 120
