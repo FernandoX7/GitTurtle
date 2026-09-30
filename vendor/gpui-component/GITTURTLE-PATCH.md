@@ -145,3 +145,65 @@ keyboard behavior needs its own run. Remove this part of the patch when
 gpui-base keeps a focused disabled Button's handle in the frame, or GPUI moves
 Tab and Shift+Tab on from a focused element that is no longer rendered, and
 that regression passes without it.
+
+The tooltip-width patch modifies `src/tooltip.rs`. Upstream Tooltip draws
+its popup as wide as its unwrapped text, with a `m_3` margin inside the element
+gpui-base's `TooltipPositioner` places. The positioner centres that element on
+the trigger and clamps it into the viewport less its 4 px `WINDOW_MARGIN`, plus
+the client inset under client-side decorations; an element wider than that
+keeps only its left edge in view, so in a narrow window the rest of the tooltip
+ran off the window's right edge. In a 461 px window this cut off the tooltips
+of History's compact Latest and Older controls and of Compare's collapsed
+review Options button, which carries the options' explanations. The app's
+element tooltips render the same Tooltip view
+(`div().id(..).tooltip(|window, cx| Tooltip::new(..).build(window, cx))`, as
+on file rows, the review caption, blame, file history, the project pane,
+Settings and the workspace), so they pass through the cap too.
+
+The popup's width is now capped at the viewport width less twice the
+positioner's margin, the client inset and the popup's `m_3` (0.75 rem at the
+window's rem size). A wider tooltip wraps its text, left-aligned, where GPUI's
+line wrapper breaks a line: at spaces, before a non-word character such as `/`,
+which then starts the next line, and inside a word that has no such break and
+is wider than the popup on its own. The text child can shrink below its
+unwrapped width (`min_w_0`) so it wraps instead of overflowing the popup. A key
+binding stays on the right of the first line: an empty strut in the popup's
+text style makes its row one line tall, and the binding is centred in it as the
+popup centres it beside a single line. A tooltip narrower than the cap keeps
+its layout exactly, key binding included, and its text style, padding, border,
+radius and shadow are unchanged. The positioner, its placement and flipping,
+the enter and switch animations and hide-on-press are untouched, and the cap is
+computed only while a tooltip renders. gpui-base keeps its margin private, so
+the kit repeats the 4 px value; the regressions below fail if the two differ.
+
+A control's tooltip, placed by the positioner, therefore wraps inside the
+window with equal margins on both sides. An element tooltip wraps to the same
+width, but GPUI places it itself (`Window::prepaint_tooltip`): below and right
+of the pointer, flipped to the pointer's left when it overflows the window, and
+at x = 0 when that overflows too, with no margin and no client inset. Near an
+edge it can sit flush with that edge, inside only the popup's own margin, and
+its two margins differ. An element tooltip whose wrapper was within 8 px of the
+viewport's width (8 px plus twice the client inset under client-side
+decorations) fitted on one line before and now wraps.
+
+`cargo test --locked -p gitturtle tooltips_wider_than_the_window_wrap_inside_it`
+lays out real kit Tooltips in the real positioner in a synthetic window, at
+16 and 18 px rems. In a 461 px window the Options tooltip, clamped at either
+edge and with a key binding, lies inside the viewport inset by the positioner's
+margin and the popup's own on both sides, above its trigger, and wraps to more
+than one line; a short tooltip keeps its unwrapped size, and every tooltip
+keeps one line in a wide window.
+`cargo test --locked -p gitturtle narrow_tooltips_wrap_inside_the_window`
+hovers the compact Columns, Latest and Older controls and the Options button
+in a 461 × 490 app window: Columns keeps one line of the popup's text style,
+and the others wrap above their controls with the same inset. Both allow a
+device pixel on each edge. The margins are equal only to within about 1.5 px
+after rounding to device pixels, and the app test's hovered controls all sit
+left of the window's centre; the synthetic test's triggers cover both edges.
+Element tooltips' placement is GPUI's and no retained regression covers it.
+No app tooltip carries a key binding, and its glyphs paint no quad the tests
+can read, so its placement is not covered by a retained regression either.
+Rendered tooltips across themes and interface sizes still require native
+inspection. Remove this part of the patch when upstream Tooltip keeps a popup
+wider than the window inside it, or its positioner constrains the popup's
+width.

@@ -455,3 +455,118 @@ fn caller_hover_styles_only_enabled_buttons(cx: &mut TestAppContext) {
         assert_eq!(fills(cx, bounds), resting, "{id} after the pointer leaves");
     }
 }
+
+/// A kit tooltip wider than the window wraps inside it, with the tooltip
+/// positioner's margin and the popup's own on both sides; one that fits keeps
+/// its unwrapped layout. Each tooltip is laid out as the tooltip overlay lays
+/// out a shown one, above its trigger, in a fill of its own.
+#[gpui::test]
+fn tooltips_wider_than_the_window_wrap_inside_it(cx: &mut TestAppContext) {
+    use crate::text_review::OPTIONS_TOOLTIP;
+    use gpui_kit::{base::TooltipPositioner, component::kbd::Kbd};
+
+    /// gpui-base's tooltip `WINDOW_MARGIN`, kept from the viewport's edges.
+    const POSITIONER_MARGIN: f32 = 4.;
+    const WIDTH: f32 = 461.;
+    const SHORT: &str = "Previous change";
+    /// Text, trigger left and top, and whether it carries a key binding: the
+    /// Options tooltip clamped at either edge and with a binding, and a short
+    /// tooltip. Each trigger leaves room above for the wrapped popup, which
+    /// the positioner would otherwise place below it.
+    const TOOLTIPS: [(&str, f32, f32, bool); 4] = [
+        (OPTIONS_TOOLTIP, 40., 220., false),
+        (OPTIONS_TOOLTIP, 420., 300., false),
+        (SHORT, 216., 380., false),
+        (OPTIONS_TOOLTIP, 216., 460., true),
+    ];
+    fn fill(index: usize) -> Hsla {
+        hsla(index as f32 / 8., 1., 0.5, 1.)
+    }
+    struct Probe(Vec<(Bounds<Pixels>, AnyView)>);
+    impl Render for Probe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .children(self.0.iter().map(|(trigger, tooltip)| {
+                    deferred(TooltipPositioner::new(*trigger).child(div().child(tooltip.clone())))
+                }))
+        }
+    }
+
+    cx.update(gpui_kit::init);
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        Probe(
+            TOOLTIPS
+                .iter()
+                .enumerate()
+                .map(|(index, &(text, left, top, binding))| {
+                    let tooltip = Tooltip::new(text)
+                        .bg(fill(index))
+                        .when(binding, |tooltip| {
+                            tooltip.key_binding(Some(Kbd::new(
+                                Keystroke::parse("ctrl-shift-k").unwrap(),
+                            )))
+                        })
+                        .build(window, cx);
+                    let trigger = Bounds::new(point(px(left), px(top)), size(px(28.), px(28.)));
+                    (trigger, tooltip)
+                })
+                .collect(),
+        )
+    });
+    let device = cx.update(|window, _| px(1. / window.scale_factor()));
+    let popups = |cx: &mut VisualTestContext, width: f32, rem: f32| {
+        cx.simulate_resize(size(px(width), px(490.)));
+        cx.update(|window, cx| {
+            window.set_rem_size(px(rem));
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        cx.run_until_parked();
+        let quads = painted_quads(cx);
+        (0..TOOLTIPS.len())
+            .map(|index| {
+                let fill = Background::from(fill(index));
+                let popup = quads
+                    .iter()
+                    .filter(|quad| quad.fill == fill)
+                    .map(|quad| quad.outer)
+                    .collect::<Vec<_>>();
+                assert_eq!(popup.len(), 1, "tooltip {index} at {width}: {popup:?}");
+                popup[0]
+            })
+            .collect::<Vec<_>>()
+    };
+
+    // At the default interface size and an enlarged one, whose rem the
+    // popup's margin follows.
+    for rem in [16., 18.] {
+        let wide = popups(cx, 2000., rem);
+        let narrow = popups(cx, WIDTH, rem);
+        let edge = px(POSITIONER_MARGIN + 0.75 * rem);
+        let one_line = wide[2].size.height;
+        // Less the vertical padding (`py_0p5`) and border.
+        let line = one_line - px(2. * (0.125 * rem + 1.));
+        for (index, (&(text, _, top, _), (wide, narrow))) in
+            TOOLTIPS.iter().zip(wide.iter().zip(&narrow)).enumerate()
+        {
+            let at = format!("tooltip {index} at rem {rem}: {narrow:?}, unwrapped {wide:?}");
+            assert_eq!(wide.size.height, one_line, "one line unwrapped, {at}");
+            assert!(
+                narrow.bottom() <= px(top) + device,
+                "above its trigger, {at}"
+            );
+            if text == SHORT {
+                assert_eq!(narrow.size, wide.size, "fits and is unchanged, {at}");
+                continue;
+            }
+            assert!(wide.size.width > px(WIDTH), "wider than the window, {at}");
+            assert!(
+                (narrow.left() - edge).abs() <= device
+                    && (px(WIDTH) - narrow.right() - edge).abs() <= device,
+                "inset by {edge:?} on both sides, {at}"
+            );
+            assert!(narrow.size.height >= one_line + line, "wraps, {at}");
+        }
+    }
+}
