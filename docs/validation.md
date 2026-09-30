@@ -65,6 +65,42 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## September 29 whole focus ring on Your themes rows
+
+Task `your-themes-rows-whole-focus-ring`, from the finding in [frames retaken under the solid focus ring](#september-29-frames-retaken-under-the-solid-focus-ring); the owner kept `DESIGN.md`'s whole-ring promise. Three faults cut the bottom edge of the ring around a focused Edit…, Export… or Delete… in Settings' Your themes list:
+- **Import highlight.** The highlighted row painted its fill as its own background, after the row above it, so the fill covered the ring on that row's actions.
+- **Hover.** A hovered plain row's fill did the same to the row above it.
+- **Reveal.** A focused row revealed flush against the status bar lost the ring to the Settings page's viewport, which never scrolled for it.
+
+Every row's fill, the import highlight and the hover surface alike, is now painted in one layer beneath all the rows, with each row's bounds, corners, color and clip, so unfocused pixels are unchanged (`settings.rs`). The Settings page has its own scroll handle and reveals a focused row with the installed ring's gap plus width of room, once per focus change, placed where the list will stand after its own reveal (`settings::planned_rows_top`, shared with `rows_off_boundary`). A row that was exactly flush moves the page up 3 px.
+
+Tests:
+- `theme_editor::tests::a_focused_row_actions_ring_is_whole_beside_the_import_highlight` failed on the old paint order ("a fill drawn after the ring covers its bottom edge") and without the rows' empty hover style ("the pointer alone … changes the rows' fills").
+- `theme_editor::tests::a_revealed_row_keeps_its_ring_inside_the_settings_page` failed without the page reveal ("the ring … 62×34 lies inside the page's viewport (0, 84) 1000×570").
+
+Native evidence, full tier:
+- Builds: base `de09c65` (sha256 `c0c51988…`) and candidate `3f4fec1` (sha256 `6b88ed4a…`), both debug and clean; `qa.py identity` reported no problem. The branch later merged `main`, whose [tab-strip change](#september-29-focus-ring-inside-the-repository-tab-strip) moves nothing unfocused and touches no Settings code.
+- Host: Ubuntu 26.04, GNOME 50 on Wayland, XWayland `:0` at scale factor 1, window 1000x680. Input went through Mutter RemoteDesktop with verified X focus.
+- Fixture: `theme-fixture` (HEAD `52f471a`), unchanged by every launch. The store holds Seed 01 Midnight, Seed 02 Braden and Seed 03 Graphite with the palette active, as the committed frames did. Import… adds "Imported Harbor" (base Midnight) through the Nautilus FileChooser. It is clicked with the pointer, so keyboard focus stays where Settings put it, and the store it writes was byte-identical on both builds. The flush and rest launches start from that store with the fourth theme already saved, and import nothing.
+- Focus: from Settings' entry focus, Tab 37 reaches Seed 02's Edit…, 40 Seed 03's and 43 Imported Harbor's, the same on both builds. For the hover frame the pointer then moves onto the plain row below, because GPUI shows no hover while the last input was a key.
+- `qa.py compare <base> <candidate> --mask status-timing`, both palettes:
+  - `highlight` and `rest`: identical.
+  - `focus-hover-below` and `focus-beside-highlight`: 100 px each, one region along the ring's bottom edge.
+  - `focus-on-highlight` and `flush`: the page moved up 3 px (83,834 and 78,558 px in Midnight, 85,126 and 79,859 in Porcelain). Inside the page's viewport (y 84 to 653) the candidate's y 84 to 650 equals the base's y 87 to 653 exactly, everything outside the viewport is identical, and of the three rows it reveals at the bottom, y 651 and 652 carry the ring's bottom edge and y 653 is the card's surface, 1 px above the status bar's border.
+
+Ring pixels in the 1 to 3 px band outside the focused Edit…, against the same build's unfocused frame at the same scroll. Each cell gives the differing pixels out of the band; the counts are the same in all four frames and both palettes:
+
+| Build | Top | Bottom | Left | Right |
+| --- | --- | --- | --- | --- |
+| base | 114/162 | 14/162 | 62/84 | 62/84 |
+| candidate | 114/162 | 114/162 | 62/84 | 62/84 |
+
+The base's 14 bottom pixels all lie where the rounded corners bend into the band; between them it has no bottom edge. The candidate's strongest ring pixel reads 10.93:1 on Midnight's list surface, 8.80:1 on a hovered row's fill and 7.48:1 on the highlight, and 6.21:1, 5.77:1 and 5.57:1 in Porcelain. Every side reads at least 5.57:1.
+
+Frames, in [`evidence/themes/linux-gaps/`](evidence/themes/linux-gaps/): the six `imported-{midnight,porcelain}-1000x680-{highlight,focus-beside-highlight,focus-on-highlight}.png` are retaken on the candidate, and six are new: `…-focus-hover-below`, `…-flush` (Imported Harbor's Edit… focused at the list's end against the status bar, with no import) and `…-rest` (the same view unfocused). The base's beside and on frames reproduced byte for byte the frames #89 committed from build `650a76e`, so the route matches theirs. The retaken `highlight` frames differ from the ones they replace, taken on another host (`84df3b3`), in 505 and 652 px of text antialiasing by at most one color level; base and candidate are identical there. A local qaflow driver, `drive_themes_capture.py` (sha256 `22bf5b47…`), took every frame. `qa.py privacy scan --redacted --jobs 8` with the local template set found all 12 clean, and a full-resolution view shows only theme names, the `theme-fixture` tab and Settings text. A `design-reviewer` pass accepted the frames: the ring is whole on every side, the unfocused fills are unchanged, and the 3 px page move is acceptable, because it is exact, happens only when the row lacks room, and matches the list's own 3 px. A read-only `verifier` pass recounted the ring pixels, reran the compare, the two tests (and their failures with the fix taken out) and the fast gate, and passed the criteria once the earlier finding pointed here.
+
+Not covered: macOS, fractional scale factors, release builds, the accessibility tree and touch input: the fill layer checks `Hitbox::is_hovered`, which unlike GPUI's own `.hover()` does not ask whether the last input was a touch, so after a touch the row under it would keep its hover fill; no backend GitTurtle ships sends touch input yet.
+
 ## September 29 GitTurtle under XWayland on Omarchy
 
 Task `omarchy-xwayland-evidence` checks the release build as an X11 client on Omarchy, launched as `docs/linux.md` suggests with `env -u WAYLAND_DISPLAY`. It is evidence only; no product code changed. The runs took place between 2026-09-29 23:17 and 2026-09-30 00:20 UTC.
@@ -279,7 +315,7 @@ Not rechecked, because their focus is on a control the Button ring does not styl
 - On the row above the highlight ("beside"), the highlighted row's fill paints over the 2 px where the ring falls.
 - On the highlighted row itself ("on"), the imported row sits flush against the status bar, and the Settings page's viewport cuts the ring at the status bar's top border. The list itself keeps 3 px below its last row: row 32's Delete… in `list32-…-12` is whole.
 
-Base still showed its inner band and 1 px of its half-accent ring there, so these frames show less focus than base did. The design reviewer placed "beside" with `DESIGN.md`'s adjacent-segment case: a later sibling painting over the ring, fixed by paint order rather than container room. They placed "on" as a scroll-into-view margin question. `DESIGN.md` still says a focused row action's ring "is whole in every slot", and neither `DESIGN.md`'s nor the theme spec's open list names these cases. This task changes no contract text, so both are left for the owner.
+Base still showed its inner band and 1 px of its half-accent ring there, so these frames show less focus than base did. The design reviewer placed "beside" with `DESIGN.md`'s adjacent-segment case: a later sibling painting over the ring, fixed by paint order rather than container room. They placed "on" as a scroll-into-view margin question. `DESIGN.md` still says a focused row action's ring "is whole in every slot", and neither `DESIGN.md`'s nor the theme spec's open list names these cases. This task changes no contract text, so both are left for the owner. The owner kept the promise, and the product was fixed: see [whole focus ring on Your themes rows](#september-29-whole-focus-ring-on-your-themes-rows).
 
 **Theme draw-cost procedure.** Step 2 of the [draw-cost procedure](benchmarks/2026-09-22-theme-draw-cost.md#procedure) found row 1's Edit… by the old ring's colour. It is re-pointed to the solid ring and re-implemented as `draw_cost_focus.py` (sha256 `2ef19e3b…af73`), because the original driver was not on this host. The procedure's lineage paragraph records the adaptation; no recorded measurement changed.
 
@@ -325,7 +361,7 @@ Clipping: the ring is whole on the History segments, Workspaces, dialog footers,
 
 Frames: [`evidence/themes/button-focus-ring/`](evidence/themes/button-focus-ring/), 68 files. They are the candidate at every captured state; the unfocused references; crops of each clipping container; and the base's three regressed crops and Solarized Light pair. A privacy scan of every proposed frame with the local template set came back clean. A `design-reviewer` pass accepted the ring, the selected hover and the disabled-hover pair. It asked for the clipped containers to be listed as open in `DESIGN.md` and the spec, which they are, and for a follow-up that gives the tab strip, the Tags body and the Tags and Reflog lists room for the footprint, starting with the repository tab. It also noted that the density and project-mode segments (`settings.rs`, `projects.rs`) still dim to 0.9 when selected and hovered, so two kinds of selected segment now answer the pointer differently. [`helper-focus-ring/`](evidence/themes/helper-focus-ring/) stays as the superseded #66 record.
 
-Still open: macOS rendering, fractional scale factors, the clipping containers above, the two 0.9 dims, the keyboard trap, and the Your themes rows beside the import highlight, where the next row's fill paints over the ring's bottom edge (a row flush against the status bar loses it to the page viewport). The 49 stale frames, and 15 more a sweep found, were [retaken under the solid ring](#september-29-frames-retaken-under-the-solid-focus-ring), which is where that clipping showed.
+Still open: macOS rendering, fractional scale factors, the clipping containers above, the two 0.9 dims, the keyboard trap, and the Your themes rows beside the import highlight, where the next row's fill paints over the ring's bottom edge (a row flush against the status bar loses it to the page viewport; [fixed later](#september-29-whole-focus-ring-on-your-themes-rows)). The 49 stale frames, and 15 more a sweep found, were [retaken under the solid ring](#september-29-frames-retaken-under-the-solid-focus-ring), which is where that clipping showed.
 
 ## September 29 narrow History Ctrl+B announcement
 
