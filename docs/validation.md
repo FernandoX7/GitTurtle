@@ -65,6 +65,42 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## September 29 whole focus ring on Your themes rows
+
+Task `your-themes-rows-whole-focus-ring`, from the finding in [frames retaken under the solid focus ring](#september-29-frames-retaken-under-the-solid-focus-ring); the owner kept `DESIGN.md`'s whole-ring promise. Three faults cut the bottom edge of the ring around a focused Edit…, Export… or Delete… in Settings' Your themes list:
+- **Import highlight.** The highlighted row painted its fill as its own background, after the row above it, so the fill covered the ring on that row's actions.
+- **Hover.** A hovered plain row's fill did the same to the row above it.
+- **Reveal.** A focused row revealed flush against the status bar lost the ring to the Settings page's viewport, which never scrolled for it.
+
+Every row's fill, the import highlight and the hover surface alike, is now painted in one layer beneath all the rows, with each row's bounds, corners, color and clip, so unfocused pixels are unchanged (`settings.rs`). The Settings page has its own scroll handle and reveals a focused row with the installed ring's gap plus width of room, once per focus change, placed where the list will stand after its own reveal (`settings::planned_rows_top`, shared with `rows_off_boundary`). A row that was exactly flush moves the page up 3 px.
+
+Tests:
+- `theme_editor::tests::a_focused_row_actions_ring_is_whole_beside_the_import_highlight` failed on the old paint order ("a fill drawn after the ring covers its bottom edge") and without the rows' empty hover style ("the pointer alone … changes the rows' fills").
+- `theme_editor::tests::a_revealed_row_keeps_its_ring_inside_the_settings_page` failed without the page reveal ("the ring … 62×34 lies inside the page's viewport (0, 84) 1000×570").
+
+Native evidence, full tier:
+- Builds: base `de09c65` (sha256 `c0c51988…`) and candidate `3f4fec1` (sha256 `6b88ed4a…`), both debug and clean; `qa.py identity` reported no problem. The branch later merged `main`, whose [tab-strip change](#september-29-focus-ring-inside-the-repository-tab-strip) moves nothing unfocused and touches no Settings code.
+- Host: Ubuntu 26.04, GNOME 50 on Wayland, XWayland `:0` at scale factor 1, window 1000x680. Input went through Mutter RemoteDesktop with verified X focus.
+- Fixture: `theme-fixture` (HEAD `52f471a`), unchanged by every launch. The store holds Seed 01 Midnight, Seed 02 Braden and Seed 03 Graphite with the palette active, as the committed frames did. Import… adds "Imported Harbor" (base Midnight) through the Nautilus FileChooser. It is clicked with the pointer, so keyboard focus stays where Settings put it, and the store it writes was byte-identical on both builds. The flush and rest launches start from that store with the fourth theme already saved, and import nothing.
+- Focus: from Settings' entry focus, Tab 37 reaches Seed 02's Edit…, 40 Seed 03's and 43 Imported Harbor's, the same on both builds. For the hover frame the pointer then moves onto the plain row below, because GPUI shows no hover while the last input was a key.
+- `qa.py compare <base> <candidate> --mask status-timing`, both palettes:
+  - `highlight` and `rest`: identical.
+  - `focus-hover-below` and `focus-beside-highlight`: 100 px each, one region along the ring's bottom edge.
+  - `focus-on-highlight` and `flush`: the page moved up 3 px (83,834 and 78,558 px in Midnight, 85,126 and 79,859 in Porcelain). Inside the page's viewport (y 84 to 653) the candidate's y 84 to 650 equals the base's y 87 to 653 exactly, everything outside the viewport is identical, and the three rows it reveals at the bottom carry the ring's bottom edge.
+
+Ring pixels in the 1 to 3 px band outside the focused Edit…, against the same build's unfocused frame at the same scroll. Each cell gives the differing pixels out of the band; the counts are the same in all four frames and both palettes:
+
+| Build | Top | Bottom | Left | Right |
+| --- | --- | --- | --- | --- |
+| base | 114/162 | 14/162 | 62/84 | 62/84 |
+| candidate | 114/162 | 114/162 | 62/84 | 62/84 |
+
+The base's 14 bottom pixels all lie where the rounded corners bend into the band; between them it has no bottom edge. The candidate's strongest ring pixel reads 10.93:1 on Midnight's list surface, 8.80:1 on a hovered row's fill and 7.48:1 on the highlight, and 6.21:1, 5.77:1 and 5.57:1 in Porcelain. Every side reads at least 5.57:1.
+
+Frames, in [`evidence/themes/linux-gaps/`](evidence/themes/linux-gaps/): the six `imported-{midnight,porcelain}-1000x680-{highlight,focus-beside-highlight,focus-on-highlight}.png` are retaken on the candidate, and six are new: `…-focus-hover-below`, `…-flush` (Imported Harbor's Edit… focused at the list's end against the status bar, with no import) and `…-rest` (the same view unfocused). The base's beside and on frames reproduced the committed `650a76e` frames byte for byte, so the route matches theirs. `qa.py privacy scan --redacted --jobs 8` with the local template set found all 12 clean, and a full-resolution view shows only theme names, the `theme-fixture` tab and Settings text.
+
+Not covered: macOS, fractional scale factors, release builds, the accessibility tree and touch input, where the fill layer's `Hitbox::is_hovered` check can show a row's hover fill.
+
 ## September 29 GitTurtle under XWayland on Omarchy
 
 Task `omarchy-xwayland-evidence` checks the release build as an X11 client on Omarchy, launched as `docs/linux.md` suggests with `env -u WAYLAND_DISPLAY`. It is evidence only; no product code changed. The runs took place between 2026-09-29 23:17 and 2026-09-30 00:20 UTC.
