@@ -2,16 +2,26 @@
 use crate::*;
 use gitturtle_core::{RemoteConfig, Tag, TagCommand, TagDetails, TagList, WriteCommand};
 use gpui_kit::{
-    component::{WindowExt, dialog::DialogButtonProps},
+    component::{Theme, WindowExt, dialog::DialogButtonProps},
     prelude::FluentBuilder,
 };
 
 const PREPARING: &str = "Reading tags…";
+/// The gap the kit's dialog leaves between its body and its footer, its
+/// default 16 px padding.
+const DIALOG_FOOTER_GAP: Pixels = px(16.);
+
+/// The room the installed Button focus ring takes outside a Button's edge.
+fn ring_room(cx: &App) -> Pixels {
+    let ring = Theme::global(cx).button_focus_ring;
+    ring.gap + ring.width
+}
 
 fn static_text(id: &'static str, value: impl Into<SharedString>) -> Stateful<Div> {
     let value = value.into();
     div()
         .id(id)
+        .debug_selector(|| id.into())
         .role(Role::Label)
         .aria_label(value.clone())
         .child(value)
@@ -40,10 +50,17 @@ impl GitTurtle {
                     let owner = cx.entity().downgrade();
                     let path = this.path.clone();
                     let browser = cx.new(|cx| TagBrowser::new(owner, path, list, window, cx));
-                    window.open_alert_dialog(cx, move |dialog, _, _| {
+                    window.open_alert_dialog(cx, move |dialog, _, cx| {
+                        // The dialog clips its body to the body's bounds, and
+                        // the browser keeps the focus ring's room inside them
+                        // above Create tag… and below the last row. The
+                        // title's margin and the footer's gap give the room
+                        // back, so nothing in the dialog moves.
+                        let room = ring_room(cx);
                         dialog
-                            .title(static_text("tags-dialog-title", "Tags"))
+                            .title(static_text("tags-dialog-title", "Tags").mb(-room))
                             .width(px(600.))
+                            .gap(DIALOG_FOOTER_GAP - room)
                             .child(browser.clone())
                             .button_props(DialogButtonProps::default().ok_text("Done"))
                     });
@@ -285,14 +302,20 @@ impl Render for TagBrowser {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         let matches = self.matches(cx);
-        div().flex().flex_col().gap_3()
-            .child(div().flex().gap_2().child(div().flex_1().child(Input::new(&self.query).aria_label("Filter local tags").cleanable(true))).child(button("create-tag", "Create tag…", "plus", false).on_click(cx.listener(|this, _, window, cx| {
+        // The browser keeps the focus ring's room above Create tag… and below
+        // its last control inside the dialog's clip, which the dialog gives
+        // back. The list scrolls, so it clips its rows to its bounds on both
+        // axes: it keeps the room around them and gives it back through its
+        // margin, so no row moves.
+        let room = ring_room(cx);
+        div().flex().flex_col().gap_3().py(room)
+            .child(div().flex().gap_2().child(div().flex_1().child(Input::new(&self.query).aria_label("Filter local tags").cleanable(true))).child(button("create-tag", "Create tag…", "plus", false).debug_selector(|| "create-tag".into()).on_click(cx.listener(|this, _, window, cx| {
                 let _ = this.owner.update(cx, |owner, cx| { if owner.path == this.path && owner.operation_busy.is_none() { window.close_dialog(cx); owner.open_create_tag(window, cx); } });
             }))))
             .child(static_text("tag-list-summary", format!("{} local tags · Select to inspect, delete locally, or push one named tag.", self.list.tags.len())).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
-            .child(div().id("tags-list").max_h(px(360.)).overflow_y_scroll().flex().flex_col().gap_1().children(matches.iter().take(100).enumerate().map(|(index, tag)| {
+            .child(div().id("tags-list").max_h(px(360.) + room * 2.).p(room).m(-room).overflow_y_scroll().flex().flex_col().gap_1().children(matches.iter().take(100).enumerate().map(|(index, tag)| {
                 let tag = (*tag).clone(); let label = format!("{} · {} · {}", tag.name, if tag.annotated { "Annotated" } else { "Lightweight" }, short_oid(&tag.target_oid));
-                Button::new(("tag-row", index)).ghost().w_full().h(crate::appearance::ui_size(34.)).label(label.clone()).accessibility_label(label).on_click(cx.listener(move |this, _, window, cx| this.activate(tag.clone(), window, cx)))
+                Button::new(("tag-row", index)).debug_selector(move || format!("tag-row-{index}")).ghost().w_full().h(crate::appearance::ui_size(34.)).label(label.clone()).accessibility_label(label).on_click(cx.listener(move |this, _, window, cx| this.activate(tag.clone(), window, cx)))
             })).when(matches.is_empty(), |element| element.child(static_text("tag-list-empty", if self.list.tags.is_empty() { "No local tags yet. Create a tag to name a commit." } else { "No tags match this filter." }).p_3().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))))
             .when(matches.len() > 100, |element| element.child(static_text("tag-list-match-limit", "Showing 100 matches. Narrow the filter to find another tag.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))))
             .when(self.list.truncated, |element| element.child(static_text("tag-list-load-limit", "Loaded the first 10,000 local tags by name. Additional tags are outside this bounded browser.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning))))
@@ -374,5 +397,290 @@ impl Render for TagForm {
             .child(static_text("tag-signing-explanation", "Signing follows Git configuration. Signing failures are reported without an unsigned fallback.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
             .when(self.pending, |element| element.child(static_text("tag-preparation-status", "Preparing exact target and signing settings…").text_size(crate::appearance::ui_text(12.))))
             .children(self.error.as_ref().map(|error| static_text("tag-preparation-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+    use gpui_kit::component::{FocusRing, Root};
+    use std::{cell::RefCell, rc::Rc};
+
+    /// Runs Git in `path` with no configuration beyond the fixture identity.
+    fn git(path: &std::path::Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-c",
+                "commit.gpgSign=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+            ])
+            .args(args)
+            .current_dir(path)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Three tagged commits: three local tags and three entries in HEAD's
+    /// reflog.
+    pub(crate) fn tagged_repository(directory: &std::path::Path) -> GitRepository {
+        let repo = GitRepository::init(directory.join("repository"), "main").unwrap();
+        for index in 0..3 {
+            let message = format!("Commit {index}");
+            git(
+                repo.path(),
+                &["commit", "--quiet", "--allow-empty", "-m", &message],
+            );
+            git(repo.path(), &["tag", &format!("v0.{index}")]);
+        }
+        repo
+    }
+
+    /// The application in a window on `repo`, with its palette and focus ring
+    /// installed and dialogs opening at rest.
+    pub(crate) fn window<'a>(
+        cx: &'a mut TestAppContext,
+        repo: &GitRepository,
+    ) -> (Entity<GitTurtle>, &'a mut VisualTestContext) {
+        cx.executor().allow_parking();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+            // A dialog otherwise slides in on a wall-clock animation.
+            cx.set_reduce_motion(true);
+        });
+        let repo = repo.clone();
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let observed = captured.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let app = cx.new(|cx| {
+                let mut app = GitTurtle::new(
+                    None,
+                    Preferences::default(),
+                    repository_tabs::Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                );
+                // Finish startup's preference reads before GPUI first polls
+                // their reply, as `commit_message`'s fixture does.
+                futures::executor::block_on(app.preferences_writer.submit(|| Ok(())))
+                    .expect("startup preferences worker replied")
+                    .expect("startup preferences queue drained");
+                app.page = AppPage::Repository;
+                app.path = Some(repo.path().to_owned());
+                app.repository = Some(repo);
+                app
+            });
+            *captured.borrow_mut() = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let app = observed.borrow_mut().take().unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.apply_appearance(window, cx)));
+        draw(cx);
+        (app, cx)
+    }
+
+    pub(crate) fn draw(cx: &mut VisualTestContext) {
+        for _ in 0..3 {
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            cx.executor().run_until_parked();
+        }
+    }
+
+    fn rendered(cx: &mut VisualTestContext, selector: &'static str) -> Bounds<Pixels> {
+        cx.debug_bounds(selector)
+            .unwrap_or_else(|| panic!("rendered {selector}"))
+    }
+
+    fn logical(bounds: Bounds<ScaledPixels>, scale: f32) -> Bounds<Pixels> {
+        let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+        Bounds::from_corners(
+            point(logical(bounds.left()), logical(bounds.top())),
+            point(logical(bounds.right()), logical(bounds.bottom())),
+        )
+    }
+
+    /// Moves the pointer onto the dialog's backdrop, where it hovers nothing.
+    fn park_pointer(cx: &mut VisualTestContext) {
+        cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+        draw(cx);
+    }
+
+    /// The content mask `control` paints in, read from the fill it paints
+    /// under the pointer: GPUI keeps a filled quad's mask whole, and that mask
+    /// is the intersection of every ancestor's.
+    fn content_mask(cx: &mut VisualTestContext, control: &'static str) -> Bounds<Pixels> {
+        let surface = rendered(cx, control);
+        cx.simulate_mouse_move(surface.center(), None, Modifiers::default());
+        draw(cx);
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let device = px(1. / scale);
+            let masks = window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| {
+                    let drawn = logical(quad.bounds, scale);
+                    !quad.background.is_transparent()
+                        && [
+                            (drawn.left(), surface.left()),
+                            (drawn.top(), surface.top()),
+                            (drawn.right(), surface.right()),
+                            (drawn.bottom(), surface.bottom()),
+                        ]
+                        .into_iter()
+                        .all(|(drawn, expected)| (drawn - expected).abs() < device)
+                })
+                .map(|quad| logical(quad.content_mask.bounds, scale))
+                .collect::<Vec<_>>();
+            match masks.as_slice() {
+                [mask, rest @ ..] if rest.iter().all(|other| other == mask) => *mask,
+                _ => panic!("one hovered fill of {control} at {surface:?}, masked by {masks:?}"),
+            }
+        })
+    }
+
+    /// `mask` holds `ring`, within float error of the device pixels both lie
+    /// on.
+    fn holds(mask: Bounds<Pixels>, ring: Bounds<Pixels>) -> bool {
+        let slack = px(0.01);
+        mask.left() <= ring.left() + slack
+            && mask.top() <= ring.top() + slack
+            && mask.right() + slack >= ring.right()
+            && mask.bottom() + slack >= ring.bottom()
+    }
+
+    /// Where the window painted each quad, then where each of `selectors`
+    /// lies.
+    fn layout(
+        cx: &mut VisualTestContext,
+        selectors: &[&'static str],
+    ) -> (Vec<Bounds<Pixels>>, Vec<Bounds<Pixels>>) {
+        let quads = cx.update(|window, _| {
+            let scale = window.scale_factor();
+            window
+                .painted_quads()
+                .into_iter()
+                .map(|quad| logical(quad.bounds, scale))
+                .collect()
+        });
+        let elements = selectors
+            .iter()
+            .map(|selector| rendered(cx, selector))
+            .collect();
+        (quads, elements)
+    }
+
+    fn install_ring(cx: &mut VisualTestContext, app: &Entity<GitTurtle>, ring: FocusRing) {
+        cx.update(|window, cx| {
+            Theme::global_mut(cx).button_focus_ring = ring;
+            app.update(cx, |_, cx| cx.notify());
+            window.refresh();
+        });
+        draw(cx);
+    }
+
+    /// Each of `controls` lies in clipping containers. Grown by the installed
+    /// Button focus ring's width plus gap, each lies inside the content mask it
+    /// paints in. The room that keeps it there moves nothing: laid out
+    /// without the room, as a ring taking none lays out, every painted quad,
+    /// control and element of `fixed` sits where it does with the room, and
+    /// every control's ring is clipped.
+    pub(crate) fn assert_room_for_rings(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        controls: &[&'static str],
+        fixed: &[&'static str],
+    ) {
+        let installed = cx.read(|cx| Theme::global(cx).button_focus_ring);
+        assert_eq!(installed, appearance::BUTTON_FOCUS_RING);
+        let footprint = installed.gap + installed.width;
+        let mut clipped = Vec::new();
+        for &control in controls {
+            let mask = content_mask(cx, control);
+            let ring = rendered(cx, control).dilate(footprint);
+            if !holds(mask, ring) {
+                clipped.push(format!("{control}: ring {ring:?}, mask {mask:?}"));
+            }
+        }
+        assert!(
+            clipped.is_empty(),
+            "rings lie outside their content masks:\n{}",
+            clipped.join("\n")
+        );
+
+        let selectors = [controls, fixed].concat();
+        park_pointer(cx);
+        let (quads, elements) = layout(cx, &selectors);
+        install_ring(
+            cx,
+            app,
+            FocusRing {
+                width: px(0.),
+                gap: px(0.),
+                ..installed
+            },
+        );
+        park_pointer(cx);
+        let (bare_quads, bare_elements) = layout(cx, &selectors);
+        assert_eq!(bare_quads.len(), quads.len(), "the room paints nothing");
+        if let Some((index, (with, without))) = quads
+            .iter()
+            .zip(&bare_quads)
+            .enumerate()
+            .find(|(_, (with, without))| with != without)
+        {
+            panic!("the room moves painted quad {index} from {without:?} to {with:?}");
+        }
+        for ((selector, with), without) in selectors.iter().zip(&elements).zip(&bare_elements) {
+            assert_eq!(with, without, "the room moves {selector}");
+        }
+        for &control in controls {
+            let mask = content_mask(cx, control);
+            let ring = rendered(cx, control).dilate(footprint);
+            assert!(
+                !holds(mask, ring),
+                "without room the ring around {control}, {ring:?}, is clipped to {mask:?}"
+            );
+        }
+        install_ring(cx, app, installed);
+    }
+
+    /// The dialog clips its body to the body's bounds, and the tag list
+    /// scrolls, so GPUI clips it to the list's bounds on both axes. Create
+    /// tag…, at the top of the body, and the first and last rows keep their
+    /// rings whole, and nothing moves.
+    #[gpui::test]
+    async fn tag_browser_keeps_room_for_every_focus_ring(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
+        let read = app.update(cx, |app, _| app.tag_actions.task.take());
+        read.expect("the tags are read").await;
+        draw(cx);
+        assert_room_for_rings(
+            cx,
+            &app,
+            &["create-tag", "tag-row-0", "tag-row-2"],
+            &["tags-dialog-title", "tag-list-summary", "tag-row-1"],
+        );
     }
 }
