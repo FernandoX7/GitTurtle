@@ -588,6 +588,53 @@ pub(crate) mod tests {
         (quads, elements)
     }
 
+    /// The first painted quad or element of `selectors` that lies elsewhere
+    /// in `after` than in `before`.
+    fn first_move(
+        (before_quads, before_elements): &(Vec<Bounds<Pixels>>, Vec<Bounds<Pixels>>),
+        (after_quads, after_elements): &(Vec<Bounds<Pixels>>, Vec<Bounds<Pixels>>),
+        selectors: &[&'static str],
+    ) -> Option<String> {
+        if before_quads.len() != after_quads.len() {
+            return Some(format!(
+                "the painted quads: {} instead of {}",
+                after_quads.len(),
+                before_quads.len()
+            ));
+        }
+        let quad = before_quads
+            .iter()
+            .zip(after_quads)
+            .enumerate()
+            .find(|(_, (before, after))| before != after)
+            .map(|(index, (before, after))| {
+                format!("painted quad {index} from {before:?} to {after:?}")
+            });
+        quad.or_else(|| {
+            selectors
+                .iter()
+                .zip(before_elements.iter().zip(after_elements))
+                .find(|(_, (before, after))| before != after)
+                .map(|(selector, (before, after))| {
+                    format!("{selector} from {before:?} to {after:?}")
+                })
+        })
+    }
+
+    /// A wheel step down at `position`, which every scrolling container under
+    /// it takes as far as it can move.
+    fn wheel(cx: &mut VisualTestContext, position: Point<Pixels>) {
+        cx.simulate_mouse_move(position, None, Modifiers::default());
+        draw(cx);
+        cx.simulate_event(ScrollWheelEvent {
+            position,
+            delta: ScrollDelta::Lines(point(0., -3.)),
+            modifiers: Modifiers::default(),
+            touch_phase: TouchPhase::Moved,
+        });
+        draw(cx);
+    }
+
     fn install_ring(cx: &mut VisualTestContext, app: &Entity<GitTurtle>, ring: FocusRing) {
         cx.update(|window, cx| {
             Theme::global_mut(cx).button_focus_ring = ring;
@@ -599,7 +646,9 @@ pub(crate) mod tests {
 
     /// Each of `controls` lies in clipping containers. Grown by the installed
     /// Button focus ring's width plus gap, each lies inside the content mask it
-    /// paints in. The room that keeps it there moves nothing: laid out
+    /// paints in. The room that keeps it there moves nothing: the content
+    /// fits, and a wheel step over any control scrolls nothing, because the
+    /// room's overhang adds nothing a container can scroll to; and laid out
     /// without the room, as a ring taking none lays out, every painted quad,
     /// control and element of `fixed` sits where it does with the room, and
     /// every control's ring is clipped.
@@ -628,7 +677,15 @@ pub(crate) mod tests {
 
         let selectors = [controls, fixed].concat();
         park_pointer(cx);
-        let (quads, elements) = layout(cx, &selectors);
+        let with_room = layout(cx, &selectors);
+        for &control in controls {
+            let center = rendered(cx, control).center();
+            wheel(cx, center);
+            park_pointer(cx);
+            if let Some(moved) = first_move(&with_room, &layout(cx, &selectors), &selectors) {
+                panic!("a wheel step over {control} scrolls content that fits: it moves {moved}");
+            }
+        }
         install_ring(
             cx,
             app,
@@ -639,18 +696,8 @@ pub(crate) mod tests {
             },
         );
         park_pointer(cx);
-        let (bare_quads, bare_elements) = layout(cx, &selectors);
-        assert_eq!(bare_quads.len(), quads.len(), "the room paints nothing");
-        if let Some((index, (with, without))) = quads
-            .iter()
-            .zip(&bare_quads)
-            .enumerate()
-            .find(|(_, (with, without))| with != without)
-        {
-            panic!("the room moves painted quad {index} from {without:?} to {with:?}");
-        }
-        for ((selector, with), without) in selectors.iter().zip(&elements).zip(&bare_elements) {
-            assert_eq!(with, without, "the room moves {selector}");
+        if let Some(moved) = first_move(&layout(cx, &selectors), &with_room, &selectors) {
+            panic!("the room moves {moved}");
         }
         for &control in controls {
             let mask = content_mask(cx, control);
@@ -661,6 +708,43 @@ pub(crate) mod tests {
             );
         }
         install_ring(cx, app, installed);
+    }
+
+    /// The gap the kit's dialog leaves between its body and its footer when
+    /// nothing overrides it, measured on a dialog of its own.
+    pub(crate) fn kit_dialog_footer_gap(cx: &mut TestAppContext) -> Pixels {
+        /// A window that shows nothing but its dialogs.
+        struct Blank;
+        impl Render for Blank {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .size_full()
+                    .children(Root::render_dialog_layer(window, cx))
+            }
+        }
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_reduce_motion(true);
+        });
+        let (_, cx) = cx.add_window_view(|window, cx| Root::new(cx.new(|_| Blank), window, cx));
+        cx.update(|window, cx| {
+            window.open_alert_dialog(cx, |dialog, _, _| {
+                // Both are taller than the dialog's minimum height would
+                // stretch its body to.
+                dialog
+                    .child(div().debug_selector(|| "probe-body".into()).h(px(80.)))
+                    .footer(div().debug_selector(|| "probe-footer".into()).h(px(80.)))
+            })
+        });
+        draw(cx);
+        rendered(cx, "probe-footer").top() - rendered(cx, "probe-body").bottom()
+    }
+
+    /// The Tags dialog gives its room back through the footer gap, taking it
+    /// to be the kit's default; any other default would move the footer.
+    #[gpui::test]
+    fn dialog_footer_gap_is_the_kits(cx: &mut TestAppContext) {
+        assert_eq!(kit_dialog_footer_gap(cx), DIALOG_FOOTER_GAP);
     }
 
     /// The dialog clips its body to the body's bounds, and the tag list

@@ -310,7 +310,16 @@ impl Render for ReflogBrowser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tags::tests::{assert_room_for_rings, draw, tagged_repository, window};
+    use crate::tags::tests::{
+        assert_room_for_rings, draw, kit_dialog_footer_gap, tagged_repository, window,
+    };
+
+    /// The Reflog dialog gives its room back through the footer gap, taking it
+    /// to be the kit's default; any other default would move the footer.
+    #[gpui::test]
+    fn dialog_footer_gap_is_the_kits(cx: &mut TestAppContext) {
+        assert_eq!(kit_dialog_footer_gap(cx), DIALOG_FOOTER_GAP);
+    }
     use ::core::prelude::v1::test;
 
     /// The reflog's content and its list both scroll, so GPUI clips each to
