@@ -249,6 +249,8 @@ class Runner:
             self.initial_seconds = max(0, self.initial_seconds - max(0, elapsed))
             self.recover_usage()
         self.interrupted = False
+        self.reported_phase: tuple[str, str | None] | None = None
+        self.reported_status: dict[str, tuple[str, int]] = {}
 
     def recover_usage(self) -> None:
         reported = 0
@@ -288,6 +290,30 @@ class Runner:
         self.state["output_tokens"] = self.initial_tokens + self.adapter.output_tokens
         self.state["output_usage_incomplete"] = self.state.get("output_usage_incomplete", False) or getattr(self.adapter, "output_usage_incomplete", False)
         atomic_json(self.directory / "state.json", self.state)
+        self.report()
+
+    def report(self) -> None:
+        """Print each phase and task-status change once, so a watched run shows where it is."""
+        stamp = self.state["updated_at"][11:19] + "Z"
+        active = (self.state.get("active") or {}).get("task")
+        if (self.state["phase"], active) != self.reported_phase:
+            self.reported_phase = (self.state["phase"], active)
+            if active:
+                print(f"{stamp} {self.state['phase']} {active} attempt {self.state['tasks'][active]['attempts']}", flush=True)
+            elif self.state["phase"] != "idle":
+                print(f"{stamp} {self.state['phase']}", flush=True)
+        if active:
+            return  # a step's intermediate statuses are reported by its outcome
+        for task_id, record in self.state["tasks"].items():
+            outcome = (record["status"], record["attempts"])
+            if self.reported_status.get(task_id) == outcome:
+                continue
+            if record["status"] == "awaiting_evidence" and not self.missing_evidence(record):
+                continue  # reviewed and about to be accepted; only waiting on an owner is news
+            self.reported_status[task_id] = outcome
+            reason = " ".join(str(record.get("reason", "")).split())[:240]
+            where = f" at {record['candidate'][:12]}" if record["status"] == "accepted" and record.get("candidate") else ""
+            print(f"{stamp} {task_id}: {record['status']}{where}" + (f" ({reason})" if reason else ""), flush=True)
 
     def stop_requested(self) -> bool:
         return self.interrupted or (self.directory / "STOP").exists()
@@ -342,6 +368,7 @@ class Runner:
             results.append(entry)
             report = {"passed": not result.stopped and result.returncode == 0, "checks": results}
             atomic_json(directory / "gates.json", report)
+            print(f"{now()[11:19]}Z   {name} gate {'passed' if report['passed'] else 'failed'} in {result.elapsed:.0f}s", flush=True)
             if result.stopped:
                 raise EnvironmentBlocked(f"{name} gate interrupted: {result.stopped}")
             if not report["passed"]:
@@ -682,7 +709,6 @@ class Runner:
         record.update(status="accepted", accepted_at=now(), reason="all required evidence accepted")
         self.state.update(accepted_head=record["candidate"], phase="idle", active=None)
         self.save()
-        print(f"accepted {task_id} at {record['candidate'][:12]}", flush=True)
 
     def validate_candidate(self, record: dict) -> None:
         directory = Path(record["directory"])

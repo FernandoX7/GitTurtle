@@ -102,8 +102,10 @@ class RunnerTests(unittest.TestCase):
 
     def execute(self, directory, adapter=None, gate=green_gates):
         runner = Runner(directory, adapter=adapter or FakeCodex(), gate_runner=gate)
-        with redirect_stdout(io.StringIO()):
+        output = io.StringIO()
+        with redirect_stdout(output):
             result = runner.execute()
+        self.output = output.getvalue()
         self.assertEqual(head(self.root), self.original_head)
         self.assertTrue(clean(self.root))
         return result
@@ -310,6 +312,20 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(state["tasks"]["one"]["attempts"], 1)
         self.assertEqual(state["tasks"]["two"]["attempts"], 0)
         self.assertEqual(state["tasks"]["three"]["status"], "accepted")
+
+    def test_progress_reports_each_step_and_outcome_once(self):
+        directory = self.create([task("one", profiles=["native"]), task("two")])
+        state = self.execute(directory)
+        stamps, events = zip(*(line.split(" ", 1) for line in self.output.splitlines()))
+        self.assertTrue(all(len(stamp) == 9 and stamp.endswith("Z") for stamp in stamps), stamps)
+        self.assertEqual(list(events), [
+            "one: pending", "two: pending", "preflight",
+            "building one attempt 1", "gating one attempt 1",
+            "one: awaiting_evidence (required external evidence: native)",
+            "building two attempt 1", "gating two attempt 1", "verifying two attempt 1", "accepting two attempt 1",
+            f"two: accepted at {state['tasks']['two']['candidate'][:12]} (all required evidence accepted)",
+            "blocked",
+        ])
 
     def test_attestation_requires_exact_candidate_and_resume_verifies(self):
         directory = self.create([task(profiles=["native"])])
