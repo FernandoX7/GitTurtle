@@ -1289,6 +1289,9 @@
         "crates/app/src/views/**",
         "crates/app/src/text_review.rs",
         "crates/app/src/workspace.rs",
+        "crates/app/src/native_accessibility/control_tests.rs",
+        "vendor/gpui-component/**",
+        "vendor/AGENTS.md",
         "DESIGN.md",
         "docs/evidence/**",
         "docs/validation.md"
@@ -1317,7 +1320,8 @@
       ],
       "profiles": [
         "rust",
-        "native"
+        "native",
+        "vendor"
       ],
       "commit": "fix(layout): keep paging and the diff usable in narrow windows"
     },
