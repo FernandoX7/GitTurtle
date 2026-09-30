@@ -1688,3 +1688,82 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod targets_focus_tests {
+    use crate::tags::tests::{draw, tagged_repository, window};
+    use crate::*;
+    use core::prelude::v1::test;
+
+    /// Targets' Switch turns disabled while it holds focus: a completed switch
+    /// clears the branch field. Tab and Shift+Tab, as keystrokes through the
+    /// window, still leave it for its neighbours, past the Create button that
+    /// the empty field disables too.
+    #[gpui::test]
+    fn tab_and_shift_tab_leave_a_focused_switch_that_turns_disabled(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        let set_branch = |cx: &mut VisualTestContext, value: &'static str| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.git_actions_open = true;
+                    app.branch_name
+                        .update(cx, |input, cx| input.set_value(value, window, cx));
+                    cx.notify();
+                })
+            });
+            draw(cx);
+        };
+        let press = |cx: &mut VisualTestContext, keys: &str| {
+            cx.simulate_keystrokes(keys);
+            draw(cx);
+            cx.update(|window, cx| window.focused(cx))
+                .expect("a focused control")
+        };
+
+        set_branch(cx, "topic");
+        let (branch, remote) = cx.read(|cx| {
+            let app = app.read(cx);
+            (
+                app.branch_name.read(cx).focus_handle(cx),
+                app.remote_name.read(cx).focus_handle(cx),
+            )
+        });
+        cx.update(|window, cx| branch.focus(window, cx));
+        draw(cx);
+        // Enabled, Targets reads: branch field, Switch, Create, Remote field.
+        let switch = press(cx, "tab");
+        let create = press(cx, "tab");
+        assert!(switch != branch && create != switch && create != remote);
+        assert_eq!(press(cx, "tab"), remote, "Create precedes the Remote field");
+        assert_eq!(press(cx, "shift-tab"), create);
+        assert_eq!(press(cx, "shift-tab"), switch);
+
+        set_branch(cx, "");
+        assert_eq!(
+            cx.update(|window, cx| window.focused(cx)),
+            Some(switch.clone()),
+            "the disabled Switch keeps focus until the keyboard moves it"
+        );
+        assert_eq!(
+            press(cx, "tab"),
+            remote,
+            "Tab leaves the disabled Switch, past the disabled Create"
+        );
+        assert_eq!(
+            press(cx, "shift-tab"),
+            branch,
+            "Shift+Tab passes over both disabled buttons"
+        );
+
+        set_branch(cx, "topic");
+        assert_eq!(press(cx, "tab"), switch);
+        set_branch(cx, "");
+        assert_eq!(
+            press(cx, "shift-tab"),
+            branch,
+            "Shift+Tab leaves the disabled Switch for the branch field"
+        );
+    }
+}
