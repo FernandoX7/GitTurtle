@@ -5,8 +5,8 @@
 //! panels without a horizontal RGB stripe, such as WOLED and QD-OLED monitors
 //! or rotated screens, and diverges from GTK 4, which renders every glyph
 //! grayscale. This module reads the desktop preference through the XDG
-//! settings portal, falls back to fontconfig's resolved defaults when a portal
-//! backend does not publish GNOME's keys, and follows portal changes while the app
+//! settings portal, falls back to fontconfig's resolved defaults when no portal
+//! answers or it does not publish GNOME's keys, and follows portal changes while the app
 //! runs. Returning to a window refreshes the snapshot and fontconfig fallback. On Wayland it also applies the desktop text scaling factor ("Large
 //! Text"), where the toolkit has no DPI source; the X11 backend already scales
 //! the whole window through `Xft.dpi`. Code uses the bundled DejaVu Sans Mono
@@ -416,9 +416,11 @@ pub(super) struct Observed {
 
 #[cfg(any(target_os = "linux", test))]
 impl Observed {
-    /// Prefers the desktop's own preference, then fontconfig, then grayscale:
-    /// the one mode that cannot fringe on an unknown panel layout and matches
-    /// GTK 4 on the same desktop. Text scaling applies only where the toolkit
+    /// Takes the first source that answers, in DESIGN.md's order: the portal's
+    /// GNOME `font-rendering`, then `font-antialiasing`; then fontconfig's
+    /// resolved `sans-serif` defaults, distribution defaults included; then
+    /// grayscale, the one mode that cannot fringe on an unknown panel layout
+    /// and matches GTK 4 on the same desktop. Text scaling applies only where the toolkit
     /// would not otherwise scale the window.
     pub(super) fn resolve(&self, scales_text: bool) -> DesktopText {
         let rendering =
@@ -1286,6 +1288,9 @@ mod tests {
         assert_eq!(rendering_from_fontconfig("True|5"), Some(Grayscale));
         assert_eq!(rendering_from_fontconfig("False|1"), Some(Grayscale));
         assert_eq!(rendering_from_fontconfig(""), None);
+        // What `fc-match` prints when no configuration sets either property.
+        assert_eq!(rendering_from_fontconfig("|"), None);
+        assert_eq!(rendering_from_fontconfig("True|"), None);
         assert_eq!(rendering_from_fontconfig("Maybe|1"), None);
         assert_eq!(rendering_from_fontconfig("True|rgb"), None);
         assert_eq!(rendering_from_fontconfig("True|9"), None);
@@ -1316,6 +1321,114 @@ mod tests {
         assert_eq!(Observed::default().resolve(true).rendering, Grayscale);
         // Resolution leaves the code font to the worker's own lookup.
         assert_eq!(Observed::default().resolve(true).code_font, None);
+    }
+
+    /// The mode `resolve` picks from the portal's two GNOME keys and
+    /// fontconfig's `antialias|rgba` answer, each of which may be absent.
+    fn rendering_for(
+        font_rendering: Option<&str>,
+        antialiasing: Option<&str>,
+        fontconfig: Option<&str>,
+    ) -> gpui_kit::TextRenderingMode {
+        Observed {
+            font_rendering: font_rendering.map(str::to_owned),
+            antialiasing: antialiasing.map(str::to_owned),
+            text_scale: None,
+            fontconfig: fontconfig.map(str::to_owned),
+        }
+        .resolve(false)
+        .rendering
+    }
+
+    #[test]
+    fn antialiasing_order_each_source_decides_once_the_earlier_ones_are_absent() {
+        // Every source present, the first answering grayscale and the later
+        // ones subpixel: `font-rendering` "automatic" decides.
+        assert_eq!(
+            rendering_for(Some("automatic"), Some("rgba"), Some("True|1")),
+            Grayscale
+        );
+        // Without `font-rendering`, `font-antialiasing` decides.
+        assert_eq!(rendering_for(None, Some("rgba"), Some("True|5")), Subpixel);
+        assert_eq!(
+            rendering_for(None, Some("grayscale"), Some("True|1")),
+            Grayscale
+        );
+        // "manual" defers to `font-antialiasing`; without it, fontconfig decides.
+        assert_eq!(
+            rendering_for(Some("manual"), None, Some("True|1")),
+            Subpixel
+        );
+        assert_eq!(
+            rendering_for(Some("manual"), None, Some("True|5")),
+            Grayscale
+        );
+        // No portal answer at all: fontconfig decides. This is the no-portal
+        // evidence session, where Ubuntu's packaged 10-sub-pixel-rgb.conf
+        // resolves `sans-serif` to `True|1`.
+        assert_eq!(rendering_for(None, None, Some("True|1")), Subpixel);
+        assert_eq!(rendering_for(None, None, Some("True|5")), Grayscale);
+        // Without fontconfig as well, the answer is grayscale.
+        assert_eq!(rendering_for(None, None, None), Grayscale);
+        // Fontconfig absent while the portal answers: the portal decides.
+        assert_eq!(rendering_for(Some("manual"), Some("rgba"), None), Subpixel);
+        assert_eq!(rendering_for(Some("automatic"), None, None), Grayscale);
+        assert_eq!(rendering_for(Some("manual"), None, None), Grayscale);
+    }
+
+    #[test]
+    fn antialiasing_order_fontconfig_answers_grayscale_subpixel_or_nothing() {
+        // Subpixel: antialiased with a horizontal RGB or BGR stripe.
+        assert_eq!(rendering_for(None, None, Some("True|1")), Subpixel);
+        assert_eq!(rendering_for(None, None, Some("True|2")), Subpixel);
+        // Grayscale: unknown, vertical or no stripes, or no antialiasing.
+        for answer in ["True|0", "True|3", "True|4", "True|5", "False|1"] {
+            assert_eq!(
+                rendering_for(None, None, Some(answer)),
+                Grayscale,
+                "{answer}"
+            );
+        }
+        // Nothing: no answer, or one that does not parse, falls to grayscale.
+        for answer in ["", "Maybe|1", "True|rgb", "True|9", "True|1|5"] {
+            assert_eq!(
+                rendering_for(None, None, Some(answer)),
+                Grayscale,
+                "{answer:?}"
+            );
+        }
+        assert_eq!(rendering_for(None, None, None), Grayscale);
+        // An invalid GNOME value does not stop fontconfig from answering.
+        assert_eq!(
+            rendering_for(Some("manual"), Some("lcd-v"), Some("True|1")),
+            Subpixel
+        );
+    }
+
+    #[test]
+    fn antialiasing_order_gnome_keys_win_over_fontconfig() {
+        for fontconfig in [Some("True|1"), Some("True|5"), Some("False|0"), None] {
+            assert_eq!(
+                rendering_for(Some("manual"), Some("grayscale"), fontconfig),
+                Grayscale,
+                "{fontconfig:?}"
+            );
+            assert_eq!(
+                rendering_for(Some("manual"), Some("rgba"), fontconfig),
+                Subpixel,
+                "{fontconfig:?}"
+            );
+            assert_eq!(
+                rendering_for(Some("manual"), Some("none"), fontconfig),
+                Grayscale,
+                "{fontconfig:?}"
+            );
+            assert_eq!(
+                rendering_for(Some("automatic"), Some("rgba"), fontconfig),
+                Grayscale,
+                "{fontconfig:?}"
+            );
+        }
     }
 
     #[test]
