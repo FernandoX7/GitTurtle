@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict
 from datetime import datetime, timezone
 import fcntl
@@ -14,6 +14,7 @@ import re
 import shutil
 import signal
 import sys
+import tempfile
 import time
 import uuid
 
@@ -35,8 +36,13 @@ MIRRORS = (".codex", ".agents/skills")
 # A squash merge's subject is the pull request title plus ` (#N)`; the ASCII
 # digit class keeps other numerals from standing in for a PR number.
 SQUASH_SUFFIX = re.compile(r"(.+) \(#[0-9]+\)")
+# What `git revert` and GitHub's Revert button write.
+REVERT_SUBJECT = re.compile(r'Revert "(.+)"')
+REVERTS_COMMIT = re.compile(r"^This reverts commit ([0-9a-f]{40}|[0-9a-f]{64})\b", re.MULTILINE)
 COORDINATOR_NOTES = "docs/development/HANDOFF.md"
-HEADLESS_UNSET = ("DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET")
+# The operator's display and session bus; the native-QA gate also gets an empty
+# private XDG_RUNTIME_DIR, so neither Wayland nor the default bus path resolves.
+HEADLESS_UNSET = ("DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET", "DBUS_SESSION_BUS_ADDRESS")
 EVIDENCE_KINDS = {"native", "performance", "package", "vendor"}
 EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
 TOOLS = ("codex", "claude")
@@ -58,6 +64,20 @@ def mirror_untracked(repo: Path) -> list[str]:
 def note_mirror(repo: Path, record: dict) -> None:
     if mirrored := mirror_untracked(repo):
         record["mirror_untracked"] = sorted(set(record.get("mirror_untracked", ())) | set(mirrored))
+
+
+@contextmanager
+def headless(environment: dict[str, str]):
+    """Withhold the operator's display and session bus for one gate command.
+
+    This removes the inherited variables only. A test that names a display
+    itself, as native-QA's launch default of `:1` would, can still reach it.
+    """
+    for variable in HEADLESS_UNSET:
+        environment.pop(variable, None)
+    with tempfile.TemporaryDirectory(prefix="gitturtle-runtime-") as runtime:
+        environment["XDG_RUNTIME_DIR"] = runtime
+        yield
 
 
 def checkout_clean(repo: Path, record: dict | None = None) -> bool:
@@ -309,12 +329,8 @@ class Runner:
             environment["PYTHONDONTWRITEBYTECODE"] = "1"
             environment["CARGO_TARGET_DIR"] = str(self.directory / "build")
             environment["CARGO_TERM_COLOR"] = "never"
-            if name == "native-qa-tooling":
-                # The suite never needs a display; withholding one keeps a test
-                # that regressed into opening a window off the operator's desktop.
-                for variable in HEADLESS_UNSET:
-                    environment.pop(variable, None)
-            result = run_process(argv, repo, directory / f"{name}.log", self.timeout(), env=environment, stop=self.stop_requested)
+            with headless(environment) if name == "native-qa-tooling" else nullcontext():
+                result = run_process(argv, repo, directory / f"{name}.log", self.timeout(), env=environment, stop=self.stop_requested)
             entry = asdict(result) | {"name": name, "log": str(directory / f"{name}.log"), "sha256": digest(directory / f"{name}.log")}
             results.append(entry)
             report = {"passed": not result.stopped and result.returncode == 0, "checks": results}
@@ -678,35 +694,70 @@ class Runner:
                 raise LoopError("gate command log changed")
 
 
+def revert_target(subject: str) -> str | None:
+    """The subject a ``Revert "…"`` commit names, with or without a squash suffix."""
+    squashed = SQUASH_SUFFIX.fullmatch(subject)
+    for text in (subject, squashed[1] if squashed else ""):
+        named = REVERT_SUBJECT.fullmatch(text)
+        if named:
+            return named[1]
+    return None
+
+
 def landed_tasks(root: Path, base: str, tasks: list[Task], queue: str = "") -> dict[str, str]:
     """Map each task already committed on the source branch to its newest commit.
 
     The queue is status-free, so a queue continued in a fresh run would otherwise
     redo accepted work. A task counts as landed only when a single-parent commit
     reachable from ``base`` carries its exact subject, changes at least one path
-    inside its scope and no other path, and every dependency landed too.
+    inside its scope and no other path, is still in effect at ``base``, and every
+    dependency landed too.
 
     Pull requests land by squash merge, which appends `` (#N)`` to the subject
     and folds in the coordinator's own bookkeeping, so the subject may carry that
     one suffix and the commit may also touch the handoff notes and ``queue``, the
-    run's queue file relative to ``root``.
+    run's queue file relative to ``root``. Those two paths are set aside before
+    the scope check, so they can neither land a task alone nor refuse one.
+
+    A later commit reverts an earlier one when its body says ``This reverts
+    commit <sha>`` or its subject is ``Revert "<subject>"``, optionally squashed.
+    A reverted commit is out of effect unless its revert was reverted in turn.
     """
+    commits = [record.split("\x1f", 2) for record in git(
+        root, "log", "-z", "--no-merges", "--topo-order", "--format=%H%x1f%s%x1f%b", base,
+    ).split("\0") if record]
     newest: dict[str, str] = {}
-    for line in git(root, "log", "--no-merges", "--format=%H%x1f%s", base).splitlines():
-        sha, _, subject = line.partition("\x1f")
+    for sha, subject, _ in commits:
         newest.setdefault(subject, sha)
         squashed = SQUASH_SUFFIX.fullmatch(subject)
         if squashed:
             newest.setdefault(squashed[1], sha)
+    # Oldest first, so a revert only ever names a commit that precedes it; a
+    # body naming a later or unknown commit is ignored, which rules out cycles.
+    reverters: dict[str, list[str]] = {}
+    latest: dict[str, str] = {}
+    seen: set[str] = set()
+    for sha, subject, body in reversed(commits):
+        targets = set(REVERTS_COMMIT.findall(body)) & seen
+        named = revert_target(subject)
+        if named in latest:
+            targets.add(latest[named])
+        for target in targets:
+            reverters.setdefault(target, []).append(sha)
+        latest[subject] = sha
+        seen.add(sha)
+    in_effect: dict[str, bool] = {}
+    for sha, _, _ in commits:  # newest first: every reverter is already decided
+        in_effect[sha] = not any(in_effect[reverter] for reverter in reverters.get(sha, ()))
     bookkeeping = {COORDINATOR_NOTES, queue} - {""}
     candidates = {}
     for task in tasks:
         sha = newest.get(task.commit)
-        if not sha:
+        if not sha or not in_effect[sha]:
             continue
         paths = list(filter(None, git(root, "diff-tree", "--no-commit-id", "--root", "-r", "--name-only", "-z", "--no-renames", sha).split("\0")))
-        outside = [path for path in paths if not path_allowed(path, task.scope)]
-        if len(outside) < len(paths) and set(outside) <= bookkeeping:
+        work = [path for path in paths if path not in bookkeeping]
+        if work and all(path_allowed(path, task.scope) for path in work):
             candidates[task.id] = sha
     landed: dict[str, str] = {}
     changed = True

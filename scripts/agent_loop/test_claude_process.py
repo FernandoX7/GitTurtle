@@ -180,10 +180,11 @@ class ClaudeProcessTests(unittest.TestCase):
         self.assertIn("Bash(python3 scripts/agent-loop.py *)", deny)
         self.assertIn("Bash(python3 scripts/agent_loop/*)", deny)
 
-    def test_review_sessions_run_the_documented_python_suites_and_nothing_wider(self):
+    def test_review_sessions_may_start_the_documented_python_suites(self):
         # The tooling suites run as `python3 -m unittest discover`, which
         # `python3 scripts/*` never matched, so a verifier could not rerun them.
-        # Claude Code's `*` matches any run of characters, as fnmatch's does.
+        # Claude Code's `*` matches any run of characters, as fnmatch's does, so
+        # this checks the start of a command, not every argument after it.
         patterns = [rule[len("Bash("):-1] for rule in REVIEW_ALLOWED if rule.startswith("Bash(")]
 
         def allowed(command):

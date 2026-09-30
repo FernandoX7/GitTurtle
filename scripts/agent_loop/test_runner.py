@@ -189,24 +189,62 @@ class RunnerTests(unittest.TestCase):
         self.land(["docs/five.md"], "docs: explain five workflow (#55) (#56)")
         self.assertEqual(self.landed_states(specification), {name: ("pending", None) for name in ("one", "two", "three", "four", "five")})
 
+    def test_landed_detection_never_counts_bookkeeping_as_the_task(self):
+        # A scope wide enough to cover the handoff notes still needs work of its own.
+        specification = self.prepare([task("one") | {"scope": ["docs/**"]}])
+        self.land(["docs/development/HANDOFF.md"], "docs: explain one workflow (#57)")
+        self.assertEqual(self.landed_states(specification), {"one": ("pending", None)})
+
+    def revert(self, message):
+        git(self.root, "revert", "--no-edit", "HEAD")
+        git(self.root, "commit", "--quiet", "--amend", "-m", message)
+        self.original_head = head(self.root)
+        return self.original_head
+
+    def test_landed_detection_skips_reverted_squashes(self):
+        specification = self.prepare([task("one"), task("two"), task("three")])
+        # Reverted by sha in the body, under an unrelated subject.
+        one = self.land(["docs/one.md"], "docs: explain one workflow (#41)")
+        self.revert(f"docs: withdraw the one guide\n\nThis reverts commit {one}.")
+        # Reverted through GitHub's Revert button, itself squash-merged.
+        self.land(["docs/two.md"], "docs: explain two workflow (#42)")
+        self.revert('Revert "docs: explain two workflow (#42)" (#47)')
+        # Reverted, then the revert reverted: the change is back.
+        three = self.land(["docs/three.md"], "docs: explain three workflow (#43)")
+        self.revert('Revert "docs: explain three workflow (#43)" (#48)')
+        self.revert('Revert "Revert "docs: explain three workflow (#43)" (#48)" (#49)')
+        self.assertEqual(self.landed_states(specification),
+                         {"one": ("pending", None), "two": ("pending", None), "three": ("accepted", three)})
+
     def test_tooling_gate_runs_both_python_suites_without_a_display(self):
         directory = self.create()
         runner = Runner(directory, adapter=FakeCodex())
         seen = []
 
         def run(argv, cwd, log, timeout, *, env=None, **options):
-            seen.append((argv, env))
+            runtime = Path(env.get("XDG_RUNTIME_DIR", "/nonexistent"))
+            # Record the runtime directory as the command saw it.
+            state = (runtime.is_dir() and not any(runtime.iterdir()), runtime.stat().st_mode & 0o777 if runtime.is_dir() else None)
+            seen.append((argv, dict(env), runtime, state))
             log.write_text("ok\n")
             return Result(tuple(argv), 0, 0.0)
 
-        with patch.dict(os.environ, {"DISPLAY": ":0", "WAYLAND_DISPLAY": "wayland-0"}), patch("agent_loop.runner.run_process", run):
+        inherited = {"DISPLAY": ":0", "WAYLAND_DISPLAY": "wayland-0", "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1/bus",
+                     "XDG_RUNTIME_DIR": "/run/user/1"}
+        with patch.dict(os.environ, inherited), patch("agent_loop.runner.run_process", run):
             report = runner.gates(directory / "accepted", {"docs", "tooling"}, directory / "gate-probe")
         self.assertTrue(report["passed"])
-        suites = {argv[argv.index("-s") + 1]: env for argv, env in seen if "-s" in argv}
+        suites = {argv[argv.index("-s") + 1]: rest for argv, *rest in seen if "-s" in argv}
         self.assertEqual(set(suites), {"scripts/agent_loop", "scripts/native_qa"})
-        self.assertFalse({"DISPLAY", "WAYLAND_DISPLAY"} & suites["scripts/native_qa"].keys())
-        # Only the native-QA suite is kept off the display.
-        self.assertEqual(suites["scripts/agent_loop"]["DISPLAY"], ":0")
+        environment, runtime, (empty, mode) = suites["scripts/native_qa"]
+        self.assertFalse({"DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"} & environment.keys())
+        # A private runtime directory that was empty during the run and is gone after it.
+        self.assertNotEqual(runtime, Path("/run/user/1"))
+        self.assertEqual((empty, mode), (True, 0o700))
+        self.assertFalse(runtime.exists())
+        # Only the native-QA suite is kept off the operator's session.
+        self.assertEqual(suites["scripts/agent_loop"][0]["DISPLAY"], ":0")
+        self.assertEqual(suites["scripts/agent_loop"][0]["XDG_RUNTIME_DIR"], "/run/user/1")
 
     def test_red_review_retries_with_failed_commit_preserved(self):
         directory = self.create()
