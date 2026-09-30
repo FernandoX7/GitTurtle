@@ -1890,13 +1890,22 @@ mod tests {
         );
     }
 
-    /// A selected mode has the shared helper's selected look: it rests on the
-    /// palette's `selected`, hovers to its `selected_hover`, and keeps the whole
-    /// Button, focus ring included, at full opacity, in a dark and two light
-    /// palettes, one of which moves the control label.
+    /// In a dark and two light palettes, a selected mode has the shared helper's
+    /// selected look: it rests on the palette's `selected`, hovers to its
+    /// `selected_hover`, and keeps the whole Button, focus ring included, at
+    /// full opacity. An unselected mode keeps the kit's ghost look: no fill at
+    /// rest and the ghost's hover under the pointer, which the helper's
+    /// unselected look does not paint. While the hub is busy the selected mode
+    /// paints no fill, at rest or under the pointer. Only fills and rings are
+    /// checked; the test platform paints no text, so a label's color goes
+    /// unchecked.
     #[gpui::test]
-    fn a_selected_mode_rests_and_hovers_like_the_shared_helper(cx: &mut TestAppContext) {
-        use crate::appearance::{SelectedState, ThemeChoice, assert_selected_button};
+    fn a_selected_mode_rests_and_hovers_like_the_shared_helper_and_the_others_like_the_ghost(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::appearance::{
+            SelectedState, ThemeChoice, assert_ghost_button, assert_selected_button,
+        };
         fn draw(cx: &mut VisualTestContext) {
             cx.update(|window, cx| {
                 window.simulate_next_frame(cx);
@@ -1944,8 +1953,16 @@ mod tests {
             let segment = cx
                 .debug_bounds("project-mode-Clone")
                 .expect("rendered Clone mode");
+            let ghost = cx
+                .debug_bounds("project-mode-Open")
+                .expect("rendered Open mode");
             let name = format!("{choice:?} Clone mode");
+            let ghost_name = format!("{choice:?} Open mode");
             assert_selected_button(cx, &name, segment, SelectedState::Resting);
+            assert_ghost_button(cx, &ghost_name, ghost, false);
+            cx.simulate_mouse_move(ghost.center(), None, Modifiers::default());
+            draw(cx);
+            assert_ghost_button(cx, &ghost_name, ghost, true);
             cx.simulate_mouse_move(segment.center(), None, Modifiers::default());
             draw(cx);
             assert_selected_button(cx, &name, segment, SelectedState::Hovered);

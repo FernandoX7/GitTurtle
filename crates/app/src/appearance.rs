@@ -343,6 +343,39 @@ pub(crate) fn assert_selected_button(
     }
 }
 
+/// For tests of an unfocused Button in the kit's ghost look: asserts that the
+/// last frame drew no focus ring around `element` and filled its bounds with
+/// nothing at rest, or with nothing but the ghost's hover under the pointer,
+/// the applied `secondary` lightened in a dark mode or darkened in a light one
+/// by 0.1 at 0.8 opacity, as the kit computes it. The shared helper's
+/// unselected look, [`control_button_variant`]`(false)`, rests without a fill
+/// as well, so only the hover tells the two apart.
+#[cfg(test)]
+pub(crate) fn assert_ghost_button(
+    cx: &mut gpui_kit::VisualTestContext,
+    name: &str,
+    element: gpui_kit::Bounds<Pixels>,
+    hovered: bool,
+) {
+    let hover = cx.update(|_, cx| {
+        let theme = Theme::global(cx);
+        let hover = if theme.mode.is_dark() {
+            theme.secondary.lighten(0.1)
+        } else {
+            theme.secondary.darken(0.1)
+        };
+        gpui_kit::Background::from(hover.opacity(0.8))
+    });
+    let state = if hovered { "hovered" } else { "at rest" };
+    let (fills, rings) = painted_button(cx, element);
+    if hovered {
+        assert_eq!(fills, [hover], "{name} {state} paints {fills:?}");
+    } else {
+        assert!(fills.is_empty(), "{name} {state} paints {fills:?}");
+    }
+    assert!(rings.is_empty(), "{name} {state} draws {rings:?}");
+}
+
 /// The shared compact button's variant: the applied palette's control fills,
 /// or the kit's ghost before any palette is applied. A selected button keeps
 /// the kit's secondary, which paints `selected` with `text`, unless the palette

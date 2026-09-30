@@ -5230,21 +5230,30 @@ mod segment_tests {
     use super::*;
     use core::prelude::v1::test;
 
-    /// A selected density has the shared helper's selected look: it rests on
-    /// the palette's `selected`, hovers to its `selected_hover`, and keeps the
-    /// whole Button, focus ring included, at full opacity, in a dark and two
-    /// light palettes, one of which moves the control label.
+    /// In a dark and two light palettes, a selected density has the shared
+    /// helper's selected look: it rests on the palette's `selected`, hovers to
+    /// its `selected_hover`, and keeps the whole Button, focus ring included, at
+    /// full opacity. An unselected density keeps the kit's ghost look: no fill
+    /// at rest and the ghost's hover under the pointer, which the helper's
+    /// unselected look does not paint. Only fills and rings are checked; the
+    /// test platform paints no text, so a label's color goes unchecked.
     #[gpui::test]
-    fn a_selected_density_rests_and_hovers_like_the_shared_helper(cx: &mut TestAppContext) {
+    fn a_selected_density_rests_and_hovers_like_the_shared_helper_and_the_others_like_the_ghost(
+        cx: &mut TestAppContext,
+    ) {
         let (app, cx) = open_app(cx);
         assert_eq!(
             cx.read(|cx| app.read(cx).settings.density),
             Density::Comfortable
         );
-        let index = Density::ALL
-            .iter()
-            .position(|density| *density == Density::Compact);
-        let selector: &'static str = format!("settings-density-{}", index.unwrap()).leak();
+        let selector_of = |wanted: Density| -> &'static str {
+            let index = Density::ALL.iter().position(|density| *density == wanted);
+            format!("settings-density-{}", index.unwrap()).leak()
+        };
+        let (selector, comfortable) = (
+            selector_of(Density::Compact),
+            selector_of(Density::Comfortable),
+        );
         let unselected = shown(cx, selector).expect("the Compact density is drawn");
         // Tab from the Your themes card passes the text size controls before it
         // reaches the density segments; Space selecting Compact shows that is
@@ -5296,13 +5305,19 @@ mod segment_tests {
             cx.simulate_mouse_move(point(px(0.), px(0.)), None, Modifiers::default());
             settle(cx);
             let segment = shown(cx, selector).expect("the selected density is drawn");
+            let ghost = shown(cx, comfortable).expect("the Comfortable density is drawn");
             let name = format!("{choice:?} Compact density");
+            let ghost_name = format!("{choice:?} Comfortable density");
             appearance::assert_selected_button(
                 cx,
                 &name,
                 segment,
                 appearance::SelectedState::Resting,
             );
+            appearance::assert_ghost_button(cx, &ghost_name, ghost, false);
+            cx.simulate_mouse_move(ghost.center(), None, Modifiers::default());
+            settle(cx);
+            appearance::assert_ghost_button(cx, &ghost_name, ghost, true);
             cx.simulate_mouse_move(segment.center(), None, Modifiers::default());
             settle(cx);
             appearance::assert_selected_button(
