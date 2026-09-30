@@ -65,6 +65,34 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## September 30 Git writes and network actions on Omarchy
+
+Task `omarchy-git-writes-evidence` checks Git writes and network actions in the release build on Omarchy, on native Wayland. It is evidence only; no product code changed. The run took place on 2026-09-30 between 19:22 and 19:29 UTC.
+
+- Host: Omarchy 4.0.4-1, Hyprland 0.56.2 (`efb5099`), native Wayland, on a temporary headless output at 1480 × 800 and scale 1 with the window fullscreen; AMD Radeon Vega (Picasso/Raven 2) with Mesa 26.2.2 and `vulkan-radeon`. The monitor layout (mode, scale and position in `hyprctl monitors -j`) matched its reading from before the run.
+- Build: `main` `ca7b826`, release, clean, sha256 `4c2cb18e…`.
+- Launch: fresh HOME and XDG directories whose `~/.gitconfig` holds only the `GitTurtle QA <qa@example.invalid>` identity, so no credential helper was configured (none is set system-wide on this host), and Midnight selected.
+- Fixture: a disposable repository at `/tmp/gitturtle-evidence/writes-10/work`, cloned from the bare `remote.git` beside it, with `notes.txt` edited and `story.txt` edited in two hunks (lines 3 and 36). Before the launch, a second clone put "Upstream change" on `remote.git` and "Change on the HTTP remote" on a second bare repository, `http/lan.git`. Every commit, the one made in the app included, has the QA identity as author and committer.
+- Remotes: `origin` at `file:///tmp/gitturtle-evidence/writes-10/remote.git`, and `lan` at `http://127.0.0.1:18710/lan.git`, served by `git http-backend` through a small Python CGI bridge that answers 401 to any request without the throwaway Basic credentials. Its request log recorded each 401 and each authenticated request.
+- Input: pointer clicks through a Wayland virtual pointer (`zwlr_virtual_pointer_v1`) at a position set with `hl.dsp.cursor.move`, and typing with `wtype`, each after checking that the active window's PID was the app's.
+
+Results, in the order they ran. The fixture's `git status --porcelain=v2 --branch` and `git log --all --format='%H %an %s %D'` after each step are in `git/` beside the frames:
+- **Fetch and pull over `file://`.** Fetch showed "Fetched origin" with the branch 1 behind, and Pull fast-forwarded `main` to `d14f1d2` ("Pulled origin/main").
+- **Fetch and pull over HTTP.** With `lan` typed as the Targets remote, Fetch opened GitTurtle's **Git authentication** dialog for the user name, then for the password, which it masks; the password prompt shows the URL with `[redacted]` in place of the user name. Once both were answered, "Fetched lan" brought `lan/main` at `af9df9d`. Pull asked for both again and fast-forwarded `main` to `af9df9d`.
+- **Stage a file.** The row's Stage button put `notes.txt` in the index ("Staged notes.txt"; `M.`).
+- **Stage a hunk.** In `story.txt`'s diff, the first hunk's **Stage hunk** staged only the line 3 edit ("Selected changes staged"; `MM`). The index's `story.txt` blob, `41633d6`, which the commit below recorded, differs from `HEAD`'s only at line 3.
+- **Unstage.** The staged row's Unstage button returned `notes.txt` to the working tree (`.M`).
+- **Commit.** With the title "Edit the story's first hunk", **Commit 1 file** made `8fee510` ("Committed 8fee510 · Edit the story's first hunk") with the staged hunk only; the second hunk and `notes.txt` stayed unstaged.
+- **Branches.** **Create** made `qa-topic` at `8fee510` and switched to it, **Switch** with `main` returned to `main`, and the `qa-topic` row's actions (Shift+F10), **Delete branch…** and its confirmation removed it ("Deleted local branch 'qa-topic'").
+- **Push.** Push to `origin/main` moved `remote.git`'s `refs/heads/main` to `8fee510`. Push to `lan/main` asked for the credentials again and moved `lan.git`'s `refs/heads/main` to `8fee510`; as the branch Push sets the pushed branch's upstream (`--set-upstream`), `main` then tracked `lan/main`.
+- **Credentials.** After the run, `grep -r` for the password, the Basic token and the user name found no match in the launch's HOME, its XDG config, data, cache and state directories, its stdout and stderr, or the fixture's `.git` (`git/credential-grep.txt`). Apart from shader caches, GitTurtle wrote only `preferences.json`, `activity.json` and `repository-session.json` there.
+
+The 17 frames and the records are in [`evidence/omarchy-git-writes/`](evidence/omarchy-git-writes/). `python3 scripts/native_qa/qa.py privacy scan --redacted --jobs 2` with the local template set passed all 17 committed frames (0 matched, 276 s wall, 19:49 UTC), and each was viewed at full size.
+
+Found, not fixed, and reported for its own task: History was scoped to `qa-topic` when it was deleted. A red "History scope changed" banner appeared at once and returned after each later push, and an explicit Refresh (Ctrl+R) then reported "Could not open repository" for the whole repository and marked its tab unavailable until **All history** was chosen (`27b-after-refresh.png`, `28-all-history-after-refresh.png`). Also, the authentication prompt mentions macOS Keychain on Linux.
+
+Not covered: SSH remotes and host verification, a credential helper that stores answers, cancelling a prompt, a rejected push, a pull that cannot fast-forward, conflicts, and Git writes under XWayland.
+
 ## September 30 paging and the diff in narrow windows
 
 Task `narrow-window-compare-height` closes the follow-ups of [the fractional-scales check](#september-27-fractional-scales-on-hyprland) for side-by-side tiles on a display about 1,000 logical pixels wide, 461 to 493 px each. The owner's decisions (2026-09-29): History's paging becomes icon-only below the width its labelled scope toolbar needs, Compare's review options become arrows and an Options menu below the width their row needs, the composer heading squeezed out at 461 × 490 is recorded rather than changed, and an 18 pt interface text size at 461 × 490 is recorded for a later task. On 2026-09-30 the owner added the kit's tooltip (`vendor/gpui-component`) to the task's scope, so a tooltip wider than the window wraps inside it.

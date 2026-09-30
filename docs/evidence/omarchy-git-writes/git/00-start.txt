@@ -1,0 +1,11 @@
+# 00-start 2026-09-30T19:22:32Z
+## git status --porcelain=v2 --branch
+# branch.oid b3e329f676eedb4dcf39fed9702621bcae282619
+# branch.head main
+# branch.upstream origin/main
+# branch.ab +0 -0
+1 .M N... 100644 100644 100644 f27ee24cbe2641baafd661aa5b7a867f34893276 f27ee24cbe2641baafd661aa5b7a867f34893276 notes.txt
+1 .M N... 100644 100644 100644 c5dacbaf2cb21fc71475757d68307e02d9deb517 c5dacbaf2cb21fc71475757d68307e02d9deb517 story.txt
+## git log --all --format='%H %an %s %D'
+b3e329f676eedb4dcf39fed9702621bcae282619 GitTurtle QA Add story HEAD -> main, origin/main, origin/HEAD
+d778df88d694d9b7557b20671ed2aa6953d2eaea GitTurtle QA Initial commit 

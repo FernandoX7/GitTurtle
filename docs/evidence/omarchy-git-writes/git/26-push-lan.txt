@@ -1,0 +1,14 @@
+# 26-push-lan 2026-09-30T19:27:59Z
+## git status --porcelain=v2 --branch
+# branch.oid 8fee510fb8e58bda5ac91ec4e881704d22fd177e
+# branch.head main
+# branch.upstream lan/main
+# branch.ab +0 -0
+1 .M N... 100644 100644 100644 f27ee24cbe2641baafd661aa5b7a867f34893276 f27ee24cbe2641baafd661aa5b7a867f34893276 notes.txt
+1 .M N... 100644 100644 100644 41633d65ff7011a444a9f0a7fa153d9fc3e861d3 41633d65ff7011a444a9f0a7fa153d9fc3e861d3 story.txt
+## git log --all --format='%H %an %s %D'
+8fee510fb8e58bda5ac91ec4e881704d22fd177e GitTurtle QA Edit the story's first hunk HEAD -> main, origin/main, origin/HEAD, lan/main, lan/HEAD
+af9df9d688861dac6d1be5c7cea0606d9f8bf4f8 GitTurtle QA Change on the HTTP remote 
+d14f1d2b2d17ed12ffaa7b0095954f7b9a99e7ff GitTurtle QA Upstream change 
+b3e329f676eedb4dcf39fed9702621bcae282619 GitTurtle QA Add story 
+d778df88d694d9b7557b20671ed2aa6953d2eaea GitTurtle QA Initial commit 
