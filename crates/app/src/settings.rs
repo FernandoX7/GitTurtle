@@ -54,13 +54,10 @@ pub(super) fn rescale_list_scroll(scroll: &UniformListScrollHandle, ratio: f32) 
 
 /// Whether the Your themes rows stand off a row boundary in the frame being
 /// drawn, so that a row partly scrolled out of the viewport crosses the focus
-/// ring's room at one end of it. The list applies a pending `scroll_to_item`
-/// in its prepaint, after this render, so the answer is taken from where the
-/// list will stand and not from where it stood: `reveal_focused_row`'s
-/// Nearest scroll leaves the offset alone while the row is whole in the
-/// viewport and otherwise lands the row's top or bottom on the viewport's, a
-/// row boundary, as the list itself resolves it. Within half a device pixel
-/// of a boundary counts as on it, since no painted edge moves.
+/// ring's room at one end of it. The answer is taken from where the list will
+/// stand ([`planned_rows_top`]), which the page reveal of a focused row reads
+/// too (`reveal_in_page`). Within half a device pixel of a boundary counts as
+/// on it, since no painted edge moves.
 fn rows_off_boundary(
     scroll: &UniformListScrollHandle,
     row: Pixels,
@@ -68,6 +65,24 @@ fn rows_off_boundary(
     rows: usize,
     window: &Window,
 ) -> bool {
+    let top = planned_rows_top(scroll, row, viewport, rows);
+    let row = f32::from(row);
+    let phase = f32::from(top).rem_euclid(row);
+    phase.min(row - phase) > 0.5 / window.scale_factor()
+}
+
+/// How far the Your themes list will be scrolled in the frame being drawn.
+/// The list applies a pending `scroll_to_item` in its prepaint, after this
+/// render, so the answer is where the list will stand and not where it stood:
+/// `reveal_focused_row`'s Nearest scroll leaves the offset alone while the row
+/// is whole in the viewport and otherwise lands the row's top or bottom on the
+/// viewport's, a row boundary, as the list itself resolves it.
+fn planned_rows_top(
+    scroll: &UniformListScrollHandle,
+    row: Pixels,
+    viewport: Pixels,
+    rows: usize,
+) -> Pixels {
     use gpui::ScrollStrategy::{Bottom, Center, Nearest, Top};
     let state = scroll.0.borrow();
     let mut top = -state.base_handle.offset().y;
@@ -92,9 +107,44 @@ fn rows_off_boundary(
             top = target.max(Pixels::ZERO).min(reach);
         }
     }
-    let row = f32::from(row);
-    let phase = f32::from(top).rem_euclid(row);
-    phase.min(row - phase) > 0.5 / window.scale_factor()
+    top
+}
+
+/// Scroll the Settings page the least that brings the span from window y
+/// `top` to `bottom`, measured at the page's current offset, inside the
+/// page's viewport, as the Your themes list's own Nearest reveal does inside
+/// the list: nothing while it fits, else its top onto the viewport's top or
+/// its bottom onto the viewport's bottom, the top when it is taller than the
+/// viewport. The viewport is the page's from the last frame it was
+/// prepainted in, which a focus change does not move; GPUI clamps the offset
+/// to the page's reach.
+fn reveal_in_page(page: &ScrollHandle, top: Pixels, bottom: Pixels) {
+    let viewport = page.bounds();
+    if viewport.size.height <= Pixels::ZERO {
+        return;
+    }
+    let delta = if top < viewport.top() || bottom - top > viewport.size.height {
+        viewport.top() - top
+    } else if bottom > viewport.bottom() {
+        viewport.bottom() - bottom
+    } else {
+        return;
+    };
+    let offset = page.offset();
+    page.set_offset(point(offset.x, offset.y + delta));
+}
+
+/// The Your themes rows' corner radius.
+const ROW_RADIUS: Pixels = px(6.);
+
+/// Where the just-imported Your themes row is drawn in the frame being
+/// prepainted, for the fill the list paints beneath the rows: the row's
+/// bounds, its content mask, and a hitbox of the row's own bounds, which is
+/// hovered exactly when the row is.
+struct RowFill {
+    bounds: Bounds<Pixels>,
+    mask: ContentMask<Pixels>,
+    hitbox: Hitbox,
 }
 
 /// Baselines distinguish a saved value moving externally from an unfinished edit.
@@ -291,6 +341,7 @@ impl GitTurtle {
     pub(super) fn show_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.page != AppPage::Settings {
             self.page_origin = self.page;
+            self.theme_editor.settings_entered();
         }
         self.capture_page_return_focus(window, cx);
         self.cancel_branch_action();
@@ -1558,22 +1609,43 @@ impl GitTurtle {
                     .focus_scrolled_out(&self.custom_themes, focused, window, cx)
             })
             .map(|(_, handle)| handle.clone());
-        self.theme_editor.reveal_focused_row(focused);
+        let revealed = self.theme_editor.reveal_focused_row(focused);
         let scroll = self.theme_editor.rows_scroll().clone();
+        let row_height = appearance::ui_size(30.);
+        let viewport = appearance::ui_size(30. * VISIBLE_ROWS as f32);
+        // The Settings page scrolls too, and its viewport clips the ring of a
+        // row the list has revealed as surely as the list would: the row
+        // holding focus is revealed in the page as well, once per focus
+        // change as in the list, with the installed ring's footprint of room
+        // above and below it. It is placed where the list will stand once
+        // its own reveal lands (`planned_rows_top`, as `rows_off_boundary`
+        // judges the strips), from where the page last laid the rows out.
+        if let Some(row) = revealed
+            && let Some(anchor) = self.theme_editor.rows_anchor().get()
+        {
+            let page = self.theme_editor.page_scroll();
+            let top = anchor + page.offset().y + row_height * row as f32
+                - planned_rows_top(&scroll, row_height, viewport, rows);
+            let ring = gpui_kit::component::Theme::global(cx).button_focus_ring;
+            let room = ring.gap + ring.width;
+            reveal_in_page(page, top - room, top + row_height + room);
+        }
         // The list clips at its own bounds, the ring's room included, so a
         // row partly scrolled out of the viewport paints into that room. Two
         // strips of the card's surface cover the room while the rows stand
         // off a row boundary; on a boundary the rows fill the viewport
         // exactly and the room is the ring's alone (`rows_off_boundary`).
-        let strips = scrolls
-            && rows_off_boundary(
-                &scroll,
-                appearance::ui_size(30.),
-                appearance::ui_size(30. * VISIBLE_ROWS as f32),
-                rows,
-                window,
-            );
-        let surface = rgb(palette(cx).subtle);
+        let strips = scrolls && rows_off_boundary(&scroll, row_height, viewport, rows, window);
+        let p = palette(cx);
+        let surface = rgb(p.subtle);
+        // The import highlight's fill, painted beneath every row rather than
+        // as the highlighted row's own background: a row paints after the
+        // row above it, so that background covered the bottom edge of the
+        // ring around a focused action on the row above
+        // (`render_custom_theme_row` records where the row is drawn).
+        let highlight = std::rc::Rc::new(std::cell::Cell::new(None::<RowFill>));
+        let fill = highlight.clone();
+        let (selected, hovered) = (p.selected, p.row_hover(true));
         // The box the rows occupy in the card's column: exactly the rows, so
         // the card, the row pitch and everything below the card stay where
         // the plain stack put them. The list itself is positioned over it 3
@@ -1583,6 +1655,8 @@ impl GitTurtle {
         // contribution below its flex basis collapses the card's content
         // height under max-content sizing (taffy 0.13 scales that negative
         // difference by the item's inner flex basis).
+        let page = self.theme_editor.page_scroll().clone();
+        let anchor = self.theme_editor.rows_anchor().clone();
         div()
             .debug_selector(|| "custom-themes-rows-box".into())
             .relative()
@@ -1591,6 +1665,13 @@ impl GitTurtle {
             .mx(appearance::ui_size(-8.))
             .h(appearance::ui_size(30. * rows.min(VISIBLE_ROWS) as f32))
             .flex_shrink_0()
+            // The first row starts the ring's room below the list's top; the
+            // page's offset, applied to these bounds, is taken back out.
+            .on_children_prepainted(move |children, _, _| {
+                if let Some(list) = children.first() {
+                    anchor.set(Some(list.top() + ROW_RING_ROOM - page.offset().y));
+                }
+            })
             .child(
                 div()
                     .debug_selector(|| "custom-themes-rows".into())
@@ -1636,10 +1717,38 @@ impl GitTurtle {
                         }
                     })
                     .child(
+                        canvas(
+                            |_, _, _| (),
+                            move |_, (), window, cx| {
+                                let Some(row) = fill.take() else {
+                                    return;
+                                };
+                                // What the row's own background and hover
+                                // style painted: the selected surface, or its
+                                // hover blend under the pointer.
+                                let hover = !cx.has_active_drag() && row.hitbox.is_hovered(window);
+                                let color = Hsla::from(rgb(if hover { hovered } else { selected }));
+                                window.with_content_mask(Some(row.mask), |window| {
+                                    window.paint_quad(quad(
+                                        row.bounds,
+                                        Corners::all(ROW_RADIUS)
+                                            .clamp_radii_for_quad_size(row.bounds.size),
+                                        color,
+                                        Edges::default(),
+                                        color.alpha(0.),
+                                        BorderStyle::default(),
+                                    ))
+                                });
+                            },
+                        )
+                        .absolute()
+                        .size_full(),
+                    )
+                    .child(
                         uniform_list(
                             "custom-theme-rows",
                             rows,
-                            cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
+                            cx.processor(move |this, range: std::ops::Range<usize>, window, cx| {
                                 // Tab across the viewport boundary asked for a
                                 // row this render draws: its actions are tab
                                 // stops from this frame on, so the next frame
@@ -1661,7 +1770,7 @@ impl GitTurtle {
                                 range
                                     .filter_map(|index| {
                                         let count = warnings.get(index).copied().unwrap_or(0);
-                                        this.render_custom_theme_row(index, count, cx)
+                                        this.render_custom_theme_row(index, count, &highlight, cx)
                                     })
                                     .collect::<Vec<_>>()
                             }),
@@ -1722,10 +1831,13 @@ impl GitTurtle {
     }
 
     /// One Your themes row, built only while it is in the list's viewport.
+    /// The just-imported row records where it is drawn in `highlight`, whose
+    /// fill the list paints beneath the rows (`render_custom_theme_rows`).
     fn render_custom_theme_row(
         &self,
         index: usize,
         warnings: usize,
+        highlight: &std::rc::Rc<std::cell::Cell<Option<RowFill>>>,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let theme = self.custom_themes.get(index)?;
@@ -1755,14 +1867,40 @@ impl GitTurtle {
             .w_full()
             .h(appearance::ui_size(30.))
             .px(appearance::ui_size(8.))
-            .rounded(px(6.))
+            .rounded(ROW_RADIUS)
             // A just-imported theme is highlighted on the selected
             // surface. It is added, not applied: the checkmark still
             // marks the theme the window uses. Hovering the row is not
-            // a card action, so it keeps the highlight rather than
-            // replacing it with the plain hover surface.
-            .when(imported == Some(id), |row| row.bg(rgb(p.selected)))
-            .hover(|row| row.bg(rgb(p.row_hover(imported == Some(id)))))
+            // a card action, so it keeps the highlight, blended as a
+            // hovered selected row, rather than replacing it with the
+            // plain hover surface. The list paints both beneath every
+            // row from what this probe records, so the row paints no
+            // fill of its own over the ring of a focused action on the
+            // row above. The empty hover style still has GPUI draw the
+            // page again when the pointer enters or leaves the row.
+            .when(imported == Some(id), |row| {
+                let highlight = highlight.clone();
+                row.child(
+                    canvas(
+                        move |bounds, window, _| {
+                            highlight.set(Some(RowFill {
+                                bounds,
+                                mask: window.content_mask(),
+                                hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
+                            }))
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+                )
+                .hover(|row| row)
+            })
+            .when(imported != Some(id), |row| {
+                row.hover(|row| row.bg(rgb(p.row_hover(false))))
+            })
             .flex()
             .items_center()
             .gap_2()
@@ -2218,9 +2356,13 @@ impl GitTurtle {
             .child(
                 div()
                     .id("settings-scroll")
+                    .debug_selector(|| "settings-scroll".into())
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
+                    // Tracked so that the Your themes row holding focus is
+                    // revealed here too (`reveal_in_page`).
+                    .track_scroll(self.theme_editor.page_scroll())
                     .p_6()
                     .when(narrow, |body| body.p_4())
                     .child(
