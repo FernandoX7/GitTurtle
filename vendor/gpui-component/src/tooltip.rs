@@ -2,8 +2,8 @@ use std::{cell::Cell, rc::Rc, time::Duration};
 
 use gpui::{
     Action, AnyElement, AnyView, App, AppContext, Bounds, Context, ElementId, IntoElement,
-    MouseButton, ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement,
-    StyleRefinement, Styled, Window, div, prelude::FluentBuilder, px,
+    MouseButton, ParentElement, Pixels, Render, Rems, SharedString, StatefulInteractiveElement,
+    StyleRefinement, Styled, Window, div, prelude::FluentBuilder, px, rems,
 };
 use gpui_base::{
     Tooltip as BaseTooltip, TooltipOverlay as BaseTooltipOverlay,
@@ -13,6 +13,7 @@ use gpui_base::{
 use crate::{
     ActiveTheme, Placement, StyledExt,
     animation::{EffectTransition, ease_in_out_cubic, ease_out_cubic},
+    h_flex,
     kbd::Kbd,
     root::Root,
     text::Text,
@@ -20,6 +21,29 @@ use crate::{
 
 pub(crate) fn init(_cx: &mut App) {
     // No app-level init needed — TooltipOverlay is per-window via Root.
+}
+
+/// The margin the tooltip positioner keeps from the viewport's edges:
+/// `WINDOW_MARGIN` in gpui-base's `tooltip.rs`, which `TooltipPositioner`
+/// gives the shared `Positioner`. That constant is private, so this repeats
+/// its value; the consuming app's regression fails if the two part.
+const POSITIONER_MARGIN: Pixels = px(4.);
+
+/// The popup's margin inside the element the positioner places (`m_3`).
+const POPUP_MARGIN: Rems = rems(0.75);
+
+/// The widest popup that fits in the window with equal margins.
+///
+/// The positioner clamps the popup's wrapper, which includes the popup's
+/// margin, into the viewport less its own margin, to which it adds the client
+/// inset of client-side decorations. It centres a narrower wrapper on the
+/// trigger first, but a wider one keeps only its left edge in view, so a
+/// popup capped at this width wraps its text inside the window instead.
+fn max_popup_width(window: &Window) -> Pixels {
+    let edge = POSITIONER_MARGIN
+        + window.client_inset().unwrap_or(px(0.))
+        + POPUP_MARGIN.to_pixels(window.rem_size());
+    (window.viewport_size().width - edge * 2.).max(px(0.))
 }
 
 // ── Tooltip view (unchanged API) ────────────────────────────────────────────
@@ -110,7 +134,8 @@ impl Render for Tooltip {
             BaseTooltip::new("tooltip-popup")
                 .h_flex()
                 .font_family(cx.theme().font_family.clone())
-                .m_3()
+                .m(POPUP_MARGIN)
+                .max_w(max_popup_width(window))
                 .bg(cx.theme().tokens.popover)
                 .text_color(cx.theme().popover_foreground)
                 .bg(cx.theme().tokens.popover)
@@ -125,18 +150,30 @@ impl Render for Tooltip {
                 .gap_3()
                 .refine_style(&self.style)
                 .map(|this| {
-                    this.child(div().map(|this| match self.content {
+                    // Able to shrink below its unwrapped width, so capped
+                    // text wraps at spaces inside the popup.
+                    this.child(div().min_w_0().map(|this| match self.content {
                         TooltipContext::Text(ref text) => this.child(text.clone()),
                         TooltipContext::Element(ref builder) => this.child(builder(window, cx)),
                     }))
                 })
                 .when_some(key_binding, |this, kbd| {
+                    // Beside the first line: an empty strut in the popup's
+                    // text style makes this row one line tall, and the
+                    // binding is centred in it as the popup centres it
+                    // beside a single line.
                     this.child(
-                        div()
-                            .text_xs()
+                        h_flex()
+                            .self_start()
                             .flex_shrink_0()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(kbd.appearance(false)),
+                            .child(div().w_0().child(""))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .flex_shrink_0()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(kbd.appearance(false)),
+                            ),
                     )
                 }),
         )

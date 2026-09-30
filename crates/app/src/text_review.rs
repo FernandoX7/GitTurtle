@@ -26,6 +26,11 @@ const CONTEXT_STEPS: [usize; 4] = [3, 12, 48, 192];
 const MAX_REVIEW_BYTES: usize = 4 * 1024 * 1024;
 const MAX_REVIEW_ROWS: usize = 100_000;
 const MAX_REVIEW_HUNKS: usize = 4096;
+/// The collapsed Options button's tooltip: the explanations of the options
+/// it holds.
+pub(crate) const OPTIONS_TOOLTIP: &str = "Hide whitespace-only changes, expand unchanged \
+     context (3, 12, 48, then 192 lines) or reset to the original diff. Source tabs keep exact \
+     content; partial staging requires the original diff.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Options {
@@ -481,11 +486,7 @@ impl GitTurtle {
                 "text-review-menu",
                 "Review options",
             )
-            .tooltip(
-                "Hide whitespace-only changes, expand unchanged context (3, 12, 48, then 192 lines) \
-                 or reset to the original diff. Source tabs keep exact content; partial staging \
-                 requires the original diff.",
-            )
+            .tooltip(OPTIONS_TOOLTIP)
             .dropdown_menu(move |menu, _, _| {
                 // Built when opened; each item acts on the review as it
                 // is when chosen, as the buttons of the full row do.

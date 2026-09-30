@@ -3604,6 +3604,102 @@ mod tests {
         }
     }
 
+    /// In a 461 × 490 window, the compact Latest and Older tooltips and the
+    /// Options tooltip, each wider than the window on one line, wrap inside
+    /// it above their controls, with the tooltip positioner's margin and the
+    /// popup's own on both sides. The shorter Columns tooltip keeps one line.
+    #[gpui::test]
+    async fn narrow_tooltips_wrap_inside_the_window(cx: &mut TestAppContext) {
+        use gpui_kit::component::Theme;
+        use std::time::Duration;
+
+        /// gpui-base's tooltip `WINDOW_MARGIN`, kept from the viewport's
+        /// edges, and its show delay.
+        const POSITIONER_MARGIN: Pixels = px(4.);
+        const SHOW_DELAY: Duration = Duration::from_millis(500);
+        const WIDTH: f32 = 461.;
+
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
+        // The popup enters where it rests, without sliding or fading in.
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.simulate_resize(size(px(WIDTH), px(490.)));
+        draw(cx);
+        let popover = cx.read(|cx| Background::from(Theme::global(cx).tokens.popover));
+        let popups = move |cx: &mut VisualTestContext| {
+            cx.update(|window, _| {
+                let scale = window.scale_factor();
+                let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| quad.background == popover)
+                    .map(|quad| {
+                        let (origin, extent) = (quad.bounds.origin, quad.bounds.size);
+                        Bounds::new(
+                            point(logical(origin.x), logical(origin.y)),
+                            size(logical(extent.width), logical(extent.height)),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        // The control and the popup that hovering it shows; then the pointer
+        // leaves the window until the tooltip has gone.
+        let hover = |cx: &mut VisualTestContext, selector: &'static str| {
+            let control = cx.debug_bounds(selector).expect(selector);
+            let before = popups(cx);
+            cx.simulate_mouse_move(control.center(), None, Modifiers::default());
+            cx.executor().advance_clock(SHOW_DELAY);
+            draw(cx);
+            let shown = popups(cx)
+                .into_iter()
+                .filter(|popup| !before.contains(popup))
+                .collect::<Vec<_>>();
+            cx.simulate_mouse_move(point(px(-1.), px(-1.)), None, Modifiers::default());
+            cx.executor().advance_clock(SHOW_DELAY);
+            draw(cx);
+            assert_eq!(shown.len(), 1, "{selector} shows one tooltip: {shown:?}");
+            (control, shown[0])
+        };
+        let (rem, edge, device) = cx.update(|window, _| {
+            let rem = window.rem_size();
+            let inset = window.client_inset().unwrap_or_default();
+            (
+                rem,
+                POSITIONER_MARGIN + inset + rem * 0.75,
+                px(1. / window.scale_factor()),
+            )
+        });
+        let (_, columns) = hover(cx, "columns");
+        // Less the vertical padding (`py_0p5`) and border.
+        let line = columns.size.height - (rem * 0.125 + px(1.)) * 2.;
+        assert!(
+            columns.size.width < px(WIDTH) - edge * 2. && line > px(0.),
+            "Columns on one line: {columns:?}"
+        );
+        let check = |selector: &str, control: Bounds<Pixels>, popup: Bounds<Pixels>| {
+            let at = format!("{selector}: {popup:?} over {control:?}");
+            assert!(popup.bottom() <= control.top() + device, "above, {at}");
+            assert!(
+                (popup.left() - edge).abs() <= device
+                    && (px(WIDTH) - popup.right() - edge).abs() <= device,
+                "inset by {edge:?} on both sides, {at}"
+            );
+            assert!(
+                popup.size.height >= columns.size.height + line,
+                "wraps, {at}"
+            );
+        };
+        for selector in ["history-newest", "load-more"] {
+            let (control, popup) = hover(cx, selector);
+            check(selector, control, popup);
+        }
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let (control, popup) = hover(cx, "text-review-menu");
+        check("text-review-menu", control, popup);
+    }
+
     /// Hide whitespace, Context and Reset stay reachable from the keyboard
     /// in the Options menu, with their buttons' disabled states; the menu
     /// itself opens from the keyboard.
