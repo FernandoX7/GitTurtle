@@ -286,6 +286,24 @@ fn apply_code_font(
     sync_code_font(cx) || shown
 }
 
+/// Tests: the worker's reply to the current code font lookup, through the
+/// same generation check and window refresh as a real reply.
+#[cfg(all(test, target_os = "linux"))]
+pub(super) fn answer_code_font_lookup(
+    found: Result<gpui_kit::SharedString, String>,
+    cx: &mut gpui_kit::App,
+) -> bool {
+    let generation = cx
+        .default_global::<CodeFont>()
+        .generation
+        .load(std::sync::atomic::Ordering::Acquire);
+    let changed = apply_code_font(generation, found, cx);
+    if changed {
+        cx.refresh_windows();
+    }
+    changed
+}
+
 /// The first of fontconfig's names for its `monospace` match that the toolkit
 /// has loaded and that draws basic Latin at one advance. The toolkit matches
 /// family names exactly and caches a failed lookup for the life of the

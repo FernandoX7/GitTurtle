@@ -3870,10 +3870,13 @@ fn setting_description(
 ) -> AnyElement {
     let p = palette(cx);
     let description = description.into();
+    let label = format!("{title}. {description}");
     div()
         .id(title)
         .role(Role::Label)
-        .aria_label(format!("{title}. {description}"))
+        // Tests read the accessible name here; other builds skip it.
+        .debug_selector(|| format!("setting-description: {label}"))
+        .aria_label(label)
         .flex_1()
         .min_w_0()
         .flex()
@@ -4617,6 +4620,52 @@ mod picker_tests {
         assert_eq!(state(cx), (true, SystemCodeFont::Pending, bundled.clone()));
         toggle(cx);
         assert_eq!(state(cx), (false, SystemCodeFont::Off, bundled));
+    }
+
+    /// Linux: the row's description, read from its accessible name, names the
+    /// bundled font while off, the lookup while pending, the desktop's family
+    /// once found, and why the bundled font stays when the family is unusable.
+    /// A reply that arrives after the setting turned off leaves the row off.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn the_code_font_row_describes_off_pending_and_on(cx: &mut TestAppContext) {
+        use crate::desktop_text;
+
+        let (_app, cx) = open_app(cx);
+        let describes = |cx: &mut VisualTestContext, description: &str| {
+            let label = format!("Use the desktop's monospace font. {description}");
+            let state = cx.read(desktop_text::system_code_font);
+            assert!(
+                drawn(cx, format!("setting-description: {label}")).is_some(),
+                "the row reads {label:?} while {state:?}"
+            );
+        };
+        let toggle = |cx: &mut VisualTestContext| {
+            let switch = shown(cx, "code-font-switch").expect("Linux Settings offers the switch");
+            cx.simulate_click(switch.center(), Modifiers::default());
+            settle(cx);
+        };
+        let answer = |cx: &mut VisualTestContext, found: Result<SharedString, String>| {
+            let changed = cx.update(|_, cx| desktop_text::answer_code_font_lookup(found, cx));
+            settle(cx);
+            changed
+        };
+        let bundled = crate::mono();
+        let off = format!(
+            "Code uses the bundled {bundled}. Turn on to use fontconfig's monospace font when it is fixed-width."
+        );
+        describes(cx, &off);
+        toggle(cx);
+        describes(cx, "Looking up the desktop's monospace font…");
+        assert!(answer(cx, Ok("Desktop Mono".into())));
+        describes(cx, "Code uses Desktop Mono, the desktop's monospace font.");
+        let reason = "Proportional Sans is not monospace.";
+        assert!(answer(cx, Err(reason.into())));
+        describes(cx, &format!("{reason} Code uses the bundled {bundled}."));
+        toggle(cx);
+        describes(cx, &off);
+        assert!(!answer(cx, Ok("Desktop Mono".into())));
+        describes(cx, &off);
     }
 
     /// Linux: with the desktop's Omarchy theme read, Settings offers it as the
