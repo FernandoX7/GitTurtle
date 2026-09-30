@@ -32,6 +32,11 @@ CONTROLS = (".codex", ".agents", ".claude", "scripts/agent_loop", "scripts/agent
 # an untracked file under them is left out of the candidate and recorded with
 # the attempt instead of failing it; tracked files there stay protected.
 MIRRORS = (".codex", ".agents/skills")
+# A squash merge's subject is the pull request title plus ` (#N)`; the ASCII
+# digit class keeps other numerals from standing in for a PR number.
+SQUASH_SUFFIX = re.compile(r"(.+) \(#[0-9]+\)")
+COORDINATOR_NOTES = "docs/development/HANDOFF.md"
+HEADLESS_UNSET = ("DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET")
 EVIDENCE_KINDS = {"native", "performance", "package", "vendor"}
 EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
 TOOLS = ("codex", "claude")
@@ -286,6 +291,7 @@ class Runner:
         commands = [("guidance", [sys.executable, "-B", str(self.controller / "scripts/check-agent-guidance.py"), "--root", str(repo)])]
         if "tooling" in profiles:
             commands.append(("tooling", [sys.executable, "-B", "-m", "unittest", "discover", "-s", "scripts/agent_loop", "-t", "scripts", "-p", "test_*.py"]))
+            commands.append(("native-qa-tooling", [sys.executable, "-B", "-m", "unittest", "discover", "-s", "scripts/native_qa", "-t", "scripts", "-p", "test_*.py"]))
         if profiles & {"rust", "native", "performance", "package", "vendor"}:
             commands.extend([
                 ("format", ["cargo", "fmt", "--all", "--", "--check"]),
@@ -303,6 +309,11 @@ class Runner:
             environment["PYTHONDONTWRITEBYTECODE"] = "1"
             environment["CARGO_TARGET_DIR"] = str(self.directory / "build")
             environment["CARGO_TERM_COLOR"] = "never"
+            if name == "native-qa-tooling":
+                # The suite never needs a display; withholding one keeps a test
+                # that regressed into opening a window off the operator's desktop.
+                for variable in HEADLESS_UNSET:
+                    environment.pop(variable, None)
             result = run_process(argv, repo, directory / f"{name}.log", self.timeout(), env=environment, stop=self.stop_requested)
             entry = asdict(result) | {"name": name, "log": str(directory / f"{name}.log"), "sha256": digest(directory / f"{name}.log")}
             results.append(entry)
@@ -667,25 +678,35 @@ class Runner:
                 raise LoopError("gate command log changed")
 
 
-def landed_tasks(root: Path, base: str, tasks: list[Task]) -> dict[str, str]:
+def landed_tasks(root: Path, base: str, tasks: list[Task], queue: str = "") -> dict[str, str]:
     """Map each task already committed on the source branch to its newest commit.
 
     The queue is status-free, so a queue continued in a fresh run would otherwise
     redo accepted work. A task counts as landed only when a single-parent commit
     reachable from ``base`` carries its exact subject, changes at least one path
-    and only paths inside its scope, and every dependency landed too.
+    inside its scope and no other path, and every dependency landed too.
+
+    Pull requests land by squash merge, which appends `` (#N)`` to the subject
+    and folds in the coordinator's own bookkeeping, so the subject may carry that
+    one suffix and the commit may also touch the handoff notes and ``queue``, the
+    run's queue file relative to ``root``.
     """
     newest: dict[str, str] = {}
     for line in git(root, "log", "--no-merges", "--format=%H%x1f%s", base).splitlines():
         sha, _, subject = line.partition("\x1f")
         newest.setdefault(subject, sha)
+        squashed = SQUASH_SUFFIX.fullmatch(subject)
+        if squashed:
+            newest.setdefault(squashed[1], sha)
+    bookkeeping = {COORDINATOR_NOTES, queue} - {""}
     candidates = {}
     for task in tasks:
         sha = newest.get(task.commit)
         if not sha:
             continue
         paths = list(filter(None, git(root, "diff-tree", "--no-commit-id", "--root", "-r", "--name-only", "-z", "--no-renames", sha).split("\0")))
-        if paths and all(path_allowed(path, task.scope) for path in paths):
+        outside = [path for path in paths if not path_allowed(path, task.scope)]
+        if len(outside) < len(paths) and set(outside) <= bookkeeping:
             candidates[task.id] = sha
     landed: dict[str, str] = {}
     changed = True
@@ -743,7 +764,7 @@ def create_run(repo: Path, spec_path: Path, controller: Path, options: dict) -> 
         controller_files[relative] = digest(target)
     prepared = adapter.prepare_run(directory) if hasattr(adapter, "prepare_run") else {}
     base = head(root)
-    landed = landed_tasks(root, base, tasks)
+    landed = landed_tasks(root, base, tasks, relative_spec)
     clone(root, directory / "accepted", base, author, owner=directory)
     git(directory / "accepted", "switch", "--quiet", "-c", getattr(adapter, "branch_prefix", "codex/agent-") + run_id, owner=directory)
     records = {task.id: {"status": "pending", "attempts": 0} for task in tasks}

@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 
 from agent_loop.git import clean, git, head
-from agent_loop.process import LoopError, MalformedResponse, atomic_json, read_json
+from agent_loop.process import LoopError, MalformedResponse, Result, atomic_json, read_json
 from agent_loop.runner import Runner, attest, create_run, gate_context, locked, main, profiles_for, validate_patch
 from agent_loop.task_spec import parse_spec
 # Records and run state stay private even when the host umask is permissive.
@@ -159,6 +159,54 @@ class RunnerTests(unittest.TestCase):
         tasks = read_json(directory / "state.json")["tasks"]
         self.assertEqual({key: value["status"] for key, value in tasks.items()},
                          {"one": "pending", "two": "pending", "three": "accepted"})
+
+    def landed_states(self, specification):
+        with patch("agent_loop.runner.Codex.preflight", return_value="fixture Codex"):
+            directory = create_run(self.root, specification, CONTROLLER, self.options)
+        return {key: (value["status"], value.get("landed")) for key, value in read_json(directory / "state.json")["tasks"].items()}
+
+    def test_landed_detection_recognises_a_squash_merged_pull_request(self):
+        # A squash merge appends ` (#N)` and folds in the coordinator's handoff
+        # notes and edits to the run's own queue file.
+        specification = self.prepare([task("one"), task("two", ["one"]), task("three")])
+        specification.write_text(json.dumps(json.loads(specification.read_text()), indent=2))
+        git(self.root, "add", "--", "tasks.json")
+        one = self.land(["docs/one.md", "docs/development/HANDOFF.md"], "docs: explain one workflow (#41)")
+        two = self.land(["docs/two.md"], "docs: explain two workflow (#42)")
+        self.assertEqual(self.landed_states(specification),
+                         {"one": ("accepted", one), "two": ("accepted", two), "three": ("pending", None)})
+
+    def test_landed_detection_still_refuses_other_paths_and_subjects(self):
+        specification = self.prepare([task(name) for name in ("one", "two", "three", "four", "five")])
+        # Squashed, but it also changed an unrelated path.
+        self.land(["docs/one.md", "protected.txt"], "docs: explain one workflow (#51)")
+        # Another queue's file is not this run's bookkeeping.
+        self.land(["docs/two.md", "docs/development/tasks.json"], "docs: explain two workflow (#52)")
+        # Bookkeeping alone is not the task's change.
+        self.land(["docs/development/HANDOFF.md"], "docs: explain three workflow (#53)")
+        # Subjects that only begin like the task's belong to other commits.
+        self.land(["docs/four.md"], "docs: explain four workflow in depth (#54)")
+        self.land(["docs/five.md"], "docs: explain five workflow (#55) (#56)")
+        self.assertEqual(self.landed_states(specification), {name: ("pending", None) for name in ("one", "two", "three", "four", "five")})
+
+    def test_tooling_gate_runs_both_python_suites_without_a_display(self):
+        directory = self.create()
+        runner = Runner(directory, adapter=FakeCodex())
+        seen = []
+
+        def run(argv, cwd, log, timeout, *, env=None, **options):
+            seen.append((argv, env))
+            log.write_text("ok\n")
+            return Result(tuple(argv), 0, 0.0)
+
+        with patch.dict(os.environ, {"DISPLAY": ":0", "WAYLAND_DISPLAY": "wayland-0"}), patch("agent_loop.runner.run_process", run):
+            report = runner.gates(directory / "accepted", {"docs", "tooling"}, directory / "gate-probe")
+        self.assertTrue(report["passed"])
+        suites = {argv[argv.index("-s") + 1]: env for argv, env in seen if "-s" in argv}
+        self.assertEqual(set(suites), {"scripts/agent_loop", "scripts/native_qa"})
+        self.assertFalse({"DISPLAY", "WAYLAND_DISPLAY"} & suites["scripts/native_qa"].keys())
+        # Only the native-QA suite is kept off the display.
+        self.assertEqual(suites["scripts/agent_loop"]["DISPLAY"], ":0")
 
     def test_red_review_retries_with_failed_commit_preserved(self):
         directory = self.create()
