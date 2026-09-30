@@ -1729,24 +1729,25 @@
     },
     {
       "id": "selected-segment-hover-helper",
-      "title": "Hover the density and project-mode segments with the shared selected helper",
-      "description": "Owner request of 2026-09-29, from the #85 design review. Two selected segments still dim the whole element to 0.9 on hover, and with it any focus ring: Settings' density segments (crates/app/src/settings.rs ~1986) and the project mode segments (crates/app/src/projects.rs ~727), both `button.hover(|style| style.opacity(0.9))`. The shared `button()` helper (crates/app/src/main.rs ~1884) and the History segments hover a selected Button with `appearance::control_selected_hover` (crates/app/src/appearance.rs ~245), which keeps opacity 1 and paints `selected_hover`. Use that helper at both sites; no other segment changes.",
+      "title": "Give the density and project-mode segments the shared helper's selected look",
+      "description": "Owner request of 2026-09-29, from the #85 design review. Two selected segments still dim the whole element to 0.9 on hover, and with it any focus ring: Settings' density segments (crates/app/src/settings.rs ~1986) and the project mode segments (crates/app/src/projects.rs ~727), both `button.hover(|style| style.opacity(0.9))`. The shared `button()` helper (crates/app/src/main.rs ~1884) and the History segments hover a selected Button with `appearance::control_selected_hover` (crates/app/src/appearance.rs ~245), which keeps opacity 1 and paints `selected_hover`. Use that helper at both sites. Owner decision of 2026-09-30, from the code review of the hover change: a selected segment at both sites also rests on the palette's opaque `selected` through `appearance::control_button_variant(true)`, like the History segments, instead of the kit's translucent ghost selected fill, so hover steps from `selected` to `selected_hover` as the shared helper does. Unselected segments stay ghost, and while the project hub is busy every mode keeps the ghost's disabled look. DESIGN.md's sentence that these segments dim to 0.9 goes.",
       "depends_on": [],
       "scope": [
         "crates/app/src/settings.rs",
         "crates/app/src/projects.rs",
         "crates/app/src/appearance.rs",
+        "DESIGN.md",
         "docs/validation.md",
         "docs/evidence/**"
       ],
       "acceptance": [
         {
           "id": "helper",
-          "description": "A test asserts that a hovered selected density segment and a hovered selected project-mode segment keep opacity 1 and paint the palette's `selected_hover`, like `control_selected_hover`; it fails on origin/main and passes after the change, and no `opacity(0.9)` hover remains on a selected segment in crates/app."
+          "description": "A test asserts that a selected density segment and a selected project-mode segment rest on the palette's opaque `selected` and, hovered, keep opacity 1 and paint its `selected_hover`, like `control_selected_hover`, with a full focus ring when focused; that an unselected segment keeps the ghost look; and that a busy hub's selected mode keeps the ghost's disabled look. It fails on origin/main and passes after the change, and no `opacity(0.9)` hover remains on a selected segment in crates/app."
         },
         {
           "id": "native",
-          "description": "Native frames on Linux X11 at scale factor 1, base (origin/main when the task starts) and candidate launched in the same session (`scripts/native_qa/qa.py`, each binary in its own CARGO_TARGET_DIR and checked with `qa.py identity`), show both segments selected and hovered, and selected, hovered and focused, in a dark and a light palette; masked `qa.py compare` shows no difference from the base outside the hovered segment; docs/validation.md counts the focused segment's ring pixels on all four sides in a new dated entry; frames privacy-scanned and design-reviewed."
+          "description": "Native frames on Linux X11 at scale factor 1, base (origin/main when the task starts) and candidate launched in the same session (`scripts/native_qa/qa.py`, each binary in its own CARGO_TARGET_DIR and checked with `qa.py identity`), show both segments selected at rest, selected and hovered, and selected, hovered and focused, in a dark and a light palette; masked `qa.py compare` shows no difference from the base outside the selected segment's box, apart from the focus ring's band in focused frames; docs/validation.md counts the focused segment's ring pixels on all four sides in a new dated entry; frames privacy-scanned and design-reviewed."
         },
         {
           "id": "gates",
@@ -1757,7 +1758,7 @@
         "rust",
         "native"
       ],
-      "commit": "fix(settings): hover selected segments with the shared helper"
+      "commit": "fix(settings): give selected segments the shared helper's look"
     },
     {
       "id": "disabled-focus-tab-trap",
