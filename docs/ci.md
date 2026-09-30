@@ -536,14 +536,15 @@ action](#bounded-rust-dependency-caching) and its pinned `rust-cache`, with the 
 Every run still upgrades to that day's packages first, behind the unchanged
 signature check, so between two `main` pushes a pull request whose keyed packages
 moved in Arch restores nothing and builds cold; the next successful `main` push
-seeds the new key. The [hosted record](benchmarks/2026-09-29-ci-arch-warm-cache.md)
-gives the cold baseline. A pull request cannot save an entry, so the `main` seed,
-the entry's size, the repository total after it and a warm pull-request run can
-only be measured after the change merges; they are added to that record.
+seeds the new key. In the [hosted record](benchmarks/2026-09-29-ci-arch-warm-cache.md):
+- The cold job took 927 to 974 s.
+- The first `main` push saved the entry in 22 s after an 11 s bound, 4.73 GB of logical payload with no dependency evicted.
+- On the first warm product pull request the job took 182 s. The restore took 26 s, 873 of 912 units were fresh, and only the three workspace members compiled. That was 103 s less than the slowest warm `Rust tests and Clippy` job of the same run.
 
 **Budget.** The Arch payload is held to the `debug` limit (7 GiB of logical bytes
 before registration) by the same helper and upstream cleanup as the Ubuntu debug
-lane, whose archive is about 1.42 GB. Only a successful push to `main` registers a
+lane. Its first archive is 1,083,913,297 bytes (1.08 GB), against about 1.42 GB for
+the Ubuntu debug lane. Only a successful push to `main` registers a
 save, and only when no entry has that exact key, so the lane adds one entry per
 new key that `main` builds: a keyed package update or a keyed source change. GitHub removes an entry 7 days after its last
 access and, once the repository is over its 10 GB limit, evicts by last access. An
@@ -552,7 +553,14 @@ the Ubuntu and macOS entries that every product run restores. The repository was
 already over the limit before the first Arch entry: at 22:48 UTC on September 29,
 2026, it held 11 entries, 11.36 GB. The four other lanes' keys also move with the
 runners' native inventories, and in five hours `main` saved 11 of their entries
-with no keyed source change (the record has the list).
+with no keyed source change (the record has the list). By 00:14 UTC on September 30,
+GitHub had evicted only the seven oldest entries, last accessed by 20:19, and the
+Ubuntu, macOS and Arch entries that current runs restore all survived. They total
+7.47 GB, counting two Ubuntu keys, because two runner images were in service. The
+other 4.11 GB, the four lanes' entries from before #92, were superseded and go first.
+A third Ubuntu image (2.28 GB more) and a macOS rollout (1.83 GB) at the same time
+would pass the limit and evict entries still in use. Keying the Ubuntu lanes on a
+package list like Arch's would stop the per-image entries.
 
 **Cost.** Before the cache, every run was cold: an image pull (about 308 MB
 compressed), the package upgrade and install, the toolchain download, a full debug
