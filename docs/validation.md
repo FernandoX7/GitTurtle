@@ -65,6 +65,49 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## September 30 diff headers and syntax colours from the palette
+
+Task `diff-syntax-colours-from-palette` (Omarchy follow-ups D2 and D6, which predate the Omarchy theme). On `main` the unified diff highlighted with the `diff` grammar in the toolkit's default highlight theme, so the `---` and `+++` lines, and changed lines wherever their decoration did not win, drew colours no palette chose, and syntax tokens everywhere took that same default theme; [`themes/spec.md`](development/themes/spec.md) records where each came from. Owner decisions (2026-09-30): the syntax roles take mapped hues (keyword renamed, string added, number, boolean and constant warning, type and constructor modified, function hunk, tag, attribute, property and link accent, comment muted, variables and punctuation text), each mixed toward text until it reads at 4.5:1 or better (aiming at 4.75) on the editor background, the panel and the added and removed tints; the unified diff drops the grammar and draws plain text with the palette's decorations, with `---`/`+++` headers in the text colour at medium weight; the PR review's patch is decorated like Compare; Omarchy comments stay `muted`.
+
+What changed:
+- `Palette::configure` fits the syntax roles for every palette, built-in, custom and Omarchy-mapped, as precomputed targets. The unified patch draws as plain text with the palette's decorations, so its `---` and `+++` file headers draw in the editor's text colour at medium weight and follow a theme change in Compare, recovery and rewrite review alike.
+- The PR review's Source patch prepares its decorations with its file on GPUI's background pool, within Compare's 2 MiB / 100,000-line bounds (a larger patch stays plain text), keeps them for the editor's life, follows palette changes, counts them in the panel's retained bytes and catches a panicking preparation as an error. Find refreshes when decorations attach under open matches.
+
+Tests: `appearance::tests::syntax_colors_read_on_every_editor_background` (all twenty built-ins and a generated custom theme) and `appearance::omarchy::palette::tests::fixture_syntax_colors_read_on_every_editor_background` (the embedded Omarchy fixtures, dark and light) hold every syntax token colour the diff and source editors use to 4.5:1 on those four backgrounds; on `main` 382 of 4,380 pairs fell short (Daylight's attribute at 3.84:1). `text::tests::patch_headers_and_changes_draw_palette_colors_in_every_built_in` asserts the `@@`, `---` and `+++` lines draw palette colours in every built-in, also under decorations prepared in another palette; on `main` Midnight's `---` drew `#87b1f6`. `syntax_fields_take_their_palette_roles` and `syntax_draws_in_text_where_text_misses_the_rule` pin the role table and its fallback. `github_view::review::tests::source_patch_takes_the_decorations_its_file_preparation_made`, `source_presentation_stops_at_compares_bounds` and `editor_find::tests::decorations_attached_under_open_find_take_no_background_under_its_matches` cover the PR patch's lifecycle, bounds and Find.
+
+Lowest token contrast before and after, on `canvas` (the editor background, where hunk headers also draw), `panel` (the active line) and the added and removed line tints ([details](development/themes/spec.md#diff-and-syntax-colors)):
+
+| Group | Before | After |
+| --- | --- | --- |
+| Built-in dark | 3.88 | 4.75 |
+| Built-in light | 2.61 | 4.75 |
+| Omarchy | 2.62 | 4.75 |
+| Custom | 3.18 | 4.76 |
+
+Native evidence, full tier, on Omarchy 4.0.4 (Hyprland 0.56.2, native Wayland):
+- Builds: release, clean, in one session: base `ca7b826` (`gitturtle-ca7b826`, sha256 `4c2cb18e…`; its product code is identical to `main` through `ec1d7d8`) and candidate `e71ed69` (sha256 `95eef802…`, `--build-info` clean). The round 1 build `26a6390` (sha256 `f7a96b71…`) was captured the same way on the same day.
+- Compare: the disposable repository `/tmp/gitturtle-evidence/syntax-10/repo`, whose commit `fa41ee5` edits `src/lib.rs`, opened from History in Compare's Diff, then Split. Each launch had a fresh HOME with the `GitTurtle QA` identity and fresh XDG directories on a temporary 1480 × 800 headless output at scale 1; pointer clicks went through a Wayland virtual pointer after checking the active window's PID. Palettes: Midnight, Daylight, and the Omarchy card following Tokyo Night from a copy of the bundled theme in the launch's own `current/`.
+- PR review patch: the offline review fixture ([`GITTURTLE_GITHUB_FIXTURE=review`](github-collaboration.md#offline-native-review-fixture)): PR #42, Files, `src/review/session.rs`, Changes, then Source, in the same three palettes. No account, network or credential is involved.
+- Comparison: `qa.py compare --mask status-timing`, plus the output's top 26 px, where Omarchy's bar drew over the headless output in some runs. Compare differs from base only in the editor text (Diff 4,754–4,806 px, Split 25,152–27,172 px, plus one pixel of raster noise at (584, 189) in Midnight) and is pixel-identical to the `26a6390` frames in all three palettes. In the PR review, Changes is pixel-identical and Source differs only in its editor text, hunk-header rows included: [488, 365]–[777, 600] in the 1480 × 800 capture, 26 px higher in the committed crops.
+- Frames: cropped below the top 26 px to 1480 × 774, the 18 frames are in [`evidence/diff-syntax-colours/`](evidence/diff-syntax-colours/): Compare Diff and Split and PR Source, base and candidate, per palette. A privacy scan of the 18 committed files with the local template set came back clean.
+
+Two `design-reviewer` passes approved with notes: the round 1 Compare frames on September 30 (session 10), and the final PR Source frames. PR Source now draws the same colours as Compare in each palette (Midnight: removed `#FF95A8` on its line tint `#382531`, added `#75E0BB` on `#19322D`, hunks `#95BAFF`). Measured in the frames: context text 8.10–15.67:1, hunk headers 5.40–9.35:1, removed text on its line tint 4.90–6.85:1, added 5.89–8.56:1. The word tints, which are not targets by decision, read 3.40:1 (Daylight, removed) and 3.43:1 (Tokyo Night) at the lowest; the base's Daylight hunk gold read about 4.2:1.
+
+Performance ([record](benchmarks/2026-09-30-diff-syntax-colours.md)), a `performance-reviewer` measurement in release against the same base on this host (AMD 3020e, two cores, the app pinned to one): `Palette::configure` alone took 40.1 to 46.7 µs at p50 per palette against 4.75 to 4.89 µs, about 36 µs of it the per-field serde round trips of the kit's highlight theme; in the running app an Omarchy switch applied in 0.592 ms at p50 and 0.741 ms at p95 against 0.463 and 0.589 ms, far inside the theme budget (median 8 ms, p95 16 ms). The picker switch and the theme editor's live preview run the same single `configure` and were not measured natively: the app's window could not take keyboard focus during the run.
+
+**Findings**, for the owner and not fixed here:
+- Find and selection highlights are not colour targets: syntax colours read at 3.78:1 there.
+- Markdown ```` ```diff ```` blocks still use the `diff` grammar, now drawn in the palette's roles.
+- The PR review's Source shows single line numbers, no hunk folding and an untinted canvas gutter, unlike Compare (as before).
+- Roles share colours where the palette's do (modified and warning, for example), and the word tints, which are not targets, read at 2.58:1 at the lowest.
+- Medium weight is invisible in the bundled DejaVu Sans Mono, which has no Medium face, so the `---` and `+++` headers there look exactly like body text.
+- Thin glyphs measure 4.44:1 at scale 1 where antialiasing thins them.
+- Tokyo Night's comments (`#A0A8CE`) sit close to its text (`#A9B1D6`); the owner kept comments `muted`.
+- Compare's, recovery's and rewrite review's decoration lists are not counted in any retained-bytes budget.
+- `configure`'s 42 per-field serde round trips could become one, or a cached result per palette, if theme application ever needs the 36 µs back.
+
+Not covered: macOS, XWayland, X11, scales other than 1, and a live GitHub account (the PR patch frames come from the offline fixture).
+
 ## September 30 Git writes and network actions on Omarchy
 
 Task `omarchy-git-writes-evidence` checks Git writes and network actions in the release build on Omarchy, on native Wayland. It is evidence only; no product code changed. The run took place on 2026-09-30 between 19:22 and 19:29 UTC.
@@ -710,8 +753,8 @@ Not covered:
 - Other Arch desktops, and a cold page cache, were not exercised either.
 - Open follow-ups:
   - the disabled Follow system thumb stays at full strength;
-  - syntax colours on changed lines;
-  - fixed colours on the first `@@`, `---` and `+++` lines, which predate this change;
+  - syntax colours on changed lines (fixed: [September 30](#september-30-diff-headers-and-syntax-colours-from-the-palette));
+  - fixed colours on the first `@@`, `---` and `+++` lines, which predate this change (fixed: [September 30](#september-30-diff-headers-and-syntax-colours-from-the-palette));
   - Nord and Rosé Pine hunks take GitTurtle's blue;
   - a custom theme name up to 64 bytes is cut short on the card, though its tooltip and accessible name carry it in full;
   - GitTurtle's own light palettes keep hover close to subtle (One Light 1.010:1), and Braden is the light fallback.
