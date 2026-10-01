@@ -276,17 +276,22 @@ impl Render for ReflogBrowser {
         // below its controls, giving the sides back through its margin, and
         // the list around its rows, giving it all back through its margin. The
         // content counts each child's box in what it can scroll, so the list
-        // borrows through a wrapper, which shrinks as the list did. No control
-        // moves.
+        // borrows through a wrapper. No control moves.
+        //
+        // The content scrolls rather than shrinking its children to its height
+        // bound, so the list's wrapper, the message editor and the
+        // changed-file list never shrink. Each would otherwise give up its
+        // whole height, having no automatic minimum: the editor sets a zero
+        // one, and a scrolling list has none.
         let room = ring_room(cx);
-        div().id("reflog-browser-content").flex().flex_col().gap_3().max_h(px(590.).min(body_height) + room).px(room).mx(-room).pb(room).overflow_y_scroll()
+        div().id("reflog-browser-content").debug_selector(|| "reflog-browser-content".into()).flex().flex_col().gap_3().max_h(px(590.).min(body_height) + room).px(room).mx(-room).pb(room).overflow_y_scroll()
             .child(label("reflog-explanation", "Git records local reference movements here, including actions by other tools. HEAD belongs to this worktree; branch logs are shared. Entries expire, and unreachable objects may be pruned. This is not a permanent backup or a complete activity history.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
             .child(div().flex().gap_2().child(div().flex_1().child(Input::new(&self.scope).aria_label("Reflog scope: HEAD or local branch name"))).child(button("refresh-reflog", "Read log", "refresh", false).debug_selector(|| "refresh-reflog".into()).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx)))))
             .when_some(self.page.as_ref(), |element, page| element.child(label("reflog-scope-summary", format!("{} · {} retained entries · newest first", page.reference, page.entries.len())).text_size(crate::appearance::ui_text(12.))).when(page.truncated, |element| element.child(label("reflog-limit", "Showing the newest 1,000 records within a 4 MiB tail. Older records are outside this bounded view.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning)))))
             .child(Input::new(&self.query).aria_label("Filter loaded reflog entries").cleanable(true))
             .when(self.pending, |element| element.child(div().flex().gap_2().child(label("reflog-loading", "Reading local reflog or selected commit…").text_size(crate::appearance::ui_text(12.))).child(button("cancel-reflog-read", "Cancel", "", false).on_click(cx.listener(|this, _, _, cx| { this.cancel(); cx.notify(); })))))
             .children(self.error.as_ref().map(|error| label("reflog-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
-            .child(div().flex().flex_col().min_h_0().child(div().id("reflog-list").max_h(px(230.) + room * 2.).p(room).m(-room).overflow_y_scroll().flex().flex_col().gap_1().children(matches.iter().take(100).enumerate().map(|(index, entry)| {
+            .child(div().debug_selector(|| "reflog-entries".into()).flex().flex_col().flex_shrink_0().child(div().id("reflog-list").debug_selector(|| "reflog-list".into()).max_h(px(230.) + room * 2.).p(room).m(-room).overflow_y_scroll().flex().flex_col().gap_1().children(matches.iter().take(100).enumerate().map(|(index, entry)| {
                 let entry = entry.clone(); let text = format!("{} · {} · {} · {}", entry.selector, short_oid(&entry.oid), full_date(entry.timestamp), if entry.message.is_empty() { "Reference updated" } else { &entry.message });
                 Button::new(("reflog-entry", index)).debug_selector(move || format!("reflog-entry-{index}")).ghost().w_full().h_auto().min_h(crate::appearance::ui_size(36.)).label(text.clone()).accessibility_label(text).toggled(self.selected.as_ref() == Some(&entry)).on_click(cx.listener(move |this, _, window, cx| this.select(entry.clone(), window, cx)))
             })).when(matches.is_empty() && self.page.is_some() && !self.pending, |element| element.child(label("reflog-empty", if self.page.as_ref().is_some_and(|page| page.entries.is_empty()) { "No local reflog records for this scope. Reflog recording may be disabled, the branch may not exist, or older entries may have expired." } else { "No loaded entries match this filter." }).text_size(crate::appearance::ui_text(12.))))))
@@ -298,12 +303,12 @@ impl Render for ReflogBrowser {
             })
             .when_some(self.commit.as_ref(), |element, commit| element
                 .child(label("reflog-commit-metadata", format!("{} · {}\n{} parent(s) · {} changed files against {}", commit.author, full_date(commit.timestamp), commit.parents.len(), self.changes.len(), if commit.parents.len() > 1 { "first parent" } else { "parent or empty tree" })).text_size(crate::appearance::ui_text(12.)))
-                .when_some(self.message.as_ref(), |element, message| element.child(crate::editor_find::Editor::new(message).readonly(true).h(px(110.)).aria_label("Reflog commit message")))
-                .child(div().id("reflog-commit-files").max_h(px(110.)).overflow_y_scroll().flex().flex_col().children(self.changes.iter().take(100).enumerate().map(|(index, file)| { let text = format!("{} · {}", file.status.label(), file.path().display()); div().id(("reflog-commit-file", index)).role(Role::Label).aria_label(text.clone()).text_size(crate::appearance::ui_text(12.)).child(text) })))
+                .when_some(self.message.as_ref(), |element, message| element.child(div().debug_selector(|| "reflog-commit-message".into()).flex_shrink_0().child(crate::editor_find::Editor::new(message).readonly(true).h(px(110.)).aria_label("Reflog commit message"))))
+                .child(div().id("reflog-commit-files").debug_selector(|| "reflog-commit-files".into()).flex_shrink_0().max_h(px(110.)).overflow_y_scroll().flex().flex_col().children(self.changes.iter().take(100).enumerate().map(|(index, file)| { let text = format!("{} · {}", file.status.label(), file.path().display()); div().id(("reflog-commit-file", index)).debug_selector(move || format!("reflog-commit-file-{index}")).role(Role::Label).aria_label(text.clone()).text_size(crate::appearance::ui_text(12.)).child(text) })))
                 .when(self.changes.len() > 100, |element| element.child(label("reflog-file-limit", "Showing the first 100 changed paths.").text_size(crate::appearance::ui_text(12.))))
                 .child(label("reflog-recovery-name-label", "Create a new branch at this commit to keep it reachable").text_size(crate::appearance::ui_text(12.)))
                 .child(Input::new(&self.name).aria_label("New recovery branch name"))
-                .child(button("review-reflog-recovery", "Review recovery branch…", "", false).disabled(unavailable).on_click(cx.listener(|this, _, window, cx| this.recover(window, cx)))))
+                .child(button("review-reflog-recovery", "Review recovery branch…", "", false).debug_selector(|| "review-reflog-recovery".into()).disabled(unavailable).on_click(cx.listener(|this, _, window, cx| this.recover(window, cx)))))
     }
 }
 
@@ -350,6 +355,169 @@ mod tests {
                 "reflog-scope-summary",
                 "reflog-entry-1",
             ],
+        );
+    }
+
+    /// Runs Git in `path` with no configuration beyond the fixture identity.
+    fn git(path: &std::path::Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-c",
+                "commit.gpgSign=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+            ])
+            .args(args)
+            .current_dir(path)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Twelve HEAD reflog entries, as on the native fixture, so the entry list
+    /// fills its height; the newest commit changes three files.
+    fn changed_repository(directory: &std::path::Path) -> GitRepository {
+        let repo = GitRepository::init(directory.join("repository"), "main").unwrap();
+        for index in 0..11 {
+            let message = format!("Commit {index}");
+            git(
+                repo.path(),
+                &["commit", "--quiet", "--allow-empty", "-m", &message],
+            );
+        }
+        for name in ["first.txt", "second.txt", "third.txt"] {
+            std::fs::write(repo.path().join(name), format!("{name}\n")).unwrap();
+        }
+        git(repo.path(), &["add", "--all"]);
+        git(
+            repo.path(),
+            &["commit", "--quiet", "-m", "Add three files\n\nWith a body."],
+        );
+        repo
+    }
+
+    fn rendered(cx: &mut VisualTestContext, selector: &'static str) -> Bounds<Pixels> {
+        cx.debug_bounds(selector)
+            .unwrap_or_else(|| panic!("rendered {selector}"))
+    }
+
+    /// `inner` lies whole inside `outer`, within float error, and has height.
+    fn shows_whole(outer: Bounds<Pixels>, inner: Bounds<Pixels>) -> bool {
+        let slack = px(0.01);
+        inner.size.height > px(0.)
+            && outer.left() <= inner.left() + slack
+            && outer.top() <= inner.top() + slack
+            && outer.right() + slack >= inner.right()
+            && outer.bottom() + slack >= inner.bottom()
+    }
+
+    /// At 1000x680 and the default text size, a selected entry whose commit
+    /// changes three files takes the content past its height bound. The
+    /// content scrolls to reach the branch form, and none of its children
+    /// shrinks to make room: the entry list shows whole entries, the
+    /// changed-file list whole rows and the message editor its 110 px, each
+    /// below the one before.
+    #[gpui::test]
+    async fn selected_entry_keeps_lists_and_message_whole(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = changed_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        draw(cx);
+        let browser = cx.update(|window, cx| {
+            let browser =
+                cx.new(|cx| ReflogBrowser::new(app.downgrade(), repo.clone(), window, cx));
+            browser.update(cx, |this, cx| this.refresh(window, cx));
+            ReflogBrowser::show(browser.clone(), window, cx);
+            browser
+        });
+        let read = browser.update(cx, |this, _| this.task.take());
+        read.expect("the log is read").await;
+        let entry = browser.read_with(cx, |this, _| {
+            let page = this.page.as_ref().expect("the log loaded");
+            assert_eq!(page.entries.len(), 12);
+            page.entries[0].clone()
+        });
+        cx.update(|window, cx| browser.update(cx, |this, cx| this.select(entry, window, cx)));
+        let read = browser.update(cx, |this, _| this.task.take());
+        read.expect("the commit is read").await;
+        assert_eq!(browser.read_with(cx, |this, _| this.changes.len()), 3);
+        draw(cx);
+        cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+        draw(cx);
+
+        let content = rendered(cx, "reflog-browser-content");
+        let list = rendered(cx, "reflog-list");
+        let entry = rendered(cx, "reflog-entry-0");
+        assert!(
+            shows_whole(list, entry) && shows_whole(content, entry),
+            "the first entry {entry:?} lies whole in the list {list:?} and the content {content:?}"
+        );
+        let files = rendered(cx, "reflog-commit-files");
+        let file = rendered(cx, "reflog-commit-file-0");
+        assert!(
+            shows_whole(files, file),
+            "the first changed file {file:?} lies whole in its list {files:?}"
+        );
+        let message = rendered(cx, "reflog-commit-message");
+        assert_eq!(
+            message.size.height,
+            px(110.),
+            "the message editor {message:?}"
+        );
+
+        let stack = [
+            "reflog-entries",
+            "reflog-commit-metadata",
+            "reflog-commit-message",
+            "reflog-commit-files",
+            "reflog-recovery-name-label",
+        ];
+        for pair in stack.windows(2) {
+            let (above, below) = (rendered(cx, pair[0]), rendered(cx, pair[1]));
+            assert!(
+                above.bottom() <= below.top() + px(0.01),
+                "{} {above:?} overlaps {} {below:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+
+        let form = rendered(cx, "review-reflog-recovery");
+        assert!(
+            form.bottom() > content.bottom(),
+            "the content {content:?} needs no scrolling to show the branch form {form:?}"
+        );
+        let position = rendered(cx, "reflog-explanation").center();
+        cx.simulate_mouse_move(position, None, Modifiers::default());
+        draw(cx);
+        cx.simulate_event(ScrollWheelEvent {
+            position,
+            delta: ScrollDelta::Pixels(point(px(0.), px(-2000.))),
+            modifiers: Modifiers::default(),
+            touch_phase: TouchPhase::Moved,
+        });
+        draw(cx);
+        assert_eq!(rendered(cx, "reflog-browser-content"), content);
+        let form = rendered(cx, "review-reflog-recovery");
+        assert!(
+            shows_whole(content, form),
+            "scrolled to its end, the content {content:?} shows the branch form {form:?}"
+        );
+        let label = rendered(cx, "reflog-recovery-name-label");
+        assert!(
+            shows_whole(content, label),
+            "scrolled to its end, the content {content:?} shows the branch name label {label:?}"
         );
     }
 }
