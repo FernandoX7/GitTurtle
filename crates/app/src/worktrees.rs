@@ -518,13 +518,14 @@ impl Render for WorktreeManager {
             .take(12)
             .cloned()
             .collect();
-        // The content and its list of worktrees scroll, so each clips to its
-        // bounds on both axes and keeps the focus ring's room inside: the
-        // content around its controls, giving the sides back through its
-        // margin and the top and bottom through the dialog, and the list
-        // around its rows, giving it all back through its margin. The content
-        // counts each child's box in what it can scroll, so the list borrows
-        // through a wrapper that shrinks as the list did. No control moves.
+        // The content, its list of worktrees and its list of branch choices
+        // scroll, so each clips to its bounds on both axes and keeps the
+        // focus ring's room inside: the content around its controls, giving
+        // the sides back through its margin and the top and bottom through
+        // the dialog, and each list around its rows, giving it all back
+        // through its margin. The content counts each child's box in what it
+        // can scroll, so each list borrows through a wrapper that shrinks as
+        // the list did. No control moves.
         let room = appearance::button_ring_room(cx);
         div().id("worktree-manager-content").debug_selector(|| "worktree-manager-content".into()).flex().flex_col().gap_3().max_h(px(570.).min(body_height) + room * 2.).p(room).mx(-room).overflow_y_scroll()
             .child(div().flex().gap_2()
@@ -558,10 +559,10 @@ impl Render for WorktreeManager {
                 .child(div().flex().gap_2().children([(false, "Existing branch"), (true, "New branch")].map(|(new, name)| button(name, name, "", self.new_branch == new).toggled(self.new_branch == new).disabled(self.pending).on_click(cx.listener(move |this, _, _, cx| { this.new_branch = new; this.error = None; cx.notify(); })))))
                 .child(label("worktree-branch-label", if self.new_branch { "New branch name" } else { "Choose a local branch" }).text_size(crate::appearance::ui_text(12.)))
                 .child(Input::new(&self.branch).aria_label("Worktree branch name"))
-                .when(!self.new_branch, |element| element.child(div().id("worktree-branch-choices").max_h(px(140.)).overflow_y_scroll().flex().flex_col().gap_1().children(choices.iter().enumerate().map(|(index, branch)| {
+                .when(!self.new_branch, |element| element.child(div().debug_selector(|| "worktree-branch-entries".into()).flex().flex_col().min_h_0().child(div().id("worktree-branch-choices").debug_selector(|| "worktree-branch-choices".into()).max_h(px(140.) + room * 2.).p(room).m(-room).overflow_y_scroll().flex().flex_col().gap_1().children(choices.iter().enumerate().map(|(index, branch)| {
                     let name = branch.name.clone(); let occupied = self.trees.iter().any(|tree| tree.branch.as_deref() == Some(&name));
-                    button(("worktree-branch-choice", index), format!("{}{}", name, if occupied { " · In use" } else { "" }), "", false).disabled(occupied || self.pending).on_click(cx.listener(move |this, _, window, cx| { this.branch.update(cx, |input, cx| input.set_value(name.clone(), window, cx)); cx.notify(); }))
-                })).when(choices.is_empty(), |element| element.child(label("worktree-branches-empty", "No local branch matches. Create a new branch or change the name.").text_size(crate::appearance::ui_text(12.))))))
+                    button(("worktree-branch-choice", index), format!("{}{}", name, if occupied { " · In use" } else { "" }), "", false).debug_selector(move || format!("worktree-branch-choice-{index}")).disabled(occupied || self.pending).on_click(cx.listener(move |this, _, window, cx| { this.branch.update(cx, |input, cx| input.set_value(name.clone(), window, cx)); cx.notify(); }))
+                })).when(choices.is_empty(), |element| element.child(label("worktree-branches-empty", "No local branch matches. Create a new branch or change the name.").text_size(crate::appearance::ui_text(12.)))))))
                 .when(self.new_branch, |element| element.child(label("worktree-start-label", "Start from local branch, tag, or commit").text_size(crate::appearance::ui_text(12.))).child(Input::new(&self.start).aria_label("New worktree starting revision")))
                 .child(label("worktree-parent", format!("Parent folder: {}", self.parent.display())).text_size(crate::appearance::ui_text(12.)))
                 .child(button("choose-worktree-parent", "Choose parent folder…", "folder", false).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.choose_parent(window, cx))))
@@ -579,8 +580,42 @@ mod tests;
 #[cfg(test)]
 mod ring_room_tests {
     use super::*;
-    use crate::tags::tests::{assert_room_for_rings, draw, git, tagged_repository, window};
+    use crate::tags::tests::{
+        assert_rings_whole, assert_room_for_rings, assert_room_moves_nothing, draw, git, rendered,
+        scroll_down, tagged_repository, window,
+    };
     use ::core::prelude::v1::test;
+
+    /// The manager on `repo`, opened in a window, with its first refresh
+    /// finished.
+    async fn opened_manager<'a>(
+        cx: &'a mut TestAppContext,
+        repo: &GitRepository,
+    ) -> (
+        Entity<GitTurtle>,
+        Entity<WorktreeManager>,
+        &'a mut VisualTestContext,
+    ) {
+        let (app, cx) = window(cx, repo);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_worktree_manager(window, cx)));
+        let manager = app.read_with(cx, |app, _| {
+            app.worktree_management
+                .draft
+                .clone()
+                .expect("the manager opens")
+        });
+        // A refresh lists the registrations, then inspects any selected row.
+        for _ in 0..4 {
+            cx.executor().run_until_parked();
+            let Some(task) = manager.update(cx, |manager, _| manager.task.take()) else {
+                break;
+            };
+            task.await;
+        }
+        draw(cx);
+        assert!(!manager.read_with(cx, |manager, _| manager.pending));
+        (app, manager, cx)
+    }
 
     /// The dialog clips its body to the body's bounds, and the manager's
     /// content and its list of worktrees scroll, so GPUI clips each to its
@@ -605,24 +640,7 @@ mod ring_room_tests {
                 ],
             );
         }
-        let (app, cx) = window(cx, &repo);
-        cx.update(|window, cx| app.update(cx, |app, cx| app.open_worktree_manager(window, cx)));
-        let manager = app.read_with(cx, |app, _| {
-            app.worktree_management
-                .draft
-                .clone()
-                .expect("the manager opens")
-        });
-        // A refresh lists the registrations, then inspects any selected row.
-        for _ in 0..4 {
-            cx.executor().run_until_parked();
-            let Some(task) = manager.update(cx, |manager, _| manager.task.take()) else {
-                break;
-            };
-            task.await;
-        }
-        draw(cx);
-        assert!(!manager.read_with(cx, |manager, _| manager.pending));
+        let (app, manager, cx) = opened_manager(cx, &repo).await;
         assert_eq!(manager.read_with(cx, |manager, _| manager.trees.len()), 3);
 
         assert_room_for_rings(
@@ -641,5 +659,57 @@ mod ring_room_tests {
                 "managed-worktree-row-1",
             ],
         );
+    }
+
+    /// The create form's list of branch choices scrolls, so GPUI clips it to
+    /// its bounds on both axes, inside the manager's scrolling content.
+    /// Scrolled to either end, the choice at that end keeps its ring whole,
+    /// and nothing moves.
+    #[gpui::test]
+    async fn branch_choices_keep_room_for_rings_at_either_end(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        for index in 0..11 {
+            git(repo.path(), &["branch", &format!("feature-{index:02}")]);
+        }
+        // With no branch checked out, every choice is available, so each
+        // paints the hovered fill that shows the mask it paints in.
+        git(repo.path(), &["checkout", "--quiet", "--detach"]);
+        let (app, manager, cx) = opened_manager(cx, &repo).await;
+        manager.update(cx, |manager, cx| {
+            manager.set_creating(true, cx);
+            manager.new_branch = false;
+            cx.notify();
+        });
+        draw(cx);
+
+        // Main and eleven features: the twelve choices the form shows.
+        let (first, last) = ("worktree-branch-choice-0", "worktree-branch-choice-11");
+        let fixed = [
+            "worktree-manager-title",
+            "worktree-branch-label",
+            "worktree-branch-entries",
+            "worktree-parent",
+        ];
+        let list = rendered(cx, "worktree-branch-choices");
+        assert!(
+            rendered(cx, last).bottom() > list.bottom(),
+            "the list is long enough to scroll"
+        );
+        assert_rings_whole(cx, &[first]);
+        assert_room_moves_nothing(cx, &app, &[first], &fixed);
+
+        scroll_down(
+            cx,
+            list.center(),
+            ScrollDelta::Pixels(point(px(0.), px(-10_000.))),
+        );
+        let list = rendered(cx, "worktree-branch-choices");
+        assert!(
+            rendered(cx, first).top() < list.top(),
+            "the list scrolls to its end"
+        );
+        assert_rings_whole(cx, &[last]);
+        assert_room_moves_nothing(cx, &app, &[last], &fixed);
     }
 }
