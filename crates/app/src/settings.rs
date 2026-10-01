@@ -5014,6 +5014,111 @@ mod picker_tests {
         assert!(cx.read(|cx| app.read(cx).settings.follow_system));
     }
 
+    /// A disabled Switch fades its thumb with its track. The Follow system
+    /// switch, which the selected Omarchy theme disables, paints its track and
+    /// its thumb (`switch_thumb`, the palette's text) at half strength; enabled
+    /// with Midnight selected, off and on, it paints both at full strength, as
+    /// before.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_disabled_switch_fades_its_thumb_with_its_track(cx: &mut TestAppContext) {
+        /// The fills of the Follow system switch in a frame that builds every
+        /// view: its track, then the thumb inside it, its only filled quads.
+        fn painted_switch(cx: &mut VisualTestContext) -> (Background, Background) {
+            assert!(page_shows(cx, "follow-system-switch"));
+            let switch = cx
+                .debug_bounds("follow-system-switch")
+                .expect("the Follow system switch");
+            cx.update(|window, _| {
+                let scale = window.scale_factor();
+                let device = px(1. / scale);
+                let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+                let inside = |inner: Bounds<Pixels>, outer: Bounds<Pixels>| {
+                    inner.left() >= outer.left() - device
+                        && inner.top() >= outer.top() - device
+                        && inner.right() <= outer.right() + device
+                        && inner.bottom() <= outer.bottom() + device
+                };
+                let fills = window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| !quad.background.is_transparent())
+                    .map(|quad| {
+                        let drawn = Bounds::from_corners(
+                            point(logical(quad.bounds.left()), logical(quad.bounds.top())),
+                            point(logical(quad.bounds.right()), logical(quad.bounds.bottom())),
+                        );
+                        (drawn, quad.background)
+                    })
+                    .filter(|(drawn, _)| inside(*drawn, switch))
+                    .collect::<Vec<_>>();
+                let [(track, track_fill), (thumb, thumb_fill)] = fills[..] else {
+                    panic!("the switch paints a track and a thumb: {fills:?}");
+                };
+                assert!(inside(thumb, track), "the thumb lies on the track");
+                assert!(thumb.size.width < track.size.width);
+                (track_fill, thumb_fill)
+            })
+        }
+
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("current");
+        std::fs::create_dir_all(root.join("theme")).unwrap();
+        let colors = include_bytes!("../tests/fixtures/omarchy/tokyo-night.toml");
+        std::fs::write(root.join("theme/colors.toml"), colors).unwrap();
+        std::fs::write(root.join("theme.name"), "tokyo-night\n").unwrap();
+        cx.update(|cx| drop(appearance::omarchy::install(Some(root.clone()), cx)));
+        let (app, cx) = open_app(cx);
+        // Selects a theme and Follow system, and returns what the switch
+        // painted with whether it is on and whether it is locked.
+        let select = |cx: &mut VisualTestContext, theme: ThemeSelection, follow_system: bool| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.theme = theme;
+                    app.settings.follow_system = follow_system;
+                    app.apply_appearance(window, cx);
+                })
+            });
+            settle(cx);
+            let painted = painted_switch(cx);
+            let row = cx.read(|cx| app.read(cx).follow_system_row.borrow().clone().unwrap());
+            (painted, (row.0, row.1))
+        };
+        // The palette's track and thumb fills, faded by the track's 0.5 while
+        // disabled.
+        let expected = |cx: &mut VisualTestContext, checked: bool, disabled: bool| {
+            let p = cx.read(palette);
+            let fill = |color: u32| {
+                let fill = Background::from(Hsla::from(rgb(color)));
+                if disabled { fill.opacity(0.5) } else { fill }
+            };
+            (
+                fill(if checked { p.accent } else { p.border }),
+                fill(p.text),
+            )
+        };
+
+        let midnight = ThemeSelection::BuiltIn(ThemeChoice::Midnight);
+        for on in [false, true] {
+            let (painted, state) = select(cx, midnight, on);
+            assert_eq!(state, (on, false), "Midnight leaves the switch enabled");
+            assert_eq!(painted, expected(cx, on, false), "enabled, on: {on}");
+        }
+
+        let (painted, state) = select(cx, ThemeSelection::Omarchy, false);
+        assert_eq!(
+            state,
+            (false, true),
+            "the Omarchy theme disables the switch"
+        );
+        assert_eq!(
+            cx.read(palette),
+            cx.read(|cx| appearance::omarchy::card(cx).unwrap().palette),
+            "the Omarchy theme applies its mapped palette"
+        );
+        assert_eq!(painted, expected(cx, false, true), "disabled");
+    }
+
     /// The Omarchy card's caption fits its card at the default interface size
     /// in a 1,400 px window, for the longest bundled theme name (Catppuccin
     /// Latte): an unavailable card's name line holds "Omarchy", "Unavailable"

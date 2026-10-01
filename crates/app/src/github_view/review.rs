@@ -74,6 +74,13 @@ pub(super) struct ReviewState {
     pub composing: Option<LineComment>,
     pub input: Entity<TextareaState>,
     pub source: Option<Entity<EditorState>>,
+    /// The Source editor's patch decorations, kept for the editor's life so Find can remove
+    /// their backgrounds under its matches and a palette change redecorates them.
+    source_decorations: Option<editor_find::PatchDecorations>,
+    /// The selected file's patch presentation, prepared with its rows on the read worker
+    /// within Compare's text bounds; `None` while preparing and above them.
+    presentation: Option<text::PatchPresentation>,
+    _palette: Subscription,
     pub mode: usize,
     pub file_focus: FocusHandle,
     pub line_focus: FocusHandle,
@@ -110,6 +117,13 @@ impl ReviewState {
                     .placeholder("Explain this change…")
             }),
             source: None,
+            source_decorations: None,
+            presentation: None,
+            // Compare's patch is redecorated where the app applies a palette; this panel
+            // follows the applied palette itself.
+            _palette: cx.observe_global::<crate::appearance::Palette>(|panel, cx| {
+                panel.review.refresh_theme(cx)
+            }),
             mode: 0,
             file_focus: cx.focus_handle(),
             line_focus: cx.focus_handle(),
@@ -137,10 +151,42 @@ impl ReviewState {
         self.selected_file = None;
         self.selected_row = None;
         self.anchor = None;
-        self.source = None;
+        self.release_file();
         self.file_page = 1;
         self.files_next = false;
     }
+    /// Release the selected file's Source editor, its decorations and its presentation.
+    fn release_file(&mut self) {
+        self.source = None;
+        self.source_decorations = None;
+        self.presentation = None;
+    }
+    /// Decorate the Source editor once it and its file's presentation both exist, whichever
+    /// comes first; a file above the bounds, or not prepared, keeps plain text.
+    fn decorate_source(&mut self, cx: &mut App) {
+        if self.source_decorations.is_none()
+            && let (Some(source), Some(presentation)) = (&self.source, &self.presentation)
+        {
+            self.source_decorations = Some(text::decorate(source, presentation, cx));
+        }
+    }
+    fn refresh_theme(&self, cx: &mut App) {
+        if let (Some(decorations), Some(presentation)) =
+            (&self.source_decorations, &self.presentation)
+        {
+            text::refresh_theme(decorations, presentation, cx);
+        }
+    }
+}
+
+/// Prepare Source's patch decorations only within Compare's text bounds. Compare applies
+/// `gitturtle_core::MAX_DIFF_BYTES` and `MAX_DIFF_LINES` to each blob side in git-core, counting
+/// `\n` bytes; this path applies the same constants, the same way, to the supplied patch text.
+/// A larger patch is drawn as plain text.
+fn source_presentation(patch: &str) -> Option<text::PatchPresentation> {
+    (patch.len() <= gitturtle_core::MAX_DIFF_BYTES
+        && patch.bytes().filter(|byte| *byte == b'\n').count() <= gitturtle_core::MAX_DIFF_LINES)
+        .then(|| text::PatchPresentation::prepare(patch))
 }
 impl Panel {
     pub(super) fn reveal_on_focus(
@@ -287,6 +333,16 @@ impl Panel {
                     + file.rows.iter().map(|row| row.text.len()).sum::<usize>()
             })
             .sum::<usize>()
+            + self
+                .review
+                .presentation
+                .as_ref()
+                .map_or(0, text::PatchPresentation::retained_bytes)
+            + self
+                .review
+                .source_decorations
+                .as_ref()
+                .map_or(0, editor_find::PatchDecorations::retained_bytes)
             + self.conversation_bytes(cx)
             + self.review.comments.iter().map(comment).sum::<usize>()
             + self.review.composing.as_ref().map_or(0, comment)
@@ -460,7 +516,7 @@ impl Panel {
         self.review.selected_file = None;
         self.review.selected_row = None;
         self.review.anchor = None;
-        self.review.source = None;
+        self.review.release_file();
         self.review.mode = 0;
     }
     pub(super) fn select_review_file(
@@ -489,7 +545,7 @@ impl Panel {
         self.review.selected_file = Some(index);
         self.review.selected_row = None;
         self.review.anchor = None;
-        self.review.source = None;
+        self.review.release_file();
         self.review.mode = 0;
         self.review
             .file_scroll
@@ -500,20 +556,26 @@ impl Panel {
         self.review.file_focus.focus(window, cx);
         let mut file = self.review.files[index].clone();
         let generation = self.review.prepare_generation;
-        let response = self.owner.update(cx, |owner, _| {
-            owner.operations.submit_read(move || {
+        // Pure CPU over the supplied patch the panel owns: no repository, network or write, so
+        // it stays off the serial operations executor that carries accepted writes. Dropping
+        // the task cancels work that has not started. A panic on a supplied patch becomes the
+        // error the operations executor gives a panicking job (`operations.rs`), as Compare's
+        // worker guards its preparation, instead of unwinding into the awaiting UI task.
+        let prepared = cx.background_spawn(async move {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
                 file.prepare()?;
-                Ok(file)
+                let presentation = file.patch.as_deref().and_then(source_presentation);
+                anyhow::Ok((file, presentation))
+            }))
+            .unwrap_or_else(|_| {
+                Err(anyhow::anyhow!(
+                    "Operation interrupted unexpectedly. Refresh the repository before retrying; it may have changed."
+                ))
             })
         });
-        let Ok(response) = response else {
-            self.error = Some("The repository window is unavailable.".into());
-            cx.notify();
-            return;
-        };
         self.review.preparing = true;
         self.review.prepare_task = Some(cx.spawn_in(window, async move |this, cx| {
-            let result = response.await;
+            let result = prepared.await;
             let _ = this.update_in(cx, |this, _, cx| {
                 if this.closed
                     || generation != this.review.prepare_generation
@@ -523,12 +585,12 @@ impl Panel {
                 }
                 this.review.preparing = false;
                 match result {
-                    Ok(Ok(file)) => this.review.files[index] = file,
-                    Ok(Err(error)) => this.error = Some(format!("{error:#}")),
-                    Err(_) => {
-                        this.error =
-                            Some("File preparation was interrupted. Choose the file again.".into())
+                    Ok((file, presentation)) => {
+                        this.review.files[index] = file;
+                        this.review.presentation = presentation;
+                        this.review.decorate_source(cx);
                     }
+                    Err(error) => this.error = Some(format!("{error:#}")),
                 }
                 cx.notify();
             });
@@ -667,9 +729,13 @@ impl Panel {
             && let Some(patch) = self
                 .review
                 .selected_file
-                .and_then(|n| self.review.files[n].patch.clone())
+                .and_then(|n| self.review.files[n].patch.as_deref())
         {
-            self.review.source = Some(text::editor(&patch, "diff", None, window, cx));
+            // Plain text with the editor's own line numbers; the decorations follow from the
+            // presentation the file's preparation made, now or when it arrives.
+            let source = text::editor(patch, "diff", None, window, cx);
+            self.review.source = Some(source);
+            self.review.decorate_source(cx);
         }
         self.focus_file_content(window, cx);
         cx.notify();
@@ -1135,10 +1201,7 @@ mod tests {
                 panel.select_review_file(0, window, cx);
             })
         });
-        app.read_with(cx, |app, _| app.operations.submit(|| Ok(())))
-            .await
-            .unwrap()
-            .unwrap();
+        // File preparation runs on the GPUI background executor.
         cx.executor().run_until_parked();
         cx.update(|window, cx| {
             assert!(window.has_active_dialog(cx));
@@ -1286,10 +1349,7 @@ mod tests {
                 });
             })
         });
-        app.read_with(cx, |app, _| app.operations.submit(|| Ok(())))
-            .await
-            .unwrap()
-            .unwrap();
+        // File preparation runs on the GPUI background executor.
         cx.executor().run_until_parked();
         cx.update(|window, cx| {
             panel.update(cx, |panel, cx| {
@@ -1306,6 +1366,205 @@ mod tests {
             .unwrap()
             .unwrap();
         cx.executor().run_until_parked();
+    }
+    /// Source draws the supplied patch as plain text and takes the decorations the file's
+    /// background preparation made, read back through the handle Find masks: they reach the
+    /// editor whether Source opens before the preparation finishes or after it, equal Compare's
+    /// for the same text, follow a palette change and count in the retained bytes. A file
+    /// superseded before its preparation finished decorates nothing, neither its own Source
+    /// nor the next file's. `source_presentation_stops_at_compares_bounds` covers the bounds.
+    #[gpui::test]
+    async fn source_patch_takes_the_decorations_its_file_preparation_made(cx: &mut TestAppContext) {
+        use crate::appearance::ThemeChoice;
+        cx.executor().allow_parking();
+        let fixture = tempfile::tempdir().unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["-c", "init.templateDir=", "init", "--initial-branch=main"])
+                .arg(fixture.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        let repo = GitRepository::open(fixture.path()).unwrap();
+        let panel_repo = repo.clone();
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let output = captured.clone();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+            ThemeChoice::ALL[0].apply(None, cx);
+        });
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let app = cx.new(|cx| {
+                let mut app = GitTurtle::new(
+                    None,
+                    Preferences::default(),
+                    repository_tabs::Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                );
+                app.page = AppPage::Repository;
+                app.path = Some(repo.path().to_owned());
+                app.repository = Some(repo);
+                app
+            });
+            *output.borrow_mut() = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let app = captured.borrow().as_ref().unwrap().clone();
+        let panel = cx.update(|window, cx| {
+            cx.new(|cx| Panel::new(app.downgrade(), panel_repo, "main".into(), window, cx))
+        });
+        // The panel's local read (remotes and saved drafts) runs on the operations executor;
+        // settle it once so it cannot land during the steps below.
+        app.read_with(cx, |app, _| app.operations.drain());
+        cx.run_until_parked();
+        // File preparation runs on the GPUI background executor.
+        let settle = |cx: &mut gpui_kit::VisualTestContext| cx.run_until_parked();
+        let patches = [
+            "@@ -1,2 +1,2 @@\n context\n-old value\n+new value\n".to_owned(),
+            "@@ -1 +1,2 @@\n-before\n+after\n+more\n".to_owned(),
+        ];
+        // Counts match each patch, so a prepared file has inline rows.
+        let file = |name: &str, patch: &String, additions| PullFile {
+            filename: name.into(),
+            previous_filename: None,
+            status: "modified".into(),
+            additions,
+            deletions: 1,
+            patch: Some(patch.clone()),
+            rows: Vec::new(),
+            unavailable: None,
+        };
+        let files = vec![
+            file("src/a.rs", &patches[0], 1),
+            file("src/b.rs", &patches[1], 2),
+        ];
+        // The decorations Compare's unified diff takes for the same text in the applied palette.
+        let compare = |patch: &str, cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|window, cx| {
+                let presentation = text::PatchPresentation::prepare(patch);
+                // The editor stays alive while `drawn` reads the ranges it holds.
+                let (_editor, decorations) =
+                    text::editor_with_decorations(patch, "diff", Some(&presentation), window, cx);
+                decorations
+                    .expect("a prepared patch is decorated")
+                    .drawn(cx)
+            })
+        };
+        let source = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.read(|cx| panel.read(cx).review.source.clone().expect("Source editor"))
+        };
+        let decorations = |editor: &Entity<EditorState>, cx: &mut gpui_kit::VisualTestContext| {
+            cx.read(|cx| editor_find::patch_layer(editor, cx).map(|layer| layer.drawn(cx)))
+        };
+
+        // Source opens before the file's preparation has finished: plain text at once.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.review.files = files;
+                panel.review.section = Section::Files;
+                panel.select_review_file(0, window, cx);
+                panel.review_source(1, window, cx);
+            })
+        });
+        let first = source(cx);
+        assert_eq!(decorations(&first, cx), None);
+        settle(cx);
+        let expected = compare(&patches[0], cx);
+        assert_eq!(
+            decorations(&first, cx).as_ref(),
+            Some(&expected),
+            "the prepared decorations reach the open Source editor"
+        );
+        cx.read(|cx| assert_eq!(first.read(cx).value(), patches[0].as_str()));
+
+        // The presentation and the decorations kept for the editor count toward the budget.
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                let with = panel.retained_review_bytes(cx);
+                let presentation = panel.review.presentation.take().expect("prepared");
+                let kept = panel.review.source_decorations.take().expect("kept");
+                let counted = presentation.retained_bytes() + kept.retained_bytes();
+                assert_eq!(with - panel.retained_review_bytes(cx), counted);
+                assert!(counted > 0);
+                panel.review.presentation = Some(presentation);
+                panel.review.source_decorations = Some(kept);
+            })
+        });
+
+        // A palette change redecorates it as Compare would be.
+        cx.update(|_, cx| ThemeChoice::ALL[1].apply(None, cx));
+        cx.run_until_parked();
+        let recolored = compare(&patches[0], cx);
+        assert_ne!(recolored, expected);
+        assert_eq!(decorations(&first, cx), Some(recolored.clone()));
+
+        // A file superseded before its preparation finished decorates nothing: its Source is
+        // plain text while it is selected, and its preparation's result never lands, neither
+        // as its rows nor on the next file's Source, opened before either finished.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.select_review_file(1, window, cx);
+                panel.review_source(1, window, cx);
+            })
+        });
+        let superseded = source(cx);
+        assert_eq!(decorations(&superseded, cx), None);
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.select_review_file(0, window, cx);
+                panel.review_source(1, window, cx);
+            })
+        });
+        let current = source(cx);
+        settle(cx);
+        assert_ne!(current, superseded);
+        cx.read(|cx| assert!(panel.read(cx).review.files[1].rows.is_empty()));
+        assert_eq!(decorations(&current, cx), Some(recolored));
+
+        // Source opened after its file's preparation finished takes the decorations at once.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| panel.select_review_file(1, window, cx))
+        });
+        settle(cx);
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.review_source(1, window, cx)));
+        let later = source(cx);
+        cx.read(|cx| assert!(!panel.read(cx).review.files[1].rows.is_empty()));
+        let expected = compare(&patches[1], cx);
+        assert_eq!(decorations(&later, cx), Some(expected));
+    }
+    /// Source decorations are prepared up to Compare's bounds and not one byte or one line
+    /// beyond. Lines are `\n` bytes, as git-core counts them for Compare, so a patch's last
+    /// line without one does not count.
+    #[test]
+    fn source_presentation_stops_at_compares_bounds() {
+        use gitturtle_core::{MAX_DIFF_BYTES, MAX_DIFF_LINES};
+        // Bytes: one hunk whose context line fills the patch, with no trailing newline.
+        let header = "@@ -1 +1 @@\n ";
+        let at_bytes = format!("{header}{}", "x".repeat(MAX_DIFF_BYTES - header.len()));
+        assert_eq!(at_bytes.len(), MAX_DIFF_BYTES);
+        assert!(source_presentation(&at_bytes).is_some());
+        assert!(source_presentation(&format!("{at_bytes}x")).is_none());
+        // Lines: MAX_DIFF_LINES newlines, the last context line unterminated.
+        let at_lines = format!(
+            "@@ -1,{0} +1,{0} @@\n{1} ",
+            MAX_DIFF_LINES,
+            " \n".repeat(MAX_DIFF_LINES - 1)
+        );
+        let newlines = |patch: &str| patch.bytes().filter(|byte| *byte == b'\n').count();
+        assert_eq!(newlines(&at_lines), MAX_DIFF_LINES);
+        assert!(at_lines.len() < MAX_DIFF_BYTES);
+        assert!(source_presentation(&at_lines).is_some());
+        let over_lines = format!("{at_lines}\n ");
+        assert_eq!(newlines(&over_lines), MAX_DIFF_LINES + 1);
+        assert!(source_presentation(&over_lines).is_none());
     }
     #[gpui::test]
     async fn warm_reopen_retries_interrupted_local_read_and_template_payload_evicts(
