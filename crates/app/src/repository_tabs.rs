@@ -1895,16 +1895,18 @@ impl GitTurtle {
         // The scrolling tab list clips its children to its own bounds on both
         // axes, so it keeps room inside for the ring a focused tab or close
         // button draws outside its edge, and gives the room back through its
-        // margin so the tabs do not move.
+        // margin so the tabs do not move. The strip is the window's first row,
+        // so the room above a tab can only come from the strip itself.
         let ring_room = appearance::button_ring_room(cx);
         div()
+            .debug_selector(|| "repository-tab-strip".into())
             .flex()
             .items_center()
             .gap_1()
             .px_2()
-            .min_h(appearance::ui_size(36.))
+            .min_h(tab_strip_min_height(ring_room))
             .bg(rgb(colors.panel))
-            .border_b_1()
+            .border_b(TAB_STRIP_BORDER)
             .border_color(rgb(colors.border))
             .children(left_controls)
             .when(cfg!(target_os = "linux"), |strip| {
@@ -2024,6 +2026,22 @@ impl GitTurtle {
             .children(right_controls)
             .into_any_element()
     }
+}
+
+/// The rule under the repository tab strip, inside its height.
+const TAB_STRIP_BORDER: Pixels = px(1.);
+
+/// The repository tab strip's minimum height: the larger of its 36 px at the
+/// interface size and a tab or close button (the shared `button` helper's
+/// 28 px, like every control in the strip) plus `ring_room` above and below it
+/// and the strip's bottom rule, which lies inside that height. The controls
+/// are centered above the rule, so the strip grows only by the few pixels the
+/// smallest text scales lack (below 0.875 of the default, where the scaled
+/// 8 px between 36 and 28 fall under the default ring's 3 px twice plus the
+/// 1 px rule) and nothing moves where the room already fits.
+fn tab_strip_min_height(ring_room: Pixels) -> Pixels {
+    let controls = appearance::ui_size(28.);
+    appearance::ui_size(36.).max(controls + ring_room * 2. + TAB_STRIP_BORDER)
 }
 
 struct LibraryView {
@@ -3097,6 +3115,254 @@ mod tests {
             Theme::global_mut(cx).button_focus_ring = installed;
             window.refresh();
         });
+        settle_tab_test(&app, cx).await;
+    }
+
+    /// At interface text sizes 11, 12, 13 and 18 pt, at desktop text scale
+    /// 1.0 and, on Linux (the only desktop that reports one), 0.5, the ring a
+    /// focused first tab, a focused close button and a focused last tab draw,
+    /// `gap + width` outside their edge, lies inside the window and inside the
+    /// content mask the control paints in, the intersection of every
+    /// ancestor's. The strip is the window's first row, so where its 36 px
+    /// leave less than the ring's room above and below a tab it grows by
+    /// exactly what it lacks. Where they already leave the room, at 12 pt and
+    /// above at desktop scale 1.0, its minimum height is the 36 px it always
+    /// had, so it lays out at that height with every tab and close button
+    /// centered above its rule, where they always were. A larger installed
+    /// ring grows the strip in turn.
+    #[gpui::test]
+    async fn tab_strip_keeps_every_focus_ring_inside_the_window_at_every_text_size(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::{content_mask, draw, install_ring, rendered};
+        use gpui_kit::component::{FocusRing, Root, Theme};
+        use std::{cell::RefCell, rc::Rc};
+
+        /// The first tab, its close button and the last tab.
+        const CONTROLS: [&str; 3] = [
+            "repository-tab-0",
+            "repository-tab-close-0",
+            "repository-tab-1",
+        ];
+        /// Moves keyboard focus through the window until `selector` draws a
+        /// focus ring.
+        fn focus(cx: &mut VisualTestContext, selector: &'static str) {
+            cx.update(|window, cx| window.blur(cx));
+            for _ in 0..64 {
+                cx.update(|window, cx| window.focus_next(cx));
+                draw(cx);
+                let element = rendered(cx, selector);
+                if !appearance::painted_button(cx, element).1.is_empty() {
+                    return;
+                }
+            }
+            panic!("keyboard focus never reaches {selector}");
+        }
+        /// `outer` holds `inner`, within float error of the device pixels
+        /// both lie on.
+        fn holds(outer: Bounds<Pixels>, inner: Bounds<Pixels>) -> bool {
+            let slack = px(0.01);
+            outer.left() <= inner.left() + slack
+                && outer.top() <= inner.top() + slack
+                && outer.right() + slack >= inner.right()
+                && outer.bottom() + slack >= inner.bottom()
+        }
+        /// Focuses each control in turn and checks that its ring lies inside
+        /// the window and inside the content mask the control paints in.
+        fn assert_rings_inside(cx: &mut VisualTestContext, at: &str) {
+            let footprint = cx.update(|_, cx| appearance::button_ring_room(cx));
+            let viewport = cx.update(|window, _| {
+                Bounds::new(point(Pixels::ZERO, Pixels::ZERO), window.viewport_size())
+            });
+            for selector in CONTROLS {
+                // The ring is the focused Button's child, so it paints in the
+                // mask the Button's own fill paints in.
+                let mask = content_mask(cx, selector);
+                focus(cx, selector);
+                let ring = rendered(cx, selector).dilate(footprint);
+                assert!(
+                    holds(viewport, ring),
+                    "at {at} the ring around focused {selector}, {ring:?}, leaves the window \
+                     {viewport:?}"
+                );
+                assert!(
+                    holds(mask, ring),
+                    "at {at} the ring around focused {selector}, {ring:?}, lies outside its \
+                     content mask {mask:?}"
+                );
+            }
+            cx.update(|window, cx| window.blur(cx));
+            draw(cx);
+        }
+        /// The strip leaves exactly the ring's room above and below the first
+        /// tab, inside its rule.
+        fn assert_strip_fits_ring(cx: &mut VisualTestContext, at: &str) {
+            let (footprint, device) = cx.update(|window, cx| {
+                (
+                    appearance::button_ring_room(cx),
+                    px(1. / window.scale_factor()),
+                )
+            });
+            let strip = rendered(cx, "repository-tab-strip");
+            let tab = rendered(cx, CONTROLS[0]);
+            let above = tab.top() - strip.top();
+            let below = strip.bottom() - TAB_STRIP_BORDER - tab.bottom();
+            assert!(
+                (above - footprint).abs() < device && (below - footprint).abs() < device,
+                "at {at} the strip {strip:?} leaves {above:?} above and {below:?} below \
+                 {tab:?}, not the ring's {footprint:?}"
+            );
+        }
+        fn set_text_size(
+            cx: &mut VisualTestContext,
+            app: &Entity<GitTurtle>,
+            interface: u8,
+            desktop: f32,
+        ) {
+            cx.update(|window, cx| {
+                #[cfg(target_os = "linux")]
+                appearance::set_desktop_text_scale(desktop, cx);
+                #[cfg(not(target_os = "linux"))]
+                assert_eq!(desktop, 1.0, "only Linux reports a desktop text scale");
+                app.update(cx, |app, cx| {
+                    app.settings.interface_text_size = interface;
+                    let code = app.settings.code_text_size;
+                    appearance::apply_text_sizes(interface, code, window, cx);
+                    cx.notify();
+                })
+            });
+        }
+
+        cx.executor().allow_parking();
+        let fixture = tempfile::tempdir().unwrap();
+        let paths = (0..2)
+            .map(|index| {
+                GitRepository::init(fixture.path().join(format!("repository-{index}")), "main")
+                    .unwrap()
+                    .path()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        let initial = paths[0].clone();
+        let destination = fixture.path().join("isolated-session.json");
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+        });
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let observed = captured.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let app = cx.new(|cx| {
+                let mut app = GitTurtle::new(
+                    Some(initial),
+                    Preferences::default(),
+                    Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                );
+                app.repository_tabs.save_path = Some(destination);
+                app
+            });
+            *captured.borrow_mut() = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let app = observed.borrow_mut().take().unwrap();
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        settle_tab_test(&app, cx).await;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.apply_appearance(window, cx);
+                app.open_repository_tab(paths[1].clone(), window, cx);
+            })
+        });
+        settle_tab_test(&app, cx).await;
+        let installed = cx.read(|cx| Theme::global(cx).button_focus_ring);
+        assert_eq!(installed, appearance::BUTTON_FOCUS_RING);
+        let ring_room = installed.gap + installed.width;
+
+        let desktop_scales: &[f32] = if cfg!(target_os = "linux") {
+            &[1.0, 0.5]
+        } else {
+            &[1.0]
+        };
+        for &desktop in desktop_scales {
+            for interface in [11, 12, 13, 18] {
+                let at = format!("{interface} pt at desktop scale {desktop}");
+                set_text_size(cx, &app, interface, desktop);
+                settle_tab_test(&app, cx).await;
+                draw(cx);
+                assert_rings_inside(cx, &at);
+
+                // The test window draws at scale factor 2 only. At scale
+                // factor 1, as on the native host, GPUI rounds each authored
+                // length to whole pixels before layout, ties toward zero, and
+                // centers a tab in what the strip leaves above its rule: the
+                // room there holds the ring too, as at 11 pt at desktop scale
+                // 1.0, where 36 px alone leave 5 px around a 24 px tab.
+                let whole = |length: Pixels| (f32::from(length) - 0.5).ceil();
+                let around = whole(tab_strip_min_height(ring_room))
+                    - f32::from(TAB_STRIP_BORDER)
+                    - whole(appearance::ui_size(28.));
+                assert!(
+                    around >= 2. * f32::from(ring_room),
+                    "at {at} at scale factor 1 the strip leaves {around} px around a tab"
+                );
+
+                let device = cx.update(|window, _| px(1. / window.scale_factor()));
+                if desktop == 1.0 && interface >= 12 {
+                    // The strip's 36 px already leave the room, so its minimum
+                    // height is exactly what it was and nothing in it moves:
+                    // it keeps that height, and every tab and close button
+                    // stays centered above its rule.
+                    assert_eq!(
+                        tab_strip_min_height(ring_room),
+                        appearance::ui_size(36.),
+                        "at {at} the strip keeps its minimum height"
+                    );
+                    let strip = rendered(cx, "repository-tab-strip");
+                    assert!(
+                        (strip.size.height - appearance::ui_size(36.)).abs() < device,
+                        "at {at} the strip keeps its height, not {strip:?}"
+                    );
+                    for selector in CONTROLS {
+                        let control = rendered(cx, selector);
+                        let above = control.top() - strip.top();
+                        let below = strip.bottom() - TAB_STRIP_BORDER - control.bottom();
+                        assert!(
+                            (control.size.height - appearance::ui_size(28.)).abs() < device
+                                && (above - below).abs() <= device,
+                            "at {at} {selector}, {control:?}, stays centered in {strip:?}"
+                        );
+                    }
+                } else {
+                    assert!(
+                        tab_strip_min_height(ring_room) > appearance::ui_size(36.),
+                        "at {at} the strip grows"
+                    );
+                    assert_strip_fits_ring(cx, &at);
+                }
+            }
+        }
+
+        // The room follows the installed ring: a 5 px ring's room exceeds what
+        // the strip's 36 px leave at the default size, so the strip grows.
+        set_text_size(cx, &app, appearance::DEFAULT_INTERFACE_TEXT_SIZE, 1.0);
+        settle_tab_test(&app, cx).await;
+        install_ring(
+            cx,
+            &app,
+            FocusRing {
+                width: px(3.),
+                gap: px(2.),
+                opacity: 1.,
+            },
+        );
+        let at = "13 pt with a 5 px ring";
+        assert_rings_inside(cx, at);
+        assert_strip_fits_ring(cx, at);
+        install_ring(cx, &app, installed);
         settle_tab_test(&app, cx).await;
     }
 
