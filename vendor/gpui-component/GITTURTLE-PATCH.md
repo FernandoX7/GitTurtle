@@ -131,11 +131,10 @@ its window-wide record, which gpui-base's enabled path rewrites on every render,
 so a Button that is enabled again is a tab stop again. Once focus leaves, and
 for every enabled or unfocused Button, rendering is unchanged.
 
-gpui-base's Checkbox, Switch, Radio, Toggle, Link and ColorPicker keep the same
-enabled-only focus guard and are not patched here. The app disables a focused
-Switch or Checkbox in Settings' Follow system (while the Omarchy theme is
-selected), the diff view's partial-line Checkbox, the ignore dialog and the
-profile editor.
+gpui-base's Checkbox, Switch, Radio, Toggle, Link and ColorPicker swatch kept
+the same enabled-only focus guard; the [base patch](../gpui-base/GITTURTLE-PATCH.md)
+applies this rule in gpui-base, where they own it, so this crate's Checkbox and
+Switch wrappers are unchanged.
 
 `cargo test --locked -p gitturtle tab_and_shift_tab_leave_a_focused_switch_that_turns_disabled`
 renders the application's Targets, tabs onto Switch, clears the branch field,
