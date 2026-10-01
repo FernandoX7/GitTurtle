@@ -65,6 +65,73 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## October 1 Tab leaves a focused kit control that turns disabled
+
+Task `gpui-base-sibling-focus-traps`, the owner's request of 2026-09-30, from the open items of [Tab leaves a focused Button that turns disabled](#september-30-tab-leaves-a-focused-button-that-turns-disabled). gpui-base's Checkbox, Switch, Radio, Toggle, Link and ColorPicker swatch tracked their focus handle only while enabled. One that turned disabled while it held focus left the rendered frame with the window's focus still on it, and Tab and Shift+Tab did nothing until a pointer click. Each now tracks its handle through `disabled_focus::track_control_focus` (`vendor/gpui-base/src/disabled_focus.rs`):
+- enabled, as upstream;
+- disabled and focused, as a target that is not a tab stop;
+- disabled and unfocused, not at all.
+
+This is #102's rule for the component Button. `vendor/gpui-base/GITTURTLE-PATCH.md` records it, and gpui-component's wrappers are unchanged.
+
+Tests: three tests send real `tab` and `shift-tab` keystrokes and require each key to reach a neighbouring tab stop:
+- `tab_and_shift_tab_leave_follow_system_once_omarchy_disables_it` (`settings.rs`, Linux only) focuses Settings' Follow system Switch and then selects the Omarchy theme;
+- `tab_and_shift_tab_leave_the_directory_checkbox_while_the_rule_is_prepared` (`ignore.rs`) disables the ignore dialog's Checkbox while its rule is prepared;
+- `tab_and_shift_tab_leave_focused_kit_controls_that_turn_disabled` (`native_accessibility/control_tests.rs`) does the same for a bare Radio, Toggle, Link, ColorPicker swatch, Checkbox and Switch, and requires Tab to skip each one while it is disabled and unfocused.
+With the candidate's sources, `cargo test --locked -p gitturtle -- tab_and_shift_tab_leave` passes all three and #102's Targets test. With `vendor/gpui-base/src` taken from `27177da` and everything else unchanged, all three fail at their first Tab after the disable ("Tab leaves the disabled …"), while #102's test still passes (2026-10-01, 16:47 to 16:50 UTC). A `code-reviewer` pass over the vendor patch found no defect. It checked the helper and its six call sites against the pinned gpui-pre 0.3.4, the patch notes, and the unchanged `Cargo.toml`, `Cargo.lock` and license files. Non-blocking:
+- the patch note does not say that a focused disabled control now also takes a caller's focus styles, reports AccessKit focus and keeps a mouse-down's focus from reaching an ancestor;
+- the Settings test runs on Linux only;
+- no test presses Enter or Space on a focused disabled control.
+
+Native evidence, full tier, since the base had to show the trap in the same session as the fix. It is keyboard only, as the change moves focus and no pixel of any control:
+- **Builds:** base `27177da` (sha256 `20744763…`), the candidate's parent, and candidate `b64d919` (sha256 `4898ca9f…`). Both are release builds from clean trees, each in its own `CARGO_TARGET_DIR`, and `qa.py identity` reported no problem. The controller rebuilds the candidate on the commit that adds this entry. Its native attestation re-checks the rebuilt executable.
+- **Host:** Ubuntu 26.04, GNOME 50 on Wayland, XWayland `:0` at scale factor 1, window 1000x680. One session on 2026-10-01 from 16:33 to 16:44 UTC ran a rehearsal, a dry run, 4 paired launches and 4 AT-SPI launches.
+- **Input:** local drivers on the `qa.py` library (`capture.py`, sha256 `82bbba25…`, on `sfl.py`, `3604f234…`) sent every input through Mutter RemoteDesktop, never XTest. X focus was checked before every key, and the pointer was confirmed on the window before the click.
+- **Fixture:** a disposable repository with one commit under the QA identity (HEAD `3e027be`), unchanged by every launch.
+- **Omarchy theme:** each launch's own HOME carried one at `.local/state/omarchy/current`, with the colours of the Tokyo Night test fixture and `theme.name` `tokyo-night`, so Settings offered "Omarchy · Follows Tokyo Night". The store started on Midnight with Follow system off.
+- **Route:**
+  - Ctrl+comma opens Settings with nothing focused. Tab 6 focuses Back to repository, Tab 7 the Follow system Switch and Tab 8 the Omarchy card, on both builds, each step within 0.031 to 0.050 s.
+  - With the Switch focused, a pointer click on the Omarchy card selects it. The palette becomes Tokyo Night, the Switch turns disabled, and keyboard focus stays on the Switch.
+
+Focus after each key once the Switch is disabled, by the ring's box and, on the candidate, AT-SPI's focused node:
+
+| Scenario | Key | Base | Candidate |
+| --- | --- | --- | --- |
+| Tab first | Tab | no change within 2 s | the Omarchy card ("Omarchy theme"), after 0.052 s |
+| | then Shift+Tab | no change | Back to repository, after 0.050 s, past the Switch |
+| | then Tab | no change | the Omarchy card, after 0.033 s, past the Switch |
+| Shift+Tab first | Shift+Tab | no change | Back to repository, after 0.049 s |
+| | then Tab | no change | the Omarchy card, after 0.033 s, past the Switch |
+| | then Shift+Tab | no change | Back to repository, after 0.031 s |
+
+On the base every frame from the click on has the same bytes, the frame 2 s after the click and the frames after each key included. `qa.py compare <base> <candidate> --mask status-timing` found the frames with the Switch focused and with it disabled identical in both scenarios. The frames after a key differ only at the two rings they move between.
+
+AT-SPI, with `org.a11y.Status IsEnabled` set for the rehearsal and the four AT-SPI launches only and read back `false` after each:
+- On both builds, the focused Switch is "Follow system appearance", a toggle button that is `enabled`, `sensitive`, `focusable` and `focused`.
+- On the candidate it keeps those states after the click, so the click moved no focus. After Tab or Shift+Tab, AT-SPI focuses "Omarchy theme" or "Back to repository", and the Switch drops `focusable`.
+- On the base, after the click and after every key, AT-SPI names only the "GitTurtle" frame as focused. AT-SPI cannot say where GPUI's focus is. That focus stays on the Switch's untracked handle is inferred from the code and from the candidate.
+- As #102 found for Buttons, the disabled Switch still reports `enabled` and `sensitive`.
+
+The Settings Switch draws no focus ring, enabled or disabled, on either build. A frame with it focused matches Settings with nothing focused, so focus on it shows only in AT-SPI and in where the next key lands. That is `switch-focus-ring-and-hover` in `tasks.json`.
+
+Frames: [`evidence/gpui-base-sibling-focus-traps/`](evidence/gpui-base-sibling-focus-traps/) holds four frames:
+- `midnight-1000x680-settings-switch-focused` and `omarchy-1000x680-settings-switch-disabled`, whose bytes both builds share;
+- the candidate's `omarchy-1000x680-settings-after-tab` and `omarchy-1000x680-settings-after-shift-tab`.
+
+`qa.py privacy scan --redacted` with the local template set found all four clean. A view of each shows only product UI and the fixture's tab name.
+
+Design check: pass with notes, by a `design-reviewer` pass over the four frames. Focus stays on the disabled control until the keyboard moves it, which is #102's rule. Both rings the keys move between are whole: the card's 2 px of accent sits 1 px outside its selected border, about 7:1 against the surface, and Back to repository's ring fits its header slot. Notes:
+- **Missing Switch ring:** it is pre-existing and non-blocking. As queued, `switch-focus-ring-and-hover` paints no ring on a disabled Switch. A disabled Switch can now hold focus, so that wording would leave it with no visible focus, unlike #102's Buttons, whose ring stays and fades with them. That is the owner's call for that task.
+- **Disabled Switch in Tokyo Night:** it keeps #117's faded thumb. The row's description, not colour alone, says why it is disabled.
+
+Not covered:
+- macOS, native Wayland and fractional scale factors;
+- the other five controls, and the diff view, ignore dialog and profile editor Checkboxes, natively (the view tests cover them);
+- Space, Enter or another binding on the focused disabled Switch;
+- the Switch turning enabled again under focus;
+- a screen reader speaking.
+Each latency is a single sample.
+
 ## October 1 whole focus rings in the chooser, worktree and Push to… lists
 
 Task `ring-clipping-lists`, the owner's request of 2026-09-30, from [the whole focus ring in Tags and Reflog](#september-29-whole-focus-ring-in-tags-and-reflog). Three more containers clipped the 3 px a focused Button's ring takes outside its edge: the branch chooser's scrolling list, the worktree manager's scrolling content and its list of worktrees, and the tag inspector's list of Push to… buttons. A focused full-width row lost its sides and its top or bottom edge, and Manage lost its top and left. Each container now keeps `appearance::button_ring_room` inside its clip and gives it back through its margins. The branch chooser and the tag inspector also give it back through the dialog's gap above the footer, and the worktree manager through its title's margin and that gap (`branch_actions.rs`, `worktrees.rs`, `tags.rs`). `DESIGN.md` now lists them among the containers that keep the room. The worktree manager's list of branch choices when creating a worktree stays open there.
