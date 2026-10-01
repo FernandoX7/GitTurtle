@@ -101,6 +101,8 @@ fn annotation_inspection_preserves_message_and_never_bypasses_signing() {
     );
     assert_eq!(tag.tagger, "Tag Fixture");
     f.git(&["config", "tag.gpgSign", "true"]);
+    // Pin the format too: an inherited `gpg.format=ssh` would bypass this signer.
+    f.git(&["config", "gpg.format", "openpgp"]);
     f.git(&["config", "gpg.program", "/usr/bin/false"]);
     assert!(repo.create_tag_plan("light", "HEAD", None).is_err());
     let plan = repo

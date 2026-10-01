@@ -216,6 +216,9 @@ fn two_ssh_signing_profiles_sign_commits_and_tags_and_missing_key_never_falls_ba
         "gpg.ssh.allowedSignersFile",
         signers.to_str().unwrap(),
     ]);
+    // The product reads the user's global configuration, so an inherited
+    // `gpg.ssh.program` would replace the signer these generated keys need.
+    f.git(&["config", "gpg.ssh.program", "ssh-keygen"]);
     for (name, key) in ["Personal", "Work"].into_iter().zip(&keys) {
         let mut profile = identity(name);
         profile.signing = Some(ProfileSigning {
