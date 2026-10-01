@@ -179,9 +179,10 @@ impl ReviewState {
     }
 }
 
-/// Prepare Source's patch decorations only within the bounds Compare prepares a text diff in
-/// (`gitturtle_core::MAX_DIFF_BYTES` and `MAX_DIFF_LINES`, as `worker.rs` applies them); a
-/// larger supplied patch is drawn as plain text.
+/// Prepare Source's patch decorations only within Compare's text bounds. Compare applies
+/// `gitturtle_core::MAX_DIFF_BYTES` and `MAX_DIFF_LINES` to each blob side in git-core, counting
+/// `\n` bytes; this path applies the same constants, the same way, to the supplied patch text.
+/// A larger patch is drawn as plain text.
 fn source_presentation(patch: &str) -> Option<text::PatchPresentation> {
     (patch.len() <= gitturtle_core::MAX_DIFF_BYTES
         && patch.bytes().filter(|byte| *byte == b'\n').count() <= gitturtle_core::MAX_DIFF_LINES)
@@ -555,21 +556,17 @@ impl Panel {
         self.review.file_focus.focus(window, cx);
         let mut file = self.review.files[index].clone();
         let generation = self.review.prepare_generation;
-        let response = self.owner.update(cx, |owner, _| {
-            owner.operations.submit_read(move || {
-                file.prepare()?;
-                let presentation = file.patch.as_deref().and_then(source_presentation);
-                Ok((file, presentation))
-            })
+        // Pure CPU over the supplied patch the panel owns: no repository, network or write, so
+        // it stays off the serial operations executor that carries accepted writes. Dropping
+        // the task cancels work that has not started.
+        let prepared = cx.background_spawn(async move {
+            file.prepare()?;
+            let presentation = file.patch.as_deref().and_then(source_presentation);
+            anyhow::Ok((file, presentation))
         });
-        let Ok(response) = response else {
-            self.error = Some("The repository window is unavailable.".into());
-            cx.notify();
-            return;
-        };
         self.review.preparing = true;
         self.review.prepare_task = Some(cx.spawn_in(window, async move |this, cx| {
-            let result = response.await;
+            let result = prepared.await;
             let _ = this.update_in(cx, |this, _, cx| {
                 if this.closed
                     || generation != this.review.prepare_generation
@@ -579,16 +576,12 @@ impl Panel {
                 }
                 this.review.preparing = false;
                 match result {
-                    Ok(Ok((file, presentation))) => {
+                    Ok((file, presentation)) => {
                         this.review.files[index] = file;
                         this.review.presentation = presentation;
                         this.review.decorate_source(cx);
                     }
-                    Ok(Err(error)) => this.error = Some(format!("{error:#}")),
-                    Err(_) => {
-                        this.error =
-                            Some("File preparation was interrupted. Choose the file again.".into())
-                    }
+                    Err(error) => this.error = Some(format!("{error:#}")),
                 }
                 cx.notify();
             });
@@ -1199,10 +1192,7 @@ mod tests {
                 panel.select_review_file(0, window, cx);
             })
         });
-        app.read_with(cx, |app, _| app.operations.submit(|| Ok(())))
-            .await
-            .unwrap()
-            .unwrap();
+        // File preparation runs on the GPUI background executor.
         cx.executor().run_until_parked();
         cx.update(|window, cx| {
             assert!(window.has_active_dialog(cx));
@@ -1350,10 +1340,7 @@ mod tests {
                 });
             })
         });
-        app.read_with(cx, |app, _| app.operations.submit(|| Ok(())))
-            .await
-            .unwrap()
-            .unwrap();
+        // File preparation runs on the GPUI background executor.
         cx.executor().run_until_parked();
         cx.update(|window, cx| {
             panel.update(cx, |panel, cx| {
@@ -1372,12 +1359,11 @@ mod tests {
         cx.executor().run_until_parked();
     }
     /// Source draws the supplied patch as plain text and takes the decorations the file's
-    /// preparation made on the read worker, read back through the handle Find masks: they
-    /// reach the editor whether Source opens before the preparation finishes or after it,
-    /// equal Compare's for the same text, follow a palette change and count in the retained
-    /// bytes. A file superseded before its preparation finished decorates nothing, neither its
-    /// own Source nor the next file's, and a patch above Compare's bounds stays plain text
-    /// with no decorations.
+    /// background preparation made, read back through the handle Find masks: they reach the
+    /// editor whether Source opens before the preparation finishes or after it, equal Compare's
+    /// for the same text, follow a palette change and count in the retained bytes. A file
+    /// superseded before its preparation finished decorates nothing, neither its own Source
+    /// nor the next file's. `source_presentation_stops_at_compares_bounds` covers the bounds.
     #[gpui::test]
     async fn source_patch_takes_the_decorations_its_file_preparation_made(cx: &mut TestAppContext) {
         use crate::appearance::ThemeChoice;
@@ -1426,40 +1412,37 @@ mod tests {
         let panel = cx.update(|window, cx| {
             cx.new(|cx| Panel::new(app.downgrade(), panel_repo, "main".into(), window, cx))
         });
-        let settle = |cx: &mut gpui_kit::VisualTestContext| {
-            app.read_with(cx, |app, _| app.operations.drain());
-            cx.run_until_parked();
-        };
+        // The panel's local read (remotes and saved drafts) runs on the operations executor;
+        // settle it once so it cannot land during the steps below.
+        app.read_with(cx, |app, _| app.operations.drain());
+        cx.run_until_parked();
+        // File preparation runs on the GPUI background executor.
+        let settle = |cx: &mut gpui_kit::VisualTestContext| cx.run_until_parked();
         let patches = [
             "@@ -1,2 +1,2 @@\n context\n-old value\n+new value\n".to_owned(),
             "@@ -1 +1,2 @@\n-before\n+after\n+more\n".to_owned(),
-            // One line more than Compare prepares.
-            format!(
-                "@@ -1,{0} +1,{0} @@\n{1}",
-                gitturtle_core::MAX_DIFF_LINES,
-                " line\n".repeat(gitturtle_core::MAX_DIFF_LINES)
-            ),
         ];
-        let file = |name: &str, patch: &String| PullFile {
+        // Counts match each patch, so a prepared file has inline rows.
+        let file = |name: &str, patch: &String, additions| PullFile {
             filename: name.into(),
             previous_filename: None,
             status: "modified".into(),
-            additions: 1,
+            additions,
             deletions: 1,
             patch: Some(patch.clone()),
             rows: Vec::new(),
             unavailable: None,
         };
         let files = vec![
-            file("src/a.rs", &patches[0]),
-            file("src/b.rs", &patches[1]),
-            file("large.txt", &patches[2]),
+            file("src/a.rs", &patches[0], 1),
+            file("src/b.rs", &patches[1], 2),
         ];
         // The decorations Compare's unified diff takes for the same text in the applied palette.
         let compare = |patch: &str, cx: &mut gpui_kit::VisualTestContext| {
             cx.update(|window, cx| {
                 let presentation = text::PatchPresentation::prepare(patch);
-                let (_, decorations) =
+                // The editor stays alive while `drawn` reads the ranges it holds.
+                let (_editor, decorations) =
                     text::editor_with_decorations(patch, "diff", Some(&presentation), window, cx);
                 decorations
                     .expect("a prepared patch is decorated")
@@ -1515,9 +1498,8 @@ mod tests {
         assert_eq!(decorations(&first, cx), Some(recolored.clone()));
 
         // A file superseded before its preparation finished decorates nothing: its Source is
-        // plain text while it is selected, and its preparation's result, which arrives first
-        // on the serial read worker, never reaches the next file's Source, opened before
-        // either finished.
+        // plain text while it is selected, and its preparation's result never lands, neither
+        // as its rows nor on the next file's Source, opened before either finished.
         cx.update(|window, cx| {
             panel.update(cx, |panel, cx| {
                 panel.select_review_file(1, window, cx);
@@ -1535,6 +1517,7 @@ mod tests {
         let current = source(cx);
         settle(cx);
         assert_ne!(current, superseded);
+        cx.read(|cx| assert!(panel.read(cx).review.files[1].rows.is_empty()));
         assert_eq!(decorations(&current, cx), Some(recolored));
 
         // Source opened after its file's preparation finished takes the decorations at once.
@@ -1544,23 +1527,35 @@ mod tests {
         settle(cx);
         cx.update(|window, cx| panel.update(cx, |panel, cx| panel.review_source(1, window, cx)));
         let later = source(cx);
+        cx.read(|cx| assert!(!panel.read(cx).review.files[1].rows.is_empty()));
         let expected = compare(&patches[1], cx);
         assert_eq!(decorations(&later, cx), Some(expected));
-
-        // Above Compare's bounds the supplied patch stays exact plain text, undecorated.
-        cx.update(|window, cx| {
-            panel.update(cx, |panel, cx| {
-                panel.select_review_file(2, window, cx);
-                panel.review_source(1, window, cx);
-            })
-        });
-        settle(cx);
-        let large = source(cx);
-        cx.read(|cx| {
-            assert!(panel.read(cx).review.presentation.is_none());
-            assert_eq!(large.read(cx).value(), patches[2].as_str());
-        });
-        assert_eq!(decorations(&large, cx), None);
+    }
+    /// Source decorations are prepared up to Compare's bounds and not one byte or one line
+    /// beyond. Lines are `\n` bytes, as git-core counts them for Compare, so a patch's last
+    /// line without one does not count.
+    #[test]
+    fn source_presentation_stops_at_compares_bounds() {
+        use gitturtle_core::{MAX_DIFF_BYTES, MAX_DIFF_LINES};
+        // Bytes: one hunk whose context line fills the patch, with no trailing newline.
+        let header = "@@ -1 +1 @@\n ";
+        let at_bytes = format!("{header}{}", "x".repeat(MAX_DIFF_BYTES - header.len()));
+        assert_eq!(at_bytes.len(), MAX_DIFF_BYTES);
+        assert!(source_presentation(&at_bytes).is_some());
+        assert!(source_presentation(&format!("{at_bytes}x")).is_none());
+        // Lines: MAX_DIFF_LINES newlines, the last context line unterminated.
+        let at_lines = format!(
+            "@@ -1,{0} +1,{0} @@\n{1} ",
+            MAX_DIFF_LINES,
+            " \n".repeat(MAX_DIFF_LINES - 1)
+        );
+        let newlines = |patch: &str| patch.bytes().filter(|byte| *byte == b'\n').count();
+        assert_eq!(newlines(&at_lines), MAX_DIFF_LINES);
+        assert!(at_lines.len() < MAX_DIFF_BYTES);
+        assert!(source_presentation(&at_lines).is_some());
+        let over_lines = format!("{at_lines}\n ");
+        assert_eq!(newlines(&over_lines), MAX_DIFF_LINES + 1);
+        assert!(source_presentation(&over_lines).is_none());
     }
     #[gpui::test]
     async fn warm_reopen_retries_interrupted_local_read_and_template_payload_evicts(
