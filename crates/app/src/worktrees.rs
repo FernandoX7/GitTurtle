@@ -491,6 +491,38 @@ impl WorktreeManager {
     }
 }
 
+/// The list's surface a focused worktree row's ring keeps before the next
+/// row's border: rows stand apart by [`appearance::button_ring_room`] plus
+/// this, 5 px at the default ring and at every text size, so the ring never
+/// reads as touching its neighbour.
+const ROW_RING_CLEARANCE: Pixels = px(2.);
+
+/// One row of the managed worktree list. A selected row shows its selection
+/// through the selected surface and its selected and toggled state, and keeps
+/// the neutral border of every other row, so an accent outline around a row
+/// always means keyboard focus: the focused row's ring, drawn once.
+fn worktree_row(index: usize, text: String, selected: bool, p: appearance::Palette) -> Button {
+    Button::new(("managed-worktree-row", index))
+        .debug_selector(move || format!("managed-worktree-row-{index}"))
+        .ghost()
+        .w_full()
+        .h_auto()
+        .min_h(crate::appearance::ui_size(36.))
+        .justify_start()
+        .px_3()
+        .py_2()
+        .label(text.clone())
+        .accessibility_label(text)
+        .selected(selected)
+        .toggled(selected)
+        .border_1()
+        .border_color(rgb(p.border))
+        .when(selected, |row| {
+            row.bg(rgb(p.selected))
+                .hover(|row| row.bg(rgb(p.row_hover(true))))
+        })
+}
+
 impl Render for WorktreeManager {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
@@ -525,7 +557,9 @@ impl Render for WorktreeManager {
         // the dialog, and each list around its rows, giving it all back
         // through its margin. The content counts each child's box in what it
         // can scroll, so each list borrows through a wrapper that shrinks as
-        // the list did. No control moves.
+        // the list did. No control moves. The worktree rows stand apart by
+        // the ring's room and `ROW_RING_CLEARANCE` more, so a focused row's
+        // ring keeps some of the list's surface before the next row's border.
         let room = appearance::button_ring_room(cx);
         div().id("worktree-manager-content").debug_selector(|| "worktree-manager-content".into()).flex().flex_col().gap_3().max_h(px(570.).min(body_height) + room * 2.).p(room).mx(-room).overflow_y_scroll()
             .child(div().flex().gap_2()
@@ -536,9 +570,9 @@ impl Render for WorktreeManager {
             .children(self.error.as_ref().map(|error| label("worktree-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
             .when(!self.creating, |element| element
                 .child(Input::new(&self.filter).aria_label("Filter worktrees by branch or path").cleanable(true))
-                .child(div().debug_selector(|| "managed-worktree-entries".into()).flex().flex_col().min_h_0().child(div().id("managed-worktree-list").debug_selector(|| "managed-worktree-list".into()).max_h(px(190.) + room * 2.).p(room).m(-room).overflow_y_scroll().flex().flex_col().gap_1().children(trees.iter().take(100).enumerate().map(|(index, tree)| {
+                .child(div().debug_selector(|| "managed-worktree-entries".into()).flex().flex_col().min_h_0().child(div().id("managed-worktree-list").debug_selector(|| "managed-worktree-list".into()).max_h(px(190.) + room * 2.).p(room).m(-room).overflow_y_scroll().flex().flex_col().gap(room + ROW_RING_CLEARANCE).children(trees.iter().take(100).enumerate().map(|(index, tree)| {
                     let tree = tree.clone(); let selected = self.selected.as_ref() == Some(&tree.path); let text = format!("{} · {}{}{}", tree.branch.as_deref().unwrap_or("Detached HEAD"), tree.path.display(), if tree.locked { " · Locked" } else { "" }, if tree.prunable { " · Missing or stale" } else { "" });
-                    Button::new(("managed-worktree-row", index)).debug_selector(move || format!("managed-worktree-row-{index}")).ghost().w_full().h_auto().min_h(crate::appearance::ui_size(36.)).justify_start().px_3().py_2().label(text.clone()).accessibility_label(text).selected(selected).toggled(selected).border_1().border_color(rgb(if selected { p.accent } else { p.border })).when(selected, |row| row.bg(rgb(p.selected))).when(selected, |row| row.hover(|row| row.bg(rgb(p.row_hover(true))))).on_click(cx.listener(move |this, _, window, cx| this.select(tree.clone(), window, cx)))
+                    worktree_row(index, text, selected, p).on_click(cx.listener(move |this, _, window, cx| this.select(tree.clone(), window, cx)))
                 })).when(trees.is_empty() && !self.pending, |element| element.child(label("worktrees-empty", "No worktrees match this filter.").text_size(crate::appearance::ui_text(12.))))))
                 .when(trees.len() > 100, |element| element.child(label("worktrees-match-limit", "Showing 100 matches. Narrow the filter to find another worktree.").text_size(crate::appearance::ui_text(12.))))
                 .when_some(self.details.as_ref(), |element, details| {
@@ -585,6 +619,8 @@ mod ring_room_tests {
         scroll_down, tagged_repository, window,
     };
     use ::core::prelude::v1::test;
+    use gpui::accesskit::Toggled;
+    use gpui_kit::component::Theme;
 
     /// The manager on `repo`, opened in a window, with its first refresh
     /// finished.
@@ -621,7 +657,10 @@ mod ring_room_tests {
     /// content and its list of worktrees scroll, so GPUI clips each to its
     /// bounds on both axes. Manage, Create worktree… and Refresh, at the
     /// content's top edge, and the first and last worktree rows keep their
-    /// rings whole, and nothing moves.
+    /// rings whole, and the room the content and the list keep moves
+    /// nothing. Rows stand apart by the ring's room and 2 px more, so a ring
+    /// of another size moves every row after the first; the room is therefore
+    /// checked with the list filtered to one row.
     #[gpui::test]
     async fn manager_keeps_room_for_every_focus_ring(cx: &mut TestAppContext) {
         let fixture = tempfile::tempdir().unwrap();
@@ -642,22 +681,34 @@ mod ring_room_tests {
         }
         let (app, manager, cx) = opened_manager(cx, &repo).await;
         assert_eq!(manager.read_with(cx, |manager, _| manager.trees.len()), 3);
+        let tabs = [
+            "worktree-browse-tab",
+            "worktree-create-tab",
+            "refresh-worktrees",
+        ];
+        assert_rings_whole(
+            cx,
+            &[
+                &tabs[..],
+                &["managed-worktree-row-0", "managed-worktree-row-2"],
+            ]
+            .concat(),
+        );
 
+        cx.update(|window, cx| {
+            manager.update(cx, |manager, cx| {
+                manager
+                    .filter
+                    .update(cx, |input, cx| input.set_value("second", window, cx))
+            })
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("managed-worktree-row-1").is_none());
         assert_room_for_rings(
             cx,
             &app,
-            &[
-                "worktree-browse-tab",
-                "worktree-create-tab",
-                "refresh-worktrees",
-                "managed-worktree-row-0",
-                "managed-worktree-row-2",
-            ],
-            &[
-                "worktree-manager-title",
-                "managed-worktree-entries",
-                "managed-worktree-row-1",
-            ],
+            &[&tabs[..], &["managed-worktree-row-0"]].concat(),
+            &["worktree-manager-title", "managed-worktree-entries"],
         );
     }
 
@@ -711,5 +762,374 @@ mod ring_room_tests {
         );
         assert_rings_whole(cx, &[last]);
         assert_room_moves_nothing(cx, &app, &[last], &fixed);
+    }
+
+    /// Four worktrees on `fixture`: the tagged repository's main worktree and
+    /// three linked ones.
+    fn four_worktrees(fixture: &std::path::Path) -> GitRepository {
+        let repo = tagged_repository(fixture);
+        for branch in ["first", "second", "third"] {
+            let folder = fixture.join(branch);
+            git(
+                repo.path(),
+                &[
+                    "worktree",
+                    "add",
+                    "--quiet",
+                    "-b",
+                    branch,
+                    folder.to_str().unwrap(),
+                ],
+            );
+        }
+        repo
+    }
+
+    /// Applies `interface` as the interface text size, as Settings does.
+    fn set_interface_text_size(cx: &mut VisualTestContext, app: &Entity<GitTurtle>, interface: u8) {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.settings.interface_text_size = interface;
+                let code = app.settings.code_text_size;
+                appearance::apply_text_sizes(interface, code, window, cx);
+                cx.notify();
+            })
+        });
+        draw(cx);
+    }
+
+    /// Moves the pointer onto the dialog's backdrop, where it hovers nothing.
+    fn park_pointer(cx: &mut VisualTestContext) {
+        cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+        draw(cx);
+    }
+
+    /// The room the installed Button focus ring takes outside an edge.
+    fn ring_footprint(cx: &mut VisualTestContext) -> Pixels {
+        cx.read(|cx| {
+            let ring = Theme::global(cx).button_focus_ring;
+            ring.gap + ring.width
+        })
+    }
+
+    /// Moves keyboard focus along the window's tab order until the Button at
+    /// `selector` draws its focus ring.
+    fn focus_button(cx: &mut VisualTestContext, selector: &'static str) {
+        for _ in 0..64 {
+            cx.update(|window, cx| window.focus_next(cx));
+            draw(cx);
+            let bounds = rendered(cx, selector);
+            if !appearance::painted_button(cx, bounds).1.is_empty() {
+                return;
+            }
+        }
+        panic!("keyboard focus never reaches {selector}");
+    }
+
+    /// The bounds of every outline the last frame drew in `color` on or around
+    /// `element`: border-only or bordered quads lying at its edge or at the
+    /// installed ring's footprint, each counted once although GPUI paints a
+    /// border-only quad once per side.
+    fn outlines(
+        cx: &mut VisualTestContext,
+        element: Bounds<Pixels>,
+        color: Hsla,
+    ) -> Vec<Bounds<Pixels>> {
+        let footprint = ring_footprint(cx);
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let device = px(1. / scale);
+            let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+            let near = |drawn: Bounds<Pixels>, expected: Bounds<Pixels>| {
+                [
+                    (drawn.left(), expected.left()),
+                    (drawn.top(), expected.top()),
+                    (drawn.right(), expected.right()),
+                    (drawn.bottom(), expected.bottom()),
+                ]
+                .into_iter()
+                .all(|(edge, expected)| (edge - expected).abs() <= device)
+            };
+            let mut found: Vec<Bounds<Pixels>> = Vec::new();
+            for quad in window.painted_quads() {
+                let widths = quad.border_widths;
+                let bordered = [widths.top, widths.right, widths.bottom, widths.left]
+                    .into_iter()
+                    .any(|width| width.as_f32() > 0.);
+                let drawn = Bounds::from_corners(
+                    point(logical(quad.bounds.left()), logical(quad.bounds.top())),
+                    point(logical(quad.bounds.right()), logical(quad.bounds.bottom())),
+                );
+                let around = near(drawn, element) || near(drawn, element.dilate(footprint));
+                if bordered && around && quad.border_color == color && !found.contains(&drawn) {
+                    found.push(drawn);
+                }
+            }
+            found
+        })
+    }
+
+    /// Rows stand apart by the ring's room and 2 px more at the smallest,
+    /// default and largest tested interface text sizes. Each row, focused,
+    /// draws its ring at its bounds grown by the installed ring's gap plus
+    /// width, and that footprint ends at least 2 px before the next row's
+    /// border and begins at least 2 px after the previous row's; scrolled to
+    /// the end of the list that shows it whole, it lies inside the content
+    /// mask the row paints in, the intersection of every ancestor's.
+    #[gpui::test]
+    async fn focused_worktree_rows_keep_clear_of_the_next_row(cx: &mut TestAppContext) {
+        const ROWS: [&str; 4] = [
+            "managed-worktree-row-0",
+            "managed-worktree-row-1",
+            "managed-worktree-row-2",
+            "managed-worktree-row-3",
+        ];
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = four_worktrees(fixture.path());
+        let (app, manager, cx) = opened_manager(cx, &repo).await;
+        assert_eq!(manager.read_with(cx, |manager, _| manager.trees.len()), 4);
+        let footprint = ring_footprint(cx);
+        assert_eq!(footprint, px(3.), "the default ring is installed");
+        let ring = cx.read(|cx| Theme::global(cx).ring);
+        let clear = |clearance: Pixels| clearance >= ROW_RING_CLEARANCE - px(0.01);
+
+        for size in [11_u8, 13, 18] {
+            set_interface_text_size(cx, &app, size);
+            // The rows whose rings the list shows at the top of its scroll,
+            // then, scrolled to its end, the rest.
+            let mut whole = Vec::new();
+            for end in [false, true] {
+                if end {
+                    let list = rendered(cx, "managed-worktree-list");
+                    scroll_down(
+                        cx,
+                        list.center(),
+                        ScrollDelta::Pixels(point(px(0.), px(-10_000.))),
+                    );
+                }
+                let list = rendered(cx, "managed-worktree-list");
+                let shown: Vec<_> = ROWS
+                    .into_iter()
+                    .filter(|row| !whole.contains(row))
+                    .filter(|row| {
+                        let ring = rendered(cx, row).dilate(footprint);
+                        ring.top() >= list.top() && ring.bottom() <= list.bottom()
+                    })
+                    .collect();
+                assert_rings_whole(cx, &shown);
+                for &row in &shown {
+                    focus_button(cx, row);
+                    park_pointer(cx);
+                    let bounds = rendered(cx, row);
+                    let (_, rings) = appearance::painted_button(cx, bounds);
+                    assert_eq!(
+                        rings,
+                        [ring],
+                        "at {size} pt the focused {row} draws {rings:?}"
+                    );
+                    let drawn = bounds.dilate(footprint);
+                    let index = ROWS.iter().position(|other| *other == row).unwrap();
+                    if let Some(&next) = ROWS.get(index + 1) {
+                        let border = rendered(cx, next).top();
+                        let clearance = border - drawn.bottom();
+                        assert!(
+                            clear(clearance),
+                            "at {size} pt the ring around {row} ends at {:?}, \
+                             {clearance:?} before the next row's border at {border:?}",
+                            drawn.bottom()
+                        );
+                    }
+                    if let Some(&previous) = index.checked_sub(1).and_then(|at| ROWS.get(at)) {
+                        let border = rendered(cx, previous).bottom();
+                        let clearance = drawn.top() - border;
+                        assert!(
+                            clear(clearance),
+                            "at {size} pt the ring around {row} begins at {:?}, \
+                             {clearance:?} after the previous row's border at {border:?}",
+                            drawn.top()
+                        );
+                    }
+                }
+                whole.extend(shown);
+            }
+            assert_eq!(
+                whole.len(),
+                ROWS.len(),
+                "at {size} pt only {whole:?} show whole"
+            );
+            let list = rendered(cx, "managed-worktree-list");
+            scroll_down(
+                cx,
+                list.center(),
+                ScrollDelta::Pixels(point(px(0.), px(10_000.))),
+            );
+        }
+        set_interface_text_size(cx, &app, appearance::DEFAULT_INTERFACE_TEXT_SIZE);
+    }
+
+    /// A selected worktree row shows its selection through the selected
+    /// surface and its selected and toggled state, and keeps the palette's
+    /// neutral border, so the only accent outline around it is the focus
+    /// ring, drawn once when it is focused.
+    #[gpui::test]
+    async fn a_selected_worktree_row_draws_one_accent_outline(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = four_worktrees(fixture.path());
+        let (_app, manager, cx) = opened_manager(cx, &repo).await;
+        manager.update(cx, |manager, cx| {
+            manager.selected = Some(manager.trees[1].path.clone());
+            cx.notify();
+        });
+        park_pointer(cx);
+        let (p, ring) = cx.read(|cx| (palette(cx), Theme::global(cx).ring));
+        let color = |value: u32| Hsla::from(rgb(value));
+        let selected_fill = gpui_kit::Background::from(color(p.selected));
+        let row = rendered(cx, "managed-worktree-row-1");
+        let footprint = row.dilate(ring_footprint(cx));
+
+        let (fills, rings) = appearance::painted_button(cx, row);
+        assert_eq!(fills, [selected_fill], "the selected row paints {fills:?}");
+        assert!(rings.is_empty(), "the unfocused row draws {rings:?}");
+        assert_eq!(
+            outlines(cx, row, color(p.border)),
+            [row],
+            "the border is neutral"
+        );
+        assert!(outlines(cx, row, color(p.accent)).is_empty());
+        assert!(outlines(cx, row, ring).is_empty());
+
+        focus_button(cx, "managed-worktree-row-1");
+        park_pointer(cx);
+        let (fills, rings) = appearance::painted_button(cx, row);
+        assert_eq!(
+            fills,
+            [selected_fill],
+            "the focused selected row paints {fills:?}"
+        );
+        assert_eq!(rings, [ring], "the focused selected row draws {rings:?}");
+        assert_eq!(
+            outlines(cx, row, color(p.border)),
+            [row],
+            "the border stays neutral"
+        );
+        let accent = [color(p.accent), ring]
+            .into_iter()
+            .flat_map(|accent| outlines(cx, row, accent))
+            .fold(Vec::new(), |mut all, outline| {
+                if !all.contains(&outline) {
+                    all.push(outline);
+                }
+                all
+            });
+        assert_eq!(accent.len(), 1, "one accent outline, not {accent:?}");
+        let near = |a: Bounds<Pixels>, b: Bounds<Pixels>| {
+            (a.left() - b.left()).abs() < px(0.01)
+                && (a.top() - b.top()).abs() < px(0.01)
+                && (a.right() - b.right()).abs() < px(0.01)
+                && (a.bottom() - b.bottom()).abs() < px(0.01)
+        };
+        assert!(
+            near(accent[0], footprint),
+            "the accent outline {accent:?} is the ring"
+        );
+
+        // The row keeps the kit's selected state, and the node its Button
+        // writes reports the selection as the row's toggled state. The kit
+        // gives AccessKit's selected state to tab roles only, so a row's
+        // node, selected or not, reports none.
+        assert!(worktree_row(1, "second".into(), true, p).is_selected());
+        let rows = [(1, true, Toggled::True), (0, false, Toggled::False)];
+        let text = |index: usize| format!("worktree row {index}");
+        let nodes = row_nodes(
+            cx,
+            rows.map(|(index, selected, _)| worktree_row(index, text(index), selected, p))
+                .into(),
+        );
+        assert_eq!(nodes.len(), rows.len());
+        for ((index, selected, toggled), node) in rows.into_iter().zip(&nodes) {
+            assert_eq!(node.role(), Role::Button);
+            assert_eq!(node.label(), Some(text(index).as_str()));
+            assert_eq!(
+                node.toggled(),
+                Some(toggled),
+                "the node of a row with selected {selected}"
+            );
+            assert_eq!(
+                node.is_selected(),
+                None,
+                "the node of a row with selected {selected}"
+            );
+        }
+    }
+
+    /// The accessibility nodes the kit's Button writes for `rows`: the role
+    /// and properties a window's tree gives each while assistive technology
+    /// is active, less its bounds. The test platform never turns
+    /// accessibility on, so no frame builds that tree; like the rendered
+    /// Button checks in `native_accessibility`, a probe view renders each
+    /// row, while it is prepainted, to the element that writes its node, and
+    /// asks that element. The kit's Button renders a base Button, which GPUI
+    /// renders in turn when it is laid out, to an element type of the base's
+    /// own; a base Button rendered beside it names that type.
+    fn row_nodes(cx: &mut VisualTestContext, rows: Vec<Button>) -> Vec<gpui::accesskit::Node> {
+        use gpui::Element as _;
+        type Nodes = std::rc::Rc<std::cell::RefCell<Vec<gpui::accesskit::Node>>>;
+        /// The element `element` renders when it is laid out.
+        fn laid_out<E: gpui::Element>(
+            mut element: E,
+            window: &mut Window,
+            cx: &mut App,
+        ) -> Option<AnyElement> {
+            let (_, mut layout) = element.request_layout(None, None, window, cx);
+            (&mut layout as &mut dyn std::any::Any)
+                .downcast_mut::<Option<AnyElement>>()?
+                .take()
+        }
+        /// `element`, if it is of `witness`'s type.
+        fn of_type<'a, E: gpui::Element>(
+            _witness: &E,
+            element: &'a mut AnyElement,
+        ) -> Option<&'a mut E> {
+            element.downcast_mut()
+        }
+        fn node(row: Button, window: &mut Window, cx: &mut App) -> gpui::accesskit::Node {
+            let outer = RenderOnce::render(row, window, cx).into_element();
+            let mut base =
+                laid_out(outer, window, cx).expect("the kit's Button renders a base Button");
+            let witness =
+                RenderOnce::render(gpui_kit::base::Button::new("row-node-witness"), window, cx)
+                    .into_element();
+            let element = of_type(&witness, &mut base)
+                .expect("a base Button renders the element that writes its node");
+            let mut node =
+                gpui::accesskit::Node::new(element.a11y_role().expect("the row has a role"));
+            element.write_a11y_info(&mut node);
+            node
+        }
+        struct Probe {
+            rows: Vec<Button>,
+            nodes: Nodes,
+        }
+        impl Render for Probe {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let rows = std::mem::take(&mut self.rows);
+                let nodes = self.nodes.clone();
+                canvas(
+                    move |_, window, cx| {
+                        let rendered = rows.into_iter().map(|row| node(row, window, cx));
+                        nodes.borrow_mut().extend(rendered);
+                    },
+                    |_, _, _, _| {},
+                )
+                .size_full()
+            }
+        }
+        let nodes = Nodes::default();
+        let (_, probe) = cx.add_window_view({
+            let nodes = nodes.clone();
+            move |_, _| Probe { rows, nodes }
+        });
+        probe.update(|window, cx| window.draw(cx).clear(cx));
+        nodes.take()
     }
 }
