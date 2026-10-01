@@ -65,6 +65,35 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## October 1 the tab strip keeps the ring room at small text
+
+Task `tab-strip-ring-room-small-text`. The repository tab strip's minimum height is now the larger of `ui_size(36)` and a tab or close button plus twice the installed ring room, so a focused tab's ring keeps its gap inside the window at every text size; nothing moves where the room already fitted (12 pt and above at desktop scale 1.0).
+
+Native evidence, full tier:
+- **Builds:** base `2197371` (the candidate's parent; sha256 `1f9776e3…`) and candidate `399062e` (sha256 `2bffdda5…`), release builds from clean trees, each in its own target directory. `qa.py identity` reported no problem.
+- **Host:** Ubuntu 26.04, GNOME 50, XWayland `:0` at scale factor 1, window 1000 × 680, one session on 2026-10-01 from 19:17 to 19:22 UTC.
+- **Input:** a local driver on the `qa.py` library (sha256 `36a5dbd2…`), through Mutter RemoteDesktop with X focus verified, never XTest.
+- **Fixture:** a disposable `tabs` fixture with `alpha`, `beta` and `gamma` open as tabs, unchanged by the session; each launch's store seeded Midnight or Porcelain at 11 or 13 pt.
+- **Steps:** Tab 7 from the launch focus reaches the first tab and Tab 8 its close button.
+
+At 11 pt (an interface scale of 0.846) the base draws the tab from y 2, so the ring's top rows, y 0 and 1, touch the tab's fill and part of its top band falls outside the window. The candidate's strip is 1 px taller: ring, 1 px gap, fill, 1 px gap, ring, then the strip's rule, the same on all four sides, and everything below moves down 1 px at 11 pt only. Ring pixels found in the 1 to 3 px band (top / right / bottom / left), the same in both palettes:
+
+| 11 pt | Base | Candidate |
+| --- | --- | --- |
+| First tab | 78 / 55 / 90 / 55 | 90 / 56 / 90 / 56 |
+| Close button | 44 / 55 / 56 / 55 | 56 / 56 / 56 / 56 |
+
+The ring stands 10.45:1 (Midnight) and 7.01:1 (Porcelain) off the panel. At 13 pt, `qa.py compare --mask status-timing` finds the rest, tab and close-button frames identical to the base in both palettes.
+
+Frames in [`evidence/tab-strip-ring-room-small-text/`](evidence/tab-strip-ring-room-small-text/), 10 strip crops 1000 px wide:
+- `base-{midnight,porcelain}-11pt-1000x680-strip-tab-focus.png` and `…-strip-tab-close-focus.png`: on the base, the focused first tab and its focused close button, whose ring meets the control's fill at the top;
+- `candidate-{midnight,porcelain}-11pt-1000x680-strip-tab-focus.png` and `…-strip-tab-close-focus.png`: on the candidate, the same controls with the ring and its gap whole on all four sides;
+- `candidate-{midnight,porcelain}-13pt-1000x680-strip-rest.png`: the unfocused strip at 13 pt, byte-identical to the base's crop.
+
+`qa.py privacy scan --redacted` with the local template set found all 10 clean on their committed bytes. A `design-reviewer` pass approved the frames. At 11 pt the ring's bottom row sits on the strip's rule, as its top row sits on the window edge at every size. The rule is the strip's own edge, and the ring stands 7.53:1 (Midnight) and 4.67:1 (Porcelain) off it, so no surface row is added. A row there would grow the strip at 12 pt too.
+
+Not covered: desktop text scales below 1.0, which only the GPUI test `tab_strip_keeps_every_focus_ring_inside_the_window_at_every_text_size` reaches, other text sizes, the last tab, macOS, native Wayland and fractional scale factors.
+
 ## October 1 disabled Buttons report disabled to AT-SPI
 
 Task `atspi-disabled-state`, the owner's request of 2026-09-30, from the open items of [Tab leaves a focused Button that turns disabled](#september-30-tab-leaves-a-focused-button-that-turns-disabled). On Linux every disabled Button reported `enabled` and `sensitive` to AT-SPI. The pinned `accesskit_atspi_common` 0.19.1 added `Enabled | Sensitive` to every node unless its role supports read-only and the node was read-only or disabled (`src/node.rs:373-377`), and `accesskit_consumer` 0.38.0 does not count Button among those roles. A Switch, CheckBox or text input carrying that flag reported `read-only` instead; in the app only the kit's text input sets it besides Button (open items below). So the AccessKit disabled flag that the [gpui-base patch](native-accessibility.md#toolkit-patch) sets never reached AT-SPI.
