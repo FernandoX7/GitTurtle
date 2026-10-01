@@ -65,6 +65,24 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## October 1 authentication guidance without macOS Keychain on Linux
+
+Task `auth-prompt-platform-wording` (Omarchy finding B2, from [September 30 Git writes and network actions on Omarchy](#september-30-git-writes-and-network-actions-on-omarchy); the owner widened its scope on 2026-10-01 to the Git failure diagnostics). On Linux the Git authentication prompt told the user that their credential helper may save the response "including in macOS Keychain". Off macOS the prompt's guidance and its accessible label, which share one string, now read "Requested by the Git operation you started. Your configured credential helper may save this response. GitTurtle does not save it." On macOS the text is unchanged. The failure diagnostics in `crates/git-core/src/work/diagnostics.rs` follow the same rule. Off macOS, the SSH key diagnostic drops its `UseKeychain` clause, and the HTTP authentication diagnostic gives "Git Credential Manager or a Secret Service helper" as its example instead of "Git Credential Manager or macOS osxkeychain". `authentication::tests::pending_credential_prompt_names_keychain_only_on_macos` and `work::diagnostics::tests::authentication_guidance_names_macos_stores_only_on_macos` assert the exact sentences on each platform. The other Keychain strings in the app (the GitHub account notices and errors) are macOS-only code, or follow a credential save that always fails off macOS.
+
+Native evidence, light tier, on Omarchy 4.0.4 (Hyprland 0.56.2, native Wayland, Git 2.55.0):
+- Builds: release builds, clean, in one session. The base is `60cd48b` (`gitturtle-60cd48b`, sha256 `59dffd49…`) and the candidate `c445081` (sha256 `43896199…`). The branch's later commits change only tests, the user guide, the evidence and this entry.
+- Output: a temporary 1480 × 800 headless output at scale 1, with the window fullscreen. Each launch had a fresh HOME with the `GitTurtle QA` identity and fresh XDG directories.
+- Fixture: a disposable repository whose `origin` is a smart-HTTP remote served by `git http-backend` on 127.0.0.1 under throwaway Basic credentials.
+- Steps: Fetch raised the username prompt. The run entered a username and a wrong password, and the failure's Details were copied as text.
+- Palettes: Midnight and Daylight.
+- Comparison (`qa.py compare --mask status-timing`, plus the top 26 px strip where Omarchy's bar can draw): with the prompt open, only the guidance's second line (`[564, 171]`–`[885, 183]`) and the text caret differ. The opening frame, the failure banner and the Details dialog are pixel-identical. The copied diagnostic names osxkeychain on the base and a Secret Service helper on the candidate.
+- Credentials: no launch's HOME contains the throwaway password.
+- Frames and records: the prompt frames and the copied diagnostics, base and candidate in both palettes, are in [`evidence/auth-prompt-wording/`](evidence/auth-prompt-wording/). A privacy scan of the four committed frames with the local template set came back clean, and each frame was viewed at full size.
+
+A `design-reviewer` pass approved the frames: the shorter guidance still wraps to two whole lines, and the dialog keeps its size in both palettes. The Details viewer does not wrap, so the changed diagnostic is evidenced by the copied text rather than by a frame.
+
+Not covered: macOS, where the text is unchanged and checked only by reading; the SSH key diagnostic, natively; XWayland; and X11.
+
 ## October 1 Tab leaves a focused kit control that turns disabled
 
 Task `gpui-base-sibling-focus-traps`, the owner's request of 2026-09-30, from the open items of [Tab leaves a focused Button that turns disabled](#september-30-tab-leaves-a-focused-button-that-turns-disabled). gpui-base's Checkbox, Switch, Radio, Toggle, Link and ColorPicker swatch tracked their focus handle only while enabled. One that turned disabled while it held focus left the rendered frame with the window's focus still on it, and Tab and Shift+Tab did nothing until a pointer click. Each now tracks its handle through `disabled_focus::track_control_focus` (`vendor/gpui-base/src/disabled_focus.rs`):

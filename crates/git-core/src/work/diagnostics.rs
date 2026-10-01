@@ -21,6 +21,19 @@ pub(super) fn pull_refusal_headline(
         .then_some("Branches have diverged; choose Merge or Rebase to continue.")
 }
 
+// Keychain and osxkeychain exist only on macOS; elsewhere the same guidance
+// leaves them unnamed.
+const SSH_KEY_GUIDANCE: &str = if cfg!(target_os = "macos") {
+    "SSH did not accept an available key. Check the remote URL, configured SSH identity and agent, and your repository access. Respond to the configured agent or passphrase prompt, or load the intended key with ssh-add; macOS SSH can use Keychain when configured with UseKeychain and AddKeysToAgent. Then explicitly retry."
+} else {
+    "SSH did not accept an available key. Check the remote URL, configured SSH identity and agent, and your repository access. Respond to the configured agent or passphrase prompt, or load the intended key with ssh-add. Then explicitly retry."
+};
+const CREDENTIAL_GUIDANCE: &str = if cfg!(target_os = "macos") {
+    "Credentials may be expired or lack repository access. Check the remote URL and account permissions, then sign in with your configured Git credential helper (for example Git Credential Manager or macOS osxkeychain). GitTurtle can prompt when Git requests a username, token, or passphrase during an explicit operation. Refresh or remove only the expired credential through your helper, then explicitly retry."
+} else {
+    "Credentials may be expired or lack repository access. Check the remote URL and account permissions, then sign in with your configured Git credential helper (for example Git Credential Manager or a Secret Service helper). GitTurtle can prompt when Git requests a username, token, or passphrase during an explicit operation. Refresh or remove only the expired credential through your helper, then explicitly retry."
+};
+
 pub(super) fn guidance(stderr: &[u8], stdout: &[u8], creates_commit: bool) -> Option<&'static str> {
     let output = format!(
         "{}\n{}",
@@ -37,9 +50,7 @@ pub(super) fn guidance(stderr: &[u8], stdout: &[u8], creates_commit: bool) -> Op
     } else if output.contains("permission denied (publickey")
         || output.contains("no supported authentication methods")
     {
-        Some(
-            "SSH did not accept an available key. Check the remote URL, configured SSH identity and agent, and your repository access. Respond to the configured agent or passphrase prompt, or load the intended key with ssh-add; macOS SSH can use Keychain when configured with UseKeychain and AddKeysToAgent. Then explicitly retry.",
-        )
+        Some(SSH_KEY_GUIDANCE)
     } else if output.contains("credential-")
         && (output.contains("not a git command")
             || output.contains("not found")
@@ -56,9 +67,7 @@ pub(super) fn guidance(stderr: &[u8], stdout: &[u8], creates_commit: bool) -> Op
         || output.contains("http 401")
         || output.contains("http 403")
     {
-        Some(
-            "Credentials may be expired or lack repository access. Check the remote URL and account permissions, then sign in with your configured Git credential helper (for example Git Credential Manager or macOS osxkeychain). GitTurtle can prompt when Git requests a username, token, or passphrase during an explicit operation. Refresh or remove only the expired credential through your helper, then explicitly retry.",
-        )
+        Some(CREDENTIAL_GUIDANCE)
     } else if output.contains("failed to sign")
         || output.contains("signing failed")
         || output.contains("gpg failed")
@@ -87,7 +96,46 @@ pub(super) fn guidance(stderr: &[u8], stdout: &[u8], creates_commit: bool) -> Op
 
 #[cfg(test)]
 mod tests {
-    use super::pull_refusal_headline;
+    use super::{guidance, pull_refusal_headline};
+
+    /// The macOS wording, unchanged since these diagnostics first named macOS stores.
+    const MACOS_SSH_KEY_GUIDANCE: &str = "SSH did not accept an available key. Check the remote URL, configured SSH identity and agent, and your repository access. Respond to the configured agent or passphrase prompt, or load the intended key with ssh-add; macOS SSH can use Keychain when configured with UseKeychain and AddKeysToAgent. Then explicitly retry.";
+    const MACOS_CREDENTIAL_GUIDANCE: &str = "Credentials may be expired or lack repository access. Check the remote URL and account permissions, then sign in with your configured Git credential helper (for example Git Credential Manager or macOS osxkeychain). GitTurtle can prompt when Git requests a username, token, or passphrase during an explicit operation. Refresh or remove only the expired credential through your helper, then explicitly retry.";
+    /// The owner's wording for every other platform.
+    const OTHER_SSH_KEY_GUIDANCE: &str = "SSH did not accept an available key. Check the remote URL, configured SSH identity and agent, and your repository access. Respond to the configured agent or passphrase prompt, or load the intended key with ssh-add. Then explicitly retry.";
+    const OTHER_CREDENTIAL_GUIDANCE: &str = "Credentials may be expired or lack repository access. Check the remote URL and account permissions, then sign in with your configured Git credential helper (for example Git Credential Manager or a Secret Service helper). GitTurtle can prompt when Git requests a username, token, or passphrase during an explicit operation. Refresh or remove only the expired credential through your helper, then explicitly retry.";
+
+    #[test]
+    fn authentication_guidance_names_macos_stores_only_on_macos() {
+        let ssh = guidance(
+            b"git@example.invalid: Permission denied (publickey).\nfatal: Could not read from remote repository.\n",
+            b"",
+            false,
+        )
+        .unwrap();
+        let http = guidance(
+            b"remote: Invalid username or password.\nfatal: Authentication failed for 'https://example.invalid/repo.git/'\n",
+            b"",
+            false,
+        )
+        .unwrap();
+        let http_401 = guidance(
+            b"error: RPC failed; HTTP 401 curl 22 The requested URL returned error: 401\n",
+            b"",
+            false,
+        );
+        assert_eq!(http_401, Some(http));
+        if cfg!(target_os = "macos") {
+            assert_eq!(ssh, MACOS_SSH_KEY_GUIDANCE);
+            assert_eq!(http, MACOS_CREDENTIAL_GUIDANCE);
+        } else {
+            assert_eq!(ssh, OTHER_SSH_KEY_GUIDANCE);
+            assert_eq!(http, OTHER_CREDENTIAL_GUIDANCE);
+            for text in [ssh, http] {
+                assert!(!text.to_lowercase().contains("keychain"), "{text}");
+            }
+        }
+    }
 
     #[test]
     fn pull_refusal_uses_terminal_git_diagnostic_after_fetch_progress() {
