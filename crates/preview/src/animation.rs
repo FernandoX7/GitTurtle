@@ -1,6 +1,7 @@
 //! Bounded, composited GIF frames. Decoding never reads the hinted source path.
 use super::*;
 use image::{AnimationDecoder, codecs::gif::GifDecoder};
+use std::time::{Duration, Instant};
 
 pub const MAX_FRAMES: usize = 120;
 pub const MAX_DURATION_MS: u64 = 30_000;
@@ -30,6 +31,22 @@ pub fn decode_gif(
     max_edge: u32,
     check: impl Fn() -> Result<()>,
 ) -> Result<AnimationPreview> {
+    decode_gif_within(
+        bytes,
+        max_edge,
+        Duration::from_secs(MAX_DECODE_SECONDS),
+        check,
+    )
+}
+
+/// Decodes like [`decode_gif`] under an explicit cooperative time budget,
+/// checked before each frame, so tests can separate it from the other bounds.
+fn decode_gif_within(
+    bytes: &[u8],
+    max_edge: u32,
+    budget: Duration,
+    check: impl Fn() -> Result<()>,
+) -> Result<AnimationPreview> {
     ensure!(
         bytes.len() <= MAX_INPUT_BYTES,
         "GIF exceeds the 32 MiB input limit"
@@ -37,7 +54,7 @@ pub fn decode_gif(
     ensure!(is_gif(bytes), "Unrecognized GIF header");
     ensure!(max_edge > 0, "Preview size must be greater than zero");
     check()?;
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     let mut decoder = GifDecoder::new(Cursor::new(bytes)).context("Cannot read GIF header")?;
     let (original_width, original_height) = decoder.dimensions();
     check_dimensions(original_width, original_height)?;
@@ -59,7 +76,7 @@ pub fn decode_gif(
         let next_count = frames.len() as u64 + 1;
         if frames.len() == MAX_FRAMES
             || duration_ms >= MAX_DURATION_MS
-            || started.elapsed().as_secs() >= MAX_DECODE_SECONDS
+            || started.elapsed() >= budget
             || source_pixels.saturating_mul(next_count) > MAX_DECODED_PIXELS
             || output_pixels.saturating_mul(next_count) > MAX_OUTPUT_PIXELS
         {
@@ -215,7 +232,10 @@ mod tests {
         let mut bytes = gif(1, 20, 1, 1);
         bytes[6..10].copy_from_slice(&[255, 255, 255, 255]);
         assert!(decode_gif(&bytes, 100, || Ok(())).is_err());
-        let animation = decode_gif(&gif(30, 20, 800, 800), 800, || Ok(())).unwrap();
+        // Frames this large are slow in debug builds; without a time limit the
+        // pixel bound, not the decode clock, is what stops traversal.
+        let animation =
+            decode_gif_within(&gif(30, 20, 800, 800), 800, Duration::MAX, || Ok(())).unwrap();
         assert!(animation.truncated);
         assert_eq!(animation.frames.len(), 25);
         assert_eq!(
@@ -226,5 +246,17 @@ mod tests {
                 .sum::<u64>(),
             MAX_OUTPUT_PIXELS
         );
+    }
+
+    #[test]
+    fn spent_decode_budget_stops_before_the_next_frame() {
+        let bytes = gif(2, 20, 1, 1);
+        let error = decode_gif_within(&bytes, 10, Duration::ZERO, || Ok(()))
+            .err()
+            .expect("an exhausted budget leaves no frame to show");
+        assert_eq!(error.to_string(), "GIF has no readable frames");
+        let animation = decode_gif_within(&bytes, 10, Duration::MAX, || Ok(())).unwrap();
+        assert_eq!(animation.frames.len(), 2);
+        assert!(!animation.truncated);
     }
 }
