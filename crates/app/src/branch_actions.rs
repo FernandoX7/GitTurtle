@@ -502,11 +502,16 @@ impl GitTurtle {
                 let title = purpose.title();
                 let chooser =
                     cx.new(|cx| BranchChooser::new(owner, path, purpose, choices, window, cx));
-                window.open_alert_dialog(cx, move |dialog, _, _| {
+                window.open_alert_dialog(cx, move |dialog, _, cx| {
                     let chooser_ok = chooser.clone();
+                    // The dialog clips its body to the body's bounds, and the
+                    // chooser keeps the focus ring's room inside them below
+                    // its last control. The footer's gap gives the room back,
+                    // so the footer stays put.
                     dialog
                         .title(title.clone())
                         .width(px(540.))
+                        .gap(crate::tags::DIALOG_FOOTER_GAP - appearance::button_ring_room(cx))
                         .child(chooser.clone())
                         .button_props(
                             DialogButtonProps::default()
@@ -1001,14 +1006,20 @@ impl Render for BranchChooser {
                 "Choose the local or remote branch used for tracking and ahead/behind counts."
             }
         };
-        div().flex().flex_col().gap_3()
-            .child(div().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(detail))
+        // The list scrolls, so it clips its rows to its bounds on both axes:
+        // it keeps the focus ring's room around them, scrolled to either end,
+        // and gives it back through its margin, so no row moves. The chooser
+        // keeps the room below its last control inside the dialog's clip of
+        // its body, and the dialog gives it back.
+        let room = appearance::button_ring_room(cx);
+        div().flex().flex_col().gap_3().pb(room)
+            .child(div().debug_selector(|| "branch-chooser-detail".into()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(detail))
             .child(Input::new(&self.query).cleanable(true).prefix(Icon::default().path("icons/search.svg").size(px(14.))))
-            .child(div().id("branch-chooser-list").max_h(px(330.)).overflow_y_scroll().track_scroll(&self.scroll).flex().flex_col().gap_1()
+            .child(div().id("branch-chooser-list").debug_selector(|| "branch-chooser-list".into()).max_h(px(330.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(&self.scroll).flex().flex_col().gap_1()
                 .children(matching.iter().take(CHOICE_LIMIT).map(|index| {
                     let index = *index;
                     let choice = &self.choices[index];
-                    Button::new(("branch-choice", index)).ghost().w_full().h(crate::appearance::ui_size(34.))
+                    Button::new(("branch-choice", index)).debug_selector(move || format!("branch-choice-{index}")).ghost().w_full().h(crate::appearance::ui_size(34.))
                         .text_size(crate::appearance::ui_text(12.)).accessibility_label(choice.name.clone())
                         .child(div().w_full().min_w_0().flex().items_center().justify_start().gap_2()
                             .child(Icon::default().path(if choice.remote { "icons/remote.svg" } else { "icons/branch.svg" }).size(px(14.)))
@@ -1406,3 +1417,6 @@ fn input_lines(value: &str) -> Vec<String> {
         .map(str::to_owned)
         .collect()
 }
+
+#[cfg(test)]
+mod tests;

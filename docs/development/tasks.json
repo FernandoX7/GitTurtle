@@ -1955,8 +1955,8 @@
           "description": "crates/app/docs/navigation-and-refresh.md states the explicit-Refresh rule beside the quiet one."
         },
         {
-          "id": "id",
-          "description": "description"
+          "id": "native",
+          "description": "Native frames on Linux of the delete-then-Refresh sequence on a disposable fixture over native Wayland (the session 10 writes fixture or an equivalent), in Midnight, against a same-session base built from origin/main; privacy-scanned with the local template set, and a dated docs/validation.md entry."
         }
       ],
       "profiles": [
@@ -1989,8 +1989,8 @@
           "description": "No user-visible string reachable on Linux names macOS Keychain; the PR lists each Keychain string with whether it is reachable off macOS, and docs/user-guide.md describes credential-helper storage without naming a macOS store for Linux users."
         },
         {
-          "id": "id",
-          "description": "description"
+          "id": "native",
+          "description": "Native frames on Linux of the authentication prompt during an HTTP fetch from a disposable local fixture (as in the session 10 writes evidence), with no credential reaching the launch's HOME, in Midnight and Daylight, against a same-session base built from origin/main; privacy-scanned with the local template set, a design review of every non-timing difference, and a dated docs/validation.md entry."
         }
       ],
       "profiles": [
@@ -2034,8 +2034,8 @@
           "description": "GITTURTLE-PATCH.md records the patch, its consumers and its removal condition; vendor/AGENTS.md's gpui-component row names every patch that GITTURTLE-PATCH.md lists; DESIGN.md:27 extends the ring and hover rule to Switches."
         },
         {
-          "id": "id",
-          "description": "description"
+          "id": "native",
+          "description": "Native frames on Linux of Settings with a Switch at rest, hovered, Tab-focused, and focused while checked, in Midnight, Daylight and Omarchy Tokyo Night, against a same-session base built from origin/main; privacy-scanned with the local template set, a design review of every non-timing difference, and a dated docs/validation.md entry."
         }
       ],
       "profiles": [
@@ -2076,8 +2076,8 @@
           "description": "A release-mode measurement of theme apply against a same-session base shows the added fitting within the theme-apply budget (docs/development/themes/spec.md), recorded in docs/benchmarks/."
         },
         {
-          "id": "id",
-          "description": "description"
+          "id": "native",
+          "description": "Native frames on Linux of Compare (unified and split) with a text selection, open Find with matches, and changed-word tints, in Midnight, Daylight and an Omarchy palette, against a same-session base built from origin/main; privacy-scanned with the local template set, a design review of every non-timing difference, and a dated docs/validation.md entry."
         }
       ],
       "profiles": [
@@ -2155,8 +2155,8 @@
           "description": "GITTURTLE-PATCH.md records both changes with their consumers and removal condition, vendor/AGENTS.md's row stays complete, and DESIGN.md:27's Switch sentence covers the checked knob and the faded label."
         },
         {
-          "id": "id",
-          "description": "description"
+          "id": "native",
+          "description": "Native frames on Linux of Settings with checked, unchecked and disabled Switches, in Midnight, Daylight, Omarchy Tokyo Night and Omarchy Catppuccin Latte, against a same-session base built from origin/main; privacy-scanned with the local template set, a design review of every non-timing difference, and a dated docs/validation.md entry."
         }
       ],
       "profiles": [
@@ -2197,8 +2197,8 @@
           "description": "DESIGN.md's Settings text states that keyboard focus is kept in view on the page, generalising the sentence about Your themes rows."
         },
         {
-          "id": "id",
-          "description": "description"
+          "id": "native",
+          "description": "Native frames on Linux of a Tab sequence that crosses the viewport's lower edge and back, and a Switch toggled at 18 pt, in Midnight, against a same-session base built from origin/main; privacy-scanned with the local template set, and a dated docs/validation.md entry."
         }
       ],
       "profiles": [
@@ -2238,8 +2238,8 @@
           "description": "GITTURTLE-PATCH.md and vendor/AGENTS.md's row record any vendored highlighter change, and docs/development/themes/spec.md's syntax section states the fence rule."
         },
         {
-          "id": "id",
-          "description": "description"
+          "id": "native",
+          "description": "Native frames on Linux of a Markdown file with a diff fence shown as source, in Midnight, Daylight and an Omarchy palette, against a same-session base built from origin/main; privacy-scanned with the local template set, a design review of every non-timing difference, and a dated docs/validation.md entry."
         }
       ],
       "profiles": [
@@ -2277,8 +2277,8 @@
           "description": "Preparation stays off the UI thread and is cancelled on close and on a file change, as today, asserted by an existing or new test."
         },
         {
-          "id": "id",
-          "description": "description"
+          "id": "native",
+          "description": "Native frames on Linux of the offline fixture's PR #42 Source patch for src/review/session.rs beside Compare's unified view of a comparable patch, in Midnight and Daylight, against a same-session base built from origin/main; privacy-scanned with the local template set, a design review of every non-timing difference, and a dated docs/validation.md entry."
         }
       ],
       "profiles": [
@@ -2361,8 +2361,8 @@
           "description": "A view test closes the panel while the selected file's preparation is pending, reopens it, and asserts the patch carries its decorations without the file being chosen again, in Changes and in Source; it fails on origin/main, and `warm_reopen_retries_interrupted_local_read_and_template_payload_evicts` still passes."
         },
         {
-          "id": "id",
-          "description": "description"
+          "id": "native",
+          "description": "Native frames on Linux of the offline fixture's PR #42 after closing and reopening the panel with src/review/session.rs in Source, in Midnight, against a same-session base built from origin/main; privacy-scanned with the local template set, and a dated docs/validation.md entry."
         }
       ],
       "profiles": [
@@ -2440,8 +2440,8 @@
           "description": "DESIGN.md's ligature sentence names every code-text site: diffs, editors, Blame, the conflict editor, Markdown code blocks, the PR review and the Settings sample."
         },
         {
-          "id": "id",
-          "description": "description"
+          "id": "native",
+          "description": "Native frames on Linux of Blame, a conflict editor and the PR review fixture at the default and 18 pt code sizes with a desktop monospace family applied, in Midnight, against a same-session base built from origin/main; privacy-scanned with the local template set, a design review of every non-timing difference, and a dated docs/validation.md entry."
         }
       ],
       "profiles": [
@@ -2479,8 +2479,8 @@
           "description": "At the default text size nothing moves: existing narrow tests pass unchanged, and native frames at 461 × 490, 493 × 526, 1000 × 680 and 1480 × 800 match the base under `qa.py compare --mask status-timing`."
         },
         {
-          "id": "id",
-          "description": "description"
+          "id": "native",
+          "description": "Native frames on Linux of History, Compare and Changes at 461 × 490 and 18 pt, in Midnight, against a same-session base built from origin/main; privacy-scanned with the local template set, a design review of every non-timing difference, and a dated docs/validation.md entry."
         }
       ],
       "profiles": [
@@ -2525,8 +2525,8 @@
           "description": "At 493 × 526 and taller at the default size, and at 1000 × 680 and 1480 × 800, frames match the base under `qa.py compare --mask status-timing` apart from the composer heading, and a release-mode History scroll measurement at 461 × 490 against the base shows no regression."
         },
         {
-          "id": "id",
-          "description": "description"
+          "id": "native",
+          "description": "Native frames on Linux of History, Compare and Changes at 461 × 490 at the default size and at 18 pt, in Midnight and Daylight, against a same-session base built from origin/main; privacy-scanned with the local template set, a design review of every non-timing difference, and a dated docs/validation.md entry."
         }
       ],
       "profiles": [
@@ -2567,8 +2567,8 @@
           "description": "DESIGN.md states the copy-feedback rule."
         },
         {
-          "id": "id",
-          "description": "description"
+          "id": "native",
+          "description": "Native frames on Linux of Copy After source and the inspector's Hash at rest and just after a click, in Midnight and Daylight, against a same-session base built from origin/main; privacy-scanned with the local template set, a design review of every non-timing difference, and a dated docs/validation.md entry."
         }
       ],
       "profiles": [
@@ -2603,8 +2603,8 @@
           "description": "A release-mode History scroll measurement against a same-session base shows no regression."
         },
         {
-          "id": "id",
-          "description": "description"
+          "id": "native",
+          "description": "Native frames on Linux of History before and after Ctrl+B twice on native Wayland at scale 1 and at a fractional scale, where `qa.py compare` finds the candidate's before and after frames identical, in Midnight, against a same-session base built from origin/main; privacy-scanned with the local template set, and a dated docs/validation.md entry."
         }
       ],
       "profiles": [
@@ -2639,8 +2639,8 @@
           "description": "Every other ghost icon Button either already lifts on hover (unchanged) or gains the same lift, listed in the PR; a vendored change is recorded in GITTURTLE-PATCH.md and vendor/AGENTS.md's row."
         },
         {
-          "id": "id",
-          "description": "description"
+          "id": "native",
+          "description": "Native frames on Linux of the arrow buttons, and any other Button whose look changes, at rest and hovered in a narrow Compare window, in Midnight and Daylight, against a same-session base built from origin/main; privacy-scanned with the local template set, a design review of every non-timing difference, and a dated docs/validation.md entry."
         }
       ],
       "profiles": [

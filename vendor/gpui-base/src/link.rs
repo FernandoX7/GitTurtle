@@ -8,7 +8,7 @@ use gpui::{
 };
 use smallvec::SmallVec;
 
-use crate::{StateStyle, StyledExt as _};
+use crate::{StateStyle, StyledExt as _, disabled_focus::track_control_focus};
 
 type ActivationHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 type OpenHandler = Rc<dyn Fn(&str, &ClickEvent, &mut Window, &mut App)>;
@@ -175,11 +175,17 @@ impl RenderOnce for Link {
             .when_some(self.accessibility_label, |this, label| {
                 this.aria_label(label)
             })
-            .when(!disabled, |this| {
-                this.track_focus(
-                    &focus_handle
-                        .tab_index(self.tab_index)
-                        .tab_stop(self.tab_stop),
+            // GitTurtle patch: while focused, a disabled control keeps its
+            // handle as a target that is not a tab stop, so Tab and Shift+Tab
+            // still leave it (`disabled_focus`).
+            .map(|this| {
+                track_control_focus(
+                    this,
+                    focus_handle,
+                    disabled,
+                    self.tab_index,
+                    self.tab_stop,
+                    window,
                 )
             })
             .when(disabled, |this| {
