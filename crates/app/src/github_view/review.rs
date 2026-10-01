@@ -558,11 +558,20 @@ impl Panel {
         let generation = self.review.prepare_generation;
         // Pure CPU over the supplied patch the panel owns: no repository, network or write, so
         // it stays off the serial operations executor that carries accepted writes. Dropping
-        // the task cancels work that has not started.
+        // the task cancels work that has not started. A panic on a supplied patch becomes the
+        // error the operations executor gives a panicking job (`operations.rs`), as Compare's
+        // worker guards its preparation, instead of unwinding into the awaiting UI task.
         let prepared = cx.background_spawn(async move {
-            file.prepare()?;
-            let presentation = file.patch.as_deref().and_then(source_presentation);
-            anyhow::Ok((file, presentation))
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                file.prepare()?;
+                let presentation = file.patch.as_deref().and_then(source_presentation);
+                anyhow::Ok((file, presentation))
+            }))
+            .unwrap_or_else(|_| {
+                Err(anyhow::anyhow!(
+                    "Operation interrupted unexpectedly. Refresh the repository before retrying; it may have changed."
+                ))
+            })
         });
         self.review.preparing = true;
         self.review.prepare_task = Some(cx.spawn_in(window, async move |this, cx| {
