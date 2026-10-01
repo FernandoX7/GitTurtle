@@ -64,7 +64,7 @@ class Session:
     def __init__(self, binary: Path, fixture: Path, run_dir: Path, preferences: bytes, *,
                  width: int = 1000, height: int = 680, display: str = runenv.DEFAULT_DISPLAY,
                  scale: str = runenv.DEFAULT_SCALE, for_commit: bool = False,
-                 extra_env: dict[str, str] | None = None, settle: float = 5.0) -> None:
+                 extra_env: dict[str, str] | None = None, settle: float = 5.0, backend: str = "xtest") -> None:
         # Every refusal happens before the run directory is created or the binary is run.
         self.binary = runenv.absolute(binary, "binary")
         self.fixture, warnings = runenv.check_fixture(fixture, for_commit)
@@ -72,19 +72,22 @@ class Session:
         if for_commit:
             runenv.check_commit_run_dir(run_dir)
         runenv.check_extra(extra_env or {})
+        if backend not in ("xtest", "mutter"):
+            raise SystemExit(f"refusing: unknown input backend {backend!r}")
         described = identity.describe(self.binary)
         for warning in warnings:
             print(f"warning: {warning}", file=sys.stderr, flush=True)
         self.dirs = runenv.prepare(run_dir, preferences)
         self.env = runenv.launch_env(self.dirs, display=display, scale=scale, extra=extra_env)
         self.width, self.height, self.settle = width, height, settle
-        self.proc = self.driver = None
+        self.input = backend
+        self.proc = self.driver = self.remote = None
         self.log = dict(
             header=dict(
                 binary=described, fixture=str(self.fixture),
                 fixture_before=fixture_state(self.fixture), store_sha256=identity.sha256_bytes(preferences),
                 size=[width, height], display=display, scale=scale, backend="XWayland (WAYLAND_DISPLAY unset)",
-                for_commit=for_commit, warnings=warnings, argv=sys.argv, started_utc=utc(),
+                input=backend, for_commit=for_commit, warnings=warnings, argv=sys.argv, started_utc=utc(),
                 env={key: self.env[key] for key in (*runenv.LAYOUT, "DISPLAY", "GPUI_X11_SCALE_FACTOR")},
                 env_extra=sorted(extra_env or ()),
             ),
@@ -99,10 +102,17 @@ class Session:
         argv = [str(self.binary), str(self.fixture)]
         self.applog = open(self.dirs.root / "app.log", "wb")
         self.proc = subprocess.Popen(argv, env=self.env, stdout=self.applog, stderr=subprocess.STDOUT)
-        self.log["launch"] = dict(argv=argv, pid=self.proc.pid, at_utc=utc())
-        print(f"launched pid {self.proc.pid}", flush=True)
+        self.log["launch"] = dict(argv=argv, pid=self.proc.pid, at_utc=utc(), input=self.input)
+        print(f"launched pid {self.proc.pid} (input {self.input})", flush=True)
         dsp = x11.connect(self.env["DISPLAY"])
-        self.driver = x11.Driver(dsp, x11.find_window(dsp, self.proc.pid), self.log["input"])
+        window = x11.find_window(dsp, self.proc.pid)
+        if self.input == "mutter":
+            from . import mutter
+
+            self.remote = mutter.RemoteDesktop.connect()
+            self.driver = mutter.MutterDriver(dsp, window, self.log["input"], self.remote)
+        else:
+            self.driver = x11.Driver(dsp, window, self.log["input"])
         self.driver.resize(self.width, self.height)
         time.sleep(self.settle)
         self.driver.activate()
@@ -110,6 +120,9 @@ class Session:
 
     def close(self, timeout: float = 15.0) -> int | None:
         """SIGTERM to the launched PID only; a survivor is reported, never killed harder."""
+        if self.remote is not None:
+            self.remote.stop()
+            self.remote = None
         if self.proc is not None:
             if self.proc.poll() is None:
                 self.proc.send_signal(signal.SIGTERM)

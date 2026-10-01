@@ -1,12 +1,16 @@
 """The XDG file-chooser portal on GNOME: read its dialog, type into it, record its D-Bus traffic.
 
-The Import/Export dialogs are drawn by xdg-desktop-portal-gnome as Wayland
-clients of the session compositor, not X11 clients of the QA display. XTest
+The Import/Export dialogs are drawn by xdg-desktop-portal-gnome (or, on
+GNOME 50, by Nautilus as `org.gnome.Nautilus`) as Wayland clients of the
+session compositor, not X11 clients of the QA display. XTest
 never reaches them (a whole file name typed into the Save dialog left its
 Name entry unchanged) and org.gnome.Shell.Screenshot refuses this caller. So
 the dialog's evidence is its AT-SPI tree, and input goes through
 org.gnome.Mutter.RemoteDesktop; every keystroke sent is read back from the
 dialog's entry before the next, so input that did not land is visible.
+Mutter delivers those keys to whatever surface has compositor focus, so a key
+is sent only while a widget inside the matched dialog holds focus and X focus is
+off the app.
 
 Start from an empty run directory: a stale export in the run's HOME makes
 GTK raise its overwrite prompt, Return never completes the dialog, no portal
@@ -21,7 +25,12 @@ from pathlib import Path
 
 PORTALS = ("xdg-desktop-portal-gnome", "xdg-desktop-portal-gtk")
 STATES = ("focused", "focusable", "showing", "visible", "modal", "editable", "selected", "enabled")
-REMOTE_DESKTOP = "org.gnome.Mutter.RemoteDesktop"
+# Nautilus hosts the FileChooser on GNOME 50; only its top-levels titled exactly like the app's requests
+# are dialogs, so its browser windows are never read.
+NAUTILUS = "org.gnome.Nautilus"
+TITLES = ("Open File", "Save File")
+# Nautilus nests the dialog's entries and focus far deeper than the portal backend does.
+DIALOG_DEPTH = 40
 # A session bus with no service directory: org.freedesktop.portal.Desktop is absent, so the app's
 # picker call fails the way it does on a desktop without a FileChooser backend.
 PRIVATE_BUS_CONFIG = """<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
@@ -36,10 +45,6 @@ PRIVATE_BUS_CONFIG = """<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bu
   </policy>
 </busconfig>
 """
-CHAR_KEYSYMS = {"/": "slash", ".": "period", "-": "minus", "_": "underscore", " ": "space",
-                "(": "parenleft", ")": "parenright", "#": "numbersign", ",": "comma", "~": "asciitilde",
-                ":": "colon", "=": "equal", "+": "plus", "{": "braceleft", "}": "braceright",
-                '"': "quotedbl", "'": "apostrophe", "*": "asterisk", "?": "question", "!": "exclam"}
 
 
 # ---------- AT-SPI ----------
@@ -59,15 +64,22 @@ def init() -> None:
 
 
 def dialog_windows() -> list[tuple[str, object]]:
-    """Every top-level of the portal backends, with the backend that owns it."""
+    """Every top-level of the portal backends, and Nautilus's FileChooser by exact title, with its owner.
+
+    Other applications are skipped by name, and no other Nautilus window is returned.
+    """
     desktop = _atspi().get_desktop(0)
     found = []
     for i in range(desktop.get_child_count()):
         try:
             app = desktop.get_child_at_index(i)
-            if not app or app.get_name() not in PORTALS:
+            owner = app.get_name() if app else None
+            if owner not in PORTALS and owner != NAUTILUS:
                 continue
-            found += [(app.get_name(), app.get_child_at_index(j)) for j in range(app.get_child_count())]
+            for j in range(app.get_child_count()):
+                window = app.get_child_at_index(j)
+                if window is not None and (owner in PORTALS or window.get_name() in TITLES):
+                    found.append((owner, window))
         except Exception:
             continue
     return found
@@ -155,7 +167,8 @@ def find_nodes(node, role: str | None = None, name: str | None = None, depth: in
 
 def entry_texts(window) -> list[dict]:
     return [{"role": node.get_role_name(), "name": node.get_name(), "text": text_of(node), "states": states_of(node)}
-            for node in find_nodes(window, role="text") + find_nodes(window, role="entry")]
+            for node in find_nodes(window, role="text", limit=DIALOG_DEPTH)
+            + find_nodes(window, role="entry", limit=DIALOG_DEPTH)]
 
 
 def focused_text(window) -> str | None:
@@ -166,56 +179,65 @@ def focused_text(window) -> str | None:
     return entries[0]["text"] if entries else None
 
 
+def dialog_has_focus(window) -> bool:
+    """A widget inside the dialog holds focus. GTK4 never reports ACTIVE on the frame, so FOCUSED is the signal."""
+    return any("focused" in states_of(node) for node in find_nodes(window, limit=DIALOG_DEPTH))
+
+
 # ---------- compositor keyboard ----------
+class DialogFocusRefused(SystemExit):
+    def __init__(self, message: str) -> None:
+        super().__init__(f"refusing: {message}")
+
+
 class Keyboard:
-    """Keysyms injected through a Mutter RemoteDesktop session, which reach the portal dialog."""
+    """Keysyms for a portal dialog through a Mutter RemoteDesktop session, each batch behind the focus guard.
 
-    def __init__(self) -> None:
-        import dbus
+    `app_focused` (MutterDriver.app_focused) adds the second half of the guard: X focus must be off the app.
+    """
 
-        self.dbus = dbus
-        bus = dbus.SessionBus()
-        top = dbus.Interface(bus.get_object(REMOTE_DESKTOP, "/org/gnome/Mutter/RemoteDesktop"), REMOTE_DESKTOP)
-        self.path = str(top.CreateSession())
-        self.session = dbus.Interface(bus.get_object(REMOTE_DESKTOP, self.path), f"{REMOTE_DESKTOP}.Session")
-        self.session.Start()
+    def __init__(self, remote=None, app_focused=None) -> None:
+        from . import mutter
+
+        self.mutter = mutter
+        self.owned = remote is None
+        self.remote = mutter.RemoteDesktop.connect() if remote is None else remote
+        self.app_focused = app_focused
         self.log: list[str] = []
 
     def stop(self) -> None:
-        try:
-            self.session.Stop()
-        except Exception:
-            pass
+        if self.owned:
+            self.remote.stop()
 
-    def _sym(self, keysym: int, down: bool) -> None:
-        self.session.NotifyKeyboardKeysym(self.dbus.UInt32(keysym), self.dbus.Boolean(down))
+    def guard(self, window, why: str, attempts: int = 20, poll: float = 0.3) -> None:
+        """Wait up to attempts x poll seconds for focus inside `window` with X focus off the app, else refuse."""
+        for attempt in range(max(1, attempts)):
+            inside = dialog_has_focus(window)
+            off_app = self.app_focused is None or not self.app_focused()
+            if inside and off_app:
+                return
+            if attempt + 1 < attempts:
+                time.sleep(poll)
+        self.log.append(f"guard refused {why}: focus inside dialog {inside}, X focus off the app {off_app}")
+        raise DialogFocusRefused(f"no widget inside the dialog holds focus (or X focus is on the app) before {why}; "
+                                 "no key sent")
 
-    def key(self, name: str, mods=(), wait: float = 0.25) -> None:
-        from Xlib import XK
-
-        syms = [XK.string_to_keysym(mod) for mod in mods]
-        sym = XK.string_to_keysym(name)
-        if sym == 0:
-            raise ValueError(f"unknown keysym name {name!r}")
-        for mod in syms:
-            self._sym(mod, True)
-        self._sym(sym, True)
-        self._sym(sym, False)
-        for mod in reversed(syms):
-            self._sym(mod, False)
+    def key(self, window, name: str, mods=(), wait: float = 0.25) -> None:
+        syms = [self.mutter.keysym(mod) for mod in mods]
+        sym = self.mutter.keysym(name)
+        if sym == 0 or 0 in syms:
+            raise ValueError(f"unknown keysym in {list(mods)} {name!r}")
+        self.guard(window, f"dialog key {name}")
+        self.remote.chord(syms, sym)
         self.log.append("+".join([*(m.replace("_L", "") for m in mods), name]))
         time.sleep(wait)
 
-    def type(self, text: str, per: float = 0.045) -> None:
-        from Xlib import XK
-
-        for char in text:
-            name = CHAR_KEYSYMS.get(char, char if char.isalnum() else None)
-            if name is None:
-                raise ValueError(f"no keysym mapping for {char!r}")
-            sym = XK.string_to_keysym(name) or (ord(char) if char.isupper() else 0)
-            self._sym(sym, True)
-            self._sym(sym, False)
+    def type(self, window, text: str, per: float = 0.045) -> None:
+        syms = [self.mutter.char_keysym(char) for char in text]
+        self.guard(window, f"dialog type {text!r}")
+        for sym in syms:
+            self.remote.keysym(sym, True)
+            self.remote.keysym(sym, False)
             time.sleep(per)
         self.log.append(f"type {text!r}")
         time.sleep(0.2)
@@ -223,8 +245,8 @@ class Keyboard:
     def type_checked(self, window, text: str, select_all: bool = True) -> tuple[bool, str | None]:
         """Type into the dialog's focused entry and read it back."""
         if select_all:
-            self.key("a", ["Control_L"])
-        self.type(text)
+            self.key(window, "a", ["Control_L"])
+        self.type(window, text)
         time.sleep(0.5)
         got = focused_text(window)
         return got == text, got
