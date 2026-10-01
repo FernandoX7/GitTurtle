@@ -37,8 +37,8 @@ Research for task `atspi-disabled-state` in [`tasks.json`](tasks.json), using th
 
 - **Owners:** `vendor/accesskit_atspi_common/GITTURTLE-PATCH.md` records provenance, the change, the consuming path and the removal condition. `vendor/AGENTS.md` lists it, `THIRD_PARTY_NOTICES.md` names its license and patch record, and `Cargo.toml` selects and excludes it.
 - **Regression:** `native_accessibility::atspi_state_tests` is a Linux-only application test, so every Linux run of the app's tests, Ubuntu CI included, runs it. It maps an AccessKit tree through the vendored adapter's `PlatformNode::state()`.
-- **Native, pending:** an AT-SPI read of base and candidate on Linux X11 is the coordinator's, recorded in [`docs/validation.md`](../validation.md).
-- **Dependency, pending:** licenses and advisories (`cargo deny --locked check`) and the independent [security review](security-review.md).
+- **Native:** an AT-SPI read of base and candidate on Linux X11 on 2026-10-01, recorded in [`docs/validation.md`](../validation.md#october-1-disabled-buttons-report-disabled-to-at-spi). It covered disabled Buttons, not a disabled text input.
+- **Dependency:** `cargo deny --locked check` passed (advisories, bans, licenses and sources), and the independent [security review](security-review.md) passed on 2026-10-01.
 - **Remaining uncertainty:** whether Orca speaks the new state as intended (not covered), and VoiceOver, which this change does not touch.
 
 ## Outcome

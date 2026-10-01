@@ -22,8 +22,8 @@ enabled and sensitive on Unix" (AccessKit/accesskit#788, released in
 Upstream 0.19.1 added `Enabled | Sensitive` to every node unless its role
 supports read-only and the node was read-only or disabled. A disabled Button,
 whose role does not support read-only in `accesskit_consumer` 0.38.0, therefore
-reported `enabled` and `sensitive`, and a disabled Switch or CheckBox reported
-`read-only`. With the backport, a disabled node reports none of the three; an
+reported `enabled` and `sensitive`, and a disabled Switch, CheckBox or text
+input reported `read-only`. With the backport, a disabled node reports none of the three; an
 enabled node keeps `enabled` and `sensitive`, or `read-only` when its role
 supports it and it is read-only. The `is_read_only()` it calls already exists
 in the locked `accesskit_consumer` 0.38.0. No other source, manifest or
@@ -40,8 +40,8 @@ Buttons; this patch lets that property reach AT-SPI. macOS uses
 
 The Linux-only application test
 `native_accessibility::atspi_state_tests` maps an AccessKit tree with enabled,
-disabled and focused disabled Buttons, a disabled Switch and a disabled
-CheckBox through this crate's adapter. Run
+disabled and focused disabled Buttons, a disabled Switch, a disabled
+CheckBox, a disabled text input and an enabled read-only text input through this crate's adapter. Run
 `cargo test --locked -p gitturtle --bin gitturtle native_accessibility::atspi_state_tests`
 on Linux. Native AT-SPI reads are recorded in `docs/validation.md`.
 

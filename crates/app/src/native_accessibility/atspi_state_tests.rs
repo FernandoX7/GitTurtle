@@ -1,8 +1,9 @@
 //! The AT-SPI state set that `accesskit_unix` serves for `Accessible.GetState`
 //! is `PlatformNode::state()` of the shared `accesskit_atspi_common` adapter.
 //! Upstream 0.19.1 reported every disabled Button as enabled and sensitive and
-//! every disabled Switch or CheckBox as read-only; the vendored #788 backport
-//! (`vendor/accesskit_atspi_common/GITTURTLE-PATCH.md`) reports none of them.
+//! every disabled Switch, CheckBox or text input as read-only; the vendored #788
+//! backport (`vendor/accesskit_atspi_common/GITTURTLE-PATCH.md`) reports none
+//! of them, while an enabled read-only text input stays read-only.
 
 use accesskit_atspi_common::{Adapter, AdapterCallback, AppContext, Event, InterfaceSet};
 use accesskit_atspi_common::{NodeId, State, StateSet, WindowBounds};
@@ -39,6 +40,12 @@ fn disabled_controls_are_neither_enabled_sensitive_nor_read_only() {
         ("focused disabled Button", control(Role::Button, true)),
         ("disabled Switch", control(Role::Switch, true)),
         ("disabled CheckBox", control(Role::CheckBox, true)),
+        ("disabled TextInput", control(Role::TextInput, true)),
+        ("read-only TextInput", {
+            let mut node = control(Role::TextInput, false);
+            node.set_read_only();
+            node
+        }),
     ];
     let ids: Vec<_> = (1..=controls.len() as u64).map(LocalNodeId).collect();
     let mut window = Node::new(Role::Window);
@@ -76,7 +83,8 @@ fn disabled_controls_are_neither_enabled_sensitive_nor_read_only() {
         !states[0].contains(State::ReadOnly),
         "enabled Button: {states:?}"
     );
-    for ((name, _), state) in controls.iter().zip(&states).skip(1) {
+    let disabled = 1..controls.len() - 1;
+    for ((name, _), state) in controls[disabled.clone()].iter().zip(&states[disabled]) {
         for unusable in [State::Enabled, State::Sensitive, State::ReadOnly] {
             assert!(
                 !state.contains(unusable),
@@ -89,5 +97,10 @@ fn disabled_controls_are_neither_enabled_sensitive_nor_read_only() {
         states[2].contains(State::Focusable | State::Focused),
         "a disabled Button that holds focus keeps its focus states: {:?}",
         states[2]
+    );
+    let read_only = &states[controls.len() - 1];
+    assert!(
+        read_only.contains(State::ReadOnly) && !read_only.intersects(usable),
+        "an enabled read-only text input stays read-only: {read_only:?}"
     );
 }
