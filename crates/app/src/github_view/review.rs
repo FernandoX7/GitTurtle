@@ -74,6 +74,13 @@ pub(super) struct ReviewState {
     pub composing: Option<LineComment>,
     pub input: Entity<TextareaState>,
     pub source: Option<Entity<EditorState>>,
+    /// The Source editor's patch decorations, kept for the editor's life so Find can remove
+    /// their backgrounds under its matches and a palette change redecorates them.
+    source_decorations: Option<editor_find::PatchDecorations>,
+    /// The selected file's patch presentation, prepared with its rows on the read worker
+    /// within Compare's text bounds; `None` while preparing and above them.
+    presentation: Option<text::PatchPresentation>,
+    _palette: Subscription,
     pub mode: usize,
     pub file_focus: FocusHandle,
     pub line_focus: FocusHandle,
@@ -110,6 +117,13 @@ impl ReviewState {
                     .placeholder("Explain this change…")
             }),
             source: None,
+            source_decorations: None,
+            presentation: None,
+            // Compare's patch is redecorated where the app applies a palette; this panel
+            // follows the applied palette itself.
+            _palette: cx.observe_global::<crate::appearance::Palette>(|panel, cx| {
+                panel.review.refresh_theme(cx)
+            }),
             mode: 0,
             file_focus: cx.focus_handle(),
             line_focus: cx.focus_handle(),
@@ -137,10 +151,41 @@ impl ReviewState {
         self.selected_file = None;
         self.selected_row = None;
         self.anchor = None;
-        self.source = None;
+        self.release_file();
         self.file_page = 1;
         self.files_next = false;
     }
+    /// Release the selected file's Source editor, its decorations and its presentation.
+    fn release_file(&mut self) {
+        self.source = None;
+        self.source_decorations = None;
+        self.presentation = None;
+    }
+    /// Decorate the Source editor once it and its file's presentation both exist, whichever
+    /// comes first; a file above the bounds, or not prepared, keeps plain text.
+    fn decorate_source(&mut self, cx: &mut App) {
+        if self.source_decorations.is_none()
+            && let (Some(source), Some(presentation)) = (&self.source, &self.presentation)
+        {
+            self.source_decorations = Some(text::decorate(source, presentation, cx));
+        }
+    }
+    fn refresh_theme(&self, cx: &mut App) {
+        if let (Some(decorations), Some(presentation)) =
+            (&self.source_decorations, &self.presentation)
+        {
+            text::refresh_theme(decorations, presentation, cx);
+        }
+    }
+}
+
+/// Prepare Source's patch decorations only within the bounds Compare prepares a text diff in
+/// (`gitturtle_core::MAX_DIFF_BYTES` and `MAX_DIFF_LINES`, as `worker.rs` applies them); a
+/// larger supplied patch is drawn as plain text.
+fn source_presentation(patch: &str) -> Option<text::PatchPresentation> {
+    (patch.len() <= gitturtle_core::MAX_DIFF_BYTES
+        && patch.bytes().filter(|byte| *byte == b'\n').count() <= gitturtle_core::MAX_DIFF_LINES)
+        .then(|| text::PatchPresentation::prepare(patch))
 }
 impl Panel {
     pub(super) fn reveal_on_focus(
@@ -287,6 +332,16 @@ impl Panel {
                     + file.rows.iter().map(|row| row.text.len()).sum::<usize>()
             })
             .sum::<usize>()
+            + self
+                .review
+                .presentation
+                .as_ref()
+                .map_or(0, text::PatchPresentation::retained_bytes)
+            + self
+                .review
+                .source_decorations
+                .as_ref()
+                .map_or(0, editor_find::PatchDecorations::retained_bytes)
             + self.conversation_bytes(cx)
             + self.review.comments.iter().map(comment).sum::<usize>()
             + self.review.composing.as_ref().map_or(0, comment)
@@ -460,7 +515,7 @@ impl Panel {
         self.review.selected_file = None;
         self.review.selected_row = None;
         self.review.anchor = None;
-        self.review.source = None;
+        self.review.release_file();
         self.review.mode = 0;
     }
     pub(super) fn select_review_file(
@@ -489,7 +544,7 @@ impl Panel {
         self.review.selected_file = Some(index);
         self.review.selected_row = None;
         self.review.anchor = None;
-        self.review.source = None;
+        self.review.release_file();
         self.review.mode = 0;
         self.review
             .file_scroll
@@ -503,7 +558,8 @@ impl Panel {
         let response = self.owner.update(cx, |owner, _| {
             owner.operations.submit_read(move || {
                 file.prepare()?;
-                Ok(file)
+                let presentation = file.patch.as_deref().and_then(source_presentation);
+                Ok((file, presentation))
             })
         });
         let Ok(response) = response else {
@@ -523,7 +579,11 @@ impl Panel {
                 }
                 this.review.preparing = false;
                 match result {
-                    Ok(Ok(file)) => this.review.files[index] = file,
+                    Ok(Ok((file, presentation))) => {
+                        this.review.files[index] = file;
+                        this.review.presentation = presentation;
+                        this.review.decorate_source(cx);
+                    }
                     Ok(Err(error)) => this.error = Some(format!("{error:#}")),
                     Err(_) => {
                         this.error =
@@ -667,9 +727,13 @@ impl Panel {
             && let Some(patch) = self
                 .review
                 .selected_file
-                .and_then(|n| self.review.files[n].patch.clone())
+                .and_then(|n| self.review.files[n].patch.as_deref())
         {
-            self.review.source = Some(text::editor(&patch, "diff", None, window, cx));
+            // Plain text with the editor's own line numbers; the decorations follow from the
+            // presentation the file's preparation made, now or when it arrives.
+            let source = text::editor(patch, "diff", None, window, cx);
+            self.review.source = Some(source);
+            self.review.decorate_source(cx);
         }
         self.focus_file_content(window, cx);
         cx.notify();
@@ -1306,6 +1370,197 @@ mod tests {
             .unwrap()
             .unwrap();
         cx.executor().run_until_parked();
+    }
+    /// Source draws the supplied patch as plain text and takes the decorations the file's
+    /// preparation made on the read worker, read back through the handle Find masks: they
+    /// reach the editor whether Source opens before the preparation finishes or after it,
+    /// equal Compare's for the same text, follow a palette change and count in the retained
+    /// bytes. A file superseded before its preparation finished decorates nothing, neither its
+    /// own Source nor the next file's, and a patch above Compare's bounds stays plain text
+    /// with no decorations.
+    #[gpui::test]
+    async fn source_patch_takes_the_decorations_its_file_preparation_made(cx: &mut TestAppContext) {
+        use crate::appearance::ThemeChoice;
+        cx.executor().allow_parking();
+        let fixture = tempfile::tempdir().unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["-c", "init.templateDir=", "init", "--initial-branch=main"])
+                .arg(fixture.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        let repo = GitRepository::open(fixture.path()).unwrap();
+        let panel_repo = repo.clone();
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let output = captured.clone();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+            ThemeChoice::ALL[0].apply(None, cx);
+        });
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let app = cx.new(|cx| {
+                let mut app = GitTurtle::new(
+                    None,
+                    Preferences::default(),
+                    repository_tabs::Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                );
+                app.page = AppPage::Repository;
+                app.path = Some(repo.path().to_owned());
+                app.repository = Some(repo);
+                app
+            });
+            *output.borrow_mut() = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let app = captured.borrow().as_ref().unwrap().clone();
+        let panel = cx.update(|window, cx| {
+            cx.new(|cx| Panel::new(app.downgrade(), panel_repo, "main".into(), window, cx))
+        });
+        let settle = |cx: &mut gpui_kit::VisualTestContext| {
+            app.read_with(cx, |app, _| app.operations.drain());
+            cx.run_until_parked();
+        };
+        let patches = [
+            "@@ -1,2 +1,2 @@\n context\n-old value\n+new value\n".to_owned(),
+            "@@ -1 +1,2 @@\n-before\n+after\n+more\n".to_owned(),
+            // One line more than Compare prepares.
+            format!(
+                "@@ -1,{0} +1,{0} @@\n{1}",
+                gitturtle_core::MAX_DIFF_LINES,
+                " line\n".repeat(gitturtle_core::MAX_DIFF_LINES)
+            ),
+        ];
+        let file = |name: &str, patch: &String| PullFile {
+            filename: name.into(),
+            previous_filename: None,
+            status: "modified".into(),
+            additions: 1,
+            deletions: 1,
+            patch: Some(patch.clone()),
+            rows: Vec::new(),
+            unavailable: None,
+        };
+        let files = vec![
+            file("src/a.rs", &patches[0]),
+            file("src/b.rs", &patches[1]),
+            file("large.txt", &patches[2]),
+        ];
+        // The decorations Compare's unified diff takes for the same text in the applied palette.
+        let compare = |patch: &str, cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|window, cx| {
+                let presentation = text::PatchPresentation::prepare(patch);
+                let (_, decorations) =
+                    text::editor_with_decorations(patch, "diff", Some(&presentation), window, cx);
+                decorations
+                    .expect("a prepared patch is decorated")
+                    .drawn(cx)
+            })
+        };
+        let source = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.read(|cx| panel.read(cx).review.source.clone().expect("Source editor"))
+        };
+        let decorations = |editor: &Entity<EditorState>, cx: &mut gpui_kit::VisualTestContext| {
+            cx.read(|cx| editor_find::patch_layer(editor, cx).map(|layer| layer.drawn(cx)))
+        };
+
+        // Source opens before the file's preparation has finished: plain text at once.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.review.files = files;
+                panel.review.section = Section::Files;
+                panel.select_review_file(0, window, cx);
+                panel.review_source(1, window, cx);
+            })
+        });
+        let first = source(cx);
+        assert_eq!(decorations(&first, cx), None);
+        settle(cx);
+        let expected = compare(&patches[0], cx);
+        assert_eq!(
+            decorations(&first, cx).as_ref(),
+            Some(&expected),
+            "the prepared decorations reach the open Source editor"
+        );
+        cx.read(|cx| assert_eq!(first.read(cx).value(), patches[0].as_str()));
+
+        // The presentation and the decorations kept for the editor count toward the budget.
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                let with = panel.retained_review_bytes(cx);
+                let presentation = panel.review.presentation.take().expect("prepared");
+                let kept = panel.review.source_decorations.take().expect("kept");
+                let counted = presentation.retained_bytes() + kept.retained_bytes();
+                assert_eq!(with - panel.retained_review_bytes(cx), counted);
+                assert!(counted > 0);
+                panel.review.presentation = Some(presentation);
+                panel.review.source_decorations = Some(kept);
+            })
+        });
+
+        // A palette change redecorates it as Compare would be.
+        cx.update(|_, cx| ThemeChoice::ALL[1].apply(None, cx));
+        cx.run_until_parked();
+        let recolored = compare(&patches[0], cx);
+        assert_ne!(recolored, expected);
+        assert_eq!(decorations(&first, cx), Some(recolored.clone()));
+
+        // A file superseded before its preparation finished decorates nothing: its Source is
+        // plain text while it is selected, and its preparation's result, which arrives first
+        // on the serial read worker, never reaches the next file's Source, opened before
+        // either finished.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.select_review_file(1, window, cx);
+                panel.review_source(1, window, cx);
+            })
+        });
+        let superseded = source(cx);
+        assert_eq!(decorations(&superseded, cx), None);
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.select_review_file(0, window, cx);
+                panel.review_source(1, window, cx);
+            })
+        });
+        let current = source(cx);
+        settle(cx);
+        assert_ne!(current, superseded);
+        assert_eq!(decorations(&current, cx), Some(recolored));
+
+        // Source opened after its file's preparation finished takes the decorations at once.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| panel.select_review_file(1, window, cx))
+        });
+        settle(cx);
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.review_source(1, window, cx)));
+        let later = source(cx);
+        let expected = compare(&patches[1], cx);
+        assert_eq!(decorations(&later, cx), Some(expected));
+
+        // Above Compare's bounds the supplied patch stays exact plain text, undecorated.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.select_review_file(2, window, cx);
+                panel.review_source(1, window, cx);
+            })
+        });
+        settle(cx);
+        let large = source(cx);
+        cx.read(|cx| {
+            assert!(panel.read(cx).review.presentation.is_none());
+            assert_eq!(large.read(cx).value(), patches[2].as_str());
+        });
+        assert_eq!(decorations(&large, cx), None);
     }
     #[gpui::test]
     async fn warm_reopen_retries_interrupted_local_read_and_template_payload_evicts(

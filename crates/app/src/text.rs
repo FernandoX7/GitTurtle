@@ -4,8 +4,6 @@ use gpui_kit::{
     component::input::{EditorState, TextDecoration},
     rgb,
 };
-#[cfg(test)]
-use gpui_kit::{EntityId, Global};
 use std::{mem::size_of, ops::Range, sync::Arc};
 
 /// Immutable patch metadata prepared by the repository worker and shared with
@@ -62,7 +60,11 @@ const PLAIN_TEXT: &str = "text";
 const DIFF: &str = "diff";
 
 /// Build only the currently requested editor. Decorations change presentation,
-/// while the editor receives one owned copy of the unmodified source text.
+/// while the editor receives one owned copy of the unmodified source text. A patch's
+/// presentation is prepared off the UI thread by its caller's worker (`worker::text_content`
+/// for Compare, recovery and rewrite; the pull request review's file preparation for its
+/// Source patch), so this never scans the patch; a `"diff"` request without one draws plain
+/// text with no colors.
 pub fn editor(
     value: &str,
     language: &str,
@@ -73,11 +75,9 @@ pub fn editor(
     editor_with_decorations(value, language, diff, window, cx).0
 }
 
-/// A decorated patch is drawn as plain text: its decorations are then the only colors on it.
-/// A grammar's captures would compete with them for the same text, and GPUI's highlight fold
-/// leaves either color, by hash order rather than precedence. A caller asking for the diff
-/// language without a presentation gets one derived from the patch text, as Compare's unified
-/// diff has, so no patch is drawn in the diff grammar.
+/// A patch is drawn as plain text, so its decorations are the only colors on it. A grammar's
+/// captures would compete with them for the same text, and GPUI's highlight fold leaves either
+/// color, by hash order rather than precedence.
 pub fn editor_with_decorations(
     value: &str,
     language: &str,
@@ -88,8 +88,7 @@ pub fn editor_with_decorations(
     Entity<EditorState>,
     Option<crate::editor_find::PatchDecorations>,
 ) {
-    let derive = diff.is_none() && language == DIFF;
-    let language = if diff.is_some() || derive {
+    let language = if diff.is_some() || language == DIFF {
         PLAIN_TEXT
     } else {
         language
@@ -103,53 +102,22 @@ pub fn editor_with_decorations(
             .default_value(value.to_owned())
     });
     crate::editor_find::reserve_highlight_layer(&editor, cx);
-    let collection = diff.map(|presentation| {
-        let decorations = theme_decorations(presentation, cx);
-        crate::editor_find::patch_decorations(&editor, decorations, cx)
-    });
-    if derive {
-        decorate_from_text(&editor, value, cx);
-    }
+    let collection = diff.map(|presentation| decorate(&editor, presentation, cx));
     (editor, collection)
 }
 
-/// Decorate a patch its caller has not prepared from its own text, as Compare's unified diff
-/// is decorated. The presentation is prepared on the background executor, so the plain text
-/// reads at once and the decorations arrive over it without reflow; an editor released first
-/// gets none. The decorations stay with the editor until it is released, so Find can clear
-/// their backgrounds under its matches.
-fn decorate_from_text(editor: &Entity<EditorState>, patch: &str, cx: &mut App) {
-    let target = editor.downgrade();
-    let patch = patch.to_owned();
-    let prepared = cx
-        .background_executor()
-        .spawn(async move { PatchPresentation::prepare(&patch) });
-    cx.spawn(async move |cx| {
-        let presentation = prepared.await;
-        cx.update(|cx| {
-            let Some(editor) = target.upgrade() else {
-                return;
-            };
-            let decorations = theme_decorations(&presentation, cx);
-            #[cfg(test)]
-            cx.default_global::<DerivedDecorations>()
-                .0
-                .push((editor.entity_id(), decorations.clone()));
-            let collection = crate::editor_find::patch_decorations(&editor, decorations, cx);
-            cx.observe_release(&editor, move |_, _| drop(collection))
-                .detach();
-        });
-    })
-    .detach();
+/// Decorate a patch editor built without a presentation, once its caller has prepared one:
+/// the pull request review's Source patch keeps the editor's own line numbers and may open
+/// before its file's preparation finishes. Keep the handle for the editor's life: Find removes
+/// the backgrounds under its matches through it, and [`refresh_theme`] redecorates it.
+pub fn decorate(
+    editor: &Entity<EditorState>,
+    presentation: &PatchPresentation,
+    cx: &mut App,
+) -> crate::editor_find::PatchDecorations {
+    let decorations = theme_decorations(presentation, cx);
+    crate::editor_find::patch_decorations(editor, decorations, cx)
 }
-
-/// The decorations each patch editor derived from its own text, by editor, for tests that
-/// compose them with the editor's syntax as the input element does.
-#[cfg(test)]
-#[derive(Default)]
-struct DerivedDecorations(Vec<(EntityId, Vec<TextDecoration>)>);
-#[cfg(test)]
-impl Global for DerivedDecorations {}
 
 /// Keep the native editor identity, find session, focus, selection, and scroll
 /// while a local filesystem change supplies new prepared text.
@@ -225,8 +193,9 @@ fn theme_decorations(presentation: &PatchPresentation, cx: &App) -> Vec<TextDeco
                     font_weight: Some(FontWeight::MEDIUM),
                     ..Default::default()
                 },
+                // No color of its own: a file header draws in the editor foreground, `text`,
+                // which follows a theme change in the patch views that never redecorate.
                 Kind::Header => HighlightStyle {
-                    color: Some(rgb(palette.text).into()),
                     font_weight: Some(FontWeight::MEDIUM),
                     ..Default::default()
                 },
@@ -704,10 +673,12 @@ mod tests {
     /// syntax styles of the language the editor asks its highlighter for, in the applied
     /// highlight theme, with the patch decorations composed over them as the kit's input
     /// element composes them (`combine_highlights`, semantic styles first and decorations
-    /// last). On origin/main the editor asked for the diff grammar: file headers drew its
-    /// keyword and string colors, and hunk headers and changed lines the decoration's color
-    /// or the grammar's, as GPUI's unordered fold left them (the themes spec, "Diff and
-    /// syntax colors").
+    /// last), and where neither sets a color, the editor foreground (the theme's `foreground`).
+    /// On origin/main the editor asked for the diff grammar: file headers drew its keyword and
+    /// string colors, and hunk headers and changed lines the decoration's color or the
+    /// grammar's, as GPUI's unordered fold left them (the themes spec, "Diff and syntax
+    /// colors"). File headers also draw in each palette's text under decorations prepared in
+    /// another, as the recovery and rewrite patches, which never redecorate, keep theirs.
     #[gpui_kit::test]
     fn patch_headers_and_changes_draw_palette_colors_in_every_built_in(
         cx: &mut gpui_kit::TestAppContext,
@@ -726,41 +697,63 @@ mod tests {
         };
         use std::{cell::RefCell, rc::Rc};
 
-        struct Probe(Entity<EditorState>);
+        struct Probe([Entity<EditorState>; 2]);
         impl Render for Probe {
             fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-                div()
-                    .w(px(480.))
-                    .h(px(400.))
-                    .child(Editor::new(&self.0).w_full().h_full())
+                div().w(px(480.)).h(px(400.)).children(
+                    self.0
+                        .iter()
+                        .map(|editor| Editor::new(editor).w_full().h(px(200.))),
+                )
             }
         }
 
         let patch = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,3 @@ fn main() {\n fn main() {\n-    let old = \"value\";\n+    let new = \"value\";\n }\n@@ -10,2 +10,2 @@\n-a\n+b\n@@ -20 +20 @@\n-c\n+d\n";
         let presentation = PatchPresentation::prepare(patch);
         cx.update(gpui_kit::init);
-        // The language the patch editor's highlighter is built for, as the editor asks.
-        let asked = Rc::new(RefCell::new(Vec::<String>::new()));
-        let record = asked.clone();
-        let factory: InputHighlighterFactory = Rc::new(move |language: &str| {
-            record.borrow_mut().push(language.to_owned());
-            None
-        });
+        // The language each editor's highlighter is built for, as the editor asks: the
+        // decorated patch, and the same patch asked for as "diff" without a presentation.
+        let asked = [(); 2].map(|_| Rc::new(RefCell::new(Vec::<String>::new())));
+        let factory = |asked: &Rc<RefCell<Vec<String>>>| -> InputHighlighterFactory {
+            let record = asked.clone();
+            Rc::new(move |language: &str| {
+                record.borrow_mut().push(language.to_owned());
+                None
+            })
+        };
+        let factories = [factory(&asked[0]), factory(&asked[1])];
         let (_, cx) = cx.add_window_view(|window, cx| {
-            let editor = editor(patch, "diff", Some(&presentation), window, cx);
-            editor.update(cx, |state, cx| state.set_highlighter_factory(factory, cx));
-            Probe(editor)
+            let decorated = editor(patch, "diff", Some(&presentation), window, cx);
+            let (plain, decorations) = editor_with_decorations(patch, "diff", None, window, cx);
+            assert!(
+                decorations.is_none(),
+                "an unprepared patch has no decorations"
+            );
+            let [first, second] = factories;
+            decorated.update(cx, |state, cx| state.set_highlighter_factory(first, cx));
+            plain.update(cx, |state, cx| state.set_highlighter_factory(second, cx));
+            Probe([decorated, plain])
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        let language = asked.borrow().first().cloned().expect("the editor asked");
+        let language = asked[0]
+            .borrow()
+            .first()
+            .cloned()
+            .expect("the editor asked");
         let hex =
             |color: Option<gpui_kit::Hsla>| color.map(|color| serde_json::to_value(color).unwrap());
 
+        // Decorations prepared in the first built-in and never refreshed.
+        let kept = cx.update(|_, cx| {
+            ThemeChoice::ALL[0].apply(None, cx);
+            theme_decorations(&presentation, cx)
+        });
         cx.update(|_, cx| {
             for choice in ThemeChoice::ALL {
                 choice.apply(None, cx);
                 let palette = palette(cx);
                 let theme = Theme::global(cx).highlight_theme.clone();
+                let foreground = Some(Theme::global(cx).foreground);
                 // The contrast test reads the same highlight theme without an application.
                 assert_eq!(
                     theme,
@@ -771,47 +764,58 @@ mod tests {
                 highlighter.update(None, &Rope::from(patch), None);
                 let syntax = highlighter.styles(&(0..patch.len()), theme.as_ref());
                 let styles = combine_highlights(Vec::new(), syntax).collect::<Vec<_>>();
-                let decorations = theme_decorations(&presentation, cx);
-                let drawn = combine_highlights(
-                    styles,
-                    decorations
-                        .iter()
-                        .map(|decoration| (decoration.range.clone(), decoration.style)),
-                )
-                .collect::<Vec<_>>();
+                let compose = |decorations: &[TextDecoration]| {
+                    combine_highlights(
+                        styles.clone(),
+                        decorations
+                            .iter()
+                            .map(|decoration| (decoration.range.clone(), decoration.style)),
+                    )
+                    .collect::<Vec<_>>()
+                };
+                let drawn = compose(&theme_decorations(&presentation, cx));
+                let stale = compose(&kept);
 
                 let color = |token: u32| Some(rgb(token).into());
                 let mut start = 0;
                 for line in patch.split_inclusive('\n') {
                     let range = start..start + line.len();
                     start = range.end;
+                    let header = line.starts_with("--- a/") || line.starts_with("+++ b/");
                     let expected = if line.starts_with("@@") {
                         // Hunk lines draw on the editor background (canvas).
                         (color(palette.hunk), Some(FontWeight::MEDIUM), true)
-                    } else if line.starts_with("--- a/") || line.starts_with("+++ b/") {
+                    } else if header {
                         (color(palette.text), Some(FontWeight::MEDIUM), true)
                     } else if line.starts_with('-') {
                         (color(palette.removed), None, false)
                     } else if line.starts_with('+') {
                         (color(palette.added), None, false)
                     } else {
-                        // Neutral lines take the editor foreground, the palette's text.
-                        (None, None, true)
+                        (color(palette.text), None, true)
                     };
-                    for (segment, style) in &drawn {
+                    let segments = drawn.iter().map(|segment| (segment, "prepared now"));
+                    let segments = segments.chain(
+                        stale
+                            .iter()
+                            .filter(|_| header)
+                            .map(|segment| (segment, "prepared in the first built-in")),
+                    );
+                    for ((segment, style), decorations) in segments {
                         if segment.end <= range.start || segment.start >= range.end {
                             continue;
                         }
                         let (want_color, weight, no_background) = expected;
+                        let drawn_color = style.color.or(foreground);
                         assert!(
-                            style.color == want_color
+                            drawn_color == want_color
                                 && style.font_weight == weight
                                 && (!no_background || style.background_color.is_none()),
-                            "{choice:?} draws {:?} of {:?} in {:?} at {:?} on {:?}, \
-                             wanted {:?} at {weight:?}",
+                            "{choice:?} draws {:?} of {:?} in {:?} at {:?} on {:?} under \
+                             decorations {decorations}, wanted {:?} at {weight:?}",
                             &patch[segment.start.max(range.start)..segment.end.min(range.end)],
                             line.trim_end(),
-                            hex(style.color),
+                            hex(drawn_color),
                             style.font_weight,
                             hex(style.background_color),
                             hex(want_color),
@@ -820,154 +824,9 @@ mod tests {
                 }
             }
         });
-        // The patch is drawn as the kit's plain text, which has no grammar to color it.
+        // Both patches are drawn as the kit's plain text, which has no grammar to color them.
         assert_eq!(language, "text");
-    }
-
-    /// A caller that asks for the diff language without a presentation, as the pull request
-    /// review's Source patch does (`github_view/review.rs`), gets the patch drawn as Compare's
-    /// unified diff is drawn: as plain text, under the decorations Compare prepares from the
-    /// same text, composed over the syntax as the input element composes them. On origin/main
-    /// it drew the diff grammar's colors and no decorations.
-    #[gpui_kit::test]
-    fn unprepared_diff_patches_draw_like_compare_in_every_built_in(
-        cx: &mut gpui_kit::TestAppContext,
-    ) {
-        use crate::appearance::ThemeChoice;
-        use gpui_kit::{
-            Context, IntoElement, ParentElement, Render, Styled,
-            base::input::InputHighlighterFactory,
-            combine_highlights,
-            component::{
-                Rope, Theme,
-                highlighter::SyntaxHighlighter,
-                input::{Editor, EditorState},
-            },
-            div, px,
-        };
-        use std::{cell::RefCell, rc::Rc};
-
-        struct Probe(Entity<EditorState>);
-        impl Render for Probe {
-            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-                div()
-                    .w(px(480.))
-                    .h(px(400.))
-                    .child(Editor::new(&self.0).w_full().h_full())
-            }
-        }
-
-        let patch = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,3 @@ fn main() {\n fn main() {\n-    let old = \"value\";\n+    let new = \"value\";\n }\n@@ -10,2 +10,2 @@\n-a\n+b\n@@ -20 +20 @@\n-c\n+d\n";
-        cx.update(gpui_kit::init);
-        let asked = Rc::new(RefCell::new(Vec::<String>::new()));
-        let record = asked.clone();
-        let factory: InputHighlighterFactory = Rc::new(move |language: &str| {
-            record.borrow_mut().push(language.to_owned());
-            None
-        });
-        let (_, cx) = cx.add_window_view(|window, cx| {
-            let editor = editor(patch, "diff", None, window, cx);
-            editor.update(cx, |state, cx| state.set_highlighter_factory(factory, cx));
-            Probe(editor)
-        });
-        cx.update(|window, cx| window.draw(cx).clear(cx));
-        let language = asked.borrow().first().cloned().expect("the editor asked");
-        let hex =
-            |color: Option<gpui_kit::Hsla>| color.map(|color| serde_json::to_value(color).unwrap());
-
-        for choice in ThemeChoice::ALL {
-            cx.update(|_, cx| choice.apply(None, cx));
-            // Decorations take the palette applied when they are prepared.
-            let derived = cx.update(|window, cx| editor(patch, "diff", None, window, cx));
-            cx.run_until_parked();
-            cx.update(|_, cx| {
-                let palette = palette(cx);
-                let decorations = cx
-                    .try_global::<DerivedDecorations>()
-                    .and_then(|derived_decorations| {
-                        derived_decorations
-                            .0
-                            .iter()
-                            .find(|(editor, _)| *editor == derived.entity_id())
-                    })
-                    .map(|(_, decorations)| decorations.clone())
-                    .unwrap_or_default();
-                let theme = Theme::global(cx).highlight_theme.clone();
-                let mut highlighter = SyntaxHighlighter::new(&language);
-                highlighter.update(None, &Rope::from(patch), None);
-                let syntax = highlighter.styles(&(0..patch.len()), theme.as_ref());
-                let styles = combine_highlights(Vec::new(), syntax).collect::<Vec<_>>();
-                let drawn = combine_highlights(
-                    styles,
-                    decorations
-                        .iter()
-                        .map(|decoration| (decoration.range.clone(), decoration.style)),
-                )
-                .collect::<Vec<_>>();
-
-                let color = |token: u32| Some(rgb(token).into());
-                let mut start = 0;
-                for line in patch.split_inclusive('\n') {
-                    let range = start..start + line.len();
-                    start = range.end;
-                    // Color, weight and the backgrounds the line may draw on: its tint, or the
-                    // word tint on a changed word; none on the editor background (canvas).
-                    let expected = if line.starts_with("@@") {
-                        (color(palette.hunk), Some(FontWeight::MEDIUM), vec![None])
-                    } else if line.starts_with("--- a/") || line.starts_with("+++ b/") {
-                        (color(palette.text), Some(FontWeight::MEDIUM), vec![None])
-                    } else if line.starts_with('-') {
-                        let tint = palette.removed_background;
-                        (
-                            color(palette.removed),
-                            None,
-                            vec![color(tint), color(strong_tint(tint, palette.removed))],
-                        )
-                    } else if line.starts_with('+') {
-                        let tint = palette.added_background;
-                        (
-                            color(palette.added),
-                            None,
-                            vec![color(tint), color(strong_tint(tint, palette.added))],
-                        )
-                    } else {
-                        (color(palette.text), None, vec![None])
-                    };
-                    for (segment, style) in &drawn {
-                        if segment.end <= range.start || segment.start >= range.end {
-                            continue;
-                        }
-                        let (want_color, weight, backgrounds) = &expected;
-                        // Text without a color draws in the editor foreground, `text`.
-                        let drawn_color = style.color.or(color(palette.text));
-                        assert!(
-                            drawn_color == *want_color
-                                && style.font_weight == *weight
-                                && backgrounds.contains(&style.background_color),
-                            "{choice:?} draws {:?} of {:?} in {:?} at {:?} on {:?}, \
-                             wanted {:?} at {weight:?} on one of {:?}",
-                            &patch[segment.start.max(range.start)..segment.end.min(range.end)],
-                            line.trim_end(),
-                            hex(drawn_color),
-                            style.font_weight,
-                            hex(style.background_color),
-                            hex(*want_color),
-                            backgrounds
-                                .iter()
-                                .map(|background| hex(*background))
-                                .collect::<Vec<_>>(),
-                        );
-                    }
-                }
-                // Exactly the decorations Compare's worker-prepared presentation gives.
-                assert_eq!(
-                    decorations,
-                    theme_decorations(&PatchPresentation::prepare(patch), cx),
-                    "{choice:?}"
-                );
-            });
-            drop(derived);
-        }
-        assert_eq!(language, "text");
+        let unprepared = asked[1].borrow().first().cloned();
+        assert_eq!(unprepared.as_deref(), Some("text"));
     }
 }
