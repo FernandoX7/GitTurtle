@@ -2015,7 +2015,9 @@
         "vendor/gpui-component/GITTURTLE-PATCH.md",
         "vendor/AGENTS.md",
         "docs/evidence/**",
-        "docs/validation.md"
+        "docs/validation.md",
+        "crates/app/src/appearance/**",
+        "crates/app/src/native_accessibility/control_tests.rs"
       ],
       "acceptance": [
         {
@@ -2140,7 +2142,8 @@
         "vendor/gpui-component/GITTURTLE-PATCH.md",
         "vendor/AGENTS.md",
         "docs/evidence/**",
-        "docs/validation.md"
+        "docs/validation.md",
+        "crates/app/src/appearance/**"
       ],
       "acceptance": [
         {
@@ -2304,7 +2307,9 @@
         "crates/app/src/review_bench.rs",
         "crates/app/docs/**",
         "docs/architecture.md",
-        "docs/benchmarks/**"
+        "docs/benchmarks/**",
+        "docs/validation.md",
+        "docs/evidence/decorations-in-retained-bounds/**"
       ],
       "acceptance": [
         {
@@ -2346,7 +2351,8 @@
         "docs/github-collaboration.md",
         "docs/benchmarks/**",
         "docs/evidence/**",
-        "docs/validation.md"
+        "docs/validation.md",
+        "crates/app/src/github/**"
       ],
       "acceptance": [
         {
@@ -2386,7 +2392,8 @@
         "crates/app/src/settings/**",
         "crates/app/docs/**",
         "docs/benchmarks/**",
-        "docs/validation.md"
+        "docs/validation.md",
+        "docs/evidence/code-font-cold-launch-wait/**"
       ],
       "acceptance": [
         {
@@ -2425,7 +2432,9 @@
         "crates/app/src/main.rs",
         "DESIGN.md",
         "docs/evidence/**",
-        "docs/validation.md"
+        "docs/validation.md",
+        "crates/app/src/diff_view.rs",
+        "crates/app/src/appearance/**"
       ],
       "acceptance": [
         {
@@ -2628,7 +2637,8 @@
         "vendor/gpui-component/GITTURTLE-PATCH.md",
         "vendor/AGENTS.md",
         "docs/evidence/**",
-        "docs/validation.md"
+        "docs/validation.md",
+        "crates/app/src/**"
       ],
       "acceptance": [
         {
