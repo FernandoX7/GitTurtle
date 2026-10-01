@@ -1968,13 +1968,14 @@
     {
       "id": "auth-prompt-platform-wording",
       "title": "Name macOS Keychain in the authentication prompt only on macOS",
-      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (B2; validation entry \"September 30 Git writes and network actions on Omarchy\"). The Git authentication prompt's guidance (crates/app/src/authentication.rs:160, element `git-authentication-guidance`, also its accessible label) says on every platform that the configured credential helper may save the response \"including in macOS Keychain\". On Linux and other non-macOS platforms drop that clause (\"Requested by the Git operation you started. Your configured credential helper may save this response. GitTurtle does not save it.\"); macOS keeps today's text. docs/user-guide.md:186 says the same and becomes platform-accurate. The GitHub account notice (github_view.rs:735, \"authorization is stored in macOS Keychain\") follows a Keychain save that fails first off macOS (github/transport.rs:146-158); confirm it is unreachable on Linux and leave it, or apply the same rule if it is reachable. No test asserts this copy yet.",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (B2; validation entry \"September 30 Git writes and network actions on Omarchy\"). The Git authentication prompt's guidance (crates/app/src/authentication.rs:160, element `git-authentication-guidance`, also its accessible label) says on every platform that the configured credential helper may save the response \"including in macOS Keychain\". On Linux and other non-macOS platforms drop that clause (\"Requested by the Git operation you started. Your configured credential helper may save this response. GitTurtle does not save it.\"); macOS keeps today's text. docs/user-guide.md:186 says the same and becomes platform-accurate. The GitHub account notice (github_view.rs:735, \"authorization is stored in macOS Keychain\") follows a Keychain save that fails first off macOS (github/transport.rs:146-158); confirm it is unreachable on Linux and leave it, or apply the same rule if it is reachable. No test asserts this copy yet. Scope addition (owner, 2026-10-01): crates/git-core/src/work/diagnostics.rs, whose SSH-key and HTTP-authentication failure diagnostics name macOS Keychain and osxkeychain on Linux; on non-macOS they drop the UseKeychain clause and give Git Credential Manager or a Secret Service helper as the example, and macOS keeps today's text.",
       "depends_on": [],
       "scope": [
         "crates/app/src/authentication.rs",
         "crates/app/src/authentication/**",
         "crates/app/src/github_view.rs",
         "docs/user-guide.md",
+        "crates/git-core/src/work/diagnostics.rs",
         "docs/authentication.md",
         "docs/evidence/**",
         "docs/validation.md"
