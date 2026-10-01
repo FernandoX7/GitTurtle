@@ -292,6 +292,8 @@ mod tests {
 
     /// The macOS wording, unchanged since the prompt first named Keychain.
     const MACOS_CREDENTIAL_GUIDANCE: &str = "Requested by the Git operation you started. Your configured credential helper may save this response, including in macOS Keychain. GitTurtle does not save it.";
+    /// The owner's wording for every other platform.
+    const OTHER_CREDENTIAL_GUIDANCE: &str = "Requested by the Git operation you started. Your configured credential helper may save this response. GitTurtle does not save it.";
 
     #[gpui::test]
     async fn pending_credential_prompt_names_keychain_only_on_macos(cx: &mut TestAppContext) {
@@ -350,6 +352,8 @@ mod tests {
         if cfg!(target_os = "macos") {
             assert_eq!(text, MACOS_CREDENTIAL_GUIDANCE);
         } else {
+            assert_eq!(text, OTHER_CREDENTIAL_GUIDANCE);
+            assert_eq!(label, OTHER_CREDENTIAL_GUIDANCE);
             assert!(!text.contains("Keychain"), "visible guidance: {text}");
             assert!(!label.contains("Keychain"), "accessible label: {label}");
         }

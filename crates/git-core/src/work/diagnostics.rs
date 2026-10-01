@@ -101,6 +101,9 @@ mod tests {
     /// The macOS wording, unchanged since these diagnostics first named macOS stores.
     const MACOS_SSH_KEY_GUIDANCE: &str = "SSH did not accept an available key. Check the remote URL, configured SSH identity and agent, and your repository access. Respond to the configured agent or passphrase prompt, or load the intended key with ssh-add; macOS SSH can use Keychain when configured with UseKeychain and AddKeysToAgent. Then explicitly retry.";
     const MACOS_CREDENTIAL_GUIDANCE: &str = "Credentials may be expired or lack repository access. Check the remote URL and account permissions, then sign in with your configured Git credential helper (for example Git Credential Manager or macOS osxkeychain). GitTurtle can prompt when Git requests a username, token, or passphrase during an explicit operation. Refresh or remove only the expired credential through your helper, then explicitly retry.";
+    /// The owner's wording for every other platform.
+    const OTHER_SSH_KEY_GUIDANCE: &str = "SSH did not accept an available key. Check the remote URL, configured SSH identity and agent, and your repository access. Respond to the configured agent or passphrase prompt, or load the intended key with ssh-add. Then explicitly retry.";
+    const OTHER_CREDENTIAL_GUIDANCE: &str = "Credentials may be expired or lack repository access. Check the remote URL and account permissions, then sign in with your configured Git credential helper (for example Git Credential Manager or a Secret Service helper). GitTurtle can prompt when Git requests a username, token, or passphrase during an explicit operation. Refresh or remove only the expired credential through your helper, then explicitly retry.";
 
     #[test]
     fn authentication_guidance_names_macos_stores_only_on_macos() {
@@ -126,17 +129,11 @@ mod tests {
             assert_eq!(ssh, MACOS_SSH_KEY_GUIDANCE);
             assert_eq!(http, MACOS_CREDENTIAL_GUIDANCE);
         } else {
+            assert_eq!(ssh, OTHER_SSH_KEY_GUIDANCE);
+            assert_eq!(http, OTHER_CREDENTIAL_GUIDANCE);
             for text in [ssh, http] {
                 assert!(!text.to_lowercase().contains("keychain"), "{text}");
             }
-            assert!(
-                ssh.ends_with("or load the intended key with ssh-add. Then explicitly retry."),
-                "{ssh}"
-            );
-            assert!(
-                http.contains("(for example Git Credential Manager or a Secret Service helper)"),
-                "{http}"
-            );
         }
     }
 
