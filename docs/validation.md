@@ -65,6 +65,32 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## October 1 Tab reveals branch, remote and tag rows
+
+Task `tab-reveals-branch-and-tag-rows`. When keyboard focus moves onto a row that lies wholly or partly outside the branch chooser, the remote manager, Tags or the tag inspector's Push to… list, the list scrolls by the least amount that shows the whole row and its ring, to the nearest edge and without animation; a pointer press scrolls nothing. The project hub keeps its reveal through the same shared helper.
+
+Native evidence, full tier:
+- **Builds:** base `ee87282` (the run's `accepted_head`, the attested release of `reflog-selection-and-scroll-cues`; sha256 `2f6c30d8…`) and candidate `a65720f` (sha256 `0b6bd46c…`), release builds from clean trees, each in its own target directory. `qa.py identity` reported no problem.
+- **Host:** Ubuntu 26.04, GNOME 50, XWayland `:0` at scale factor 1, window 1000 × 680, default text size, one session on 2026-10-01 from 23:36 to 23:46 UTC.
+- **Input:** a local driver on the `qa.py` library (sha256 `379e49a9…`), through Mutter RemoteDesktop with X focus verified, never XTest.
+- **Fixture:** a disposable repository with 30 local branches, 30 tags and a local bare `origin`. Its state was byte-identical before and after the session, and no write control was activated.
+- **Steps, the same keys in both builds:** the branch chooser opened from the branch button's "Manage another branch…", Tab 2 to its first row, Tab 9 to `topic-14` (the first row wholly below the list's lower edge), then Tab 11 and Shift+Tab 9 to `topic-24`, and Shift+Tab 3 more; Tags opened from the command palette, Tab 3 to its first row, Tab 10 to `v1.10`, then Tab 11 and Shift+Tab 10 to `v1.11`, and Shift+Tab 3 more.
+
+The candidate shows the focused row with its ring whole, the ring 0 px inside the list's clip on the revealed edge, in both lists and both palettes (11.43:1 Midnight, 6.55:1 Porcelain against the list's surface). It scrolls the least amount on every one of 142 keys: one 37 px row per key past an edge, 7 px onto a partly visible row, and nothing across rows already in view. The base never scrolls, so the focused row stays out of view: below the lower edge after Tab, and still below it after Shift+Tab, since the list never moved; three more Shift+Tabs bring focus back into view on row 8, which confirms focus stayed in the list. Nothing outside the lists moves in either build, and a pointer press on a partly visible Tags row (candidate, Midnight) scrolls nothing.
+
+The reveal is applied one frame after the focus change, as the project hub's reveal it shares already was: a fast probe saw the newly focused row unrevealed, its ring cut at the list's edge, for one 6 to 12 ms frame on 2 of 8 scrolling keys before the list moved. Coordinator decision, with the design review: accept it here, since it never persists and the contract keeps the hub's behaviour unchanged, and queue a follow-up that reveals before the frame is painted, for every list and the hub, with a frame-by-frame probe finding no cut ring.
+
+Frames in [`evidence/tab-reveals-branch-and-tag-rows/`](evidence/tab-reveals-branch-and-tag-rows/), 20 crops of the dialog, the chooser 540 × 490 at (230, 68) and Tags 600 × 521 at (200, 68):
+- `base-{midnight,porcelain}-1000x680-branch-chooser-tab-down.png`: on the base, `topic-14` focused below the lower edge, only a 3 px line of its ring's top showing at the list's edge;
+- `base-{midnight,porcelain}-1000x680-branch-chooser-shift-tab-up.png` and `base-…-tags-tab-down.png` and `…-tags-shift-tab-up.png`: on the base, the focused row out of view and no ring in the list (the two Tags frames are identical);
+- `base-{midnight,porcelain}-1000x680-{branch-chooser,tags}-shift-tab-confirm.png`: on the base, three Shift+Tabs later, row 8 focused at the unscrolled list;
+- `candidate-{midnight,porcelain}-1000x680-branch-chooser-tab-down.png` and `…-tags-tab-down.png`: on the candidate, `topic-14` and `v1.10` revealed at the lower edge with the ring whole;
+- `candidate-{midnight,porcelain}-1000x680-branch-chooser-shift-tab-up.png` and `…-tags-shift-tab-up.png`: on the candidate, `topic-24` and `v1.11` revealed at the upper edge with the ring whole.
+
+`qa.py privacy scan --redacted` with the local template set found all 20 clean on their committed bytes. A `design-reviewer` pass approved the frames. Also queued from it: DESIGN.md's sentence should name every keyboard focus move, not only Tab, and give the project hub's reveal on a click its own sentence; and neither list shows a scroll cue once scrolled.
+
+Not covered natively: the remote manager and the Push to… list (their view tests cover them), other text and window sizes, macOS, native Wayland and fractional scale factors.
+
 ## October 1 a marked Reflog selection and cues for what scrolls
 
 Task `reflog-selection-and-scroll-cues`. In the Reflog, the selected entry now paints the selected surface; the dialog's scrolling content shows the always-visible vertical scrollbar of the discard and worktree removal reviews whenever it overflows; and the changed-file list shows whole rows only, as many as fit in 110 px at 13 pt (5), kept as that row count at every text size, with the same scrollbar when it holds more files.
