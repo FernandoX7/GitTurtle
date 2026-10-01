@@ -777,26 +777,18 @@ impl GitRepository {
                         &format!("refs/heads/{local_branch}"),
                     ],
                 )?;
+                // Like Git's push.autoSetupRemote, record the destination as the
+                // upstream only for a branch without one. A configuration change
+                // between this read and the push is accepted: at worst an upstream
+                // added concurrently is replaced, as before this check existed.
+                let set_upstream = !branch_upstream_configured(&self.path, local_branch)?;
                 configure_network(&mut command, self)?;
-                // Explicit refspec and disabled mirror/follow-tags prevent normal
-                // push configuration from expanding the visible target.
-                command.args([
-                    "-c",
-                    &format!("remote.{remote}.mirror=false"),
-                    "-c",
-                    "push.followTags=false",
-                    "push",
-                    "--progress",
-                    "--porcelain",
-                    "--no-force",
-                    "--no-force-with-lease",
-                    "--no-follow-tags",
-                    "--recurse-submodules=no",
-                    "--set-upstream",
-                    "--",
+                command.args(push_arguments(
                     remote,
-                    &format!("refs/heads/{local_branch}:refs/heads/{remote_branch}"),
-                ]);
+                    local_branch,
+                    remote_branch,
+                    set_upstream,
+                ));
                 timeout = NETWORK_TIMEOUT;
             }
             WriteCommand::SetIdentity { name, email } => {
@@ -1517,6 +1509,63 @@ fn passive_status_command(path: &Path) -> Result<Command> {
     }
     Ok(command)
 }
+/// Passive read of whether `branch` already records an upstream branch.
+/// Git treats a branch without `branch.<name>.merge` as having no upstream,
+/// which is also the condition `push.autoSetupRemote` uses.
+fn branch_upstream_configured(path: &Path, branch: &str) -> Result<bool> {
+    let output = run_git_output(
+        path,
+        &[
+            "config",
+            "--null",
+            "--get-all",
+            &format!("branch.{branch}.merge"),
+        ],
+    )?;
+    if output.status.code() == Some(1) {
+        return Ok(false);
+    }
+    ensure!(
+        output.status.success(),
+        "Unable to read the branch's upstream configuration: {}",
+        text(&output.stderr).trim()
+    );
+    Ok(!output.stdout.is_empty())
+}
+/// Ordinary branch push arguments. The explicit refspec and disabled
+/// mirror/follow-tags prevent normal push configuration from expanding the
+/// visible target.
+fn push_arguments(
+    remote: &str,
+    local_branch: &str,
+    remote_branch: &str,
+    set_upstream: bool,
+) -> Vec<String> {
+    let mut args = [
+        "-c",
+        &format!("remote.{remote}.mirror=false"),
+        "-c",
+        "push.followTags=false",
+        "push",
+        "--progress",
+        "--porcelain",
+        "--no-force",
+        "--no-force-with-lease",
+        "--no-follow-tags",
+        "--recurse-submodules=no",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    if set_upstream {
+        args.push("--set-upstream".into());
+    }
+    args.extend([
+        "--".into(),
+        remote.into(),
+        format!("refs/heads/{local_branch}:refs/heads/{remote_branch}"),
+    ]);
+    args
+}
 fn normal_config_at(path: &Path, key: &str) -> Result<Option<String>> {
     let mut command = normal_command(path);
     command.args(["config", "--null", "--get", key]);
@@ -1942,6 +1991,44 @@ fn preview_bytes(file: &FileChange, old: &[u8], new: &[u8]) -> TextPreview {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn push_passes_set_upstream_only_for_a_branch_without_one() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("work");
+        GitRepository::init(&root, "main").unwrap();
+        let git = |args: &[&str]| {
+            assert!(
+                Command::new("git")
+                    .arg("-C")
+                    .arg(&root)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            )
+        };
+        let flagged = |set: bool| {
+            push_arguments("lan", "main", "main", set)
+                .iter()
+                .filter(|arg| *arg == "--set-upstream")
+                .count()
+        };
+        // A branch.remote alone is not an upstream for Git either.
+        git(&["config", "branch.main.remote", "origin"]);
+        let set = !branch_upstream_configured(&root, "main").unwrap();
+        assert!(set);
+        assert_eq!(flagged(set), 1);
+        git(&["config", "branch.main.merge", "refs/heads/main"]);
+        let set = !branch_upstream_configured(&root, "main").unwrap();
+        assert!(!set);
+        assert_eq!(flagged(set), 0);
+        let args = push_arguments("lan", "main", "trunk", set);
+        assert_eq!(
+            args[args.len() - 3..],
+            ["--", "lan", "refs/heads/main:refs/heads/trunk"]
+        );
+        assert!(!branch_upstream_configured(&root, "other").unwrap());
+    }
     #[test]
     fn mutation_deadline_includes_pipe_holding_hook_descendant_after_parent_exit() {
         let mut command = Command::new("/bin/sh");
