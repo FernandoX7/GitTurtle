@@ -30,6 +30,11 @@ impl State {
             ..Default::default()
         };
     }
+    /// The in-flight quiet read, for a GPUI test to await its reply.
+    #[cfg(test)]
+    pub(super) fn take_task(&mut self) -> Option<Task<()>> {
+        self.task.take()
+    }
 
     fn can_start(
         &self,

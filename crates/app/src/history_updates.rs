@@ -61,14 +61,33 @@ impl State {
         self.pending = Some(Update::Changed);
         self.followed = false;
     }
+    /// Report a vanished scope once. `scope_error` remembers the report after
+    /// it is dismissed (or an accepted write clears the banner), so later
+    /// quiet reads and searches leave it dismissed; reading the scope again or
+    /// opening another one forgets it.
     pub fn report_scope_error(&mut self, error: &str, operation_error: &mut Option<String>) {
         let message = format!(
             "History scope changed: {error}. The displayed history is retained; choose a current branch to browse its history."
         );
+        if self.scope_error.as_ref() == Some(&message) {
+            return;
+        }
         if operation_error.is_none() || operation_error.as_ref() == self.scope_error.as_ref() {
             *operation_error = Some(message.clone());
             self.scope_error = Some(message);
         }
+    }
+    /// An explicit Refresh found its scope gone and opened All history. The
+    /// explanation replaces the banner; All history has no scope to forget.
+    pub fn report_scope_fallback(
+        &mut self,
+        vanished: &worker::VanishedScope,
+        operation_error: &mut Option<String>,
+    ) {
+        self.clear_scope_error(operation_error);
+        *operation_error = Some(format!(
+            "History scope changed: {vanished}. Showing All history."
+        ));
     }
     pub fn clear_scope_error(&mut self, operation_error: &mut Option<String>) {
         if let Some(previous) = self.scope_error.take()
@@ -291,6 +310,7 @@ impl GitTurtle {
             Job::Open {
                 path,
                 scope: self.scope.as_ref().map(|scope| scope.1.clone()),
+                missing_scope: worker::MissingScope::Fail,
                 limit: history_paging::PAGE_SIZE,
             },
             false,
@@ -549,6 +569,7 @@ mod tests {
             graph_notice: None,
             refs: HashMap::new(),
             elapsed: std::time::Duration::ZERO,
+            vanished_scope: None,
             commits,
         };
         cx.update(|cx| {
@@ -678,6 +699,7 @@ mod tests {
             let output = futures::executor::block_on(reader.submit(Job::Open {
                 path: fixture.path().to_owned(),
                 scope: None,
+                missing_scope: worker::MissingScope::Fail,
                 limit: history_paging::PAGE_SIZE,
             }))
             .unwrap()
@@ -783,5 +805,405 @@ mod tests {
             Update::New(2).merge(Update::Changed).merge(Update::New(3)),
             Update::Changed
         );
+    }
+
+    /// Git in a disposable fixture, without the caller's configuration.
+    fn git(directory: &std::path::Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .current_dir(directory)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    /// `main` checked out with "main work" on top of "initial", and `topic`
+    /// branched from "initial" with "topic work".
+    fn scoped_fixture() -> (tempfile::TempDir, PathBuf) {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = GitRepository::init(fixture.path().join("repo"), "main")
+            .unwrap()
+            .path()
+            .to_owned();
+        for args in [
+            &["config", "user.name", "Scope fixture"][..],
+            &["config", "user.email", "scope@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["commit", "--allow-empty", "-qm", "initial"],
+            &["switch", "-qc", "topic"],
+            &["commit", "--allow-empty", "-qm", "topic work"],
+            &["switch", "-q", "main"],
+            &["commit", "--allow-empty", "-qm", "main work"],
+        ] {
+            git(&path, args);
+        }
+        (fixture, path)
+    }
+
+    fn branch_scope(name: &str) -> Option<(String, worker::Scope)> {
+        Some((
+            name.into(),
+            worker::Scope::Branch {
+                name: name.into(),
+                remote: false,
+            },
+        ))
+    }
+
+    /// A window whose application has opened `path` in `scope`.
+    async fn scoped_window<'a>(
+        cx: &'a mut TestAppContext,
+        path: &std::path::Path,
+        scope: Option<(String, worker::Scope)>,
+    ) -> (Entity<GitTurtle>, &'a mut VisualTestContext) {
+        use gpui_kit::component::Root;
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.executor().allow_parking();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+        });
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let observed = captured.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let app = cx.new(|cx| {
+                GitTurtle::new(
+                    None,
+                    Preferences::default(),
+                    repository_tabs::Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                )
+            });
+            *captured.borrow_mut() = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let app = observed.borrow_mut().take().unwrap();
+        let path = path.to_owned();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open(path, scope, window, cx)));
+        settle(&app, cx).await;
+        (app, cx)
+    }
+
+    /// Await every read, write, quiet refresh and search page in flight,
+    /// including the ones their replies start, then stop the local watcher so
+    /// no filesystem event starts another read before the next step.
+    async fn settle(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        for _ in 0..16 {
+            cx.executor().run_until_parked();
+            let (operations, preferences) = app.read_with(cx, |app, _| {
+                (
+                    app.operations.submit_read(|| Ok(())),
+                    app.preferences_writer.submit_read(|| Ok(())),
+                )
+            });
+            operations.await.unwrap().unwrap();
+            preferences.await.unwrap().unwrap();
+            cx.executor().run_until_parked();
+            let tasks = app.update(cx, |app, _| {
+                [
+                    app.task.take(),
+                    app.status_task.take(),
+                    app.integration_task.take(),
+                    app.operation_task.take(),
+                    app.automatic.take_task(),
+                    app.history_search.take_task(),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+            });
+            if tasks.is_empty() {
+                break;
+            }
+            for task in tasks {
+                task.await;
+            }
+        }
+        app.update(cx, |app, _| {
+            app.automatic.reset();
+            app._display_preferences_task = None;
+        });
+    }
+
+    fn subjects(app: &GitTurtle) -> Vec<&str> {
+        app.visible
+            .iter()
+            .map(|&index| app.commits[index].subject.as_str())
+            .collect()
+    }
+
+    /// Refresh as the keyboard shortcut and menu deliver it.
+    async fn dispatch_refresh(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            app.update(cx, |app, cx| app.app_focus.focus(window, cx));
+            window.dispatch_action(Box::new(Refresh), cx);
+        });
+        assert_eq!(
+            app.read_with(cx, |app, _| app.loading),
+            Some("Reading local history…"),
+            "Refresh reached the repository page"
+        );
+        settle(app, cx).await;
+    }
+
+    fn assert_showing_all_history(app: &GitTurtle, vanished: &str) {
+        assert!(app.error.is_none(), "repository error: {:?}", app.error);
+        let tab = &app.repository_tabs.tabs[app.repository_tabs.active.unwrap()];
+        assert!(tab.error.is_none(), "unavailable tab: {:?}", tab.error);
+        assert!(app.scope.is_none(), "scope kept: {:?}", app.scope);
+        assert_eq!(subjects(app), ["main work", "initial"]);
+        assert_eq!(
+            app.operation_error.as_deref(),
+            Some(format!("History scope changed: {vanished}. Showing All history.").as_str())
+        );
+    }
+
+    #[gpui::test]
+    async fn refresh_opens_all_history_when_the_scoped_branch_is_gone(cx: &mut TestAppContext) {
+        let (_fixture, path) = scoped_fixture();
+        let (app, cx) = scoped_window(cx, &path, branch_scope("topic")).await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(subjects(app), ["topic work", "initial"]);
+        });
+        git(&path, &["branch", "-D", "topic"]);
+        dispatch_refresh(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_showing_all_history(
+                app,
+                "Local branch 'topic' no longer exists in the local repository snapshot",
+            );
+        });
+        // The explanation is reported once: later reads leave it alone.
+        app.update_in(cx, |app, window, cx| {
+            app.queue_automatic_refresh(
+                local_refresh::LocalChange {
+                    git: true,
+                    ..Default::default()
+                },
+                window,
+                cx,
+            );
+        });
+        settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_showing_all_history(
+                app,
+                "Local branch 'topic' no longer exists in the local repository snapshot",
+            );
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    #[gpui::test]
+    async fn refresh_opens_all_history_when_the_scoped_worktree_is_gone(cx: &mut TestAppContext) {
+        let (fixture, path) = scoped_fixture();
+        let linked = fixture.path().join("linked");
+        git(
+            &path,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "linked-topic",
+                linked.to_str().unwrap(),
+                "topic",
+            ],
+        );
+        git(&linked, &["commit", "--allow-empty", "-qm", "linked work"]);
+        // The worktree as Git lists it, which is the path a scope captures.
+        let listed = GitRepository::open(&path)
+            .unwrap()
+            .worktrees()
+            .unwrap()
+            .into_iter()
+            .find(|tree| tree.branch.as_deref() == Some("linked-topic"))
+            .unwrap()
+            .path;
+        let scope = Some((
+            "linked-topic".into(),
+            worker::Scope::Worktree {
+                path: listed.clone(),
+            },
+        ));
+        let (app, cx) = scoped_window(cx, &path, scope).await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(subjects(app), ["linked work", "topic work", "initial"]);
+        });
+        git(
+            &path,
+            &["worktree", "remove", "--force", linked.to_str().unwrap()],
+        );
+        git(&path, &["branch", "-D", "linked-topic", "topic"]);
+        dispatch_refresh(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_showing_all_history(
+                app,
+                &format!(
+                    "Worktree '{}' is no longer registered in the local repository snapshot",
+                    listed.display()
+                ),
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn a_dismissed_vanished_scope_is_not_reported_again_by_later_writes(
+        cx: &mut TestAppContext,
+    ) {
+        let quiet = |name: &str| {
+            format!(
+                "History scope changed: Local branch '{name}' no longer exists in the local repository snapshot. The displayed history is retained; choose a current branch to browse its history."
+            )
+        };
+        let (_fixture, path) = scoped_fixture();
+        let (app, cx) = scoped_window(cx, &path, branch_scope("topic")).await;
+        git(&path, &["branch", "-D", "topic"]);
+        let quiet_refresh = |cx: &mut VisualTestContext| {
+            app.update_in(cx, |app, window, cx| {
+                app.queue_automatic_refresh(
+                    local_refresh::LocalChange {
+                        git: true,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                );
+            });
+        };
+        quiet_refresh(cx);
+        settle(&app, cx).await;
+        app.update(cx, |app, _| {
+            assert_eq!(app.operation_error, Some(quiet("topic")));
+            assert_eq!(
+                subjects(app),
+                ["topic work", "initial"],
+                "quiet refresh keeps the displayed history"
+            );
+            // Dismiss, as the banner's button does.
+            app.operation_error = None;
+        });
+        for message in ["first write", "second write"] {
+            std::fs::write(path.join(format!("{message}.txt")), message).unwrap();
+            git(&path, &["add", "--", &format!("{message}.txt")]);
+            app.update_in(cx, |app, window, cx| {
+                app.write(
+                    gitturtle_core::WriteCommand::Commit {
+                        message: message.into(),
+                    },
+                    "Creating commit…",
+                    window,
+                    cx,
+                );
+            });
+            settle(&app, cx).await;
+            let head = git(&path, &["rev-parse", "HEAD"]);
+            app.read_with(cx, |app, _| {
+                assert!(
+                    app.operation_notice
+                        .as_deref()
+                        .is_some_and(|notice| notice.contains(message)),
+                    "{message} was accepted: {:?} {:?}",
+                    app.operation_notice,
+                    app.operation_error
+                );
+                assert!(
+                    app.branches
+                        .iter()
+                        .any(|branch| branch.name == "main" && branch.oid == head),
+                    "a quiet refresh followed {message}"
+                );
+                assert_eq!(
+                    app.operation_error, None,
+                    "{message} raised the dismissed scope report again"
+                );
+            });
+        }
+        quiet_refresh(cx);
+        settle(&app, cx).await;
+        app.read_with(cx, |app, _| assert_eq!(app.operation_error, None));
+        // A new scope choice forgets the report, so another vanished scope
+        // is reported.
+        git(&path, &["branch", "other"]);
+        let path_for_open = path.clone();
+        app.update_in(cx, |app, window, cx| {
+            app.open(path_for_open, branch_scope("other"), window, cx)
+        });
+        settle(&app, cx).await;
+        git(&path, &["branch", "-D", "other"]);
+        quiet_refresh(cx);
+        settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.operation_error, Some(quiet("other")));
+        });
+    }
+
+    #[gpui::test]
+    async fn search_under_a_vanished_scope_reports_it_and_refresh_searches_all_history(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, path) = scoped_fixture();
+        let (app, cx) = scoped_window(cx, &path, branch_scope("topic")).await;
+        git(&path, &["branch", "-D", "topic"]);
+        let search = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.search
+                        .update(cx, |input, cx| input.set_value("work", window, cx));
+                    app.history_query_changed(window, cx);
+                })
+            });
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(300));
+        };
+        search(cx);
+        settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert!(app.error.is_none(), "repository error: {:?}", app.error);
+            let tab = &app.repository_tabs.tabs[app.repository_tabs.active.unwrap()];
+            assert!(tab.error.is_none(), "unavailable tab: {:?}", tab.error);
+            assert_eq!(
+                app.operation_error.as_deref(),
+                Some(
+                    "History scope changed: Local branch 'topic' no longer exists in the local repository snapshot. The displayed history is retained; choose a current branch to browse its history."
+                )
+            );
+            assert_eq!(
+                app.history_search_empty().map(|(title, _)| title),
+                Some("Search could not complete")
+            );
+        });
+        // Refresh shows All history, and the search runs again there rather
+        // than against the vanished scope.
+        dispatch_refresh(&app, cx).await;
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(300));
+        settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert!(app.scope.is_none());
+            assert!(app.history_search_active());
+            assert_eq!(subjects(app), ["main work"]);
+            assert_eq!(
+                app.operation_error.as_deref(),
+                Some(
+                    "History scope changed: Local branch 'topic' no longer exists in the local repository snapshot. Showing All history."
+                )
+            );
+        });
     }
 }

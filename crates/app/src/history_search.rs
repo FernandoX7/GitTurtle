@@ -60,6 +60,11 @@ impl State {
             progress.pinned = scope;
         }
     }
+    /// The in-flight search page, for a GPUI test to await its reply.
+    #[cfg(test)]
+    pub(super) fn take_task(&mut self) -> Option<Task<()>> {
+        self.task.take()
+    }
     pub(super) fn retained_bytes(&self) -> usize {
         self.normal.as_ref().map_or(0, |normal| {
             repository_tabs::history_bytes(&normal.commits, &normal.graph)
@@ -319,6 +324,15 @@ impl GitTurtle {
                         }
                     }
                     Ok(Err(error)) => {
+                        // A scope that no longer resolves is reported like a
+                        // quiet read reports it; the search stops there, and
+                        // Refresh searches All history instead.
+                        if let Some(vanished) = error.downcast_ref::<worker::VanishedScope>() {
+                            this.history_updates.report_scope_error(
+                                &vanished.to_string(),
+                                &mut this.operation_error,
+                            );
+                        }
                         if let Some(progress) = &mut this.history_search.progress {
                             progress.error = Some(format!("{error:#}"));
                         }
