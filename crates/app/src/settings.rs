@@ -2121,20 +2121,15 @@ impl GitTurtle {
                             .children(Density::ALL.into_iter().enumerate().map(
                                 |(index, density)| {
                                     let selected = self.settings.density == density;
-                                    // Selected, the shared helper's look: the `selected`
+                                    // The shared helper's look, as History's segments:
+                                    // unselected, transparent at rest with the palette's
+                                    // hover and pressed fills, so a press steps to
+                                    // almost the selected fill; selected, the `selected`
                                     // surface, tinted on hover rather than faded, which
                                     // would fade the focus ring with it.
                                     Button::new(("settings-density", index))
                                         .small()
-                                        .map(|button| {
-                                            if selected {
-                                                button.with_variant(
-                                                    appearance::control_button_variant(true),
-                                                )
-                                            } else {
-                                                button.ghost()
-                                            }
-                                        })
+                                        .with_variant(appearance::control_button_variant(selected))
                                         .label(density.label())
                                         .selected(selected)
                                         .toggled(selected)
@@ -5552,17 +5547,17 @@ mod segment_tests {
     use super::*;
     use core::prelude::v1::test;
 
-    /// In a dark and two light palettes, a selected density has the shared
-    /// helper's selected look: it rests on the palette's `selected`, hovers to
-    /// its `selected_hover`, and keeps the whole Button, focus ring included, at
-    /// full opacity. An unselected density keeps the kit's ghost look: no fill
-    /// at rest and the ghost's hover under the pointer, which the helper's
-    /// unselected look does not paint. Only fills and rings are checked; the
-    /// test platform paints no text, so a label's color goes unchecked.
+    /// In two dark and two light palettes, two of them with a moved control
+    /// label, every density looks like History's segments, the shared helper.
+    /// Selected, it rests on the palette's `selected`, hovers to its
+    /// `selected_hover`, and keeps the whole Button, focus ring included, at
+    /// full opacity. Unselected, it has no fill at rest, the palette's control
+    /// fill of `hover` under the pointer and of `selected` while held pressed,
+    /// rather than the ghost's translucent fills. Only fills and rings are
+    /// checked; the test platform paints no text, so a label's color goes
+    /// unchecked.
     #[gpui::test]
-    fn a_selected_density_rests_and_hovers_like_the_shared_helper_and_the_others_like_the_ghost(
-        cx: &mut TestAppContext,
-    ) {
+    fn every_density_rests_hovers_and_presses_like_the_shared_helper(cx: &mut TestAppContext) {
         let (app, cx) = open_app(cx);
         assert_eq!(
             cx.read(|cx| app.read(cx).settings.density),
@@ -5615,6 +5610,7 @@ mod segment_tests {
             ThemeChoice::Midnight,
             ThemeChoice::Porcelain,
             ThemeChoice::KanagawaLotus,
+            ThemeChoice::OneDark,
         ] {
             cx.update(|window, cx| {
                 app.update(cx, |app, cx| {
@@ -5627,19 +5623,47 @@ mod segment_tests {
             cx.simulate_mouse_move(point(px(0.), px(0.)), None, Modifiers::default());
             settle(cx);
             let segment = shown(cx, selector).expect("the selected density is drawn");
-            let ghost = shown(cx, comfortable).expect("the Comfortable density is drawn");
+            let other = shown(cx, comfortable).expect("the Comfortable density is drawn");
             let name = format!("{choice:?} Compact density");
-            let ghost_name = format!("{choice:?} Comfortable density");
+            let other_name = format!("{choice:?} Comfortable density");
             appearance::assert_selected_button(
                 cx,
                 &name,
                 segment,
                 appearance::SelectedState::Resting,
             );
-            appearance::assert_ghost_button(cx, &ghost_name, ghost, false);
-            cx.simulate_mouse_move(ghost.center(), None, Modifiers::default());
+            appearance::assert_unselected_button(
+                cx,
+                &other_name,
+                other,
+                appearance::UnselectedState::Resting,
+            );
+            cx.simulate_mouse_move(other.center(), None, Modifiers::default());
             settle(cx);
-            appearance::assert_ghost_button(cx, &ghost_name, ghost, true);
+            appearance::assert_unselected_button(
+                cx,
+                &other_name,
+                other,
+                appearance::UnselectedState::Hovered,
+            );
+            cx.simulate_mouse_down(other.center(), MouseButton::Left, Modifiers::default());
+            settle(cx);
+            appearance::assert_unselected_button(
+                cx,
+                &other_name,
+                other,
+                appearance::UnselectedState::Pressed,
+            );
+            // Released off the segment, the press selects nothing.
+            let away = point(px(0.), px(0.));
+            cx.simulate_mouse_move(away, Some(MouseButton::Left), Modifiers::default());
+            cx.simulate_mouse_up(away, MouseButton::Left, Modifiers::default());
+            settle(cx);
+            assert_eq!(
+                cx.read(|cx| app.read(cx).settings.density),
+                Density::Compact,
+                "{other_name} released off the segment selects nothing"
+            );
             cx.simulate_mouse_move(segment.center(), None, Modifiers::default());
             settle(cx);
             appearance::assert_selected_button(

@@ -344,37 +344,49 @@ pub(crate) fn assert_selected_button(
     }
 }
 
-/// For tests of an unfocused Button in the kit's ghost look: asserts that the
-/// last frame drew no focus ring around `element` and filled its bounds with
-/// nothing at rest, or with nothing but the ghost's hover under the pointer,
-/// the applied `secondary` lightened in a dark mode or darkened in a light one
-/// by 0.1 at 0.8 opacity, as the kit computes it. The shared helper's
-/// unselected look, [`control_button_variant`]`(false)`, rests without a fill
-/// as well, so only the hover tells the two apart.
+/// The state [`assert_unselected_button`] checks an unselected Button in.
 #[cfg(test)]
-pub(crate) fn assert_ghost_button(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum UnselectedState {
+    Resting,
+    Hovered,
+    /// Held down under the pointer.
+    Pressed,
+}
+
+/// For tests of an unfocused Button in the shared helper's unselected look,
+/// [`control_button_variant`]`(false)`, as History's segments draw it: asserts
+/// that the last frame drew no focus ring around `element` and filled its
+/// bounds with nothing at rest, with nothing but the applied palette's
+/// [`Palette::control_fill`] of `hover` under the pointer, and with nothing
+/// but its `control_fill` of `selected` while held pressed, so a press steps
+/// to almost the selected fill.
+#[cfg(test)]
+pub(crate) fn assert_unselected_button(
     cx: &mut gpui_kit::VisualTestContext,
     name: &str,
     element: gpui_kit::Bounds<Pixels>,
-    hovered: bool,
+    state: UnselectedState,
 ) {
-    let hover = cx.update(|_, cx| {
-        let theme = Theme::global(cx);
-        let hover = if theme.mode.is_dark() {
-            theme.secondary.lighten(0.1)
-        } else {
-            theme.secondary.darken(0.1)
-        };
-        gpui_kit::Background::from(hover.opacity(0.8))
-    });
-    let state = if hovered { "hovered" } else { "at rest" };
+    let palette = cx.update(|_, cx| palette(cx));
+    let fill = |layer: Rgba| gpui_kit::Background::from(gpui_kit::Hsla::from(layer));
     let (fills, rings) = painted_button(cx, element);
-    if hovered {
-        assert_eq!(fills, [hover], "{name} {state} paints {fills:?}");
-    } else {
-        assert!(fills.is_empty(), "{name} {state} paints {fills:?}");
+    match state {
+        UnselectedState::Resting => {
+            assert!(fills.is_empty(), "{name} {state:?} paints {fills:?}")
+        }
+        UnselectedState::Hovered => assert_eq!(
+            fills,
+            [fill(palette.control_fill(palette.hover))],
+            "{name} {state:?} paints {fills:?}"
+        ),
+        UnselectedState::Pressed => assert_eq!(
+            fills,
+            [fill(palette.control_fill(palette.selected))],
+            "{name} {state:?} paints {fills:?}"
+        ),
     }
-    assert!(rings.is_empty(), "{name} {state} draws {rings:?}");
+    assert!(rings.is_empty(), "{name} {state:?} draws {rings:?}");
 }
 
 /// The shared compact button's variant: the applied palette's control fills,
