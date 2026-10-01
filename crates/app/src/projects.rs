@@ -709,20 +709,24 @@ impl ProjectHub {
                             (ProjectMode::Create, "Create", "branch-add"),
                         ]
                         .map(|(mode, label, symbol)| {
-                            // Selected, the shared helper's look: the `selected`
-                            // surface, tinted on hover rather than faded, which
-                            // would fade the focus ring with it. While the hub is
-                            // busy every mode keeps the ghost's disabled look.
-                            let selected = self.mode == mode && !self.unavailable();
+                            // The shared helper's look, as History's segments:
+                            // unselected, transparent at rest with the palette's
+                            // hover and pressed fills, so a press steps to almost
+                            // the selected fill; selected, the `selected` surface,
+                            // tinted on hover rather than faded, which would fade
+                            // the focus ring with it. While the hub is busy every
+                            // mode keeps the ghost's disabled look.
+                            let unavailable = self.unavailable();
+                            let selected = self.mode == mode && !unavailable;
                             Button::new(label)
                                 .role(Role::Tab)
                                 .map(|button| {
-                                    if selected {
-                                        button.with_variant(
-                                            crate::appearance::control_button_variant(true),
-                                        )
-                                    } else {
+                                    if unavailable {
                                         button.ghost()
+                                    } else {
+                                        button.with_variant(
+                                            crate::appearance::control_button_variant(selected),
+                                        )
                                     }
                                 })
                                 .flex_1()
@@ -735,7 +739,7 @@ impl ProjectHub {
                                         .size(px(14.)),
                                 )
                                 .selected(self.mode == mode)
-                                .disabled(self.unavailable())
+                                .disabled(unavailable)
                                 .debug_selector(move || format!("project-mode-{label}"))
                                 .when(selected, |button| {
                                     button.hover(crate::appearance::control_selected_hover)
@@ -1890,21 +1894,23 @@ mod tests {
         );
     }
 
-    /// In a dark and two light palettes, a selected mode has the shared helper's
-    /// selected look: it rests on the palette's `selected`, hovers to its
+    /// In two dark and two light palettes, two of them with a moved control
+    /// label, every mode looks like History's segments, the shared helper.
+    /// Selected, it rests on the palette's `selected`, hovers to its
     /// `selected_hover`, and keeps the whole Button, focus ring included, at
-    /// full opacity. An unselected mode keeps the kit's ghost look: no fill at
-    /// rest and the ghost's hover under the pointer, which the helper's
-    /// unselected look does not paint. While the hub is busy the selected mode
-    /// paints no fill, at rest or under the pointer. Only fills and rings are
-    /// checked; the test platform paints no text, so a label's color goes
-    /// unchecked.
+    /// full opacity. Unselected, it has no fill at rest, the palette's control
+    /// fill of `hover` under the pointer and of `selected` while held pressed,
+    /// rather than the ghost's translucent fills. While the hub is busy every
+    /// mode keeps the ghost's disabled look and paints no fill, at rest, under
+    /// the pointer or pressed. Only fills and rings are checked; the test
+    /// platform paints no text, so a label's color goes unchecked.
     #[gpui::test]
-    fn a_selected_mode_rests_and_hovers_like_the_shared_helper_and_the_others_like_the_ghost(
+    fn every_mode_rests_hovers_and_presses_like_the_shared_helper_unless_busy(
         cx: &mut TestAppContext,
     ) {
         use crate::appearance::{
-            SelectedState, ThemeChoice, assert_ghost_button, assert_selected_button,
+            SelectedState, ThemeChoice, UnselectedState, assert_selected_button,
+            assert_unselected_button,
         };
         fn draw(cx: &mut VisualTestContext) {
             cx.update(|window, cx| {
@@ -1943,6 +1949,7 @@ mod tests {
             ThemeChoice::Midnight,
             ThemeChoice::Porcelain,
             ThemeChoice::KanagawaLotus,
+            ThemeChoice::OneDark,
         ] {
             cx.update(|window, cx| {
                 choice.apply(Some(window), cx);
@@ -1953,16 +1960,28 @@ mod tests {
             let segment = cx
                 .debug_bounds("project-mode-Clone")
                 .expect("rendered Clone mode");
-            let ghost = cx
+            let other = cx
                 .debug_bounds("project-mode-Open")
                 .expect("rendered Open mode");
             let name = format!("{choice:?} Clone mode");
-            let ghost_name = format!("{choice:?} Open mode");
+            let other_name = format!("{choice:?} Open mode");
+            let away = point(px(0.), px(0.));
             assert_selected_button(cx, &name, segment, SelectedState::Resting);
-            assert_ghost_button(cx, &ghost_name, ghost, false);
-            cx.simulate_mouse_move(ghost.center(), None, Modifiers::default());
+            assert_unselected_button(cx, &other_name, other, UnselectedState::Resting);
+            cx.simulate_mouse_move(other.center(), None, Modifiers::default());
             draw(cx);
-            assert_ghost_button(cx, &ghost_name, ghost, true);
+            assert_unselected_button(cx, &other_name, other, UnselectedState::Hovered);
+            cx.simulate_mouse_down(other.center(), MouseButton::Left, Modifiers::default());
+            draw(cx);
+            assert_unselected_button(cx, &other_name, other, UnselectedState::Pressed);
+            // Released off the segment, the press selects nothing.
+            cx.simulate_mouse_move(away, Some(MouseButton::Left), Modifiers::default());
+            cx.simulate_mouse_up(away, MouseButton::Left, Modifiers::default());
+            draw(cx);
+            assert!(
+                cx.read(|cx| hub.read(cx).mode == ProjectMode::Clone),
+                "{other_name} released off the segment selects nothing"
+            );
             cx.simulate_mouse_move(segment.center(), None, Modifiers::default());
             draw(cx);
             assert_selected_button(cx, &name, segment, SelectedState::Hovered);
@@ -1973,8 +1992,8 @@ mod tests {
                 "{name} takes focus back"
             );
             assert_selected_button(cx, &name, segment, SelectedState::FocusedAndHovered);
-            // While the hub is busy the selected mode keeps the ghost's
-            // disabled look, transparent at rest and under the pointer.
+            // While the hub is busy every mode keeps the ghost's disabled
+            // look, transparent at rest, under the pointer and pressed.
             let busy = |cx: &mut VisualTestContext, busy| {
                 cx.update(|window, cx| {
                     hub.update(cx, |hub, cx| {
@@ -1985,11 +2004,20 @@ mod tests {
                 })
             };
             busy(cx, true);
-            for position in [point(px(0.), px(0.)), segment.center()] {
-                cx.simulate_mouse_move(position, None, Modifiers::default());
+            for (mode, bounds) in [(&name, segment), (&other_name, other)] {
+                for position in [away, bounds.center()] {
+                    cx.simulate_mouse_move(position, None, Modifiers::default());
+                    draw(cx);
+                    let (fills, _) = crate::appearance::painted_button(cx, bounds);
+                    assert!(fills.is_empty(), "{mode} busy paints {fills:?}");
+                }
+                cx.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
                 draw(cx);
-                let (fills, _) = crate::appearance::painted_button(cx, segment);
-                assert!(fills.is_empty(), "{name} busy paints {fills:?}");
+                let (fills, _) = crate::appearance::painted_button(cx, bounds);
+                assert!(fills.is_empty(), "{mode} busy pressed paints {fills:?}");
+                cx.simulate_mouse_move(away, Some(MouseButton::Left), Modifiers::default());
+                cx.simulate_mouse_up(away, MouseButton::Left, Modifiers::default());
+                draw(cx);
             }
             busy(cx, false);
         }

@@ -65,6 +65,159 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## October 1 whole focus rings in the chooser, worktree and Push to… lists
+
+Task `ring-clipping-lists`, the owner's request of 2026-09-30, from [the whole focus ring in Tags and Reflog](#september-29-whole-focus-ring-in-tags-and-reflog). Three more containers clipped the 3 px a focused Button's ring takes outside its edge: the branch chooser's scrolling list, the worktree manager's scrolling content and its list of worktrees, and the tag inspector's list of Push to… buttons. A focused full-width row lost its sides and its top or bottom edge, and Manage lost its top and left. Each container now keeps `appearance::button_ring_room` inside its clip and gives it back through its margins. The branch chooser and the tag inspector also give it back through the dialog's gap above the footer, and the worktree manager through its title's margin and that gap (`branch_actions.rs`, `worktrees.rs`, `tags.rs`). `DESIGN.md` now lists them among the containers that keep the room. The worktree manager's list of branch choices when creating a worktree stays open there.
+
+Tests: `branch_chooser_keeps_room_for_rings_at_either_end` (`branch_actions/tests.rs`), `manager_keeps_room_for_every_focus_ring` (`worktrees.rs`) and `tag_inspector_keeps_room_for_every_push_ring` (`tags.rs`) lay out each view on the Tags and Reflog clipping fixtures. They require each list's first and last row, and Manage, Create worktree… and Refresh, grown by the installed ring's gap plus width, to lie inside every ancestor content mask, and nothing to move with a zero-width ring.
+
+Native evidence:
+- **Builds:** base `20cf4a7` (sha256 `f70708fe…`), the candidate's parent, is the release executable attested for `ring-room-helper`, reused rather than rebuilt. Candidate `00e14c3` (sha256 `96b6a726…`). Both are release builds from clean trees, each in its own `CARGO_TARGET_DIR`, and `qa.py identity` reported no problem. The controller rebuilds the candidate on the commit that adds these frames. Its native attestation re-checks the rebuilt executable against them.
+- **Host:** Ubuntu 26.04, GNOME 50 on Wayland, XWayland `:0` at scale factor 1, window 1000x680, Midnight and Porcelain. One session on 2026-10-01 from 15:36 to 15:53 UTC ran base then candidate in each palette, 4 launches, after one rehearsal launch of the candidate.
+- **Input:** a local driver on the `qa.py` library (`session.Session` and `mutter.MutterDriver`; `drive_rcl.py`, sha256 `aca18071…`) sent every input through Mutter RemoteDesktop with X focus verified, never through XTest. Each launch had its own empty run directory under `/tmp/gitturtle-evidence/runs/ring-clipping-lists`, its own store, and the QA identity.
+- **Fixture:** a disposable `ring-clipping` repository under `/tmp/gitturtle-evidence/fixtures/`, made by a script (sha256 `7c673be0…`), with 20 local branches, 3 linked worktrees, the tags `v0.9` and `v1.0`, and the remotes `origin` and `upstream`, local bare repositories filled by a local push. Nothing used the network. The repository, its worktrees and both remotes were the same before and after the session: no action was activated, and each dialog closed with Escape.
+- **Routes:** the same keys on both builds.
+  - **Branch chooser:** the toolbar's branch menu, Manage another branch…. Tab 2 focuses the first row; after wheeling the list to its bottom, Tab 19 more focuses the last.
+  - **Worktree manager:** Manage worktrees… from the command palette. Tab 1 focuses Manage, Tab 4 more the first row (`main`, selected), and Tab 3 more the last.
+  - **Tag inspector:** Browse and manage tags… from the command palette, then Tab 3 and Space open `v0.9`. Tab 3 focuses Push to origin…, and one more Push to upstream….
+
+Ring pixels: against the same build's unfocused frame at the same scroll, the 1 to 3 px band outside each control, counted per side (top / right / bottom / left). The counts are the same in both palettes:
+
+| Control | Base `20cf4a7` | Candidate `00e14c3` |
+| --- | --- | --- |
+| First branch-chooser row | 0 / 0 / 1018 / 0 | 1018 / 74 / 1018 / 74 |
+| Last branch-chooser row | 1018 / 0 / 0 / 0 | 1018 / 74 / 1018 / 74 |
+| Manage | 0 / 62 / 134 / 0 | 134 / 62 / 134 / 62 |
+| First worktree row | 0 / 0 / 1338 / 0 | 1338 / 78 / 1338 / 78 |
+| Last worktree row | 1338 / 0 / 0 / 0 | 1338 / 78 / 1338 / 78 |
+| Push to origin… | 0 / 0 / 1218 / 0 | 1218 / 62 / 1218 / 62 |
+| Push to upstream… | 1218 / 0 / 0 / 0 | 1218 / 62 / 1218 / 62 |
+
+On every side the candidate draws, its strongest ring pixel is 11.43:1 against the same pixel unfocused in Midnight and 6.55:1 in Porcelain. No focus frame differs from its unfocused frame outside the control's box grown by 3 px.
+
+Compares, each `qa.py compare <base> <candidate> --mask status-timing`, unfocused and the same in both palettes:
+- The branch chooser at rest and wheeled to its bottom: identical, 0 px outside the mask.
+- The worktree manager at rest: 2 px at (166, 375) and (166, 376), the left edge of the "/" that begins the selected worktree's path. The content's clip used to cut that glyph's overhang at x = 167; it now ends at x = 164, the ring's room.
+- The tag inspector at rest: 1 px at (248, 145) in the "Tag object:" line, one level brighter in each channel (Midnight `(43,48,58)` to `(44,49,59)`).
+The design review accepts both. The first is the ring's room: every pixel from x = 167 on is the same, so the text did not move, and the same 2 px show in every worktree frame. The second is not an inset but rasterisation noise. The kit dialog's `.gap()` sets only the space above the footer, so the content's added bottom room and the smaller gap leave every child where it was. A real shift of the text would redraw the edge of every glyph on that line, not one pixel. Its cause is not proven.
+
+The focus frames differ from the base only in the ring band. The masked pixels, 65 in each frame, are the status bar's timing.
+
+Frames: [`evidence/ring-clipping-lists/`](evidence/ring-clipping-lists/) holds the candidate's 14 focus frames, `candidate-{midnight,porcelain}-1000x680-{chooser-first-focus,chooser-last-focus,worktrees-manage-focus,worktrees-row-first-focus,worktrees-row-last-focus,push-first-focus,push-second-focus}.png`. Each shows the focused control's whole ring. The base's frames and the unfocused frames are not committed. `qa.py privacy scan --redacted` with the local template set found all 44 frames of the session clean. A full-resolution view shows only:
+- product UI;
+- `/tmp/gitturtle-evidence` paths;
+- the QA identity;
+- the fixture's branch, tag and remote names.
+
+Design check: pass with notes, by a `design-reviewer` pass over the 14 frames. Each ring is 1 px of surface, then 2 px of full accent (`#75e0bb` in Midnight, `#3455a6` in Porcelain), on all four sides; every straight-edge ring pixel is present, and the four corners match. Non-blocking, each also true of the base:
+- **Worktree rows:** a focused worktree row's ring meets the next row's 1 px border, because the rows' 3.25 px gap equals the ring's footprint.
+- **Selected worktree row:** the selected row reads as a double outline, the ring and then its own accent border.
+- **Branch chooser:** with the chooser wheeled to its bottom, Tab moves focus through rows above the view without scrolling them in. That stays out of this task's scope.
+
+"At whole scale factors nothing moves" is checked natively only at scale factor 1; scale factor 2 rests on the view tests.
+
+Not covered:
+- the worktree list scrolled, since four rows fit (its last row sits at the list's bottom edge without scrolling);
+- the inspector for an annotated tag, and AT-SPI;
+- macOS, native Wayland, fractional scale factors, and other window and text sizes.
+
+## October 1 one ring room for every clip
+
+Task `ring-room-helper`, the owner's cleanup request of 2026-09-30 after #94, #96 and #99. Four clips keep room for the ring a focused Button draws outside its edge: the repository tab strip, the Tags and Reflog dialogs, and Settings' Your themes rows. Each computed that room on its own, and the Your themes rows kept a fixed 3 px (`ROW_RING_ROOM`) while the page's reveal read the installed ring. All four now take `appearance::button_ring_room`, the installed `Theme::button_focus_ring`'s gap plus width. `ROW_RING_ROOM` is gone, and `rows_off_boundary` and the theme editor's `reveal_focused_row` stay in step with the rows' room.
+
+The Your themes rows' fill layer also drops its hover fill after a touch, as GPUI's own hover styles do. GPUI keeps `Window::last_input_was_touch` crate-private, so the row asks GPUI's `Interactivity::compute_style` whether a hover style would show (`settings.rs`, `row_hovered`). The answer follows every modality rule GPUI applies to hover styles.
+
+Tests: `every_ring_room_follows_the_installed_ring` (`repository_tabs.rs`) installs a ring of another size. It requires each of the four clips to keep exactly that room, and the Your themes list's room to agree with the page reveal and `rows_off_boundary`. `a_touch_takes_a_rows_hover_fill_away_until_the_mouse_moves` (`theme_editor.rs`) hovers a row with the mouse and sends a touch over it. It requires the resting fill after the touch, and the hover fill again after the next mouse move. The existing ring-room tests pass unchanged.
+
+Native evidence, light tier, since at the default ring (2 px and a 1 px gap) the change is meant to move no pixel:
+- **Builds:** base `469b549` (sha256 `5aa34e3a…`), the candidate's parent, and candidate `04690dc` (sha256 `cc75b9a2…`). Both are release builds from clean trees, each in its own `CARGO_TARGET_DIR`, and `qa.py identity` reported no problem. The controller rebuilds the candidate on the commit that adds these frames. Its native attestation re-checks the rebuilt executable against them.
+- **Host:** Ubuntu 26.04, GNOME 50 on Wayland, XWayland `:0` at scale factor 1, window 1000x680, Midnight. One session on 2026-10-01 from 14:03 to 14:17 UTC ran base then candidate for each scenario, 10 launches.
+- **Input:** a local driver on the `qa.py` library (`session.Session`, `mutter.MutterDriver`, and `portal.Keyboard` for the file chooser; `drive_rrh.py`, sha256 `e2b4218f…`) sent every input through Mutter RemoteDesktop with X focus verified, never through XTest. Each launch had its own empty run directory under `/tmp/gitturtle-evidence/runs/ring-room-helper`, its own store, and the QA identity.
+- **Routes:** Tab keys move the focus from where a launch starts, and nothing is activated except Import…. The fixtures were used read-only; their HEAD, status, index, refs and reflogs were the same before and after the session.
+  - **Tab strip:** the `tabs` fixture's three repositories, the first active; Tab 7 focuses the first tab.
+  - **Your themes:** `theme-fixture`, with a store holding three custom themes. A click on Import… adds Imported Harbor through the GNOME file chooser, which draws the import highlight. Tab 40 focuses Edit… on the row above it, and Tab 43 focuses Imported Harbor's Edit…, flush against the status bar once the page scrolls 3 px to reveal it.
+  - **Tags and Reflog:** the `tags-reflog` fixture under `/tmp/gitturtle-evidence/fixtures/`. Tab 3 focuses the first Tags row, and Tab 4 the first Reflog entry.
+
+Compares, each `qa.py compare <base> <candidate> --mask status-timing`: all five sites are identical, with 0 px outside the mask. The masked pixels, 0 to 75, are the status bar's timing. Each focus frame shows the ring. Against the same build's unfocused frame, the 1 to 3 px band outside the target differs on all four sides: 336 px for the tab, 352 for either Your themes row, 2,424 for the Tags row and 2,992 for the Reflog entry, the same on both builds. Another 13 frames from the same launches are identical too:
+- the rest frames;
+- the middle tab, its close button and the last tab;
+- the last Tags row and the last Reflog entry;
+- a Your themes row hovered by the mouse, with and without focus.
+
+The base frames reproduce the committed Your themes highlight, focus-beside-highlight and flush frames and the Tags row frame of #96 and #99 byte for byte.
+
+Frames: [`evidence/ring-room-helper/`](evidence/ring-room-helper/) holds the candidate's five frames: `candidate-midnight-1000x680-{tab-focus,themes-row-focus-above-import,themes-row-focus-flush,tags-row-focus,reflog-entry-focus}.png`. The base's frames are identical and not committed. `qa.py privacy scan --redacted` with the local template set found all five clean. A full-resolution view shows only:
+- product UI;
+- `/tmp/gitturtle-evidence` paths;
+- the QA identity;
+- the fixture's author.
+
+Design check: pass, by a `design-reviewer` pass over the five frames. Each ring is whole: 2 px of accent (`#75e0bb`) 1 px outside the control on all four sides. The tab strip does not clip the tab's ring, and the flush row's ring keeps a 1 px gap above the status bar's border. The touch rule changes when a row shows its hover fill, not the fill's colour. Non-blocking: touch and a ring of another size rest on the view tests. The tab's ring touches the window's top pixel row, which is whole and pre-existing.
+
+Not covered:
+- touch natively, since this host has no touch input (the touch view test covers it);
+- a ring of another size natively, since the app installs only the default (the ring-room view test covers it);
+- palettes other than Midnight, macOS, native Wayland, fractional scale factors, and other window and text sizes.
+
+## October 1 unselected segments like the shared helper
+
+Task `segments-unselected-like-history`, the owner's request and decision of 2026-09-30, which partly reverses "unselected segments keep the ghost" in [the selected segments entry](#september-30-selected-segments-like-the-shared-helper). That entry's design review left the pressed fill as a follow-up. Settings' density segments and the project hub's mode segments now give an unselected segment `appearance::control_button_variant(false)`, the shared `button()` helper's unselected look that History's segments use, instead of the kit's ghost (`settings.rs`, `projects.rs`). A selected segment keeps #100's look, and while the hub is busy every mode keeps the ghost's disabled look. `appearance::assert_ghost_button` became `assert_unselected_button`, which checks the helper's unselected look at rest, hovered and pressed.
+
+Tests: `settings::segment_tests::every_density_rests_hovers_and_presses_like_the_shared_helper` and `projects::tests::every_mode_rests_hovers_and_presses_like_the_shared_helper_unless_busy`, in Midnight, Porcelain, Kanagawa Lotus and One Dark. An unselected segment must rest, hover and, under a held simulated press, press with the fills of `control_button_variant(false)`; a selected one keeps #100's fills, and a busy hub's modes keep the ghost's disabled look.
+
+Native evidence, full tier:
+- **Builds:** base `bc27842` (sha256 `4e4c26c2…`), the candidate's parent, and candidate `7d5f6d5` (sha256 `fff27099…`). Both are release builds from clean trees, each in its own `CARGO_TARGET_DIR`, and `qa.py identity` reported no problem. The controller rebuilds the candidate on the commit that adds these frames. Its native attestation re-checks the rebuilt executable against them.
+- **Host:** Ubuntu 26.04, GNOME 50 on Wayland, XWayland `:0` at scale factor 1, window 1000x680. One session on 2026-10-01 from 13:04 to 13:11 UTC ran base then candidate for each palette and control, 16 launches.
+- **Input:** a local driver on the `qa.py` library (`session.Session` and `mutter.MutterDriver`, `drive_segunsel.py`, sha256 `b732820b…`) sent every input through Mutter RemoteDesktop with X focus verified, never through XTest. Each launch had its own empty run directory under `$RUN` (`/tmp/gitturtle-evidence/runs/segments-unselected`), a generated store with Follow system off, and the QA identity.
+- **Fixture and routes:** the density control in Settings on the `theme-fixture` repository (HEAD `52f471a`; its HEAD, status and index were the same before and after the session), reached with Ctrl+comma and a 24-step wheel scroll. The library's `wheel N` gives N effective steps; #100 sent 25 clicks, of which Mutter dropped one, and the base's Midnight density rest frame is byte-identical to #100's. The mode control on the hub, opened with no repository. Hover moves the pointer onto Compact or Clone. Press holds button 1 there for the capture, then moves the pointer, still held, to blank space and releases it, so no click fires: a frame taken afterwards equals the rest frame in all 16 launches.
+
+Compares, each `qa.py compare <base> <candidate>`, with `--mask status-timing` on the full-window density frames. Every difference lies inside the unselected segments' boxes, Compact (903,179)-(961,198) and, in the panel crops, Clone (142,23)-(260,55) and Create (263,23)-(381,55); none is in the selected segment's box or outside the unselected boxes:
+
+| Pair | Midnight | Porcelain | Kanagawa Lotus | One Dark |
+| --- | --- | --- | --- | --- |
+| density rest | identical | identical | 189 px, Compact's label | 185 px, Compact's label |
+| density hovered | 1,078 px, Compact | 1,078 | 1,078 | 1,078 |
+| density pressed | 1,078 px, Compact | 1,078 | 1,078 | 1,078 |
+| mode rest | identical | identical | 482 px, the Clone and Create labels | 465 px, the same labels |
+| mode hovered | 3,746 px, Clone | 3,751 | 4,005, Clone and Create's label | 3,997, the same |
+| mode pressed | 3,748 px, Clone | 3,751 | 4,005, Clone and Create's label | 3,997, the same |
+
+At rest the helper's unselected look paints no fill, as the ghost did, so Midnight and Porcelain rest frames are identical. In Kanagawa Lotus and One Dark the unselected labels change, because the helper's look takes `control_label` there.
+
+The pressed-to-selected step: the held unselected segment's most common color against the selected segment's resting fill in the same frame, the same for both controls. The contract's computed base figures (1.65, 1.26 and 1.03:1) measure the pressed fill against `selected_hover` instead; the frames reproduce them, 1.645, 1.258 and 1.028:1. History's Changes segment, measured the same way in extra candidate launches (not committed), presses at 1.047, 1.120, 1.163 and 1.203:1.
+
+| Palette | Selected | Base pressed | Base step | Candidate pressed | Candidate step |
+| --- | --- | --- | --- | --- | --- |
+| Midnight | `#223b3b` | `#161d29` | 1.415:1, hue 218° to 180° | `#1c3331` | 1.121:1, hue 175° to 180° |
+| Porcelain | `#dce6f6` | `#bac3e1` | 1.393:1 | `#d4dff3` | 1.067:1 |
+| Kanagawa Lotus | `#c7d7e0` | `#d8cb82` | 1.113:1, hue 51° to 202° | `#c4d2d2` | 1.054:1, hue 180° to 202° |
+| One Dark | `#323d52` | `#282c34`, the track itself | 1.283:1 | `#2d374a` | 1.096:1 |
+
+On the base, One Dark's ghost pressed fill equals the segment track, so a pressed frame is identical to rest and the press shows nothing. The candidate's pressed fill is close to History's but not equal (`#1c3331` against `#1f3836` in Midnight), since `control_fill` is translucent and History's track is a different color.
+
+Labels, the darkest (light palettes) or lightest (dark palettes) glyph pixel in each box. Density labels reach that value in only one or two pixels at this text size, so they are approximate:
+
+| Palette | Selected label, density / mode | Base unselected label | Candidate unselected label |
+| --- | --- | --- | --- |
+| Midnight | `#dfe6ee` / `#e8eef7` | `#dde3ec` / `#e7edf6` | unchanged |
+| Porcelain | `#303a55` / `#242e49` | `#333c56` / `#252f4a` | unchanged |
+| Kanagawa Lotus | `#494a57` / `#41414e` | `#5e5e6a` / `#555564`, 1.37:1 from the selected label | `#4d4c55` / `#42424e`, 1.03 and 1.01:1 |
+| One Dark | `#b4b9c5` / `#bdc2cd` | `#a5acb9` / `#adb4c1`, 1.16 and 1.17:1 | `#b2b7c2` / `#bcc1cc`, 1.01 and 1.02:1 |
+
+Frames: [`evidence/segments-unselected/`](evidence/segments-unselected/) holds base and candidate in each palette (48 files): `{base,candidate}-<palette>-1000x680-density-{rest,unselected-hover,unselected-pressed}.png` and `{base,candidate}-<palette>-1000x680-mode-{rest,unselected-hover,unselected-pressed}-panel.png`. Every frame shows the affected controls. The mode files are crops of the hub's action panel, window (580,215)-(985,480), as in #100, since full hub frames do not pass the local privacy scan. `qa.py privacy scan --redacted --jobs 10` with the local template set found all 48 clean, and the frames viewed show only product UI and the `theme-fixture` tab.
+
+Design review: pass, with no blocking finding, and no `DESIGN.md` line needed, since its button rule ("hover uses the palette hover surface, pressed uses selected") already describes the new look.
+- **Press:** the ghost broke that rule twice. Its pressed fill was off the selected hue (38° in Midnight, yellow against blue in Kanagawa Lotus), and in One Dark it did not show. The candidate's pressed fill stays near the selected hue and steps to it by 1.05 to 1.12:1, inside History's 1.05 to 1.20:1. The hovered-to-pressed step is at least 9 in one channel in every palette.
+- **Selection:** a resting selected segment still leads the track by 1.18 to 1.53:1, unchanged. A hovered unselected segment stands 1.32, 1.03, 1.07 (with a change of hue) and 1.18:1 from the selected one in Midnight, Porcelain, Kanagawa Lotus and One Dark, where History's stands 1.24, 1.09, 1.20 and 1.29:1. The reviewer accepted this as History's pattern.
+- **Labels:** unselected labels reach 5.5 to 15.5:1 on their fills at rest, hovered and pressed. The lowest, about 5.5:1, is Kanagawa Lotus density hovered and pressed, from a one- or two-pixel sample. The mixed labels #100 accepted are gone.
+- **Non-blocking, pre-existing:** in Porcelain a hovered unselected segment is only 1.03:1 from the selected one (1.09 in History), and Kanagawa Lotus is close in luminance. A rule for that separation, or a Porcelain `hover` adjustment, is left to a separate task. Settings' density track is `canvas`, while `control_fill` is tuned for panels, which is why its fills are not pixel-identical to History's.
+
+Not covered:
+- macOS, native Wayland, fractional scale factors, and text and window sizes other than the default and 1000x680;
+- a busy hub natively (the project test covers it), keyboard focus on an unselected segment, and a segment becoming selected by a click or Space;
+- the accessibility tree;
+- the other built-in palettes and custom or imported themes.
+
 ## October 1 whole lists and message for a selected Reflog entry
 
 Task `reflog-selected-entry-collapse` fixes a defect found during [the whole focus ring in Tags and Reflog](#september-29-whole-focus-ring-in-tags-and-reflog). At 1000x680, selecting a Reflog entry collapsed three children: the entry list, the changed-file list and the message editor. The frames `evidence/tags-focus-ring/{midnight,porcelain}-1000x680-reflog-selected-rest.png` stay as the record of the defect.

@@ -2,19 +2,13 @@
 use crate::*;
 use gitturtle_core::{ReflogEntry, ReflogPage, ReflogRecoveryPlan, WriteCommand};
 use gpui_kit::{
-    component::{Theme, WindowExt, dialog::DialogButtonProps},
+    component::{WindowExt, dialog::DialogButtonProps},
     prelude::FluentBuilder,
 };
 
 /// The gap the kit's dialog leaves between its body and its footer, its
 /// default 16 px padding.
 const DIALOG_FOOTER_GAP: Pixels = px(16.);
-
-/// The room the installed Button focus ring takes outside a Button's edge.
-fn ring_room(cx: &App) -> Pixels {
-    let ring = Theme::global(cx).button_focus_ring;
-    ring.gap + ring.width
-}
 
 fn label(id: &'static str, value: impl Into<SharedString>) -> Stateful<Div> {
     let value = value.into();
@@ -54,7 +48,7 @@ impl ReflogBrowser {
             dialog
                 .title(label("reflog-title", "Local reflog and recovery"))
                 .width(px(740.))
-                .gap(DIALOG_FOOTER_GAP - ring_room(cx))
+                .gap(DIALOG_FOOTER_GAP - appearance::button_ring_room(cx))
                 .child(browser.clone())
                 .button_props(DialogButtonProps::default().ok_text("Done"))
                 .on_ok(move |_, _, cx| {
@@ -283,7 +277,7 @@ impl Render for ReflogBrowser {
         // changed-file list never shrink. Each would otherwise give up its
         // whole height, having no automatic minimum: the editor sets a zero
         // one, and a scrolling list has none.
-        let room = ring_room(cx);
+        let room = appearance::button_ring_room(cx);
         div().id("reflog-browser-content").debug_selector(|| "reflog-browser-content".into()).flex().flex_col().gap_3().max_h(px(590.).min(body_height) + room).px(room).mx(-room).pb(room).overflow_y_scroll()
             .child(label("reflog-explanation", "Git records local reference movements here, including actions by other tools. HEAD belongs to this worktree; branch logs are shared. Entries expire, and unreachable objects may be pruned. This is not a permanent backup or a complete activity history.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
             .child(div().flex().gap_2().child(div().flex_1().child(Input::new(&self.scope).aria_label("Reflog scope: HEAD or local branch name"))).child(button("refresh-reflog", "Read log", "refresh", false).debug_selector(|| "refresh-reflog".into()).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx)))))
