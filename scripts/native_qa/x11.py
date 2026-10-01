@@ -2,15 +2,20 @@
 
 computer-use cannot see GPUI windows, so everything goes through the X
 display. The operator may run their own GitTurtle: every lookup is scoped to
-the process this session launched, and nothing here kills by name.
+the process this session launched, and nothing here kills by name. On a host
+whose XWayland routes XTest through the RemoteDesktop portal, input goes
+through `mutter.MutterDriver` instead; window lookup, focus and grabs stay here.
 """
 
 from __future__ import annotations
 
 import time
 
-from Xlib import X, XK, display as xdisplay
-from Xlib.ext import xtest
+try:
+    from Xlib import X, XK, display as xdisplay
+    from Xlib.ext import xtest
+except ImportError:  # the unit tests run without python-xlib; connect() names the missing module
+    X = XK = xdisplay = xtest = None
 
 WM_CLASS = "gitturtle"
 # Keysym names for characters XK.string_to_keysym does not accept as-is.
@@ -23,6 +28,8 @@ CHAR_KEYSYMS = {
 
 
 def connect(name: str):
+    if xdisplay is None:
+        raise SystemExit("launch needs python-xlib (import Xlib failed)")
     return xdisplay.Display(name)
 
 
@@ -63,6 +70,26 @@ def find_window(dsp, pid: int, timeout: float = 40.0):
                 return entry["window"]
         time.sleep(0.5)
     raise SystemExit(f"no GitTurtle window for pid {pid} on {dsp.get_display_name()}")
+
+
+def focus_within(dsp, window, depth: int = 12) -> bool:
+    """True when X input focus is on `window` or one of its descendants (PointerRoot and None are not)."""
+    focus = dsp.get_input_focus().focus
+    if focus is None or isinstance(focus, int):
+        return False
+    root = dsp.screen().root.id
+    node = focus
+    for _ in range(depth):
+        if node.id == window.id:
+            return True
+        try:
+            parent = node.query_tree().parent
+        except Exception:
+            return False
+        if parent is None or parent.id in (0, root):
+            return False
+        node = parent
+    return False
 
 
 class Driver:
