@@ -2119,4 +2119,17 @@ mod tests {
         let edited = source.replace("mode = \"dark\"", "mode = \"dim\"");
         assert_eq!(parse(edited.as_bytes(), false).unwrap().mode, Mode::Dark);
     }
+
+    /// The Omarchy half of `appearance::tests::syntax_colors_read_on_every_editor_background`:
+    /// every bundled and generated fixture as it maps. On origin/main these were the toolkit's
+    /// default highlight theme's colors.
+    #[test]
+    fn fixture_syntax_colors_read_on_every_editor_background() {
+        crate::appearance::tests::assert_syntax_colors_read(fixtures().into_iter().map(
+            |(name, colors)| {
+                let mapped = map(&colors);
+                (format!("Omarchy {name}"), mapped.palette, mapped.is_light)
+            },
+        ));
+    }
 }

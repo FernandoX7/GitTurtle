@@ -1,6 +1,7 @@
 //! Native presentation choices shared by history, previews, and settings.
 
 use gpui_kit::component::button::{ButtonCustomVariant, ButtonVariant};
+use gpui_kit::component::highlighter::{SyntaxColors, ThemeStyle};
 use gpui_kit::component::{Colorize, FocusRing, Theme, ThemeMode};
 use gpui_kit::{App, FontFeatures, Global, Pixels, Rgba, StyleRefinement, Styled, Window, px, rgb};
 use serde::{Deserialize, Serialize};
@@ -1427,6 +1428,7 @@ impl Palette {
         syntax.style.editor_active_line = Some(rgb(palette.panel).into());
         syntax.style.editor_line_number = Some(rgb(palette.line_number).into());
         syntax.style.editor_foreground = Some(rgb(palette.text).into());
+        syntax.style.syntax = palette.syntax_colors(&syntax.style.syntax);
         theme.font_size = ui_text(13.);
         theme.mono_font_size = code_text();
         theme.radius = px(7.);
@@ -1435,6 +1437,192 @@ impl Palette {
         // while foregrounds still read ThemeColor. Sync both representations
         // before Theme::sync_base propagates them to native controls.
         theme.tokens = (&theme.colors).into();
+    }
+
+    /// The toolkit's syntax styles with each field's color taken from its palette role, fitted
+    /// by [`SyntaxTargets::fit`]; italic and weight stay as the toolkit set them. The literal
+    /// names every field, so a field a later toolkit adds fails to compile until it has a role.
+    /// A capture without a field of its own takes the field of its first segment
+    /// (`variable.builtin` takes `variable`) or, with none, the editor foreground, which is
+    /// `text`, so every capture a grammar emits draws in a palette color.
+    fn syntax_colors(self, kit: &SyntaxColors) -> SyntaxColors {
+        let targets = SyntaxTargets::new(self);
+        let fitted = |role: u32| Some(targets.fit(role));
+        let keyword = fitted(self.renamed);
+        let string = fitted(self.added);
+        let constant = fitted(self.warning);
+        let type_ = fitted(self.modified);
+        let function = fitted(self.hunk);
+        let markup = fitted(self.accent);
+        let comment = fitted(self.muted);
+        // `text` reaches every target by definition, so fitting would return it unchanged.
+        let text = Some(self.text);
+        SyntaxColors {
+            keyword: restyle(kit.keyword, keyword),
+            preproc: restyle(kit.preproc, keyword),
+            string: restyle(kit.string, string),
+            string_escape: restyle(kit.string_escape, string),
+            string_regex: restyle(kit.string_regex, string),
+            string_special: restyle(kit.string_special, string),
+            string_special_symbol: restyle(kit.string_special_symbol, string),
+            text_literal: restyle(kit.text_literal, string),
+            text_code_span: restyle(kit.text_code_span, string),
+            number: restyle(kit.number, constant),
+            boolean: restyle(kit.boolean, constant),
+            constant: restyle(kit.constant, constant),
+            type_: restyle(kit.type_, type_),
+            constructor: restyle(kit.constructor, type_),
+            enum_: restyle(kit.enum_, type_),
+            variant: restyle(kit.variant, type_),
+            function: restyle(kit.function, function),
+            tag: restyle(kit.tag, markup),
+            tag_doctype: restyle(kit.tag_doctype, markup),
+            attribute: restyle(kit.attribute, markup),
+            property: restyle(kit.property, markup),
+            link_text: restyle(kit.link_text, markup),
+            link_uri: restyle(kit.link_uri, markup),
+            label: restyle(kit.label, markup),
+            title: restyle(kit.title, markup),
+            comment: restyle(kit.comment, comment),
+            comment_doc: restyle(kit.comment_doc, comment),
+            hint: restyle(kit.hint, comment),
+            predictive: restyle(kit.predictive, comment),
+            variable: restyle(kit.variable, text),
+            variable_special: restyle(kit.variable_special, text),
+            embedded: restyle(kit.embedded, text),
+            operator: restyle(kit.operator, text),
+            punctuation: restyle(kit.punctuation, text),
+            punctuation_bracket: restyle(kit.punctuation_bracket, text),
+            punctuation_delimiter: restyle(kit.punctuation_delimiter, text),
+            punctuation_list_marker: restyle(kit.punctuation_list_marker, text),
+            punctuation_special: restyle(kit.punctuation_special, text),
+            primary: restyle(kit.primary, text),
+            // Emphasis keeps its italic or weight in the color around it.
+            emphasis: restyle(kit.emphasis, None),
+            emphasis_strong: restyle(kit.emphasis_strong, None),
+        }
+    }
+
+    /// The kit theme [`Self::apply`] leaves for this palette, without an application:
+    /// `Theme::change` restores the mode's default theme, highlight theme included, and
+    /// `configure` then applies this palette over it.
+    #[cfg(test)]
+    pub(crate) fn configured_theme(self, is_light: bool) -> Theme {
+        use gpui_kit::component::highlighter::HighlightTheme;
+        let mut theme = Theme {
+            highlight_theme: if is_light {
+                HighlightTheme::default_light()
+            } else {
+                HighlightTheme::default_dark()
+            },
+            ..Theme::default()
+        };
+        self.configure(is_light, &mut theme);
+        theme
+    }
+}
+
+/// `kit` with its color replaced by `color`, or removed for `None`, keeping its italic and
+/// weight; a field the toolkit leaves empty gets a style with the color alone. `ThemeStyle` keeps
+/// its fields private, so the style is rebuilt through the toolkit's theme format, which names
+/// them.
+fn restyle(kit: Option<ThemeStyle>, color: Option<u32>) -> Option<ThemeStyle> {
+    use serde_json::{Map, Value};
+    let mut entry = match serde_json::to_value(kit) {
+        Ok(Value::Object(entry)) => entry,
+        Ok(Value::Null) => Map::new(),
+        unexpected => {
+            debug_assert!(
+                false,
+                "a theme style serializes as an object: {unexpected:?}"
+            );
+            return kit;
+        }
+    };
+    match color {
+        Some(color) => entry.insert("color".into(), custom::format_hex(color).into()),
+        None => entry.remove("color"),
+    };
+    let restyled = serde_json::from_value(Value::Object(entry));
+    debug_assert!(
+        restyled.is_ok(),
+        "a theme style reads back its own format: {restyled:?}"
+    );
+    restyled.ok().or(kit)
+}
+
+/// The backgrounds syntax colors are drawn on, measured once per palette application: the
+/// editor background, which hunk header lines keep (their decoration sets no background), the
+/// active line, and the added and removed line tints of the unified and split diffs.
+struct SyntaxTargets {
+    text: u32,
+    /// Whether `text` reads at the text rule on every background.
+    text_reads: bool,
+    /// Each background's luminance and the contrast a syntax color must reach on it: the text
+    /// rule plus the rasterization margin, or `text`'s own contrast where that is lower.
+    backgrounds: [(f64, f64); 4],
+}
+
+impl SyntaxTargets {
+    fn new(palette: Palette) -> Self {
+        let text = custom::luminance(palette.text);
+        let mut text_reads = true;
+        let backgrounds = [
+            palette.canvas,
+            palette.panel,
+            palette.added_background,
+            palette.removed_background,
+        ]
+        .map(|background| {
+            let background = custom::luminance(background);
+            let text_contrast = custom::luminance_contrast(text, background);
+            text_reads &= text_contrast >= LABEL_RULE;
+            (background, (LABEL_RULE + LABEL_MARGIN).min(text_contrast))
+        });
+        Self {
+            text: palette.text,
+            text_reads,
+            backgrounds,
+        }
+    }
+
+    fn reads(&self, color: u32) -> bool {
+        let color = custom::luminance(color);
+        self.backgrounds
+            .iter()
+            .all(|&(background, minimum)| custom::luminance_contrast(color, background) >= minimum)
+    }
+
+    /// `color` as it is, when it reads on every background, or moved toward `text` by a step
+    /// that reads, found by a binary search over 256ths of each sRGB channel; every step it
+    /// accepts reads, so the result is at least 4.5:1 on each background. `text` itself reads
+    /// everywhere, so the search always ends. A palette whose `text` is below the text rule on
+    /// one of them, which only a custom theme with a readability warning can be, draws its
+    /// syntax in `text`.
+    fn fit(&self, color: u32) -> u32 {
+        if !self.text_reads {
+            return self.text;
+        }
+        if self.reads(color) {
+            return color;
+        }
+        let toward_text = |step: u32| {
+            [16, 8, 0].into_iter().fold(0, |mixed, shift| {
+                let (from, to) = ((color >> shift) & 0xff, (self.text >> shift) & 0xff);
+                mixed | (((from * (256 - step) + to * step + 128) / 256) << shift)
+            })
+        };
+        // `high` always reads (at 256 steps the color is `text`) and `low` never does.
+        let (mut low, mut high) = (0, 256);
+        while high - low > 1 {
+            let middle = (low + high) / 2;
+            if self.reads(toward_text(middle)) {
+                high = middle;
+            } else {
+                low = middle;
+            }
+        }
+        toward_text(high)
     }
 }
 
@@ -1482,7 +1670,7 @@ impl Density {
 
 #[cfg(test)]
 mod tests {
-    use super::custom::{channel_distance, contrast, luminance};
+    use super::custom::{CustomTheme, TokenKind, channel_distance, contrast, luminance};
     use super::*;
     use gpui_kit as gpui;
     use gpui_kit::{Background, Hsla};
@@ -1537,6 +1725,246 @@ mod tests {
                     .join("; ")
             );
         }
+    }
+
+    /// `#rrggbbaa`, as the kit serializes a color, as `0xrrggbb`.
+    fn serialized(color: &serde_json::Value) -> u32 {
+        let digits = color.as_str().expect("a serialized color");
+        u32::from_str_radix(&digits[1..7], 16).expect("hex digits")
+    }
+
+    /// Every color the source and patch editors draw text in under a configured theme, by
+    /// syntax field in the toolkit's theme format: each field's color, and the editor
+    /// foreground, which a capture without a syntax color and unstyled text take. `None` for a
+    /// field without a color.
+    fn editor_text_colors(theme: &Theme) -> Vec<(String, Option<u32>)> {
+        let syntax = serde_json::to_value(&theme.highlight_theme.style.syntax).unwrap();
+        let mut colors = syntax
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(field, style)| {
+                let color = style.get("color").filter(|color| !color.is_null());
+                (field.clone(), color.map(serialized))
+            })
+            .collect::<Vec<_>>();
+        colors.push((
+            "editor foreground".into(),
+            Some(serialized(
+                &serde_json::to_value(theme.colors.foreground).unwrap(),
+            )),
+        ));
+        colors
+    }
+
+    /// Every syntax color the diff and source editors use, and the editor foreground, reads at
+    /// 4.5:1 on each background it is drawn on in each case's configured theme: the editor
+    /// background, where hunk header lines draw too, the active line, and the added and removed
+    /// line tints. Every field but emphasis has a color, so no capture falls back to the
+    /// toolkit's.
+    pub(crate) fn assert_syntax_colors_read(
+        cases: impl IntoIterator<Item = (String, Palette, bool)>,
+    ) {
+        let mut below = Vec::new();
+        let mut uncolored = Vec::new();
+        let (mut palettes, mut measured) = (0, 0);
+        for (name, palette, is_light) in cases {
+            palettes += 1;
+            let theme = palette.configured_theme(is_light);
+            let style = &theme.highlight_theme.style;
+            let background = |color: Option<Hsla>| {
+                serialized(&serde_json::to_value(color.expect("a configured color")).unwrap())
+            };
+            let backgrounds = [
+                ("editor background", background(style.editor_background)),
+                ("active line", background(style.editor_active_line)),
+                ("added lines", palette.added_background),
+                ("removed lines", palette.removed_background),
+            ];
+            for (token, color) in editor_text_colors(&theme) {
+                // Emphasis keeps its italic or weight and takes the color around it.
+                let Some(color) = color else {
+                    if !token.starts_with("emphasis") {
+                        uncolored.push(format!("{name}: {token}"));
+                    }
+                    continue;
+                };
+                for (surface, background) in backgrounds {
+                    measured += 1;
+                    let ratio = contrast(color, background);
+                    if ratio < 4.5 {
+                        below.push(format!(
+                            "{name}: {token} #{color:06x} on {surface} #{background:06x} {ratio:.2}:1"
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            below.is_empty(),
+            "{} of {measured} pairs below 4.5:1:\n{}",
+            below.len(),
+            below.join("\n")
+        );
+        assert_eq!(uncolored, Vec::<String>::new());
+        // Thirty-nine colored fields and the editor foreground, on four backgrounds.
+        assert_eq!(measured, palettes * 40 * 4);
+    }
+
+    /// The syntax colors of the twenty built-ins, and of a custom theme whose keyword and type
+    /// colors sit just above the 3:1 status rule it is held to, read on every editor
+    /// background; `omarchy::palette::tests` measures the Omarchy fixtures. On origin/main
+    /// these were the toolkit's default highlight theme's colors.
+    #[test]
+    fn syntax_colors_read_on_every_editor_background() {
+        let mut custom = CustomTheme::from_base(1, "Faint statuses", ThemeChoice::Porcelain);
+        custom.palette.set(TokenKind::Renamed, 0x8b62c4);
+        custom.palette.set(TokenKind::Modified, 0x9a6a1c);
+        assert_eq!(custom.palette.readability_issues(), Vec::new());
+        assert_syntax_colors_read(
+            ThemeChoice::ALL
+                .into_iter()
+                .map(|choice| (format!("{choice:?}"), choice.palette(), choice.is_light()))
+                .chain([(custom.name.clone(), custom.palette, custom.is_light())]),
+        );
+    }
+
+    /// Each syntax field draws in its role's palette color. Pinned on Tokyo Night with its
+    /// orange for `warning`, which Tokyo Night shares with `modified`: its eight role colors
+    /// are then distinct and each already reads on every editor background, so none is mixed
+    /// toward `text`.
+    #[test]
+    fn syntax_fields_take_their_palette_roles() {
+        let mut custom = CustomTheme::from_base(1, "Tokyo orange", ThemeChoice::TokyoNight);
+        custom.palette.set(TokenKind::Warning, 0xff9e64);
+        let palette = custom.palette;
+        assert_eq!(palette.readability_issues(), Vec::new());
+        let roles: [(Option<u32>, &[&str]); 9] = [
+            (Some(palette.renamed), &["keyword", "preproc"]),
+            (
+                Some(palette.added),
+                &[
+                    "string",
+                    "string.escape",
+                    "string.regex",
+                    "string.special",
+                    "string.special.symbol",
+                    "text.literal",
+                    "text.code.span",
+                ],
+            ),
+            (Some(palette.warning), &["number", "boolean", "constant"]),
+            (
+                Some(palette.modified),
+                &["type", "constructor", "enum", "variant"],
+            ),
+            (Some(palette.hunk), &["function"]),
+            (
+                Some(palette.accent),
+                &[
+                    "tag",
+                    "tag.doctype",
+                    "attribute",
+                    "property",
+                    "link_text",
+                    "link_uri",
+                    "label",
+                    "title",
+                ],
+            ),
+            (
+                Some(palette.muted),
+                &["comment", "comment_doc", "hint", "predictive"],
+            ),
+            (
+                Some(palette.text),
+                &[
+                    "variable",
+                    "variable.special",
+                    "embedded",
+                    "operator",
+                    "punctuation",
+                    "punctuation.bracket",
+                    "punctuation.delimiter",
+                    "punctuation.list_marker",
+                    "punctuation.special",
+                    "primary",
+                    "editor foreground",
+                ],
+            ),
+            (None, &["emphasis", "emphasis.strong"]),
+        ];
+        let mut distinct = roles
+            .iter()
+            .filter_map(|(color, _)| *color)
+            .collect::<Vec<_>>();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(distinct.len(), 8, "the role colors are distinct");
+
+        let drawn = editor_text_colors(&palette.configured_theme(custom.is_light()));
+        let mut wrong = Vec::new();
+        for (field, color) in &drawn {
+            let role = roles
+                .iter()
+                .find(|(_, fields)| fields.contains(&field.as_str()))
+                .map(|&(role, _)| role);
+            if role != Some(*color) {
+                wrong.push(format!(
+                    "{field}: {}, wanted {}",
+                    color.map_or("none".into(), custom::format_hex),
+                    role.map_or("a role".into(), |role| role
+                        .map_or("none".into(), custom::format_hex)),
+                ));
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "fields off their roles:\n{}",
+            wrong.join("\n")
+        );
+        // Every pinned field is a field the toolkit has.
+        assert_eq!(
+            drawn.len(),
+            roles.iter().map(|(_, fields)| fields.len()).sum::<usize>()
+        );
+    }
+
+    /// A custom theme whose `text` misses the text rule on one editor background draws all its
+    /// syntax in `text`, the color its readability warning names, rather than fitting each
+    /// role to a contrast `text` itself does not reach: Porcelain with a removed-line tint
+    /// `text` reads at 4.47:1 on.
+    #[test]
+    fn syntax_draws_in_text_where_text_misses_the_rule() {
+        use custom::{ReadabilityBackground, ReadabilityForeground};
+        let mut custom = CustomTheme::from_base(1, "Dim removals", ThemeChoice::Porcelain);
+        custom.palette.set(TokenKind::RemovedBackground, 0xa88e98);
+        let palette = custom.palette;
+        let ratio = contrast(palette.text, palette.removed_background);
+        assert!(
+            (4.4..4.5).contains(&ratio),
+            "text on removed lines {ratio:.3}:1"
+        );
+        assert!(palette.readability_issues().iter().any(|issue| {
+            issue.foreground == ReadabilityForeground::Token(TokenKind::Text)
+                && issue.background == ReadabilityBackground::Token(TokenKind::RemovedBackground)
+        }));
+
+        let drawn = editor_text_colors(&palette.configured_theme(custom.is_light()));
+        let off_text = drawn
+            .iter()
+            .filter(|(field, color)| {
+                let wanted = (!field.starts_with("emphasis")).then_some(palette.text);
+                *color != wanted
+            })
+            .map(|(field, color)| format!("{field}: {:?}", color.map(custom::format_hex)))
+            .collect::<Vec<_>>();
+        assert!(
+            off_text.is_empty(),
+            "fields off text:\n{}",
+            off_text.join("\n")
+        );
+        assert_eq!(drawn.len(), 42);
     }
 
     /// Tuned tokens clear their rule by this much: the rules are computed on declared colors,

@@ -21,6 +21,7 @@ use gpui_kit::{
 };
 use std::{
     cell::RefCell,
+    mem::size_of,
     ops::Range,
     rc::{Rc, Weak},
 };
@@ -80,6 +81,13 @@ struct PatchLayer {
 pub struct PatchDecorations(Rc<RefCell<PatchLayer>>);
 
 impl PatchDecorations {
+    /// Decorations this layer keeps and the editor's copy of them, which splits a decoration
+    /// around each Find match (at most two more per match), plus the match ranges.
+    pub fn retained_bytes(&self) -> usize {
+        let layer = self.0.borrow();
+        (2 * layer.source.len() + 2 * layer.matches.len()) * size_of::<TextDecoration>()
+            + layer.matches.len() * size_of::<Range<usize>>()
+    }
     pub fn set(&self, decorations: Vec<TextDecoration>, cx: &mut App) {
         let (collection, visible) = {
             let mut layer = self.0.borrow_mut();
@@ -115,8 +123,48 @@ pub fn patch_decorations(
     {
         layer.patch = Some(Rc::downgrade(&patch.0));
     }
+    // Find may already paint matches on this editor, as when a patch's decorations arrive
+    // after its plain text: hand them to the new layer so no tint stays under them.
+    if let Some(bar) = panel(editor, cx) {
+        bar.update(cx, |bar, cx| {
+            bar.painted = None;
+            bar.sync_highlights(cx);
+        });
+    }
     patch.set(decorations, cx);
     patch
+}
+
+/// The patch layer Find masks on this editor, while one is attached and its handle alive.
+#[cfg(test)]
+pub fn patch_layer(editor: &Entity<EditorState>, cx: &App) -> Option<PatchDecorations> {
+    cx.try_global::<ReservedLayers>()?
+        .0
+        .iter()
+        .find(|layer| layer.editor.entity_id() == editor.entity_id())?
+        .patch
+        .as_ref()?
+        .upgrade()
+        .map(PatchDecorations)
+}
+
+#[cfg(test)]
+impl PatchDecorations {
+    /// The decorations this layer has the editor draw, after checking that the editor holds
+    /// exactly their ranges in this layer's collection.
+    pub fn drawn(&self, cx: &App) -> Vec<TextDecoration> {
+        let layer = self.0.borrow();
+        let visible = without_match_backgrounds(&layer.source, &layer.matches);
+        assert_eq!(
+            layer.collection.get_ranges(cx),
+            visible
+                .iter()
+                .map(|decoration| decoration.range.clone())
+                .collect::<Vec<_>>(),
+            "the editor holds the ranges its patch layer set"
+        );
+        visible
+    }
 }
 
 fn set_match_ranges(editor: &WeakEntity<EditorState>, ranges: Vec<Range<usize>>, cx: &mut App) {
@@ -850,6 +898,51 @@ mod tests {
         assert!(fallback.background_color.is_none());
         assert!(fallback.color.is_none());
         assert!(fallback.underline.is_some());
+    }
+
+    /// Patch decorations that attach while Find paints matches, as the pull request Source
+    /// patch's do when its file's preparation finishes after Find opened, leave no background
+    /// under those matches and keep their tint elsewhere.
+    #[gpui_kit::test]
+    fn decorations_attached_under_open_find_take_no_background_under_its_matches(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::{
+            AppContext as _, HighlightStyle, component::input::EditorState,
+            component::input::TextDecoration, rgb,
+        };
+
+        cx.update(gpui_kit::init);
+        let cx = cx.add_empty_window();
+        let text = "keep\nneedle added\nkeep\n";
+        let editor = cx.update(|window, cx| {
+            let editor = cx.new(|cx| EditorState::new(window, cx).default_value(text));
+            super::reserve_highlight_layer(&editor, cx);
+            editor.update(cx, |source, cx| {
+                source.set_search_query("needle", false, cx)
+            });
+            super::show(&editor, editor.entity_id(), "File text".into(), window, cx);
+            editor
+        });
+        let tint = HighlightStyle {
+            color: Some(rgb(0xabcdef).into()),
+            background_color: Some(rgb(0x123456).into()),
+            ..Default::default()
+        };
+        let drawn = cx.update(|_, cx| {
+            super::patch_decorations(&editor, vec![TextDecoration::new(5..18, tint)], cx).drawn(cx)
+        });
+        let unmasked = HighlightStyle {
+            background_color: None,
+            ..tint
+        };
+        assert_eq!(
+            drawn,
+            [
+                TextDecoration::new(5..11, unmasked),
+                TextDecoration::new(11..18, tint)
+            ]
+        );
     }
 
     #[test]

@@ -1,0 +1,639 @@
+{
+ "record": "2026-09-30-diff-syntax-colours",
+ "date": "2026-09-30",
+ "task": "diff-syntax-colours-from-palette",
+ "measured_utc": "2026-10-01T02:47Z to 03:21Z",
+ "base": {
+  "revision": "ca7b8262b0642c004aba6c506680bb8008da43b4",
+  "profile": "release",
+  "source_tree": "clean",
+  "sha256": "4c2cb18ee1562dcb714d6cf8553ca3ca2be3a32d6f857a149e94c6d05f9f6fbc",
+  "build_unix_seconds": "1790795391",
+  "note": "merge base of the candidate; origin/main ec1d7d8 differs from it only in crates/preview/src/animation.rs and git-core tests, which neither build contains"
+ },
+ "candidate": {
+  "revision": "e71ed69b0ec7e11d780cd27a87ac4c73d890a4c6",
+  "branch": "claude/diff-syntax-colours-from-palette",
+  "profile": "release",
+  "source_tree": "clean",
+  "sha256": "95eef8028d309b5a33668d98e801c9409a46e81fec53b7516293bfd3e5b16232",
+  "build_unix_seconds": "1790817337"
+ },
+ "designation": "base and candidate designated in writing at 2026-10-01T02:54:41Z, before the first native launch; amended at 03:04:00Z, before the recorded run, to the input-free Omarchy path (see limitations)",
+ "host": {
+  "cpu": "AMD 3020e with Radeon Graphics, 2 cores, 1 thread per core, 1.2 GHz base, boost to about 2.6 GHz, L2 1 MiB (2 instances), L3 4 MiB",
+  "governor": "schedutil (acpi-cpufreq), boost on",
+  "power": "AC online",
+  "memory_gib": 5.7,
+  "os": "Omarchy 4.0.4-1, Linux 7.2.5-3-omarchy",
+  "compositor": "Hyprland 0.56.2, native Wayland",
+  "rustc": "1.98.0 (88d9e12ae 2026-08-18)",
+  "pinning": "harness and app on CPU 1 (taskset -c 1), native driver on CPU 0",
+  "other_load": "no builds or other jobs; desktop session idle"
+ },
+ "cache_state": "warm page cache for both executables, rlibs and fixture; harness: per-process steady state after 200 warm-up rounds, plus one first call per fresh process; native: every launch a fresh process with fresh HOME and XDG directories (fresh Mesa and app caches), 4 unrecorded warm-up switches per launch",
+ "harness": {
+  "metric": "configure_us",
+  "boundary": "One call of Palette::configure(is_light, &mut Theme), Instant before and after, on a Theme whose highlight_theme is the toolkit's shared default Arc for the mode (so Arc::make_mut clones it, as after Theme::change in the app). Excludes Theme::change, ControlButton, set_global, Theme::sync_base, editor restyling, notify and every frame. No frame tick enters the value.",
+  "build": "rustc 1.98.0 -C opt-level=3 -C codegen-units=8, linked against the release rlibs of the candidate's app build (gpui_kit a8b8bef75114a87f, serde_json 2781c734fdd6f97c); no LTO across crates, unlike the app's thin LTO. Appearance sources are the unmodified files at each revision (git show), with an identical appended hook module that calls configure; crate-level stubs for desktop_text, preferences, graph and trace_enabled copy the values of the source.",
+  "sources_sha256": {
+   "base/appearance/mod.rs (before hook)": "3dff26ecfdf62d80f11052f0f7a701ae62294d7cf4e99a80cc7dd5909f638c72",
+   "cand/appearance/mod.rs (before hook)": "bc11b1916c1bc4c4c2ebd965d5db9f323b0d6e7883d380a46fa7d0cc983c72ff",
+   "main.rs": "7c7b29059c4ddc98330b5eaee86bfa27aa7c55bdff4ac6cdc4b563075ae5cc83",
+   "theme_bench_base": "b402da814e0b87cc4428bbfc0fb44875c1fd6c7ba0af21de48919f99ef2b1832",
+   "theme_bench_cand": "028b142c1d4a9fcad94f497f5e11109046d14ae7f127b5a7c12d3ab276690b11",
+   "results.jsonl": "55b34d9a6da367de1d8b1c3db86f521820cc14915bbc82b6cce6808f70143d44",
+   "tokyo-night colors.toml": "8b5f53ba35b9305aafa72776dd56ea2029faaf29015e2e42db5e19ef698a8e0e"
+  },
+  "procedure": "10 alternating base/candidate process pairs (order alternated per pair), each 200 warm-up then 2000 measured rounds over all 25 palettes round-robin; then 40 fresh processes per palette and variant, alternating, each timing one first configure after the toolkit's lazy statics are initialised. Nearest-rank percentiles.",
+  "timer_floor_us": {
+   "n": 40000,
+   "p50": 1.397,
+   "p95": 1.467,
+   "p99": 1.886,
+   "max": 58.108
+  },
+  "palettes": {
+   "midnight": {
+    "fitted_roles": 0,
+    "base": {
+     "steady": {
+      "n": 20000,
+      "p50": 4.749,
+      "p95": 4.889,
+      "p99": 5.308,
+      "max": 56.78
+     },
+     "process_medians": [4.749, 4.749, 4.749, 4.749, 4.749, 4.749, 4.749, 4.749, 4.749, 4.749],
+     "first_call": {
+      "n": 40,
+      "p50": 12.292,
+      "p95": 15.085,
+      "p99": 15.853,
+      "max": 15.853
+     }
+    },
+    "candidate": {
+     "steady": {
+      "n": 20000,
+      "p50": 40.088,
+      "p95": 42.044,
+      "p99": 54.615,
+      "max": 128.716
+     },
+     "process_medians": [40.368, 40.158, 39.46, 40.089, 39.67, 40.508, 39.949, 40.438, 40.019, 39.879],
+     "first_call": {
+      "n": 40,
+      "p50": 58.527,
+      "p95": 72.354,
+      "p99": 98.266,
+      "max": 98.266
+     },
+     "syntax_colors_only": {
+      "n": 20000,
+      "p50": 36.667,
+      "p95": 37.225,
+      "p99": 49.028,
+      "max": 93.027
+     }
+    },
+    "delta_p50_us": 35.339
+   },
+   "daylight": {
+    "fitted_roles": 1,
+    "base": {
+     "steady": {
+      "n": 20000,
+      "p50": 4.749,
+      "p95": 4.889,
+      "p99": 5.727,
+      "max": 897.451
+     },
+     "process_medians": [4.749, 4.749, 4.749, 4.749, 4.749, 4.749, 4.749, 4.749, 4.749, 4.749],
+     "first_call": {
+      "n": 40,
+      "p50": 12.083,
+      "p95": 14.806,
+      "p99": 15.714,
+      "max": 15.714
+     }
+    },
+    "candidate": {
+     "steady": {
+      "n": 20000,
+      "p50": 41.974,
+      "p95": 44.279,
+      "p99": 56.501,
+      "max": 283.831
+     },
+     "process_medians": [42.044, 42.393, 41.276, 42.044, 41.485, 42.533, 41.905, 42.323, 41.905, 41.765],
+     "first_call": {
+      "n": 40,
+      "p50": 60.063,
+      "p95": 71.447,
+      "p99": 100.501,
+      "max": 100.501
+     },
+     "syntax_colors_only": {
+      "n": 20000,
+      "p50": 37.784,
+      "p95": 39.18,
+      "p99": 50.076,
+      "max": 130.043
+     }
+    },
+    "delta_p50_us": 37.225
+   },
+   "omarchy-tokyo-night": {
+    "fitted_roles": 1,
+    "base": {
+     "steady": {
+      "n": 20000,
+      "p50": 4.749,
+      "p95": 4.889,
+      "p99": 5.657,
+      "max": 54.755
+     },
+     "process_medians": [4.749, 4.749, 4.749, 4.749, 4.749, 4.749, 4.749, 4.749, 4.749, 4.749],
+     "first_call": {
+      "n": 40,
+      "p50": 12.711,
+      "p95": 14.876,
+      "p99": 14.946,
+      "max": 14.946
+     }
+    },
+    "candidate": {
+     "steady": {
+      "n": 20000,
+      "p50": 40.996,
+      "p95": 43.092,
+      "p99": 55.733,
+      "max": 274.403
+     },
+     "process_medians": [41.136, 41.067, 40.228, 41.066, 40.508, 41.415, 40.927, 41.345, 40.996, 40.578],
+     "first_call": {
+      "n": 40,
+      "p50": 58.666,
+      "p95": 62.996,
+      "p99": 101.199,
+      "max": 101.199
+     },
+     "syntax_colors_only": {
+      "n": 20000,
+      "p50": 36.806,
+      "p95": 38.063,
+      "p99": 49.028,
+      "max": 2612.246
+     }
+    },
+    "delta_p50_us": 36.247
+   },
+   "custom-faint-statuses": {
+    "fitted_roles": 2,
+    "base": {
+     "steady": {
+      "n": 20000,
+      "p50": 4.749,
+      "p95": 4.889,
+      "p99": 5.867,
+      "max": 80.107
+     },
+     "process_medians": [4.749, 4.749, 4.749, 4.749, 4.749, 4.749, 4.749, 4.749, 4.749, 4.749],
+     "first_call": {
+      "n": 40,
+      "p50": 12.292,
+      "p95": 15.156,
+      "p99": 16.342,
+      "max": 16.342
+     }
+    },
+    "candidate": {
+     "steady": {
+      "n": 20000,
+      "p50": 43.021,
+      "p95": 45.187,
+      "p99": 57.688,
+      "max": 910.581
+     },
+     "process_medians": [43.092, 43.301, 42.324, 43.092, 42.463, 43.511, 42.952, 43.371, 42.952, 42.742],
+     "first_call": {
+      "n": 40,
+      "p50": 61.599,
+      "p95": 67.326,
+      "p99": 103.364,
+      "max": 103.364
+     },
+     "syntax_colors_only": {
+      "n": 20000,
+      "p50": 39.041,
+      "p95": 40.578,
+      "p99": 52.52,
+      "max": 126.83
+     }
+    },
+    "delta_p50_us": 38.272
+   },
+   "custom-midnight-copy": {
+    "fitted_roles": 0,
+    "base": {
+     "steady": {
+      "n": 20000,
+      "p50": 4.749,
+      "p95": 4.889,
+      "p99": 5.308,
+      "max": 52.38
+     },
+     "process_medians": [4.749, 4.749, 4.749, 4.749, 4.749, 4.749, 4.749, 4.749, 4.749, 4.749],
+     "first_call": {
+      "n": 40,
+      "p50": 12.223,
+      "p95": 14.876,
+      "p99": 15.714,
+      "max": 15.714
+     }
+    },
+    "candidate": {
+     "steady": {
+      "n": 20000,
+      "p50": 40.019,
+      "p95": 41.975,
+      "p99": 54.755,
+      "max": 123.478
+     },
+     "process_medians": [40.089, 40.088, 39.39, 40.089, 39.599, 40.438, 39.948, 40.438, 40.019, 39.669],
+     "first_call": {
+      "n": 40,
+      "p50": 57.269,
+      "p95": 95.891,
+      "p99": 106.787,
+      "max": 106.787
+     },
+     "syntax_colors_only": {
+      "n": 20000,
+      "p50": 36.736,
+      "p95": 37.574,
+      "p99": 48.679,
+      "max": 101.199
+     }
+    },
+    "delta_p50_us": 35.27
+   },
+   "builtin-SolarizedDark": {
+    "fitted_roles": 5,
+    "base": {
+     "steady": {
+      "n": 20000,
+      "p50": 4.749,
+      "p95": 4.889,
+      "p99": 5.307,
+      "max": 54.336
+     },
+     "process_medians": [4.749, 4.749, 4.749, 4.749, 4.749, 4.749, 4.749, 4.749, 4.749, 4.749]
+    },
+    "candidate": {
+     "steady": {
+      "n": 20000,
+      "p50": 44.908,
+      "p95": 47.771,
+      "p99": 60.132,
+      "max": 133.675
+     },
+     "process_medians": [45.187, 45.117, 44.419, 45.187, 44.628, 45.396, 44.838, 45.327, 44.803, 44.767]
+    },
+    "delta_p50_us": 40.159
+   },
+   "builtin-KanagawaLotus": {
+    "fitted_roles": 5,
+    "base": {
+     "steady": {
+      "n": 20000,
+      "p50": 4.888,
+      "p95": 5.308,
+      "p99": 5.796,
+      "max": 65.161
+     },
+     "process_medians": [4.819, 5.169, 4.819, 4.854, 5.168, 5.168, 5.168, 5.168, 4.75, 4.749]
+    },
+    "candidate": {
+     "steady": {
+      "n": 20000,
+      "p50": 46.654,
+      "p95": 52.381,
+      "p99": 62.018,
+      "max": 154.138
+     },
+     "process_medians": [46.793, 47.072, 46.094, 46.723, 46.234, 47.282, 46.653, 46.863, 46.584, 46.304]
+    },
+    "delta_p50_us": 41.766
+   }
+  },
+  "all_20_builtins_p50_us": {
+   "base": [4.749, 5.238],
+   "candidate": [39.6, 46.654]
+  },
+  "load": ["0.64 0.95 2.09", "0.80 0.96 2.05"],
+  "first_call_samples": "raw first-call samples are in tools/bench/results.jsonl"
+ },
+ "native": {
+  "metric": "gitturtle.omarchy_apply_frame_ms (docs/benchmarks/metrics.md) and UI-thread CPU per switch",
+  "boundary": "omarchy_apply_frame_ms: from the reread result's arrival on the UI thread, through apply_appearance (Palette::apply, so configure once for the one window), to that window's next-frame callback; it excludes the 250 ms quiet period, the reread itself (background executor, printed as omarchy_reread_ms), and the layout and paint of the frame. On a presenting output the callback follows the platform frame request, so the value could not fall below the handler plus the wait to the next frame (up to 16.7 ms at 60 Hz); in this run the output was DPMS-off and no value exceeded 1.6 ms, so the handler, not the grid, set it. UI-thread CPU per switch: the main thread's /proc schedstat run time from just before the theme write to 1.2 s after it, covering apply and the draws that follow; idle controls are identical windows with no write.",
+  "fixture": {
+   "repository": "/tmp/gitturtle-evidence/syntax-perf-11/demo (scripts/create-demo-repo.py)",
+   "head": "52f471a1137c617fd8e36db2e6251a18f58c23eb",
+   "head_and_status_unchanged": true,
+   "omarchy_state": "fake $HOME/.local/state/omarchy/current/ per launch, seeded with tokyo-night and switched with omarchy-theme-set's writes in its order",
+   "store": "version 6, theme omarchy, follow_system false, project_pane false, one custom theme (Faint statuses: Porcelain with renamed #8b62c4 and modified #9a6a1c)"
+  },
+  "output": "temporary headless Hyprland output QA, 1400x2100 at 60 Hz, scale 1, workspace 9; window tiled at 1376x2050; QA DPMS-off on every recorded switch of every launch",
+  "procedure": "order BCCBBCCB on one output; per launch 8 s settle, 4 warm-up switches, 6 idle windows, 40 switches alternating catppuccin-latte and tokyo-night every 1.5 s, 6 idle windows; no input sent; SIGTERM by PID",
+  "run": "/tmp/gitturtle-evidence/runs/syntax-perf-omarchy-BCCBBCCB-1790823845 (all.json sha256 0ec374843af194f620c7677e5d958b9221aaa87a962b29be472a13e0ed516808)",
+  "summary": {
+   "base.all.apply": {
+    "n": 160,
+    "p50": 0.463,
+    "p95": 0.589,
+    "p99": 1.301,
+    "max": 1.579
+   },
+   "base.all.reread": {
+    "n": 160,
+    "p50": 0.882,
+    "p95": 2.565,
+    "p99": 2.613,
+    "max": 2.613
+   },
+   "base.all.ui_cpu": {
+    "n": 160,
+    "p50": 25.985,
+    "p95": 30.406,
+    "p99": 32.29,
+    "max": 32.556
+   },
+   "base.catppuccin-latte.apply": {
+    "n": 80,
+    "p50": 0.453,
+    "p95": 0.537,
+    "p99": 0.551,
+    "max": 0.551
+   },
+   "base.catppuccin-latte.reread": {
+    "n": 80,
+    "p50": 2.191,
+    "p95": 2.597,
+    "p99": 2.613,
+    "max": 2.613
+   },
+   "base.catppuccin-latte.ui_cpu": {
+    "n": 80,
+    "p50": 26.016,
+    "p95": 30.016,
+    "p99": 32.556,
+    "max": 32.556
+   },
+   "base.idle.ui_cpu": {
+    "n": 48,
+    "p50": 0.112,
+    "p95": 0.166,
+    "p99": 0.204,
+    "max": 0.204
+   },
+   "base.tokyo-night.apply": {
+    "n": 80,
+    "p50": 0.463,
+    "p95": 0.624,
+    "p99": 1.579,
+    "max": 1.579
+   },
+   "base.tokyo-night.reread": {
+    "n": 80,
+    "p50": 0.71,
+    "p95": 0.886,
+    "p99": 0.976,
+    "max": 0.976
+   },
+   "base.tokyo-night.ui_cpu": {
+    "n": 80,
+    "p50": 25.801,
+    "p95": 30.7,
+    "p99": 32.29,
+    "max": 32.29
+   },
+   "candidate.all.apply": {
+    "n": 160,
+    "p50": 0.592,
+    "p95": 0.741,
+    "p99": 0.766,
+    "max": 0.769
+   },
+   "candidate.all.reread": {
+    "n": 160,
+    "p50": 0.876,
+    "p95": 2.553,
+    "p99": 2.629,
+    "max": 2.667
+   },
+   "candidate.all.ui_cpu": {
+    "n": 160,
+    "p50": 23.744,
+    "p95": 29.927,
+    "p99": 32.013,
+    "max": 32.433
+   },
+   "candidate.catppuccin-latte.apply": {
+    "n": 80,
+    "p50": 0.605,
+    "p95": 0.708,
+    "p99": 0.752,
+    "max": 0.752
+   },
+   "candidate.catppuccin-latte.reread": {
+    "n": 80,
+    "p50": 2.26,
+    "p95": 2.569,
+    "p99": 2.667,
+    "max": 2.667
+   },
+   "candidate.catppuccin-latte.ui_cpu": {
+    "n": 80,
+    "p50": 24.105,
+    "p95": 29.927,
+    "p99": 31.232,
+    "max": 31.232
+   },
+   "candidate.idle.ui_cpu": {
+    "n": 48,
+    "p50": 0.116,
+    "p95": 0.169,
+    "p99": 0.171,
+    "max": 0.171
+   },
+   "candidate.tokyo-night.apply": {
+    "n": 80,
+    "p50": 0.588,
+    "p95": 0.749,
+    "p99": 0.769,
+    "max": 0.769
+   },
+   "candidate.tokyo-night.reread": {
+    "n": 80,
+    "p50": 0.713,
+    "p95": 0.89,
+    "p99": 1.011,
+    "max": 1.011
+   },
+   "candidate.tokyo-night.ui_cpu": {
+    "n": 80,
+    "p50": 23.263,
+    "p95": 29.597,
+    "p99": 32.433,
+    "max": 32.433
+   }
+  },
+  "launches": [
+   {
+    "run": "01-base",
+    "build": "base",
+    "pid": 52212,
+    "window": [1376, 2050],
+    "qa_dpms": [false],
+    "load_before": ["1.06", "0.94", "1.33"],
+    "load_after": ["0.36", "0.75", "1.22"],
+    "cpu1_khz_before": 2591835,
+    "cpu1_khz_after": 1200000,
+    "apply_ms": [0.201, 0.616, 0.394, 0.589, 0.539, 0.463, 0.506, 0.458, 0.222, 0.442, 0.476, 0.443, 0.407, 0.393, 0.508, 0.467, 0.407, 0.496, 0.419, 0.556, 0.415, 0.213, 0.532, 0.463, 0.467, 1.301, 0.377, 0.448, 0.394, 0.515, 0.537, 0.428, 0.483, 0.435, 0.244, 0.602, 0.538, 0.472, 0.486, 0.442],
+    "ui_cpu_ms": [11.873, 27.942, 26.587, 28.612, 28.948, 25.805, 26.457, 26.103, 11.866, 27.023, 26.016, 26.678, 19.56, 12.241, 18.692, 12.875, 25.969, 17.893, 26.35, 30.473, 25.608, 11.383, 28.24, 20.095, 32.556, 13.393, 26.847, 29.025, 28.78, 27.445, 27.516, 24.988, 30.016, 13.056, 11.554, 28.855, 27.557, 29.127, 28.125, 30.7],
+    "idle_ui_cpu_ms": [0.085, 0.06, 0.121, 0.162, 0.147, 0.075, 0.168, 0.096, 0.204, 0.103, 0.159, 0.095],
+    "other_trace_lines": 0,
+    "switch_order": "catppuccin-latte first, then alternating"
+   },
+   {
+    "run": "02-candidate",
+    "build": "candidate",
+    "pid": 57746,
+    "window": [1376, 2050],
+    "qa_dpms": [false],
+    "load_before": ["0.33", "0.73", "1.22"],
+    "load_after": ["0.07", "0.54", "1.10"],
+    "cpu1_khz_before": 2594644,
+    "cpu1_khz_after": 877767,
+    "apply_ms": [0.517, 0.547, 0.659, 0.553, 0.558, 0.675, 0.491, 0.714, 0.72, 0.68, 0.251, 0.276, 0.682, 0.565, 0.26, 0.28, 0.561, 0.719, 0.252, 0.738, 0.752, 0.613, 0.692, 0.693, 0.668, 0.721, 0.565, 0.625, 0.555, 0.677, 0.256, 0.733, 0.689, 0.537, 0.534, 0.574, 0.524, 0.55, 0.681, 0.266],
+    "ui_cpu_ms": [27.774, 32.013, 20.225, 14.124, 19.815, 22.561, 20.82, 29.404, 25.744, 22.073, 12.142, 11.937, 27.299, 23.142, 11.712, 12.036, 25.806, 28.289, 11.841, 28.338, 23.536, 24.024, 25.955, 28.43, 22.464, 15.071, 31.15, 22.169, 17.906, 28.703, 11.538, 26.157, 25.817, 26.619, 14.508, 16.742, 29.927, 18.807, 30.2, 12.148],
+    "idle_ui_cpu_ms": [0.056, 0.126, 0.156, 0.089, 0.087, 0.089, 0.116, 0.055, 0.129, 0.108, 0.169, 0.092],
+    "other_trace_lines": 0,
+    "switch_order": "catppuccin-latte first, then alternating"
+   },
+   {
+    "run": "03-candidate",
+    "build": "candidate",
+    "pid": 62949,
+    "window": [1376, 2050],
+    "qa_dpms": [false],
+    "load_before": ["0.07", "0.53", "1.09"],
+    "load_after": ["0.13", "0.43", "1.00"],
+    "cpu1_khz_before": 2430117,
+    "cpu1_khz_after": 878013,
+    "apply_ms": [0.532, 0.261, 0.556, 0.694, 0.539, 0.53, 0.697, 0.696, 0.685, 0.635, 0.679, 0.592, 0.597, 0.548, 0.242, 0.54, 0.678, 0.734, 0.528, 0.54, 0.684, 0.625, 0.638, 0.632, 0.708, 0.27, 0.703, 0.278, 0.667, 0.574, 0.702, 0.7, 0.503, 0.594, 0.532, 0.564, 0.692, 0.588, 0.684, 0.574],
+    "ui_cpu_ms": [23.744, 11.586, 25.842, 27.578, 25.635, 28.229, 26.031, 27.703, 27.574, 32.433, 20.458, 25.498, 18.044, 13.645, 11.551, 28.509, 27.54, 25.373, 21.532, 20.544, 27.999, 25.689, 27.016, 29.55, 26.34, 12.124, 21.969, 12.077, 26.889, 19.897, 31.232, 28.778, 12.534, 28.685, 27.851, 26.158, 23.515, 31.696, 26.771, 16.174],
+    "idle_ui_cpu_ms": [0.126, 0.137, 0.171, 0.126, 0.111, 0.118, 0.127, 0.104, 0.119, 0.125, 0.117, 0.086],
+    "other_trace_lines": 0,
+    "switch_order": "catppuccin-latte first, then alternating"
+   },
+   {
+    "run": "04-base",
+    "build": "base",
+    "pid": 68149,
+    "window": [1376, 2050],
+    "qa_dpms": [false],
+    "load_before": ["0.20", "0.44", "1.00"],
+    "load_after": ["0.33", "0.40", "0.93"],
+    "cpu1_khz_before": 2568597,
+    "cpu1_khz_after": 731437,
+    "apply_ms": [0.437, 0.47, 0.371, 0.424, 0.453, 0.426, 0.397, 0.228, 0.205, 0.583, 0.503, 0.566, 0.521, 0.425, 0.38, 0.579, 0.383, 0.213, 0.491, 0.425, 0.507, 0.453, 0.399, 0.523, 0.521, 0.553, 0.263, 0.587, 0.401, 0.617, 0.192, 0.526, 0.373, 0.264, 0.485, 0.458, 0.511, 0.38, 0.398, 0.473],
+    "ui_cpu_ms": [25.589, 24.885, 24.596, 17.604, 13.46, 28.421, 26.04, 12.065, 12.106, 28.662, 25.895, 27.248, 28.62, 25.724, 30.074, 25.985, 27.469, 11.786, 26.631, 29.355, 28.681, 22.577, 26.102, 26.575, 25.773, 18.358, 11.329, 23.043, 17.742, 13.587, 11.573, 27.619, 17.789, 12.187, 26.383, 23.899, 24.914, 20.684, 20.193, 15.91],
+    "idle_ui_cpu_ms": [0.111, 0.05, 0.112, 0.136, 0.12, 0.135, 0.112, 0.116, 0.166, 0.13, 0.063, 0.084],
+    "other_trace_lines": 0,
+    "switch_order": "catppuccin-latte first, then alternating"
+   },
+   {
+    "run": "05-base",
+    "build": "base",
+    "pid": 73367,
+    "window": [1376, 2050],
+    "qa_dpms": [false],
+    "load_before": ["0.31", "0.39", "0.93"],
+    "load_after": ["0.23", "0.36", "0.86"],
+    "cpu1_khz_before": 2194176,
+    "cpu1_khz_after": 2592925,
+    "apply_ms": [0.182, 0.422, 0.529, 0.547, 0.526, 0.454, 0.512, 1.579, 0.517, 0.449, 0.428, 0.432, 0.534, 0.43, 0.492, 0.588, 0.219, 0.488, 0.494, 0.497, 0.43, 0.428, 0.4, 0.501, 0.231, 0.579, 0.406, 0.469, 0.37, 0.425, 0.528, 0.425, 0.374, 0.215, 0.479, 0.495, 0.487, 0.424, 0.375, 0.385],
+    "ui_cpu_ms": [10.731, 22.64, 27.369, 26.267, 26.761, 31.881, 31.025, 13.012, 23.399, 27.074, 22.865, 27.931, 13.574, 32.29, 30.406, 18.335, 11.844, 28.853, 25.953, 26.544, 13.829, 21.732, 29.38, 25.801, 11.803, 27.812, 29.791, 21.585, 25.002, 29.357, 26.923, 18.998, 29.049, 11.527, 26.443, 29.489, 26.001, 21.316, 21.461, 22.69],
+    "idle_ui_cpu_ms": [0.11, 0.106, 0.114, 0.081, 0.166, 0.12, 0.072, 0.148, 0.147, 0.115, 0.157, 0.113],
+    "other_trace_lines": 0,
+    "switch_order": "catppuccin-latte first, then alternating"
+   },
+   {
+    "run": "06-candidate",
+    "build": "candidate",
+    "pid": 78565,
+    "window": [1376, 2050],
+    "qa_dpms": [false],
+    "load_before": ["0.29", "0.37", "0.87"],
+    "load_after": ["0.13", "0.30", "0.79"],
+    "cpu1_khz_before": 2594093,
+    "cpu1_khz_after": 1000000,
+    "apply_ms": [0.245, 0.605, 0.674, 0.298, 0.527, 0.547, 0.515, 0.751, 0.675, 0.744, 0.682, 0.74, 0.718, 0.263, 0.704, 0.578, 0.267, 0.766, 0.536, 0.751, 0.695, 0.62, 0.677, 0.74, 0.703, 0.584, 0.716, 0.586, 0.701, 0.574, 0.281, 0.747, 0.54, 0.679, 0.698, 0.606, 0.691, 0.568, 0.638, 0.587],
+    "ui_cpu_ms": [12.077, 12.826, 27.377, 12.135, 22.137, 21.593, 17.053, 28.039, 24.778, 27.417, 22.89, 24.299, 26.403, 11.215, 22.632, 13.896, 12.501, 15.353, 13.989, 26.191, 27.068, 27.328, 24.762, 28.285, 30.294, 27.011, 29.297, 24.686, 13.912, 20.264, 12.155, 27.538, 26.223, 28.744, 24.105, 17.532, 22.438, 23.343, 24.793, 25.759],
+    "idle_ui_cpu_ms": [0.066, 0.119, 0.12, 0.08, 0.14, 0.145, 0.085, 0.095, 0.099, 0.134, 0.09, 0.155],
+    "other_trace_lines": 0,
+    "switch_order": "catppuccin-latte first, then alternating"
+   },
+   {
+    "run": "07-candidate",
+    "build": "candidate",
+    "pid": 83768,
+    "window": [1376, 2050],
+    "qa_dpms": [false],
+    "load_before": ["0.12", "0.29", "0.79"],
+    "load_after": ["0.14", "0.24", "0.72"],
+    "cpu1_khz_before": 2193398,
+    "cpu1_khz_after": 877493,
+    "apply_ms": [0.272, 0.732, 0.507, 0.269, 0.534, 0.279, 0.583, 0.749, 0.556, 0.741, 0.605, 0.769, 0.65, 0.251, 0.661, 0.683, 0.265, 0.32, 0.654, 0.674, 0.545, 0.271, 0.699, 0.567, 0.677, 0.573, 0.529, 0.578, 0.539, 0.26, 0.526, 0.591, 0.531, 0.738, 0.664, 0.661, 0.274, 0.275, 0.672, 0.537],
+    "ui_cpu_ms": [12.188, 28.315, 14.647, 12.1, 16.441, 12.372, 21.982, 31.663, 27.819, 19.566, 24.943, 29.597, 27.089, 10.696, 18.071, 28.09, 12.311, 12.249, 27.273, 12.46, 28.714, 12.168, 27.219, 23.263, 19.34, 12.882, 29.623, 15.413, 23.266, 11.61, 13.469, 12.439, 25.778, 28.086, 28.217, 26.529, 11.942, 11.317, 27.156, 22.662],
+    "idle_ui_cpu_ms": [0.13, 0.169, 0.093, 0.093, 0.088, 0.121, 0.122, 0.089, 0.124, 0.089, 0.111, 0.109],
+    "other_trace_lines": 0,
+    "switch_order": "catppuccin-latte first, then alternating"
+   },
+   {
+    "run": "08-base",
+    "build": "base",
+    "pid": 88978,
+    "window": [1376, 2050],
+    "qa_dpms": [false],
+    "load_before": ["0.14", "0.24", "0.72"],
+    "load_after": ["0.16", "0.23", "0.67"],
+    "cpu1_khz_before": 2593836,
+    "cpu1_khz_after": 828163,
+    "apply_ms": [0.387, 0.228, 0.551, 0.435, 0.498, 0.254, 0.542, 0.66, 0.381, 0.631, 0.374, 0.573, 0.487, 0.548, 0.494, 0.421, 0.489, 0.45, 0.531, 0.624, 0.479, 0.521, 0.532, 0.582, 0.528, 0.583, 0.418, 0.223, 0.399, 0.588, 0.526, 0.553, 0.208, 0.462, 0.368, 0.476, 0.521, 0.42, 0.528, 0.424],
+    "ui_cpu_ms": [13.196, 12.078, 29.606, 31.531, 26.715, 12.109, 15.548, 16.991, 19.583, 26.84, 28.946, 27.578, 27.226, 12.901, 26.738, 28.368, 26.231, 31.407, 25.868, 15.432, 13.55, 28.39, 27.077, 20.24, 23.835, 28.738, 26.125, 11.919, 14.969, 27.671, 26.397, 13.626, 12.134, 29.681, 13.575, 26.16, 29.265, 26.656, 28.948, 14.152],
+    "idle_ui_cpu_ms": [0.122, 0.06, 0.136, 0.129, 0.103, 0.071, 0.102, 0.086, 0.065, 0.087, 0.118, 0.1],
+    "other_trace_lines": 0,
+    "switch_order": "catppuccin-latte first, then alternating"
+   }
+  ],
+  "reread_samples": "raw omarchy_reread_ms samples are in the run's all.json; summary above"
+ },
+ "budget": {
+  "spec": "docs/development/themes/spec.md#performance: theme_apply_frame_ms median <= 8 ms, p95 <= 16 ms",
+  "assessment": "not re-measured on the picker path (no keyboard focus available); the candidate adds 0.035 to 0.047 ms (harness) and 0.13 to 0.15 ms (in app) to the handler, against margins of more than 4 ms (median) and 8 ms (p95) in every earlier record"
+ },
+ "verdict": "FAST ENOUGH",
+ "tools": "/tmp/gitturtle-evidence/syntax-perf-11/tools (bench/: harness sources, build.sh, run.sh, analyze.py, binaries, results.jsonl; native/: lib.py, omarchy_ab.py, launch.sh, analyze_native.py, logs)",
+ "limitations": [
+  "No native picker switch (theme_apply_frame_ms) was measured: Hyprland refused keyboard focus to the app's window on this host for the whole session (the terminal kept focus; an open Omarchy menu is the likely holder, not verified), so Midnight, Daylight and the custom theme are measured in the harness only.",
+  "Every output went DPMS-off within seconds of the headless output's creation; the recorded native run asserts DPMS-off on every switch for both builds, so it is like-with-like, but the compositor was not presenting and the run says nothing about presentation.",
+  "The harness has no cross-crate thin LTO and runs configure in a tight loop with warm caches; the in-app delta (0.13 to 0.15 ms) is three to four times its steady-state delta (0.035 to 0.042 ms) and about 2.8 times its first-call delta (0.045 to 0.049 ms).",
+  "UI-thread CPU per switch is bimodal (about 12 ms and 26 ms modes in both builds) and its launch medians spread from 19.6 to 26.5 ms; that noise is about 50 times the measured apply delta, so this run cannot see the delta in it.",
+  "Only the spec's fixture shape for the Omarchy path was used (demo repository, History page, no retained comparison); the theme editor's live-preview edit path, which applies on every edit, was not measured.",
+  "One two-core host, native Wayland only; no X11/XWayland, no macOS, no cold page cache."
+ ]
+}

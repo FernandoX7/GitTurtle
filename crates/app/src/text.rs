@@ -54,8 +54,17 @@ impl PatchPresentation {
     }
 }
 
+/// The toolkit's name for its plain-text language, which has no grammar.
+const PLAIN_TEXT: &str = "text";
+/// The toolkit's name for its unified-diff grammar.
+const DIFF: &str = "diff";
+
 /// Build only the currently requested editor. Decorations change presentation,
-/// while the editor receives one owned copy of the unmodified source text.
+/// while the editor receives one owned copy of the unmodified source text. A patch's
+/// presentation is prepared off the UI thread by its caller's worker (`worker::text_content`
+/// for Compare, recovery and rewrite; the pull request review's file preparation for its
+/// Source patch), so this never scans the patch; a `"diff"` request without one draws plain
+/// text with no colors.
 pub fn editor(
     value: &str,
     language: &str,
@@ -66,6 +75,9 @@ pub fn editor(
     editor_with_decorations(value, language, diff, window, cx).0
 }
 
+/// A patch is drawn as plain text, so its decorations are the only colors on it. A grammar's
+/// captures would compete with them for the same text, and GPUI's highlight fold leaves either
+/// color, by hash order rather than precedence.
 pub fn editor_with_decorations(
     value: &str,
     language: &str,
@@ -76,6 +88,11 @@ pub fn editor_with_decorations(
     Entity<EditorState>,
     Option<crate::editor_find::PatchDecorations>,
 ) {
+    let language = if diff.is_some() || language == DIFF {
+        PLAIN_TEXT
+    } else {
+        language
+    };
     let editor = cx.new(|cx| {
         EditorState::new(window, cx)
             .language(language.to_owned())
@@ -85,11 +102,21 @@ pub fn editor_with_decorations(
             .default_value(value.to_owned())
     });
     crate::editor_find::reserve_highlight_layer(&editor, cx);
-    let collection = diff.map(|presentation| {
-        let decorations = theme_decorations(presentation, cx);
-        crate::editor_find::patch_decorations(&editor, decorations, cx)
-    });
+    let collection = diff.map(|presentation| decorate(&editor, presentation, cx));
     (editor, collection)
+}
+
+/// Decorate a patch editor built without a presentation, once its caller has prepared one:
+/// the pull request review's Source patch keeps the editor's own line numbers and may open
+/// before its file's preparation finishes. Keep the handle for the editor's life: Find removes
+/// the backgrounds under its matches through it, and [`refresh_theme`] redecorates it.
+pub fn decorate(
+    editor: &Entity<EditorState>,
+    presentation: &PatchPresentation,
+    cx: &mut App,
+) -> crate::editor_find::PatchDecorations {
+    let decorations = theme_decorations(presentation, cx);
+    crate::editor_find::patch_decorations(editor, decorations, cx)
 }
 
 /// Keep the native editor identity, find session, focus, selection, and scroll
@@ -166,6 +193,12 @@ fn theme_decorations(presentation: &PatchPresentation, cx: &App) -> Vec<TextDeco
                     font_weight: Some(FontWeight::MEDIUM),
                     ..Default::default()
                 },
+                // No color of its own: a file header draws in the editor foreground, `text`,
+                // which follows a theme change in the patch views that never redecorate.
+                Kind::Header => HighlightStyle {
+                    font_weight: Some(FontWeight::MEDIUM),
+                    ..Default::default()
+                },
             };
             TextDecoration::new(decoration.range.clone(), style)
         })
@@ -179,6 +212,8 @@ enum Kind {
     Hunk,
     AddedWord,
     RemovedWord,
+    /// The `---` and `+++` file-header lines before the first hunk.
+    Header,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -373,11 +408,20 @@ fn review_ranges(patch: &str, rows: &[crate::diff_view::LineNumbers]) -> Vec<Dif
 
 /// Track unified hunk counts so `---` / `+++` file headers are not marked as
 /// changes, while real changed source beginning with those characters is.
-/// Byte offsets include existing line endings and are valid UTF-8 boundaries.
+/// The headers before the first hunk are marked as headers; other lines outside
+/// hunks stay neutral. Byte offsets include existing line endings and are valid
+/// UTF-8 boundaries.
 fn diff_ranges(value: &str) -> Vec<DiffRange> {
     let mut result: Vec<DiffRange> = Vec::new();
     let mut remaining: Option<(usize, usize)> = None;
     let mut offset = 0;
+    let first_hunk = value
+        .split_inclusive('\n')
+        .try_fold(0, |start, line| match hunk_counts(line) {
+            Some(_) => Err(start),
+            None => Ok(start + line.len()),
+        })
+        .err();
     for line in value.split_inclusive('\n') {
         let kind = if let Some(counts) = hunk_counts(line) {
             remaining = Some(counts);
@@ -403,6 +447,10 @@ fn diff_ranges(value: &str) -> Vec<DiffRange> {
                     None
                 }
             }
+        } else if first_hunk.is_some_and(|first| offset < first)
+            && (line.starts_with("--- ") || line.starts_with("+++ "))
+        {
+            Some(Kind::Header)
         } else {
             None
         };
@@ -582,6 +630,7 @@ mod tests {
         assert_eq!(
             decorated(patch),
             vec![
+                (Kind::Header, "--- a/你好\r\n+++ b/你好\r\n"),
                 (Kind::Hunk, "@@ -1,2 +1,2 @@ function\r\n"),
                 (Kind::Removed, "-héllo 🐢\r\n-adiós\r\n"),
                 (Kind::Added, "+你好\r\n+再见"),
@@ -590,11 +639,13 @@ mod tests {
     }
 
     #[test]
-    fn file_headers_are_neutral_but_similar_changed_content_is_colored() {
+    fn file_headers_are_headers_but_similar_changed_content_is_colored() {
         let patch = "--- a/file\n+++ b/file\n@@ -1,2 +1,2 @@\n--- removed code\n unchanged\n+++ added code\n--- a/next\n+++ b/next\n";
+        // Only the headers before the first hunk are headers; later ones stay neutral.
         assert_eq!(
             decorated(patch),
             vec![
+                (Kind::Header, "--- a/file\n+++ b/file\n"),
                 (Kind::Hunk, "@@ -1,2 +1,2 @@\n"),
                 (Kind::Removed, "--- removed code\n"),
                 (Kind::Added, "+++ added code\n"),
@@ -616,5 +667,166 @@ mod tests {
             ]
         );
         assert!(diff_ranges("+++ file\n--- file\n+not a hunk\n@@ broken @@\n").is_empty());
+    }
+
+    /// What the unified patch editor draws on each line under every built-in palette: the
+    /// syntax styles of the language the editor asks its highlighter for, in the applied
+    /// highlight theme, with the patch decorations composed over them as the kit's input
+    /// element composes them (`combine_highlights`, semantic styles first and decorations
+    /// last), and where neither sets a color, the editor foreground (the theme's `foreground`).
+    /// On origin/main the editor asked for the diff grammar: file headers drew its keyword and
+    /// string colors, and hunk headers and changed lines the decoration's color or the
+    /// grammar's, as GPUI's unordered fold left them (the themes spec, "Diff and syntax
+    /// colors"). File headers also draw in each palette's text under decorations prepared in
+    /// another, as the recovery and rewrite patches, which never redecorate, keep theirs.
+    #[gpui_kit::test]
+    fn patch_headers_and_changes_draw_palette_colors_in_every_built_in(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::appearance::ThemeChoice;
+        use gpui_kit::{
+            Context, IntoElement, ParentElement, Render, Styled,
+            base::input::InputHighlighterFactory,
+            combine_highlights,
+            component::{
+                Rope, Theme,
+                highlighter::SyntaxHighlighter,
+                input::{Editor, EditorState},
+            },
+            div, px,
+        };
+        use std::{cell::RefCell, rc::Rc};
+
+        struct Probe([Entity<EditorState>; 2]);
+        impl Render for Probe {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(480.)).h(px(400.)).children(
+                    self.0
+                        .iter()
+                        .map(|editor| Editor::new(editor).w_full().h(px(200.))),
+                )
+            }
+        }
+
+        let patch = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,3 @@ fn main() {\n fn main() {\n-    let old = \"value\";\n+    let new = \"value\";\n }\n@@ -10,2 +10,2 @@\n-a\n+b\n@@ -20 +20 @@\n-c\n+d\n";
+        let presentation = PatchPresentation::prepare(patch);
+        cx.update(gpui_kit::init);
+        // The language each editor's highlighter is built for, as the editor asks: the
+        // decorated patch, and the same patch asked for as "diff" without a presentation.
+        let asked = [(); 2].map(|_| Rc::new(RefCell::new(Vec::<String>::new())));
+        let factory = |asked: &Rc<RefCell<Vec<String>>>| -> InputHighlighterFactory {
+            let record = asked.clone();
+            Rc::new(move |language: &str| {
+                record.borrow_mut().push(language.to_owned());
+                None
+            })
+        };
+        let factories = [factory(&asked[0]), factory(&asked[1])];
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let decorated = editor(patch, "diff", Some(&presentation), window, cx);
+            let (plain, decorations) = editor_with_decorations(patch, "diff", None, window, cx);
+            assert!(
+                decorations.is_none(),
+                "an unprepared patch has no decorations"
+            );
+            let [first, second] = factories;
+            decorated.update(cx, |state, cx| state.set_highlighter_factory(first, cx));
+            plain.update(cx, |state, cx| state.set_highlighter_factory(second, cx));
+            Probe([decorated, plain])
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let language = asked[0]
+            .borrow()
+            .first()
+            .cloned()
+            .expect("the editor asked");
+        let hex =
+            |color: Option<gpui_kit::Hsla>| color.map(|color| serde_json::to_value(color).unwrap());
+
+        // Decorations prepared in the first built-in and never refreshed.
+        let kept = cx.update(|_, cx| {
+            ThemeChoice::ALL[0].apply(None, cx);
+            theme_decorations(&presentation, cx)
+        });
+        cx.update(|_, cx| {
+            for choice in ThemeChoice::ALL {
+                choice.apply(None, cx);
+                let palette = palette(cx);
+                let theme = Theme::global(cx).highlight_theme.clone();
+                let foreground = Some(Theme::global(cx).foreground);
+                // The contrast test reads the same highlight theme without an application.
+                assert_eq!(
+                    theme,
+                    palette.configured_theme(choice.is_light()).highlight_theme,
+                    "{choice:?}"
+                );
+                let mut highlighter = SyntaxHighlighter::new(&language);
+                highlighter.update(None, &Rope::from(patch), None);
+                let syntax = highlighter.styles(&(0..patch.len()), theme.as_ref());
+                let styles = combine_highlights(Vec::new(), syntax).collect::<Vec<_>>();
+                let compose = |decorations: &[TextDecoration]| {
+                    combine_highlights(
+                        styles.clone(),
+                        decorations
+                            .iter()
+                            .map(|decoration| (decoration.range.clone(), decoration.style)),
+                    )
+                    .collect::<Vec<_>>()
+                };
+                let drawn = compose(&theme_decorations(&presentation, cx));
+                let stale = compose(&kept);
+
+                let color = |token: u32| Some(rgb(token).into());
+                let mut start = 0;
+                for line in patch.split_inclusive('\n') {
+                    let range = start..start + line.len();
+                    start = range.end;
+                    let header = line.starts_with("--- a/") || line.starts_with("+++ b/");
+                    let expected = if line.starts_with("@@") {
+                        // Hunk lines draw on the editor background (canvas).
+                        (color(palette.hunk), Some(FontWeight::MEDIUM), true)
+                    } else if header {
+                        (color(palette.text), Some(FontWeight::MEDIUM), true)
+                    } else if line.starts_with('-') {
+                        (color(palette.removed), None, false)
+                    } else if line.starts_with('+') {
+                        (color(palette.added), None, false)
+                    } else {
+                        (color(palette.text), None, true)
+                    };
+                    let segments = drawn.iter().map(|segment| (segment, "prepared now"));
+                    let segments = segments.chain(
+                        stale
+                            .iter()
+                            .filter(|_| header)
+                            .map(|segment| (segment, "prepared in the first built-in")),
+                    );
+                    for ((segment, style), decorations) in segments {
+                        if segment.end <= range.start || segment.start >= range.end {
+                            continue;
+                        }
+                        let (want_color, weight, no_background) = expected;
+                        let drawn_color = style.color.or(foreground);
+                        assert!(
+                            drawn_color == want_color
+                                && style.font_weight == weight
+                                && (!no_background || style.background_color.is_none()),
+                            "{choice:?} draws {:?} of {:?} in {:?} at {:?} on {:?} under \
+                             decorations {decorations}, wanted {:?} at {weight:?}",
+                            &patch[segment.start.max(range.start)..segment.end.min(range.end)],
+                            line.trim_end(),
+                            hex(drawn_color),
+                            style.font_weight,
+                            hex(style.background_color),
+                            hex(want_color),
+                        );
+                    }
+                }
+            }
+        });
+        // Both patches are drawn as the kit's plain text, which has no grammar to color them.
+        assert_eq!(language, "text");
+        let unprepared = asked[1].borrow().first().cloned();
+        assert_eq!(unprepared.as_deref(), Some("text"));
     }
 }
