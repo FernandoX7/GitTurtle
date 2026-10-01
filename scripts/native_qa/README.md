@@ -6,13 +6,13 @@ Drives the real GitTurtle window on Linux under XWayland for the [native-QA skil
 python3 scripts/native_qa/qa.py <command> --help
 ```
 
-Python 3.11 or newer. `launch` needs Pillow and python-xlib, `compare` and `privacy` need Pillow, and the portal helpers need PyGObject (AT-SPI) and dbus-python. They are imported only by the commands that use them. Exit status: 0 clean, 1 a finding, 2 a refusal, usage error or inconclusive check.
+Python 3.11 or newer. `launch` needs Pillow and python-xlib, plus dbus-python with `--input mutter`, `compare` and `privacy` need Pillow, and the portal helpers need PyGObject (AT-SPI) and dbus-python. They are imported only by the commands that use them. Exit status: 0 clean, 1 a finding, 2 a refusal, usage error or inconclusive check.
 
 | Command | What it does |
 | --- | --- |
 | `display-check [--display :1] [--allow-pid N]` | Prints `date -u`, anchored `pgrep -af` matches for GitTurtle executables and QA drivers (this process tree excluded), and every GitTurtle window with its `_NET_WM_PID`. Exits 1 if anything not allowed is running. Run it before taking the display and when handing it back. |
 | `identity BINARY [CANDIDATE]` | sha256 plus `--build-info`, run with no display and a throwaway HOME. Flags a `source_tree` other than `clean`; a pair with the same sha256 or `source_revision` is refused (a shared `CARGO_TARGET_DIR` once made a candidate build a no-op). |
-| `launch --binary B --fixture F --run-dir /abs/empty ...` | One isolated launch, described below. |
+| `launch --binary B --fixture F --run-dir /abs/empty [--input mutter\|xtest] ...` | One isolated launch, described below. |
 | `compare BASE CANDIDATE [--mask status-timing] [--mask x0,y0,x1,y1]` | Two frames or two directories of frames. Reports the differing pixel count outside the masks, the pixels masked, and the regions. Masked pixels are still counted, so a mask never hides that something changed. `status-timing` covers the per-launch timing that History and Changes print in the left-aligned status-bar message, at scale 1 (`96,H-18,208,H-7`); another message or scale needs an explicit rectangle. |
 | `privacy scan FRAME... --templates DIR` | Template matching (zero-mean normalized cross-correlation, either polarity) of personal strings in PNG or JPEG frames. Exits 1 on any match at or above 0.80. `--packed FILE` reads a packed set instead, `--jobs N` scans N images at once, and `--redacted` prints only each image's path and `clean` or `MATCH`. Every frame of an animation is scanned; more than 64 frames is refused (exit 2). |
 | `privacy crop FRAME x0,y0,x1,y1 OUT.png` | Cuts a template from a frame that shows a personal string. |
@@ -34,7 +34,25 @@ The window is found only by the launched process's `_NET_WM_PID` and resized wit
  {"glide": [772, 410], "settle": 1.2}, {"capture": "button-hover", "keep_pointer": true}]
 ```
 
-Drivers that need more than steps import the library from `scripts/`: `session.Session` for the lifecycle, `x11.Driver` for input and grabs, `frames` for comparison and pixel measurements (`modal`, `contrast`, `find_hline`), and `portal` for the GNOME file-chooser dialog. That dialog is a Wayland client that XTest cannot reach, so the tool reads it through AT-SPI, types into it through Mutter RemoteDesktop, records its D-Bus traffic (`launch --monitor-portal`), and can run a private session bus that has no portal.
+Drivers that need more than steps import the library from `scripts/`: `session.Session` for the lifecycle, `x11.Driver` (XTest) or `mutter.MutterDriver` for input and grabs, `frames` for comparison and pixel measurements (`modal`, `contrast`, `find_hline`), and `portal` for the GNOME file-chooser dialog. That dialog is a Wayland client that XTest cannot reach, so the tool reads it through AT-SPI, types into it through Mutter RemoteDesktop, records its D-Bus traffic (`launch --monitor-portal`), and can run a private session bus that has no portal. `portal.dialog_windows` returns every top-level of `xdg-desktop-portal-gnome` and `-gtk`, and, where Nautilus hosts the FileChooser (AT-SPI application `org.gnome.Nautilus`, as on GNOME 50), only its windows titled exactly `Open File` or `Save File`; no other Nautilus window or application is read.
+
+## Input backends
+
+`launch --input` picks how input reaches the app:
+
+- `xtest` sends XTest events through python-xlib. It is the default on hosts whose XWayland does not run with `-enable-ei-portal`.
+- `mutter` sends every key, pointer motion, button and wheel step through `org.gnome.Mutter.RemoteDesktop` on the session bus, which needs no prompt. It is the default when any `Xwayland` command line in `/proc` has `-enable-ei-portal` (the Ubuntu 26.04 GNOME 50 host). There, XTest goes through the RemoteDesktop portal, whose "Allow Remote Interaction" prompt swallows keys, so `--input xtest` is refused (exit 2) before the run directory is created. X is still used for window lookup, focus, geometry and grabs. `flow-log.json` records the backend in its header and launch entry.
+
+Guards in the Mutter backend, since Mutter delivers keys to whatever surface has compositor focus:
+
+- **App keys** go only while X input focus is on the app's window or a descendant. Otherwise the window is activated once and checked again; if focus is still elsewhere, the key is refused (exit 2) and nothing is sent. While typing, focus is checked again before every character.
+- **Dialog keys** (`portal.Keyboard`, or `MutterDriver.dialog_keyboard()` on the launch's session) go only while a widget inside the matched dialog reports FOCUSED, searched 40 levels deep because Nautilus nests its widgets, and, with the driver's keyboard, while X focus is off the app. The guard polls for about 6 s, then refuses. GTK4 never reports ACTIVE on the dialog frame, so FOCUSED is the signal.
+- **Clicks and wheel steps** go only once XWayland reports the pointer at the target inside the app window.
+
+Known Mutter quirks:
+
+- XWayland learns the pointer position only while the pointer is over an X window, so the driver tracks it: a large relative move anchors it in the bottom-right screen corner, then exact relative moves follow. This assumes monitor scale 1.0, where logical coordinates equal X root coordinates. A position on the app window that XWayland does not confirm is re-anchored once, then the run aborts.
+- Mutter drops the first discrete wheel click of each batch, so a `wheel` of N steps sends N + 1 clicks and logs both numbers.
 
 ## Privacy templates
 
@@ -65,4 +83,4 @@ Template names can be private too. The interactive command prints them with each
 python3 -m unittest discover -s scripts/native_qa -t scripts -p 'test_*.py'
 ```
 
-They use temporary directories and never open a display or launch the app. Tests that need Pillow or a C compiler skip when those are missing. The controller's tooling profile runs them as its `native-qa-tooling` gate, without the inherited `DISPLAY`, `WAYLAND_DISPLAY`, `WAYLAND_SOCKET` and `DBUS_SESSION_BUS_ADDRESS` and with an empty private `XDG_RUNTIME_DIR` removed afterwards. That withholds the operator's session only: a test that names a display itself, as the launch default `:1` does, could still reach it.
+They use temporary directories, fake X displays, D-Bus sessions and AT-SPI trees, and never open a display, a bus or the app. Tests that need Pillow or a C compiler skip when those are missing. The controller's tooling profile runs them as its `native-qa-tooling` gate, without the inherited `DISPLAY`, `WAYLAND_DISPLAY`, `WAYLAND_SOCKET` and `DBUS_SESSION_BUS_ADDRESS` and with an empty private `XDG_RUNTIME_DIR` removed afterwards. That withholds the operator's session only: a test that names a display itself, as the launch default `:1` does, could still reach it.

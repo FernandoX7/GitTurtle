@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """GitTurtle native-QA tooling: isolated launches, frame comparison, privacy scan, build identity, display check.
 
-  python3 scripts/native_qa/qa.py launch --binary B --fixture F --run-dir /abs/empty [--scenario S.json]
+  python3 scripts/native_qa/qa.py launch --binary B --fixture F --run-dir /abs/empty [--scenario S.json] [--input mutter|xtest]
   python3 scripts/native_qa/qa.py compare BASE CANDIDATE [--mask status-timing] [--mask x0,y0,x1,y1]
   python3 scripts/native_qa/qa.py privacy scan FRAME... --templates /local/dir [--redacted] [--jobs N]
   python3 scripts/native_qa/qa.py privacy pack --templates /local/dir --output /local/templates.b64
@@ -50,7 +50,10 @@ def write_json(path: Path | None, payload) -> None:
 def launch(args) -> int:
     from native_qa import session
 
+    from native_qa import mutter
+
     steps = session.load_scenario(args.scenario)
+    backend = mutter.choose_input(args.input, mutter.process_argvs())
     if args.preferences:
         preferences = stores.load_file(args.preferences)
     else:
@@ -58,7 +61,7 @@ def launch(args) -> int:
     width, height = args.size
     run = session.Session(args.binary, args.fixture, args.run_dir, preferences, width=width, height=height,
                           display=args.display, scale=args.scale, for_commit=args.for_commit,
-                          extra_env=dict(args.env), settle=args.settle)
+                          extra_env=dict(args.env), settle=args.settle, backend=backend)
     if args.scenario:
         run.log["header"]["scenario"] = dict(path=str(args.scenario),
                                              sha256=identity.sha256_file(args.scenario), steps=steps)
@@ -201,6 +204,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--settle", type=float, default=5.0, help="seconds after the resize before the first input")
     p.add_argument("--env", type=key_value, action="append", default=[], metavar="KEY=VALUE",
                    help="extra variable, for example GITTURTLE_GITHUB_FIXTURE=review")
+    p.add_argument("--input", choices=("mutter", "xtest"),
+                   help="input backend; default mutter where XWayland runs with -enable-ei-portal (XTest is "
+                        "refused there), otherwise xtest")
     p.add_argument("--monitor-portal", action="store_true", help="record FileChooser D-Bus traffic in the run directory")
     p.add_argument("--for-commit", action="store_true",
                    help=f"refuse a fixture outside {runenv.EVIDENCE_ROOT}/ or a run directory under a home root")
