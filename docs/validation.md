@@ -65,6 +65,25 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## September 30 disabled switch thumb fades with its track
+
+Task `switch-disabled-thumb` (Omarchy follow-up D1; the owner chose on 2026-09-29 to fade the thumb with the track). While the Omarchy card is selected, Settings disables **Follow system appearance**. The vendored Switch faded only its track to half opacity and painted its thumb in `switch_thumb`, the palette's text, at full strength, so the locked switch read as live. The vendored Switch now paints the thumb at the track's 0.5 whenever it is disabled, through the thumb's disabled style, so every disabled Switch gets it; GPUI multiplies each primitive's alpha, so the faded track shows through the faded thumb, which is accepted ([patch note](../vendor/gpui-component/GITTURTLE-PATCH.md)). `DESIGN.md` states the rule beside the other disabled-control rules. `settings::picker_tests::a_disabled_switch_fades_its_thumb_with_its_track` reads the switch's track and thumb fills from the rendered scene: with the Omarchy card selected both are the palette's at half opacity, and with Midnight selected, off and on, both are at full strength. On `origin/main` the disabled case fails with the thumb at alpha 1.0. It runs on Linux only, where the Omarchy theme exists.
+
+Native evidence, full tier, on Omarchy 4.0.4 (Hyprland 0.56.2, native Wayland):
+- Builds, release, clean, in one session: base `ca7b826` (`gitturtle-ca7b826`, product code identical to `main` at `733ec33`) and candidate `b769b4c` (sha256 `ef69f623…`, `--build-info` clean). The branch's later commits change only `DESIGN.md`, the evidence and this entry.
+- Output: a temporary 1480 × 800 headless output at scale 1, the window fullscreen. Each launch had a fresh HOME with the `GitTurtle QA` identity, fresh XDG directories and the disposable fixture `/tmp/gitturtle-evidence/narrow-8/demo`, and opened Settings with Ctrl+, after checking the active window's PID.
+- Palettes: the Omarchy card following Tokyo Night (dark) and Catppuccin Latte (light), from a copy of the bundled theme in the launch's own `current/`, which disables the switch; Midnight (dark) and Daylight (light), which leave it enabled. In every frame the Projects card's two switches are enabled, one on and one off.
+- Comparison (`qa.py compare --mask status-timing`): in both Omarchy palettes only 216 px differ, all inside the disabled thumb ([722, 222]–[738, 238]); Midnight and Daylight are pixel-identical, the enabled switches included. The thumb went from `#A9B1D6` to `#666C87` in Tokyo Night and from `#4C4F69` to `#8E91A2` in Catppuccin Latte, the text colour at 0.5 over the faded track.
+- Frames: the eight Settings frames and a 4× crop of the disabled switch per Omarchy palette, base above candidate, are in [`evidence/switch-disabled-thumb/`](evidence/switch-disabled-thumb/). A privacy scan of the 10 committed files with the local template set came back clean, and each was viewed at full size.
+
+A `design-reviewer` pass approved the frames: the disabled switch now reads as unavailable in both Omarchy palettes and its thumb still reads as off. The faded thumb measures 2.85:1 on its track in Tokyo Night and 2.11:1 in Catppuccin Latte (6.99:1 and 5.38:1 before), against 5.22:1 and 4.58:1 for the enabled off switch in the same frame. Neither `DESIGN.md` nor the readability rules set a contrast floor for a disabled control, and WCAG exempts inactive components.
+
+**Findings**, for the owner and not fixed here:
+- **The disabled label barely dims.** The Switch's disabled label takes `muted_foreground`. Omarchy's mapping raises `muted` to `text` in Catppuccin Latte, so the label, the row title and its description all draw `#4C4F69`, and in Tokyo Night the label (`#A0A8CE`) is close to the title (`#A9B1D6`). The thumb is the only part of the control that visibly dims in Latte.
+- **A disabled checked Switch** (a faded thumb on a faded accent track) has no consumer: Follow system is the only Switch Settings disables, and it is always off while disabled. Neither the test nor the frames cover it.
+
+Not covered: focus and hover on the disabled switch, XWayland, X11, scales other than 1, and macOS, where the Omarchy card does not exist.
+
 ## September 30 Git writes and network actions on Omarchy
 
 Task `omarchy-git-writes-evidence` checks Git writes and network actions in the release build on Omarchy, on native Wayland. It is evidence only; no product code changed. The run took place on 2026-09-30 between 19:22 and 19:29 UTC.
@@ -709,7 +728,7 @@ Not covered:
 - XWayland, X11, multiple monitors and scales other than 1 were not exercised.
 - Other Arch desktops, and a cold page cache, were not exercised either.
 - Open follow-ups:
-  - the disabled Follow system thumb stays at full strength;
+  - the disabled Follow system thumb stays at full strength (fixed: [September 30](#september-30-disabled-switch-thumb-fades-with-its-track));
   - syntax colours on changed lines;
   - fixed colours on the first `@@`, `---` and `+++` lines, which predate this change;
   - Nord and Rosé Pine hunks take GitTurtle's blue;
