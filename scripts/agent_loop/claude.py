@@ -16,6 +16,7 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
 from typing import Callable
 
 from .codex import BUILD_SCHEMA, REVIEW_SCHEMA
@@ -34,6 +35,17 @@ REQUIRED_FLAGS = (
 ROLES = ("implementer", "verifier", "security-reviewer")
 REVIEW_TOOLS = "Read,Grep,Glob,Bash"
 REVIEW_DISALLOWED = "Edit,Write,NotebookEdit,Agent"
+# Runs inside bwrap: enter a nested user namespace and map it, as Claude Code's
+# sandbox does before applying its seccomp filter. Exits nonzero on refusal.
+NESTED_NAMESPACE_PROBE = """
+import ctypes, os
+uid, gid = os.getuid(), os.getgid()
+if ctypes.CDLL(None, use_errno=True).unshare(0x10000000) != 0:
+    raise SystemExit(1)
+for name, text in (("setgroups", "deny"), ("uid_map", f"0 {uid} 1"), ("gid_map", f"0 {gid} 1")):
+    with open(f"/proc/self/{name}", "w") as handle:
+        handle.write(text)
+"""
 # The verifier is asked to run the repository's own checks rather than trust a
 # recorded excerpt, so it reaches every script in scripts/ except the controller
 # itself, which claude-settings.json denies. The Python suites the tooling
@@ -209,9 +221,15 @@ class Claude:
             return True
         if not shutil.which("bwrap") or not shutil.which("socat"):
             return False
+        # Claude Code's Linux sandbox applies its seccomp filter from a user
+        # namespace nested inside bwrap. A host can allow bwrap's own namespace
+        # and still refuse the nested one: Ubuntu's AppArmor userns restriction
+        # confines bwrap's child, so the sandboxed Bash fails on every command
+        # while a bare bwrap probe passes. Probe that nested step too.
         try:
             probe = subprocess.run(
-                ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--unshare-all", "--", "/bin/true"],
+                ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--unshare-all", "--",
+                 sys.executable, "-I", "-c", NESTED_NAMESPACE_PROBE],
                 capture_output=True, timeout=10, check=False,
             )
         except (OSError, subprocess.SubprocessError):
