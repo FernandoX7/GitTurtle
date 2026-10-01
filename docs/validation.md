@@ -65,6 +65,69 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## October 1 whole lists and message for a selected Reflog entry
+
+Task `reflog-selected-entry-collapse` fixes a defect found during [the whole focus ring in Tags and Reflog](#september-29-whole-focus-ring-in-tags-and-reflog). At 1000x680, selecting a Reflog entry collapsed three children: the entry list, the changed-file list and the message editor. The frames `evidence/tags-focus-ring/{midnight,porcelain}-1000x680-reflog-selected-rest.png` stay as the record of the defect.
+
+**Cause.** The Reflog content, `reflog-browser-content` (`reflog.rs`, `Render for ReflogBrowser`), is a flex column with a maximum height (`px(590.).min(body_height)` plus the ring's room) that scrolls on overflow. A selected entry adds the metadata, the message, the changed files and the branch form, which take the column past that bound. Flex layout first shrinks the children (default flex-shrink 1), and only a child's automatic minimum height stops it. Three children had no such minimum:
+- the entry list's wrapper, which set `min_h_0()`;
+- the message editor, whose `editor_find::Editor` renders its own `h(..).min_h_0()` box (`editor_find.rs`, `RenderOnce for Editor`);
+- `reflog-commit-files`, which scrolls, and taffy gives a scroll container an automatic minimum of 0.
+
+Labels, inputs and buttons keep their content height, so the shrinking fell on those three, until nothing was left to scroll. With only debug selectors added, a view test measured the wrapper and the changed-file list at 0 px, and the list at its 6 px of ring padding.
+
+**Fix.** The fix belongs in the Reflog's own content. The column chooses between scrolling and shrinking, and `Editor`'s zero minimum lets it fill a flex parent in other views. The entry list's wrapper, the message editor (now in a `flex_shrink_0` box of its own) and the changed-file list no longer shrink. The column scrolls instead. The ring room of #99 is unchanged. The unselected content at this size fits under its bound, so it lays out as before.
+
+**Test.** `reflog::tests::selected_entry_keeps_lists_and_message_whole` opens the Reflog at 1000x680 at the default text size. Its fixture has 12 HEAD reflog entries, the newest a commit changing three files, which the test selects. It requires:
+- the first entry whole inside the list and the content;
+- the first changed file whole inside its list;
+- the message editor at 110 px;
+- the entry list, metadata, message, file list and branch-name label stacked without overlap;
+- the review button below the content's view at rest, and whole inside it after one wheel scroll to the end.
+
+On the layout before the fix, with only the selectors added, it fails at its first check: the entry list measures 6 px. `reflog::tests::reflog_browser_keeps_room_for_every_focus_ring` passes unchanged.
+
+**Worktree manager.** Its content, `worktree-manager-content` (`worktrees.rs`), has the same shape and was measured, not changed: a 1000x680 view test with temporary debug selectors, since reverted.
+- **Manage:** with a worktree selected, the content takes 296 of its 440 px bound and nothing shrinks.
+- **Create, Existing branch:** with 15 local branches, the content fills its 440 px bound, and the branch-choice list, a scroll container, shrinks from 140 to 112.5 px instead of the content scrolling. The list stays visible and still scrolls, so nothing collapses as in the Reflog. Applying the same fix there is left to a separate task.
+
+Native evidence, full tier, since the change moves the layout of the Reflog's content rather than one control:
+
+- **Builds:** base `aaf6fd4` (sha256 `b9667d4b…`), the candidate's parent, and candidate `2c967fb` (sha256 `e8a8bee5…`). Both are release builds from clean trees, each in its own `CARGO_TARGET_DIR`, and `qa.py identity` reported no problem. The controller rebuilds the candidate on the commit that adds these frames. Its native attestation re-checks the rebuilt executable against them.
+- **Host:** Ubuntu 26.04, GNOME 50 on Wayland, XWayland `:0` at scale factor 1, window 1000x680, Midnight and Porcelain. One session on 2026-10-01 from 09:50 to 09:54 UTC ran base then candidate for each scenario and palette.
+- **Input:** `qa.py launch --input mutter` sent every input through Mutter RemoteDesktop with X focus verified, never through XTest.
+- **Launches:** each had its own empty run directory under `$RUN` (`/tmp/gitturtle-evidence/runs/reflog-selected`), a generated store with Follow system off, and the QA identity.
+- **Fixture:** the `tags-reflog` repository of [the refresh icon entry](#october-1-refresh-icon-on-the-refresh-buttons), used read-only: 16 tags, 12 HEAD reflog entries, HEAD `52f471a`. Its HEAD, status, index, refs and HEAD reflog were the same before and after the session.
+- **Route:** Ctrl+Shift+P "browse reflog", then the Reflog at rest. Three wheels over the entry list bring it to its end, where the unselected content cannot scroll. A click selects HEAD@{11} (`3668b4e`, the initial commit), whose 11 changed files against the empty tree are the most of any entry. A wheel over the explanation text then scrolls the content to its end. Each wheel step reaches every scroll container under the pointer, so the list went to its end first; a step that later lands on it cannot move it.
+
+Compares, each `qa.py compare $RUN/ev/base/selected-<palette>/captures/<frame> $RUN/ev/cand/selected-<palette>/captures/<frame> --mask status-timing`:
+
+- **Unselected:** identical in both palettes, at rest and with the list wheeled to its end. The base's frame is also identical to `evidence/tags-focus-ring/<palette>-1000x680-reflog-rest.png`.
+- **Selected, at rest:** the base shows no entry row; its message editor is two 1 px borders, with its first line drawn below them against the branch label; it shows no file row. The candidate shows six whole entries, HEAD@{6} to HEAD@{11}, above the selection details.
+- **Selected, scrolled to the end:** the base cannot scroll, so its frame is byte-identical to its frame at rest. The candidate shows the message editor at 110 px with all four lines and five whole changed-file rows, the sixth cut by the list's 110 px bound. Editor, file list, branch label, name and Review recovery branch… stack without overlap, and no editor line reaches the label.
+- **Defect record:** the September 29 route (a click on HEAD@{0}) on the base is identical to `evidence/tags-focus-ring/<palette>-1000x680-reflog-selected-rest.png`, so those frames remain this base's record of the defect.
+
+Frames: [`evidence/reflog-selected/`](evidence/reflog-selected/) holds base and candidate in each palette (12 files): `{base,candidate}-{midnight,porcelain}-1000x680-reflog-{unselected-rest,selected-rest,selected-scrolled-end}.png`. `qa.py privacy scan --redacted` with the local template set found all 12 clean. A full-resolution view shows only:
+- product UI;
+- the fixture's name;
+- the QA identity;
+- the fixture's fictional author.
+
+Design review: pass, with no blocking finding.
+- **Layout:** the defect is gone in both palettes. Consecutive blocks keep the 12 px rhythm and the content's left edge.
+- **Contrast:** text reaches 10.9:1 to 15.7:1, and the editor border clears 1.3:1.
+- **Non-blocking, all pre-existing and left to follow-up tasks:**
+  - A selected entry draws no surface of its own: `.toggled(...)` sets only the accessible state, and `.selected(...)` would add the surface DESIGN.md's selected-control rule asks for.
+  - At rest, nothing hints that the selection details and branch form sit below the fold. The other review dialogs show an always-visible scrollbar.
+  - The changed-file list's 110 px bound cuts only the sixth row's descenders.
+
+Not covered:
+- macOS, native Wayland, fractional scale factors, and text sizes and window sizes other than the default and 1000x680;
+- the worktree manager natively (its result above comes from the view test);
+- the changed-file list's own scrolling, keyboard selection and focus rings with an entry selected;
+- the accessibility tree, and Review recovery branch… (no write was made);
+- palettes other than Midnight and Porcelain.
+
 ## October 1 refresh icon on the refresh buttons
 
 Task `refresh-cw-icon` was found on the way in [the whole focus ring in Tags and Reflog](#september-29-whole-focus-ring-in-tags-and-reflog). Six buttons named the icon `refresh-cw`, which neither the app's `assets/icons/` nor gpui-kit-assets 0.6.0 carries, so each drew an empty icon slot. They are Read log (Reflog), the worktree manager's Refresh, Refresh PRs, Read configured source (LFS download), Refresh conversations and Refresh thread. They now draw the app's `refresh.svg`, as the other refresh and retry buttons do. The Download Before, After and Source LFS… buttons named `download`, which neither set carries either, and now draw `pull.svg`. Labels, accessible names, tooltips, disabled states and actions are unchanged.
