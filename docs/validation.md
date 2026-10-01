@@ -65,6 +65,62 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## October 1 whole focus rings in the chooser, worktree and Push to… lists
+
+Task `ring-clipping-lists`, the owner's request of 2026-09-30, from [the whole focus ring in Tags and Reflog](#september-29-whole-focus-ring-in-tags-and-reflog). Three more containers clipped the 3 px a focused Button's ring takes outside its edge: the branch chooser's scrolling list, the worktree manager's scrolling content and its list of worktrees, and the tag inspector's list of Push to… buttons. A focused full-width row lost its sides and its top or bottom edge, and Manage lost its top and left. Each container now keeps `appearance::button_ring_room` inside its clip and gives it back through its margins. The branch chooser and the tag inspector also give it back through the dialog's gap above the footer, and the worktree manager through its title's margin and that gap (`branch_actions.rs`, `worktrees.rs`, `tags.rs`). `DESIGN.md` now lists them among the containers that keep the room. The worktree manager's list of branch choices when creating a worktree stays open there.
+
+Tests: `branch_chooser_keeps_room_for_rings_at_either_end` (`branch_actions/tests.rs`), `manager_keeps_room_for_every_focus_ring` (`worktrees.rs`) and `tag_inspector_keeps_room_for_every_push_ring` (`tags.rs`) lay out each view on the Tags and Reflog clipping fixtures. They require each list's first and last row, and Manage, Create worktree… and Refresh, grown by the installed ring's gap plus width, to lie inside every ancestor content mask, and nothing to move with a zero-width ring.
+
+Native evidence:
+- **Builds:** base `20cf4a7` (sha256 `f70708fe…`), the candidate's parent, is the release executable attested for `ring-room-helper`, reused rather than rebuilt. Candidate `00e14c3` (sha256 `96b6a726…`). Both are release builds from clean trees, each in its own `CARGO_TARGET_DIR`, and `qa.py identity` reported no problem. The controller rebuilds the candidate on the commit that adds these frames. Its native attestation re-checks the rebuilt executable against them.
+- **Host:** Ubuntu 26.04, GNOME 50 on Wayland, XWayland `:0` at scale factor 1, window 1000x680, Midnight and Porcelain. One session on 2026-10-01 from 15:36 to 15:53 UTC ran base then candidate in each palette, 4 launches, after one rehearsal launch of the candidate.
+- **Input:** a local driver on the `qa.py` library (`session.Session` and `mutter.MutterDriver`; `drive_rcl.py`, sha256 `aca18071…`) sent every input through Mutter RemoteDesktop with X focus verified, never through XTest. Each launch had its own empty run directory under `/tmp/gitturtle-evidence/runs/ring-clipping-lists`, its own store, and the QA identity.
+- **Fixture:** a disposable `ring-clipping` repository under `/tmp/gitturtle-evidence/fixtures/`, made by a script (sha256 `7c673be0…`), with 20 local branches, 3 linked worktrees, the tags `v0.9` and `v1.0`, and the remotes `origin` and `upstream`, local bare repositories filled by a local push. Nothing used the network. The repository, its worktrees and both remotes were the same before and after the session: no action was activated, and each dialog closed with Escape.
+- **Routes:** the same keys on both builds.
+  - **Branch chooser:** the toolbar's branch menu, Manage another branch…. Tab 2 focuses the first row; after wheeling the list to its bottom, Tab 19 more focuses the last.
+  - **Worktree manager:** Manage worktrees… from the command palette. Tab 1 focuses Manage, Tab 4 more the first row (`main`, selected), and Tab 3 more the last.
+  - **Tag inspector:** Browse and manage tags… from the command palette, then Tab 3 and Space open `v0.9`. Tab 3 focuses Push to origin…, and one more Push to upstream….
+
+Ring pixels: against the same build's unfocused frame at the same scroll, the 1 to 3 px band outside each control, counted per side (top / right / bottom / left). The counts are the same in both palettes:
+
+| Control | Base `20cf4a7` | Candidate `00e14c3` |
+| --- | --- | --- |
+| First branch-chooser row | 0 / 0 / 1018 / 0 | 1018 / 74 / 1018 / 74 |
+| Last branch-chooser row | 1018 / 0 / 0 / 0 | 1018 / 74 / 1018 / 74 |
+| Manage | 0 / 62 / 134 / 0 | 134 / 62 / 134 / 62 |
+| First worktree row | 0 / 0 / 1338 / 0 | 1338 / 78 / 1338 / 78 |
+| Last worktree row | 1338 / 0 / 0 / 0 | 1338 / 78 / 1338 / 78 |
+| Push to origin… | 0 / 0 / 1218 / 0 | 1218 / 62 / 1218 / 62 |
+| Push to upstream… | 1218 / 0 / 0 / 0 | 1218 / 62 / 1218 / 62 |
+
+On every side the candidate draws, its strongest ring pixel is 11.43:1 against the same pixel unfocused in Midnight and 6.55:1 in Porcelain. No focus frame differs from its unfocused frame outside the control's box grown by 3 px.
+
+Compares, each `qa.py compare <base> <candidate> --mask status-timing`, unfocused and the same in both palettes:
+- The branch chooser at rest and wheeled to its bottom: identical, 0 px outside the mask.
+- The worktree manager at rest: 2 px at (166, 375) and (166, 376), the left edge of the "/" that begins the selected worktree's path. The content's clip used to cut that glyph's overhang at x = 167; it now ends at x = 164, the ring's room.
+- The tag inspector at rest: 1 px at (248, 145) in the "Tag object:" line, one level brighter in each channel (Midnight `(43,48,58)` to `(44,49,59)`).
+The design review accepts both. The first is the ring's room: every pixel from x = 167 on is the same, so the text did not move, and the same 2 px show in every worktree frame. The second is not an inset but rasterisation noise. The kit dialog's `.gap()` sets only the space above the footer, so the content's added bottom room and the smaller gap leave every child where it was. A real shift of the text would redraw the edge of every glyph on that line, not one pixel. Its cause is not proven.
+
+The focus frames differ from the base only in the ring band. The masked pixels, 65 in each frame, are the status bar's timing.
+
+Frames: [`evidence/ring-clipping-lists/`](evidence/ring-clipping-lists/) holds the candidate's 14 focus frames, `candidate-{midnight,porcelain}-1000x680-{chooser-first-focus,chooser-last-focus,worktrees-manage-focus,worktrees-row-first-focus,worktrees-row-last-focus,push-first-focus,push-second-focus}.png`. Each shows the focused control's whole ring. The base's frames and the unfocused frames are not committed. `qa.py privacy scan --redacted` with the local template set found all 44 frames of the session clean. A full-resolution view shows only:
+- product UI;
+- `/tmp/gitturtle-evidence` paths;
+- the QA identity;
+- the fixture's branch, tag and remote names.
+
+Design check: pass with notes, by a `design-reviewer` pass over the 14 frames. Each ring is 1 px of surface, then 2 px of full accent (`#75e0bb` in Midnight, `#3455a6` in Porcelain), on all four sides; every straight-edge ring pixel is present, and the four corners match. Non-blocking, each also true of the base:
+- **Worktree rows:** a focused worktree row's ring meets the next row's 1 px border, because the rows' 3.25 px gap equals the ring's footprint.
+- **Selected worktree row:** the selected row reads as a double outline, the ring and then its own accent border.
+- **Branch chooser:** with the chooser wheeled to its bottom, Tab moves focus through rows above the view without scrolling them in. That stays out of this task's scope.
+
+"At whole scale factors nothing moves" is checked natively only at scale factor 1; scale factor 2 rests on the view tests.
+
+Not covered:
+- the worktree list scrolled, since four rows fit (its last row sits at the list's bottom edge without scrolling);
+- the inspector for an annotated tag, and AT-SPI;
+- macOS, native Wayland, fractional scale factors, and other window and text sizes.
+
 ## October 1 one ring room for every clip
 
 Task `ring-room-helper`, the owner's cleanup request of 2026-09-30 after #94, #96 and #99. Four clips keep room for the ring a focused Button draws outside its edge: the repository tab strip, the Tags and Reflog dialogs, and Settings' Your themes rows. Each computed that room on its own, and the Your themes rows kept a fixed 3 px (`ROW_RING_ROOM`) while the page's reveal read the installed ring. All four now take `appearance::button_ring_room`, the installed `Theme::button_focus_ring`'s gap plus width. `ROW_RING_ROOM` is gone, and `rows_off_boundary` and the theme editor's `reveal_focused_row` stay in step with the rows' room.
