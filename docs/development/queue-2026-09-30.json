@@ -226,6 +226,7 @@
         "crates/app/src/branch_actions.rs",
         "crates/app/src/branch_actions/**",
         "crates/app/src/worktrees.rs",
+        "crates/app/src/worktrees/**",
         "crates/app/src/tags.rs",
         "DESIGN.md",
         "docs/validation.md",
