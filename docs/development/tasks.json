@@ -1918,6 +1918,776 @@
         "native"
       ],
       "commit": "fix(a11y): report disabled buttons as disabled to AT-SPI"
+    },
+    {
+      "id": "history-vanished-scope-refresh",
+      "title": "Open All history when Refresh finds History's scoped branch gone",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (B1; validation entry \"September 30 Git writes and network actions on Omarchy\", frames 27b and 28 in docs/evidence/omarchy-git-writes/). With History scoped to a local branch that the user then deletes, an explicit Refresh (Ctrl+R) reopens with the stale scope (crates/app/src/main.rs:1699-1709, `open(path, self.scope.clone(), …)`). `read_snapshot` resolves it through `scope_oid` (crates/app/src/worker.rs:1327-1353, `?` at :1212), which fails the whole snapshot, so the page reads \"Could not open repository … Local branch '‹name›' no longer exists in the local repository snapshot\" (views.rs:979-982) and the tab \"· unavailable\" (repository_tabs.rs:1950) until All history is chosen. Separately, quiet refresh keeps the vanished scope (worker.rs:979-990, `QuietHistory::Retained`), so every later accepted write raises the red \"History scope changed\" banner again after it was dismissed (history_updates.rs:64-72, automatic_refresh.rs:307-320). History search resolves the scope the same way (worker.rs:889). Owner decision (2026-10-01): an explicit Refresh that finds the scope gone opens All history and says once, politely announced, why the scope changed; it never reports the repository unavailable. Quiet refresh keeps the displayed history with its explanation (crates/app/docs/navigation-and-refresh.md:81) but reports one vanished scope once. A worktree scope behaves like a branch scope. AGENTS.md: resolve branch and worktree identities again on Refresh. Tests to copy: worker.rs `quiet_deleted_scope_keeps_history_context_but_updates_navigation_metadata` (:2833); no view test deletes a branch and refreshes yet.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/main.rs",
+        "crates/app/src/worker.rs",
+        "crates/app/src/worker/**",
+        "crates/app/src/history_updates.rs",
+        "crates/app/src/automatic_refresh.rs",
+        "crates/app/src/history_*.rs",
+        "crates/app/src/views.rs",
+        "crates/app/src/repository_tabs.rs",
+        "crates/app/docs/navigation-and-refresh.md",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "refresh",
+          "description": "With History scoped to a local branch that has since been deleted, an explicit Refresh opens All history: the page lists the repository's commits, the tab has no \"unavailable\" suffix, and one explanation names the vanished branch and is announced politely. A GPUI view test fails on origin/main and passes; a second covers a worktree scope whose worktree or branch is gone."
+        },
+        {
+          "id": "once",
+          "description": "Once a vanished scope has been reported and the report dismissed, later accepted writes and quiet refreshes do not raise it again; a test with two writes after the deletion asserts a single report."
+        },
+        {
+          "id": "quiet",
+          "description": "Quiet refresh still keeps the displayed history with its explanation when the scope vanishes between explicit refreshes (`quiet_deleted_scope_keeps_history_context_but_updates_navigation_metadata` passes), and History search under a vanished scope reports the scope change, never an unavailable repository (asserted by a test)."
+        },
+        {
+          "id": "spec",
+          "description": "crates/app/docs/navigation-and-refresh.md states the explicit-Refresh rule beside the quiet one."
+        },
+        {
+          "id": "id",
+          "description": "description"
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(history): open all history when refresh finds the scoped branch gone"
+    },
+    {
+      "id": "auth-prompt-platform-wording",
+      "title": "Name macOS Keychain in the authentication prompt only on macOS",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (B2; validation entry \"September 30 Git writes and network actions on Omarchy\"). The Git authentication prompt's guidance (crates/app/src/authentication.rs:160, element `git-authentication-guidance`, also its accessible label) says on every platform that the configured credential helper may save the response \"including in macOS Keychain\". On Linux and other non-macOS platforms drop that clause (\"Requested by the Git operation you started. Your configured credential helper may save this response. GitTurtle does not save it.\"); macOS keeps today's text. docs/user-guide.md:186 says the same and becomes platform-accurate. The GitHub account notice (github_view.rs:735, \"authorization is stored in macOS Keychain\") follows a Keychain save that fails first off macOS (github/transport.rs:146-158); confirm it is unreachable on Linux and leave it, or apply the same rule if it is reachable. No test asserts this copy yet.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/authentication.rs",
+        "crates/app/src/authentication/**",
+        "crates/app/src/github_view.rs",
+        "docs/user-guide.md",
+        "docs/authentication.md",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "copy",
+          "description": "On non-macOS builds the authentication prompt's guidance and its accessible label name no macOS Keychain, and on macOS they are unchanged; a test reads the guidance element's text and accessible label and fails on origin/main on Linux."
+        },
+        {
+          "id": "sweep",
+          "description": "No user-visible string reachable on Linux names macOS Keychain; the PR lists each Keychain string with whether it is reachable off macOS, and docs/user-guide.md describes credential-helper storage without naming a macOS store for Linux users."
+        },
+        {
+          "id": "id",
+          "description": "description"
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(auth): name macOS Keychain in the prompt only on macOS"
+    },
+    {
+      "id": "switch-focus-ring-and-hover",
+      "title": "Draw the Button focus ring and a hover lift on Switches",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (S1a; validation entry \"September 29 desktop code font row states\"). The vendored Switch (vendor/gpui-component/src/switch.rs:173-219, over vendor/gpui-base/src/switch.rs, which is a tab stop with a focus handle: :33, :256, :317, :363-366) draws no focus indication and no hover change, against DESIGN.md:27 (hover uses the palette hover surface; keyboard focus uses a visible accent ring). Owner decision (2026-10-01): a focused enabled Switch draws the Button focus ring around its track (the theme's `button_focus_ring`, appearance::BUTTON_FOCUS_RING: 2 px of full accent 1 px outside the edge, through the kit's `apply_focus_ring`, vendor/gpui-component/src/styled.rs); hovering an enabled unchecked Switch lifts its track to the palette's hover step, a checked track keeps its accent fill, and a disabled Switch shows neither and keeps #117's fade. Every Settings switch (settings.rs ~543, ~1928, ~2016, ~2039, ~2066) keeps its ring whole: give the ring its 3 px of room inside any clipping card or row, as the Your themes rows do, without moving anything. Record the patch in GITTURTLE-PATCH.md and bring vendor/AGENTS.md's gpui-component row up to date with every GITTURTLE-PATCH.md entry (owner finding M1: the row omits the Button caller focus handle, disabled-Button hover and focus, and the disabled-Switch thumb).",
+      "depends_on": [],
+      "scope": [
+        "vendor/gpui-component/src/switch.rs",
+        "vendor/gpui-component/src/styled.rs",
+        "crates/app/src/settings.rs",
+        "crates/app/src/settings/**",
+        "crates/app/src/appearance.rs",
+        "DESIGN.md",
+        "vendor/gpui-component/GITTURTLE-PATCH.md",
+        "vendor/AGENTS.md",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "ring",
+          "description": "A focused enabled Switch paints the theme's button focus ring around its track (2 px of accent, 1 px outside its edge), and an unfocused or disabled Switch paints none; a test that inspects painted quads, as `settings::picker_tests::a_disabled_switch_fades_its_thumb_with_its_track` does, fails on origin/main."
+        },
+        {
+          "id": "hover",
+          "description": "Hovering an enabled unchecked Switch changes its track fill to the palette's hover step, at least 6 of 255 in one channel from its resting fill, while a hovered checked or disabled Switch keeps its resting fill; asserted by a test."
+        },
+        {
+          "id": "room",
+          "description": "In Settings at the default size and at 18 pt every Switch's focus ring is drawn whole, and no Settings row or control moves when a Switch gains focus; asserted by a test comparing bounds and checked in the native frames."
+        },
+        {
+          "id": "docs",
+          "description": "GITTURTLE-PATCH.md records the patch, its consumers and its removal condition; vendor/AGENTS.md's gpui-component row names every patch that GITTURTLE-PATCH.md lists; DESIGN.md:27 extends the ring and hover rule to Switches."
+        },
+        {
+          "id": "id",
+          "description": "description"
+        }
+      ],
+      "profiles": [
+        "vendor",
+        "rust",
+        "native"
+      ],
+      "commit": "fix(vendor): draw the focus ring and a hover lift on switches"
+    },
+    {
+      "id": "editor-highlights-keep-syntax-readable",
+      "title": "Fit editor selection, Find and word tints so syntax stays readable",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (D1a and D1b's word tints, follow-ups of #116; validation entry \"September 30 diff headers and syntax colours from the palette\"). Syntax colours are fitted to 4.75:1 on canvas, panel and the added and removed tints (`SyntaxTargets`, crates/app/src/appearance.rs:1557-1595), but not on the highlights drawn behind them: the editor selection (`theme.colors.selection = palette.selected`, appearance.rs:1336), Find's matches (`palette.selected` and `accent`, crates/app/src/editor_find.rs:559, `match_style`) and the changed-word tints (`strong_tint`, crates/app/src/text.rs:225, used at :168-185). Lowest measured: 3.78:1 on selection and Find, 2.58:1 on split word tints and 3.05:1 on unified ones. Owner decision (2026-10-01): fit the highlights, not the syntax. Editors get their own selection, Find-match (other and current) and word-tint colours derived from the palette and fitted so text and every syntax colour keep at least 4.5:1 on them (aim 4.75, as #116 did). Syntax hues stay as #116 made them, and row and list selection elsewhere (`palette.selected`) does not change. Each fitted highlight must stay visibly distinct from the line background it sits on; state the measure and threshold chosen and why. Fitting runs on theme apply, never per frame. Hard: it must hold for the 20 built-ins, the 24 embedded Omarchy fixtures and arbitrary themes (`arbitrary_themes_always_map_to_a_readable_palette`, appearance/omarchy/palette.rs:1778).",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/appearance.rs",
+        "crates/app/src/appearance/**",
+        "crates/app/src/editor_find.rs",
+        "crates/app/src/text.rs",
+        "crates/app/src/split_diff.rs",
+        "DESIGN.md",
+        "docs/development/themes/spec.md",
+        "docs/benchmarks/**",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "contrast",
+          "description": "A test asserts that text and every syntax colour read at least 4.5:1 on the editor selection, Find's match and current-match backgrounds and both word tints in every built-in palette, dark and light, and every embedded Omarchy fixture, and the arbitrary-theme property test checks the same; it fails on origin/main."
+        },
+        {
+          "id": "unchanged",
+          "description": "Syntax colours and row and list selection are byte-identical to origin/main for every built-in and Omarchy fixture palette (dumped and compared), and each fitted highlight stays distinct from its line background by the measure the PR states."
+        },
+        {
+          "id": "perf",
+          "description": "A release-mode measurement of theme apply against a same-session base shows the added fitting within the theme-apply budget (docs/development/themes/spec.md), recorded in docs/benchmarks/."
+        },
+        {
+          "id": "id",
+          "description": "description"
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native",
+        "performance"
+      ],
+      "commit": "fix(themes): keep syntax readable on selection, find and word tints"
+    },
+    {
+      "id": "push-upstream-only-when-unset",
+      "title": "Set a pushed branch's upstream only when it has none",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (B3; docs/validation.md:208: pushing main to a second remote moved its upstream from origin/main to lan/main). Owner decision (2026-10-01): set the upstream only when the branch has none, as Git's push.autoSetupRemote does. Branch Push (crates/git-core/src/work.rs:755-800, `WriteCommand::Push`) always passes `--set-upstream` (:795). After the existing `show-ref --verify`, read the local branch's upstream with a fixed-argument passive read (for example `for-each-ref --format=%(upstream) refs/heads/‹branch›`) and pass `--set-upstream` only when it is empty. A configuration change between that read and the push is accepted and documented: at worst an upstream added concurrently is overwritten, as today. The app's Push copy (crates/app/src/workspace.rs ~1440-1471) promises nothing about upstreams and stays unchanged; historical validation entries stay as written. Test to extend: crates/git-core/tests/workflow.rs:366 `clone_fetch_fast_forward_pull_and_non_force_push_use_local_remote`.",
+      "depends_on": [],
+      "scope": [
+        "crates/git-core/src/work.rs",
+        "crates/git-core/src/work/**",
+        "crates/git-core/tests/**",
+        "crates/git-core/README.md",
+        "docs/architecture.md",
+        "docs/user-guide.md"
+      ],
+      "acceptance": [
+        {
+          "id": "keep",
+          "description": "A git-core test with two local bare remotes pushes a branch whose upstream is origin/main to the second remote and asserts that the push succeeds, the second remote's branch moves, and `branch.‹name›.remote` and `branch.‹name›.merge` still name origin and refs/heads/main; it fails on origin/main."
+        },
+        {
+          "id": "set",
+          "description": "A branch with no upstream still gets the pushed remote branch as its upstream after a successful push, and a rejected push sets none; both asserted by tests."
+        },
+        {
+          "id": "passive",
+          "description": "The upstream read follows crates/git-core/AGENTS.md's passive-read policy (fixed arguments, no optional locks, no network) and adds no write; a test asserts `--set-upstream` is passed only when the branch has no upstream."
+        },
+        {
+          "id": "docs",
+          "description": "crates/git-core/README.md:28 and docs/architecture.md:98 state the new rule, and docs/user-guide.md says a branch's first push sets its upstream and later pushes to another remote leave it."
+        }
+      ],
+      "profiles": [
+        "rust"
+      ],
+      "commit": "fix(core): set a pushed branch's upstream only when it has none"
+    },
+    {
+      "id": "switch-checked-knob-and-disabled-label",
+      "title": "Give a checked Switch's knob 3:1 and fade a disabled Switch's label",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (S1b; validation entries \"September 29 desktop code font row states\" and \"September 30 disabled Switch thumb fades with its track\"). (1) The thumb paints `switch_thumb`, the palette's text (crates/app/src/appearance.rs:1408), on the checked track's accent (`primary`, vendor/gpui-component/src/switch.rs:123-126): 1.37:1 in Midnight and 2.28:1 in Daylight. (2) A disabled Switch's label paints `muted_foreground` (switch.rs:138, :177-178) with no fade, and the Omarchy mapping sets muted to text when muted would read above text (crates/app/src/appearance/omarchy/palette.rs:781-787; Catppuccin Latte), so the disabled Follow system appearance label does not dim. Owner decision (2026-10-01): on a checked track the thumb takes the colour primary Buttons use for text on the accent (`primary_foreground`, palette.accent_foreground, appearance.rs:1331) and must reach at least 3:1 on it in every palette; an unchecked thumb is unchanged; a disabled Switch's label fades to half strength with its track and thumb, per DESIGN.md:27's disabled rule. If accent_foreground misses 3:1 on the accent in any palette, stop and report it rather than changing the palette.",
+      "depends_on": [
+        "switch-focus-ring-and-hover"
+      ],
+      "scope": [
+        "vendor/gpui-component/src/switch.rs",
+        "crates/app/src/appearance.rs",
+        "crates/app/src/settings.rs",
+        "crates/app/src/settings/**",
+        "DESIGN.md",
+        "vendor/gpui-component/GITTURTLE-PATCH.md",
+        "vendor/AGENTS.md",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "knob",
+          "description": "A checked enabled Switch paints its thumb in the theme's primary foreground, and a test asserts at least 3:1 against the checked track in every built-in palette and every embedded Omarchy fixture; it fails on origin/main (Midnight 1.37:1). Unchecked thumbs paint exactly as before."
+        },
+        {
+          "id": "label",
+          "description": "A disabled Switch paints its label at half the enabled label's strength, asserted on the painted text colour including under the Catppuccin Latte Omarchy fixture, where muted equals text; enabled labels paint exactly as before. The test fails on origin/main."
+        },
+        {
+          "id": "docs",
+          "description": "GITTURTLE-PATCH.md records both changes with their consumers and removal condition, vendor/AGENTS.md's row stays complete, and DESIGN.md:27's Switch sentence covers the checked knob and the faded label."
+        },
+        {
+          "id": "id",
+          "description": "description"
+        }
+      ],
+      "profiles": [
+        "vendor",
+        "rust",
+        "native"
+      ],
+      "commit": "fix(vendor): contrast a checked switch's knob and fade a disabled label"
+    },
+    {
+      "id": "settings-focus-reveal-and-steady-switch",
+      "title": "Scroll a Tab-focused Settings control into view and keep switches still",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (S1b; validation entry \"September 29 desktop code font row states\"). (a) Tab and Shift-Tab move focus to Settings controls outside the page's scroll viewport (`settings-scroll`, crates/app/src/settings.rs:2377-2384) without scrolling them into view. `reveal_in_page` (settings.rs:121) already reveals Your themes rows with the focus ring's room (:1625-1632); extend that to every focusable Settings control on a keyboard focus change. (b) At 18 pt, toggling a Settings Switch moves it 11 px. The cause is unconfirmed: the track and thumb are fixed pixels (vendor/gpui-component/src/switch.rs:140-147), the label is rem `text_base`, and the Settings rows (settings.rs ~2066-2091) use justify_between with a visible label and a description. Find the cause, name it in the PR and fix it so toggling moves nothing at any interface text size. The vendor profile applies only if the fix lands in the vendored Switch.",
+      "depends_on": [
+        "switch-focus-ring-and-hover"
+      ],
+      "scope": [
+        "crates/app/src/settings.rs",
+        "crates/app/src/settings/**",
+        "vendor/gpui-component/src/switch.rs",
+        "DESIGN.md",
+        "vendor/gpui-component/GITTURTLE-PATCH.md",
+        "vendor/AGENTS.md",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "reveal",
+          "description": "Tab and Shift-Tab through Settings in a 1000 × 680 window bring every focused control wholly into the page viewport with the focus ring's 3 px of room, in both directions; a GPUI test walks the whole order and asserts each focused control's bounds, and fails on origin/main."
+        },
+        {
+          "id": "steady",
+          "description": "Toggling each Settings Switch at 0.875, 1.0, 1.25 and 18 pt leaves every Switch's and row's bounds unchanged; a test asserts it and fails on origin/main at 18 pt, and a vendored fix is recorded in GITTURTLE-PATCH.md and vendor/AGENTS.md's row."
+        },
+        {
+          "id": "design",
+          "description": "DESIGN.md's Settings text states that keyboard focus is kept in view on the page, generalising the sentence about Your themes rows."
+        },
+        {
+          "id": "id",
+          "description": "description"
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native",
+        "vendor"
+      ],
+      "commit": "fix(settings): keep a tab-focused control in view and switches still"
+    },
+    {
+      "id": "markdown-diff-fence-colours",
+      "title": "Draw diff fences in Markdown source with the patch colours",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (D1b, a follow-up of #116; validation entry \"September 30 diff headers and syntax colours from the palette\"). Compare's unified patch draws plain text plus palette decorations since #116 (crates/app/src/text.rs), but an editor showing a Markdown file's source injects the tree-sitter diff grammar into ```diff fences (vendor/gpui-component/src/highlighter/languages/markdown/injections.scm). Its captures map deletions to the keyword role (palette renamed), additions to string (added) and locations to attribute (accent), so a removed line reads violet instead of removed. The rendered Markdown preview draws code blocks plain (crates/app/src/markdown_view.rs:1186) and is out of scope. Make a fence's lines take the patch roles: `+` lines the added colour, `-` lines the removed colour, `@@` lines the hunk colour and `---`/`+++` the text colour, each read at least 4.5:1 as #116's roles do. The mechanism is the implementer's (for example remapping the diff grammar's captures to dedicated names that the app's syntax theme maps to patch roles); the standalone unified patch stays grammar-free.",
+      "depends_on": [],
+      "scope": [
+        "vendor/gpui-component/src/highlighter/**",
+        "crates/app/src/appearance.rs",
+        "crates/app/src/appearance/**",
+        "crates/app/src/text.rs",
+        "docs/development/themes/spec.md",
+        "vendor/gpui-component/GITTURTLE-PATCH.md",
+        "vendor/AGENTS.md",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "roles",
+          "description": "In an editor showing Markdown source, a ```diff fence's added, removed, hunk and file-header lines draw in the applied palette's added, removed, hunk and text colours; a test highlights a fixture Markdown document and asserts each line's colour in every built-in palette, and fails on origin/main, where a removed line takes the keyword colour."
+        },
+        {
+          "id": "scope",
+          "description": "Those colours read at least 4.5:1 on canvas and panel in every built-in and embedded Omarchy palette (asserted), and other injected languages and Markdown without a diff fence highlight exactly as on origin/main."
+        },
+        {
+          "id": "docs",
+          "description": "GITTURTLE-PATCH.md and vendor/AGENTS.md's row record any vendored highlighter change, and docs/development/themes/spec.md's syntax section states the fence rule."
+        },
+        {
+          "id": "id",
+          "description": "description"
+        }
+      ],
+      "profiles": [
+        "vendor",
+        "rust",
+        "native"
+      ],
+      "commit": "fix(themes): draw diff fences in markdown source with the patch colours"
+    },
+    {
+      "id": "pr-source-gutter-like-compare",
+      "title": "Give the PR review's Source patch Compare's gutter",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (D1b, a follow-up of #116). The PR review's Source patch (crates/app/src/github_view/review.rs:734-736, `text::editor(patch, \"diff\", None, …)` then `decorate_source` :166 and `refresh_theme` :173) keeps the editor's own single column of line numbers, no hunk folding and an untinted gutter. Compare's unified patch (crates/app/src/main.rs:1342 and repository_tabs.rs:773, `text::editor(…, \"diff\", Some(presentation), …)`) shows old and new line numbers, folds hunks and tints the gutter. Owner decision (2026-10-01): match Compare. Reuse Compare's presentation path for the Source patch, whose PatchPresentation is already prepared off the UI thread since #116; do not copy Compare's code. Find over the decorations (editor_find::PatchDecorations) and Compare's bounds (`source_presentation_stops_at_compares_bounds`) keep working. Native capture: drivers from session 11 drive the offline fixture (`GITTURTLE_GITHUB_FIXTURE=review`: Pull requests, Refresh fixture PRs, #42, Files, src/review/session.rs, Source).",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/github_view/review.rs",
+        "crates/app/src/github_view/**",
+        "crates/app/src/text.rs",
+        "crates/app/src/editor_find.rs",
+        "docs/github-collaboration.md",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "gutter",
+          "description": "For the same patch, the PR review's Source shows the same old and new line-number columns, gutter tint and hunk folding as Compare's unified patch; a test compares the two editors' presentations for a fixture patch and fails on origin/main."
+        },
+        {
+          "id": "find",
+          "description": "Find in the PR's Source still marks matches over the decorations, and a patch past Compare's bounds still draws plain: `source_patch_takes_the_decorations_its_file_preparation_made` and `source_presentation_stops_at_compares_bounds` pass, unchanged or strengthened."
+        },
+        {
+          "id": "thread",
+          "description": "Preparation stays off the UI thread and is cancelled on close and on a file change, as today, asserted by an existing or new test."
+        },
+        {
+          "id": "id",
+          "description": "description"
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(github): give the review's source patch compare's gutter"
+    },
+    {
+      "id": "decorations-in-retained-bounds",
+      "title": "Count patch decorations in their views' retained-bytes bounds",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (P1, a follow-up of #116). Compare's unified patch (crates/app/src/main.rs:1342, repository_tabs.rs:773), recovery (recovery.rs:1082-1086), rewrite review (rewrite_review.rs:363-367) and the PR review's Source (github_view/review.rs) build decoration lists and a PatchPresentation, but no retained-bytes accounting counts them. Each view keeps its own `retained_bytes()` (split_diff.rs:114, editor_find.rs:86 `PatchDecorations::retained_bytes`, revision_inspection.rs:66, file_history.rs:197 and :258, blame.rs:46, history_search.rs:63), and review_bench.rs:188 and :256-270 already measure `presentation.retained_bytes()`. Count each view's decorations and presentation in the accounting of the view that owns them, so the existing bounds (retained sessions and evictions; docs/architecture.md and crates/app/AGENTS.md) see them. This is a state-lifetime change: read docs/development/architecture-review.md first. Where a view has no bound, say so in the PR and add the accounting to its nearest owner rather than inventing a global budget.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/main.rs",
+        "crates/app/src/repository_tabs.rs",
+        "crates/app/src/recovery.rs",
+        "crates/app/src/rewrite_review.rs",
+        "crates/app/src/text.rs",
+        "crates/app/src/editor_find.rs",
+        "crates/app/src/github_view/**",
+        "crates/app/src/review_bench.rs",
+        "crates/app/docs/**",
+        "docs/architecture.md",
+        "docs/benchmarks/**"
+      ],
+      "acceptance": [
+        {
+          "id": "counted",
+          "description": "For Compare's unified patch, recovery, rewrite review and the PR review's Source, the owning view's retained-bytes figure includes its decorations' and presentation's retained bytes; tests assert it per view and fail on origin/main."
+        },
+        {
+          "id": "bound",
+          "description": "Where a retained-bytes bound evicts or refuses, a test shows a decorated patch now counts toward it, for example a retained session evicted earlier with decorations than without."
+        },
+        {
+          "id": "perf",
+          "description": "A release-mode measurement of opening a large patch (review_bench or a Compare fixture) against a same-session base shows no regression beyond noise, recorded in docs/benchmarks/."
+        },
+        {
+          "id": "docs",
+          "description": "docs/architecture.md, or the owning crate document, names decorations among what each bound counts."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "performance"
+      ],
+      "commit": "fix(app): count patch decorations in retained-bytes bounds"
+    },
+    {
+      "id": "review-file-preparation-lifecycle",
+      "title": "Prepare a PR file without copying its patch, and resume after reopen",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (P1, follow-ups of #116). (a) `select_review_file` (crates/app/src/github_view/review.rs:522, clone at ~557) clones the whole `PullFile` (crates/app/src/github/review.rs:9; `patch: Option<String>` up to the 8 MiB response bound, github.rs:17) on the UI thread before `background_spawn`. Hand the worker the patch without a full copy, for example as an `Arc<str>` shared with the view, keeping PullFile's other uses intact. (b) Closing the panel mid-preparation cancels it (github_view.rs:950-968, review.rs:143) and drops a late result (~587). Reopening (github_view.rs:84-102) selects the file again only when `section == Files && mode == 0 && rows.is_empty() && unavailable.is_none()`, so a file left in another mode, or with rows already present, reopens as plain text until it is chosen again. Reopening must resume the cancelled preparation for the selected file in whichever mode it was. (a) is a UI-thread hot path and needs a release measurement. Test to copy: review.rs:1570 `warm_reopen_retries_interrupted_local_read_and_template_payload_evicts`.",
+      "depends_on": [
+        "pr-source-gutter-like-compare"
+      ],
+      "scope": [
+        "crates/app/src/github_view.rs",
+        "crates/app/src/github_view/**",
+        "crates/app/src/github/review.rs",
+        "crates/app/src/github.rs",
+        "crates/app/src/review_bench.rs",
+        "docs/github-collaboration.md",
+        "docs/benchmarks/**",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "no-copy",
+          "description": "Selecting a review file no longer copies its patch text on the UI thread: a test asserts the preparation receives the view's allocation (for example `Arc::ptr_eq`) for an 8 MiB fixture patch, and fails on origin/main."
+        },
+        {
+          "id": "measure",
+          "description": "A release-mode measurement of selecting a file with an 8 MiB patch, against a same-session base, records the selection's UI-thread time (p50, p95 and max) in docs/benchmarks/ and shows it no slower."
+        },
+        {
+          "id": "reopen",
+          "description": "A view test closes the panel while the selected file's preparation is pending, reopens it, and asserts the patch carries its decorations without the file being chosen again, in Changes and in Source; it fails on origin/main, and `warm_reopen_retries_interrupted_local_read_and_template_payload_evicts` still passes."
+        },
+        {
+          "id": "id",
+          "description": "description"
+        }
+      ],
+      "profiles": [
+        "rust",
+        "performance",
+        "native"
+      ],
+      "commit": "fix(github): prepare review files without a copy and resume on reopen"
+    },
+    {
+      "id": "code-font-cold-launch-wait",
+      "title": "Keep waiting for the desktop code font on a cold launch",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (F1; record docs/benchmarks/2026-09-29-code-font-cold-launch.md, validation entry \"September 29 desktop code font at a cold launch\"). With no fontconfig cache, `fc-match` (crates/app/src/desktop_text.rs:581-597, through `command_output_limited` :841) outlives FAMILY_WAIT (500 ms, :515), is killed (:824), and the lookup stores `SystemCodeFont::Unavailable` (`apply_code_font`, :271-289). Nothing retries (worker loop :770-800), so the family arrives only with the window-activation refresh (main.rs:901-905), about 0.8 s after launch, and in 2 of 24 cold launches never. Owner decision (2026-10-01): pending, then apply. The Settings row keeps saying the lookup is pending while the lookup keeps running in the background under a longer bound of a few seconds (chosen from the record's cold timings, with the reason stated); the family applies when it answers, through the existing generation check; the row says unavailable only when that bound also runs out. The UI thread never waits, at most one lookup process runs at a time, and the output byte bound is unchanged. Test hooks: `code_font_lookup_generation` (:292) and `answer_code_font_lookup` (:301), used by `settings::picker_tests::the_code_font_row_describes_off_pending_and_on`.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/desktop_text.rs",
+        "crates/app/src/desktop_text/**",
+        "crates/app/src/main.rs",
+        "crates/app/src/settings.rs",
+        "crates/app/src/settings/**",
+        "crates/app/docs/**",
+        "docs/benchmarks/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "late",
+          "description": "Tests drive a lookup that answers after 500 ms but within the new bound and assert the row stays pending and then shows the family with the code font applied, one that outlives the bound ends unavailable, and a stale generation's late answer is still dropped; the first fails on origin/main."
+        },
+        {
+          "id": "process",
+          "description": "At most one fontconfig lookup runs at a time and every child is reaped, or killed at the bound, asserted by a test or a process count recorded in the benchmark."
+        },
+        {
+          "id": "cold",
+          "description": "A cold-cache release measurement on this Linux host, with fontconfig caches removed before each of 24 launches as in the 2026-09-29 record and base and candidate in the same session, shows the family applied in every candidate launch and records time-to-family (p50, p95, max) and first-window time against the base in a dated docs/benchmarks/ record and a docs/validation.md entry."
+        },
+        {
+          "id": "warm",
+          "description": "With a warm cache, first-window time and time-to-family are unchanged within noise against the base, in the same record."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "performance"
+      ],
+      "commit": "fix(app): keep waiting for the desktop code font on a cold launch"
+    },
+    {
+      "id": "code-font-blame-conflicts-review-gutter",
+      "title": "Draw Blame, the conflict editor and review line numbers in the code font",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (F2). Since #86 code text draws through `.code_font(cx)` (crates/app/src/appearance.rs:161-167). Left: Blame's source uses the fixed `mono()` family (crates/app/src/blame.rs:598; `mono()` main.rs:2002); the conflict editor's textarea sets only a size (crates/app/src/conflicts.rs:713), while its read-only panes already use editor_find::Editor; and the PR review's old and new line-number columns are a fixed 36 px (crates/app/src/github_view/review.rs:1074-1075), so long line numbers at larger code sizes do not fit. Size them from the code font's digit width at the current code size. Compare's diff_view.rs:787-799 uses a constant FONT_SIZE; say in the PR whether Compare has the same problem, but leave it unless the same helper fixes both. DESIGN.md:117's ligature sentence lists only diffs, editors and the Settings sample; extend it to every code-text site. Tests to copy: review.rs `patch_lines_use_the_code_font`, markdown_view.rs `markdown_code_blocks_use_the_code_font`.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/blame.rs",
+        "crates/app/src/conflicts.rs",
+        "crates/app/src/github_view/review.rs",
+        "crates/app/src/appearance.rs",
+        "crates/app/src/main.rs",
+        "DESIGN.md",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "family",
+          "description": "Blame's source lines and the conflict editor's textarea use the family and font features of `.code_font(cx)`; tests in the style of `patch_lines_use_the_code_font` assert both and fail on origin/main."
+        },
+        {
+          "id": "gutter",
+          "description": "The PR review's line-number columns fit the file's widest line number at every code size from 0.875 to 18 pt without clipping it or overlapping the patch text (asserted by a test at 18 pt with a five-digit line number), and at the default size are no narrower than today."
+        },
+        {
+          "id": "design",
+          "description": "DESIGN.md's ligature sentence names every code-text site: diffs, editors, Blame, the conflict editor, Markdown code blocks, the PR review and the Settings sample."
+        },
+        {
+          "id": "id",
+          "description": "description"
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(app): draw blame, conflicts and review line numbers in the code font"
+    },
+    {
+      "id": "narrow-large-text-minimums",
+      "title": "Scale narrow-window minimums with the text size and keep the inspector whole",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (N1, first of two; validation entry \"September 30 paging and the diff in narrow windows\"). At 18 pt in a 461 × 490 window the column minimum (TIGHT_CONTENT_MIN 176 px, crates/app/src/views.rs:2066-2081, beside SIDEBAR_FIT_WIDTH, NARROW_CONTENT_MIN, INSPECTOR_MIN and TIGHT_INSPECTOR_MIN, applied in `render_repository` :2310-2329) is fixed, so Older is cut; the inspector's Hash toolbar (crates/app/src/commit_message.rs:245-262, flex_wrap) draws over \"Changed files\" (views.rs:1528) in History and Compare; and in Changes the placeholder is cut and \"Filter working paths…\" runs past the right edge. Owner decision (2026-10-01, compact chrome): scale these minimums with the interface size (`appearance::ui_size`) and reserve the inspector toolbar's wrapped height. At the default size every layout stays pixel-identical to origin/main. The vertical chrome is the next task, narrow-large-text-compact-chrome. Tests to copy, views.rs: `narrow_windows_keep_the_inspector_whole_and_the_header_on_one_row` (:3164), `narrow_history_keeps_paging_in_the_column` (:3253); commit_message.rs:485.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/views.rs",
+        "crates/app/src/commit_message.rs",
+        "crates/app/src/workspace.rs",
+        "crates/app/src/columns.rs",
+        "crates/app/src/path_filter.rs",
+        "DESIGN.md",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "minimums",
+          "description": "The column and inspector minimums scale with the interface text size; at 461 × 490 and 18 pt History's Columns, Latest, Previous and Older are whole in the column, asserted by a test in the style of `narrow_history_keeps_paging_in_the_column` that fails on origin/main."
+        },
+        {
+          "id": "inspector",
+          "description": "At 461 × 490 and 18 pt the inspector's Hash and Copy message toolbar never overlaps \"Changed files\" in History or Compare, and Changes' filter field and its placeholder stay inside the window; asserted by bounds."
+        },
+        {
+          "id": "unchanged",
+          "description": "At the default text size nothing moves: existing narrow tests pass unchanged, and native frames at 461 × 490, 493 × 526, 1000 × 680 and 1480 × 800 match the base under `qa.py compare --mask status-timing`."
+        },
+        {
+          "id": "id",
+          "description": "description"
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(app): scale narrow-window minimums with the text size"
+    },
+    {
+      "id": "narrow-large-text-compact-chrome",
+      "title": "Compact the chrome in short windows so History and Compare keep content",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (N1, second of two; validation entry \"September 30 paging and the diff in narrow windows\"). At 18 pt in a 461 × 490 window History shows no rows and Compare no diff line, because the header (about 183 px), the action bar (about 113 px) and Compare's toolbar (about 265 px) take the height. Owner decision (2026-10-01, compact chrome): below a height breakpoint measured from the interface font, as #105 measured its width breakpoints (`labelled_scope_toolbar_width`, views.rs:2088; text_review.rs ~625), the header and toolbars take compact one-row forms (icon buttons with tooltips and accessible names, as #105 did for paging and the review options), so History keeps at least three whole rows and Compare at least three whole diff lines at 18 pt. Owner decision (2026-10-01): the Changes composer pins its heading (about 31 px; crates/app/src/workspace.rs:1005, `commit-composer-heading`) and the staged list above gives up the room. Taller windows and the default size stay pixel-identical to origin/main, apart from the composer heading where it was squeezed out.",
+      "depends_on": [
+        "narrow-large-text-minimums"
+      ],
+      "scope": [
+        "crates/app/src/views.rs",
+        "crates/app/src/text_review.rs",
+        "crates/app/src/workspace.rs",
+        "crates/app/src/repository_tabs.rs",
+        "crates/app/src/history_*.rs",
+        "DESIGN.md",
+        "docs/benchmarks/**",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "rows",
+          "description": "At 461 × 490 and 18 pt History shows at least three whole rows and Compare at least three whole diff lines; tests in the style of `narrow_compare_keeps_three_diff_lines` at 18 pt fail on origin/main."
+        },
+        {
+          "id": "compact",
+          "description": "Every control that collapses keeps its action, tooltip and accessible name, and the Tab order is unchanged; tests in the style of `narrow_review_options_act_from_the_menu` and `compact_controls_carry_their_accessible_names` cover the new compact forms."
+        },
+        {
+          "id": "composer",
+          "description": "With two staged files in a 461 × 490 window the composer's heading is drawn whole at the default size and at 18 pt; a test asserts its bounds and fails on origin/main."
+        },
+        {
+          "id": "unchanged",
+          "description": "At 493 × 526 and taller at the default size, and at 1000 × 680 and 1480 × 800, frames match the base under `qa.py compare --mask status-timing` apart from the composer heading, and a release-mode History scroll measurement at 461 × 490 against the base shows no regression."
+        },
+        {
+          "id": "id",
+          "description": "description"
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native",
+        "performance"
+      ],
+      "commit": "fix(app): compact the chrome so short windows keep history and diff"
+    },
+    {
+      "id": "copy-actions-say-copied",
+      "title": "Confirm every copy action with Copied on its button",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (M1). No copy action gives feedback: Copy Before source and Copy After source (crates/app/src/image_compare.rs:407-409, which only write to the clipboard), the inspector's Hash and Copy message (crates/app/src/commit_message.rs:251-262), and any other copy button. Owner decision (2026-10-01): for about 1.5 s the activated button reads \"Copied\" with a check icon (in its label, or in its icon and tooltip when it is icon-only), and assistive technology hears a polite \"Copied ‹what›\" announcement (`native_accessibility::polite`, as conflicts.rs:682 uses it). One shared helper serves every copy button. The button keeps its size, reverts after the timeout, restarts the timeout on a repeated click, and uses no animation, so reduced motion needs nothing more. The PR lists every copy site it found.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/**",
+        "crates/app/docs/**",
+        "DESIGN.md",
+        "docs/native-accessibility.md",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "helper",
+          "description": "One helper shows \"Copied\" with a check icon on the activated copy button for about 1.5 s and then restores it, without changing the button's bounds; a GPUI test clicks a copy button, asserts the clipboard text, the label or icon and the bounds, advances the clock, asserts the restore, and fails on origin/main."
+        },
+        {
+          "id": "sites",
+          "description": "Every copy action in the app uses the helper, at least Copy Before source, Copy After source, Hash and Copy message, and the PR lists each site with the search that found them."
+        },
+        {
+          "id": "announce",
+          "description": "Each copy posts a polite announcement naming what was copied, asserted in the test."
+        },
+        {
+          "id": "design",
+          "description": "DESIGN.md states the copy-feedback rule."
+        },
+        {
+          "id": "id",
+          "description": "description"
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "feat(app): confirm copy actions with copied on the button"
+    },
+    {
+      "id": "history-columns-steady-after-toggle",
+      "title": "Keep History's columns still after toggling navigation twice",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (M1, seen in session 9). On native Wayland, Ctrl+B twice (hide, then show navigation) leaves History's columns 1 to 2 px from where they were. History measures its width in on_prepaint and takes a new width only when it differs by more than 1 px (crates/app/src/views.rs:1109-1115); `history_column_layout` (:1185) uses `history_width - 26.` and columns.rs:169-215 gives the leftover to Subject, so a stale width within 1 px survives. The same window width must always give the same column layout (for example compare exactly, or after rounding to device pixels), without laying out on every frame. History render is a hot path. Ctrl+B tests to copy: views.rs `narrow_history_keeps_the_navigation_choice` (:3882).",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/views.rs",
+        "crates/app/src/columns.rs",
+        "docs/benchmarks/**",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "steady",
+          "description": "A GPUI test toggles navigation twice, including at a fractional scale factor, and asserts History's column boundaries equal those before the toggle; it fails on origin/main."
+        },
+        {
+          "id": "notify",
+          "description": "History lays its columns out again only when the measured width changes; a test asserts no extra layout for an unchanged width."
+        },
+        {
+          "id": "perf",
+          "description": "A release-mode History scroll measurement against a same-session base shows no regression."
+        },
+        {
+          "id": "id",
+          "description": "description"
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native",
+        "performance"
+      ],
+      "commit": "fix(history): keep columns still after toggling navigation"
+    },
+    {
+      "id": "review-arrow-buttons-hover",
+      "title": "Give the review row's arrow buttons a hover fill",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (M1; validation entry \"September 30 paging and the diff in narrow windows\"). In narrow Compare the review row's small previous and next change arrows (crates/app/src/text_review.rs:451-456, :471-476, :516-519: `Button::new(…).small().ghost()` with `.icon(arrow(…))`) show no hover fill, unlike the other compact controls (DESIGN.md:27: hover uses the palette hover surface). Find why, in the kit's ghost icon Button or in the app's styling, name it in the PR, and fix it where the cause is. If the cause is the vendored kit, every ghost icon Button gets the fix and the patch is recorded; the vendor profile then applies.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/text_review.rs",
+        "crates/app/src/appearance.rs",
+        "crates/app/src/main.rs",
+        "vendor/gpui-component/src/button/**",
+        "vendor/gpui-component/GITTURTLE-PATCH.md",
+        "vendor/AGENTS.md",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "hover",
+          "description": "Hovering an enabled arrow button paints the palette's hover step, as the compact helper does, and a disabled one paints none; a test fails on origin/main, and the PR names the cause."
+        },
+        {
+          "id": "others",
+          "description": "Every other ghost icon Button either already lifts on hover (unchanged) or gains the same lift, listed in the PR; a vendored change is recorded in GITTURTLE-PATCH.md and vendor/AGENTS.md's row."
+        },
+        {
+          "id": "id",
+          "description": "description"
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native",
+        "vendor"
+      ],
+      "commit": "fix(app): give the review row's arrow buttons a hover fill"
+    },
+    {
+      "id": "menu-checked-items-accessible",
+      "title": "Expose a menu item's checked state to assistive technology",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (M1, seen in session 9). The kit's popup menu draws a checked item's tick only as an icon (vendor/gpui-component/src/menu/popup_menu.rs:178-188 `.checked()`, :265 `is_checked`, :1133, :1173-1175), and menu_item.rs:97-98 gives every item `Role::MenuItem` with only `aria_selected`, so a checked item is announced like an unchecked one. App users include model_view/playback.rs:227 and the `menu_with_check*` builders (popup_menu.rs:542-556, :600-647). Give a checkable item AccessKit's MenuItemCheckBox role with its toggled state; a plain item keeps MenuItem. The kit's API does not say whether a group is exclusive, so radio semantics stay out. On Linux, verify through AT-SPI with the HANDOFF's procedure: set `org.a11y.Status IsEnabled` true for the launches only, then restore it and read it back.",
+      "depends_on": [],
+      "scope": [
+        "vendor/gpui-component/src/menu/**",
+        "crates/app/src/**",
+        "docs/native-accessibility.md",
+        "vendor/gpui-component/GITTURTLE-PATCH.md",
+        "vendor/AGENTS.md",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "role",
+          "description": "A checkable menu item exposes Role::MenuItemCheckBox, toggled true when checked and false when not, and a plain item keeps Role::MenuItem; a test reads the AccessKit nodes and fails on origin/main."
+        },
+        {
+          "id": "app",
+          "description": "Every app menu that draws a tick builds its items as checkable, and the PR lists each call site."
+        },
+        {
+          "id": "atspi",
+          "description": "A native AT-SPI read on Linux of a ticked app menu, such as History's Columns menu, shows check menu items whose checked states match the ticks, against a same-session base, with `IsEnabled` restored and read back; recorded in a dated docs/validation.md entry and in docs/native-accessibility.md."
+        },
+        {
+          "id": "docs",
+          "description": "GITTURTLE-PATCH.md records the patch, its consumers and its removal condition, and vendor/AGENTS.md's row names it."
+        }
+      ],
+      "profiles": [
+        "vendor",
+        "rust",
+        "native"
+      ],
+      "commit": "fix(vendor): expose a menu item's checked state"
     }
   ]
 }
