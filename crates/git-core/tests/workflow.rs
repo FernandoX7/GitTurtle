@@ -386,6 +386,9 @@ fn clone_fetch_fast_forward_pull_and_non_force_push_use_local_remote() {
     };
     repo.execute(&push).unwrap();
     assert_eq!(repo.remotes().unwrap()[0].url, remote.to_str().unwrap());
+    // A branch's first push records the destination as its upstream.
+    assert_eq!(f.git(&["config", "branch.main.remote"]), "origin");
+    assert_eq!(f.git(&["config", "branch.main.merge"]), "refs/heads/main");
     let copy = f.temp.path().join("clone");
     let cloned = GitRepository::clone_repository(remote.to_str().unwrap(), &copy).unwrap();
     git(&copy, &["config", "user.name", "Clone Author"]);
@@ -455,6 +458,116 @@ fn clone_fetch_fast_forward_pull_and_non_force_push_use_local_remote() {
     );
     assert!(repo.operation_state().unwrap().is_none());
     assert_eq!(git(&remote, &["log", "-1", "--format=%s"]), "clone three");
+}
+
+fn bare_remote(f: &Fixture, name: &str) -> PathBuf {
+    let remote = f.temp.path().join(format!("{name}.git"));
+    git(
+        f.temp.path(),
+        &[
+            "init",
+            "--bare",
+            "--initial-branch=main",
+            remote.to_str().unwrap(),
+        ],
+    );
+    f.git(&["remote", "add", name, remote.to_str().unwrap()]);
+    remote
+}
+fn push(remote: &str, branch: &str) -> WriteCommand {
+    WriteCommand::Push {
+        remote: remote.into(),
+        local_branch: branch.into(),
+        remote_branch: branch.into(),
+    }
+}
+fn upstream_config(f: &Fixture, branch: &str) -> String {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(&f.root)
+        .args(["config", "--get-regexp", &format!("^branch\\.{branch}\\.")])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout).trim_end().into()
+}
+
+#[test]
+fn push_to_another_remote_keeps_an_existing_upstream() {
+    let f = Fixture::new();
+    f.write("file.txt", "one");
+    f.commit("one");
+    let origin = bare_remote(&f, "origin");
+    let lan = bare_remote(&f, "lan");
+    let repo = f.repo();
+    repo.execute(&push("origin", "main")).unwrap();
+    assert_eq!(
+        f.git(&["rev-parse", "--abbrev-ref", "main@{upstream}"]),
+        "origin/main"
+    );
+    f.write("file.txt", "two");
+    let tip = f.commit("two");
+    repo.execute(&push("lan", "main")).unwrap();
+    assert_eq!(git(&lan, &["rev-parse", "refs/heads/main"]), tip);
+    assert_ne!(git(&origin, &["rev-parse", "refs/heads/main"]), tip);
+    assert_eq!(f.git(&["config", "branch.main.remote"]), "origin");
+    assert_eq!(f.git(&["config", "branch.main.merge"]), "refs/heads/main");
+    assert_eq!(
+        f.git(&["rev-parse", "--abbrev-ref", "main@{upstream}"]),
+        "origin/main"
+    );
+    // Pushing to the upstream itself still works and leaves the configuration.
+    repo.execute(&push("origin", "main")).unwrap();
+    assert_eq!(git(&origin, &["rev-parse", "refs/heads/main"]), tip);
+    assert_eq!(
+        upstream_config(&f, "main"),
+        "branch.main.remote origin\nbranch.main.merge refs/heads/main"
+    );
+}
+
+#[test]
+fn push_sets_upstream_for_a_branch_without_one_only_after_success() {
+    let f = Fixture::new();
+    f.write("file.txt", "one");
+    f.commit("one");
+    let lan = bare_remote(&f, "lan");
+    let repo = f.repo();
+    // The remote already has a diverging main, so this push is rejected.
+    let other = f.temp.path().join("other");
+    git(
+        f.temp.path(),
+        &["clone", lan.to_str().unwrap(), other.to_str().unwrap()],
+    );
+    fs::write(other.join("other.txt"), "other").unwrap();
+    git(&other, &["add", "other.txt"]);
+    git(
+        &other,
+        &[
+            "-c",
+            "user.name=Other",
+            "-c",
+            "user.email=other@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "other",
+        ],
+    );
+    git(&other, &["push", "origin", "HEAD:refs/heads/main"]);
+    let remote_tip = git(&lan, &["rev-parse", "refs/heads/main"]);
+    assert!(repo.execute(&push("lan", "main")).is_err());
+    assert_eq!(git(&lan, &["rev-parse", "refs/heads/main"]), remote_tip);
+    assert_eq!(upstream_config(&f, "main"), "");
+    // A successful first push of a new branch records its upstream.
+    f.git(&["switch", "--create", "topic"]);
+    f.write("topic.txt", "topic");
+    let tip = f.commit("topic");
+    repo.execute(&push("lan", "topic")).unwrap();
+    assert_eq!(git(&lan, &["rev-parse", "refs/heads/topic"]), tip);
+    assert_eq!(
+        upstream_config(&f, "topic"),
+        "branch.topic.remote lan\nbranch.topic.merge refs/heads/topic"
+    );
 }
 
 #[test]
