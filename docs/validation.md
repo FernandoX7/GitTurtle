@@ -65,6 +65,38 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## October 1 whole focus rings in the worktree branch choices
+
+Task `worktree-branch-choices-ring`. The worktree manager's list of branch choices, shown while creating a worktree from an existing branch, now keeps the installed ring room inside its scrolling clip and gives it back through its margins, as #122 did for the other lists, so a focused first or last choice keeps its ring whole and no control moves.
+
+Native evidence, full tier:
+- **Builds:** base `6906a24` (the run's `accepted_head`, the attested release of `tab-strip-ring-room-small-text`; sha256 `a819ff65…`) and candidate `b8c8d05` (sha256 `ba3bb8d7…`), release builds from clean trees, each in its own target directory. `qa.py identity` reported no problem.
+- **Host:** Ubuntu 26.04, GNOME 50, XWayland `:0` at scale factor 1, window 1000 × 680, default text size, one session on 2026-10-01 from 20:19 to 20:24 UTC.
+- **Input:** a local driver on the `qa.py` library (sha256 `78f03b0c…`), through Mutter RemoteDesktop with X focus verified, never XTest.
+- **Fixture:** a disposable repository with 14 local branches on distinct commits, a detached HEAD so no choice is in use, no linked worktree and a local bare `origin`; the form lists the newest 12, `main` through `topic-11`. Its state was byte-identical before and after the session, and nothing was created.
+- **Steps:** the command palette's "manage worktrees", Tab 2 and Space for Create worktree…, Tab 2 and Space for Existing branch, then Tab 3 to the first choice. For the last choice, the mouse wheel scrolled the list to its end, then Tab 11 reached `topic-11`; Tab does not scroll a choice into view in either build (queued as `tab-reveals-worktree-reflog-profile-rows`).
+
+The base keeps only the side of the ring that faces into the list: the first choice's bottom and the last choice's top. The candidate draws it on all four sides. Ring pixels in the 1 to 3 px band outside each edge, corners excluded (top / right / bottom / left), each against the same launch's unfocused frame at the same scroll position, the same in both palettes:
+
+| | Base | Candidate |
+| --- | --- | --- |
+| First choice, list at its top | 0 / 0 / 1338 / 0 | 1338 / 62 / 1338 / 62 |
+| Last choice, list at its end | 1338 / 0 / 0 / 0 | 1338 / 62 / 1338 / 62 |
+
+The strongest ring pixel on every present side stands 11.43:1 (Midnight) and 6.55:1 (Porcelain) against the same pixel unfocused. The choices' boxes are identical in both builds.
+
+Unfocused, `qa.py compare --mask status-timing` finds the form identical to the base apart from 53 px in both palettes: the list's clip now reaches the ring room, 3 px past its old edges, so the partly scrolled row at the edge shows 3 more pixel rows of its label (`topic-03` at the bottom, 11 of 12 rows instead of 8; at the end, `topic-08` at the top whole instead of 10 of 12). Coordinator decision, with the design review: accept this inset. The band is exactly where the ring paints, so the visible area cannot stay at its old bounds without cutting the ring again; the partial labels now read as whole words rather than being cut through the letters; and every #122 list shows the same 3 px.
+
+Frames in [`evidence/worktree-branch-choices-ring/`](evidence/worktree-branch-choices-ring/), 12 crops of the create form, 688 × 231 at (156, 135):
+- `base-{midnight,porcelain}-1000x680-branch-choice-first-focus.png`: on the base, the focused first choice, `main`, with only the bottom of its ring;
+- `base-{midnight,porcelain}-1000x680-branch-choice-last-focus.png`: on the base, the focused last choice, `topic-11`, at the list's end, with only the top of its ring;
+- `candidate-{midnight,porcelain}-1000x680-branch-choice-first-focus.png` and `…-last-focus.png`: on the candidate, the same choices with the ring and its gap whole on all four sides;
+- `base-{midnight,porcelain}-1000x680-branch-choices-rest.png` and `candidate-…-rest.png`: the unfocused form, focus on Existing branch, where the candidate's bottom row shows 3 more pixel rows of `topic-03`.
+
+`qa.py privacy scan --redacted` with the local template set found all 12 clean on their committed bytes. A `design-reviewer` pass approved the frames and the inset.
+
+Not covered: other text sizes and window sizes, macOS, native Wayland and fractional scale factors.
+
 ## October 1 the tab strip keeps the ring room at small text
 
 Task `tab-strip-ring-room-small-text`. The repository tab strip's minimum height is now the larger of `ui_size(36)` and a tab or close button plus twice the installed ring room, so a focused tab's ring keeps its gap inside the window at every text size; nothing moves where the room already fitted (12 pt and above at desktop scale 1.0).
