@@ -8,8 +8,9 @@ use gpui_kit::{
 
 const PREPARING: &str = "Reading tags…";
 /// The gap the kit's dialog leaves between its body and its footer, its
-/// default 16 px padding.
-const DIALOG_FOOTER_GAP: Pixels = px(16.);
+/// default 16 px padding. A dialog whose body keeps the focus ring's room
+/// below its last control gives the room back by narrowing this gap.
+pub(crate) const DIALOG_FOOTER_GAP: Pixels = px(16.);
 
 fn static_text(id: &'static str, value: impl Into<SharedString>) -> Stateful<Div> {
     let value = value.into();
@@ -134,7 +135,13 @@ impl GitTurtle {
             let p = palette(cx); let tag = &details.tag;
             let deletion = tag.clone(); let delete_owner = owner.clone(); let delete_path = path.clone();
             let oid = tag.oid.clone();
-            let content = div().flex().flex_col().gap_3()
+            // The Push to… list scrolls, so it clips its buttons to its bounds
+            // on both axes: it keeps the focus ring's room around them and
+            // gives it back through its margin. The content keeps the room
+            // below its last control inside the dialog's clip of its body,
+            // and the footer's gap gives that back, so nothing moves.
+            let room = appearance::button_ring_room(cx);
+            let content = div().flex().flex_col().gap_3().pb(room)
                 .child(static_text("tag-target-identity", format!("{} · {} {}", if tag.annotated { "Annotated tag" } else { "Lightweight tag" }, tag.target_kind, tag.target_oid)).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
                 .child(static_text("tag-object-identity", format!("Tag object: {}", tag.oid)).text_size(crate::appearance::ui_text(11.)))
                 .when(!tag.tagger.is_empty(), |element| element.child(static_text("tag-author", format!("Tagged by {}", tag.tagger)).text_size(crate::appearance::ui_text(12.))))
@@ -152,9 +159,9 @@ impl GitTurtle {
                     })))
                 .child(static_text("tag-push-heading", "Push this tag").text_size(crate::appearance::ui_text(12.)).font_weight(FontWeight::MEDIUM))
                 .child(static_text("tag-push-consequences", "Choose one remote, then review. No other tags or branches are pushed. Existing remote tags are never replaced.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
-                .child(div().id("tag-remote-list").max_h(px(160.)).overflow_y_scroll().flex().flex_col().gap_1().children(remotes.iter().enumerate().map(|(index, remote)| {
+                .child(div().id("tag-remote-list").debug_selector(|| "tag-remote-list".into()).max_h(px(160.) + room * 2.).p(room).m(-room).overflow_y_scroll().flex().flex_col().gap_1().children(remotes.iter().enumerate().map(|(index, remote)| {
                     let remote = remote.clone(); let tag = tag.clone(); let owner = owner.clone(); let path = path.clone();
-                    button(("push-tag-remote", index), format!("Push to {}…", remote.name), "", false).on_click(move |_, window, cx| {
+                    button(("push-tag-remote", index), format!("Push to {}…", remote.name), "", false).debug_selector(move || format!("push-tag-remote-{index}")).on_click(move |_, window, cx| {
                         let _ = owner.update(cx, |this, cx| {
                             if this.path == path && this.operation_busy.is_none() {
                                 window.close_dialog(cx);
@@ -165,7 +172,7 @@ impl GitTurtle {
                         });
                     })
                 })).when(remotes.is_empty(), |element| element.child(static_text("tag-remotes-empty", "No remotes configured. Add a remote from the branch menu to push a tag.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))));
-            dialog.title(static_text("tag-inspector-title", details.tag.name.clone())).width(px(640.)).child(content).button_props(DialogButtonProps::default().ok_text("Done"))
+            dialog.title(static_text("tag-inspector-title", details.tag.name.clone())).width(px(640.)).gap(DIALOG_FOOTER_GAP - room).child(content).button_props(DialogButtonProps::default().ok_text("Done"))
         });
     }
     pub(super) fn finish_tag_write(
@@ -402,7 +409,7 @@ pub(crate) mod tests {
     use std::{cell::RefCell, rc::Rc};
 
     /// Runs Git in `path` with no configuration beyond the fixture identity.
-    fn git(path: &std::path::Path, args: &[&str]) {
+    pub(crate) fn git(path: &std::path::Path, args: &[&str]) {
         let output = std::process::Command::new("git")
             .args([
                 "-c",
@@ -621,11 +628,21 @@ pub(crate) mod tests {
     /// A wheel step down at `position`, which every scrolling container under
     /// it takes as far as it can move.
     fn wheel(cx: &mut VisualTestContext, position: Point<Pixels>) {
+        scroll_down(cx, position, ScrollDelta::Lines(point(0., -3.)));
+    }
+
+    /// Scrolls every container under `position` down by `delta`, as far as
+    /// each can move.
+    pub(crate) fn scroll_down(
+        cx: &mut VisualTestContext,
+        position: Point<Pixels>,
+        delta: ScrollDelta,
+    ) {
         cx.simulate_mouse_move(position, None, Modifiers::default());
         draw(cx);
         cx.simulate_event(ScrollWheelEvent {
             position,
-            delta: ScrollDelta::Lines(point(0., -3.)),
+            delta,
             modifiers: Modifiers::default(),
             touch_phase: TouchPhase::Moved,
         });
@@ -659,6 +676,25 @@ pub(crate) mod tests {
         controls: &[&'static str],
         fixed: &[&'static str],
     ) {
+        assert_rings_whole(cx, controls);
+        let selectors = [controls, fixed].concat();
+        park_pointer(cx);
+        let with_room = layout(cx, &selectors);
+        for &control in controls {
+            let center = rendered(cx, control).center();
+            wheel(cx, center);
+            park_pointer(cx);
+            if let Some(moved) = first_move(&with_room, &layout(cx, &selectors), &selectors) {
+                panic!("a wheel step over {control} scrolls content that fits: it moves {moved}");
+            }
+        }
+        assert_room_moves_nothing(cx, app, controls, fixed);
+    }
+
+    /// Grown by the installed Button focus ring's width plus gap, each of
+    /// `controls` lies inside the content mask it paints in, the intersection
+    /// of every ancestor's.
+    pub(crate) fn assert_rings_whole(cx: &mut VisualTestContext, controls: &[&'static str]) {
         let installed = cx.read(|cx| Theme::global(cx).button_focus_ring);
         assert_eq!(installed, appearance::BUTTON_FOCUS_RING);
         let footprint = installed.gap + installed.width;
@@ -675,18 +711,23 @@ pub(crate) mod tests {
             "rings lie outside their content masks:\n{}",
             clipped.join("\n")
         );
+    }
 
+    /// Laid out without the ring's room, as a ring taking none lays out, every
+    /// painted quad, control and element of `fixed` sits where it does with
+    /// the room, and the ring around every control is clipped. The installed
+    /// ring is restored afterwards.
+    pub(crate) fn assert_room_moves_nothing(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        controls: &[&'static str],
+        fixed: &[&'static str],
+    ) {
+        let installed = cx.read(|cx| Theme::global(cx).button_focus_ring);
+        let footprint = installed.gap + installed.width;
         let selectors = [controls, fixed].concat();
         park_pointer(cx);
         let with_room = layout(cx, &selectors);
-        for &control in controls {
-            let center = rendered(cx, control).center();
-            wheel(cx, center);
-            park_pointer(cx);
-            if let Some(moved) = first_move(&with_room, &layout(cx, &selectors), &selectors) {
-                panic!("a wheel step over {control} scrolls content that fits: it moves {moved}");
-            }
-        }
         install_ring(
             cx,
             app,
@@ -766,6 +807,45 @@ pub(crate) mod tests {
             &app,
             &["create-tag", "tag-row-0", "tag-row-2"],
             &["tags-dialog-title", "tag-list-summary", "tag-row-1"],
+        );
+    }
+
+    /// The Push to… list scrolls, so GPUI clips it to its bounds on both
+    /// axes, and it ends the dialog's body, which the dialog clips. The first
+    /// and last Push to… buttons keep their rings whole, and nothing moves.
+    #[gpui::test]
+    async fn tag_inspector_keeps_room_for_every_push_ring(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        // Local bare remotes: the inspector only lists them, and nothing is
+        // fetched or pushed.
+        for remote in ["origin", "upstream"] {
+            let bare = fixture.path().join(format!("{remote}.git"));
+            git(
+                fixture.path(),
+                &["init", "--quiet", "--bare", bare.to_str().unwrap()],
+            );
+            git(
+                repo.path(),
+                &["remote", "add", remote, bare.to_str().unwrap()],
+            );
+        }
+        let tag = repo.tags().unwrap().tags[0].clone();
+        let (app, cx) = window(cx, &repo);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.inspect_tag(tag, window, cx)));
+        let read = app.update(cx, |app, _| app.tag_actions.task.take());
+        read.expect("the tag is read").await;
+        draw(cx);
+        assert_room_for_rings(
+            cx,
+            &app,
+            &["push-tag-remote-0", "push-tag-remote-1"],
+            &[
+                "tag-inspector-title",
+                "tag-target-identity",
+                "tag-push-heading",
+                "tag-push-consequences",
+            ],
         );
     }
 }
