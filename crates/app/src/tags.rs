@@ -2,7 +2,7 @@
 use crate::*;
 use gitturtle_core::{RemoteConfig, Tag, TagCommand, TagDetails, TagList, WriteCommand};
 use gpui_kit::{
-    component::{Theme, WindowExt, dialog::DialogButtonProps},
+    component::{WindowExt, dialog::DialogButtonProps},
     prelude::FluentBuilder,
 };
 
@@ -10,12 +10,6 @@ const PREPARING: &str = "Reading tags…";
 /// The gap the kit's dialog leaves between its body and its footer, its
 /// default 16 px padding.
 const DIALOG_FOOTER_GAP: Pixels = px(16.);
-
-/// The room the installed Button focus ring takes outside a Button's edge.
-fn ring_room(cx: &App) -> Pixels {
-    let ring = Theme::global(cx).button_focus_ring;
-    ring.gap + ring.width
-}
 
 fn static_text(id: &'static str, value: impl Into<SharedString>) -> Stateful<Div> {
     let value = value.into();
@@ -56,7 +50,7 @@ impl GitTurtle {
                         // above Create tag… and below the last row. The
                         // title's margin and the footer's gap give the room
                         // back, so nothing in the dialog moves.
-                        let room = ring_room(cx);
+                        let room = appearance::button_ring_room(cx);
                         dialog
                             .title(static_text("tags-dialog-title", "Tags").mb(-room))
                             .width(px(600.))
@@ -307,7 +301,7 @@ impl Render for TagBrowser {
         // back. The list scrolls, so it clips its rows to its bounds on both
         // axes: it keeps the room around them and gives it back through its
         // margin, so no row moves.
-        let room = ring_room(cx);
+        let room = appearance::button_ring_room(cx);
         div().flex().flex_col().gap_3().py(room)
             .child(div().flex().gap_2().child(div().flex_1().child(Input::new(&self.query).aria_label("Filter local tags").cleanable(true))).child(button("create-tag", "Create tag…", "plus", false).debug_selector(|| "create-tag".into()).on_click(cx.listener(|this, _, window, cx| {
                 let _ = this.owner.update(cx, |owner, cx| { if owner.path == this.path && owner.operation_busy.is_none() { window.close_dialog(cx); owner.open_create_tag(window, cx); } });
@@ -404,7 +398,7 @@ impl Render for TagForm {
 pub(crate) mod tests {
     use super::*;
     use ::core::prelude::v1::test;
-    use gpui_kit::component::{FocusRing, Root};
+    use gpui_kit::component::{FocusRing, Root, Theme};
     use std::{cell::RefCell, rc::Rc};
 
     /// Runs Git in `path` with no configuration beyond the fixture identity.
@@ -504,7 +498,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn rendered(cx: &mut VisualTestContext, selector: &'static str) -> Bounds<Pixels> {
+    pub(crate) fn rendered(cx: &mut VisualTestContext, selector: &'static str) -> Bounds<Pixels> {
         cx.debug_bounds(selector)
             .unwrap_or_else(|| panic!("rendered {selector}"))
     }
@@ -526,7 +520,10 @@ pub(crate) mod tests {
     /// The content mask `control` paints in, read from the fill it paints
     /// under the pointer: GPUI keeps a filled quad's mask whole, and that mask
     /// is the intersection of every ancestor's.
-    fn content_mask(cx: &mut VisualTestContext, control: &'static str) -> Bounds<Pixels> {
+    pub(crate) fn content_mask(
+        cx: &mut VisualTestContext,
+        control: &'static str,
+    ) -> Bounds<Pixels> {
         let surface = rendered(cx, control);
         cx.simulate_mouse_move(surface.center(), None, Modifiers::default());
         draw(cx);
@@ -635,7 +632,11 @@ pub(crate) mod tests {
         draw(cx);
     }
 
-    fn install_ring(cx: &mut VisualTestContext, app: &Entity<GitTurtle>, ring: FocusRing) {
+    pub(crate) fn install_ring(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        ring: FocusRing,
+    ) {
         cx.update(|window, cx| {
             Theme::global_mut(cx).button_focus_ring = ring;
             app.update(cx, |_, cx| cx.notify());

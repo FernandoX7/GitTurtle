@@ -137,6 +137,24 @@ fn reveal_in_page(page: &ScrollHandle, top: Pixels, bottom: Pixels) {
 /// The Your themes rows' corner radius.
 const ROW_RADIUS: Pixels = px(6.);
 
+/// Whether the Your themes row on `hitbox` shows its hover fill in the frame
+/// being painted, decided as GPUI decides an element's hover style: the
+/// pointer is over the row, no drag is active, and the last input was not a
+/// touch, which leaves the pointer where it was and so would otherwise keep
+/// the row hovered. GPUI keeps the last input's modality to itself
+/// (`Window::last_input_was_touch` is crate-private), so the row asks GPUI's
+/// own style computation, `Interactivity::compute_style`, for a hover style
+/// that shows a probe: the answer follows every modality rule GPUI applies to
+/// hover styles, now and after an upgrade.
+fn row_hovered(hitbox: &Hitbox, window: &mut Window, cx: &mut App) -> bool {
+    let mut probe = div().invisible().hover(|style| style.visible());
+    probe
+        .interactivity()
+        .compute_style(None, Some(hitbox), window, cx)
+        .visibility
+        == gpui::Visibility::Visible
+}
+
 /// Where a Your themes row is drawn in the frame being prepainted, for the
 /// fill the list paints beneath the rows: the row's bounds, its content mask,
 /// a hitbox of the row's own bounds, which is hovered exactly when the row
@@ -1590,9 +1608,10 @@ impl GitTurtle {
     /// and the row holding focus is scrolled into view (`reveal_focused_row`).
     fn render_custom_theme_rows(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         const VISIBLE_ROWS: usize = 8;
-        /// The kit's focus ring width, which a focused control paints outside
-        /// its own bounds.
-        const ROW_RING_ROOM: Pixels = px(3.);
+        // The room the installed ring takes outside a focused row action,
+        // which the list keeps above its first row and below its last, the
+        // page reveal keeps around the revealed row, and the strips cover.
+        let ring_room = appearance::button_ring_room(cx);
         let rows = self.custom_themes.len();
         let scrolls = rows > VISIBLE_ROWS;
         self.theme_editor.retain_row_focus(&self.custom_themes);
@@ -1627,9 +1646,7 @@ impl GitTurtle {
             let page = self.theme_editor.page_scroll();
             let top = anchor + page.offset().y + row_height * row as f32
                 - planned_rows_top(&scroll, row_height, viewport, rows);
-            let ring = gpui_kit::component::Theme::global(cx).button_focus_ring;
-            let room = ring.gap + ring.width;
-            reveal_in_page(page, top - room, top + row_height + room);
+            reveal_in_page(page, top - ring_room, top + row_height + ring_room);
         }
         // The list clips at its own bounds, the ring's room included, so a
         // row partly scrolled out of the viewport paints into that room. Two
@@ -1649,8 +1666,8 @@ impl GitTurtle {
         let fills = drawn.clone();
         // The box the rows occupy in the card's column: exactly the rows, so
         // the card, the row pitch and everything below the card stay where
-        // the plain stack put them. The list itself is positioned over it 3
-        // px taller at each end (`ROW_RING_ROOM`) rather than laid out with
+        // the plain stack put them. The list itself is positioned over it the
+        // ring's room taller at each end (`ring_room`) rather than laid out with
         // negative margins: an absolute child does not enter taffy's sizing
         // of the card, whereas a flow child whose margins pull its content
         // contribution below its flex basis collapses the card's content
@@ -1670,7 +1687,7 @@ impl GitTurtle {
             // page's offset, applied to these bounds, is taken back out.
             .on_children_prepainted(move |children, _, _| {
                 if let Some(list) = children.first() {
-                    anchor.set(Some(list.top() + ROW_RING_ROOM - page.offset().y));
+                    anchor.set(Some(list.top() + ring_room - page.offset().y));
                 }
             })
             .child(
@@ -1682,8 +1699,8 @@ impl GitTurtle {
                     // over the card's gaps: the rows and the card do not move
                     // (`DESIGN.md`).
                     .absolute()
-                    .top(-ROW_RING_ROOM)
-                    .bottom(-ROW_RING_ROOM)
+                    .top(-ring_room)
+                    .bottom(-ring_room)
                     .left_0()
                     .right_0()
                     .when_some(scrolled_out, |list, handle| list.track_focus(&handle))
@@ -1727,8 +1744,7 @@ impl GitTurtle {
                                     // under the pointer, and on the imported
                                     // row the selected surface, blended as a
                                     // hovered selected row under the pointer.
-                                    let hover =
-                                        !cx.has_active_drag() && row.hitbox.is_hovered(window);
+                                    let hover = row_hovered(&row.hitbox, window, cx);
                                     let color = match (row.imported, hover) {
                                         (imported, true) => p.row_hover(imported),
                                         (true, false) => p.selected,
@@ -1787,7 +1803,7 @@ impl GitTurtle {
                         // The ring's room: the list's content mask is its own
                         // bounds, padding included, while the rows are laid
                         // out inside it.
-                        .py(ROW_RING_ROOM)
+                        .py(ring_room)
                         // The scrollbar paints an absolute overlay; reserve
                         // its track so the thumb never covers Delete….
                         .when(scrolls, |list| list.pr(Scrollbar::width()))
@@ -1795,7 +1811,7 @@ impl GitTurtle {
                     ),
             )
             .when(strips, |list| {
-                // Painted after the rows, over the room's 3 px at each end
+                // Painted after the rows, over the ring's room at each end
                 // of the viewport and nothing of the rows' box; absolute, so
                 // the card and the rows keep their geometry.
                 let strip = |name: &'static str| {
@@ -1804,11 +1820,11 @@ impl GitTurtle {
                         .absolute()
                         .left_0()
                         .right_0()
-                        .h(ROW_RING_ROOM)
+                        .h(ring_room)
                         .bg(surface)
                 };
-                list.child(strip("custom-themes-ring-room-top").top(-ROW_RING_ROOM))
-                    .child(strip("custom-themes-ring-room-bottom").bottom(-ROW_RING_ROOM))
+                list.child(strip("custom-themes-ring-room-top").top(-ring_room))
+                    .child(strip("custom-themes-ring-room-bottom").bottom(-ring_room))
             })
             .when(scrolls, |list| {
                 list.child(

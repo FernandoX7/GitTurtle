@@ -6286,6 +6286,92 @@ mod tests {
         }
     }
 
+    /// GPUI's own hover styles skip hover once the last input was a touch,
+    /// which leaves the pointer where it was, and take it back at the next
+    /// mouse move. The fill layer beneath the Your themes rows decides hover
+    /// the same way: with theme 2 just imported, a touch over the hovered
+    /// plain row leaves it unfilled and a touch over the hovered highlighted
+    /// row leaves its resting highlight, each repainted by the touch alone;
+    /// the next mouse move over the row brings its hover fill back.
+    #[gpui::test]
+    fn a_touch_takes_a_rows_hover_fill_away_until_the_mouse_moves(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|window, _| window.activate_window());
+        seed_themes(cx, &app, 3);
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.theme_editor.imported = Some(2);
+                app.notify_settings_page(cx);
+                cx.notify();
+            })
+        });
+        settle(cx);
+        let p = cx.read(appearance::palette);
+        let rows = [1, 2, 3].map(|id| bounds(cx, format!("custom-theme-{id}")));
+        // The pointer over theme `id`'s row spacer, clear of its actions,
+        // `nudge` to the right.
+        let pointer = |id: u32, nudge: Pixels| {
+            let row = rows[id as usize - 1];
+            gpui::point(row.left() + row.size.width / 2. + nudge, row.center().y)
+        };
+        // The fills on the rows' bounds, with the pointer over `hovered`.
+        let expected = |hovered: Option<u32>| {
+            [1, 2, 3]
+                .into_iter()
+                .filter_map(|id| {
+                    let color = match (id == 2, hovered == Some(id)) {
+                        (imported, true) => p.row_hover(imported),
+                        (true, false) => p.selected,
+                        (false, false) => return None,
+                    };
+                    Some((rows[id as usize - 1], Background::from(rgb(color))))
+                })
+                .collect::<Vec<_>>()
+        };
+        let fills = |cx: &mut VisualTestContext| {
+            painted_quads(cx)
+                .into_iter()
+                .filter(|quad| !quad.background.is_transparent() && rows.contains(&quad.bounds))
+                .map(|quad| (quad.bounds, quad.background))
+                .collect::<Vec<_>>()
+        };
+
+        for (touch, id) in [(1, 1), (2, 2)] {
+            cx.simulate_mouse_move(pointer(id, px(0.)), None, Modifiers::default());
+            settle(cx);
+            assert_eq!(
+                fills(cx),
+                expected(Some(id)),
+                "the mouse over theme {id}'s row"
+            );
+            // A touch lands over the row and is taken back by the system, so
+            // no tap or long press follows it; GPUI draws the window again
+            // for the change of modality.
+            let position = pointer(id, px(0.));
+            for phase in [TouchPhase::Started, TouchPhase::Cancelled] {
+                cx.simulate_event(gpui::TouchEvent {
+                    id: gpui::TouchId(touch),
+                    phase,
+                    position,
+                    ..Default::default()
+                });
+            }
+            cx.run_until_parked();
+            assert_eq!(
+                fills(cx),
+                expected(None),
+                "after a touch over theme {id}'s row, its resting fill"
+            );
+            cx.simulate_mouse_move(pointer(id, px(4.)), None, Modifiers::default());
+            cx.run_until_parked();
+            assert_eq!(
+                fills(cx),
+                expected(Some(id)),
+                "the next mouse move over theme {id}'s row brings its hover fill back"
+            );
+        }
+    }
+
     /// Revealing the row that holds focus brings the row, with the installed
     /// ring's footprint of room above and below it, into the Settings page's
     /// viewport as well as the list's, so the page does not cut the ring of
