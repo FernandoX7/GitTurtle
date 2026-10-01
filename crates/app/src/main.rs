@@ -2348,3 +2348,230 @@ mod shared_button_tests {
         }
     }
 }
+
+/// Every icon a source names literally must resolve through `Assets`: a name
+/// neither the embedded set nor the kit bundle carries draws an empty slot.
+#[cfg(test)]
+mod icon_symbol_tests {
+    use super::Assets;
+    use gpui_kit::AssetSource;
+    use std::path::{Path, PathBuf};
+
+    #[derive(Debug, PartialEq)]
+    enum Token {
+        Ident(String),
+        Str(String),
+        Punct(char),
+    }
+
+    /// Rust tokens enough to find calls: identifiers, string literal contents
+    /// and punctuation, with comments, char literals and lifetimes skipped.
+    fn tokens(source: &str) -> Vec<Token> {
+        let chars: Vec<char> = source.chars().collect();
+        let mut tokens = Vec::new();
+        let mut i = 0;
+        let quoted = |chars: &[char], mut i: usize| -> (String, usize) {
+            let mut text = String::new();
+            while i < chars.len() && chars[i] != '"' {
+                if chars[i] == '\\' {
+                    i += 1;
+                }
+                if let Some(&c) = chars.get(i) {
+                    text.push(c);
+                }
+                i += 1;
+            }
+            (text, i + 1)
+        };
+        while i < chars.len() {
+            let c = chars[i];
+            let next = chars.get(i + 1).copied();
+            if c == '/' && next == Some('/') {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+            } else if c == '/' && next == Some('*') {
+                let mut depth = 0;
+                while i < chars.len() {
+                    if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
+                        depth += 1;
+                        i += 2;
+                    } else if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
+                        depth -= 1;
+                        i += 2;
+                        if depth == 0 {
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+            } else if c == '"' {
+                let (text, end) = quoted(&chars, i + 1);
+                tokens.push(Token::Str(text));
+                i = end;
+            } else if c == '\'' {
+                // A char literal ('x', '\n', '\''); otherwise a lifetime.
+                if next == Some('\\') {
+                    i += 3;
+                    while i < chars.len() && chars[i] != '\'' {
+                        i += 1;
+                    }
+                    i += 1;
+                } else if chars.get(i + 2) == Some(&'\'') {
+                    i += 3;
+                } else {
+                    i += 1;
+                }
+            } else if c.is_alphabetic() || c == '_' {
+                let start = i;
+                while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                    i += 1;
+                }
+                let ident: String = chars[start..i].iter().collect();
+                let raw =
+                    matches!(ident.as_str(), "r" | "br") && matches!(chars.get(i), Some('"' | '#'));
+                if raw {
+                    let hashes = chars[i..].iter().take_while(|&&c| c == '#').count();
+                    let open = i + hashes;
+                    if chars.get(open) == Some(&'"') {
+                        let close: String = std::iter::once('"')
+                            .chain("#".repeat(hashes).chars())
+                            .collect();
+                        let rest: String = chars[open + 1..].iter().collect();
+                        let length = rest.find(&close).unwrap_or(rest.len());
+                        tokens.push(Token::Str(rest[..length].to_owned()));
+                        i = open + 1 + rest[..length].chars().count() + close.chars().count();
+                        continue;
+                    }
+                }
+                tokens.push(Token::Ident(ident));
+            } else if !c.is_whitespace() {
+                tokens.push(Token::Punct(c));
+                i += 1;
+            } else {
+                i += 1;
+            }
+        }
+        tokens
+    }
+
+    /// The literal icon names in `source`: the symbol argument of each
+    /// `button(id, label, symbol, active)` call and each `icons/<name>.svg`
+    /// path literal. Method calls (`.button(`) and definitions are not calls
+    /// of the helper; an empty symbol draws no icon.
+    fn literal_icon_symbols(source: &str) -> Vec<String> {
+        let tokens = tokens(source);
+        let mut symbols = Vec::new();
+        for (index, token) in tokens.iter().enumerate() {
+            if let Token::Str(text) = token
+                && let Some(name) = text
+                    .strip_prefix("icons/")
+                    .and_then(|path| path.strip_suffix(".svg"))
+                && !name.contains('{')
+            {
+                symbols.push(name.to_owned());
+            }
+            let call = matches!(token, Token::Ident(name) if name == "button")
+                && tokens.get(index + 1) == Some(&Token::Punct('('))
+                && !matches!(
+                    index.checked_sub(1).map(|i| &tokens[i]),
+                    Some(Token::Punct('.')) | Some(Token::Ident(_))
+                );
+            if !call {
+                continue;
+            }
+            let mut arguments: Vec<Vec<&Token>> = vec![Vec::new()];
+            let mut depth = 0usize;
+            for token in &tokens[index + 1..] {
+                match token {
+                    Token::Punct('(' | '[' | '{') => {
+                        depth += 1;
+                        if depth == 1 {
+                            continue;
+                        }
+                    }
+                    Token::Punct(')' | ']' | '}') => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    Token::Punct(',') if depth == 1 => {
+                        arguments.push(Vec::new());
+                        continue;
+                    }
+                    _ => {}
+                }
+                arguments.last_mut().unwrap().push(token);
+            }
+            if let Some([Token::Str(symbol)]) = arguments.get(2).map(Vec::as_slice)
+                && !symbol.is_empty()
+            {
+                symbols.push(symbol.clone());
+            }
+        }
+        symbols
+    }
+
+    fn sources(directory: &Path, files: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                sources(&path, files);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                files.push(path);
+            }
+        }
+    }
+
+    #[test]
+    fn scanner_reads_only_helper_calls_and_icon_paths() {
+        let source = r#"
+            fn button(id: &str, label: &str, symbol: &str, active: bool) {}
+            // button("commented", "", "commented-out", false)
+            let a = button("one", if x { "a, b" } else { "c" }, "first", false);
+            let b = crate::button(("pair", 1), format!("{}", 'x'), "second", true)
+                .on_click(|this: &'static str| this);
+            let c = toolbar.button("method", "", "method-call", false);
+            let d = button("empty", "Label", "", false);
+            let e = button("computed", "", symbol, false);
+            let f = Icon::default().path("icons/third.svg");
+            let g = svg().path(format!("icons/{name}.svg"));
+        "#;
+        assert_eq!(literal_icon_symbols(source), ["first", "second", "third"]);
+    }
+
+    #[test]
+    fn every_literal_icon_symbol_resolves_through_the_app_assets() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        sources(&root, &mut files);
+        files.sort();
+        let mut checked = 0;
+        let mut missing = Vec::new();
+        for file in &files {
+            let source = std::fs::read_to_string(file).unwrap();
+            for symbol in literal_icon_symbols(&source) {
+                checked += 1;
+                let path = format!("icons/{symbol}.svg");
+                if !matches!(Assets.load(&path), Ok(Some(_))) {
+                    let file = file.strip_prefix(&root).unwrap_or(file).display();
+                    missing.push(format!("{file}: {path}"));
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "icons that draw an empty slot: {missing:#?}"
+        );
+        let reflog = std::fs::read_to_string(root.join("reflog.rs")).unwrap();
+        assert!(
+            literal_icon_symbols(&reflog)
+                .iter()
+                .any(|symbol| symbol == "refresh"),
+            "the scanner must see Read log's helper call"
+        );
+        assert!(checked > 50, "only {checked} literal icon names were found");
+    }
+}

@@ -480,7 +480,7 @@ impl Panel {
             .child(div().flex().flex_wrap().items_center().gap_2()
                 .child(label("github-conversations-heading",format!("Conversations · {} unresolved on this page",unresolved)).font_weight(FontWeight::SEMIBOLD))
                 .child(div().flex_1())
-                .child(button("github-threads-refresh","Refresh conversations","refresh-cw",false).disabled(self.pending).on_click(cx.listener(|this,_,window,cx|this.thread_page(None,window,cx)))))
+                .child(button("github-threads-refresh","Refresh conversations","refresh",false).disabled(self.pending).on_click(cx.listener(|this,_,window,cx|this.thread_page(None,window,cx)))))
             .child(div().id("github-threads").debug_selector(||"github-threads".into()).flex_shrink_0().min_w_0().max_h(appearance::ui_size(360.)).overflow_y_scroll().flex().flex_col().gap_3()
                 .when(visible.is_empty(),|element|element.child(label("github-no-threads",if self.conversations.loaded{"No conversations for this file on the loaded page."}else{"Conversations are unavailable. Refresh conversations to load their current status."}).text_color(rgb(p.muted))))
                 .children(visible.into_iter().enumerate().map(|(index,thread)|{
@@ -509,7 +509,7 @@ impl Panel {
                         .child(div().flex().flex_wrap().items_center().gap_2().pt_1()
                             .child(button(("github-thread-reply",index),"Reply","",false).disabled(self.pending||!can_reply).on_click(cx.listener(move|this,_,window,cx|this.begin_reply(reply.clone(),window,cx))))
                             .child(button(("github-thread-resolution",index),if resolved{"Reopen"}else{"Resolve"},"",false).disabled(self.pending||!can_resolve).on_click(cx.listener(move|this,_,window,cx|this.review_resolution(resolve.clone(),!resolved,window,cx))))
-                            .child(button(("github-thread-reload",index),if opening_missing{"Opening comments"}else{"Refresh thread"},"refresh-cw",false).disabled(self.pending).on_click(cx.listener(move|this,_,window,cx|this.thread_comments(refresh.clone(),None,window,cx))))
+                            .child(button(("github-thread-reload",index),if opening_missing{"Opening comments"}else{"Refresh thread"},"refresh",false).disabled(self.pending).on_click(cx.listener(move|this,_,window,cx|this.thread_comments(refresh.clone(),None,window,cx))))
                             .when(cursor.is_some(),|element|element.child(button(("github-thread-more",index),"Next comment page","",false).disabled(self.pending).on_click(cx.listener(move|this,_,window,cx|this.thread_comments(more.clone(),cursor.clone(),window,cx)))))
                             .child(label(("github-thread-count",index),format!("{} of {} comments",thread.comments.len(),thread.comments_total)).text_color(rgb(p.muted))))
                         .when(!stale && (!can_reply || !can_resolve),|element|element.child(label(("github-thread-permissions",index),"Unavailable actions need complete context and GitHub permission; refresh to check again.").text_color(rgb(p.muted))))
@@ -567,6 +567,15 @@ mod tests {
 
     #[gpui::test]
     async fn reply_focus_navigation_recovery_and_exact_completion(cx: &mut TestAppContext) {
+        // ITERATIONS reruns every seed on this thread, which keeps one test
+        // settings directory: without a fresh one, the reply draft an earlier
+        // seed saved is restored into this seed's composer.
+        crate::preferences::inherit_test_settings_directory(std::sync::Arc::new(
+            tempfile::Builder::new()
+                .prefix("gitturtle-app-tests-")
+                .tempdir()
+                .unwrap(),
+        ));
         cx.executor().allow_parking();
         let fixture = tempfile::tempdir().unwrap();
         assert!(

@@ -516,7 +516,7 @@ impl Render for WorktreeManager {
             .child(div().flex().gap_2()
                 .child(button("worktree-browse-tab", "Manage", "", !self.creating).debug_selector(|| "worktree-browse-tab".to_string()).toggled(!self.creating).on_click(cx.listener(|this, _, _, cx| this.set_creating(false, cx))))
                 .child(button("worktree-create-tab", "Create worktree…", "plus", self.creating).debug_selector(|| "worktree-create-tab".to_string()).toggled(self.creating).on_click(cx.listener(|this, _, _, cx| this.set_creating(true, cx))))
-                .child(button("refresh-worktrees", "Refresh", "refresh-cw", false).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx)))))
+                .child(button("refresh-worktrees", "Refresh", "refresh", false).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx)))))
             .when(self.pending, |element| element.child(div().flex().gap_2().child(label("worktree-loading", "Reading worktree identities and content…").text_size(crate::appearance::ui_text(12.))).child(button("cancel-worktree-read", "Cancel", "", false).debug_selector(|| "cancel-worktree-read".to_string()).on_click(cx.listener(|this, _, _, cx| { this.cancel(); cx.notify(); })))))
             .children(self.error.as_ref().map(|error| label("worktree-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
             .when(!self.creating, |element| element
