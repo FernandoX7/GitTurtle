@@ -65,6 +65,42 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## October 1 worktree rows keep the ring clear and selection off the accent
+
+Task `worktree-rows-ring-and-selection`. Rows in the worktree manager's list of worktrees now stand apart by the ring room plus 2 px (5 px at the default ring), so a focused row's ring keeps 2 px of the list's surface before its neighbours' borders. A selected row keeps the neutral border with its selected fill and selected and toggled state, so an accent outline at rest no longer means selection.
+
+Native evidence, full tier:
+- **Builds:** base `f84b2ab` (the run's `accepted_head`, the attested release of `worktree-branch-choices-ring`; sha256 `3cf85eb9…`) and candidate `b8f4030` (sha256 `b851901c…`), release builds from clean trees, each in its own target directory. `qa.py identity` reported no problem.
+- **Host:** Ubuntu 26.04, GNOME 50, XWayland `:0` at scale factor 1, window 1000 × 680, default text size, one session on 2026-10-01 from 21:06 to 21:09 UTC.
+- **Input:** a local driver on the `qa.py` library (sha256 `845f79da…`), through Mutter RemoteDesktop with X focus verified, never XTest.
+- **Fixture:** a disposable repository on `main` with three linked worktrees, `alpha`, `beta` and `gamma`, and a local bare `origin`, so the manager lists four rows without scrolling and opens with `main` selected. Its state was byte-identical before and after the session, and no write control was activated.
+- **Steps:** the command palette's "manage worktrees", then Tab 5 to the selected row, `main`, and Tab 1 more to the unselected row `alpha`.
+
+Measured on the focused frames, the same in both palettes:
+
+| | Base | Candidate |
+| --- | --- | --- |
+| Gap between rows | 3 px | 5 px |
+| Surface between a focused row's ring and the next row's border | 0 px (above and below) | 2 px (above and below) |
+| Accent outlines on each edge of the focused selected row | 2 (accent border and ring) | 1 (the ring; the neutral border sits inside the 1 px gap) |
+| Accent outlines on each edge of a focused unselected row | 2 | 2 |
+
+The ring is present on all four sides of every focused row, its strongest pixel 11.43:1 (Midnight) and 6.55:1 (Porcelain) against the same pixel unfocused. A focused unselected row still shows the ring plus an accent border in both builds: the kit's `apply_focus_ring` turns a focused Button's border to the ring colour, and only the selected state's styling puts the row's own border back. Coordinator decision, with the design review: accept this candidate on its contract, since an accent outline now always means focus, and queue the kit change (a focused Button keeps its own border, so the ring alone shows focus, as DESIGN.md:23 asks) as a follow-up that reaches every bordered Button.
+
+Unfocused, `qa.py compare --mask status-timing` finds the expected differences: `main`'s border changes from accent to neutral, rows 1 to 3 move down 2, 4 and 6 px and are otherwise identical, and the details below and the dialog's bottom move down 6 px. The design review accepted the 6 px: the list's height cap is unchanged, and 5 px between rows still reads well below the gap between sections.
+
+Frames in [`evidence/worktree-rows-ring-and-selection/`](evidence/worktree-rows-ring-and-selection/), 12 crops of the list, 688 × 172 at (156, 170):
+- `base-{midnight,porcelain}-1000x680-worktree-rows-rest.png`: on the base, `main` selected with an accent border and 3 px between rows;
+- `base-{midnight,porcelain}-1000x680-worktree-selected-focus.png`: on the base, the focused selected row with two accent outlines, its ring touching `alpha`'s border;
+- `base-{midnight,porcelain}-1000x680-worktree-row-focus.png`: on the base, the focused `alpha` row, its ring touching `main`'s and `beta`'s borders;
+- `candidate-{midnight,porcelain}-1000x680-worktree-rows-rest.png`: on the candidate, `main` selected with the neutral border and 5 px between rows;
+- `candidate-{midnight,porcelain}-1000x680-worktree-selected-focus.png`: on the candidate, the focused selected row with one ring, 2 px clear of `alpha`;
+- `candidate-{midnight,porcelain}-1000x680-worktree-row-focus.png`: on the candidate, the focused `alpha` row, 2 px clear of both neighbours, still with the kit's accent border inside its ring.
+
+`qa.py privacy scan --redacted` with the local template set found all 12 clean on their committed bytes. A `design-reviewer` pass approved the frames on the contract and raised one more follow-up, already present on the base: the unselected rows hover with the kit's ghost fill rather than the palette's hover surface, which in Porcelain (1.30:1 against the dialog) outweighs the selected fill (1.18:1).
+
+Not covered: other text and window sizes, hover frames, macOS, native Wayland and fractional scale factors.
+
 ## October 1 whole focus rings in the worktree branch choices
 
 Task `worktree-branch-choices-ring`. The worktree manager's list of branch choices, shown while creating a worktree from an existing branch, now keeps the installed ring room inside its scrolling clip and gives it back through its margins, as #122 did for the other lists, so a focused first or last choice keeps its ring whole and no control moves.
