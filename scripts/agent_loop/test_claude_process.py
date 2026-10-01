@@ -6,13 +6,16 @@ import fnmatch
 import json
 import os
 from pathlib import Path
+import platform
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
 from agent_loop.claude import (
-    CHILD_ENVIRONMENT, REVIEW_ALLOWED, SELECTION_OVERRIDES, SETTINGS_TEMPLATE, Claude, UsageLimited, effort_above,
+    CHILD_ENVIRONMENT, NESTED_NAMESPACE_PROBE, REVIEW_ALLOWED, SELECTION_OVERRIDES, SETTINGS_TEMPLATE, Claude, UsageLimited, effort_above,
     parse_version, resolve_selection, snapshot_files,
 )
 from agent_loop.codex import validate_review
@@ -515,6 +518,46 @@ class ClaudeProcessTests(unittest.TestCase):
             ".claude/agents/implementer.md", ".claude/settings.json", ".claude/hooks/stop_gate.py",
             ".claude/skills/research/SKILL.md",
         })
+
+
+class SandboxProbeTests(unittest.TestCase):
+    """The Bash sandbox is enabled only where its nested user namespace works."""
+
+    def test_probe_maps_a_namespace_nested_inside_bubblewrap(self):
+        adapter = Claude.__new__(Claude)
+        calls = []
+
+        def run(command, **_):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, returncode)
+
+        with patch("agent_loop.claude.platform.system", return_value="Linux"), \
+                patch("agent_loop.claude.shutil.which", return_value="/usr/bin/tool"), \
+                patch("agent_loop.claude.subprocess.run", side_effect=run):
+            for returncode, expected in ((0, True), (1, False)):
+                self.assertIs(adapter.sandbox_available(), expected)
+        command = calls[0]
+        self.assertEqual(command[0], "bwrap")
+        self.assertIn("--unshare-all", command)
+        # The probe runs inside bwrap, after its own namespace exists.
+        self.assertEqual(command[command.index("--") + 1:], [sys.executable, "-I", "-c", NESTED_NAMESPACE_PROBE])
+        for step in ("unshare(0x10000000)", "setgroups", "uid_map", "gid_map"):
+            self.assertIn(step, NESTED_NAMESPACE_PROBE)
+
+    @unittest.skipUnless(
+        platform.system() == "Linux" and all(shutil.which(tool) for tool in ("bwrap", "socat", "unshare")),
+        "needs bubblewrap, socat and util-linux unshare on Linux",
+    )
+    def test_probe_agrees_with_a_nested_unshare_on_this_host(self):
+        # util-linux's `unshare -Ur` inside bwrap is an independent oracle: a host
+        # that refuses it (AppArmor's unprivileged userns restriction) must not
+        # get the sandbox, and a host that allows it must.
+        nested = subprocess.run(
+            ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--unshare-all", "--",
+             "unshare", "-Ur", "/bin/true"],
+            capture_output=True, timeout=10, check=False,
+        )
+        self.assertEqual(Claude.__new__(Claude).sandbox_available(), nested.returncode == 0)
 
 
 if __name__ == "__main__":
