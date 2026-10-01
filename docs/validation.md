@@ -65,6 +65,65 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## October 1 refresh icon on the refresh buttons
+
+Task `refresh-cw-icon` was found on the way in [the whole focus ring in Tags and Reflog](#september-29-whole-focus-ring-in-tags-and-reflog). Six buttons named the icon `refresh-cw`, which neither the app's `assets/icons/` nor gpui-kit-assets 0.6.0 carries, so each drew an empty icon slot. They are Read log (Reflog), the worktree manager's Refresh, Refresh PRs, Read configured source (LFS download), Refresh conversations and Refresh thread. They now draw the app's `refresh.svg`, as the other refresh and retry buttons do. The Download Before, After and Source LFS… buttons named `download`, which neither set carries either, and now draw `pull.svg`. Labels, accessible names, tooltips, disabled states and actions are unchanged.
+
+Native evidence, full tier, since the change reaches seven controls in five views:
+
+- **Builds:** base `d339883` (sha256 `cbf3b55f…`) and candidate `84c9e97` (sha256 `58144aa0…`). The base is the candidate's parent, and its app code is main's `ec1d7d8`. Both are release builds from clean trees, each in its own `CARGO_TARGET_DIR`, and `qa.py identity` reported no problem. The controller rebuilds the candidate on the commit that adds this entry. Its native attestation re-checks the rebuilt executable against these frames.
+- **Host:** Ubuntu 26.04, GNOME 50 on Wayland, XWayland `:0` at scale factor 1, window 1000x680, Midnight and Porcelain. One session on 2026-10-01 from 01:32 to 01:46 UTC ran base then candidate for each scenario and palette.
+- **Input:** `qa.py launch --input mutter` sent every input through Mutter RemoteDesktop with X focus verified, never through XTest.
+- **Launches:** each had its own empty run directory under `$RUN` (`/tmp/gitturtle-evidence/runs/refresh-cw-icon`), a generated store with Follow system off, and the QA identity.
+- **Fixtures:** three `scripts/create-demo-repo.py` repositories at HEAD `52f471a`, none changed by any launch:
+  - `tags-reflog`, with the 15 tags of the Tags and Reflog entry;
+  - `theme-fixture`;
+  - `lfs-source`, whose `origin` is a local bare repository.
+
+  The GitHub views ran with `GITTURTLE_GITHUB_FIXTURE=review` on `theme-fixture`.
+- **Routes:**
+  - **Reflog:** Ctrl+Shift+P "browse reflog".
+  - **Worktree manager:** "manage worktrees".
+  - **GitHub:** "github pull requests". With the fixture: Refresh fixture PRs, then #42, whose Overview holds Refresh conversations; a four-step wheel brings two Refresh thread buttons into view. Without it: the panel at rest with Refresh PRs and no account.
+  - **LFS:** in History, commit `aac36de`, then `public/lfs/canvas-photo.png`, whose Compare shows Download After LFS…. That button opens the download dialog. Git LFS is not installed on this host, so the dialog shows "Git LFS tooling is unavailable…" beside Read configured source, at rest.
+
+Each of the 28 frame pairs was compared with `qa.py compare $RUN/base/<scenario>/captures/<frame> $RUN/cand/<scenario>/captures/<frame> --mask status-timing --mask <button box>`. The button boxes were written down from candidate frames before the first compare. The two boxes for the panel without the fixture were added after it. Each button differs only inside its icon slot, the same in both palettes. No label, button box or neighbour moves:
+
+| Button | Icon slot | Pixels |
+| --- | --- | --- |
+| Read log | (774,160)-(788,172) | 90 |
+| Worktree manager Refresh | (397,112)-(411,124) | 90 |
+| Refresh fixture PRs / Refresh PRs | (338,158)-(352,170) / (338,112)-(352,124) | 90 |
+| Refresh conversations | (797,540)-(811,552), scrolled (797,288)-(811,300) | 90 |
+| Refresh thread, two threads | (199,347)-(213,359), (199,519)-(213,531) | 90 each |
+| Download After LFS… | (337,192)-(349,206) | 70 |
+| Read configured source | (426,294)-(440,306) | 90 |
+
+- **Outside the masks:** 22 pairs are identical. Six differ by 1 to 3 px, by one level in 255, on glyph edges far from any button, at (942,591), (942,340), (158,212), (730,436) and (865,669). A second run of each build shows the same spots between two runs of one build, so they are per-launch text rendering.
+- **Caret:** the panel without the fixture also masks its focused destination field's caret, (50,109)-(56,127), which blinks per launch.
+
+Frames: [`evidence/refresh-cw-icon/`](evidence/refresh-cw-icon/) holds base and candidate of each view in each palette (28 files): `{base,candidate}-{midnight,porcelain}-1000x680-{reflog-rest,worktrees-rest,github-panel-rest,github-pr42-overview,github-pr42-conversations,lfs-compare-download-after,lfs-download-dialog}`. `qa.py privacy scan --redacted` with the local template set found all 42 staged files clean. A full-resolution view shows only:
+- product UI;
+- the fixtures' names and `/tmp/gitturtle-evidence/` paths;
+- the QA identity;
+- fictional authors and reviewers.
+
+Committed frames:
+- **Recaptured and replaced:** the 12 Reflog frames in [`evidence/tags-focus-ring/`](evidence/tags-focus-ring/) and `evidence/themes/button-focus-ring/{midnight,porcelain}-1000x680-reflog-open.png`. Each was recaptured on both builds with its fixture and route, and is identical outside the Read log box. The candidate's recaptures replace them, so they now draw the icon. They differ from the September 29 captures by this host's renderer and by the fixture's reflog timestamps.
+- **Kept as their builds' record:** `evidence/themes/button-focus-ring/{midnight,porcelain}-1000x680-reflog-row-focus.png` (`650a76e`) and the macOS `evidence/review-milestone/worktree-management.jpg`. Both still show the empty slot.
+
+Design review: pass, with no blocking finding.
+- **Glyph:** each refresh glyph draws 14x12 px of ink, as the existing Working Changes refresh does. It sits within 0.5 px of the label's cap-height centre, in the label's colour (12.6:1 to 15.7:1 on its surface).
+- **Rows:** none changes, since the base already reserved the empty slot.
+- **`pull`:** acceptable for the LFS download. It is a generic arrow-into-tray glyph, the button is labelled, and the Pull action sits in another region. A dedicated download glyph would be a separate assets task with a package attestation.
+
+Not covered:
+- macOS, native Wayland and fractional scale factors;
+- the accessibility tree (AT-SPI is off on this desktop; the change passes only an icon name);
+- hover, pressed and disabled states, and focus other than the recaptured Read log focus;
+- a resolved LFS source (Git LFS is absent), and the Download Before and Source LFS… variants;
+- live GitHub, and palettes other than Midnight and Porcelain.
+
 ## September 30 Git writes and network actions on Omarchy
 
 Task `omarchy-git-writes-evidence` checks Git writes and network actions in the release build on Omarchy, on native Wayland. It is evidence only; no product code changed. The run took place on 2026-09-30 between 19:22 and 19:29 UTC.
