@@ -65,6 +65,65 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## October 1 unselected segments like the shared helper
+
+Task `segments-unselected-like-history`, the owner's request and decision of 2026-09-30, which partly reverses "unselected segments keep the ghost" in [the selected segments entry](#september-30-selected-segments-like-the-shared-helper). That entry's design review left the pressed fill as a follow-up. Settings' density segments and the project hub's mode segments now give an unselected segment `appearance::control_button_variant(false)`, the shared `button()` helper's unselected look that History's segments use, instead of the kit's ghost (`settings.rs`, `projects.rs`). A selected segment keeps #100's look, and while the hub is busy every mode keeps the ghost's disabled look. `appearance::assert_ghost_button` became `assert_unselected_button`, which checks the helper's unselected look at rest, hovered and pressed.
+
+Tests: `settings::segment_tests::every_density_rests_hovers_and_presses_like_the_shared_helper` and `projects::tests::every_mode_rests_hovers_and_presses_like_the_shared_helper_unless_busy`, in Midnight, Porcelain, Kanagawa Lotus and One Dark. An unselected segment must rest, hover and, under a held simulated press, press with the fills of `control_button_variant(false)`; a selected one keeps #100's fills, and a busy hub's modes keep the ghost's disabled look.
+
+Native evidence, full tier:
+- **Builds:** base `bc27842` (sha256 `4e4c26c2…`), the candidate's parent, and candidate `7d5f6d5` (sha256 `fff27099…`). Both are release builds from clean trees, each in its own `CARGO_TARGET_DIR`, and `qa.py identity` reported no problem. The controller rebuilds the candidate on the commit that adds these frames. Its native attestation re-checks the rebuilt executable against them.
+- **Host:** Ubuntu 26.04, GNOME 50 on Wayland, XWayland `:0` at scale factor 1, window 1000x680. One session on 2026-10-01 from 13:04 to 13:11 UTC ran base then candidate for each palette and control, 16 launches.
+- **Input:** a local driver on the `qa.py` library (`session.Session` and `mutter.MutterDriver`, `drive_segunsel.py`, sha256 `b732820b…`) sent every input through Mutter RemoteDesktop with X focus verified, never through XTest. Each launch had its own empty run directory under `$RUN` (`/tmp/gitturtle-evidence/runs/segments-unselected`), a generated store with Follow system off, and the QA identity.
+- **Fixture and routes:** the density control in Settings on the `theme-fixture` repository (HEAD `52f471a`; its HEAD, status and index were the same before and after the session), reached with Ctrl+comma and a 24-step wheel scroll. The library's `wheel N` gives N effective steps; #100 sent 25 clicks, of which Mutter dropped one, and the base's Midnight density rest frame is byte-identical to #100's. The mode control on the hub, opened with no repository. Hover moves the pointer onto Compact or Clone. Press holds button 1 there for the capture, then moves the pointer, still held, to blank space and releases it, so no click fires: a frame taken afterwards equals the rest frame in all 16 launches.
+
+Compares, each `qa.py compare <base> <candidate>`, with `--mask status-timing` on the full-window density frames. Every difference lies inside the unselected segments' boxes, Compact (903,179)-(961,198) and, in the panel crops, Clone (142,23)-(260,55) and Create (263,23)-(381,55); none is in the selected segment's box or outside the unselected boxes:
+
+| Pair | Midnight | Porcelain | Kanagawa Lotus | One Dark |
+| --- | --- | --- | --- | --- |
+| density rest | identical | identical | 189 px, Compact's label | 185 px, Compact's label |
+| density hovered | 1,078 px, Compact | 1,078 | 1,078 | 1,078 |
+| density pressed | 1,078 px, Compact | 1,078 | 1,078 | 1,078 |
+| mode rest | identical | identical | 482 px, the Clone and Create labels | 465 px, the same labels |
+| mode hovered | 3,746 px, Clone | 3,751 | 4,005, Clone and Create's label | 3,997, the same |
+| mode pressed | 3,748 px, Clone | 3,751 | 4,005, Clone and Create's label | 3,997, the same |
+
+At rest the helper's unselected look paints no fill, as the ghost did, so Midnight and Porcelain rest frames are identical. In Kanagawa Lotus and One Dark the unselected labels change, because the helper's look takes `control_label` there.
+
+The pressed-to-selected step: the held unselected segment's most common color against the selected segment's resting fill in the same frame, the same for both controls. The contract's computed base figures (1.65, 1.26 and 1.03:1) measure the pressed fill against `selected_hover` instead; the frames reproduce them, 1.645, 1.258 and 1.028:1. History's Changes segment, measured the same way in extra candidate launches (not committed), presses at 1.047, 1.120, 1.163 and 1.203:1.
+
+| Palette | Selected | Base pressed | Base step | Candidate pressed | Candidate step |
+| --- | --- | --- | --- | --- | --- |
+| Midnight | `#223b3b` | `#161d29` | 1.415:1, hue 218° to 180° | `#1c3331` | 1.121:1, hue 175° to 180° |
+| Porcelain | `#dce6f6` | `#bac3e1` | 1.393:1 | `#d4dff3` | 1.067:1 |
+| Kanagawa Lotus | `#c7d7e0` | `#d8cb82` | 1.113:1, hue 51° to 202° | `#c4d2d2` | 1.054:1, hue 180° to 202° |
+| One Dark | `#323d52` | `#282c34`, the track itself | 1.283:1 | `#2d374a` | 1.096:1 |
+
+On the base, One Dark's ghost pressed fill equals the segment track, so a pressed frame is identical to rest and the press shows nothing. The candidate's pressed fill is close to History's but not equal (`#1c3331` against `#1f3836` in Midnight), since `control_fill` is translucent and History's track is a different color.
+
+Labels, the darkest (light palettes) or lightest (dark palettes) glyph pixel in each box. Density labels reach that value in only one or two pixels at this text size, so they are approximate:
+
+| Palette | Selected label, density / mode | Base unselected label | Candidate unselected label |
+| --- | --- | --- | --- |
+| Midnight | `#dfe6ee` / `#e8eef7` | `#dde3ec` / `#e7edf6` | unchanged |
+| Porcelain | `#303a55` / `#242e49` | `#333c56` / `#252f4a` | unchanged |
+| Kanagawa Lotus | `#494a57` / `#41414e` | `#5e5e6a` / `#555564`, 1.37:1 from the selected label | `#4d4c55` / `#42424e`, 1.03 and 1.01:1 |
+| One Dark | `#b4b9c5` / `#bdc2cd` | `#a5acb9` / `#adb4c1`, 1.16 and 1.17:1 | `#b2b7c2` / `#bcc1cc`, 1.01 and 1.02:1 |
+
+Frames: [`evidence/segments-unselected/`](evidence/segments-unselected/) holds base and candidate in each palette (48 files): `{base,candidate}-<palette>-1000x680-density-{rest,unselected-hover,unselected-pressed}.png` and `{base,candidate}-<palette>-1000x680-mode-{rest,unselected-hover,unselected-pressed}-panel.png`. Every frame shows the affected controls. The mode files are crops of the hub's action panel, window (580,215)-(985,480), as in #100, since full hub frames do not pass the local privacy scan. `qa.py privacy scan --redacted --jobs 10` with the local template set found all 48 clean, and the frames viewed show only product UI and the `theme-fixture` tab.
+
+Design review: pass, with no blocking finding, and no `DESIGN.md` line needed, since its button rule ("hover uses the palette hover surface, pressed uses selected") already describes the new look.
+- **Press:** the ghost broke that rule twice. Its pressed fill was off the selected hue (38° in Midnight, yellow against blue in Kanagawa Lotus), and in One Dark it did not show. The candidate's pressed fill stays near the selected hue and steps to it by 1.05 to 1.12:1, inside History's 1.05 to 1.20:1. The hovered-to-pressed step is at least 9 in one channel in every palette.
+- **Selection:** a resting selected segment still leads the track by 1.18 to 1.53:1, unchanged. A hovered unselected segment stands 1.32, 1.03, 1.07 (with a change of hue) and 1.18:1 from the selected one in Midnight, Porcelain, Kanagawa Lotus and One Dark, where History's stands 1.24, 1.09, 1.20 and 1.29:1. The reviewer accepted this as History's pattern.
+- **Labels:** unselected labels reach 5.5 to 15.5:1 on their fills at rest, hovered and pressed. The lowest, about 5.5:1, is Kanagawa Lotus density hovered and pressed, from a one- or two-pixel sample. The mixed labels #100 accepted are gone.
+- **Non-blocking, pre-existing:** in Porcelain a hovered unselected segment is only 1.03:1 from the selected one (1.09 in History), and Kanagawa Lotus is close in luminance. A rule for that separation, or a Porcelain `hover` adjustment, is left to a separate task. Settings' density track is `canvas`, while `control_fill` is tuned for panels, which is why its fills are not pixel-identical to History's.
+
+Not covered:
+- macOS, native Wayland, fractional scale factors, and text and window sizes other than the default and 1000x680;
+- a busy hub natively (the project test covers it), keyboard focus on an unselected segment, and a segment becoming selected by a click or Space;
+- the accessibility tree;
+- the other built-in palettes and custom or imported themes.
+
 ## October 1 whole lists and message for a selected Reflog entry
 
 Task `reflog-selected-entry-collapse` fixes a defect found during [the whole focus ring in Tags and Reflog](#september-29-whole-focus-ring-in-tags-and-reflog). At 1000x680, selecting a Reflog entry collapsed three children: the entry list, the changed-file list and the message editor. The frames `evidence/tags-focus-ring/{midnight,porcelain}-1000x680-reflog-selected-rest.png` stay as the record of the defect.
