@@ -58,6 +58,12 @@ impl RepositoryIdentity {
         Ok(Self { directories, links })
     }
 
+    /// The private and common Git directories, in the order `capture`
+    /// records them after the worktree root.
+    pub(super) fn git_directories(&self) -> (&Path, &Path) {
+        (&self.directories[1].0, &self.directories[2].0)
+    }
+
     pub(super) fn is_current(&self) -> bool {
         self.directories.iter().all(|(path, identity)| {
             DirectoryIdentity::read(path).is_ok_and(|current| current == *identity)

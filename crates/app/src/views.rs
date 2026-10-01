@@ -979,7 +979,7 @@ impl GitTurtle {
         let history = if self.commits.is_empty()
             && let Some(error) = self.error.as_deref()
         {
-            empty(open_failure_title(error), error)
+            empty(self.open_failure_title(error), error)
         } else if self.visible.is_empty()
             && let Some((title, description)) = self.history_search_empty()
         {
@@ -2184,33 +2184,25 @@ thread_local! {
         const { RefCell::new(std::collections::BTreeMap::new()) };
 }
 
-/// The repository page's heading for a failed open: a removed worktree's tab
-/// says so plainly rather than as a generic failure.
-pub(crate) fn open_failure_title(error: &str) -> &'static str {
-    if crate::worker::RemovedWorktree::describes(error) {
-        "Worktree removed"
-    } else {
-        "Could not open repository"
+impl GitTurtle {
+    /// The repository page's heading for a failed open: a removed worktree's
+    /// tab says so plainly rather than as a generic failure.
+    pub(crate) fn open_failure_title(&self, error: &str) -> &'static str {
+        if self.removed_worktree_error.as_deref() == Some(error) {
+            "Worktree removed"
+        } else {
+            "Could not open repository"
+        }
     }
 }
 
-/// The operation banner's summary of `error`, its first line. A History scope
-/// change is information rather than a failure, so it is a polite status
-/// carrying its text as label and value (the macOS adapter announces a live
-/// node from its value); every other error stays an assertive alert.
+/// The operation banner's summary of `error`, its first line: an assertive
+/// alert carrying the whole text as its label.
 pub(crate) fn operation_error_summary(error: &str) -> Stateful<Div> {
-    let summary = div().id("operation-error-summary");
-    let summary = if crate::history_updates::is_scope_report(error) {
-        summary
-            .role(Role::Status)
-            .a11y_synthetic_children(native_accessibility::polite)
-            .aria_value(error.to_owned())
-    } else {
-        summary
-            .role(Role::Alert)
-            .a11y_synthetic_children(native_accessibility::assertive)
-    };
-    summary
+    div()
+        .id("operation-error-summary")
+        .role(Role::Alert)
+        .a11y_synthetic_children(native_accessibility::assertive)
         .aria_label(error.to_owned())
         .flex_1()
         .min_w_0()
@@ -2227,19 +2219,27 @@ pub(crate) fn operation_error_summary(error: &str) -> Stateful<Div> {
         )
 }
 
-/// A History scope change announced beside a banner that another failure
-/// holds: a polite status, drawn as nothing, like the rail's announcement.
-pub(crate) fn scope_announcement(message: &str) -> Stateful<Div> {
-    div()
-        .id("history-scope-announcement")
-        .debug_selector(|| "history-scope-announcement".into())
+/// The notice banner's summary: a status whose label and value are its text.
+/// It is a polite live region only when `announce`, the first time the
+/// banner draws this message (AT-SPI announces a live node's name and the
+/// macOS adapter its value when the node appears), so drawing it again after
+/// a re-render, a page return or a warm tab switch announces nothing.
+pub(crate) fn operation_notice_summary(notice: &str, announce: bool) -> Stateful<Div> {
+    let summary = div()
+        .id("operation-notice-summary")
+        .debug_selector(|| "operation-notice-summary".into())
         .role(Role::Status)
-        .a11y_synthetic_children(native_accessibility::polite)
-        .aria_label(message.to_owned())
-        .aria_value(message.to_owned())
-        .absolute()
-        .size(px(1.))
-        .overflow_hidden()
+        .aria_label(notice.to_owned())
+        .aria_value(notice.to_owned());
+    if announce {
+        summary.a11y_synthetic_children(native_accessibility::polite)
+    } else {
+        summary
+    }
+    .flex_1()
+    .truncate()
+    .text_size(crate::appearance::ui_text(11.))
+    .child(notice.to_owned())
 }
 
 /// `control` named `name` for assistive technology: a control that a compact
@@ -2575,6 +2575,22 @@ impl Render for GitTurtle {
         }
         let compact_header =
             window.viewport_size().width < appearance::ui_size(COMPACT_HEADER_WIDTH);
+        // The notice banner announces each message the first time it draws
+        // it; the record travels with a warm tab and forgets a cleared notice,
+        // so the same text set again later is announced again.
+        if self.operation_notice.is_none() {
+            self.announced_notice = None;
+        }
+        let announce_notice = self.page == AppPage::Repository
+            && self.operation_error.is_none()
+            && self.operation_notice.is_some()
+            && self.announced_notice != self.operation_notice;
+        if announce_notice {
+            self.announced_notice = self.operation_notice.clone();
+            #[cfg(test)]
+            self.notice_announcements
+                .extend(self.operation_notice.clone());
+        }
         let page = match self.page {
             AppPage::Repository => self.render_repository(window, cx),
             AppPage::Projects => self.hub.clone().into_any_element(),
@@ -2917,19 +2933,14 @@ impl Render for GitTurtle {
                             ),
                         )
                         .child(
-                            button("dismiss-operation-error", "Dismiss", "", false).on_click(
-                                cx.listener(|this, _, _, cx| {
+                            button("dismiss-operation-error", "Dismiss", "", false)
+                                .debug_selector(|| "dismiss-operation-error".into())
+                                .on_click(cx.listener(|this, _, _, cx| {
                                     this.operation_error = None;
                                     cx.notify();
-                                }),
-                            ),
+                                })),
                         )
                 }))
-                .children(
-                    self.history_updates
-                        .fallback_aside()
-                        .map(scope_announcement),
-                )
             })
             .when(
                 self.page == AppPage::Repository && self.operation_error.is_none(),
@@ -2943,17 +2954,7 @@ impl Render for GitTurtle {
                             .gap_3()
                             .bg(rgb(colors.selected))
                             .text_color(rgb(colors.accent))
-                            .child(
-                                div()
-                                    .id("operation-notice-summary")
-                                    .role(Role::Status)
-                                    .a11y_synthetic_children(native_accessibility::polite)
-                                    .aria_label(notice.clone())
-                                    .flex_1()
-                                    .truncate()
-                                    .text_size(crate::appearance::ui_text(11.))
-                                    .child(notice.clone()),
-                            )
+                            .child(operation_notice_summary(notice, announce_notice))
                             .when(self.history_updates.committed.as_ref().is_some_and(|oid| notice.starts_with(&format!("Committed {}", short_oid(oid)))), |row| row.child(
                                 button("view-created-commit", "View commit", "", false)
                                     .disabled(self.loading.is_some() || self.operation_busy.is_some())
@@ -2961,12 +2962,12 @@ impl Render for GitTurtle {
                                     .on_click(cx.listener(|this, _, window, cx| this.view_created_commit(window, cx)))
                             ))
                             .child(
-                                button("dismiss-operation-notice", "Dismiss", "", false).on_click(
-                                    cx.listener(|this, _, _, cx| {
+                                button("dismiss-operation-notice", "Dismiss", "", false)
+                                    .debug_selector(|| "dismiss-operation-notice".into())
+                                    .on_click(cx.listener(|this, _, _, cx| {
                                         this.operation_notice = None;
                                         cx.notify();
-                                    }),
-                                ),
+                                    })),
                             )
                     }))
                 },

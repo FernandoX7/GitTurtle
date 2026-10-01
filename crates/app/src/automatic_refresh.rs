@@ -35,6 +35,13 @@ impl State {
     pub(super) fn reading(&self) -> bool {
         self.task.is_some()
     }
+    /// Stop the filesystem watcher and its event listener, and nothing else,
+    /// for a GPUI test that starts the quiet reads it means to run itself.
+    #[cfg(test)]
+    pub(super) fn stop_watching(&mut self) {
+        self.events_task = None;
+        self.watcher = None;
+    }
 
     fn can_start(
         &self,
@@ -274,6 +281,9 @@ impl GitTurtle {
                 }
                 match result {
                     Ok(Ok(Output::QuietRefresh(refresh))) => {
+                        if !matches!(refresh.snapshot, Some(Err(_))) {
+                            this.history_updates.quiet_read_succeeded(history);
+                        }
                         this.apply_quiet_refresh(*refresh, window, cx);
                         // A failed native watch gets one local state read. A
                         // later event, manual Refresh, or regained focus may
@@ -284,8 +294,11 @@ impl GitTurtle {
                     }
                     Ok(Ok(_)) => {}
                     Ok(Err(error)) => {
-                        this.operation_error
-                            .get_or_insert_with(|| format!("Local refresh: {error:#}"));
+                        this.history_updates.report_quiet_failure(
+                            format!("Local refresh: {error:#}"),
+                            false,
+                            &mut this.operation_error,
+                        );
                     }
                     Err(_) => {
                         this.automatic.pending.merge(changed);
@@ -317,11 +330,14 @@ impl GitTurtle {
                     self.repository = Some(metadata.repository);
                     self.rebuild_navigation(cx);
                     self.history_updates
-                        .report_scope_error(&error, &mut self.operation_error);
+                        .report_scope_error(&error, &mut self.operation_notice);
                 }
                 Err(error) => {
-                    self.operation_error
-                        .get_or_insert_with(|| format!("Local refresh: {error:#}"));
+                    self.history_updates.report_quiet_failure(
+                        format!("Local refresh: {error:#}"),
+                        true,
+                        &mut self.operation_error,
+                    );
                 }
             }
         }

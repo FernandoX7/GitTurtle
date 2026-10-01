@@ -368,6 +368,13 @@ struct GitTurtle {
     operation_outcomes: operations::RepositoryOutcomes,
     operation_error: Option<String>,
     operation_notice: Option<String>,
+    /// The notice banner text already announced. The banner is a polite live
+    /// region only the first time it draws a message, so a re-render, a page
+    /// return or a warm tab switch does not announce it again.
+    announced_notice: Option<String>,
+    /// Test-only: each notice the banner drew as a live region.
+    #[cfg(test)]
+    notice_announcements: Vec<String>,
     operation_task: Option<Task<()>>,
     status_task: Option<Task<()>>,
     work_generation: u64,
@@ -468,6 +475,9 @@ struct GitTurtle {
     nav_scroll: UniformListScrollHandle,
     loading: Option<&'static str>,
     error: Option<String>,
+    /// The `error` text that a typed `worker::RemovedWorktree` produced, so
+    /// the page titles it "Worktree removed" without reading its words.
+    removed_worktree_error: Option<String>,
     status: String,
     sidebar: bool,
     history_sidebar: bool,
@@ -684,6 +694,9 @@ impl GitTurtle {
             operation_outcomes: operations::RepositoryOutcomes::default(),
             operation_error: None,
             operation_notice: None,
+            announced_notice: None,
+            #[cfg(test)]
+            notice_announcements: Vec::new(),
             operation_task: None,
             status_task: None,
             work_generation: 0,
@@ -781,6 +794,7 @@ impl GitTurtle {
             nav_scroll: UniformListScrollHandle::new(),
             loading: None,
             error: None,
+            removed_worktree_error: None,
             status: "Open a repository to explore its history".into(),
             sidebar: true,
             history_sidebar: true,
@@ -979,6 +993,9 @@ impl GitTurtle {
                     }
                     Err(error) => {
                         this.error = Some(format!("{error:#}"));
+                        this.removed_worktree_error = error
+                            .downcast_ref::<worker::RemovedWorktree>()
+                            .and(this.error.clone());
                         if let Some(index) = this.repository_tabs.active
                             && let Some(tab) = this.repository_tabs.tabs.get_mut(index)
                         {
@@ -1077,6 +1094,7 @@ impl GitTurtle {
         self.graph_notice = None;
         self.request(
             Job::Open {
+                linked: self.repository_tabs.linked_worktree(&path),
                 path,
                 scope: self.scope.as_ref().map(|s| s.1.clone()),
                 limit: self.limit,
@@ -1138,7 +1156,7 @@ impl GitTurtle {
                 self.receive(Output::Preview(content, elapsed), window, cx);
             }
             Output::Snapshot(mut snapshot) => {
-                if self.tab_snapshot_accepted(&snapshot.repository, window, cx) {
+                if self.tab_snapshot_accepted(&snapshot, window, cx) {
                     return;
                 }
                 // Before navigation and a retained query use the scope.

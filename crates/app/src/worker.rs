@@ -41,6 +41,8 @@ pub struct Snapshot {
     /// Set when an explicit Open found its scope gone: this snapshot is All
     /// history instead.
     pub vanished_scope: Option<VanishedScope>,
+    /// Set when an explicit Open read a linked worktree, for its tab to keep.
+    pub linked_worktree: Option<Arc<LinkedWorktree>>,
 }
 
 /// A branch or worktree scope that the current local snapshot no longer
@@ -67,28 +69,57 @@ enum MissingScope {
     AllHistory,
 }
 
-/// An explicit Open of a worktree's own tab whose folder no longer exists.
-/// It stays an open failure, said plainly.
+/// A linked worktree, as its tab records it when an explicit Open succeeds:
+/// its root, its private Git directory and the main repository it belongs to.
+/// A later Open that fails uses it to tell a removed worktree from any other
+/// missing folder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkedWorktree {
+    root: PathBuf,
+    private_git: PathBuf,
+    common_git: PathBuf,
+    /// The main repository's worktree, or its directory when it is bare: the
+    /// first entry of the worktree list.
+    main: PathBuf,
+}
+
+impl LinkedWorktree {
+    /// Whether this worktree was removed, established with passive reads
+    /// only: `requested` and the worktree's private Git directory are gone,
+    /// while the main repository still opens and no longer lists it. `git
+    /// worktree move` keeps the private directory, and a folder deleted
+    /// without Git, or on an unavailable volume, stays listed; neither is a
+    /// removal.
+    fn removed(&self, requested: &Path) -> bool {
+        let missing = |path: &Path| fs_err_not_found(std::fs::symlink_metadata(path));
+        missing(requested)
+            && missing(&self.private_git)
+            && self.common_git.is_dir()
+            && GitRepository::open(&self.main)
+                .and_then(|main| main.worktrees())
+                .is_ok_and(|listed| {
+                    listed
+                        .iter()
+                        .all(|worktree| worktree.path != self.root && worktree.path != requested)
+                })
+    }
+}
+
+/// The failure of an explicit Open of a linked worktree's tab whose worktree
+/// was removed. It is the context of the original error, which stays beneath
+/// it in the chain.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemovedWorktree(PathBuf);
 
-const REMOVED_WORKTREE: (&str, &str) = ("The worktree ", " was removed.");
-
-impl RemovedWorktree {
-    /// Whether `message` is this failure, as the repository page shows it.
-    pub fn describes(message: &str) -> bool {
-        message.starts_with(REMOVED_WORKTREE.0) && message.ends_with(REMOVED_WORKTREE.1)
-    }
-}
-
 impl std::fmt::Display for RemovedWorktree {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let (before, after) = REMOVED_WORKTREE;
-        write!(formatter, "{before}{}{after}", self.0.display())
+        let path = self.0.display();
+        write!(
+            formatter,
+            "The worktree {path} was removed.\nFolder: {path}"
+        )
     }
 }
-
-impl std::error::Error for RemovedWorktree {}
 
 pub struct ImageSide {
     pub animation: Option<Arc<crate::gif_playback::Timeline>>,
@@ -267,11 +298,13 @@ pub enum Job {
         head: Option<String>,
     },
     /// An explicit open. A scope that no longer resolves reads All history
-    /// and says why in `Snapshot::vanished_scope`.
+    /// and says why in `Snapshot::vanished_scope`. `linked` is what the tab
+    /// recorded when it last opened a linked worktree.
     Open {
         path: PathBuf,
         scope: Option<Scope>,
         limit: usize,
+        linked: Option<Arc<LinkedWorktree>>,
     },
     Changes {
         repo: GitRepository,
@@ -632,6 +665,23 @@ impl RepositorySession {
             identity,
         });
         Ok(repository.as_ref().clone())
+    }
+
+    /// The current repository as a linked worktree's tab records it, from the
+    /// Git directories its session captured; `None` for a main worktree or a
+    /// bare repository, whose private and common directories are one.
+    fn linked_worktree(&self, worktrees: &[Worktree]) -> Option<Arc<LinkedWorktree>> {
+        let current = self.current.as_ref()?;
+        let (private_git, common_git) = current.identity.git_directories();
+        if private_git == common_git {
+            return None;
+        }
+        Some(Arc::new(LinkedWorktree {
+            root: current.repository.path().to_owned(),
+            private_git: private_git.to_owned(),
+            common_git: common_git.to_owned(),
+            main: worktrees.first()?.path.clone(),
+        }))
     }
 
     fn history_page(
@@ -1187,7 +1237,12 @@ fn execute(
                 start.elapsed(),
             ))
         }
-        Job::Open { path, scope, limit } => {
+        Job::Open {
+            path,
+            scope,
+            limit,
+            linked,
+        } => {
             let mut snapshot = read_snapshot(
                 path.clone(),
                 scope.as_ref(),
@@ -1196,16 +1251,9 @@ fn execute(
                 cancellation,
                 session,
             )
-            .map_err(|error| match &scope {
-                // A worktree's tab is rooted at the worktree itself.
-                Some(Scope::Worktree { path: worktree })
-                    if fs_err_not_found(std::fs::symlink_metadata(&path)) =>
-                {
-                    anyhow::Error::new(RemovedWorktree(worktree.clone()))
-                }
-                _ => crate::repository_access::explain(&path, error),
-            })?;
+            .map_err(|error| explain_open_failure(&path, linked.as_deref(), error))?;
             cancellation.check()?;
+            snapshot.linked_worktree = session.linked_worktree(&snapshot.worktrees);
             snapshot.elapsed = start.elapsed();
             Ok(Output::Snapshot(snapshot))
         }
@@ -1336,6 +1384,7 @@ fn read_snapshot(
         refs,
         elapsed: start.elapsed(),
         vanished_scope,
+        linked_worktree: None,
     })
 }
 
@@ -1428,6 +1477,21 @@ fn scope_oid<'a>(
                     path.display()
                 ))
             }),
+    }
+}
+
+/// An explicit Open's failure, explained on the worker. A linked worktree's
+/// tab whose worktree was removed says so; every other failure keeps
+/// `repository_access::explain`'s diagnostic. Either way the original error
+/// stays in the chain beneath it.
+fn explain_open_failure(
+    path: &Path,
+    linked: Option<&LinkedWorktree>,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    match linked {
+        Some(linked) if linked.removed(path) => error.context(RemovedWorktree(linked.root.clone())),
+        _ => crate::repository_access::explain(path, error),
     }
 }
 
@@ -2026,6 +2090,7 @@ mod tests {
             path: name.into(),
             scope: None,
             limit: 10,
+            linked: None,
         }
     }
 
@@ -2463,6 +2528,7 @@ mod image_tests {
                 path: fixture.0.clone(),
                 scope: None,
                 limit: 500,
+                linked: None,
             },
             &mut cache,
             &active(),
@@ -3014,6 +3080,7 @@ mod image_tests {
                     path: fixture.0.clone(),
                     scope: Some(scope),
                     limit: 10,
+                    linked: None,
                 },
                 &mut PreviewCache::default(),
                 &active(),

@@ -330,7 +330,7 @@ impl GitTurtle {
                         if let Some(vanished) = error.downcast_ref::<worker::VanishedScope>() {
                             this.history_updates.report_scope_error(
                                 &vanished.to_string(),
-                                &mut this.operation_error,
+                                &mut this.operation_notice,
                             );
                         }
                         if let Some(progress) = &mut this.history_search.progress {

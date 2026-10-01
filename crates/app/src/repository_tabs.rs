@@ -130,7 +130,7 @@ pub struct Bookmark {
     pub compare: bool,
 }
 impl Bookmark {
-    fn retain_history_only(&mut self) {
+    pub(super) fn retain_history_only(&mut self) {
         self.comparison = None;
         self.compare = false;
         self.selected_file = None;
@@ -151,7 +151,7 @@ pub struct SavedCommit {
     body: String,
 }
 impl SavedCommit {
-    fn new(commit: &Commit) -> Self {
+    pub(super) fn new(commit: &Commit) -> Self {
         Self {
             oid: commit.oid.clone(),
             parents: commit.parents.clone(),
@@ -360,6 +360,11 @@ pub struct Tab {
     saved: Bookmark,
     warm: Option<WarmTab>,
     pub error: Option<String>,
+    /// What the last successful Open recorded when this tab is a linked
+    /// worktree's, so a later failed Open can say the worktree was removed.
+    /// The saved session keeps no Git directories, so a restored tab starts
+    /// without it.
+    linked_worktree: Option<Arc<worker::LinkedWorktree>>,
 }
 type SessionSaveCompletion =
     futures::future::Shared<futures::future::BoxFuture<'static, std::result::Result<(), String>>>;
@@ -438,6 +443,7 @@ impl State {
                     saved: tab.bookmark,
                     warm: None,
                     error: None,
+                    linked_worktree: None,
                 })
                 .collect(),
             active,
@@ -453,6 +459,10 @@ impl State {
     }
     fn find(&self, path: &Path) -> Option<usize> {
         self.tabs.iter().position(|tab| tab.path == path)
+    }
+    /// The linked worktree that `path`'s tab recorded, for its next Open.
+    pub(super) fn linked_worktree(&self, path: &Path) -> Option<Arc<worker::LinkedWorktree>> {
+        self.tabs[self.find(path)?].linked_worktree.clone()
     }
     fn saved(&self) -> Session {
         Session {
@@ -613,6 +623,7 @@ struct WarmTab {
     working_scroll: UniformListScrollHandle,
     working_selection: working_selection::Selection,
     operation_notice: Option<String>,
+    announced_notice: Option<String>,
     operation_error: Option<String>,
 }
 
@@ -630,6 +641,7 @@ impl GitTurtle {
             + self.blame.retained_bytes()
             + self.history_search.retained_bytes()
             + self.history_updates.retained_bytes()
+            + self.announced_notice.as_ref().map_or(0, String::capacity)
             + self
                 .branches
                 .iter()
@@ -811,6 +823,7 @@ impl GitTurtle {
                 saved: Bookmark::default(),
                 warm: None,
                 error: None,
+                linked_worktree: None,
             });
             self.repository_tabs.tabs.len() - 1
         };
@@ -886,6 +899,7 @@ impl GitTurtle {
             working_scroll: std::mem::take(&mut self.working_scroll),
             working_selection: std::mem::take(&mut self.working_selection),
             operation_notice: self.operation_notice.take(),
+            announced_notice: self.announced_notice.take(),
             operation_error: self.operation_error.take(),
         };
         self.repository_tabs.tabs[index].saved = bookmark;
@@ -941,6 +955,7 @@ impl GitTurtle {
         self.working_scroll = warm.working_scroll;
         self.working_selection = warm.working_selection;
         self.operation_notice = warm.operation_notice;
+        self.announced_notice = warm.announced_notice;
         self.operation_error = warm.operation_error;
         warm.inputs.restore(self.tab_inputs(), window, cx);
         self.observe_tab_panels(cx);
@@ -1087,6 +1102,7 @@ impl GitTurtle {
             saved: Bookmark::default(),
             warm: None,
             error: None,
+            linked_worktree: None,
         });
         self.repository_tabs.active = Some(index);
         self.repository_tabs.restoring = None;
@@ -1095,10 +1111,11 @@ impl GitTurtle {
     }
     pub(super) fn tab_snapshot_accepted(
         &mut self,
-        repo: &GitRepository,
+        snapshot: &worker::Snapshot,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        let repo = &snapshot.repository;
         if let Some(existing) = self.repository_tabs.find(repo.path())
             && self.repository_tabs.active != Some(existing)
         {
@@ -1119,6 +1136,7 @@ impl GitTurtle {
         {
             tab.path = repo.path().to_owned();
             tab.error = None;
+            tab.linked_worktree = snapshot.linked_worktree.clone();
         }
         // Capture after receive installs the accepted metadata. A newly opened
         // active tab may never be switched or otherwise trigger a session save.
@@ -1607,6 +1625,7 @@ impl GitTurtle {
                 saved: Bookmark::default(),
                 warm: None,
                 error: None,
+                linked_worktree: None,
             });
         }
         self.status = format!(
@@ -1755,6 +1774,7 @@ impl GitTurtle {
                     saved: Bookmark::default(),
                     warm: None,
                     error: None,
+                    linked_worktree: None,
                 });
             }
         }
@@ -2282,6 +2302,7 @@ mod tests {
                     saved: bookmark.clone(),
                     warm: None,
                     error: None,
+                    linked_worktree: None,
                 }],
                 restoring: Some(bookmark.clone()),
                 document_restore: Some(bookmark),
