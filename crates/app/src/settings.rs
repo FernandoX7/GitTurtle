@@ -5179,6 +5179,81 @@ mod picker_tests {
         settle(cx);
     }
 
+    /// Linux: Follow system turns disabled while it holds focus when the
+    /// Omarchy theme is chosen, as a click on its card chooses it, without
+    /// moving keyboard focus. Tab and Shift+Tab, as keystrokes through the
+    /// window, still leave the Switch for its neighbours, and skip it while it
+    /// is disabled.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn tab_and_shift_tab_leave_follow_system_once_omarchy_disables_it(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("current");
+        std::fs::create_dir_all(root.join("theme")).unwrap();
+        let colors = include_bytes!("../tests/fixtures/omarchy/tokyo-night.toml");
+        std::fs::write(root.join("theme/colors.toml"), colors).unwrap();
+        std::fs::write(root.join("theme.name"), "tokyo-night\n").unwrap();
+        cx.update(|cx| drop(appearance::omarchy::install(Some(root.clone()), cx)));
+        let (app, cx) = open_app(cx);
+        settle(cx);
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+        let press = |cx: &mut VisualTestContext, keys: &str| {
+            cx.simulate_keystrokes(keys);
+            settle(cx);
+            focused(cx).expect("a focused control")
+        };
+        let locked = |cx: &mut VisualTestContext| {
+            page_shows(cx, "follow-system-switch");
+            cx.read(|cx| app.read(cx).follow_system_row.borrow().clone().unwrap().1)
+        };
+
+        // A click focuses the enabled Switch; it reads between two tab stops.
+        let switch = shown(cx, "follow-system-switch").expect("the Follow system switch");
+        cx.simulate_click(switch.center(), Modifiers::default());
+        settle(cx);
+        let switch = focused(cx).expect("the clicked Switch holds focus");
+        assert!(!locked(cx));
+        let previous = press(cx, "shift-tab");
+        assert_ne!(previous, switch);
+        assert_eq!(press(cx, "tab"), switch);
+        let next = press(cx, "tab");
+        assert!(next != switch && next != previous);
+        assert_eq!(press(cx, "shift-tab"), switch);
+
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.choose_theme(ThemeSelection::Omarchy, window, cx)
+            })
+        });
+        settle(cx);
+        assert!(locked(cx), "Omarchy disables Follow system");
+        assert_eq!(
+            focused(cx),
+            Some(switch.clone()),
+            "the disabled Switch keeps focus until the keyboard moves it"
+        );
+        assert_eq!(press(cx, "tab"), next, "Tab leaves the disabled Switch");
+        assert_eq!(
+            press(cx, "shift-tab"),
+            previous,
+            "Shift+Tab passes over the disabled Switch"
+        );
+
+        cx.update(|window, cx| window.focus(&switch, cx));
+        settle(cx);
+        assert!(locked(cx));
+        assert_eq!(
+            press(cx, "shift-tab"),
+            previous,
+            "Shift+Tab leaves the disabled Switch"
+        );
+        assert_eq!(
+            press(cx, "tab"),
+            next,
+            "Tab passes over the disabled Switch"
+        );
+    }
+
     /// Linux: the Omarchy card's description takes a second line when one
     /// cannot hold it and ends in an ellipsis only when two cannot, at
     /// 1,400 px and at the window's 1,000 px minimum, for the longest name

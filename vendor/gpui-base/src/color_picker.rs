@@ -1,3 +1,4 @@
+use crate::disabled_focus::track_control_focus;
 use crate::input::InputState;
 use std::rc::Rc;
 
@@ -757,11 +758,17 @@ impl RenderOnce for ColorSwatch {
                 Toggled::False
             })
             .aria_selected(selected)
-            .when(!disabled, |this| {
-                this.track_focus(
-                    &focus_handle
-                        .tab_index(self.tab_index)
-                        .tab_stop(self.tab_stop),
+            // GitTurtle patch: while focused, a disabled control keeps its
+            // handle as a target that is not a tab stop, so Tab and Shift+Tab
+            // still leave it (`disabled_focus`).
+            .map(|this| {
+                track_control_focus(
+                    this,
+                    focus_handle,
+                    disabled,
+                    self.tab_index,
+                    self.tab_stop,
+                    window,
                 )
             })
             .when_some(

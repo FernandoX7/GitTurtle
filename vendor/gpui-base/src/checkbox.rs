@@ -8,7 +8,7 @@ use gpui::{
 };
 use smallvec::SmallVec;
 
-use crate::{RoleOverride, StateStyle, StyledExt as _};
+use crate::{RoleOverride, StateStyle, StyledExt as _, disabled_focus::track_control_focus};
 
 type ChangeHandler = Rc<dyn Fn(CheckboxState, &ClickEvent, &mut Window, &mut App)>;
 
@@ -377,11 +377,17 @@ impl RenderOnce for Checkbox {
             .when_some(self.accessibility_label, |this, label| {
                 this.aria_label(label)
             })
-            .when(!disabled, |this| {
-                this.track_focus(
-                    &focus_handle
-                        .tab_index(self.tab_index)
-                        .tab_stop(self.tab_stop),
+            // GitTurtle patch: while focused, a disabled control keeps its
+            // handle as a target that is not a tab stop, so Tab and Shift+Tab
+            // still leave it (`disabled_focus`).
+            .map(|this| {
+                track_control_focus(
+                    this,
+                    focus_handle,
+                    disabled,
+                    self.tab_index,
+                    self.tab_stop,
+                    window,
                 )
             })
             .when_some(

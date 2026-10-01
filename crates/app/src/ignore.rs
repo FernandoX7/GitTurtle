@@ -156,3 +156,144 @@ impl Render for IgnoreForm {
             .children(self.error.as_ref().map(|error| static_text("ignore-preparation-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::prelude::v1::test;
+    use std::{cell::RefCell, rc::Rc};
+
+    /// The ignore form between two tab stops the probe owns.
+    struct Probe {
+        before: FocusHandle,
+        form: Entity<IgnoreForm>,
+        after: FocusHandle,
+    }
+
+    impl Render for Probe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .id("probe-before")
+                        .track_focus(&self.before.clone().tab_stop(true))
+                        .size(px(20.)),
+                )
+                .child(self.form.clone())
+                .child(
+                    div()
+                        .id("probe-after")
+                        .track_focus(&self.after.clone().tab_stop(true))
+                        .size(px(20.)),
+                )
+        }
+    }
+
+    /// The containing-directory Checkbox turns disabled while it holds focus
+    /// once the rule's preparation starts, as `IgnoreForm::submit` sets
+    /// `pending`, with the destination buttons before it. Tab and Shift+Tab,
+    /// as keystrokes through the window, still leave it for the nearest tab
+    /// stops that stay enabled, and skip it while it is disabled.
+    #[gpui::test]
+    fn tab_and_shift_tab_leave_the_directory_checkbox_while_the_rule_is_prepared(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let captured: Rc<RefCell<Option<Entity<Probe>>>> = Default::default();
+        let output = captured.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let probe = cx.new(|cx| Probe {
+                before: cx.focus_handle(),
+                form: cx.new(|_| IgnoreForm {
+                    owner: WeakEntity::new_invalid(),
+                    repository: None,
+                    path: PathBuf::from("build/output.log"),
+                    directory: false,
+                    local: false,
+                    pending: false,
+                    error: None,
+                }),
+                after: cx.focus_handle(),
+            });
+            *output.borrow_mut() = Some(probe.clone());
+            gpui_kit::component::Root::new(probe, window, cx)
+        });
+        let probe = captured.borrow().as_ref().unwrap().clone();
+        let draw = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+        };
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+        let press = |cx: &mut VisualTestContext, keys: &str| {
+            cx.simulate_keystrokes(keys);
+            draw(cx);
+            focused(cx).expect("a focused control")
+        };
+        let (before, form, after) = cx.read(|cx| {
+            let probe = probe.read(cx);
+            (
+                probe.before.clone(),
+                probe.form.clone(),
+                probe.after.clone(),
+            )
+        });
+        let pending = |cx: &mut VisualTestContext, pending: bool| {
+            cx.update(|_, cx| {
+                form.update(cx, |form, cx| {
+                    form.pending = pending;
+                    cx.notify();
+                })
+            });
+            draw(cx);
+        };
+        let focus = |cx: &mut VisualTestContext, handle: &FocusHandle| {
+            cx.update(|window, cx| window.focus(handle, cx));
+            draw(cx);
+        };
+
+        // Enabled, the form reads: Shared .gitignore, Local excludes, Checkbox.
+        draw(cx);
+        focus(cx, &before);
+        let shared = press(cx, "tab");
+        let local = press(cx, "tab");
+        let checkbox = press(cx, "tab");
+        let stops = [&before, &shared, &local, &checkbox, &after];
+        for (index, stop) in stops.iter().enumerate() {
+            assert!(
+                stops[index + 1..].iter().all(|other| other != stop),
+                "five distinct tab stops"
+            );
+        }
+        assert_eq!(
+            press(cx, "tab"),
+            after,
+            "the Checkbox precedes the after stop"
+        );
+        assert_eq!(press(cx, "shift-tab"), checkbox);
+
+        pending(cx, true);
+        assert_eq!(
+            focused(cx),
+            Some(checkbox.clone()),
+            "the disabled Checkbox keeps focus until the keyboard moves it"
+        );
+        assert_eq!(press(cx, "tab"), after, "Tab leaves the disabled Checkbox");
+        assert_eq!(
+            press(cx, "shift-tab"),
+            before,
+            "Shift+Tab passes over the disabled Checkbox and buttons"
+        );
+
+        pending(cx, false);
+        focus(cx, &local);
+        assert_eq!(press(cx, "tab"), checkbox);
+        pending(cx, true);
+        assert_eq!(
+            press(cx, "shift-tab"),
+            before,
+            "Shift+Tab leaves the disabled Checkbox past the disabled buttons"
+        );
+    }
+}
