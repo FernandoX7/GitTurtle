@@ -60,10 +60,10 @@ impl State {
             progress.pinned = scope;
         }
     }
-    /// The in-flight search page, for a GPUI test to await its reply.
+    /// Whether a search page is in flight, for a GPUI test to wait on it.
     #[cfg(test)]
-    pub(super) fn take_task(&mut self) -> Option<Task<()>> {
-        self.task.take()
+    pub(super) fn searching(&self) -> bool {
+        self.task.is_some()
     }
     pub(super) fn retained_bytes(&self) -> usize {
         self.normal.as_ref().map_or(0, |normal| {

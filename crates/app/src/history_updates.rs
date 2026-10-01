@@ -24,6 +24,18 @@ impl Update {
     }
 }
 
+const SCOPE_CHANGED: &str = "History scope changed: ";
+const SCOPE_RETAINED: &str =
+    ". The displayed history is retained; choose a current branch to browse its history.";
+const SCOPE_FALLBACK: &str = ". Showing All history.";
+
+/// Whether the operation banner's `message` is one of the scope-change
+/// reports below, which the banner announces politely as a status.
+pub(super) fn is_scope_report(message: &str) -> bool {
+    message.starts_with(SCOPE_CHANGED)
+        && (message.ends_with(SCOPE_RETAINED) || message.ends_with(SCOPE_FALLBACK))
+}
+
 #[derive(Default)]
 pub(super) struct State {
     observed: Option<HistoryScope>,
@@ -31,6 +43,12 @@ pub(super) struct State {
     pub pending: Option<Update>,
     followed: bool,
     scope_error: Option<String>,
+    /// The last explicit open's All history explanation. A quiet read does
+    /// not clear it; the next explicit open does.
+    fallback: Option<String>,
+    /// Another failure held the banner, so the explanation is announced
+    /// beside it instead.
+    fallback_aside: bool,
     pub committed: Option<String>,
 }
 impl State {
@@ -50,6 +68,7 @@ impl State {
             })
             + self.committed.as_ref().map_or(0, String::capacity)
             + self.scope_error.as_ref().map_or(0, String::capacity)
+            + self.fallback.as_ref().map_or(0, String::capacity)
     }
     pub fn reset_history(&mut self) {
         self.observed = None;
@@ -66,9 +85,7 @@ impl State {
     /// quiet reads and searches leave it dismissed; reading the scope again or
     /// opening another one forgets it.
     pub fn report_scope_error(&mut self, error: &str, operation_error: &mut Option<String>) {
-        let message = format!(
-            "History scope changed: {error}. The displayed history is retained; choose a current branch to browse its history."
-        );
+        let message = format!("{SCOPE_CHANGED}{error}{SCOPE_RETAINED}");
         if self.scope_error.as_ref() == Some(&message) {
             return;
         }
@@ -77,17 +94,38 @@ impl State {
             self.scope_error = Some(message);
         }
     }
-    /// An explicit Refresh found its scope gone and opened All history. The
-    /// explanation replaces the banner; All history has no scope to forget.
-    pub fn report_scope_fallback(
+    /// An explicit open found its scope gone and read All history. The
+    /// explanation takes the banner unless another failure holds it; then it
+    /// is announced beside that failure, which stays.
+    fn report_scope_fallback(
         &mut self,
         vanished: &worker::VanishedScope,
         operation_error: &mut Option<String>,
     ) {
+        self.opened(operation_error);
+        let message = format!("{SCOPE_CHANGED}{vanished}{SCOPE_FALLBACK}");
+        self.fallback_aside = operation_error
+            .as_deref()
+            .is_some_and(|current| !is_scope_report(current));
+        if !self.fallback_aside {
+            *operation_error = Some(message.clone());
+        }
+        self.fallback = Some(message);
+    }
+    /// An explicit open was accepted: forget earlier scope reports, and take
+    /// down the banner if it still shows one.
+    fn opened(&mut self, operation_error: &mut Option<String>) {
         self.clear_scope_error(operation_error);
-        *operation_error = Some(format!(
-            "History scope changed: {vanished}. Showing All history."
-        ));
+        if let Some(previous) = self.fallback.take()
+            && operation_error.as_ref() == Some(&previous)
+        {
+            *operation_error = None;
+        }
+        self.fallback_aside = false;
+    }
+    /// The fallback explanation announced beside another failure's banner.
+    pub fn fallback_aside(&self) -> Option<&str> {
+        self.fallback.as_deref().filter(|_| self.fallback_aside)
     }
     pub fn clear_scope_error(&mut self, operation_error: &mut Option<String>) {
         if let Some(previous) = self.scope_error.take()
@@ -202,6 +240,25 @@ fn follows_latest(mode: WorkspaceMode, searching: bool, deep: bool, offset: f32)
 }
 
 impl GitTurtle {
+    /// An explicit open's snapshot is All history when its scope vanished:
+    /// drop the scope and say why once. A restoring tab's saved position and
+    /// pinned tips belong to the vanished scope's history, so they go too.
+    /// Otherwise the open forgets, and takes down, earlier scope reports.
+    pub(super) fn accept_open_scope(&mut self, snapshot: &mut worker::Snapshot) {
+        let Some(vanished) = snapshot.vanished_scope.take() else {
+            self.history_updates.opened(&mut self.operation_error);
+            return;
+        };
+        self.scope = None;
+        if let Some(saved) = &mut self.repository_tabs.restoring {
+            saved.pinned = None;
+            saved.offset = 0;
+            saved.history_y = 0.;
+        }
+        self.history_updates
+            .report_scope_fallback(&vanished, &mut self.operation_error);
+    }
+
     pub(super) fn apply_quiet_snapshot(
         &mut self,
         snapshot: worker::Snapshot,
@@ -310,7 +367,6 @@ impl GitTurtle {
             Job::Open {
                 path,
                 scope: self.scope.as_ref().map(|scope| scope.1.clone()),
-                missing_scope: worker::MissingScope::Fail,
                 limit: history_paging::PAGE_SIZE,
             },
             false,
@@ -379,9 +435,8 @@ impl GitTurtle {
                         this.search
                             .update(cx, |input, cx| input.set_value("", window, cx));
                         match output {
-                            Output::Snapshot(snapshot) => {
-                                this.history_updates
-                                    .clear_scope_error(&mut this.operation_error);
+                            Output::Snapshot(mut snapshot) => {
+                                this.accept_open_scope(&mut snapshot);
                                 this.history_updates.captured(&snapshot);
                                 this.install_current_history(snapshot, true, window, cx);
                                 this.status =
@@ -699,7 +754,6 @@ mod tests {
             let output = futures::executor::block_on(reader.submit(Job::Open {
                 path: fixture.path().to_owned(),
                 scope: None,
-                missing_scope: worker::MissingScope::Fail,
                 limit: history_paging::PAGE_SIZE,
             }))
             .unwrap()
@@ -860,12 +914,13 @@ mod tests {
         ))
     }
 
-    /// A window whose application has opened `path` in `scope`.
-    async fn scoped_window<'a>(
-        cx: &'a mut TestAppContext,
-        path: &std::path::Path,
-        scope: Option<(String, worker::Scope)>,
-    ) -> (Entity<GitTurtle>, &'a mut VisualTestContext) {
+    /// A window whose application starts as a launch does: with `initial`
+    /// as the repository to open and `session` as the saved tabs.
+    fn launched_window(
+        cx: &mut TestAppContext,
+        initial: Option<PathBuf>,
+        session: repository_tabs::Session,
+    ) -> (Entity<GitTurtle>, &mut VisualTestContext) {
         use gpui_kit::component::Root;
         use std::{cell::RefCell, rc::Rc};
 
@@ -879,9 +934,9 @@ mod tests {
         let (_, cx) = cx.add_window_view(move |window, cx| {
             let app = cx.new(|cx| {
                 GitTurtle::new(
-                    None,
+                    initial,
                     Preferences::default(),
-                    repository_tabs::Session::default(),
+                    session,
                     activity::State::default(),
                     recovery_drafts::State::default(),
                     window,
@@ -892,46 +947,57 @@ mod tests {
             Root::new(app, window, cx)
         });
         let app = observed.borrow_mut().take().unwrap();
+        (app, cx)
+    }
+
+    /// A window whose application has opened `path` in `scope`.
+    async fn scoped_window<'a>(
+        cx: &'a mut TestAppContext,
+        path: &std::path::Path,
+        scope: Option<(String, worker::Scope)>,
+    ) -> (Entity<GitTurtle>, &'a mut VisualTestContext) {
+        let (app, cx) = launched_window(cx, None, repository_tabs::Session::default());
         let path = path.to_owned();
         cx.update(|window, cx| app.update(cx, |app, cx| app.open(path, scope, window, cx)));
         settle(&app, cx).await;
         (app, cx)
     }
 
-    /// Await every read, write, quiet refresh and search page in flight,
-    /// including the ones their replies start, then stop the local watcher so
-    /// no filesystem event starts another read before the next step.
+    /// Let every read, write, quiet refresh and search page in flight finish,
+    /// with the ones their replies start. Each task stays where the app keeps
+    /// it, so the rules that keep a quiet read from starting beside a search,
+    /// a status read or a write still hold. Then stop the local watcher so no
+    /// filesystem event starts another read before the next step.
     async fn settle(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
-        for _ in 0..16 {
-            cx.executor().run_until_parked();
-            let (operations, preferences) = app.read_with(cx, |app, _| {
-                (
-                    app.operations.submit_read(|| Ok(())),
-                    app.preferences_writer.submit_read(|| Ok(())),
-                )
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            // The serial executors have answered once they run a marker
+            // queued now; the read worker answers on its own thread.
+            app.read_with(cx, |app, _| {
+                app.operations.drain();
+                app.preferences_writer.drain();
             });
-            operations.await.unwrap().unwrap();
-            preferences.await.unwrap().unwrap();
             cx.executor().run_until_parked();
-            let tasks = app.update(cx, |app, _| {
+            let pending = app.read_with(cx, |app, _| {
                 [
-                    app.task.take(),
-                    app.status_task.take(),
-                    app.integration_task.take(),
-                    app.operation_task.take(),
-                    app.automatic.take_task(),
-                    app.history_search.take_task(),
+                    ("read", app.task.is_some()),
+                    ("working status", app.status_task.is_some()),
+                    ("operation", app.operation_busy.is_some()),
+                    ("quiet read", app.automatic.reading()),
+                    ("search page", app.history_search.searching()),
                 ]
                 .into_iter()
-                .flatten()
+                .filter_map(|(name, busy)| busy.then_some(name))
                 .collect::<Vec<_>>()
             });
-            if tasks.is_empty() {
+            if pending.is_empty() {
                 break;
             }
-            for task in tasks {
-                task.await;
-            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "still in flight after 30 s: {pending:?}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
         }
         app.update(cx, |app, _| {
             app.automatic.reset();
@@ -961,17 +1027,43 @@ mod tests {
         settle(app, cx).await;
     }
 
-    fn assert_showing_all_history(app: &GitTurtle, vanished: &str) {
+    /// The banner's summary node as AccessKit receives it. The test platform
+    /// builds no accessibility tree, so this reads the role, label and value
+    /// the element writes; its live politeness is set with the role.
+    fn banner_node(message: &str) -> gpui::accesskit::Node {
+        let summary = crate::views::operation_error_summary(message);
+        let mut node = gpui::accesskit::Node::new(summary.a11y_role().expect("summary role"));
+        summary.write_a11y_info(&mut node);
+        node
+    }
+
+    /// A scope report is a polite status whose label and value are its text.
+    fn assert_polite(message: &str) {
+        let node = banner_node(message);
+        assert_eq!(node.role(), Role::Status, "{message}");
+        assert_eq!(node.label(), Some(message));
+        assert_eq!(node.value(), Some(message));
+    }
+
+    /// An explicit open fell back to All history: no repository error or
+    /// unavailable tab, no scope, and one polite explanation.
+    fn assert_fell_back(app: &GitTurtle, vanished: &str) {
         assert!(app.error.is_none(), "repository error: {:?}", app.error);
         let tab = &app.repository_tabs.tabs[app.repository_tabs.active.unwrap()];
         assert!(tab.error.is_none(), "unavailable tab: {:?}", tab.error);
         assert!(app.scope.is_none(), "scope kept: {:?}", app.scope);
-        assert_eq!(subjects(app), ["main work", "initial"]);
-        assert_eq!(
-            app.operation_error.as_deref(),
-            Some(format!("History scope changed: {vanished}. Showing All history.").as_str())
-        );
+        let message = format!("History scope changed: {vanished}. Showing All history.");
+        assert_eq!(app.operation_error.as_deref(), Some(message.as_str()));
+        assert_polite(&message);
     }
+
+    fn assert_showing_all_history(app: &GitTurtle, vanished: &str) {
+        assert_fell_back(app, vanished);
+        assert_eq!(subjects(app), ["main work", "initial"]);
+    }
+
+    const TOPIC_GONE: &str =
+        "Local branch 'topic' no longer exists in the local repository snapshot";
 
     #[gpui::test]
     async fn refresh_opens_all_history_when_the_scoped_branch_is_gone(cx: &mut TestAppContext) {
@@ -1010,7 +1102,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn refresh_opens_all_history_when_the_scoped_worktree_is_gone(cx: &mut TestAppContext) {
+    async fn refresh_says_plainly_when_a_worktree_tab_was_removed(cx: &mut TestAppContext) {
         let (fixture, path) = scoped_fixture();
         let linked = fixture.path().join("linked");
         git(
@@ -1025,40 +1117,111 @@ mod tests {
                 "topic",
             ],
         );
-        git(&linked, &["commit", "--allow-empty", "-qm", "linked work"]);
-        // The worktree as Git lists it, which is the path a scope captures.
-        let listed = GitRepository::open(&path)
-            .unwrap()
-            .worktrees()
-            .unwrap()
-            .into_iter()
-            .find(|tree| tree.branch.as_deref() == Some("linked-topic"))
-            .unwrap()
-            .path;
-        let scope = Some((
-            "linked-topic".into(),
-            worker::Scope::Worktree {
-                path: listed.clone(),
-            },
-        ));
-        let (app, cx) = scoped_window(cx, &path, scope).await;
-        app.read_with(cx, |app, _| {
-            assert_eq!(subjects(app), ["linked work", "topic work", "initial"]);
+        let (app, cx) = scoped_window(cx, &path, None).await;
+        // Choosing the worktree opens it in its own tab, rooted at its path.
+        app.update(cx, |app, cx| {
+            app.nav_mode = NavMode::Worktrees;
+            app.rebuild_navigation(cx);
+        });
+        let row = app.read_with(cx, |app, _| {
+            app.nav_rows
+                .iter()
+                .position(|row| {
+                    matches!(row, NavRow::Worktree(index)
+                        if app.worktrees[*index].branch.as_deref() == Some("linked-topic"))
+                })
+                .expect("a linked worktree row")
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            app.update(cx, |app, cx| app.activate_navigation(row, window, cx));
+        });
+        settle(&app, cx).await;
+        let listed = app.read_with(cx, |app, _| {
+            let Some((_, worker::Scope::Worktree { path: listed })) = &app.scope else {
+                panic!("a worktree scope: {:?}", app.scope)
+            };
+            assert_eq!(app.path.as_ref(), Some(listed));
+            assert_eq!(app.repository_tabs.tabs.len(), 2);
+            listed.clone()
         });
         git(
             &path,
             &["worktree", "remove", "--force", linked.to_str().unwrap()],
         );
-        git(&path, &["branch", "-D", "linked-topic", "topic"]);
         dispatch_refresh(&app, cx).await;
         app.read_with(cx, |app, _| {
-            assert_showing_all_history(
-                app,
-                &format!(
-                    "Worktree '{}' is no longer registered in the local repository snapshot",
-                    listed.display()
-                ),
+            assert_eq!(
+                app.error.as_deref(),
+                Some(format!("The worktree {} was removed.", listed.display()).as_str())
             );
+            let tab = &app.repository_tabs.tabs[app.repository_tabs.active.unwrap()];
+            assert!(tab.error.is_some(), "the tab reads unavailable");
+            assert_eq!(
+                crate::views::open_failure_title(app.error.as_ref().unwrap()),
+                "Worktree removed"
+            );
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    #[gpui::test]
+    async fn a_failure_banner_survives_a_fallback_refresh(cx: &mut TestAppContext) {
+        let failure = "Commit failed: the pre-commit hook refused the change";
+        let (_fixture, path) = scoped_fixture();
+        let (app, cx) = scoped_window(cx, &path, branch_scope("topic")).await;
+        app.update(cx, |app, _| app.operation_error = Some(failure.into()));
+        git(&path, &["branch", "-D", "topic"]);
+        dispatch_refresh(&app, cx).await;
+        let fallback = format!("History scope changed: {TOPIC_GONE}. Showing All history.");
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.operation_error.as_deref(), Some(failure));
+            assert!(app.scope.is_none());
+            assert_eq!(subjects(app), ["main work", "initial"]);
+            assert_eq!(
+                app.history_updates.fallback_aside(),
+                Some(fallback.as_str())
+            );
+        });
+        // The explanation is still announced, politely, beside the failure.
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("history-scope-announcement").is_some());
+        let summary = crate::views::scope_announcement(&fallback);
+        let mut node = gpui::accesskit::Node::new(summary.a11y_role().unwrap());
+        summary.write_a11y_info(&mut node);
+        assert_eq!(node.role(), Role::Status);
+        assert_eq!(node.label(), Some(fallback.as_str()));
+        assert_eq!(node.value(), Some(fallback.as_str()));
+        assert_eq!(banner_node(failure).role(), Role::Alert);
+    }
+
+    #[gpui::test]
+    async fn an_explicit_open_after_a_fallback_takes_its_banner_down(cx: &mut TestAppContext) {
+        let (_fixture, path) = scoped_fixture();
+        let (app, cx) = scoped_window(cx, &path, branch_scope("topic")).await;
+        git(&path, &["branch", "-D", "topic"]);
+        dispatch_refresh(&app, cx).await;
+        app.read_with(cx, |app, _| assert_showing_all_history(app, TOPIC_GONE));
+        let row = app.read_with(cx, |app, _| {
+            app.nav_rows
+                .iter()
+                .position(|row| {
+                    matches!(row, NavRow::Branch(index, _) if app.branches[*index].name == "main")
+                })
+                .expect("a main row")
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            app.update(cx, |app, cx| app.activate_navigation(row, window, cx));
+        });
+        settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(
+                app.scope.as_ref().map(|scope| scope.0.as_str()),
+                Some("main")
+            );
+            assert_eq!(app.operation_error, None, "the explanation is taken down");
+            assert_eq!(app.history_updates.fallback_aside(), None);
         });
     }
 
@@ -1090,6 +1253,7 @@ mod tests {
         settle(&app, cx).await;
         app.update(cx, |app, _| {
             assert_eq!(app.operation_error, Some(quiet("topic")));
+            assert_polite(&quiet("topic"));
             assert_eq!(
                 subjects(app),
                 ["topic work", "initial"],
@@ -1203,6 +1367,114 @@ mod tests {
                 Some(
                     "History scope changed: Local branch 'topic' no longer exists in the local repository snapshot. Showing All history."
                 )
+            );
+        });
+    }
+
+    #[::core::prelude::v1::test]
+    fn ordinary_operation_errors_stay_assertive_alerts() {
+        for message in [
+            "Commit failed: nothing to commit",
+            // A quiet read whose metadata could not be read is a failure,
+            // even though it names the scope.
+            "History scope changed: Git exceeded the local read deadline",
+        ] {
+            assert!(!is_scope_report(message), "{message}");
+            let node = banner_node(message);
+            assert_eq!(node.role(), Role::Alert, "{message}");
+            assert_eq!(node.label(), Some(message));
+            assert_eq!(node.value(), None, "{message}");
+        }
+    }
+
+    #[gpui::test]
+    async fn show_latest_opens_all_history_when_the_scoped_branch_is_gone(cx: &mut TestAppContext) {
+        let (_fixture, path) = scoped_fixture();
+        let (app, cx) = scoped_window(cx, &path, branch_scope("topic")).await;
+        git(&path, &["branch", "-D", "topic"]);
+        app.update_in(cx, |app, window, cx| app.show_latest_history(window, cx));
+        assert_eq!(
+            app.read_with(cx, |app, _| app.loading),
+            Some("Reading latest local history…")
+        );
+        settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_fell_back(app, TOPIC_GONE);
+            // Show latest keeps the selected inspector: the vanished scope's
+            // selected commit stays after All history's rows.
+            assert_eq!(subjects(app)[..2], ["main work", "initial"]);
+            assert_eq!(
+                app.selected_commit
+                    .map(|index| app.commits[index].subject.as_str()),
+                Some("topic work")
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn a_restored_tab_opens_all_history_when_its_saved_scope_is_gone(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, path) = scoped_fixture();
+        let topic = git(&path, &["rev-parse", "topic"]);
+        // Deleted while the app was closed.
+        git(&path, &["branch", "-D", "topic"]);
+        let bookmark = repository_tabs::Bookmark {
+            scope: Some((
+                "topic".into(),
+                repository_tabs::SavedScope::Branch {
+                    name: "topic".into(),
+                    remote: false,
+                },
+            )),
+            // A position in the vanished scope's own history, which All
+            // history must not restore.
+            pinned: Some(repository_tabs::SavedHistoryScope::Commit(topic)),
+            offset: 1,
+            ..Default::default()
+        };
+        let session = repository_tabs::Session {
+            version: 1,
+            active: 0,
+            tabs: vec![repository_tabs::SavedTab {
+                path: repository_tabs::SavedPath::Text(path.to_str().unwrap().into()),
+                bookmark,
+            }],
+            ..Default::default()
+        };
+        let (app, cx) = launched_window(cx, Some(path.clone()), session);
+        settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.path.as_deref(), Some(path.as_path()));
+            assert_showing_all_history(app, TOPIC_GONE);
+        });
+    }
+
+    #[gpui::test]
+    async fn a_branch_row_opens_all_history_when_its_branch_is_gone(cx: &mut TestAppContext) {
+        let (_fixture, path) = scoped_fixture();
+        let (app, cx) = scoped_window(cx, &path, None).await;
+        let row = app.read_with(cx, |app, _| {
+            app.nav_rows
+                .iter()
+                .position(|row| {
+                    matches!(row, NavRow::Branch(index, _) if app.branches[*index].name == "topic")
+                })
+                .expect("a topic row")
+        });
+        // Deleted outside GitTurtle; the sidebar has not refreshed.
+        git(&path, &["branch", "-D", "topic"]);
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            // What clicking the row, or Enter on it, does.
+            app.update(cx, |app, cx| app.activate_navigation(row, window, cx));
+        });
+        settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_showing_all_history(app, TOPIC_GONE);
+            assert!(
+                app.branches.iter().all(|branch| branch.name != "topic"),
+                "the sidebar now lists current branches"
             );
         });
     }

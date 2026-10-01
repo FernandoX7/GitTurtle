@@ -976,11 +976,10 @@ impl GitTurtle {
             .map(|s| s.0.clone())
             .unwrap_or("All history".into());
         let columns = self.history_column_layout();
-        let history = if self.commits.is_empty() && self.error.is_some() {
-            empty(
-                "Could not open repository",
-                self.error.as_deref().unwrap_or_default(),
-            )
+        let history = if self.commits.is_empty()
+            && let Some(error) = self.error.as_deref()
+        {
+            empty(open_failure_title(error), error)
         } else if self.visible.is_empty()
             && let Some((title, description)) = self.history_search_empty()
         {
@@ -2185,6 +2184,64 @@ thread_local! {
         const { RefCell::new(std::collections::BTreeMap::new()) };
 }
 
+/// The repository page's heading for a failed open: a removed worktree's tab
+/// says so plainly rather than as a generic failure.
+pub(crate) fn open_failure_title(error: &str) -> &'static str {
+    if crate::worker::RemovedWorktree::describes(error) {
+        "Worktree removed"
+    } else {
+        "Could not open repository"
+    }
+}
+
+/// The operation banner's summary of `error`, its first line. A History scope
+/// change is information rather than a failure, so it is a polite status
+/// carrying its text as label and value (the macOS adapter announces a live
+/// node from its value); every other error stays an assertive alert.
+pub(crate) fn operation_error_summary(error: &str) -> Stateful<Div> {
+    let summary = div().id("operation-error-summary");
+    let summary = if crate::history_updates::is_scope_report(error) {
+        summary
+            .role(Role::Status)
+            .a11y_synthetic_children(native_accessibility::polite)
+            .aria_value(error.to_owned())
+    } else {
+        summary
+            .role(Role::Alert)
+            .a11y_synthetic_children(native_accessibility::assertive)
+    };
+    summary
+        .aria_label(error.to_owned())
+        .flex_1()
+        .min_w_0()
+        .truncate()
+        .text_size(crate::appearance::ui_text(11.))
+        .child(
+            error
+                .lines()
+                .next()
+                .unwrap_or(error)
+                .chars()
+                .take(220)
+                .collect::<String>(),
+        )
+}
+
+/// A History scope change announced beside a banner that another failure
+/// holds: a polite status, drawn as nothing, like the rail's announcement.
+pub(crate) fn scope_announcement(message: &str) -> Stateful<Div> {
+    div()
+        .id("history-scope-announcement")
+        .debug_selector(|| "history-scope-announcement".into())
+        .role(Role::Status)
+        .a11y_synthetic_children(native_accessibility::polite)
+        .aria_label(message.to_owned())
+        .aria_value(message.to_owned())
+        .absolute()
+        .size(px(1.))
+        .overflow_hidden()
+}
+
 /// `control` named `name` for assistive technology: a control that a compact
 /// layout draws without its visible label. `selector` is its debug selector,
 /// by which a test reads the name back.
@@ -2851,26 +2908,7 @@ impl Render for GitTurtle {
                         .gap_3()
                         .bg(rgb(palette(cx).removed_background))
                         .text_color(rgb(palette(cx).removed))
-                        .child(
-                            div()
-                                .id("operation-error-summary")
-                                .role(Role::Alert)
-                                .a11y_synthetic_children(native_accessibility::assertive)
-                                .aria_label(error.clone())
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(crate::appearance::ui_text(11.))
-                                .child(
-                                    error
-                                        .lines()
-                                        .next()
-                                        .unwrap_or(error)
-                                        .chars()
-                                        .take(220)
-                                        .collect::<String>(),
-                                ),
-                        )
+                        .child(operation_error_summary(error))
                         .child(
                             button("operation-error-details", "Details…", "", false).on_click(
                                 cx.listener(|this, _, window, cx| {
@@ -2887,6 +2925,11 @@ impl Render for GitTurtle {
                             ),
                         )
                 }))
+                .children(
+                    self.history_updates
+                        .fallback_aside()
+                        .map(scope_announcement),
+                )
             })
             .when(
                 self.page == AppPage::Repository && self.operation_error.is_none(),

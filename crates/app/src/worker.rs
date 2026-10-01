@@ -38,8 +38,8 @@ pub struct Snapshot {
     pub graph_notice: Option<String>,
     pub refs: HashMap<String, Vec<String>>,
     pub elapsed: Duration,
-    /// Set when an Open with [`MissingScope::AllHistory`] found its scope
-    /// gone: this snapshot is All history instead.
+    /// Set when an explicit Open found its scope gone: this snapshot is All
+    /// history instead.
     pub vanished_scope: Option<VanishedScope>,
 }
 
@@ -56,15 +56,39 @@ impl std::fmt::Display for VanishedScope {
 
 impl std::error::Error for VanishedScope {}
 
-/// What an Open does when its branch or worktree scope no longer resolves.
+/// What a snapshot read does when its branch or worktree scope no longer
+/// resolves. Either way the reason is in `Snapshot::vanished_scope`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MissingScope {
-    /// Fail the read, as for a scope just chosen or a restored tab.
-    Fail,
-    /// Read All history and return the reason in `Snapshot::vanished_scope`,
-    /// as an explicit Refresh does.
+enum MissingScope {
+    /// Read navigation metadata without history rows: a quiet read keeps the
+    /// displayed history.
+    Metadata,
+    /// Read All history, as every explicit Open does.
     AllHistory,
 }
+
+/// An explicit Open of a worktree's own tab whose folder no longer exists.
+/// It stays an open failure, said plainly.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemovedWorktree(PathBuf);
+
+const REMOVED_WORKTREE: (&str, &str) = ("The worktree ", " was removed.");
+
+impl RemovedWorktree {
+    /// Whether `message` is this failure, as the repository page shows it.
+    pub fn describes(message: &str) -> bool {
+        message.starts_with(REMOVED_WORKTREE.0) && message.ends_with(REMOVED_WORKTREE.1)
+    }
+}
+
+impl std::fmt::Display for RemovedWorktree {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (before, after) = REMOVED_WORKTREE;
+        write!(formatter, "{before}{}{after}", self.0.display())
+    }
+}
+
+impl std::error::Error for RemovedWorktree {}
 
 pub struct ImageSide {
     pub animation: Option<Arc<crate::gif_playback::Timeline>>,
@@ -242,10 +266,11 @@ pub enum Job {
         area: gitturtle_core::ChangeArea,
         head: Option<String>,
     },
+    /// An explicit open. A scope that no longer resolves reads All history
+    /// and says why in `Snapshot::vanished_scope`.
     Open {
         path: PathBuf,
         scope: Option<Scope>,
-        missing_scope: MissingScope,
         limit: usize,
     },
     Changes {
@@ -995,34 +1020,24 @@ fn execute(
         } => {
             let working = WorkingState::read_with_checkpoint(&repo, || cancellation.check())?;
             cancellation.check()?;
+            // Only a vanished scope retains the displayed history; any other
+            // failure is reported as the failed read it is.
             let snapshot = history.then(|| {
-                match read_snapshot(
+                let mut snapshot = read_snapshot(
                     repo.path().to_owned(),
                     scope.as_ref(),
-                    MissingScope::Fail,
+                    MissingScope::Metadata,
                     limit,
                     cancellation,
                     session,
-                ) {
-                    Ok(snapshot) => Ok(QuietHistory::Refreshed(snapshot)),
-                    Err(error) => {
-                        cancellation.check()?;
-                        // A zero-row unscoped snapshot reads current navigation
-                        // metadata without loading a replacement history page.
-                        let metadata = read_snapshot(
-                            repo.path().to_owned(),
-                            None,
-                            MissingScope::Fail,
-                            0,
-                            cancellation,
-                            session,
-                        )?;
-                        Ok(QuietHistory::Retained {
-                            metadata,
-                            error: format!("{error:#}"),
-                        })
-                    }
-                }
+                )?;
+                Ok(match snapshot.vanished_scope.take() {
+                    Some(vanished) => QuietHistory::Retained {
+                        metadata: snapshot,
+                        error: vanished.to_string(),
+                    },
+                    None => QuietHistory::Refreshed(snapshot),
+                })
             });
             cancellation.check()?;
             let preview = selected.map(
@@ -1172,21 +1187,24 @@ fn execute(
                 start.elapsed(),
             ))
         }
-        Job::Open {
-            path,
-            scope,
-            missing_scope,
-            limit,
-        } => {
+        Job::Open { path, scope, limit } => {
             let mut snapshot = read_snapshot(
                 path.clone(),
                 scope.as_ref(),
-                missing_scope,
+                MissingScope::AllHistory,
                 limit,
                 cancellation,
                 session,
             )
-            .map_err(|error| crate::repository_access::explain(&path, error))?;
+            .map_err(|error| match &scope {
+                // A worktree's tab is rooted at the worktree itself.
+                Some(Scope::Worktree { path: worktree })
+                    if fs_err_not_found(std::fs::symlink_metadata(&path)) =>
+                {
+                    anyhow::Error::new(RemovedWorktree(worktree.clone()))
+                }
+                _ => crate::repository_access::explain(&path, error),
+            })?;
             cancellation.check()?;
             snapshot.elapsed = start.elapsed();
             Ok(Output::Snapshot(snapshot))
@@ -1256,11 +1274,17 @@ fn read_snapshot(
     let worktrees = repository.worktrees()?;
     cancellation.check()?;
     // The branch and worktree lists that show the scope gone are the ones
-    // the All history fallback is read with.
-    let (oid, vanished_scope) = match scope_oid(scope, &branches, &worktrees) {
-        Ok(oid) => (oid, None),
-        Err(vanished) if missing_scope == MissingScope::AllHistory => (None, Some(vanished)),
-        Err(vanished) => return Err(vanished.into()),
+    // the All history or metadata read is made with.
+    let (oid, vanished_scope, limit) = match scope_oid(scope, &branches, &worktrees) {
+        Ok(oid) => (oid, None, limit),
+        Err(vanished) => (
+            None,
+            Some(vanished),
+            match missing_scope {
+                MissingScope::AllHistory => limit,
+                MissingScope::Metadata => 0,
+            },
+        ),
     };
     let scope = match oid {
         Some(oid) if oid.bytes().all(|byte| byte == b'0') => {
@@ -1405,6 +1429,11 @@ fn scope_oid<'a>(
                 ))
             }),
     }
+}
+
+/// Whether a passive metadata probe found nothing at the path.
+fn fs_err_not_found(probe: std::io::Result<std::fs::Metadata>) -> bool {
+    probe.is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
 }
 
 fn image_change(file: &FileChange) -> bool {
@@ -1996,7 +2025,6 @@ mod tests {
         Job::Open {
             path: name.into(),
             scope: None,
-            missing_scope: MissingScope::Fail,
             limit: 10,
         }
     }
@@ -2434,7 +2462,6 @@ mod image_tests {
             Job::Open {
                 path: fixture.0.clone(),
                 scope: None,
-                missing_scope: MissingScope::Fail,
                 limit: 500,
             },
             &mut cache,
@@ -2941,6 +2968,123 @@ mod image_tests {
             metadata.commits.is_empty(),
             "metadata fallback must not load another history page"
         );
+    }
+
+    /// The initial branch with "main work" on "initial", and `departing` at
+    /// "initial".
+    fn departing_fixture() -> Fixture {
+        let fixture = Fixture::new();
+        for args in [
+            &["config", "user.name", "GitTurtle Test"][..],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["commit", "--allow-empty", "-qm", "initial"],
+            &["branch", "departing"],
+            &["commit", "--allow-empty", "-qm", "main work"],
+        ] {
+            fixture.git(args, b"");
+        }
+        fixture
+    }
+
+    #[test]
+    fn explicit_open_with_a_vanished_scope_reads_all_history_and_names_it() {
+        let fixture = departing_fixture();
+        fixture.git(&["branch", "-D", "departing"], b"");
+        let gone = fixture.0.join("removed-worktree");
+        for (scope, reason) in [
+            (
+                Scope::Branch {
+                    name: "departing".into(),
+                    remote: false,
+                },
+                "Local branch 'departing' no longer exists in the local repository snapshot"
+                    .to_owned(),
+            ),
+            (
+                Scope::Worktree { path: gone.clone() },
+                format!(
+                    "Worktree '{}' is no longer registered in the local repository snapshot",
+                    gone.display()
+                ),
+            ),
+        ] {
+            let Output::Snapshot(snapshot) = execute(
+                Job::Open {
+                    path: fixture.0.clone(),
+                    scope: Some(scope),
+                    limit: 10,
+                },
+                &mut PreviewCache::default(),
+                &active(),
+                &mut RepositorySession::default(),
+            )
+            .unwrap() else {
+                panic!("expected a snapshot")
+            };
+            assert_eq!(
+                snapshot.vanished_scope.map(|vanished| vanished.to_string()),
+                Some(reason)
+            );
+            assert_eq!(
+                snapshot
+                    .commits
+                    .iter()
+                    .map(|commit| commit.subject.as_str())
+                    .collect::<Vec<_>>(),
+                ["main work", "initial"],
+                "All history"
+            );
+        }
+    }
+
+    #[test]
+    fn quiet_history_failures_other_than_a_vanished_scope_stay_failures() {
+        let fixture = departing_fixture();
+        fixture.git(&["switch", "-q", "departing"], b"");
+        fixture.git(&["commit", "--allow-empty", "-qm", "lost parent"], b"");
+        let lost = fixture.git(&["rev-parse", "HEAD"], b"");
+        fixture.git(&["commit", "--allow-empty", "-qm", "departing tip"], b"");
+        fixture.git(&["switch", "-q", "-"], b"");
+        // The branch still resolves; reading its history fails on a missing
+        // object.
+        fs::remove_file(
+            fixture
+                .0
+                .join(".git/objects")
+                .join(&lost[..2])
+                .join(&lost[2..]),
+        )
+        .unwrap();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let Output::QuietRefresh(refresh) = execute(
+            Job::QuietRefresh {
+                repo,
+                scope: Some(Scope::Branch {
+                    name: "departing".into(),
+                    remote: false,
+                }),
+                limit: 100,
+                history: true,
+                selected: None,
+            },
+            &mut PreviewCache::default(),
+            &active(),
+            &mut RepositorySession::default(),
+        )
+        .unwrap() else {
+            panic!("expected quiet refresh")
+        };
+        match refresh.snapshot {
+            Some(Err(error)) => {
+                assert!(error.downcast_ref::<VanishedScope>().is_none(), "{error:#}")
+            }
+            Some(Ok(QuietHistory::Retained { error, .. })) => {
+                panic!("a failed read was retained as a scope change: {error}")
+            }
+            Some(Ok(QuietHistory::Refreshed(_))) => panic!("the missing object went unnoticed"),
+            None => panic!("history was requested"),
+        }
     }
 
     #[test]
@@ -4120,7 +4264,7 @@ mod image_tests {
         let before = read_snapshot(
             fixture.0.clone(),
             Some(&scope),
-            MissingScope::Fail,
+            MissingScope::Metadata,
             10,
             &active(),
             &mut session,
@@ -4136,7 +4280,7 @@ mod image_tests {
             let refreshed = read_snapshot(
                 fixture.0.clone(),
                 Some(scope),
-                MissingScope::Fail,
+                MissingScope::Metadata,
                 10,
                 &active(),
                 &mut session,
@@ -4145,19 +4289,23 @@ mod image_tests {
             assert_eq!(refreshed.commits[0].oid, second);
             assert_eq!(refreshed.commits[1].oid, first);
         }
-        // A missing selection must never silently fall back to unrelated refs.
+        // A missing selection must never silently fall back to unrelated
+        // refs: a quiet read gets navigation metadata and the reason only.
         fixture.git(&["update-ref", "-d", "refs/heads/main"], &[]);
-        let error = read_snapshot(
+        let missing = read_snapshot(
             fixture.0.clone(),
             Some(&scope),
-            MissingScope::Fail,
+            MissingScope::Metadata,
             10,
             &active(),
             &mut session,
         )
-        .err()
-        .expect("deleted branch must fail");
-        assert!(error.to_string().contains("no longer exists"));
+        .unwrap();
+        assert!(missing.commits.is_empty());
+        assert_eq!(
+            missing.vanished_scope.map(|vanished| vanished.to_string()),
+            Some("Local branch 'main' no longer exists in the local repository snapshot".into())
+        );
     }
 
     #[test]

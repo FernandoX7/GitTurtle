@@ -30,10 +30,10 @@ impl State {
             ..Default::default()
         };
     }
-    /// The in-flight quiet read, for a GPUI test to await its reply.
+    /// Whether a quiet read is in flight, for a GPUI test to wait on it.
     #[cfg(test)]
-    pub(super) fn take_task(&mut self) -> Option<Task<()>> {
-        self.task.take()
+    pub(super) fn reading(&self) -> bool {
+        self.task.is_some()
     }
 
     fn can_start(
@@ -321,7 +321,7 @@ impl GitTurtle {
                 }
                 Err(error) => {
                     self.operation_error
-                        .get_or_insert_with(|| format!("History scope changed: {error:#}"));
+                        .get_or_insert_with(|| format!("Local refresh: {error:#}"));
                 }
             }
         }

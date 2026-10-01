@@ -1008,19 +1008,6 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_history(path, scope, worker::MissingScope::Fail, window, cx);
-    }
-
-    /// `missing_scope` decides whether a scope that no longer resolves fails
-    /// the read or shows All history; only explicit Refresh asks for the latter.
-    fn open_history(
-        &mut self,
-        path: PathBuf,
-        scope: Option<(String, worker::Scope)>,
-        missing_scope: worker::MissingScope,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
         if self.tab_open_requested(&path, &scope, window, cx) {
             return;
         }
@@ -1092,7 +1079,6 @@ impl GitTurtle {
             Job::Open {
                 path,
                 scope: self.scope.as_ref().map(|s| s.1.clone()),
-                missing_scope,
                 limit: self.limit,
             },
             "Reading local history…",
@@ -1155,15 +1141,8 @@ impl GitTurtle {
                 if self.tab_snapshot_accepted(&snapshot.repository, window, cx) {
                     return;
                 }
-                if let Some(vanished) = snapshot.vanished_scope.take() {
-                    // Before navigation and a retained query use the scope.
-                    self.scope = None;
-                    self.history_updates
-                        .report_scope_fallback(&vanished, &mut self.operation_error);
-                } else {
-                    self.history_updates
-                        .clear_scope_error(&mut self.operation_error);
-                }
+                // Before navigation and a retained query use the scope.
+                self.accept_open_scope(&mut snapshot);
                 self.history_updates.captured(&snapshot);
                 self.history_paging = history_paging::State::from_snapshot(&snapshot);
                 self.status = format!(
@@ -1725,13 +1704,7 @@ impl GitTurtle {
         if self.mode == WorkspaceMode::Working {
             self.refresh_worktree(window, cx);
         } else if let Some(path) = self.path.clone() {
-            self.open_history(
-                path,
-                self.scope.clone(),
-                worker::MissingScope::AllHistory,
-                window,
-                cx,
-            );
+            self.open(path, self.scope.clone(), window, cx);
         }
     }
     fn choose_repository(
