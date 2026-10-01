@@ -260,6 +260,8 @@ impl GitTurtle {
     }
 }
 
+#[cfg(all(test, target_os = "linux"))]
+mod atspi_state_tests;
 #[cfg(test)]
 mod control_tests;
 #[cfg(test)]

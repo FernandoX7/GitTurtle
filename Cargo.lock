@@ -15,8 +15,6 @@ dependencies = [
 [[package]]
 name = "accesskit_atspi_common"
 version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "023da0e5097f46df7092d5280b02efb9bbf8d93298daeced42652463e357d636"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
@@ -2256,6 +2254,7 @@ checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
 name = "gitturtle"
 version = "0.1.0"
 dependencies = [
+ "accesskit_atspi_common",
  "anyhow",
  "ashpd",
  "block2 0.6.2",

@@ -6,11 +6,12 @@ does not replace the notices described here.
 
 ## Toolkit and libraries
 
-The locked GPUI Kit 0.6.0 stack and GPUI 0.3.4 backend use Apache-2.0. Local
-patches preserve upstream licenses and document modifications:
+The locked GPUI Kit 0.6.0 stack and GPUI 0.3.4 backend use Apache-2.0, and its
+AccessKit adapters MIT or Apache-2.0. Local patches preserve upstream licenses and document modifications:
 
 | Vendored package | License | Modification record |
 | --- | --- | --- |
+| `accesskit_atspi_common` 0.19.1 | [MIT](vendor/accesskit_atspi_common/LICENSE-MIT) or [Apache-2.0](vendor/accesskit_atspi_common/LICENSE-APACHE), with [Chromium notices](vendor/accesskit_atspi_common/LICENSE.chromium) | [Patch](vendor/accesskit_atspi_common/GITTURTLE-PATCH.md) |
 | `gpui-base` 0.6.0 | [Apache-2.0](vendor/gpui-base/LICENSE-APACHE) | [Patch](vendor/gpui-base/GITTURTLE-PATCH.md) |
 | `gpui-component` 0.6.0 | [Apache-2.0](vendor/gpui-component/LICENSE-APACHE) | [Patch](vendor/gpui-component/GITTURTLE-PATCH.md) |
 | `gpui-pre-macos` 0.3.4 | [Apache-2.0](vendor/gpui-pre-macos/LICENSE-APACHE) | [Patch](vendor/gpui-pre-macos/README.gitturtle.md) |

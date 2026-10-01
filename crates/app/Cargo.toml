@@ -43,6 +43,9 @@ gpui-kit = { version = "=0.6.0", features = ["test-support"] }
 # The toolkit's Linux text system, already in the graph through gpui-kit; the
 # bundled code font test loads it without system fonts.
 gpui-pre-wgpu = "=0.3.4"
+# The AT-SPI translation layer under the toolkit's accesskit_unix, already in
+# the graph and patched in vendor/; the state-set test maps nodes through it.
+accesskit_atspi_common = "=0.19.1"
 
 [[bin]]
 name = "gitturtle"
