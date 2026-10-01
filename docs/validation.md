@@ -65,6 +65,44 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## October 1 a marked Reflog selection and cues for what scrolls
+
+Task `reflog-selection-and-scroll-cues`. In the Reflog, the selected entry now paints the selected surface; the dialog's scrolling content shows the always-visible vertical scrollbar of the discard and worktree removal reviews whenever it overflows; and the changed-file list shows whole rows only, as many as fit in 110 px at 13 pt (5), kept as that row count at every text size, with the same scrollbar when it holds more files.
+
+Native evidence, full tier:
+- **Builds:** base `7e1caa9` (the run's `accepted_head`, the attested release of `worktree-rows-ring-and-selection`; sha256 `536b8123…`) and candidate `2400891` (sha256 `4d451355…`), release builds from clean trees, each in its own target directory. `qa.py identity` reported no problem.
+- **Host:** Ubuntu 26.04, GNOME 50, XWayland `:0` at scale factor 1, window 1000 × 680, one session on 2026-10-01 from 22:33 to 22:40 UTC.
+- **Input:** a local driver on the `qa.py` library (sha256 `0fc29d90…`), through Mutter RemoteDesktop with X focus verified, never XTest.
+- **Fixture:** a disposable `gallery` repository with 14 HEAD reflog entries, 16 tags and a local bare `origin`. `HEAD@{0}` points at a commit that changes 9 files whose paths all have descenders; `HEAD@{1}` changes 3. Its state was byte-identical before and after the session, and no write control was activated.
+- **Steps:** the command palette's "browse reflog", a click on the entry, the pointer parked outside the window, then the mouse wheel over the dialog's explanation until the content stopped moving. Each launch's store seeded Midnight or Porcelain at 13 or 18 pt.
+
+Measured, the same in both palettes unless named:
+
+| | Base | Candidate |
+| --- | --- | --- |
+| Selected entry's fill against the dialog | none (1.00:1) | `selected`: 1.53:1 Midnight, 1.18:1 Porcelain |
+| Content scrollbar at rest and at the end | none | a thumb at the top, then at the bottom |
+| File list at 13 pt, 9 files | 110 px; 5 whole rows, then the 6th cut through its descenders; no scrollbar | 95 px, 5 whole 19 px rows, and a thumb in its gutter |
+| File list at 18 pt, 9 files | 110 px; 4 whole rows and no cue for the other 5 | 135 px, 5 whole 27 px rows, and a thumb |
+| File list at 13 pt, 3 files | 3 rows, no scrollbar | the same, identical |
+
+With nothing selected at 13 pt, `qa.py compare --mask status-timing` finds both builds identical. With the entry selected they differ only in the fill and the thumbs, and in the end frames the content above the file list sits 15 px higher, the list's shorter bound.
+
+Coordinator decisions, with the design review: the Porcelain selected fill stays at 1.18:1, above the 1.15:1 floor DESIGN.md sets for selected surfaces and the same `selected` the worktree rows and other lists use; and the file list growing to 135 px at 18 pt is the contract's row count, cued by the content's scrollbar. File rows no longer wrap, so a long path now ends in an ellipsis without a tooltip; no captured path was long enough to show it. Queued as follow-ups: a tooltip with the full path on each file row, keeping the file name visible; the 2 px accent leading marker DESIGN.md gives a selected row, for the Reflog and worktree lists together; and the same scrollbar for the Reflog's entry list, which shows 6 of 14 entries without a cue.
+
+Frames in [`evidence/reflog-selection-and-scroll-cues/`](evidence/reflog-selection-and-scroll-cues/), 14 crops of the Reflog dialog, 740 × 535 at (130, 68) at 13 pt and 740 × 553 at 18 pt:
+- `base-{midnight,porcelain}-13pt-1000x680-reflog-selected-rest.png`: on the base, `HEAD@{0}` selected without a surface, and no scrollbar;
+- `base-{midnight,porcelain}-13pt-1000x680-reflog-selected-end.png`: on the base, scrolled to the end, the file list's 6th row cut through its descenders, and no scrollbar;
+- `candidate-{midnight,porcelain}-13pt-1000x680-reflog-selected-rest.png`: on the candidate, the selected fill on `HEAD@{0}` and the content's thumb at the top;
+- `candidate-{midnight,porcelain}-13pt-1000x680-reflog-selected-end.png`: on the candidate, scrolled to the end, 5 whole file rows with the list's thumb, and the content's thumb at the bottom;
+- `base-{midnight,porcelain}-18pt-1000x680-reflog-files.png`: on the base at 18 pt, 4 file rows and no cue for the other 5;
+- `candidate-{midnight,porcelain}-18pt-1000x680-reflog-files.png`: on the candidate at 18 pt, 5 whole rows with the list's thumb, and the content's thumb;
+- `base-midnight-13pt-1000x680-reflog-files-few.png` and `candidate-…-files-few.png`: `HEAD@{1}` with 3 files, no file-list scrollbar in either build, and on the candidate the content's thumb.
+
+`qa.py privacy scan --redacted` with the local template set found all 14 clean on their committed bytes. A `design-reviewer` pass approved the frames.
+
+Not covered: keyboard focus and hover on the selected entry (the ring room is covered by `reflog_browser_keeps_room_for_every_focus_ring`), truncated paths, 11 pt, macOS, native Wayland and fractional scale factors.
+
 ## October 1 worktree rows keep the ring clear and selection off the accent
 
 Task `worktree-rows-ring-and-selection`. Rows in the worktree manager's list of worktrees now stand apart by the ring room plus 2 px (5 px at the default ring), so a focused row's ring keeps 2 px of the list's surface before its neighbours' borders. A selected row keeps the neutral border with its selected fill and selected and toggled state, so an accent outline at rest no longer means selection.
