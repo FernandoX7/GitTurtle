@@ -65,6 +65,44 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## October 1 one ring room for every clip
+
+Task `ring-room-helper`, the owner's cleanup request of 2026-09-30 after #94, #96 and #99. Four clips keep room for the ring a focused Button draws outside its edge: the repository tab strip, the Tags and Reflog dialogs, and Settings' Your themes rows. Each computed that room on its own, and the Your themes rows kept a fixed 3 px (`ROW_RING_ROOM`) while the page's reveal read the installed ring. All four now take `appearance::button_ring_room`, the installed `Theme::button_focus_ring`'s gap plus width. `ROW_RING_ROOM` is gone, and `rows_off_boundary` and the theme editor's `reveal_focused_row` stay in step with the rows' room.
+
+The Your themes rows' fill layer also drops its hover fill after a touch, as GPUI's own hover styles do. GPUI keeps `Window::last_input_was_touch` crate-private, so the row asks GPUI's `Interactivity::compute_style` whether a hover style would show (`settings.rs`, `row_hovered`). The answer follows every modality rule GPUI applies to hover styles.
+
+Tests: `every_ring_room_follows_the_installed_ring` (`repository_tabs.rs`) installs a ring of another size. It requires each of the four clips to keep exactly that room, and the Your themes list's room to agree with the page reveal and `rows_off_boundary`. `a_touch_takes_a_rows_hover_fill_away_until_the_mouse_moves` (`theme_editor.rs`) hovers a row with the mouse and sends a touch over it. It requires the resting fill after the touch, and the hover fill again after the next mouse move. The existing ring-room tests pass unchanged.
+
+Native evidence, light tier, since at the default ring (2 px and a 1 px gap) the change is meant to move no pixel:
+- **Builds:** base `469b549` (sha256 `5aa34e3a…`), the candidate's parent, and candidate `04690dc` (sha256 `cc75b9a2…`). Both are release builds from clean trees, each in its own `CARGO_TARGET_DIR`, and `qa.py identity` reported no problem. The controller rebuilds the candidate on the commit that adds these frames. Its native attestation re-checks the rebuilt executable against them.
+- **Host:** Ubuntu 26.04, GNOME 50 on Wayland, XWayland `:0` at scale factor 1, window 1000x680, Midnight. One session on 2026-10-01 from 14:03 to 14:17 UTC ran base then candidate for each scenario, 10 launches.
+- **Input:** a local driver on the `qa.py` library (`session.Session`, `mutter.MutterDriver`, and `portal.Keyboard` for the file chooser; `drive_rrh.py`, sha256 `e2b4218f…`) sent every input through Mutter RemoteDesktop with X focus verified, never through XTest. Each launch had its own empty run directory under `/tmp/gitturtle-evidence/runs/ring-room-helper`, its own store, and the QA identity.
+- **Routes:** Tab keys move the focus from where a launch starts, and nothing is activated except Import…. The fixtures were used read-only; their HEAD, status, index, refs and reflogs were the same before and after the session.
+  - **Tab strip:** the `tabs` fixture's three repositories, the first active; Tab 7 focuses the first tab.
+  - **Your themes:** `theme-fixture`, with a store holding three custom themes. A click on Import… adds Imported Harbor through the GNOME file chooser, which draws the import highlight. Tab 40 focuses Edit… on the row above it, and Tab 43 focuses Imported Harbor's Edit…, flush against the status bar once the page scrolls 3 px to reveal it.
+  - **Tags and Reflog:** the `tags-reflog` fixture under `/tmp/gitturtle-evidence/fixtures/`. Tab 3 focuses the first Tags row, and Tab 4 the first Reflog entry.
+
+Compares, each `qa.py compare <base> <candidate> --mask status-timing`: all five sites are identical, with 0 px outside the mask. The masked pixels, 0 to 75, are the status bar's timing. Each focus frame shows the ring. Against the same build's unfocused frame, the 1 to 3 px band outside the target differs on all four sides: 336 px for the tab, 352 for either Your themes row, 2,424 for the Tags row and 2,992 for the Reflog entry, the same on both builds. Another 13 frames from the same launches are identical too:
+- the rest frames;
+- the middle tab, its close button and the last tab;
+- the last Tags row and the last Reflog entry;
+- a Your themes row hovered by the mouse, with and without focus.
+
+The base frames reproduce the committed Your themes highlight, focus-beside-highlight and flush frames and the Tags row frame of #96 and #99 byte for byte.
+
+Frames: [`evidence/ring-room-helper/`](evidence/ring-room-helper/) holds the candidate's five frames: `candidate-midnight-1000x680-{tab-focus,themes-row-focus-above-import,themes-row-focus-flush,tags-row-focus,reflog-entry-focus}.png`. The base's frames are identical and not committed. `qa.py privacy scan --redacted` with the local template set found all five clean. A full-resolution view shows only:
+- product UI;
+- `/tmp/gitturtle-evidence` paths;
+- the QA identity;
+- the fixture's author.
+
+Design check: pass, by a `design-reviewer` pass over the five frames. Each ring is whole: 2 px of accent (`#75e0bb`) 1 px outside the control on all four sides. The tab strip does not clip the tab's ring, and the flush row's ring keeps a 1 px gap above the status bar's border. The touch rule changes when a row shows its hover fill, not the fill's colour. Non-blocking: touch and a ring of another size rest on the view tests. The tab's ring touches the window's top pixel row, which is whole and pre-existing.
+
+Not covered:
+- touch natively, since this host has no touch input (the touch view test covers it);
+- a ring of another size natively, since the app installs only the default (the ring-room view test covers it);
+- palettes other than Midnight, macOS, native Wayland, fractional scale factors, and other window and text sizes.
+
 ## October 1 unselected segments like the shared helper
 
 Task `segments-unselected-like-history`, the owner's request and decision of 2026-09-30, which partly reverses "unselected segments keep the ghost" in [the selected segments entry](#september-30-selected-segments-like-the-shared-helper). That entry's design review left the pressed fill as a follow-up. Settings' density segments and the project hub's mode segments now give an unselected segment `appearance::control_button_variant(false)`, the shared `button()` helper's unselected look that History's segments use, instead of the kit's ghost (`settings.rs`, `projects.rs`). A selected segment keeps #100's look, and while the hub is busy every mode keeps the ghost's disabled look. `appearance::assert_ghost_button` became `assert_unselected_button`, which checks the helper's unselected look at rest, hovered and pressed.

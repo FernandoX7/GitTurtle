@@ -3,10 +3,7 @@ use crate::*;
 use anyhow::{Context as _, Result, ensure};
 use futures::FutureExt;
 use gpui_kit::{
-    component::{
-        Theme,
-        menu::{DropdownMenu, PopupMenuItem},
-    },
+    component::menu::{DropdownMenu, PopupMenuItem},
     prelude::FluentBuilder,
 };
 use serde::{Deserialize, Serialize};
@@ -1899,8 +1896,7 @@ impl GitTurtle {
         // axes, so it keeps room inside for the ring a focused tab or close
         // button draws outside its edge, and gives the room back through its
         // margin so the tabs do not move.
-        let ring = Theme::global(cx).button_focus_ring;
-        let ring_room = ring.gap + ring.width;
+        let ring_room = appearance::button_ring_room(cx);
         div()
             .flex()
             .items_center()
@@ -2926,7 +2922,7 @@ mod tests {
     /// where a list without the room puts it.
     #[gpui::test]
     async fn repository_tab_list_keeps_room_for_every_focus_ring(cx: &mut TestAppContext) {
-        use gpui_kit::component::{FocusRing, Root};
+        use gpui_kit::component::{FocusRing, Root, Theme};
         use std::{cell::RefCell, rc::Rc};
 
         /// Each tab with its close button.
@@ -3097,6 +3093,267 @@ mod tests {
                 "without room the list clips the ring around {selector}, {ring:?}, to {mask:?}"
             );
         }
+        cx.update(|window, cx| {
+            Theme::global_mut(cx).button_focus_ring = installed;
+            window.refresh();
+        });
+        settle_tab_test(&app, cx).await;
+    }
+
+    /// Every clip that keeps room for the ring a focused Button draws outside
+    /// its edge keeps exactly the installed ring's room,
+    /// `appearance::button_ring_room`, and follows a ring of another size:
+    /// the repository tab list, the Tags list, the Reflog list and the Your
+    /// themes list. The Your themes list's room is also the room its page
+    /// reveal keeps around a revealed row, and the room its strips cover
+    /// while the rows stand off a boundary (`rows_off_boundary`).
+    #[gpui::test]
+    async fn every_ring_room_follows_the_installed_ring(cx: &mut TestAppContext) {
+        use crate::tags::tests::{content_mask, draw, install_ring, rendered, tagged_repository};
+        use appearance::{ThemeChoice, custom::CustomTheme};
+        use gpui_kit::component::{FocusRing, Root, Theme, WindowExt};
+        use std::{cell::RefCell, rc::Rc};
+
+        /// How far inside `mask` the nearest of `control`'s edges stands.
+        fn room_kept(mask: Bounds<Pixels>, control: Bounds<Pixels>) -> Pixels {
+            [
+                control.left() - mask.left(),
+                control.top() - mask.top(),
+                mask.right() - control.right(),
+                mask.bottom() - control.bottom(),
+            ]
+            .into_iter()
+            .fold(Pixels::MAX, Pixels::min)
+        }
+        fn assert_room(what: &str, kept: Pixels, room: Pixels) {
+            assert!(
+                (kept - room).abs() < px(0.01),
+                "{what} keeps {kept:?} of room, not the installed ring's {room:?}"
+            );
+        }
+        /// Draw until `selector` is rendered, while a worker reads.
+        fn wait_for(cx: &mut VisualTestContext, selector: &'static str) {
+            for _ in 0..500 {
+                draw(cx);
+                if cx.debug_bounds(selector).is_some() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            panic!("{selector} is never rendered");
+        }
+        fn shown(cx: &mut VisualTestContext, selector: &'static str) -> Bounds<Pixels> {
+            settings::shown(cx, selector).unwrap_or_else(|| panic!("{selector} is rendered"))
+        }
+        fn seed(cx: &mut VisualTestContext, app: &Entity<GitTurtle>, count: u32) {
+            cx.update(|_, cx| {
+                app.update(cx, |app, cx| {
+                    let themes = (1..=count)
+                        .map(|n| {
+                            let base = ThemeChoice::ALL[(n as usize - 1) % ThemeChoice::ALL.len()];
+                            CustomTheme::from_base(n, format!("Seed {n:02}"), base)
+                        })
+                        .collect();
+                    app.set_custom_themes(themes, cx);
+                    cx.notify();
+                })
+            });
+            draw(cx);
+        }
+        fn scroll_rows(cx: &mut VisualTestContext, app: &Entity<GitTurtle>, y: Pixels) {
+            cx.update(|_, cx| {
+                app.update(cx, |app, cx| {
+                    app.theme_editor
+                        .rows_scroll()
+                        .0
+                        .borrow()
+                        .base_handle
+                        .set_offset(point(Pixels::ZERO, y));
+                    app.notify_settings_page(cx);
+                })
+            });
+            draw(cx);
+        }
+        fn scroll_page(cx: &mut VisualTestContext, app: &Entity<GitTurtle>, y: Pixels) {
+            cx.update(|_, cx| {
+                app.update(cx, |app, cx| {
+                    app.theme_editor
+                        .page_scroll()
+                        .set_offset(point(Pixels::ZERO, y));
+                    app.notify_settings_page(cx);
+                })
+            });
+            draw(cx);
+        }
+
+        cx.executor().allow_parking();
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let initial = repo.path().to_owned();
+        let destination = fixture.path().join("isolated-session.json");
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+            // A dialog otherwise slides in on a wall-clock animation.
+            cx.set_reduce_motion(true);
+        });
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let observed = captured.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let app = cx.new(|cx| {
+                let mut app = GitTurtle::new(
+                    Some(initial),
+                    Preferences::default(),
+                    Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                );
+                app.repository_tabs.save_path = Some(destination);
+                app
+            });
+            *captured.borrow_mut() = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let app = observed.borrow_mut().take().unwrap();
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        settle_tab_test(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.apply_appearance(window, cx)));
+        settle_tab_test(&app, cx).await;
+
+        // A ring of another size than the palette's: 1 px wide, 1 px out.
+        // Smaller, so the window's own edge, 3.5 px above the strip's tabs,
+        // does not clip before the tab list does.
+        let installed = cx.read(|cx| Theme::global(cx).button_focus_ring);
+        assert_eq!(installed, appearance::BUTTON_FOCUS_RING);
+        let ring = FocusRing {
+            width: px(1.),
+            gap: px(1.),
+            ..installed
+        };
+        install_ring(cx, &app, ring);
+        let room = cx.read(appearance::button_ring_room);
+        assert_eq!(room, px(2.), "the helper follows the installed ring");
+
+        // The repository tab list.
+        wait_for(cx, "repository-tab-0");
+        let tab = rendered(cx, "repository-tab-0");
+        assert_room(
+            "the tab list",
+            room_kept(content_mask(cx, "repository-tab-0"), tab),
+            room,
+        );
+
+        // The Tags list.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
+        wait_for(cx, "tag-row-0");
+        let row = rendered(cx, "tag-row-0");
+        assert_room(
+            "the Tags list",
+            room_kept(content_mask(cx, "tag-row-0"), row),
+            room,
+        );
+        cx.update(|window, cx| window.close_all_dialogs(cx));
+        draw(cx);
+
+        // The Reflog list.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_reflog_browser(window, cx)));
+        wait_for(cx, "reflog-entry-0");
+        let entry = rendered(cx, "reflog-entry-0");
+        assert_room(
+            "the Reflog list",
+            room_kept(content_mask(cx, "reflog-entry-0"), entry),
+            room,
+        );
+        cx.update(|window, cx| window.close_all_dialogs(cx));
+        draw(cx);
+
+        // The Your themes list: the room above its first row and below its
+        // last, over the rows' box, which the list clips at its own bounds.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        seed(cx, &app, 4);
+        let list = shown(cx, "custom-themes-rows");
+        let rows_box = shown(cx, "custom-themes-rows-box");
+        let first = shown(cx, "custom-theme-1");
+        let last = shown(cx, "custom-theme-4");
+        assert_room("the Your themes list above", first.top() - list.top(), room);
+        assert_room(
+            "the Your themes list below",
+            list.bottom() - last.bottom(),
+            room,
+        );
+        assert_eq!(
+            (first.top(), last.bottom()),
+            (rows_box.top(), rows_box.bottom()),
+            "the room moves no row: the rows fill their box"
+        );
+
+        // The page reveal keeps the same room around the revealed row: with
+        // the rows' box flush against the page's bottom, focusing the last
+        // row's Delete… scrolls the page by the room and no further.
+        let viewport = shown(cx, "settings-scroll");
+        let offset = cx.read(|cx| app.read(cx).theme_editor.page_scroll().offset().y);
+        scroll_page(cx, &app, offset + viewport.bottom() - rows_box.bottom());
+        assert_eq!(
+            shown(cx, "custom-themes-rows-box").bottom(),
+            viewport.bottom(),
+            "the rows' box is flush against the page's bottom"
+        );
+        let handle = cx.update(|_, cx| app.read(cx).theme_editor.row_focus(4, cx));
+        cx.update(|window, cx| {
+            theme_editor::State::focus_row_action(
+                &handle,
+                theme_editor::RowFocus::Action(2),
+                window,
+                cx,
+            )
+        });
+        draw(cx);
+        let last = shown(cx, "custom-theme-4");
+        let list = shown(cx, "custom-themes-rows");
+        assert_room(
+            "the page reveal below the last row",
+            viewport.bottom() - last.bottom(),
+            room,
+        );
+        assert_eq!(
+            list.bottom(),
+            viewport.bottom(),
+            "the page reveals the list's own room, and no more"
+        );
+        cx.update(|window, cx| window.blur(cx));
+        draw(cx);
+
+        // The strips cover exactly the room while the rows stand off a row
+        // boundary, and are absent on one.
+        seed(cx, &app, 32);
+        scroll_page(cx, &app, Pixels::ZERO);
+        scroll_rows(cx, &app, px(-10.));
+        let list = shown(cx, "custom-themes-rows");
+        let rows_box = shown(cx, "custom-themes-rows-box");
+        let top = shown(cx, "custom-themes-ring-room-top");
+        let bottom = shown(cx, "custom-themes-ring-room-bottom");
+        assert_eq!(
+            top,
+            Bounds::new(list.origin, size(list.size.width, room)),
+            "the top strip is the room above the rows"
+        );
+        assert_eq!(
+            bottom,
+            Bounds::new(
+                point(list.left(), rows_box.bottom()),
+                size(list.size.width, room)
+            ),
+            "the bottom strip is the room below them"
+        );
+        assert_eq!(bottom.bottom(), list.bottom());
+        scroll_rows(cx, &app, Pixels::ZERO);
+        assert!(
+            !settings::page_shows(cx, "custom-themes-ring-room-top"),
+            "on a boundary the room is the ring's"
+        );
+
         cx.update(|window, cx| {
             Theme::global_mut(cx).button_focus_ring = installed;
             window.refresh();

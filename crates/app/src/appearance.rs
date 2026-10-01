@@ -238,6 +238,16 @@ pub const BUTTON_FOCUS_RING: FocusRing = FocusRing {
     opacity: 1.,
 };
 
+/// The room the installed `Theme::button_focus_ring` takes outside a focused
+/// Button's edge, its gap plus its width: what a container that clips its
+/// children keeps around a Button so the ring is drawn whole. It follows the
+/// ring the theme installs rather than [`BUTTON_FOCUS_RING`], 3 px at the
+/// default.
+pub fn button_ring_room(cx: &App) -> Pixels {
+    let ring = Theme::global(cx).button_focus_ring;
+    ring.gap + ring.width
+}
+
 /// The hover of a Button that is selected in the shared helper's look,
 /// [`control_button_variant`]`(true)`: the helper itself, the Settings density
 /// segments and the project hub's mode segments. The kit gives a selected
