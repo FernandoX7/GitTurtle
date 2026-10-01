@@ -570,3 +570,160 @@ fn tooltips_wider_than_the_window_wrap_inside_it(cx: &mut TestAppContext) {
         }
     }
 }
+
+/// The bare kit controls that track their focus handle only while enabled.
+const DISABLING_CONTROLS: [&str; 6] = [
+    "radio",
+    "toggle",
+    "link",
+    "color-swatch",
+    "checkbox",
+    "switch",
+];
+
+/// One bare kit control between two tab stops the probe owns.
+struct DisablingProbe {
+    before: FocusHandle,
+    after: FocusHandle,
+    control: &'static str,
+    disabled: bool,
+}
+
+impl Render for DisablingProbe {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        use gpui_kit::base;
+        let disabled = self.disabled;
+        let control = match self.control {
+            "radio" => base::Radio::new("probe-control")
+                .disabled(disabled)
+                .size(px(20.))
+                .into_any_element(),
+            "toggle" => base::Toggle::new("probe-control")
+                .disabled(disabled)
+                .size(px(20.))
+                .into_any_element(),
+            "link" => base::Link::new("probe-control")
+                .disabled(disabled)
+                .size(px(20.))
+                .into_any_element(),
+            "color-swatch" => base::ColorSwatch::new("probe-control", gpui::red())
+                .disabled(disabled)
+                .size(px(20.))
+                .into_any_element(),
+            "checkbox" => base::Checkbox::new("probe-control")
+                .disabled(disabled)
+                .size(px(20.))
+                .into_any_element(),
+            "switch" => base::Switch::new("probe-control")
+                .disabled(disabled)
+                .size(px(20.))
+                .into_any_element(),
+            other => unreachable!("{other}"),
+        };
+        div()
+            .flex()
+            .gap_2()
+            .child(
+                div()
+                    .id("probe-before")
+                    .track_focus(&self.before.clone().tab_stop(true))
+                    .size(px(20.)),
+            )
+            .child(control)
+            .child(
+                div()
+                    .id("probe-after")
+                    .track_focus(&self.after.clone().tab_stop(true))
+                    .size(px(20.)),
+            )
+    }
+}
+
+/// Each bare kit Radio, Toggle, Link, ColorPicker swatch, Checkbox and Switch
+/// that turns disabled while it holds focus still lets Tab and Shift+Tab,
+/// sent as keystrokes, leave it for its neighbours; disabled and unfocused,
+/// Tab skips it, and enabled again it is a tab stop again.
+#[gpui::test]
+fn tab_and_shift_tab_leave_focused_kit_controls_that_turn_disabled(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    for control in DISABLING_CONTROLS {
+        let captured: Rc<RefCell<Option<Entity<DisablingProbe>>>> = Default::default();
+        let output = captured.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let probe = cx.new(|cx| DisablingProbe {
+                before: cx.focus_handle(),
+                after: cx.focus_handle(),
+                control,
+                disabled: false,
+            });
+            *output.borrow_mut() = Some(probe.clone());
+            gpui_kit::component::Root::new(probe, window, cx)
+        });
+        let probe = captured.borrow().as_ref().unwrap().clone();
+        let draw = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+        };
+        let press = |cx: &mut VisualTestContext, keys: &str| {
+            cx.simulate_keystrokes(keys);
+            draw(cx);
+            cx.update(|window, cx| window.focused(cx))
+                .expect("a focused element")
+        };
+        let disable = |cx: &mut VisualTestContext, disabled: bool| {
+            cx.update(|_, cx| {
+                probe.update(cx, |probe, cx| {
+                    probe.disabled = disabled;
+                    cx.notify();
+                })
+            });
+            draw(cx);
+        };
+        let (before, after) = cx.read(|cx| {
+            let probe = probe.read(cx);
+            (probe.before.clone(), probe.after.clone())
+        });
+        let focus = |cx: &mut VisualTestContext, handle: &FocusHandle| {
+            cx.update(|window, cx| window.focus(handle, cx));
+            draw(cx);
+        };
+
+        draw(cx);
+        focus(cx, &before);
+        let handle = press(cx, "tab");
+        assert!(
+            handle != before && handle != after,
+            "Tab reaches the {control}"
+        );
+        assert_eq!(press(cx, "tab"), after, "{control} precedes the after stop");
+        assert_eq!(press(cx, "shift-tab"), handle);
+
+        disable(cx, true);
+        assert_eq!(
+            cx.update(|window, cx| window.focused(cx)),
+            Some(handle.clone()),
+            "the disabled {control} keeps focus until the keyboard moves it"
+        );
+        assert_eq!(press(cx, "tab"), after, "Tab leaves the disabled {control}");
+        assert_eq!(
+            press(cx, "shift-tab"),
+            before,
+            "Tab and Shift+Tab skip the disabled, unfocused {control}"
+        );
+        assert_eq!(press(cx, "tab"), after);
+
+        disable(cx, false);
+        focus(cx, &before);
+        assert_eq!(
+            press(cx, "tab"),
+            handle,
+            "enabled again, the {control} is a tab stop again"
+        );
+        disable(cx, true);
+        assert_eq!(
+            press(cx, "shift-tab"),
+            before,
+            "Shift+Tab leaves the disabled {control}"
+        );
+    }
+}
