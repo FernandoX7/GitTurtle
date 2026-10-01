@@ -575,6 +575,8 @@ fn configured_signing_failure_is_reported_instead_of_creating_unsigned_commit() 
     let repo = f.repo();
     repo.execute(&WriteCommand::StageAll).unwrap();
     f.git(&["config", "commit.gpgsign", "true"]);
+    // Pin the format too: an inherited `gpg.format=ssh` would bypass this signer.
+    f.git(&["config", "gpg.format", "openpgp"]);
     f.git(&["config", "gpg.program", "/usr/bin/false"]);
     assert!(repo.profile().unwrap().signing);
     let error = repo
