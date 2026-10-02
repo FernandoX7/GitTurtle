@@ -977,6 +977,9 @@ impl ProjectHub {
 
 impl Render for ProjectHub {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A form control focus has moved into scrolls into view in this
+        // frame.
+        self.body.reveal(window, cx);
         if let Some(branch) = self.pending_default_branch.take() {
             self.branch
                 .update(cx, |input, cx| input.set_value(branch, window, cx));
@@ -1610,6 +1613,108 @@ mod tests {
                 },
             );
         }
+    }
+
+    /// Every frame painted after focus moves into a form field, by Tab or
+    /// by a click on a field the page shows only in part, the first frame
+    /// that draws the focus included, shows the field 12 px clear of the
+    /// page's edges, or as near as the page's reach allows.
+    #[gpui::test]
+    fn project_hub_reveals_fields_in_the_frame_that_draws_focus(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            Theme::global_mut(cx).font_size = px(18.);
+        });
+        let captured = Rc::new(RefCell::new(None));
+        let observed = captured.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let hub =
+                cx.new(|cx| ProjectHub::new(vec![], HashMap::new(), "main".into(), window, cx));
+            *captured.borrow_mut() = Some(hub.clone());
+            gpui_kit::component::Root::new(hub, window, cx)
+        });
+        let hub = observed.borrow_mut().take().unwrap();
+        cx.simulate_resize(size(px(1000.), px(680.)));
+
+        fn settle(cx: &mut VisualTestContext) {
+            for _ in 0..2 {
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+                cx.run_until_parked();
+            }
+        }
+        /// Every frame painted since the last call shows the focused field
+        /// 12 px clear of the page's edges.
+        fn assert_clear(cx: &mut VisualTestContext, hub: &Entity<ProjectHub>, after: &str) {
+            let frames = cx.read(|cx| hub.read(cx).body.take_painted());
+            assert!(!frames.is_empty(), "{after} paints the page");
+            let (margin, slack) = (px(12.), px(0.01));
+            for (index, frame) in frames.iter().enumerate() {
+                let field = frame
+                    .control
+                    .unwrap_or_else(|| panic!("frame {index} after {after} draws the field"));
+                let viewport = frame.viewport;
+                let top =
+                    field.top() - margin + slack >= viewport.top() || frame.offset >= Pixels::ZERO;
+                let bottom = field.bottom() + margin <= viewport.bottom() + slack
+                    || frame.offset <= -frame.max_offset + slack;
+                assert!(
+                    top && bottom,
+                    "frame {index} of {} after {after} paints the field at {field:?}, less \
+                     than 12 px inside the page, {viewport:?}, at offset {:?}",
+                    frames.len(),
+                    frame.offset
+                );
+            }
+        }
+
+        cx.update(|window, cx| {
+            hub.update(cx, |hub, cx| {
+                hub.change_mode(ProjectMode::Create, window, cx)
+            });
+        });
+        settle(cx);
+        let mut scrolled = false;
+        for _ in 0..4 {
+            cx.read(|cx| hub.read(cx).body.take_painted());
+            cx.simulate_keystrokes("tab");
+            settle(cx);
+            assert_clear(cx, &hub, "tab");
+            scrolled |= cx.read(|cx| hub.read(cx).body.scroll().offset().y) < px(0.);
+        }
+        assert!(scrolled, "Tab scrolls the page");
+        for _ in 0..3 {
+            cx.read(|cx| hub.read(cx).body.take_painted());
+            cx.simulate_keystrokes("shift-tab");
+            settle(cx);
+            assert_clear(cx, &hub, "shift-tab");
+        }
+
+        // In a shorter window, scroll until the folder name field's input
+        // shows only its upper part at the page's lower edge, then click
+        // there.
+        cx.simulate_resize(size(px(1000.), px(420.)));
+        settle(cx);
+        let field = cx.debug_bounds("Project folder name").expect("the field");
+        let viewport = cx.read(|cx| hub.read(cx).body.scroll().bounds());
+        let offset = cx.read(|cx| hub.read(cx).body.scroll().offset().y);
+        let away = offset + (viewport.bottom() - px(15.) - field.bottom()) + field.size.height / 2.;
+        cx.update(|window, cx| {
+            let body = hub.read(cx).body.scroll();
+            assert!(away < px(0.) && -away <= body.max_offset().y);
+            body.set_offset(point(px(0.), away));
+            window.refresh();
+        });
+        settle(cx);
+        let field = cx.debug_bounds("Project folder name").expect("the field");
+        assert!(field.top() < viewport.bottom() && field.bottom() > viewport.bottom());
+        cx.read(|cx| hub.read(cx).body.take_painted());
+        cx.simulate_click(
+            point(field.center().x, viewport.bottom() - px(4.)),
+            Modifiers::default(),
+        );
+        settle(cx);
+        cx.update(|window, cx| assert!(hub.read(cx).name.focus_handle(cx).is_focused(window)));
+        assert_clear(cx, &hub, "a click");
     }
 
     #[gpui::test]

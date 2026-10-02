@@ -1,5 +1,7 @@
 use super::*;
-use crate::focus_reveal::tests::{assert_steady, assert_tab_reveals, control, focus_filter};
+use crate::focus_reveal::tests::{
+    assert_every_frame_reveals, assert_steady, assert_tab_reveals, control, focus_filter,
+};
 use crate::tags::tests::{
     assert_rings_whole, assert_room_moves_nothing, draw, git, rendered, scroll_down,
     tagged_repository, window,
@@ -96,6 +98,32 @@ async fn tab_reveals_every_branch_chooser_row(cx: &mut TestAppContext) {
     // A click activates nothing while an operation runs.
     app.update(cx, |app, _| app.operation_busy = Some("Testing"));
     assert_steady(cx, &list, "branch-chooser-list", &rows);
+}
+
+/// Tab and Shift+Tab through the branch chooser's 30 rows: every frame
+/// painted after a key, the first one that draws the new focus included,
+/// shows the focused row with its whole ring inside the list.
+#[gpui::test]
+async fn branch_chooser_reveals_rows_in_the_frame_that_draws_focus(cx: &mut TestAppContext) {
+    let fixture = tempfile::tempdir().unwrap();
+    let (_repo, app, cx) = small_window_with_branches(cx, fixture.path(), 29);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.choose_branch(ChoicePurpose::Manage, window, cx)
+        })
+    });
+    let read = app.update(cx, |app, _| app.branch_actions.task.take());
+    read.expect("the branches are read").await;
+    draw(cx);
+    let list = app
+        .read_with(cx, |app, _| app.branch_actions.list.clone())
+        .expect("the chooser's list");
+
+    let rows: Vec<_> = (0..30)
+        .map(|index| control("branch-choice", index))
+        .collect();
+    focus_filter(cx, &list, &rows[0]);
+    assert_every_frame_reveals(cx, &list, "branch-chooser-list", &rows);
 }
 
 /// Tab moves through every remote's Edit… and Remove… and Shift+Tab back,

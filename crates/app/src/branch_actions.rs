@@ -999,7 +999,9 @@ impl BranchChooser {
 }
 
 impl Render for BranchChooser {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A row focus has moved onto scrolls into view in this frame.
+        self.list.reveal(window, cx);
         let p = palette(cx);
         let matching = self.matching(cx);
         let detail = match &self.purpose {
@@ -1227,7 +1229,9 @@ impl RemoteManager {
 }
 
 impl Render for RemoteManager {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A control focus has moved onto scrolls into view in this frame.
+        self.list.reveal(window, cx);
         let p = palette(cx);
         let query = self.query.read(cx).value().trim().to_lowercase();
         let matches: Vec<_> = self
