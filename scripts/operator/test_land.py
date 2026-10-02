@@ -1,4 +1,4 @@
-"""Tests for land.py's pure parts on temporary Git repositories: no network, no gh.
+"""Tests for land.py on temporary Git repositories: no network, and a stub `gh` stands in for GitHub.
 
 Run: python3 -B -m unittest discover -s scripts/operator -p 'test_*.py'
 """
@@ -246,6 +246,21 @@ class CherryPickAndIdentityTests(GitCase):
         self.assertEqual(land.head(self.repo), before)
         self.assertEqual(self.git("status", "--porcelain"), "")
 
+    def test_the_update_check_fails_closed_when_the_range_and_the_handoff_edit_one_path(self) -> None:
+        bookkeeping = {land.HANDOFF, "docs/development/queue.json"}
+        self.git("checkout", "-q", "-B", "bookkeeping", self.base)
+        original = self.commit("fix(app): the task", {land.HANDOFF: "a\nfrom the task\n",
+                                                      "src/app.rs": "fn main() { run(); }\n"})
+        handoff = self.commit("docs(dev): record the landing", {"docs/development/queue.json": "{}\n"})
+        self.assertEqual(land.updated_problems(self.repo, [original], self.repo, self.base, handoff, handoff,
+                                               bookkeeping), [])
+        self.git("checkout", "-q", "-B", "bookkeeping", original)
+        handoff = self.commit("docs(dev): record the landing", {land.HANDOFF: "a\nfrom the task\nlanded\n"})
+        self.assertEqual(land.updated_problems(self.repo, [original], self.repo, self.base, handoff, handoff,
+                                               bookkeeping),
+                         [f"the accepted range and the HANDOFF commit {handoff[:12]} both edit {land.HANDOFF}, "
+                          "which this check cannot separate; land it by hand"])
+
     def test_landed_as_finds_a_squashed_subject(self) -> None:
         self.commit("fix(app): the task (#12)", {"x.txt": "x\n"})
         self.assertEqual(land.landed_as(self.repo, "HEAD", "fix(app): the task"), land.head(self.repo))
@@ -303,6 +318,21 @@ class EarlierTasksTests(GitCase):
             land.earlier_landed(self.repo, tip, self.run_dir, self.state, "b")
 
 
+class PushByHandTests(GitCase):
+    def test_a_merge_by_hand_pushes_by_push_targets_rule(self) -> None:
+        self.git("remote", "add", "origin", "https://github.com/owner/repo.git")
+        since = "a" * 40
+        self.assertEqual(land.push_by_hand(self.repo, "claude/land-task", since, False),
+                         "`git push origin HEAD:claude/land-task`, or `git push git@github.com:owner/repo.git "
+                         "HEAD:claude/land-task` if `git diff --name-only aaaaaaaaaaaa HEAD -- .github/workflows` "
+                         "lists a file")
+        self.assertEqual(land.push_by_hand(self.repo, "claude/land-task", since, True),
+                         "`git push git@github.com:owner/repo.git HEAD:claude/land-task`")
+        self.git("remote", "set-url", "origin", "git@github.com:owner/repo.git")
+        self.assertEqual(land.push_by_hand(self.repo, "claude/land-task", since, True),
+                         "`git push origin HEAD:claude/land-task`")
+
+
 class CloneCleanupTests(GitCase):
     def test_only_clean_clones_inside_the_landed_range_go(self) -> None:
         base, candidate, evidence = self.accepted_chain()
@@ -326,10 +356,12 @@ class CloneCleanupTests(GitCase):
         self.assertNotEqual(base, evidence)
 
 
-class DryRunTests(GitCase):
-    """Steps 1 to 5 end to end against a local bare origin and a stub `agent-loop.py status`."""
+class LandingCase(GitCase):
+    """A main checkout cloned from a local bare origin whose main gained an entry after the run's base,
+    and a run whose task `task` is accepted, read through a stub `agent-loop.py status`."""
 
-    def test_dry_run_lands_merges_checks_and_cleans_up(self) -> None:
+    def make_landing(self) -> tuple[Path, Path, Path, dict]:
+        """(top directory, main checkout, run directory, the task's record)."""
         top = self.repo.parent
         base, candidate, evidence = self.accepted_chain()
         self.git("init", "-q", "--bare", "-b", "main", str(top / "origin.git"), cwd=top)
@@ -357,7 +389,15 @@ class DryRunTests(GitCase):
                                                     "tasks": {"task": record}}), encoding="utf-8")
         (run / "tasks.json").write_text(json.dumps({"version": 1, "tasks": [
             {"id": "task", "title": "Do the task", "commit": "fix(app): the task"}]}), encoding="utf-8")
+        return top, root, run, record
 
+
+class DryRunTests(LandingCase):
+    """Steps 1 to 5 end to end against a local bare origin and a stub `agent-loop.py status`."""
+
+    def test_dry_run_lands_merges_checks_and_cleans_up(self) -> None:
+        top, root, run, record = self.make_landing()
+        evidence = record["evidence_commit"]
         result = subprocess.run([sys.executable, "-B", str(root / "scripts/operator/land.py"), "--run", run.name,
                                  "--task", "task", "--dry-run"], cwd=top, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
@@ -374,6 +414,212 @@ class DryRunTests(GitCase):
                                  "--task", "task", "--dry-run"], cwd=top, capture_output=True, text=True)
         self.assertEqual(result.returncode, 1)
         self.assertIn("not 'accepted'", result.stderr)
+
+
+# GitHub as the stub `gh` sees it: the PR is `branch` on the bare `origin`, every check passes at once, and
+# each `pr checks` call first moves origin's main to the next of `moves`, as if another PR merged meanwhile.
+# Like `main`'s strict required check, `pr merge` refuses a head whose branch lacks origin's main.
+STUB_GH = r'''
+import json, os, subprocess, sys
+path = os.environ["STUB_GH_STATE"]
+with open(path, encoding="utf-8") as handle:
+    state = json.load(handle)
+args = sys.argv[1:]
+state["calls"].append(args)
+
+def origin(*command, check=True):
+    return subprocess.run(["git", "--git-dir", state["origin"], *command], check=check, capture_output=True,
+                          text=True)
+
+def branch_head():
+    found = origin("rev-parse", "--verify", "--quiet", "refs/heads/" + state["branch"], check=False)
+    return found.stdout.strip() or None
+
+def behind():
+    return origin("merge-base", "--is-ancestor", "refs/heads/main", "refs/heads/" + state["branch"],
+                  check=False).returncode != 0
+
+out, err, code = "", "", 0
+if args[:2] == ["pr", "create"]:
+    state["branch"] = args[args.index("--head") + 1]
+    out = "https://github.com/owner/repo/pull/155\n"
+elif args[:2] == ["pr", "checks"]:
+    if state["moves"]:
+        origin("update-ref", "refs/heads/main", state["moves"].pop(0))
+    out = json.dumps([{"name": "Quality gate", "bucket": "pass", "link": ""}])
+elif args[:2] == ["run", "list"]:
+    out = json.dumps([{"status": "completed", "conclusion": "success", "workflowName": "Quality"}])
+elif args[:2] == ["pr", "view"]:
+    view = {"state": state["state"], "headRefOid": branch_head(), "mergeCommit": {"oid": state.get("merged", "")},
+            "mergeStateStatus": "BEHIND" if state["state"] == "OPEN" and behind() else "CLEAN"}
+    out = json.dumps({key: view[key] for key in args[args.index("--json") + 1].split(",")})
+elif args[:2] == ["pr", "merge"]:
+    tip = branch_head()
+    if args[args.index("--match-head-commit") + 1] != tip:
+        err, code = "the head moved", 1
+    elif behind():
+        err, code = ("X Pull request owner/repo#155 is not mergeable: the head branch is not up to date "
+                     "with the base branch."), 1
+    else:
+        squash = origin("commit-tree", tip + "^{tree}", "-p", "refs/heads/main", "-m", "squash").stdout.strip()
+        origin("update-ref", "refs/heads/main", squash)
+        origin("update-ref", "-d", "refs/heads/" + state["branch"])
+        subprocess.run(["git", "branch", "-D", state["branch"]], check=True, capture_output=True)
+        state["state"], state["merged"] = "MERGED", squash
+else:
+    err, code = "the stub has no answer for gh " + " ".join(args), 2
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(state, handle)
+sys.stdout.write(out)
+sys.stderr.write(err)
+sys.exit(code)
+'''
+
+
+class BranchUpdateTests(LandingCase):
+    """Step 8 when another PR merges into main while this one's checks run (main requires strict checks)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.top, self.root, self.run_dir, self.record = self.make_landing()
+        # The stub scripts and run directory are untracked; excluded, the checkout counts as clean.
+        (self.root / ".git/info/exclude").write_text("/scripts/\n/.local/\n", encoding="utf-8")
+        self.origin = self.top / "origin.git"
+        stub = self.top / "bin/gh"
+        stub.parent.mkdir()
+        stub.write_text(f"#!{sys.executable}\n{STUB_GH}", encoding="utf-8")
+        stub.chmod(0o755)
+        self.gh_state = self.top / "gh-state.json"
+
+    def other_merges(self, *changes: dict[str, str]) -> list[str]:
+        """Commits other PRs put on origin's main, one per wait for checks, each on the previous one."""
+        other = self.top / "other"
+        self.git("clone", "-q", str(self.origin), str(other), cwd=self.top)
+        moves = []
+        for number, files in enumerate(changes, 1):
+            for name, content in files.items():
+                (other / name).parent.mkdir(parents=True, exist_ok=True)
+                (other / name).write_text(content, encoding="utf-8")
+            self.git("add", "--", *files, cwd=other)
+            self.git("commit", "-q", "-m", f"chore: another pull request {number}", cwd=other)
+            moves.append(self.git("rev-parse", "HEAD", cwd=other))
+        if moves:
+            self.git("push", "-q", "origin", "HEAD:refs/heads/other", cwd=other)  # the objects reach origin
+        return moves
+
+    def land(self, moves: list[str], *options: str) -> tuple[subprocess.CompletedProcess, list[list[str]]]:
+        self.gh_state.write_text(json.dumps({"origin": str(self.origin), "moves": moves, "state": "OPEN",
+                                             "branch": "", "calls": []}), encoding="utf-8")
+        environment = {**os.environ, "STUB_GH_STATE": str(self.gh_state),
+                       "PATH": f"{self.top / 'bin'}{os.pathsep}{os.environ['PATH']}"}
+        result = subprocess.run([sys.executable, "-B", str(self.root / "scripts/operator/land.py"), "--run",
+                                 self.run_dir.name, "--task", "task", *options], cwd=self.top, capture_output=True,
+                                text=True, env=environment)
+        return result, json.loads(self.gh_state.read_text(encoding="utf-8"))["calls"]
+
+    def origin_ref(self, name: str) -> str:
+        return self.git("--git-dir", str(self.origin), "rev-parse", "--verify", "--quiet", name, cwd=self.top)
+
+    def merged_heads(self, calls: list[list[str]]) -> list[str]:
+        """The head each `gh pr merge` asked for."""
+        return [call[call.index("--match-head-commit") + 1] for call in calls if call[:2] == ["pr", "merge"]]
+
+    def test_behind_main_merges_it_in_waits_for_checks_and_lands_that_head(self) -> None:
+        moves = self.other_merges({"other.txt": "another PR\n"})
+        patch_file = self.top / "handoff.patch"
+        patch_file.write_text(f"diff --git a/{land.HANDOFF} b/{land.HANDOFF}\nnew file mode 100644\n--- /dev/null\n"
+                              f"+++ b/{land.HANDOFF}\n@@ -0,0 +1 @@\n+Landed the task.\n", encoding="utf-8")
+        result, calls = self.land(moves, "--handoff-commit", str(patch_file))
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        first, updated = self.merged_heads(calls)
+        parents = self.git("rev-list", "--parents", "-n", "1", updated, cwd=self.root).split()[1:]
+        self.assertEqual(parents, [first, moves[0]])
+        for expected in ("is behind main, which moved while its checks ran: update 1 of 3",
+                         f"merged origin/main {moves[0][:12]} into claude/land-task as {updated[:12]}",
+                         f"against origin/main {moves[0][:12]} still has the accepted range's patch identity",
+                         f"pushed claude/land-task at {updated[:12]}", f"all 1 checks passed on {updated[:12]}",
+                         "merged PR #155"):
+            self.assertIn(expected, result.stdout)
+        # The squash carries the task, the other PR and the HANDOFF commit, and the checkout followed it.
+        squash = self.origin_ref("refs/heads/main")
+        self.assertEqual(self.git("rev-parse", f"{squash}^", cwd=self.root), moves[0])
+        for name, text in (("src/app.rs", "fn main() { run(); }"), ("other.txt", "another PR"),
+                           (land.HANDOFF, "Landed the task.")):
+            self.assertEqual(self.git("show", f"{squash}:{name}", cwd=self.root), text)
+        self.assertEqual(land.head(self.root), squash)
+        self.assertFalse((self.root / ".local/land/task").exists())
+        self.assertEqual(self.git("branch", "--list", "claude/land-task", cwd=self.root), "")
+
+    # Main's validation entry since the run's base (see `make_landing`), and another PR's entry of the task's date.
+    mains_entry = entry("October 3", "main's", "m")
+    others_entry = entry("October 2", "another task", "other")
+
+    def test_a_conflict_only_in_validation_keeps_both_entries_and_lands(self) -> None:
+        moves = self.other_merges({land.VALIDATION: GUIDE + self.mains_entry + self.others_entry + OLD + OLDEST})
+        result, calls = self.land(moves)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        first, updated = self.merged_heads(calls)
+        self.assertEqual(self.git("rev-list", "--parents", "-n", "1", updated, cwd=self.root).split()[1:],
+                         [first, moves[0]])
+        for expected in (f"merged origin/main {moves[0][:12]} into claude/land-task as {updated[:12]}",
+                         f"{land.VALIDATION}: kept both sides' entries, newest first",
+                         "still has the accepted range's patch identity", "merged PR #155"):
+            self.assertIn(expected, result.stdout)
+        # Both PRs' entries, the landing one first on their shared date, with their blank separators.
+        squash = self.origin_ref("refs/heads/main")
+        self.assertEqual(self.git("show", f"{squash}:{land.VALIDATION}", cwd=self.root) + "\n",
+                         GUIDE + self.mains_entry + entry("October 2", "the task", "task") + self.others_entry
+                         + OLD + OLDEST)
+
+    def test_a_conflict_with_main_stops_with_the_commands_to_finish_by_hand(self) -> None:
+        # The validation entries conflict too, but the two-entry merge only ever resolves them alone.
+        moves = self.other_merges({"src/app.rs": "fn main() { other(); }\n",
+                                   land.VALIDATION: GUIDE + self.mains_entry + self.others_entry + OLD + OLDEST})
+        result, calls = self.land(moves)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        worktree = self.root / ".local/land/task"
+        pushed = self.merged_heads(calls)[0]
+        for expected in (f"merging origin/main {moves[0][:12]} into claude/land-task stopped with conflicts in "
+                         f"{land.VALIDATION}, src/app.rs", f"PR #155 stays open at {pushed[:12]}",
+                         f"run `git fetch origin main` and `git merge origin/main` in {worktree}",
+                         "push with `git push origin HEAD:claude/land-task`; then,",
+                         f"`git worktree remove --force {worktree}` if it is still there, then "
+                         "`gh pr merge 155 --squash --delete-branch --match-head-commit <that head>`"):
+            self.assertIn(expected, result.stderr)
+        # The merge was aborted: the worktree is clean at the pushed head, and nothing else was pushed.
+        self.assertEqual(land.head(worktree), pushed)
+        self.assertEqual(self.git("status", "--porcelain", cwd=worktree), "")
+        self.assertEqual(self.origin_ref("refs/heads/claude/land-task"), pushed)
+        self.assertEqual(len(self.merged_heads(calls)), 1)
+
+    def test_an_update_whose_change_differs_from_the_accepted_range_is_not_pushed(self) -> None:
+        # Another PR made the candidate's own change, so the merge is clean but the PR would no longer carry it.
+        moves = self.other_merges({"src/app.rs": "fn main() { run(); }\n"})
+        result, calls = self.land(moves)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("no longer has the accepted range's patch identity", result.stderr)
+        self.assertIn("misses src/app.rs", result.stderr)
+        self.assertIn("Nothing was pushed", result.stderr)
+        pushed = self.merged_heads(calls)[0]
+        self.assertEqual(self.origin_ref("refs/heads/claude/land-task"), pushed)
+        self.assertEqual(self.git("rev-list", "--parents", "-n", "1", "HEAD", cwd=self.root / ".local/land/task")
+                         .split()[1:], [pushed, moves[0]])
+
+    def test_updates_stop_after_the_bound(self) -> None:
+        moves = self.other_merges(*({f"other-{number}.txt": f"PR {number}\n"} for number in range(4)))
+        result, calls = self.land(moves)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(f"still behind main after {land.MAX_BRANCH_UPDATES} updates", result.stderr)
+        worktree = self.root / ".local/land/task"
+        self.assertIn(f"`git worktree add {worktree} claude/land-task`, run `git fetch origin main` and "
+                      f"`git merge origin/main` in {worktree}, resolve, commit and push with "
+                      "`git push origin HEAD:claude/land-task`; then,", result.stderr)
+        heads = self.merged_heads(calls)
+        self.assertEqual(len(heads), land.MAX_BRANCH_UPDATES + 1)
+        self.assertEqual(len(set(heads)), len(heads))
+        self.assertEqual(heads[-1], self.origin_ref("refs/heads/claude/land-task"))
+        self.assertEqual(result.stdout.count("is behind main"), land.MAX_BRANCH_UPDATES)
+        self.assertNotIn("merged PR", result.stdout)
 
 
 class HandoffTests(unittest.TestCase):

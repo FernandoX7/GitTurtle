@@ -28,6 +28,13 @@
    then fast-forward the main checkout if it is clean and on `main`, remove the
    worktree, and remove each `.local/evidence/<task>/src-cand-*` clone that is
    clean with its HEAD inside the landed range (any other is kept and named).
+   When GitHub refuses the merge because main moved under the PR (strict required
+   checks), merge a freshly fetched origin/main into the branch locally, refuse
+   unless the PR's change against it still has the accepted range's patch identity
+   (plus the HANDOFF commit), push that merge and wait for its checks, then merge
+   that head; at most three times. A conflict only in docs/validation.md keeps
+   both sides' entries as in step 4; any other (HANDOFF included) stops with the
+   commands that finish by hand.
 
 `--dry-run` stops after step 5, prints the rest, and removes the worktree and
 branch it made. `--no-merge` stops once the PR exists. Nothing is force-pushed
@@ -62,6 +69,10 @@ MAX_EVIDENCE_BYTES = 1024 * 1024
 CHECK_POLL_SECONDS = 30
 CHECKS_APPEAR_SECONDS = 15 * 60
 CHECKS_TIMEOUT_SECONDS = 3 * 60 * 60
+# How often a PR that fell behind main is brought up to date before landing stops.
+MAX_BRANCH_UPDATES = 3
+# gh's words when strict required checks refuse a head that is behind its base.
+BEHIND_REFUSAL = re.compile(r"not up to date with the base branch")
 # Git variables that would point a command at another repository or index.
 FOREIGN_GIT = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
                "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_PREFIX")
@@ -69,6 +80,10 @@ FOREIGN_GIT = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTO
 
 class LandError(Exception):
     """A condition the operator has to look at before landing can go on."""
+
+
+class MergeConflict(LandError):
+    """Merging origin/main into the landing branch conflicted; the merge was aborted."""
 
 
 def say(message: str) -> None:
@@ -372,6 +387,33 @@ def identity_problems(accepted_repo: Path, originals: list[str], landing_repo: P
     return problems
 
 
+def updated_problems(accepted_repo: Path, originals: list[str], landing_repo: Path, base: str, updated: str,
+                     handoff: str | None, bookkeeping: set[str]) -> list[str]:
+    """How the PR's change from origin/main `base` to the `updated` head differs from the accepted range
+    followed by the HANDOFF commit, which alone may change the `bookkeeping` paths, and only as it did.
+
+    One diff cannot tell the two apart in a path both edit, so then it fails closed, although the
+    per-commit check of the first push passed: such a task is landed by hand."""
+    allowed = frozenset(bookkeeping) if handoff else frozenset()
+    if handoff:
+        both = (changed_paths(accepted_repo, f"{originals[0]}^", originals[-1])
+                & changed_paths(landing_repo, f"{handoff}^", handoff))
+        if both:
+            return [f"the accepted range and the HANDOFF commit {handoff[:12]} both edit {', '.join(sorted(both))}, "
+                    "which this check cannot separate; land it by hand"]
+    problems = change_problems(accepted_repo, (f"{originals[0]}^", originals[-1]), landing_repo, (base, updated),
+                               allowed)
+    if handoff:
+        accepted = changed_paths(accepted_repo, f"{originals[0]}^", originals[-1])
+        paths = (changed_paths(landing_repo, f"{handoff}^", handoff)
+                 | changed_paths(landing_repo, base, updated)) & allowed
+        problems += [f"changes {path} differently from the HANDOFF commit {handoff[:12]}"
+                     for path in sorted(paths - accepted)
+                     if not same_change(file_change(landing_repo, f"{handoff}^", handoff, path),
+                                        file_change(landing_repo, base, updated, path))]
+    return problems
+
+
 # --- 3. Cherry-picks --------------------------------------------------------------------------------
 
 def cherry_pick(worktree: Path, commit: str) -> bool:
@@ -632,6 +674,76 @@ def wait_for_checks(cwd: Path, number: str, sha: str) -> int:
         time.sleep(CHECK_POLL_SECONDS)
 
 
+def pr_view(cwd: Path, number: str, fields: str) -> dict:
+    """`gh pr view --json fields`, or {} when gh prints no JSON object."""
+    result = gh(cwd, "pr", "view", number, "--json", fields, check=False)
+    try:
+        view = json.loads(result.stdout) if result.stdout.strip() else {}
+    except ValueError:
+        return {}
+    return view if isinstance(view, dict) else {}
+
+
+def merge_main(worktree: Path, branch: str, main_sha: str) -> tuple[str, bool]:
+    """Merge origin/main `main_sha` into `branch`, checked out in `worktree`: (the merge commit, which stays
+    local; whether docs/validation.md needed the two-entry merge). A conflict only in docs/validation.md
+    keeps both sides' entries as the cherry-pick does, with the branch's placed as if it landed last on
+    main; any other conflict aborts the merge, leaving the branch where it was."""
+    before = head(worktree)
+    message = f"Merge origin/main {main_sha[:12]} into {branch}"
+    result = git_result(worktree, "-c", "rerere.enabled=false", "merge", "--no-ff", "--no-edit",
+                        "-m", message, main_sha)
+    resolved = False
+    if result.returncode:
+        unmerged = sorted(path for path in git(worktree, "diff", "--name-only", "-z",
+                                                "--diff-filter=U").split("\0") if path)
+        stopped = f"merging origin/main {main_sha[:12]} into {branch} stopped"
+        try:
+            if unmerged != [VALIDATION]:
+                detail = result.stderr.decode("utf-8", "replace").strip().splitlines()
+                raise MergeConflict(stopped + (f" with conflicts in {', '.join(unmerged)}" if unmerged
+                                               else f": {detail[-1] if detail else 'no reason given'}"))
+            fork = git(worktree, "merge-base", before, main_sha).strip()
+            try:
+                text = merge_validation(git(worktree, "show", f"{main_sha}:{VALIDATION}"),
+                                        git(worktree, "show", f"{fork}:{VALIDATION}"),
+                                        git(worktree, "show", f"{before}:{VALIDATION}"))
+            except LandError as error:
+                raise MergeConflict(f"{stopped} with conflicts in {VALIDATION} that the two-entry merge "
+                                    f"cannot resolve: {error}") from None
+        except LandError:
+            git_result(worktree, "merge", "--abort")
+            raise
+        (worktree / VALIDATION).write_bytes(text.encode("utf-8", "surrogateescape"))
+        git(worktree, "add", "--", VALIDATION)
+        git(worktree, "commit", "--quiet", "-m", message)
+        resolved = True
+    after = head(worktree)
+    if git(worktree, "rev-list", "--parents", "-n", "1", after).split()[1:] != [before, main_sha]:
+        raise LandError(f"merging origin/main {main_sha[:12]} did not leave one merge commit on {before[:12]}")
+    return after, resolved
+
+
+def update_branch(root: Path, worktree: Path, branch: str, pushed: str, base: str) -> tuple[str, str]:
+    """Check `branch` out again at the `pushed` head and merge a freshly fetched origin/main into it,
+    which must descend from `base`: (that origin/main, the local merge commit)."""
+    git(root, "worktree", "add", "--quiet", str(worktree), branch)
+    if head(worktree) != pushed:
+        raise LandError(f"{branch} is at {head(worktree)[:12]}, not the pushed {pushed[:12]}")
+    git(root, "fetch", "--quiet", "origin", "main")
+    main_sha = git(root, "rev-parse", "--verify", "refs/remotes/origin/main^{commit}").strip()
+    if not is_ancestor(root, base, main_sha):
+        raise LandError(f"origin/main {main_sha[:12]} does not descend from {base[:12]}, the PR's base")
+    if is_ancestor(root, main_sha, pushed):
+        raise LandError(f"GitHub reports the PR behind main, yet origin/main {main_sha[:12]} is in {pushed[:12]}")
+    say(f"worktree {worktree} back on {branch} at {pushed[:12]}; merging origin/main {main_sha[:12]}")
+    merged, resolved = merge_main(worktree, branch, main_sha)
+    say(f"merged origin/main {main_sha[:12]} into {branch} as {merged[:12]}, not pushed yet")
+    if resolved:
+        say(f"  {VALIDATION}: kept both sides' entries, newest first, the landing one first on a shared date")
+    return main_sha, merged
+
+
 def push_target(worktree: Path, touches_workflows: bool) -> str:
     """origin, or its SSH URL when workflows change: the gh HTTPS token lacks the `workflow` scope."""
     if not touches_workflows:
@@ -639,6 +751,16 @@ def push_target(worktree: Path, touches_workflows: bool) -> str:
     url = git(worktree, "remote", "get-url", "origin").strip()
     match = re.fullmatch(r"https://github\.com/([^/\s]+)/([^/\s]+?)(?:\.git)?/?", url)
     return f"git@github.com:{match[1]}/{match[2]}.git" if match else "origin"
+
+
+def push_by_hand(repo: Path, branch: str, since: str, touches_workflows: bool) -> str:
+    """The push of a merge of origin/main made by hand on top of `since`, by push_target's rule: over SSH
+    when the task's commits or what the merge brings in change workflows, which only the merge shows."""
+    ssh = push_target(repo, True)
+    if touches_workflows or ssh == "origin":
+        return f"`git push {ssh} HEAD:{branch}`"
+    return (f"`git push origin HEAD:{branch}`, or `git push {ssh} HEAD:{branch}` if "
+            f"`git diff --name-only {since[:12]} HEAD -- .github/workflows` lists a file")
 
 
 # --- Orchestration --------------------------------------------------------------------------------------
@@ -825,6 +947,7 @@ def land(args: argparse.Namespace) -> int:
         say(f"removed the dry-run worktree and {branch}")
         return 0
 
+    handoff_commit = None
     if handoff:
         handoff_commit = apply_handoff(worktree, handoff[0], handoff[1], args.task, allowed)
         say(f"HANDOFF commit {handoff_commit[:12]}")
@@ -841,27 +964,75 @@ def land(args: argparse.Namespace) -> int:
         raise LandError(f"gh pr create printed no PR URL: {created.stdout.strip()} {created.stderr.strip()}")
     number = match[1]
     say(f"opened {url}")
-    finish = (f"merge with `gh pr merge {number} --squash --delete-branch --match-head-commit {pushed}` once "
-              f"its checks pass, then {cleanup_hint} and fast-forward main")
+
+    def finish(tip: str) -> str:
+        # `--delete-branch` deletes the local branch too, which Git refuses while a worktree has it checked out.
+        return (f"once its checks pass, `git worktree remove --force {worktree}` if it is still there, then "
+                f"`gh pr merge {number} --squash --delete-branch --match-head-commit {tip}`, and fast-forward main")
+
+    def merge_main_by_hand(start: str) -> str:
+        # The same fetch land.py makes, so that the merge never takes a stale origin/main; the push target
+        # depends on what that merge brings in.
+        return (f"To finish by hand, {start}run `git fetch origin main` and `git merge origin/main` in {worktree}, "
+                f"resolve, commit and push with {push_by_hand(root, branch, pushed, touches_workflows)}; "
+                f"then, {finish('<that head>')}.")
+
     if args.no_merge:
-        say(f"--no-merge: stopping here; {finish}")
+        say(f"--no-merge: stopping here; {finish(pushed)}")
         return 0
-    try:
-        count = wait_for_checks(worktree, number, pushed)
-    except LandError as error:
-        raise LandError(f"{error}\nPR #{number} stays open; after a fix or `gh run rerun --failed`, {finish}.") from None
-    say(f"all {count} checks passed on {pushed[:12]}")
-    # The branch must be checked out nowhere for `--delete-branch` to delete it locally too.
-    git(root, "worktree", "remove", str(worktree))
-    try:
-        # Merge exactly the head whose checks passed; GitHub refuses if the branch moved since.
-        gh(root, "pr", "merge", number, "--squash", "--delete-branch", "--match-head-commit", pushed)
-    except LandError as error:
-        raise LandError(f"{error}\nPR #{number} stays open and {branch} stays; merge it by hand, "
-                        "then fast-forward main") from None
+    base, updates = main_sha, 0
+    while True:
+        try:
+            count = wait_for_checks(worktree, number, pushed)
+        except LandError as error:
+            raise LandError(f"{error}\nPR #{number} stays open; after a fix or `gh run rerun --failed`, "
+                            f"{finish(pushed)}.") from None
+        say(f"all {count} checks passed on {pushed[:12]}")
+        # The branch must be checked out nowhere for `--delete-branch` to delete it locally too.
+        git(root, "worktree", "remove", str(worktree))
+        try:
+            # Merge exactly the head whose checks passed; GitHub refuses if the branch moved since.
+            gh(root, "pr", "merge", number, "--squash", "--delete-branch", "--match-head-commit", pushed)
+            break
+        except LandError as error:
+            refusal = str(error)
+        # With strict required checks, a PR whose base moved while its checks ran is refused as behind.
+        merge_state = pr_view(root, number, "mergeStateStatus,headRefOid")
+        if merge_state.get("mergeStateStatus") != "BEHIND" and not BEHIND_REFUSAL.search(refusal):
+            raise LandError(f"{refusal}\nPR #{number} stays open and {branch} stays; merge it by hand, "
+                            "then fast-forward main")
+        if merge_state.get("headRefOid") not in (None, pushed):
+            raise LandError(f"PR #{number}'s head moved to {str(merge_state['headRefOid'])[:12]}, not the pushed "
+                            f"{pushed[:12]}; it stays open and {branch} stays; merge it by hand, "
+                            "then fast-forward main")
+        if updates == MAX_BRANCH_UPDATES:
+            raise LandError(f"{refusal}\nPR #{number} is still behind main after {MAX_BRANCH_UPDATES} updates "
+                            f"and stays open at {pushed[:12]}. "
+                            + merge_main_by_hand(f"`git worktree add {worktree} {branch}`, "))
+        updates += 1
+        say(f"PR #{number} is behind main, which moved while its checks ran: update {updates} of {MAX_BRANCH_UPDATES}")
+        try:
+            base, merged = update_branch(root, worktree, branch, pushed, base)
+            problems = updated_problems(accepted_repo, commits, worktree, base, merged, handoff_commit, allowed)
+            if problems:
+                raise LandError(f"the change of {merged[:12]} against origin/main {base[:12]} no longer has the "
+                                "accepted range's patch identity:\n  " + "\n  ".join(problems))
+            say(f"the change against origin/main {base[:12]} still has the accepted range's patch identity")
+            # A merge that brings main's workflow edits needs the `workflow` scope, like a task that edits them.
+            remote = push_target(worktree, touches_workflows or any(
+                path.startswith(".github/workflows/") for path in changed_paths(worktree, pushed, merged)))
+            git(worktree, "push", "--quiet", remote, f"{merged}:refs/heads/{branch}")
+        except MergeConflict as error:
+            raise LandError(f"{error}\nNothing was pushed and PR #{number} stays open at {pushed[:12]}; {worktree} is "
+                            f"left on {branch}. " + merge_main_by_hand("")) from None
+        except LandError as error:
+            raise LandError(f"{error}\nNothing was pushed and PR #{number} stays open at {pushed[:12]}; {worktree} "
+                            f"is left for inspection; {cleanup_hint}.") from None
+        pushed = merged
+        say(f"pushed {branch} at {pushed[:12]} to {remote}")
     view = json.loads(gh(root, "pr", "view", number, "--json", "state,mergeCommit").stdout)
     if view.get("state") != "MERGED":
-        raise LandError(f"PR #{number} is {view.get('state')} after the merge; {finish}")
+        raise LandError(f"PR #{number} is {view.get('state')} after the merge; {finish(pushed)}")
     merge_sha = (view.get("mergeCommit") or {}).get("oid", "")
     say(f"merged PR #{number} as {merge_sha[:12]}")
     remove_worktree(root, worktree, branch)
