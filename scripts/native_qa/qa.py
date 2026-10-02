@@ -257,7 +257,6 @@ def display_check(args) -> int:
 
     status, lines = display.check(args.display, set(args.allow_pid))
     print("\n".join(lines))
-    print({0: "display clear", 1: "FOREIGN processes or windows present", 2: "INCONCLUSIVE"}[status])
     return status
 
 
@@ -377,7 +376,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--json", type=Path, help="write the identities here")
     p.set_defaults(func=identity_command)
 
-    p = commands.add_parser("display-check", help="date -u, running GitTurtle/driver processes and windows")
+    p = commands.add_parser("display-check", help="date -u, GitTurtle/driver processes and windows, session lock")
     p.add_argument("--display", default=runenv.DEFAULT_DISPLAY)
     p.add_argument("--allow-pid", type=int, action="append", default=[], help="a known process that is not foreign")
     p.set_defaults(func=display_check)
