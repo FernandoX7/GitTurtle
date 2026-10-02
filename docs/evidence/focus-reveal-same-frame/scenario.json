@@ -1,0 +1,2974 @@
+{
+ "version": 1,
+ "task": "focus-reveal-same-frame",
+ "summary": "Tab and Shift+Tab reveal the focused row of the branch chooser and Tags, and Tab and a click reveal a project hub field 12 px clear of the page's edges, in the first frame that draws the new focus; a pointer press scrolls nothing",
+ "limitations": "A probe sees only the frames its back-to-back grabs return, so a frame shorter than its recorded resolution may be missed. The remote manager, the tag inspector's Push to... list, macOS, native Wayland and fractional scale factors are not covered natively; at 13 pt the hub page does not scroll at 1000 x 680, so its Tab and click frames show that nothing scrolls",
+ "window": [
+  1000,
+  680
+ ],
+ "roles": [
+  "base",
+  "cand"
+ ],
+ "fixture": {
+  "name": "focus-reveal-same-frame",
+  "description": "five commits; 30 local branches (main and topic-01 to topic-29, so the branch chooser scrolls) and 30 tags (v1.00 to v1.29, the even ones annotated, so Tags scrolls) spread over them; a local bare origin holding main. the recipe of tab-reveals-branch-and-tag-rows/scenario.json under this task's name, so its objects and refs are the same",
+  "repository": "repo",
+  "branch": "main",
+  "operations": [
+   {
+    "commit": "Commit 1: update README.md",
+    "date": "2026-09-01T09:21:00Z",
+    "files": {
+     "README.md": "# Tab reveal fixture\n\nDisposable QA repository.\n"
+    }
+   },
+   {
+    "commit": "Commit 2: update src/lib.txt",
+    "date": "2026-09-01T09:35:00Z",
+    "files": {
+     "src/lib.txt": "first line\n"
+    }
+   },
+   {
+    "commit": "Commit 3: update src/lib.txt",
+    "date": "2026-09-01T10:49:00Z",
+    "files": {
+     "src/lib.txt": "first line\nsecond line\n"
+    }
+   },
+   {
+    "commit": "Commit 4: update notes/plan.md",
+    "date": "2026-09-01T10:03:00Z",
+    "files": {
+     "notes/plan.md": "- chooser\n- tags\n"
+    }
+   },
+   {
+    "commit": "Commit 5: update src/lib.txt",
+    "date": "2026-09-01T10:17:00Z",
+    "files": {
+     "src/lib.txt": "first line\nsecond line\nthird\n"
+    }
+   },
+   {
+    "branch": "topic-01",
+    "at": "@1",
+    "date": "2026-09-01T11:24:00Z"
+   },
+   {
+    "branch": "topic-02",
+    "at": "@2",
+    "date": "2026-09-01T11:31:00Z"
+   },
+   {
+    "branch": "topic-03",
+    "at": "@3",
+    "date": "2026-09-01T11:38:00Z"
+   },
+   {
+    "branch": "topic-04",
+    "at": "@4",
+    "date": "2026-09-01T11:45:00Z"
+   },
+   {
+    "branch": "topic-05",
+    "at": "@0",
+    "date": "2026-09-01T11:52:00Z"
+   },
+   {
+    "branch": "topic-06",
+    "at": "@1",
+    "date": "2026-09-01T11:59:00Z"
+   },
+   {
+    "branch": "topic-07",
+    "at": "@2",
+    "date": "2026-09-01T12:06:00Z"
+   },
+   {
+    "branch": "topic-08",
+    "at": "@3",
+    "date": "2026-09-01T12:13:00Z"
+   },
+   {
+    "branch": "topic-09",
+    "at": "@4",
+    "date": "2026-09-01T12:20:00Z"
+   },
+   {
+    "branch": "topic-10",
+    "at": "@0",
+    "date": "2026-09-01T12:27:00Z"
+   },
+   {
+    "branch": "topic-11",
+    "at": "@1",
+    "date": "2026-09-01T12:34:00Z"
+   },
+   {
+    "branch": "topic-12",
+    "at": "@2",
+    "date": "2026-09-01T12:41:00Z"
+   },
+   {
+    "branch": "topic-13",
+    "at": "@3",
+    "date": "2026-09-01T13:48:00Z"
+   },
+   {
+    "branch": "topic-14",
+    "at": "@4",
+    "date": "2026-09-01T13:55:00Z"
+   },
+   {
+    "branch": "topic-15",
+    "at": "@0",
+    "date": "2026-09-01T13:02:00Z"
+   },
+   {
+    "branch": "topic-16",
+    "at": "@1",
+    "date": "2026-09-01T13:09:00Z"
+   },
+   {
+    "branch": "topic-17",
+    "at": "@2",
+    "date": "2026-09-01T13:16:00Z"
+   },
+   {
+    "branch": "topic-18",
+    "at": "@3",
+    "date": "2026-09-01T13:23:00Z"
+   },
+   {
+    "branch": "topic-19",
+    "at": "@4",
+    "date": "2026-09-01T14:30:00Z"
+   },
+   {
+    "branch": "topic-20",
+    "at": "@0",
+    "date": "2026-09-01T14:37:00Z"
+   },
+   {
+    "branch": "topic-21",
+    "at": "@1",
+    "date": "2026-09-01T14:44:00Z"
+   },
+   {
+    "branch": "topic-22",
+    "at": "@2",
+    "date": "2026-09-01T14:51:00Z"
+   },
+   {
+    "branch": "topic-23",
+    "at": "@3",
+    "date": "2026-09-01T14:58:00Z"
+   },
+   {
+    "branch": "topic-24",
+    "at": "@4",
+    "date": "2026-09-01T14:05:00Z"
+   },
+   {
+    "branch": "topic-25",
+    "at": "@0",
+    "date": "2026-09-01T15:12:00Z"
+   },
+   {
+    "branch": "topic-26",
+    "at": "@1",
+    "date": "2026-09-01T15:19:00Z"
+   },
+   {
+    "branch": "topic-27",
+    "at": "@2",
+    "date": "2026-09-01T15:26:00Z"
+   },
+   {
+    "branch": "topic-28",
+    "at": "@3",
+    "date": "2026-09-01T15:33:00Z"
+   },
+   {
+    "branch": "topic-29",
+    "at": "@4",
+    "date": "2026-09-02T09:40:00Z"
+   },
+   {
+    "tag": "v1.00",
+    "at": "@0",
+    "message": "Release 1.00",
+    "date": "2026-09-02T09:47:00Z"
+   },
+   {
+    "tag": "v1.01",
+    "at": "@1",
+    "date": "2026-09-02T09:54:00Z"
+   },
+   {
+    "tag": "v1.02",
+    "at": "@2",
+    "message": "Release 1.02",
+    "date": "2026-09-02T09:01:00Z"
+   },
+   {
+    "tag": "v1.03",
+    "at": "@3",
+    "date": "2026-09-02T09:08:00Z"
+   },
+   {
+    "tag": "v1.04",
+    "at": "@4",
+    "message": "Release 1.04",
+    "date": "2026-09-02T09:15:00Z"
+   },
+   {
+    "tag": "v1.05",
+    "at": "@0",
+    "date": "2026-09-02T10:22:00Z"
+   },
+   {
+    "tag": "v1.06",
+    "at": "@1",
+    "message": "Release 1.06",
+    "date": "2026-09-02T10:29:00Z"
+   },
+   {
+    "tag": "v1.07",
+    "at": "@2",
+    "date": "2026-09-02T10:36:00Z"
+   },
+   {
+    "tag": "v1.08",
+    "at": "@3",
+    "message": "Release 1.08",
+    "date": "2026-09-02T10:43:00Z"
+   },
+   {
+    "tag": "v1.09",
+    "at": "@4",
+    "date": "2026-09-02T10:50:00Z"
+   },
+   {
+    "tag": "v1.10",
+    "at": "@0",
+    "message": "Release 1.10",
+    "date": "2026-09-02T10:57:00Z"
+   },
+   {
+    "tag": "v1.11",
+    "at": "@1",
+    "date": "2026-09-02T11:04:00Z"
+   },
+   {
+    "tag": "v1.12",
+    "at": "@2",
+    "message": "Release 1.12",
+    "date": "2026-09-02T11:11:00Z"
+   },
+   {
+    "tag": "v1.13",
+    "at": "@3",
+    "date": "2026-09-02T11:18:00Z"
+   },
+   {
+    "tag": "v1.14",
+    "at": "@4",
+    "message": "Release 1.14",
+    "date": "2026-09-02T11:25:00Z"
+   },
+   {
+    "tag": "v1.15",
+    "at": "@0",
+    "date": "2026-09-02T11:32:00Z"
+   },
+   {
+    "tag": "v1.16",
+    "at": "@1",
+    "message": "Release 1.16",
+    "date": "2026-09-02T11:39:00Z"
+   },
+   {
+    "tag": "v1.17",
+    "at": "@2",
+    "date": "2026-09-02T12:46:00Z"
+   },
+   {
+    "tag": "v1.18",
+    "at": "@3",
+    "message": "Release 1.18",
+    "date": "2026-09-02T12:53:00Z"
+   },
+   {
+    "tag": "v1.19",
+    "at": "@4",
+    "date": "2026-09-02T12:00:00Z"
+   },
+   {
+    "tag": "v1.20",
+    "at": "@0",
+    "message": "Release 1.20",
+    "date": "2026-09-02T12:07:00Z"
+   },
+   {
+    "tag": "v1.21",
+    "at": "@1",
+    "date": "2026-09-02T12:14:00Z"
+   },
+   {
+    "tag": "v1.22",
+    "at": "@2",
+    "message": "Release 1.22",
+    "date": "2026-09-02T12:21:00Z"
+   },
+   {
+    "tag": "v1.23",
+    "at": "@3",
+    "date": "2026-09-02T13:28:00Z"
+   },
+   {
+    "tag": "v1.24",
+    "at": "@4",
+    "message": "Release 1.24",
+    "date": "2026-09-02T13:35:00Z"
+   },
+   {
+    "tag": "v1.25",
+    "at": "@0",
+    "date": "2026-09-02T13:42:00Z"
+   },
+   {
+    "tag": "v1.26",
+    "at": "@1",
+    "message": "Release 1.26",
+    "date": "2026-09-02T13:49:00Z"
+   },
+   {
+    "tag": "v1.27",
+    "at": "@2",
+    "date": "2026-09-02T13:56:00Z"
+   },
+   {
+    "tag": "v1.28",
+    "at": "@3",
+    "message": "Release 1.28",
+    "date": "2026-09-02T13:03:00Z"
+   },
+   {
+    "tag": "v1.29",
+    "at": "@4",
+    "date": "2026-09-02T14:10:00Z"
+   },
+   {
+    "remote": "origin",
+    "bare": "remotes/origin.git",
+    "date": "2026-09-02T14:24:00Z"
+   },
+   {
+    "push": "origin",
+    "refs": [
+     "main"
+    ],
+    "date": "2026-09-02T14:31:00Z"
+   }
+  ],
+  "expect": {
+   "@0": "00ee7cec9ebe0916ba521537a3508b573e85b3e0",
+   "@1": "d3be1c8ef7f9e9364e2a3566e5f7577f9fc3a021",
+   "@2": "2f3bc2f80e353a9e58f9ef7b98ef537d4ada9fa4",
+   "@3": "479457995ae4928dbf84103ef97cec2daa57dde7",
+   "HEAD": "75842dff84b20dde31970e44331da8c9ed3d41fa"
+  }
+ },
+ "variants": {
+  "palettes": [
+   "midnight",
+   "porcelain"
+  ],
+  "text_sizes": [
+   13,
+   18
+  ]
+ },
+ "crops": {
+  "chooser-13": [
+   230,
+   68,
+   770,
+   558
+  ],
+  "tags-13": [
+   200,
+   68,
+   800,
+   589
+  ],
+  "hub-13": [
+   571,
+   84,
+   991,
+   658
+  ],
+  "chooser-18": [
+   230,
+   68,
+   770,
+   627
+  ],
+  "tags-18": [
+   200,
+   68,
+   800,
+   631
+  ],
+  "hub-18": [
+   563,
+   120,
+   983,
+   650
+  ]
+ },
+ "steps": [
+  {
+   "stable": 12.0,
+   "quiet": 1.15,
+   "note": "the launch settles"
+  },
+  {
+   "mark": "page",
+   "note": "History before the branch menu"
+  },
+  {
+   "click": [
+    55,
+    112
+   ],
+   "note": "the toolbar's branch button",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "click": [
+    68,
+    155
+   ],
+   "note": "the toolbar's branch button",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "park": true
+  },
+  {
+   "stable": 6.0,
+   "quiet": 0.8
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "page",
+    "b": "@now",
+    "region": [
+     10,
+     133,
+     205,
+     563
+    ],
+    "min_pixels": 20001
+   },
+   "note": "the branch menu opened",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "page",
+    "b": "@now",
+    "region": [
+     10,
+     180,
+     280,
+     615
+    ],
+    "min_pixels": 20001
+   },
+   "note": "the branch menu opened",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "key": "Up",
+   "await_change": 2.5,
+   "wait_after": 0.5,
+   "note": "the menu's last item, Manage remotes..."
+  },
+  {
+   "stable": 4.0,
+   "quiet": 0.8
+  },
+  {
+   "mark": "menu-up1"
+  },
+  {
+   "key": "Up",
+   "repeat": 11,
+   "await_change": 2.5,
+   "wait_after": 0.15,
+   "note": "up to Manage another branch..."
+  },
+  {
+   "stable": 4.0,
+   "quiet": 0.8
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "menu-up1",
+    "b": "@now",
+    "region": [
+     0,
+     0,
+     190,
+     680
+    ],
+    "band_min": 21,
+    "bands": [
+     [
+      309,
+      326
+     ],
+     [
+      545,
+      562
+     ]
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the highlight moved from Manage remotes... to Manage another branch... and nowhere else; otherwise Escape and stop",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "menu-up1",
+    "b": "@now",
+    "region": [
+     0,
+     0,
+     190,
+     680
+    ],
+    "band_min": 21,
+    "bands": [
+     [
+      274,
+      298
+     ],
+     [
+      587,
+      611
+     ]
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the highlight moved from Manage remotes... to Manage another branch... and nowhere else; otherwise Escape and stop",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "mark": "menu-up12"
+  },
+  {
+   "key": "Return",
+   "await_change": 5.0,
+   "wait_after": 0.0,
+   "note": "Manage another branch..."
+  },
+  {
+   "stable": 10.0,
+   "quiet": 1.15
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "menu-up12",
+    "b": "@now",
+    "min_pixels": 50001
+   },
+   "note": "Manage a local branch opened"
+  },
+  {
+   "capture": "chooser-rest",
+   "commit": false
+  },
+  {
+   "key": "Tab",
+   "repeat": 2,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "the filter, then row 0 (topic-02)"
+  },
+  {
+   "capture": "chooser-row0",
+   "commit": false
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "chooser-row0",
+    "rect": [
+     244,
+     166,
+     756,
+     206
+    ]
+   },
+   "note": "row 0 (topic-02) focused, its ring where exploration found it",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "chooser-row0",
+    "rect": [
+     244,
+     225,
+     756,
+     278
+    ]
+   },
+   "note": "row 0 (topic-02) focused, its ring where exploration found it",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "probe": "p-chooser-tab-down",
+   "send": "Tab",
+   "repeat": 9,
+   "region": "chooser-13",
+   "note": "every frame after each press. Rows 1 to 9; row 9 (topic-14) is the first wholly below the lower edge at scroll 0",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "probe": "p-chooser-tab-down",
+   "send": "Tab",
+   "repeat": 7,
+   "region": "chooser-18",
+   "note": "every frame after each press. Rows 1 to 7; row 7 (topic-04) is the first wholly below the lower edge at scroll 0",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "capture": "chooser-tab-down",
+   "crop": "chooser-13",
+   "roles": [
+    "cand"
+   ],
+   "shows": "Tab past the list's lower edge: the first row wholly below it is revealed at the bottom by the least amount, its ring whole",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "capture": "chooser-tab-down",
+   "crop": "chooser-18",
+   "roles": [
+    "cand"
+   ],
+   "shows": "Tab past the list's lower edge: the first row wholly below it is revealed at the bottom by the least amount, its ring whole",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "probe": "p-chooser-tab-more",
+   "send": "Tab",
+   "repeat": 11,
+   "region": "chooser-13",
+   "note": "every frame after each press: eleven more rows; each press reveals one row at the bottom",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "probe": "p-chooser-tab-more",
+   "send": "Tab",
+   "repeat": 11,
+   "region": "chooser-18",
+   "note": "every frame after each press: eleven more rows; each press reveals one row at the bottom",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "probe": "p-chooser-shift-tab-up",
+   "send": "Tab",
+   "mods": [
+    "Shift_L"
+   ],
+   "repeat": 9,
+   "region": "chooser-13",
+   "note": "every frame after each press: back to row 11 (topic-24), the first wholly above the upper edge",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "probe": "p-chooser-shift-tab-up",
+   "send": "Tab",
+   "mods": [
+    "Shift_L"
+   ],
+   "repeat": 7,
+   "region": "chooser-18",
+   "note": "every frame after each press: back to row 11 (topic-24), the first wholly above the upper edge",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "capture": "chooser-shift-tab-up",
+   "crop": "chooser-13",
+   "roles": [
+    "cand"
+   ],
+   "shows": "Shift+Tab past the list's upper edge: topic-24 revealed at the top by the least amount, its ring whole",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "capture": "chooser-shift-tab-up",
+   "crop": "chooser-18",
+   "roles": [
+    "cand"
+   ],
+   "shows": "Shift+Tab past the list's upper edge: topic-24 revealed at the top by the least amount, its ring whole",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "glide": [
+    500,
+    186
+   ],
+   "settle": 1.2,
+   "note": "park the pointer on the focused row",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "glide": [
+    500,
+    251
+   ],
+   "settle": 1.2,
+   "note": "park the pointer on the focused row",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "capture": "chooser-hover",
+   "crop": "chooser-13",
+   "roles": [
+    "cand"
+   ],
+   "keep_pointer": true,
+   "shows": "topic-24 focused and hovered: the hover fill inside a whole ring, the row's tooltip above the list",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "capture": "chooser-hover",
+   "crop": "chooser-18",
+   "roles": [
+    "cand"
+   ],
+   "keep_pointer": true,
+   "shows": "topic-24 focused and hovered: the hover fill inside a whole ring, the row's tooltip above the list",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "wheel": [
+    500,
+    330
+   ],
+   "steps": 1,
+   "note": "one wheel step (63 px) leaves a row cut by the lower edge",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "wheel": [
+    500,
+    400
+   ],
+   "steps": 1,
+   "note": "one wheel step (87 px) leaves a row cut by the lower edge",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "capture": "chooser-wheel",
+   "commit": false
+  },
+  {
+   "probe": "p-chooser-press",
+   "click_at": [
+    500,
+    490
+   ],
+   "release_at": [
+    400,
+    91
+   ],
+   "region": "chooser-13",
+   "note": "every frame after a pointer press on the row cut by the lower edge; released on the title, so nothing is chosen",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "probe": "p-chooser-press",
+   "click_at": [
+    500,
+    555
+   ],
+   "release_at": [
+    400,
+    95
+   ],
+   "region": "chooser-18",
+   "note": "every frame after a pointer press on the row cut by the lower edge; released on the title, so nothing is chosen",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "move": [
+    500,
+    490
+   ],
+   "note": "onto the partly visible row",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "move": [
+    500,
+    555
+   ],
+   "note": "onto the partly visible row",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "wait": 1.5
+  },
+  {
+   "press": 1,
+   "note": "a pointer press, not a click: a click activates the row and closes the dialog"
+  },
+  {
+   "wait": 0.6
+  },
+  {
+   "capture": "chooser-press",
+   "crop": "chooser-13",
+   "roles": [
+    "cand"
+   ],
+   "keep_pointer": true,
+   "stable_within": 3.0,
+   "quiet": 0.5,
+   "shows": "a pointer press on the row cut by the lower edge: its pressed fill shows, cut, and the list does not scroll",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "capture": "chooser-press",
+   "crop": "chooser-18",
+   "roles": [
+    "cand"
+   ],
+   "keep_pointer": true,
+   "stable_within": 3.0,
+   "quiet": 0.5,
+   "shows": "a pointer press on the row cut by the lower edge: its pressed fill shows, cut, and the list does not scroll",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "move": [
+    400,
+    91
+   ],
+   "note": "off the row, so the release activates nothing",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "move": [
+    400,
+    95
+   ],
+   "note": "off the row, so the release activates nothing",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "wait": 0.4
+  },
+  {
+   "release": 1
+  },
+  {
+   "capture": "chooser-press-released",
+   "commit": false
+  },
+  {
+   "key": "Escape",
+   "await_change": 3.0,
+   "wait_after": 0.0,
+   "note": "close the chooser"
+  },
+  {
+   "stable": 6.0,
+   "quiet": 0.8
+  },
+  {
+   "mark": "before-tags"
+  },
+  {
+   "palette": "browse and manage tags"
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "before-tags",
+    "b": "@now",
+    "min_pixels": 30001
+   },
+   "note": "Tags opened"
+  },
+  {
+   "capture": "tags-rest",
+   "commit": false
+  },
+  {
+   "key": "Tab",
+   "repeat": 3,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "the filter, Create tag..., row 0 (v1.00)"
+  },
+  {
+   "capture": "tags-row0",
+   "commit": false
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "tags-row0",
+    "rect": [
+     214,
+     167,
+     786,
+     207
+    ]
+   },
+   "note": "row 0 (v1.00) focused, its ring where exploration found it",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "tags-row0",
+    "rect": [
+     214,
+     199,
+     786,
+     252
+    ]
+   },
+   "note": "row 0 (v1.00) focused, its ring where exploration found it",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "probe": "p-tags-tab-down",
+   "send": "Tab",
+   "repeat": 10,
+   "region": "tags-13",
+   "note": "every frame after each press. Rows 1 to 10; v1.10 is the first wholly below the lower edge at scroll 0",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "probe": "p-tags-tab-down",
+   "send": "Tab",
+   "repeat": 8,
+   "region": "tags-18",
+   "note": "every frame after each press. Rows 1 to 8; v1.08 is the first wholly below the lower edge at scroll 0",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "capture": "tags-tab-down",
+   "crop": "tags-13",
+   "roles": [
+    "cand"
+   ],
+   "shows": "Tab past Tags' lower edge: the first tag wholly below it is revealed at the bottom by the least amount, its ring whole",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "capture": "tags-tab-down",
+   "crop": "tags-18",
+   "roles": [
+    "cand"
+   ],
+   "shows": "Tab past Tags' lower edge: the first tag wholly below it is revealed at the bottom by the least amount, its ring whole",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "probe": "p-tags-tab-more",
+   "send": "Tab",
+   "repeat": 11,
+   "region": "tags-13",
+   "note": "every frame after each press: eleven more tags; each press reveals one row at the bottom",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "probe": "p-tags-tab-more",
+   "send": "Tab",
+   "repeat": 11,
+   "region": "tags-18",
+   "note": "every frame after each press: eleven more tags; each press reveals one row at the bottom",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "probe": "p-tags-shift-tab-up",
+   "send": "Tab",
+   "mods": [
+    "Shift_L"
+   ],
+   "repeat": 10,
+   "region": "tags-13",
+   "note": "every frame after each press: back to v1.11, the first wholly above the upper edge",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "probe": "p-tags-shift-tab-up",
+   "send": "Tab",
+   "mods": [
+    "Shift_L"
+   ],
+   "repeat": 8,
+   "region": "tags-18",
+   "note": "every frame after each press: back to v1.11, the first wholly above the upper edge",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "capture": "tags-shift-tab-up",
+   "crop": "tags-13",
+   "roles": [
+    "cand"
+   ],
+   "shows": "Shift+Tab past Tags' upper edge: v1.11 revealed at the top by the least amount, its ring whole",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "capture": "tags-shift-tab-up",
+   "crop": "tags-18",
+   "roles": [
+    "cand"
+   ],
+   "shows": "Shift+Tab past Tags' upper edge: v1.11 revealed at the top by the least amount, its ring whole",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "glide": [
+    500,
+    187
+   ],
+   "settle": 1.2,
+   "note": "park the pointer on the focused row",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "glide": [
+    500,
+    225
+   ],
+   "settle": 1.2,
+   "note": "park the pointer on the focused row",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "capture": "tags-hover",
+   "crop": "tags-13",
+   "roles": [
+    "cand"
+   ],
+   "keep_pointer": true,
+   "shows": "v1.11 focused and hovered: the hover fill inside a whole ring",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "capture": "tags-hover",
+   "crop": "tags-18",
+   "roles": [
+    "cand"
+   ],
+   "keep_pointer": true,
+   "shows": "v1.11 focused and hovered: the hover fill inside a whole ring",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "wheel": [
+    500,
+    330
+   ],
+   "steps": 1,
+   "note": "one wheel step (63 px) leaves a tag cut by the lower edge",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "wheel": [
+    500,
+    400
+   ],
+   "steps": 1,
+   "note": "one wheel step (87 px) leaves a tag cut by the lower edge",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "capture": "tags-wheel",
+   "commit": false
+  },
+  {
+   "probe": "p-tags-press",
+   "click_at": [
+    500,
+    524
+   ],
+   "release_at": [
+    400,
+    91
+   ],
+   "region": "tags-13",
+   "note": "every frame after a pointer press on the tag cut by the lower edge; released on the title, so nothing opens",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "probe": "p-tags-press",
+   "click_at": [
+    500,
+    545
+   ],
+   "release_at": [
+    400,
+    95
+   ],
+   "region": "tags-18",
+   "note": "every frame after a pointer press on the tag cut by the lower edge; released on the title, so nothing opens",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "move": [
+    500,
+    524
+   ],
+   "note": "onto the partly visible tag",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "move": [
+    500,
+    545
+   ],
+   "note": "onto the partly visible tag",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "wait": 1.5
+  },
+  {
+   "press": 1,
+   "note": "a pointer press, not a click: a click opens the tag"
+  },
+  {
+   "wait": 0.6
+  },
+  {
+   "capture": "tags-press",
+   "crop": "tags-13",
+   "roles": [
+    "cand"
+   ],
+   "keep_pointer": true,
+   "stable_within": 3.0,
+   "quiet": 0.5,
+   "shows": "a pointer press on the tag cut by the lower edge: its pressed fill shows, cut, and the list does not scroll",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "capture": "tags-press",
+   "crop": "tags-18",
+   "roles": [
+    "cand"
+   ],
+   "keep_pointer": true,
+   "stable_within": 3.0,
+   "quiet": 0.5,
+   "shows": "a pointer press on the tag cut by the lower edge: its pressed fill shows, cut, and the list does not scroll",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "move": [
+    400,
+    91
+   ],
+   "note": "off the row, so the release activates nothing",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "move": [
+    400,
+    95
+   ],
+   "note": "off the row, so the release activates nothing",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "wait": 0.4
+  },
+  {
+   "release": 1
+  },
+  {
+   "capture": "tags-press-released",
+   "commit": false
+  },
+  {
+   "key": "Escape",
+   "await_change": 3.0,
+   "wait_after": 0.0,
+   "note": "close Tags"
+  },
+  {
+   "stable": 6.0,
+   "quiet": 0.8
+  },
+  {
+   "palette": "go to projects"
+  },
+  {
+   "click": [
+    902,
+    253
+   ],
+   "note": "the hub's Create mode, which focuses Project folder name",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "click": [
+    890,
+    352
+   ],
+   "note": "the hub's Create mode, which focuses Project folder name",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "stable": 4.0,
+   "quiet": 0.8
+  },
+  {
+   "capture": "hub-create",
+   "commit": false
+  },
+  {
+   "probe": "p-hub-tab",
+   "send": "Tab",
+   "region": "hub-13",
+   "quiet": 0.25,
+   "note": "every frame after Tab to Parent folder: 18 pt scrolls the page 60 px, 13 pt scrolls nothing",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "probe": "p-hub-tab",
+   "send": "Tab",
+   "region": "hub-18",
+   "quiet": 0.25,
+   "note": "every frame after Tab to Parent folder: 18 pt scrolls the page 60 px, 13 pt scrolls nothing",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "capture": "hub-tab",
+   "crop": "hub-13",
+   "roles": [
+    "cand"
+   ],
+   "shows": "Parent folder focused by Tab: at 18 pt the page scrolled so the field lies 12 px clear of its lower edge; at 13 pt nothing scrolls",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "capture": "hub-tab",
+   "crop": "hub-18",
+   "roles": [
+    "cand"
+   ],
+   "shows": "Parent folder focused by Tab: at 18 pt the page scrolled so the field lies 12 px clear of its lower edge; at 13 pt nothing scrolls",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "probe": "p-hub-tab-branch",
+   "send": "Tab",
+   "repeat": 2,
+   "region": "hub-13",
+   "quiet": 0.25,
+   "note": "every frame after Tab to Browse..., then to Initial branch (18 pt scrolls to 150 px)",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "probe": "p-hub-tab-branch",
+   "send": "Tab",
+   "repeat": 2,
+   "region": "hub-18",
+   "quiet": 0.25,
+   "note": "every frame after Tab to Browse..., then to Initial branch (18 pt scrolls to 150 px)",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "probe": "p-hub-tab-submit",
+   "send": "Tab",
+   "region": "hub-13",
+   "quiet": 0.25,
+   "note": "every frame after Tab to Create project, focused only; nothing is activated (18 pt scrolls to 227 px)",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "probe": "p-hub-tab-submit",
+   "send": "Tab",
+   "region": "hub-18",
+   "quiet": 0.25,
+   "note": "every frame after Tab to Create project, focused only; nothing is activated (18 pt scrolls to 227 px)",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "wheel": [
+    780,
+    300
+   ],
+   "steps": -1,
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "one step up (87 px, to 140 px): Initial branch's input ends 2 px above the page's lower edge"
+  },
+  {
+   "capture": "hub-before-click",
+   "commit": false
+  },
+  {
+   "probe": "p-hub-click",
+   "click_at": [
+    770,
+    542
+   ],
+   "region": "hub-13",
+   "quiet": 0.25,
+   "note": "every frame after a click on Initial branch's input (the field, not Create project)",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "probe": "p-hub-click",
+   "click_at": [
+    770,
+    615
+   ],
+   "region": "hub-18",
+   "quiet": 0.25,
+   "note": "every frame after a click on Initial branch's input (the field, not Create project)",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "capture": "hub-click",
+   "crop": "hub-13",
+   "roles": [
+    "cand"
+   ],
+   "shows": "Initial branch focused by a click: at 18 pt the page scrolled 10 px so the field lies 12 px clear of its lower edge; at 13 pt nothing scrolls",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "capture": "hub-click",
+   "crop": "hub-18",
+   "roles": [
+    "cand"
+   ],
+   "shows": "Initial branch focused by a click: at 18 pt the page scrolled 10 px so the field lies 12 px clear of its lower edge; at 13 pt nothing scrolls",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  }
+ ],
+ "analyses": [
+  {
+   "name": "chooser-tab-down-ring-13pt",
+   "kind": "ring",
+   "frame": "chooser-tab-down",
+   "rect": [
+    244,
+    462,
+    756,
+    502
+   ],
+   "min_contrast": 3.0,
+   "note": "the first row wholly below the edge, revealed at the bottom: all four sides whole, one width, at least 3:1 against the list, inside the list's clip (the settled frame; both builds)",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-shift-tab-up-ring-13pt",
+   "kind": "ring",
+   "frame": "chooser-shift-tab-up",
+   "rect": [
+    244,
+    166,
+    756,
+    206
+   ],
+   "min_contrast": 3.0,
+   "note": "topic-24 revealed at the top: all four sides whole, one width, at least 3:1 against the list, inside the list's clip (the settled frame; both builds)",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-hover-ring-13pt",
+   "kind": "ring",
+   "frame": "chooser-hover",
+   "rect": [
+    244,
+    166,
+    756,
+    206
+   ],
+   "min_contrast": 3.0,
+   "note": "topic-24 focused and hovered: all four sides whole, one width, at least 3:1 against the list, inside the list's clip (the settled frame; both builds)",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-tab-down-ring-13pt",
+   "kind": "ring",
+   "frame": "tags-tab-down",
+   "rect": [
+    214,
+    493,
+    786,
+    533
+   ],
+   "min_contrast": 3.0,
+   "note": "the first tag wholly below the edge, revealed at the bottom: all four sides whole, one width, at least 3:1 against the list, inside the list's clip (the settled frame; both builds)",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-shift-tab-up-ring-13pt",
+   "kind": "ring",
+   "frame": "tags-shift-tab-up",
+   "rect": [
+    214,
+    167,
+    786,
+    207
+   ],
+   "min_contrast": 3.0,
+   "note": "v1.11 revealed at the top: all four sides whole, one width, at least 3:1 against the list, inside the list's clip (the settled frame; both builds)",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-hover-ring-13pt",
+   "kind": "ring",
+   "frame": "tags-hover",
+   "rect": [
+    214,
+    167,
+    786,
+    207
+   ],
+   "min_contrast": 3.0,
+   "note": "v1.11 focused and hovered: all four sides whole, one width, at least 3:1 against the list, inside the list's clip (the settled frame; both builds)",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-press-no-scroll-13pt",
+   "kind": "compare",
+   "a": "chooser-wheel",
+   "b": "chooser-press",
+   "crop": "chooser-13",
+   "bands": [
+    [
+     476,
+     501
+    ]
+   ],
+   "band_min": 21,
+   "note": "the press changes only the pressed row's visible rows: no scroll, no focus ring moves",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-release-off-row-13pt",
+   "kind": "compare",
+   "a": "chooser-wheel",
+   "b": "chooser-press-released",
+   "crop": "chooser-13",
+   "note": "after releasing off the row, the list is exactly as before the press",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-press-no-scroll-13pt",
+   "kind": "compare",
+   "a": "tags-wheel",
+   "b": "tags-press",
+   "crop": "tags-13",
+   "bands": [
+    [
+     514,
+     532
+    ]
+   ],
+   "band_min": 21,
+   "note": "the press changes only the pressed row's visible rows: no scroll, no focus ring moves",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-release-off-row-13pt",
+   "kind": "compare",
+   "a": "tags-wheel",
+   "b": "tags-press-released",
+   "crop": "tags-13",
+   "note": "after releasing off the row, the list is exactly as before the press",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-tab-down-ring-18pt",
+   "kind": "ring",
+   "frame": "chooser-tab-down",
+   "rect": [
+    244,
+    508,
+    756,
+    561
+   ],
+   "min_contrast": 3.0,
+   "note": "the first row wholly below the edge, revealed at the bottom: all four sides whole, one width, at least 3:1 against the list, inside the list's clip (the settled frame; both builds)",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-shift-tab-up-ring-18pt",
+   "kind": "ring",
+   "frame": "chooser-shift-tab-up",
+   "rect": [
+    244,
+    225,
+    756,
+    278
+   ],
+   "min_contrast": 3.0,
+   "note": "topic-24 revealed at the top: all four sides whole, one width, at least 3:1 against the list, inside the list's clip (the settled frame; both builds)",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-hover-ring-18pt",
+   "kind": "ring",
+   "frame": "chooser-hover",
+   "rect": [
+    244,
+    225,
+    756,
+    278
+   ],
+   "min_contrast": 3.0,
+   "note": "topic-24 focused and hovered: all four sides whole, one width, at least 3:1 against the list, inside the list's clip (the settled frame; both builds)",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-tab-down-ring-18pt",
+   "kind": "ring",
+   "frame": "tags-tab-down",
+   "rect": [
+    214,
+    512,
+    786,
+    565
+   ],
+   "min_contrast": 3.0,
+   "note": "the first tag wholly below the edge, revealed at the bottom: all four sides whole, one width, at least 3:1 against the list, inside the list's clip (the settled frame; both builds)",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-shift-tab-up-ring-18pt",
+   "kind": "ring",
+   "frame": "tags-shift-tab-up",
+   "rect": [
+    214,
+    199,
+    786,
+    252
+   ],
+   "min_contrast": 3.0,
+   "note": "v1.11 revealed at the top: all four sides whole, one width, at least 3:1 against the list, inside the list's clip (the settled frame; both builds)",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-hover-ring-18pt",
+   "kind": "ring",
+   "frame": "tags-hover",
+   "rect": [
+    214,
+    199,
+    786,
+    252
+   ],
+   "min_contrast": 3.0,
+   "note": "v1.11 focused and hovered: all four sides whole, one width, at least 3:1 against the list, inside the list's clip (the settled frame; both builds)",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-press-no-scroll-18pt",
+   "kind": "compare",
+   "a": "chooser-wheel",
+   "b": "chooser-press",
+   "crop": "chooser-18",
+   "bands": [
+    [
+     549,
+     560
+    ]
+   ],
+   "band_min": 21,
+   "note": "the press changes only the pressed row's visible rows: no scroll, no focus ring moves",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-release-off-row-18pt",
+   "kind": "compare",
+   "a": "chooser-wheel",
+   "b": "chooser-press-released",
+   "crop": "chooser-18",
+   "note": "after releasing off the row, the list is exactly as before the press",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-press-no-scroll-18pt",
+   "kind": "compare",
+   "a": "tags-wheel",
+   "b": "tags-press",
+   "crop": "tags-18",
+   "bands": [
+    [
+     523,
+     564
+    ]
+   ],
+   "band_min": 21,
+   "note": "the press changes only the pressed row's visible rows: no scroll, no focus ring moves",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-release-off-row-18pt",
+   "kind": "compare",
+   "a": "tags-wheel",
+   "b": "tags-press-released",
+   "crop": "tags-18",
+   "note": "after releasing off the row, the list is exactly as before the press",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "hub-tab-nothing-scrolls-13pt",
+   "kind": "compare",
+   "a": "hub-create",
+   "b": "hub-tab",
+   "region": [
+    581,
+    218,
+    981,
+    380
+   ],
+   "note": "13 pt: the panel's title and mode tabs do not move when Tab reaches Parent folder",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "hub-click-nothing-scrolls-13pt",
+   "kind": "compare",
+   "a": "hub-before-click",
+   "b": "hub-click",
+   "region": [
+    581,
+    218,
+    981,
+    380
+   ],
+   "note": "13 pt: the panel's title and mode tabs do not move when a click focuses Initial branch",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "hub-tab-clearance-18pt",
+   "kind": "clearance",
+   "frame": "hub-tab",
+   "rect": [
+    593,
+    593,
+    818,
+    635
+   ],
+   "side": "bottom",
+   "surface": {
+    "at": [
+     700,
+     640
+    ]
+   },
+   "at": [
+    700
+   ],
+   "min_px": 9,
+   "max_px": 9,
+   "note": "18 pt: Parent folder's input ends at 632, 12 px above the page's lower edge (644): its 3 px focus glow, then 9 px of panel",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "hub-before-click-clearance-18pt",
+   "kind": "clearance",
+   "frame": "hub-before-click",
+   "rect": [
+    596,
+    606,
+    950,
+    642
+   ],
+   "side": "bottom",
+   "surface": {
+    "at": [
+     700,
+     643
+    ]
+   },
+   "at": [
+    700
+   ],
+   "min_px": 2,
+   "max_px": 2,
+   "note": "18 pt: before the click, Initial branch's input ends 2 px above the page's lower edge",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "hub-click-clearance-18pt",
+   "kind": "clearance",
+   "frame": "hub-click",
+   "rect": [
+    593,
+    593,
+    953,
+    635
+   ],
+   "side": "bottom",
+   "surface": {
+    "at": [
+     700,
+     640
+    ]
+   },
+   "at": [
+    700
+   ],
+   "min_px": 9,
+   "max_px": 9,
+   "note": "18 pt: after the click, Initial branch's input ends 12 px above the page's lower edge: its glow, then 9 px of panel",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-tab-down-base-equals-cand-13pt",
+   "kind": "compare",
+   "a": "base:chooser-tab-down",
+   "b": "cand:chooser-tab-down",
+   "crop": "chooser-13",
+   "note": "the settled frame is the same on both builds: the base's reveal lands one frame late, so only the probe tells them apart",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-tab-down-base-equals-cand-18pt",
+   "kind": "compare",
+   "a": "base:chooser-tab-down",
+   "b": "cand:chooser-tab-down",
+   "crop": "chooser-18",
+   "note": "the settled frame is the same on both builds: the base's reveal lands one frame late, so only the probe tells them apart",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-shift-tab-up-base-equals-cand-13pt",
+   "kind": "compare",
+   "a": "base:chooser-shift-tab-up",
+   "b": "cand:chooser-shift-tab-up",
+   "crop": "chooser-13",
+   "note": "the settled frame is the same on both builds: the base's reveal lands one frame late, so only the probe tells them apart",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-shift-tab-up-base-equals-cand-18pt",
+   "kind": "compare",
+   "a": "base:chooser-shift-tab-up",
+   "b": "cand:chooser-shift-tab-up",
+   "crop": "chooser-18",
+   "note": "the settled frame is the same on both builds: the base's reveal lands one frame late, so only the probe tells them apart",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-hover-base-equals-cand-13pt",
+   "kind": "compare",
+   "a": "base:chooser-hover",
+   "b": "cand:chooser-hover",
+   "crop": "chooser-13",
+   "note": "the settled frame is the same on both builds: the base's reveal lands one frame late, so only the probe tells them apart",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-hover-base-equals-cand-18pt",
+   "kind": "compare",
+   "a": "base:chooser-hover",
+   "b": "cand:chooser-hover",
+   "crop": "chooser-18",
+   "note": "the settled frame is the same on both builds: the base's reveal lands one frame late, so only the probe tells them apart",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-press-base-equals-cand-13pt",
+   "kind": "compare",
+   "a": "base:chooser-press",
+   "b": "cand:chooser-press",
+   "crop": "chooser-13",
+   "note": "the settled frame is the same on both builds: the base's reveal lands one frame late, so only the probe tells them apart",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-press-base-equals-cand-18pt",
+   "kind": "compare",
+   "a": "base:chooser-press",
+   "b": "cand:chooser-press",
+   "crop": "chooser-18",
+   "note": "the settled frame is the same on both builds: the base's reveal lands one frame late, so only the probe tells them apart",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-tab-down-base-equals-cand-13pt",
+   "kind": "compare",
+   "a": "base:tags-tab-down",
+   "b": "cand:tags-tab-down",
+   "crop": "tags-13",
+   "note": "the settled frame is the same on both builds: the base's reveal lands one frame late, so only the probe tells them apart",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-tab-down-base-equals-cand-18pt",
+   "kind": "compare",
+   "a": "base:tags-tab-down",
+   "b": "cand:tags-tab-down",
+   "crop": "tags-18",
+   "note": "the settled frame is the same on both builds: the base's reveal lands one frame late, so only the probe tells them apart",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-shift-tab-up-base-equals-cand-13pt",
+   "kind": "compare",
+   "a": "base:tags-shift-tab-up",
+   "b": "cand:tags-shift-tab-up",
+   "crop": "tags-13",
+   "note": "the settled frame is the same on both builds: the base's reveal lands one frame late, so only the probe tells them apart",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-shift-tab-up-base-equals-cand-18pt",
+   "kind": "compare",
+   "a": "base:tags-shift-tab-up",
+   "b": "cand:tags-shift-tab-up",
+   "crop": "tags-18",
+   "note": "the settled frame is the same on both builds: the base's reveal lands one frame late, so only the probe tells them apart",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-hover-base-equals-cand-13pt",
+   "kind": "compare",
+   "a": "base:tags-hover",
+   "b": "cand:tags-hover",
+   "crop": "tags-13",
+   "note": "the settled frame is the same on both builds: the base's reveal lands one frame late, so only the probe tells them apart",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-hover-base-equals-cand-18pt",
+   "kind": "compare",
+   "a": "base:tags-hover",
+   "b": "cand:tags-hover",
+   "crop": "tags-18",
+   "note": "the settled frame is the same on both builds: the base's reveal lands one frame late, so only the probe tells them apart",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-press-base-equals-cand-13pt",
+   "kind": "compare",
+   "a": "base:tags-press",
+   "b": "cand:tags-press",
+   "crop": "tags-13",
+   "note": "the settled frame is the same on both builds: the base's reveal lands one frame late, so only the probe tells them apart",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-press-base-equals-cand-18pt",
+   "kind": "compare",
+   "a": "base:tags-press",
+   "b": "cand:tags-press",
+   "crop": "tags-18",
+   "note": "the settled frame is the same on both builds: the base's reveal lands one frame late, so only the probe tells them apart",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "hub-tab-base-equals-cand-13pt",
+   "kind": "compare",
+   "a": "base:hub-tab",
+   "b": "cand:hub-tab",
+   "crop": "hub-13",
+   "note": "the settled frame is the same on both builds: the base's reveal lands one frame late, so only the probe tells them apart",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "hub-tab-base-equals-cand-18pt",
+   "kind": "compare",
+   "a": "base:hub-tab",
+   "b": "cand:hub-tab",
+   "crop": "hub-18",
+   "note": "the settled frame is the same on both builds: the base's reveal lands one frame late, so only the probe tells them apart",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "hub-click-base-equals-cand-13pt",
+   "kind": "compare",
+   "a": "base:hub-click",
+   "b": "cand:hub-click",
+   "crop": "hub-13",
+   "note": "the settled frame is the same on both builds: the base's reveal lands one frame late, so only the probe tells them apart",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "hub-click-base-equals-cand-18pt",
+   "kind": "compare",
+   "a": "base:hub-click",
+   "b": "cand:hub-click",
+   "crop": "hub-18",
+   "note": "the settled frame is the same on both builds: the base's reveal lands one frame late, so only the probe tells them apart",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "p-chooser-tab-down-ring-13pt",
+   "kind": "probe_ring",
+   "probe": "p-chooser-tab-down",
+   "clip": [
+    244,
+    166,
+    756,
+    502
+   ],
+   "colour": "detect",
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "every frame after each press shows the focused row's ring whole, all four sides inside the list's clip; the base's cut frames are recorded with their timing",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "p-chooser-tab-more-ring-13pt",
+   "kind": "probe_ring",
+   "probe": "p-chooser-tab-more",
+   "clip": [
+    244,
+    166,
+    756,
+    502
+   ],
+   "colour": "detect",
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "every frame after each press shows the focused row's ring whole, all four sides inside the list's clip; the base's cut frames are recorded with their timing",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "p-chooser-shift-tab-up-ring-13pt",
+   "kind": "probe_ring",
+   "probe": "p-chooser-shift-tab-up",
+   "clip": [
+    244,
+    166,
+    756,
+    502
+   ],
+   "colour": "detect",
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "every frame after each press shows the focused row's ring whole, all four sides inside the list's clip; the base's cut frames are recorded with their timing",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "p-chooser-press-endpoints-13pt",
+   "kind": "probe_endpoints",
+   "probe": "p-chooser-press",
+   "clip": [
+    244,
+    166,
+    756,
+    502
+   ],
+   "note": "a pointer press scrolls nothing: every frame after it is the frame before the press or the settled pressed frame",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "p-tags-tab-down-ring-13pt",
+   "kind": "probe_ring",
+   "probe": "p-tags-tab-down",
+   "clip": [
+    214,
+    167,
+    786,
+    533
+   ],
+   "colour": "detect",
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "every frame after each press shows the focused row's ring whole, all four sides inside the list's clip; the base's cut frames are recorded with their timing",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "p-tags-tab-more-ring-13pt",
+   "kind": "probe_ring",
+   "probe": "p-tags-tab-more",
+   "clip": [
+    214,
+    167,
+    786,
+    533
+   ],
+   "colour": "detect",
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "every frame after each press shows the focused row's ring whole, all four sides inside the list's clip; the base's cut frames are recorded with their timing",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "p-tags-shift-tab-up-ring-13pt",
+   "kind": "probe_ring",
+   "probe": "p-tags-shift-tab-up",
+   "clip": [
+    214,
+    167,
+    786,
+    533
+   ],
+   "colour": "detect",
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "every frame after each press shows the focused row's ring whole, all four sides inside the list's clip; the base's cut frames are recorded with their timing",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "p-tags-press-endpoints-13pt",
+   "kind": "probe_endpoints",
+   "probe": "p-tags-press",
+   "clip": [
+    214,
+    167,
+    786,
+    533
+   ],
+   "note": "a pointer press scrolls nothing: every frame after it is the frame before the press or the settled pressed frame",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "p-hub-tab-endpoints-13pt",
+   "kind": "probe_endpoints",
+   "probe": "p-hub-tab",
+   "clip": [
+    571,
+    92,
+    991,
+    654
+   ],
+   "masks": [
+    [
+     600,
+     92,
+     650,
+     654
+    ]
+   ],
+   "expect": true,
+   "note": "13 pt: nothing scrolls, so every frame is the one before the press or the settled one; the inputs' caret column masked",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "p-hub-tab-branch-endpoints-13pt",
+   "kind": "probe_endpoints",
+   "probe": "p-hub-tab-branch",
+   "clip": [
+    571,
+    92,
+    991,
+    654
+   ],
+   "masks": [
+    [
+     600,
+     92,
+     650,
+     654
+    ]
+   ],
+   "expect": true,
+   "note": "13 pt: nothing scrolls, so every frame is the one before the press or the settled one; the inputs' caret column masked",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "p-hub-tab-submit-endpoints-13pt",
+   "kind": "probe_endpoints",
+   "probe": "p-hub-tab-submit",
+   "clip": [
+    571,
+    92,
+    991,
+    654
+   ],
+   "masks": [
+    [
+     600,
+     92,
+     650,
+     654
+    ]
+   ],
+   "expect": true,
+   "note": "13 pt: nothing scrolls, so every frame is the one before the press or the settled one; the inputs' caret column masked",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "p-hub-click-endpoints-13pt",
+   "kind": "probe_endpoints",
+   "probe": "p-hub-click",
+   "clip": [
+    571,
+    92,
+    991,
+    654
+   ],
+   "masks": [
+    [
+     600,
+     92,
+     650,
+     654
+    ]
+   ],
+   "expect": true,
+   "note": "13 pt: nothing scrolls, so every frame is the one before the press or the settled one; the inputs' caret column masked",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "p-chooser-tab-down-ring-18pt",
+   "kind": "probe_ring",
+   "probe": "p-chooser-tab-down",
+   "clip": [
+    244,
+    225,
+    756,
+    561
+   ],
+   "colour": "detect",
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "every frame after each press shows the focused row's ring whole, all four sides inside the list's clip; the base's cut frames are recorded with their timing",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "p-chooser-tab-more-ring-18pt",
+   "kind": "probe_ring",
+   "probe": "p-chooser-tab-more",
+   "clip": [
+    244,
+    225,
+    756,
+    561
+   ],
+   "colour": "detect",
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "every frame after each press shows the focused row's ring whole, all four sides inside the list's clip; the base's cut frames are recorded with their timing",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "p-chooser-shift-tab-up-ring-18pt",
+   "kind": "probe_ring",
+   "probe": "p-chooser-shift-tab-up",
+   "clip": [
+    244,
+    225,
+    756,
+    561
+   ],
+   "colour": "detect",
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "every frame after each press shows the focused row's ring whole, all four sides inside the list's clip; the base's cut frames are recorded with their timing",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "p-chooser-press-endpoints-18pt",
+   "kind": "probe_endpoints",
+   "probe": "p-chooser-press",
+   "clip": [
+    244,
+    225,
+    756,
+    561
+   ],
+   "note": "a pointer press scrolls nothing: every frame after it is the frame before the press or the settled pressed frame",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "p-tags-tab-down-ring-18pt",
+   "kind": "probe_ring",
+   "probe": "p-tags-tab-down",
+   "clip": [
+    214,
+    199,
+    786,
+    565
+   ],
+   "colour": "detect",
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "every frame after each press shows the focused row's ring whole, all four sides inside the list's clip; the base's cut frames are recorded with their timing",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "p-tags-tab-more-ring-18pt",
+   "kind": "probe_ring",
+   "probe": "p-tags-tab-more",
+   "clip": [
+    214,
+    199,
+    786,
+    565
+   ],
+   "colour": "detect",
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "every frame after each press shows the focused row's ring whole, all four sides inside the list's clip; the base's cut frames are recorded with their timing",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "p-tags-shift-tab-up-ring-18pt",
+   "kind": "probe_ring",
+   "probe": "p-tags-shift-tab-up",
+   "clip": [
+    214,
+    199,
+    786,
+    565
+   ],
+   "colour": "detect",
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "every frame after each press shows the focused row's ring whole, all four sides inside the list's clip; the base's cut frames are recorded with their timing",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "p-tags-press-endpoints-18pt",
+   "kind": "probe_endpoints",
+   "probe": "p-tags-press",
+   "clip": [
+    214,
+    199,
+    786,
+    565
+   ],
+   "note": "a pointer press scrolls nothing: every frame after it is the frame before the press or the settled pressed frame",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "p-hub-tab-endpoints-18pt",
+   "kind": "probe_endpoints",
+   "probe": "p-hub-tab",
+   "clip": [
+    563,
+    128,
+    983,
+    644
+   ],
+   "masks": [
+    [
+     598,
+     128,
+     655,
+     644
+    ]
+   ],
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "18 pt: the first frame that draws the new focus is the settled one, the field already 12 px clear; the base's intermediate frames are recorded; the inputs' caret column masked",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "p-hub-tab-branch-endpoints-18pt",
+   "kind": "probe_endpoints",
+   "probe": "p-hub-tab-branch",
+   "clip": [
+    563,
+    128,
+    983,
+    644
+   ],
+   "masks": [
+    [
+     598,
+     128,
+     655,
+     644
+    ]
+   ],
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "18 pt: the first frame that draws the new focus is the settled one, the field already 12 px clear; the base's intermediate frames are recorded; the inputs' caret column masked",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "p-hub-tab-submit-endpoints-18pt",
+   "kind": "probe_endpoints",
+   "probe": "p-hub-tab-submit",
+   "clip": [
+    563,
+    128,
+    983,
+    644
+   ],
+   "masks": [
+    [
+     598,
+     128,
+     655,
+     644
+    ]
+   ],
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "18 pt: the first frame that draws the new focus is the settled one, the field already 12 px clear; the base's intermediate frames are recorded; the inputs' caret column masked",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "p-hub-click-endpoints-18pt",
+   "kind": "probe_endpoints",
+   "probe": "p-hub-click",
+   "clip": [
+    563,
+    128,
+    983,
+    644
+   ],
+   "masks": [
+    [
+     598,
+     128,
+     655,
+     644
+    ]
+   ],
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "18 pt: the first frame that draws the new focus is the settled one, the field already 12 px clear; the base's intermediate frames are recorded; the inputs' caret column masked",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  }
+ ]
+}

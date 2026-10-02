@@ -145,7 +145,9 @@ impl GitTurtle {
         {
             self.tag_actions.list = Some(list.clone());
         }
-        window.open_alert_dialog(cx, move |dialog, _, cx| {
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
+            // A button focus has moved onto scrolls into view in this frame.
+            list.reveal(window, cx);
             let p = palette(cx); let tag = &details.tag;
             let deletion = tag.clone(); let delete_owner = owner.clone(); let delete_path = path.clone();
             let oid = tag.oid.clone();
@@ -320,7 +322,9 @@ impl TagBrowser {
     }
 }
 impl Render for TagBrowser {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A row focus has moved onto scrolls into view in this frame.
+        self.rows.reveal(window, cx);
         let p = palette(cx);
         let matches = self.matches(cx);
         // The browser keeps the focus ring's room above Create tag… and below
@@ -429,7 +433,9 @@ impl Render for TagForm {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::focus_reveal::tests::{assert_steady, assert_tab_reveals, control, focus_filter};
+    use crate::focus_reveal::tests::{
+        assert_every_frame_reveals, assert_steady, assert_tab_reveals, control, focus_filter,
+    };
     use ::core::prelude::v1::test;
     use gpui_kit::component::{FocusRing, Root, Theme};
     use std::{cell::RefCell, rc::Rc};
@@ -913,6 +919,26 @@ pub(crate) mod tests {
         // A click inspects nothing while an operation runs.
         app.update(cx, |app, _| app.operation_busy = Some("Testing"));
         assert_steady(cx, &list, "tags-list", &rows);
+    }
+
+    /// Tab and Shift+Tab through Tags' 30 rows: every frame painted after a
+    /// key, the first one that draws the new focus included, shows the
+    /// focused row with its whole ring inside the list.
+    #[gpui::test]
+    async fn tags_reveal_rows_in_the_frame_that_draws_focus(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let (_repo, app, cx) = small_window_with_tags(cx, fixture.path(), 27);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
+        let read = app.update(cx, |app, _| app.tag_actions.task.take());
+        read.expect("the tags are read").await;
+        draw(cx);
+        let list = app
+            .read_with(cx, |app, _| app.tag_actions.list.clone())
+            .expect("the Tags list");
+
+        let rows: Vec<_> = (0..30).map(|index| control("tag-row", index)).collect();
+        focus_filter(cx, &list, &rows[0]);
+        assert_every_frame_reveals(cx, &list, "tags-list", &rows);
     }
 
     /// Tab moves through every Push to… button of the tag inspector and
