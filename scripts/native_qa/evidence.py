@@ -101,13 +101,29 @@ def run_analyses(spec: dict, root: Path) -> dict:
                 cache[path] = None
         return cache[path]
 
+    logs: dict = {}
+
+    def readings(role: str, variant: scenario.Variant) -> dict:
+        """A launch's readings by label, from its flow-log.json (none when it is missing or unreadable)."""
+        if (role, variant.id) not in logs:
+            try:
+                found = json.loads((root / role / variant.id / "flow-log.json").read_text()).get("readings", [])
+            except (OSError, ValueError, AttributeError):
+                found = []
+            logs[role, variant.id] = {item.get("label"): item for item in found if isinstance(item, dict)}
+        return logs[role, variant.id]
+
     results = []
     for entry, role, variant in scenario.analysis_runs(spec):
         def resolve(ref, role=role, variant=variant):
             named, capture = scenario.split_ref(ref, role)
             return frame(raw_frame(root, named, variant, capture))
 
-        result = analysis.evaluate(entry, resolve)
+        def reading(ref, role=role, variant=variant):
+            named, label = scenario.split_ref(ref, role)
+            return readings(named, variant).get(label)
+
+        result = analysis.evaluate(entry, resolve, reading)
         want = scenario.expected(entry, role)
         results.append(dict(name=entry["name"], kind=entry["kind"], role=role, variant=variant.id,
                             frames=analysis.frame_refs(entry), expected=want, passed=result["passed"],

@@ -7,7 +7,11 @@ desktop is locked, SIGTERM to the launched PID only, and the fixture's state
 compared before and after. Steps run identically for every role; a capture
 limited to some roles is still grabbed in all of them and only committed for
 those. A failed guard stops the launch (after its `on_fail` keys) and the run;
-nothing is retried.
+nothing is retried. A spec with `"atspi": true` sets `org.a11y.Status
+IsEnabled` before each launch and puts its value back once the app has
+stopped (`a11y.enabled`); meanwhile SIGTERM only marks the launch, which
+stops before its next step, and a value that does not read back stops the
+run as inconclusive.
 
 Exit status, as for the other commands: 0 every launch passed, the analyses
 met their expectations and the privacy scan is clean (or, for a re-check,
@@ -16,6 +20,7 @@ every crop is byte-identical); 1 a finding; 2 a refusal or an inconclusive run.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import platform
 import shutil
@@ -61,7 +66,7 @@ def guard(run, step: dict) -> None:
     def resolve(ref):
         return run.driver.snap() if ref == scenario.NOW else run.frames.get(ref)
 
-    result = analysis.evaluate(step["guard"], resolve)
+    result = analysis.evaluate(step["guard"], resolve, run.readings.get)
     note = step.get("note", "")
     run.log["scenario"]["guards"].append(dict(step=step["index"], note=note, passed=result["passed"], result=result))
     print(f"guard (step {step['index']}) {'ok' if result['passed'] else 'FAILED'}: {note}", flush=True)
@@ -77,23 +82,32 @@ def launch(spec: dict, role: str, variant: scenario.Variant, binary: Path, fixtu
     from . import session
 
     store = stores.store_text(variant.palette, settings=scenario.store_settings(spec, variant))
-    # The digest flow-log.json's header records too: the merged store this launch starts from.
+    home = scenario.home_files(spec, variant)
+    # The digests flow-log.json's header records too: the merged store and HOME files this launch starts from.
     record = dict(role=role, variant=variant.id, run_dir=str(run_dir), store_sha256=identity.sha256_bytes(store),
+                  home_sha256={path: identity.sha256_bytes(data) for path, data in sorted(home.items())},
                   error=None, refusal=False)
     width, height = spec["window"]
     try:
         run = session.Session(binary, fixture, run_dir, store, width=width, height=height,
                               display=options["display"], scale="1", for_commit=True, extra_env=spec["env"],
-                              settle=options["settle"], backend=options["backend"])
+                              settle=options["settle"], backend=options["backend"], home_files=home)
     except SystemExit as error:
         return dict(record, error=str(error), refusal=True, started_utc=utc(), ended_utc=utc())
     run.log["scenario"] = dict(task=spec["task"], sha256=spec["sha256"], role=role, variant=variant.describe(),
                                guards=[])
     before = recipe.state(fixture)
     print(f"== {role} {variant.id}: {run_dir}", flush=True)
+    accessibility = contextlib.ExitStack()
     try:
+        if spec["atspi"]:  # IsEnabled true from before the app starts until after it stopped
+            from . import a11y
+
+            accessibility.enter_context(a11y.enabled(record.setdefault("atspi", {})))
+        stop_if_terminated(record)
         run.launch()
         for step in scenario.steps_for(spec, variant):
+            stop_if_terminated(record)
             if "guard" in step:
                 guard(run, step)
             else:
@@ -105,7 +119,10 @@ def launch(spec: dict, role: str, variant: scenario.Variant, binary: Path, fixtu
                       refusal=isinstance(error, SystemExit))
         run.log["error"] = record["error"]
     finally:
-        code = run.close()
+        try:
+            code = run.close()
+        finally:
+            accessibility.close()
     header = run.log["header"]
     unchanged = bool(run.log.get("fixture_unchanged")) and recipe.state(fixture) == before
     record.update(started_utc=header["started_utc"], ended_utc=header["ended_utc"], exit=run.log.get("exit"),
@@ -117,8 +134,21 @@ def launch(spec: dict, role: str, variant: scenario.Variant, binary: Path, fixtu
         record["error"] = "the fixture's state changed during the launch"
     if run.restore_failures:  # a read_only path kept its mode: reported beside whatever else stopped the launch
         record["error"] = "; ".join([*filter(None, [record["error"]]), *run.restore_failures])
+    accessibility_record = record.get("atspi", {})
+    if accessibility_record.get("sigterm") and record["error"] is None:  # received after the last step
+        record.update(error="stopped: SIGTERM received", refusal=True)
+    if accessibility_record.get("restore_error"):  # so is an IsEnabled that did not come back, a host problem
+        record["error"] = "; ".join([*filter(None, [record["error"]]), accessibility_record["restore_error"]])
+        record["refusal"] = True  # never the build's finding: the run is inconclusive
     print(f"   {role} {variant.id}: {'ok' if record['error'] is None else record['error']}", flush=True)
     return record
+
+
+def stop_if_terminated(record: dict) -> None:
+    """With `atspi`, SIGTERM only marks the launch (`a11y.enabled`), so the restore cannot be skipped; the
+    launch stops before its next step and the run as inconclusive."""
+    if record.get("atspi", {}).get("sigterm"):
+        raise SystemExit("stopped: SIGTERM received")
 
 
 def host(spec: dict, variants, display: str, backend: str) -> dict:
@@ -165,6 +195,14 @@ def prepare(spec: dict, fixture: Path | None, fixtures: Path) -> tuple[Path, dic
         recipe_sha256=manifest["recipe_sha256"], summary=recipe.summary(manifest))
 
 
+def require_tools(spec: dict) -> None:
+    """Refuse a spec whose readings this host cannot take, before anything is created or launched."""
+    if spec["atspi"]:
+        from . import a11y
+
+        a11y.require_modules()
+
+
 def require_unlocked(backend: str) -> None:
     if backend != "mutter":
         return
@@ -204,6 +242,7 @@ def run(spec_path: Path, builds: dict[str, Path], out: Path, fixture: Path | Non
     problems = identity.problems([entries[role] for role in spec["roles"]], pair=len(entries) == 2)
     if problems:
         raise SystemExit("refusing: " + "; ".join(problems))
+    require_tools(spec)
     backend = mutter.choose_input(input_choice, mutter.process_argvs())
     repository, manifest, fixture_record = prepare(spec, fixture, fixtures)
     require_unlocked(backend)
@@ -266,6 +305,7 @@ def recheck(spec_path: Path, exe: Path, committed: Path, out: Path | None = None
     problems = identity.problems([entry], pair=False)
     if problems:
         raise SystemExit("refusing: " + "; ".join(problems))
+    require_tools(spec)
     if out is None:
         out = runenv.EVIDENCE_ROOT / "runs" / f"{spec['task']}-recheck-{entry['sha256'][:12]}-" \
                                              f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"

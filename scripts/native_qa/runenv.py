@@ -9,6 +9,7 @@ each launch and refused when it is the operator's own directory.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import pwd
 import stat
@@ -33,6 +34,10 @@ DEFAULT_DISPLAY = ":1"
 DEFAULT_SCALE = "1"
 # The run directory's XDG homes, where a `read_only` step may remove write bits; home/ and captures/ stay writable.
 READ_ONLY_ROOTS = tuple(sub for name, sub in LAYOUT.items() if name != "HOME")
+# Files a scenario seeds into each launch's HOME (`home`): at most this many, each at most this many bytes.
+HOME_FILES = 64
+HOME_FILE_BYTES = 1_000_000
+HOME_OWN = (".gitconfig",)  # written by `prepare` itself: the run's Git identity
 
 
 class Refusal(SystemExit):
@@ -121,8 +126,10 @@ def check_commit_run_dir(run_dir: Path) -> None:
             raise Refusal(f"run directory {run_dir} is under {root}; use {EVIDENCE_ROOT}/runs/<name> for commit captures")
 
 
-def prepare(run_dir: Path | str, preferences: bytes, home: Path | None = None) -> RunDirs:
-    """Create the empty run directory, its HOME/XDG tree, the Git identity and the seeded store."""
+def prepare(run_dir: Path | str, preferences: bytes, home: Path | None = None,
+            home_files: dict[str, bytes] | None = None) -> RunDirs:
+    """Create the empty run directory, its HOME/XDG tree, the Git identity, the seeded HOME files and store."""
+    check_home_files(home_files or {})
     run_dir = check_run_dir(run_dir, home)
     run_dir.mkdir(parents=True, exist_ok=True)
     started = time.time()
@@ -134,12 +141,97 @@ def prepare(run_dir: Path | str, preferences: bytes, home: Path | None = None) -
         path.mkdir()
         paths[name] = path
     (paths["HOME"] / ".gitconfig").write_text(GITCONFIG)
+    seed_home(paths["HOME"], home_files or {})
     store = paths["XDG_CONFIG_HOME"] / "gitturtle" / "preferences.json"
     store.parent.mkdir()
     store.write_bytes(preferences)
     captures = run_dir / "captures"
     captures.mkdir()
     return RunDirs(run_dir, captures, paths)
+
+
+# ---------- files seeded into HOME ----------
+def home_file_problem(value) -> str | None:
+    """Why `value` cannot name a file seeded under a launch's HOME, or None: a relative POSIX path that stays
+    under HOME and is not the run's own Git identity."""
+    if not isinstance(value, str) or not value or len(value) > 300 or "\0" in value:
+        return f"expected a non-empty path of at most 300 characters, got {value!r}"
+    parts = value.split("/")
+    if value.startswith("/") or "\\" in value or any(part in ("", ".", "..") for part in parts):
+        return f"{value!r} must be a relative POSIX path under HOME without empty, . or .. parts"
+    if parts[0] in HOME_OWN:
+        return f"{value!r} is the run's own Git identity, which every launch writes itself"
+    return None
+
+
+def home_overlap(paths) -> str | None:
+    """Why these files cannot all be written, one being another's directory, or None."""
+    ordered = sorted(paths)
+    for path in ordered:
+        inside = next((other for other in ordered if other.startswith(path + "/")), None)
+        if inside is not None:
+            return f"{path!r} is a file, but {inside!r} needs it as a directory"
+    return None
+
+
+def home_files_problem(files: dict[str, bytes]) -> str | None:
+    """Why `seed_home` would not write this whole set of HOME files, or None: too many, a bad path, a file too
+    large, or one file another needs as a directory."""
+    if len(files) > HOME_FILES:
+        return f"{len(files)} files; at most {HOME_FILES}"
+    for relative, data in files.items():
+        problem = home_file_problem(relative)
+        if problem is not None:
+            return problem
+        if not isinstance(data, bytes) or len(data) > HOME_FILE_BYTES:
+            return f"{relative}: expected at most {HOME_FILE_BYTES} bytes"
+    return home_overlap(files)
+
+
+def check_home_files(files: dict[str, bytes]) -> dict[str, bytes]:
+    """Refuse, before anything is created, HOME files `seed_home` would not write."""
+    problem = home_files_problem(files)
+    if problem is not None:
+        raise Refusal(f"HOME files: {problem}")
+    return files
+
+
+def seed_home(home: Path, files: dict[str, bytes]) -> dict[str, str]:
+    """Write each file under `home` without following a link; each one's sha256 by path.
+
+    Every directory on the way is opened relative to its parent with
+    O_NOFOLLOW and every file is created with O_EXCL, so a symbolic link or
+    an existing file is refused rather than followed or replaced, and nothing
+    lands outside `home`.
+    """
+    check_home_files(files)
+    digests = {}
+    for relative in sorted(files):
+        *directories, name = relative.split("/")
+        fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for depth, part in enumerate(directories):
+                try:
+                    os.mkdir(part, 0o755, dir_fd=fd)
+                except FileExistsError:
+                    pass
+                try:
+                    child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                except OSError as error:
+                    where = "/".join(directories[:depth + 1])
+                    raise Refusal(f"HOME file {relative}: {where} is not a plain directory ({error})") from None
+                os.close(fd)
+                fd = child
+            try:
+                out = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=fd)
+            except OSError as error:
+                raise Refusal(f"HOME file {relative}: cannot create it in {home} ({error})") from None
+            with os.fdopen(out, "wb") as handle:
+                handle.write(files[relative])
+        finally:
+            os.close(fd)
+        digests[relative] = hashlib.sha256(files[relative]).hexdigest()
+    return digests
 
 
 def read_only_problem(value) -> str | None:

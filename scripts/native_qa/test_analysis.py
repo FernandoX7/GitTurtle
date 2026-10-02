@@ -220,5 +220,124 @@ class FillAndCompareTest(unittest.TestCase):
         self.assertEqual(analysis.evaluate(fill, frames_.get)["contrast"], 1.0)
 
 
+SWITCH = dict(name="Follow system appearance", role="toggle button", states=["focused", "focusable", "enabled"],
+              depth=5)
+
+
+def focus_reading(label: str, focused=SWITCH, **extra) -> dict:
+    return dict(label=label, kind="atspi_focus", application="GitTurtle", focused=focused,
+                all_focused=[focused] if focused else [], **extra)
+
+
+def snapshot(label: str, data: bytes | None, inode: int = 7, mtime: int = 1) -> dict:
+    """A store_snapshot reading of `data` (None: the file is absent)."""
+    import hashlib
+    import json
+
+    entry = dict(label=label, kind="store_snapshot", path="config/gitturtle/preferences.json", stable=True,
+                 exists=data is not None, sha256=None, bytes=None, mtime_ns=None, inode=None, json=None)
+    if data is not None:
+        entry.update(sha256=hashlib.sha256(data).hexdigest(), bytes=len(data), mtime_ns=mtime, inode=inode)
+        try:
+            entry["json"] = json.loads(data)
+        except ValueError as error:
+            entry["json_error"] = str(error)
+    return entry
+
+
+class ReadingTest(unittest.TestCase):
+    """The reading kinds: pure functions on what `atspi_focus` and `store_snapshot` steps recorded."""
+
+    def test_focused_node(self) -> None:
+        reading = focus_reading("after-card")
+        self.assertTrue(analysis.focused_node(reading, "Follow system appearance", "toggle button",
+                                              ["focused"], ["pressed"])["passed"])
+        for kwargs, reason in ((dict(node="Omarchy theme"), "is 'Follow system appearance', not 'Omarchy theme'"),
+                               (dict(role="button"), "is a 'toggle button', not a 'button'"),
+                               (dict(states=["focused", "pressed", "checked"]), "lacks pressed, checked"),
+                               (dict(not_states=["enabled", "focusable"]), "is enabled, focusable")):
+            with self.subTest(kwargs=kwargs):
+                result = analysis.focused_node(reading, **kwargs)
+                self.assertFalse(result["passed"])
+                self.assertIn(reason, result["reasons"][0])
+        # The base can report only the window as focused, or nothing at all.
+        window = dict(name="GitTurtle", role="frame", states=["focused", "active"], depth=1)
+        self.assertFalse(analysis.focused_node(focus_reading("x", window), "Follow system appearance")["passed"])
+        nothing = analysis.focused_node(focus_reading("x", None), states=["focused"])
+        self.assertEqual(nothing["reasons"], ["AT-SPI reported no focused node"])
+        lost = analysis.focused_node(dict(focus_reading("x", None), error="no AT-SPI application"), node="x")
+        self.assertEqual(lost["reasons"][0], "no AT-SPI application")
+
+    def test_focused_node_same_as_another_reading(self) -> None:
+        before, after = focus_reading("after-card"), focus_reading("after-keys", dict(SWITCH, states=list(
+            reversed(SWITCH["states"]))))
+        same = analysis.focused_node(after, same=before)
+        self.assertTrue(same["passed"], same["reasons"])  # the same states in another order
+        self.assertEqual(same["same_as"], SWITCH)
+        toggled = focus_reading("after-keys", dict(SWITCH, states=SWITCH["states"] + ["pressed"]))
+        result = analysis.focused_node(toggled, same=before)
+        self.assertFalse(result["passed"])
+        self.assertIn("differs from reading 'after-card' in states", result["reasons"][0])
+        moved = analysis.focused_node(focus_reading("after-tab", dict(SWITCH, name="Omarchy theme", role="button")),
+                                      same=before)
+        self.assertIn("in name, role", moved["reasons"][0])
+        self.assertFalse(analysis.focused_node(before, same=focus_reading("gone", None))["passed"])
+
+    def test_store_compare_bytes_and_keys(self) -> None:
+        store = b'{"version": 6, "settings": {"theme": "omarchy", "follow_system": false}}'
+        a, b = snapshot("after-card", store), snapshot("after-keys", store)
+        same = analysis.store_compare(a, b)
+        self.assertTrue(same["passed"], same["reasons"])
+        self.assertEqual((same["identical"], same["rewritten"], same["changed_keys"]), (True, False, []))
+        rewritten = analysis.store_compare(a, snapshot("after-keys", store, inode=8))
+        self.assertTrue(rewritten["passed"])  # the same bytes written again pass; the record says so
+        self.assertTrue(rewritten["rewritten"])
+        changed = snapshot("after-keys", b'{"version": 6, "settings": {"theme": "omarchy", "follow_system": true}}')
+        result = analysis.store_compare(a, changed)
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["changed_keys"], ["settings.follow_system"])
+        self.assertIn("the store's bytes differ", result["reasons"][0])
+        self.assertIn("changed keys settings.follow_system", result["reasons"][0])
+        keys = analysis.store_compare(a, changed, ["settings.theme"])
+        self.assertTrue(keys["passed"], keys["reasons"])
+        keys = analysis.store_compare(a, changed, ["settings.theme", "settings.follow_system", "settings.absent"])
+        self.assertEqual(keys["reasons"], ["settings.follow_system: False against True"])
+        self.assertEqual(keys["differing"], [dict(key="settings.follow_system", a=False, b=True)])
+        # Absent on both sides is identical; absent on one is not; a file that is not JSON has no keys.
+        self.assertTrue(analysis.store_compare(snapshot("a", None), snapshot("b", None))["passed"])
+        self.assertFalse(analysis.store_compare(a, snapshot("b", None))["passed"])
+        garbled = analysis.store_compare(a, snapshot("b", b"{"), ["settings.theme"])
+        self.assertEqual(garbled["reasons"], ["a snapshot is not JSON, so its keys cannot be compared"])
+        unsettled = analysis.store_compare(a, dict(b, stable=False))
+        self.assertEqual(unsettled["reasons"], ["snapshot 'after-keys' never settled"])
+
+    def test_json_paths(self) -> None:
+        document = {"settings": {"theme": "midnight"}, "recent_repositories": ["/tmp/a", "/tmp/b"]}
+        self.assertEqual(analysis.json_at(document, "settings.theme"), "midnight")
+        self.assertEqual(analysis.json_at(document, "recent_repositories.1"), "/tmp/b")
+        for key in ("settings.missing", "recent_repositories.2", "settings.theme.x"):
+            self.assertEqual(analysis.json_at(document, key), analysis.ABSENT)
+        self.assertEqual(analysis.json_changes(document, {"settings": {"theme": "porcelain"}}),
+                         ["recent_repositories", "settings.theme"])
+        self.assertEqual(analysis.json_changes([1], [2]), ["(the whole document)"])
+
+    def test_evaluate_reads_readings_not_frames(self) -> None:
+        readings = {"after-card": focus_reading("after-card"), "store": snapshot("store", b"{}"),
+                    "store-2": snapshot("store-2", b"{}")}
+        entry = dict(kind="atspi_focus", focus="after-card", node="Follow system appearance", states=["focused"],
+                     not_states=[])
+        self.assertEqual(analysis.frame_refs(entry), [])
+        self.assertEqual(analysis.refs(entry), ["after-card"])
+        self.assertTrue(analysis.evaluate(entry, lambda ref: self.fail("no frame is read"), readings.get)["passed"])
+        missing = analysis.evaluate(dict(entry, same_as="gone"), None, readings.get)
+        self.assertEqual((missing["passed"], missing["missing"]), (False, ["gone"]))
+        wrong = analysis.evaluate(dict(entry, focus="store"), None, readings.get)
+        self.assertEqual(wrong["reasons"], ["reading store comes from store_snapshot, but atspi_focus reads only "
+                                            "atspi_focus readings"])
+        compare = dict(kind="store_compare", a="store", b="store-2")
+        self.assertTrue(analysis.evaluate(compare, None, readings.get)["passed"])
+        self.assertFalse(analysis.evaluate(compare, None)["passed"])  # no readings at all: missing
+
+
 if __name__ == "__main__":
     unittest.main()

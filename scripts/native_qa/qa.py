@@ -71,6 +71,11 @@ def scenario_check(args) -> int:
     spec = scenario.load(args.spec)
     crops = scenario.committed(spec)
     print(f"{args.spec}: valid (version {spec['version']}, task {spec['task']}, sha256 {spec['sha256'][:12]})")
+    seeded = sorted({path for variant in spec["variants"] for path in scenario.home_files(spec, variant)})
+    if seeded:
+        print(f"  HOME files seeded before each launch: {', '.join(seeded)}")
+    if spec["atspi"]:
+        print("  org.a11y.Status IsEnabled set true for each launch, then restored and read back")
     print(f"  {len(spec['variants'])} variant(s), {len(spec['steps'])} steps, {len(spec['analyses'])} analyses, "
           f"{len(scenario.analysis_runs(spec))} evaluations, {len(crops)} committed crops:")
     for crop in crops:

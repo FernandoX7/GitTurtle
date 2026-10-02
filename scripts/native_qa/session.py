@@ -7,7 +7,9 @@ With Mutter input, nothing is sent while the desktop is locked: Mutter
 delivers keys to whatever surface has compositor focus, the lock screen's
 password field included. A `read_only` step's paths get their modes back in
 `close`, whatever ended the launch, before anything else reads or removes the
-run directory.
+run directory. `atspi_focus` and `store_snapshot` steps send nothing: they keep
+the focused AT-SPI node, or a store's digest, size and JSON, under a label in
+flow-log.json's `readings`.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import identity, runenv
+from . import a11y, identity, runenv, stores
 
 DEFAULT_SCENARIO = [
     {"stable": 4.0},
@@ -31,6 +33,10 @@ DEFAULT_SCENARIO = [
 STEP_KEYS = ("key", "type", "palette", "move", "glide", "click", "press", "release", "wheel", "park", "wait",
              "stable", "mark", "capture", "resize", "read_only")
 NO_INPUT = ("wait", "stable", "read_only")  # steps that send nothing, so they need no lock check
+# Steps that read the app's state into flow-log.json's `readings` under a label; they send nothing either.
+READING_STEPS = ("atspi_focus", "store_snapshot")
+STEP_KEYS += READING_STEPS
+NO_INPUT += READING_STEPS
 PALETTE_KEY = ("p", ("Control_L", "Shift_L"))  # the command palette's shortcut
 # The palette is a modal dialog that dims the whole window: opening it changed about 640,000 of 680,000 pixels
 # on 2026-10-02 (Midnight and Porcelain, 1000x680), where a caret blink changes under 100.
@@ -92,6 +98,10 @@ def load_scenario(path: Path | None) -> list[dict]:
             problem = runenv.read_only_problem(step["read_only"])
             if problem is not None:
                 raise SystemExit(f"refusing: scenario step {number} ($[{number}].read_only): {problem}")
+        if actions == ["store_snapshot"] and "path" in step:
+            problem = runenv.read_only_problem(step["path"])  # a run-directory path in its XDG homes
+            if problem is not None:
+                raise SystemExit(f"refusing: scenario step {number} ($[{number}].path): {problem}")
     return steps
 
 
@@ -100,7 +110,7 @@ class Session:
                  width: int = 1000, height: int = 680, display: str = runenv.DEFAULT_DISPLAY,
                  scale: str = runenv.DEFAULT_SCALE, for_commit: bool = False,
                  extra_env: dict[str, str] | None = None, settle: float = 5.0, backend: str = "xtest",
-                 lock_check=None) -> None:
+                 lock_check=None, home_files: dict[str, bytes] | None = None) -> None:
         # Every refusal happens before the run directory is created or the binary is run.
         self.binary = runenv.absolute(binary, "binary")
         self.fixture, warnings = runenv.check_fixture(fixture, for_commit)
@@ -108,12 +118,13 @@ class Session:
         if for_commit:
             runenv.check_commit_run_dir(run_dir)
         runenv.check_extra(extra_env or {})
+        home_files = runenv.check_home_files(home_files or {})
         if backend not in ("xtest", "mutter"):
             raise SystemExit(f"refusing: unknown input backend {backend!r}")
         described = identity.describe(self.binary)
         for warning in warnings:
             print(f"warning: {warning}", file=sys.stderr, flush=True)
-        self.dirs = runenv.prepare(run_dir, preferences)
+        self.dirs = runenv.prepare(run_dir, preferences, home_files=home_files)
         self.env = runenv.launch_env(self.dirs, display=display, scale=scale, extra=extra_env)
         self.width, self.height, self.settle = width, height, settle
         self.input = backend
@@ -123,6 +134,7 @@ class Session:
             lock_check = mutter.screen_locked
         self.lock_check = lock_check
         self.frames: dict = {}  # captures and marks by name, for a scenario's guards
+        self.readings: dict[str, dict] = {}  # atspi_focus and store_snapshot readings by label, for guards
         self.proc = self.driver = self.remote = None
         self.locked: list[tuple[runenv.Locked, dict]] = []  # read_only paths, restored last first by close
         self.restore_failures: list[str] = []
@@ -131,12 +143,13 @@ class Session:
             header=dict(
                 binary=described, fixture=str(self.fixture),
                 fixture_before=fixture_state(self.fixture), store_sha256=identity.sha256_bytes(preferences),
+                home_files={path: identity.sha256_bytes(data) for path, data in sorted(home_files.items())},
                 size=[width, height], display=display, scale=scale, backend="XWayland (WAYLAND_DISPLAY unset)",
                 input=backend, for_commit=for_commit, warnings=warnings, argv=sys.argv, started_utc=utc(),
                 env={key: self.env[key] for key in (*runenv.LAYOUT, "DISPLAY", "GPUI_X11_SCALE_FACTOR")},
                 env_extra=sorted(extra_env or ()),
             ),
-            input=[], captures=[], checks=[], read_only=[])
+            input=[], captures=[], checks=[], read_only=[], readings=[])
         if described["build_info"].get("source_tree") != "clean":
             print("warning: the binary's source_tree is not clean", file=sys.stderr, flush=True)
 
@@ -359,6 +372,60 @@ class Session:
         if ran is None:
             raise runenv.Refusal(f"the palette command {query!r} changed nothing within 5 s; stopping")
 
+    # ---------- readings ----------
+    def add_reading(self, label: str, kind: str, note: str | None, found: dict) -> dict:
+        """Keep a reading under `label` for later guards and log it in flow-log.json's `readings`."""
+        if label in self.readings:
+            raise SystemExit(f"refusing: reading {label} was already taken in this run")
+        entry = dict(label=label, kind=kind, at_utc=utc(), **({"note": note} if note else {}), **found)
+        self.readings[label] = entry
+        self.log["readings"].append(entry)
+        return entry
+
+    def atspi_focus(self, label: str, within: float = a11y.WITHIN, note: str | None = None) -> dict:
+        """Read the focused AT-SPI node of the launched process (an `atspi_focus` step); it sends no input."""
+        if self.proc is None:
+            raise runenv.Refusal(f"atspi_focus {label}: the app is not running")
+        try:
+            found = a11y.read_focus(self.proc.pid, within)
+        except Exception as error:  # the tool could not read AT-SPI: inconclusive, never a finding on the build
+            found = dict(pid=self.proc.pid, application=None, focused=None, all_focused=[],
+                         error=f"AT-SPI could not be read ({error!r})")
+        entry = self.add_reading(label, "atspi_focus", note, found)
+        if entry.get("error"):
+            raise runenv.Refusal(f"atspi_focus {label}: {entry['error']}")
+        focused = entry["focused"]
+        shown = "no focused node" if focused is None else \
+            f"{focused['name']!r} ({focused['role']}) {', '.join(focused['states'])}"
+        print(f"atspi_focus {label}: {shown}", flush=True)
+        return entry
+
+    def store_snapshot(self, label: str, relative: str = stores.PREFERENCES, quiet: float = stores.SNAPSHOT_QUIET,
+                       within: float = stores.SNAPSHOT_WITHIN, note: str | None = None) -> dict:
+        """Wait until a store in the run directory stops changing, then keep its sha256, size and JSON (a
+        `store_snapshot` step); one that keeps changing for `within` seconds stops the launch as inconclusive."""
+        problem = runenv.read_only_problem(relative)
+        if problem is not None:
+            raise runenv.Refusal(f"store_snapshot {label}: {problem}")
+        try:
+            found = stores.snapshot(self.dirs.root, relative, quiet=quiet, within=within)
+        except OSError as error:
+            raise runenv.Refusal(f"store_snapshot {label}: {error}") from None
+        entry = self.add_reading(label, "store_snapshot", note, dict(path=relative, **found))
+        if not entry["stable"]:
+            raise runenv.Refusal(f"store_snapshot {label}: {relative} was still changing after {within} s")
+        shown = f"sha256 {entry['sha256'][:12]}, {entry['bytes']} bytes" if entry["exists"] else "absent"
+        print(f"store_snapshot {label}: {relative} {shown} (settled after {entry['waited_s']} s)", flush=True)
+        return entry
+
+    def reading_step(self, step: dict) -> None:
+        if "atspi_focus" in step:
+            self.atspi_focus(step["atspi_focus"], step.get("within", a11y.WITHIN), step.get("note"))
+        else:
+            self.store_snapshot(step["store_snapshot"], step.get("path", stores.PREFERENCES),
+                                step.get("quiet", stores.SNAPSHOT_QUIET), step.get("within", stores.SNAPSHOT_WITHIN),
+                                step.get("note"))
+
     # ---------- scenarios ----------
     def run(self, steps: list[dict]) -> None:
         d = self.driver
@@ -366,6 +433,9 @@ class Session:
             note = step.get("note")
             if not any(key in step for key in NO_INPUT):
                 self.require_unlocked(f"step {next((key for key in STEP_KEYS if key in step), '?')}")
+            if any(key in step for key in READING_STEPS):
+                self.reading_step(step)
+                continue
             if "key" in step:
                 for press in range(step.get("repeat", 1)):
                     if press:

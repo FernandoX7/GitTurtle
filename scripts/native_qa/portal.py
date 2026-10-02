@@ -105,13 +105,15 @@ def wait_until_gone(timeout: float = 20.0, poll: float = 0.4) -> bool:
     return False
 
 
-def states_of(node) -> list[str]:
+def states_of(node, names=STATES) -> list[str]:
+    """The `names` (AT-SPI StateType names in lower case) that `node` reports, in that order."""
     atspi = _atspi()
     try:
         state_set = node.get_state_set()
     except Exception:
         return []
-    return [name for name in STATES if state_set.contains(getattr(atspi.StateType, name.upper()))]
+    return [name for name in names
+            if hasattr(atspi.StateType, name.upper()) and state_set.contains(getattr(atspi.StateType, name.upper()))]
 
 
 def text_of(node) -> str | None:

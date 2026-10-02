@@ -5,11 +5,14 @@ import copy
 import importlib.util
 import io
 import json
+import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -318,6 +321,156 @@ class SpecTest(unittest.TestCase):
                     self.assertRaisesRegex(scenario.SpecError, rf"\$\.variants: variants {clash} \(step 4\)"):
                 scenario.validate(spec(variants=variants))
 
+    def test_home_files_are_seeded_from_the_spec_and_each_variant(self) -> None:
+        colors = ".local/state/omarchy/current/theme/colors.toml"
+        home = {colors: 'accent = "#7aa2f7"\n', ".local/state/omarchy/current/theme.name": "tokyo-night\n",
+                ".local/state/omarchy/current/theme/light.mode": "",
+                "bin.dat": {"base64": "AAEC/w=="}}
+        loaded = scenario.validate(spec(home=home, variants=[
+            {"palette": "midnight"},
+            {"palette": "midnight", "id": "midnight-catppuccin", "home": {colors: 'accent = "#89b4fa"\n'}},
+            {"palette": "porcelain", "text_size": 13, "id": "porcelain-13pt-extra", "home": {"extra/x": "x"}}]))
+        plain, other, extra = loaded["variants"]
+        self.assertEqual(scenario.home_files(loaded, plain)[colors], b'accent = "#7aa2f7"\n')
+        self.assertEqual(scenario.home_files(loaded, plain)["bin.dat"], b"\x00\x01\x02\xff")
+        self.assertEqual(scenario.home_files(loaded, plain)[".local/state/omarchy/current/theme/light.mode"], b"")
+        self.assertEqual(scenario.home_files(loaded, other)[colors], b'accent = "#89b4fa"\n')  # the variant's own
+        self.assertEqual(sorted(scenario.home_files(loaded, extra)), sorted([*home, "extra/x"]))
+        # A variant with its own HOME files commits under its id, and describes them by path only.
+        self.assertEqual([c.name for c in scenario.committed(loaded, roles=("cand",))], [
+            "candidate-midnight-1000x680-focus.png", "candidate-midnight-catppuccin-1000x680-focus.png",
+            "candidate-porcelain-13pt-extra-1000x680-focus.png"])
+        self.assertEqual(other.describe(), dict(id="midnight-catppuccin", palette="midnight", text_size=None,
+                                                home=[colors]))
+        self.assertEqual(scenario.validate(spec())["home"], {})
+
+    def test_bad_home_files(self) -> None:
+        good = {"notes.txt": "x"}
+        for changes, match in (
+                (dict(home={}), r"\$\.home: no files"),
+                (dict(home=["notes.txt"]), r"\$\.home: expected an object"),
+                (dict(home={"/etc/passwd": "x"}), r"\$\.home: '/etc/passwd' must be a relative POSIX path under HOME"),
+                (dict(home={"../escape": "x"}), r"\$\.home: '\.\./escape' must be a relative POSIX path"),
+                (dict(home={"a/./b": "x"}), "without empty, . or .. parts"),
+                (dict(home={"a\\b": "x"}), "relative POSIX path"),
+                (dict(home={".gitconfig": "[user]"}), "the run's own Git identity"),
+                (dict(home={"a": "x", "a/b": "y"}), r"\$\.home: 'a' is a file, but 'a/b' needs it as a directory"),
+                (dict(home={"a": 7}), r"\$\.home\['a'\]: expected an object, got int"),
+                (dict(home={"a": {"base64": "!!"}}), r"\$\.home\['a'\]\.base64: not base64"),
+                (dict(home={"a": {"base64": 7}}), r"\$\.home\['a'\]\.base64: expected a base64 string"),
+                (dict(home={"a": {"text": "x"}}), r"\$\.home\['a'\]: unknown key\(s\) text"),
+                (dict(home={"a": "\ud800"}), "not valid UTF-8"),
+                (dict(home={f"f{i}": "" for i in range(65)}), "65 files; at most 64"),
+                (dict(home={"big": "x" * 1_000_001}), "1000001 bytes; at most 1000000"),
+                (dict(variants=[{"palette": "midnight", "home": good}]),
+                 r"\$\.variants\[0\]\.id: a variant with HOME files needs an \"id\" that extends 'midnight-'"),
+                (dict(variants=[{"palette": "midnight", "id": "midnight-13pt", "home": good}]),
+                 r"names an interface size after 'midnight-' that only \"text_size\" sets; extend 'midnight-' with "
+                 r"what the HOME files change"),
+                (dict(home={"a": "x"}, variants=[{"palette": "midnight", "id": "midnight-x", "home": {"a/b": "y"}}]),
+                 r"\$\.variants\[0\]\.home: with the spec's own HOME files, 'a' is a file, but 'a/b' needs it"),
+                # Within the cap apart, over it merged: refused here, not by the launch's Session mid-run.
+                (dict(home={f"spec-{i}": "" for i in range(40)}, variants=[
+                    {"palette": "midnight"},
+                    {"palette": "midnight", "id": "midnight-more", "home": {f"own-{i}": "" for i in range(30)}}]),
+                 r"\$\.variants\[1\]\.home: with the spec's own HOME files, 70 files; at most 64")):
+            with self.subTest(match=match), self.assertRaisesRegex(scenario.SpecError, match):
+                scenario.validate(spec(**changes))
+
+    def test_readings_and_their_analyses(self) -> None:
+        steps = SPEC["steps"] + [
+            {"atspi_focus": "switch", "note": "the Switch holds focus"},
+            {"store_snapshot": "store-before"},
+            {"key": "space"},
+            {"store_snapshot": "store-after", "path": "config/gitturtle/preferences.json", "quiet": 0.5,
+             "within": 5},
+            {"atspi_focus": "after-space", "within": 2}]
+        analyses = SPEC["analyses"] + [
+            {"name": "switch-focused", "kind": "atspi_focus", "focus": "switch", "node": "Follow system appearance",
+             "role": "toggle button", "states": ["focused"], "not_states": ["pressed"]},
+            {"name": "space-keeps-it", "kind": "atspi_focus", "focus": "after-space", "same_as": "switch",
+             "expect": {"base": False, "cand": True}},
+            {"name": "store-same", "kind": "store_compare", "a": "store-before", "b": "store-after"},
+            {"name": "theme-same", "kind": "store_compare", "a": "store-before", "b": "store-after",
+             "keys": ["settings.theme", "settings.follow_system", "recent_repositories.0"]},
+            {"name": "stores-across-builds", "kind": "store_compare", "a": "base:store-after", "b": "cand:store-after"}]
+        loaded = scenario.validate(spec(atspi=True, steps=steps, analyses=analyses))
+        self.assertTrue(loaded["atspi"])
+        self.assertFalse(scenario.validate(spec())["atspi"])
+        focus, before, _, after, space = loaded["steps"][-5:]
+        self.assertEqual((focus["within"], before["path"], before["quiet"], before["within"]),
+                         (5.0, "config/gitturtle/preferences.json", 1.0, 10.0))
+        self.assertEqual((after["quiet"], after["within"], space["within"]), (0.5, 5.0, 2.0))
+        named = {entry["name"]: entry for entry in loaded["analyses"]}
+        self.assertEqual(named["switch-focused"]["states"], ["focused"])
+        self.assertEqual(named["space-keeps-it"]["expect"], {"base": False, "cand": True})
+        self.assertEqual(named["theme-same"]["keys"], ["settings.theme", "settings.follow_system",
+                                                       "recent_repositories.0"])
+        self.assertIsNone(named["stores-across-builds"]["roles"])  # both frames name a role: once per variant
+        runs = [(entry["name"], role) for entry, role, variant in scenario.analysis_runs(loaded)
+                if variant.id == "midnight"]
+        self.assertIn(("switch-focused", "base"), runs)
+        self.assertIn(("stores-across-builds", None), runs)
+        # Every reading step reaches the session as exactly one action.
+        from native_qa import session
+
+        for step in loaded["steps"][-5:]:
+            sent = play.session_step(step, "cand")
+            self.assertEqual(len([key for key in session.STEP_KEYS if key in sent]), 1, sent)
+        self.assertEqual(set(scenario.READING_STEPS), set(session.READING_STEPS))
+
+    def test_bad_readings(self) -> None:
+        steps = SPEC["steps"] + [{"atspi_focus": "switch"}, {"store_snapshot": "store"}]
+        focus = {"name": "f", "kind": "atspi_focus", "focus": "switch", "states": ["focused"]}
+        compare = {"name": "s", "kind": "store_compare", "a": "store", "b": "store-2"}
+        later = steps + [{"store_snapshot": "store-2"}]
+        for changes, match in (
+                (dict(steps=steps), r"\$\.steps\[6\]\.atspi_focus: needs \"atspi\": true"),
+                (dict(atspi="yes", steps=steps), r"\$\.atspi: expected true or false"),
+                (dict(atspi=True, steps=steps + [{"atspi_focus": "switch"}]), "reading 'switch' is taken twice"),
+                (dict(atspi=True, steps=steps + [{"atspi_focus": "Switch"}]), r"\.atspi_focus: 'Switch' does not match"),
+                (dict(atspi=True, steps=steps + [{"atspi_focus": "x", "within": 0}]), r"\.within: 0 is outside"),
+                (dict(atspi=True, steps=steps + [{"atspi_focus": "x", "quiet": 1}]), r"unknown key\(s\) quiet"),
+                (dict(atspi=True, steps=steps + [{"store_snapshot": "x", "path": "home/.gitconfig"}]),
+                 r"\$\.steps\[8\]\.path: 'home/\.gitconfig' must start with one of config, data, cache, state"),
+                (dict(atspi=True, steps=steps + [{"store_snapshot": "x", "path": "config/../../x"}]),
+                 r"\.path: .* without empty, \. or \.\. parts"),
+                (dict(atspi=True, steps=steps + [{"store_snapshot": "x", "quiet": 5, "within": 2}]),
+                 r"\.within: 2\.0 s is shorter than quiet \(5\.0 s\)"),
+                (dict(atspi=True, steps=steps, analyses=[dict(focus, states=["glowing"])]),
+                 r"\$\.analyses\[0\]\.states\[0\]: 'glowing' is not a state a reading reports"),
+                (dict(atspi=True, steps=steps, analyses=[dict(focus, states=[], not_states=[])]),
+                 "needs node, role, states, not_states or same_as to pass or fail"),
+                (dict(atspi=True, steps=steps, analyses=[dict(focus, not_states=["focused"])]),
+                 "both required and refused"),
+                (dict(atspi=True, steps=steps + [{"guard": {"kind": "atspi_focus", "focus": "@now", "node": "x"}}]),
+                 r"\$\.steps\[8\]\.guard\.focus: @now is a frame; give a reading's label"),
+                (dict(atspi=True, steps=steps, analyses=[dict(focus, focus="@now")]), r"\.focus: '@now' is not a"),
+                (dict(atspi=True, steps=steps, analyses=[dict(focus, focus="gone")]),
+                 r"\$\.analyses\[0\]: reads reading 'gone', which is never taken in variant midnight"),
+                (dict(atspi=True, steps=steps, analyses=[dict(focus, focus="store")]),
+                 r"reads 'store', which comes from store_snapshot, but atspi_focus reads only atspi_focus readings"),
+                (dict(atspi=True, steps=steps, analyses=[dict(focus, focus="focus")]),
+                 "reads reading 'focus', which is never taken"),  # a capture is not a reading
+                (dict(atspi=True, steps=steps, analyses=[dict(compare, b="store")]), "a and b name the same snapshot"),
+                (dict(atspi=True, steps=steps, analyses=[compare]), "reads reading 'store-2', which is never taken"),
+                (dict(atspi=True, steps=later, analyses=[dict(compare, keys=["settings..theme"])]),
+                 r"\.keys\[0\]: 'settings\.\.theme' does not match"),
+                (dict(atspi=True, steps=later, analyses=[dict(compare, keys=[])]), r"\.keys: expected a list of 1"),
+                (dict(atspi=True, steps=later, analyses=[dict(compare, a="head:store")]),
+                 "'head' is not one of the roles"),
+                (dict(atspi=True, steps=SPEC["steps"] + [
+                    {"guard": {"kind": "atspi_focus", "focus": "switch", "states": ["focused"]}},
+                    {"atspi_focus": "switch"}]),
+                 r"\$\.steps\[6\]: reads reading 'switch', which is not taken before it in variant midnight")):
+            with self.subTest(match=match), self.assertRaisesRegex(scenario.SpecError, match):
+                scenario.validate(spec(**changes))
+        # A guard may read a reading taken before it.
+        guarded = scenario.validate(spec(atspi=True, steps=steps + [
+            {"guard": {"kind": "atspi_focus", "focus": "switch", "node": "Follow system appearance"},
+             "on_fail": [{"key": "Escape"}]}]))
+        self.assertEqual(guarded["steps"][-1]["guard"]["focus"], "switch")
+
     def test_load_reports_json_errors(self) -> None:
         with tempfile.TemporaryDirectory() as scratch:
             path = Path(scratch) / "s.json"
@@ -339,6 +492,29 @@ class SpecTest(unittest.TestCase):
                                     capture_output=True, text=True)
         self.assertEqual(result.returncode, 2)
         self.assertIn("$.steps[0].park: expected true", result.stderr)
+
+    def test_cli_check_names_the_home_files_and_the_accessibility_switch(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            path = Path(scratch) / "spec.json"
+            path.write_text(json.dumps(spec(atspi=True, home={"b.txt": "", "a/c.txt": "x"},
+                                            steps=SPEC["steps"] + [{"atspi_focus": "switch"}])))
+            result = subprocess.run([sys.executable, "-B", str(QA), "scenario", "check", str(path)],
+                                    capture_output=True, text=True)
+            over = Path(scratch) / "over.json"
+            over.write_text(json.dumps(spec(home={f"spec-{i}": "" for i in range(40)}, variants=[
+                {"palette": "midnight", "id": "midnight-more", "home": {f"own-{i}": "" for i in range(30)}}])))
+            refused = subprocess.run([sys.executable, "-B", str(QA), "scenario", "check", str(over)],
+                                     capture_output=True, text=True)
+        self.assertEqual(refused.returncode, 2, refused.stdout)
+        self.assertIn("$.variants[0].home: with the spec's own HOME files, 70 files; at most 64", refused.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("  HOME files seeded before each launch: a/c.txt, b.txt\n", result.stdout)
+        self.assertIn("  org.a11y.Status IsEnabled set true for each launch, then restored and read back\n",
+                      result.stdout)
+        plain = subprocess.run([sys.executable, "-B", str(QA), "scenario", "check", str(EXAMPLE)],
+                               capture_output=True, text=True)
+        self.assertNotIn("HOME files", plain.stdout)
+        self.assertNotIn("IsEnabled", plain.stdout)
 
 
 def frame(ring: bool = False, patch: bool = False):
@@ -414,6 +590,39 @@ class BundleTest(unittest.TestCase):
         frame(ring=True).save(self.root / "base" / "porcelain" / "captures" / "focus.png")
         report = evidence.run_analyses(self.spec, self.root)
         self.assertEqual(report["unexpected"], ["ring (base, porcelain): passed, expected fail"])
+
+    def test_reading_analyses_read_the_flow_log_of_each_launch(self) -> None:
+        from native_qa.test_analysis import SWITCH, focus_reading, snapshot
+
+        steps = SPEC["steps"] + [{"atspi_focus": "switch"}, {"store_snapshot": "store-a"}, {"key": "space"},
+                                 {"store_snapshot": "store-b"}]
+        loaded = scenario.validate(spec(atspi=True, steps=steps, analyses=[
+            {"name": "switch", "kind": "atspi_focus", "focus": "switch", "node": "Follow system appearance",
+             "states": ["focused"], "expect": {"base": False, "cand": True}},
+            {"name": "keys-keep-store", "kind": "store_compare", "a": "store-a", "b": "store-b"},
+            {"name": "builds-agree", "kind": "store_compare", "a": "base:store-b", "b": "cand:store-b",
+             "keys": ["settings.theme"]}]), "f" * 64)
+        window = dict(name="GitTurtle", role="frame", states=["focused"], depth=1)
+        store = b'{"version": 6, "settings": {"theme": "omarchy"}}'
+        for role in ("base", "cand"):
+            for variant in loaded["variants"]:
+                run_dir = self.root / role / variant.id
+                run_dir.mkdir(parents=True)
+                readings = [focus_reading("switch", SWITCH if role == "cand" else window),
+                            snapshot("store-a", store), snapshot("store-b", store)]
+                (run_dir / "flow-log.json").write_text(json.dumps(dict(header={}, readings=readings)))
+        report = evidence.run_analyses(loaded, self.root)
+        self.assertEqual((report["total"], report["as_expected"], report["unexpected"]), (10, 10, []))
+        base = next(r for r in report["results"] if r["name"] == "switch" and r["role"] == "base")
+        self.assertEqual(base["result"]["focused"], window)
+        self.assertEqual(base["frames"], [])
+        # A launch whose flow log lost its readings fails every analysis that reads them.
+        (self.root / "cand" / "porcelain" / "flow-log.json").write_text(json.dumps(dict(header={})))
+        report = evidence.run_analyses(loaded, self.root)
+        self.assertEqual(sorted(report["unexpected"]), [
+            "builds-agree (both roles, porcelain): failed, expected pass",
+            "keys-keep-store (cand, porcelain): failed, expected pass",
+            "switch (cand, porcelain): failed, expected pass"])
 
     def test_recheck_comparison(self) -> None:
         from PIL import Image
@@ -553,15 +762,16 @@ class BundleTest(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("git"), "no git")
 class LaunchRecordTest(unittest.TestCase):
-    def launch(self, loaded: dict, variant: scenario.Variant, restore_failure: str | None = None):
-        """`play.launch` through a session that keeps its store and runs nothing; the record and that session."""
+    def launch(self, loaded: dict, variant: scenario.Variant, restore_failure: str | None = None, during=None):
+        """`play.launch` through a session that keeps its store and runs nothing; the record and that session.
+        `during` is called as each step runs, and may raise as a failing step would."""
         sessions = []
 
         class FakeSession:
             """Runs the steps and, on close, reports `restore_failure` as a read_only path it could not restore."""
 
             def __init__(self, binary, fixture, run_dir, store, **kwargs) -> None:
-                self.store = store
+                self.store, self.kwargs = store, kwargs
                 self.log = dict(header=dict(started_utc="2026-10-02T10:00:00Z", ended_utc="2026-10-02T10:01:00Z"),
                                 captures=[], fixture_unchanged=True)
                 self.restore_failures, self.steps = [], []
@@ -571,6 +781,8 @@ class LaunchRecordTest(unittest.TestCase):
                 pass
 
             def run(self, steps) -> None:
+                if during is not None:
+                    during()
                 self.steps += steps
 
             def close(self) -> int:
@@ -586,6 +798,28 @@ class LaunchRecordTest(unittest.TestCase):
                 record = play.launch(loaded, "cand", variant, Path("/x/cand"), fixture, Path(scratch) / "run",
                                      dict(display=":1", settle=0, backend="xtest"))
         return record, sessions[0]
+
+    def test_a_guard_reads_the_sessions_readings(self) -> None:
+        from types import SimpleNamespace
+
+        from native_qa.test_analysis import focus_reading
+
+        loaded = scenario.validate(spec(atspi=True, analyses=[], steps=[
+            {"atspi_focus": "switch"},
+            {"guard": {"kind": "atspi_focus", "focus": "switch", "node": "Follow system appearance"},
+             "on_fail": [{"key": "Escape"}], "note": "the Switch holds focus"}]))
+        step = loaded["steps"][1]
+        sent = []
+        run = SimpleNamespace(readings={"switch": focus_reading("switch")}, frames={}, run=sent.extend,
+                              log={"scenario": {"guards": []}})
+        with contextlib.redirect_stdout(io.StringIO()):
+            play.guard(run, step)
+            self.assertEqual(sent, [])
+            run.readings["switch"] = focus_reading("switch", dict(name="GitTurtle", role="frame", states=["focused"]))
+            with self.assertRaisesRegex(SystemExit, "inconclusive: guard at step 1 .* is 'GitTurtle', not"):
+                play.guard(run, step)
+        self.assertEqual([key["key"] for key in sent], ["Escape"])
+        self.assertEqual([g["passed"] for g in run.log["scenario"]["guards"]], [True, False])
 
     def test_a_mode_the_launch_could_not_restore_fails_it(self) -> None:
         loaded = scenario.validate(spec(steps=[{"read_only": "config/gitturtle"}, {"wait": 0}], analyses=[]), "f" * 64)
@@ -611,6 +845,73 @@ class LaunchRecordTest(unittest.TestCase):
                           "system_code_font": False, "interface_text_size": 13})
         self.assertNotIn("settings", plain_session.log["scenario"]["variant"])
         self.assertEqual(plain_record["store_sha256"], evidence.identity.sha256_bytes(plain_session.store))
+
+    def test_a_launch_seeds_its_variants_home_files_and_records_their_digests(self) -> None:
+        loaded = scenario.validate(spec(home={"a/b.txt": "spec", "c.txt": "spec"}, variants=[
+            {"palette": "midnight"}, {"palette": "midnight", "id": "midnight-own", "home": {"c.txt": "own"}}],
+            steps=[{"wait": 0}], analyses=[]), "f" * 64)
+        plain, own = loaded["variants"]
+        record, session = self.launch(loaded, own)
+        self.assertEqual(session.kwargs["home_files"], {"a/b.txt": b"spec", "c.txt": b"own"})
+        sha = evidence.identity.sha256_bytes
+        self.assertEqual(record["home_sha256"], {"a/b.txt": sha(b"spec"), "c.txt": sha(b"own")})
+        self.assertEqual(session.log["scenario"]["variant"]["home"], ["c.txt"])
+        record, session = self.launch(scenario.validate(spec(steps=[{"wait": 0}], analyses=[]), "f" * 64), plain)
+        self.assertEqual((record["home_sha256"], session.kwargs["home_files"]), ({}, {}))
+
+    def test_isenabled_is_set_for_each_launch_and_restored_however_it_ends(self) -> None:
+        from native_qa import a11y
+        from native_qa.test_a11y import TYPES, FakeProxy
+
+        proxy = FakeProxy(enabled=False)
+        seen = []
+        loaded = scenario.validate(spec(atspi=True, steps=[{"wait": 0}], analyses=[]), "f" * 64)
+        variant = loaded["variants"][0]
+        self.addCleanup(signal.signal, signal.SIGTERM, signal.getsignal(signal.SIGTERM))
+        with mock.patch.object(a11y.Status, "connect", lambda: a11y.Status(proxy, TYPES)), \
+                contextlib.redirect_stderr(io.StringIO()):
+            record, _ = self.launch(loaded, variant, during=lambda: seen.append(proxy.enabled))
+            self.assertEqual((seen, proxy.enabled, record["error"]), ([True], False, None))
+            self.assertEqual(record["atspi"], dict(original=False, set=True, restored=False))
+
+            def crash():
+                raise RuntimeError("the app went away")
+
+            record, _ = self.launch(loaded, variant, during=crash)
+            self.assertEqual((record["error"], record["refusal"], proxy.enabled), ("RuntimeError('the app went away')",
+                                                                                   False, False))
+            self.assertEqual(record["atspi"]["restored"], False)
+
+            def locked_down():
+                proxy.ignore_set = True  # the restore's Set will not take
+
+            record, _ = self.launch(loaded, variant, during=locked_down)
+            self.assertTrue(record["error"].startswith("org.a11y.Status IsEnabled read back True after restoring False; restore it by hand"))
+            self.assertTrue(record["refusal"])  # a host problem: the run is inconclusive, never a finding
+            proxy.ignore_set, proxy.enabled = False, False
+
+            def terminated():
+                os.kill(os.getpid(), signal.SIGTERM)
+                time.sleep(0.01)  # the tool's handler only marks the launch; the step finishes
+
+            # A SIGTERM during the first of two steps stops the launch before the second, after the restore.
+            two = scenario.validate(spec(atspi=True, steps=[{"wait": 0}, {"wait": 0}], analyses=[]), "f" * 64)
+            record, stopped = self.launch(two, variant, during=terminated)
+            self.assertEqual((record["error"], record["refusal"], len(stopped.steps), proxy.enabled),
+                             ("stopped: SIGTERM received", True, 1, False))
+            self.assertEqual((record["atspi"]["sigterm"], record["atspi"]["restored"]), (True, False))
+            # One during the last step still marks the launch stopped once IsEnabled is back.
+            record, stopped = self.launch(loaded, variant, during=terminated)
+            self.assertEqual((record["error"], record["refusal"], len(stopped.steps), proxy.enabled),
+                             ("stopped: SIGTERM received", True, 1, False))
+            proxy.fail_get = True
+            record, _ = self.launch(loaded, variant, during=lambda: self.fail("never launched"))
+            self.assertIn("refusing: org.a11y.Status IsEnabled cannot be read", record["error"])
+            self.assertTrue(record["refusal"])
+        # A spec without "atspi" never touches the bus.
+        proxy.calls.clear()
+        self.launch(scenario.validate(spec(steps=[{"wait": 0}], analyses=[]), "f" * 64), variant)
+        self.assertEqual(proxy.calls, [])
 
 
 @unittest.skipUnless(HAVE_PIL and shutil.which("git"), "Pillow or git is missing")
@@ -722,6 +1023,33 @@ class RunWithoutDisplayTest(unittest.TestCase):
         play.require_settled(unsettled, steps["only-base"], "cand")  # committed for the base only
         with self.assertRaises(SystemExit):
             play.require_settled(unsettled, steps["only-base"], "base")
+
+    def test_missing_accessibility_modules_refuse_before_isenabled_or_a_launch(self) -> None:
+        from native_qa import a11y, portal
+
+        self.spec_path.write_text(json.dumps(spec(atspi=True, steps=SPEC["steps"] + [{"atspi_focus": "switch"}])))
+        (self.root / "committed").mkdir()
+        launched, connect = [], mock.Mock()
+        with self.patched(), mock.patch.object(play, "launch", lambda *args: launched.append(args)), \
+                mock.patch.object(portal, "_atspi", side_effect=ImportError("No module named 'gi'")), \
+                mock.patch.object(a11y.Status, "connect", connect):
+            with self.assertRaisesRegex(SystemExit, r"refusing: \"atspi\": true needs gi with Atspi 2\.0 .*No module "
+                                                    r"named 'gi'"):
+                play.run(self.spec_path, {"base": Path("/x/base"), "cand": Path("/x/cand")}, self.root / "out",
+                         self.fixture, templates=self.templates)
+            with self.assertRaisesRegex(SystemExit, "needs gi with Atspi 2.0"):
+                play.recheck(self.spec_path, Path("/x/cand"), self.root / "committed", self.root / "re", self.fixture)
+        self.assertEqual((launched, connect.call_count), ([], 0))
+        self.assertFalse((self.root / "out").exists() or (self.root / "re").exists())
+        # As a command, that refusal exits 2: a tool this host lacks never grades the build.
+        from native_qa import qa
+
+        with self.patched(), mock.patch.object(portal, "_atspi", side_effect=ImportError("No module named 'gi'")), \
+                contextlib.redirect_stderr(io.StringIO()) as printed:
+            code = qa.main(["recheck", str(self.spec_path), "--exe", "/x/cand", "--committed",
+                            str(self.root / "committed"), "--out", str(self.root / "re")])
+        self.assertEqual(code, 2)
+        self.assertIn("needs gi with Atspi 2.0", printed.getvalue())
 
     def test_refusals_before_any_launch(self) -> None:
         with self.patched():
