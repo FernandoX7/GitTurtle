@@ -80,6 +80,16 @@ def scenario_check(args) -> int:
           f"{len(scenario.analysis_runs(spec))} evaluations, {len(crops)} committed crops:")
     for crop in crops:
         print(f"    {crop.name}  ({crop.crop or 'whole frame'})")
+    probes = scenario.probes(spec)
+    if probes:
+        print(f"  {len(probes)} probe(s), kept in the bundle and never committed:")
+        for step in probes:
+            if "send" in step:
+                sent = "+".join([*(m.replace("_L", "") for m in step["mods"]), step["send"]])
+            else:
+                sent = f"click at {step['click_at']}" + (f" released at {step['release_at']}"
+                                                         if "release_at" in step else "")
+            print(f"    {step['probe']}  ({sent} x{step['repeat']}, region {step['region']})")
     return 0
 
 

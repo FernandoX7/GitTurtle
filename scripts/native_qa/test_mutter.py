@@ -188,7 +188,13 @@ class GuardTest(unittest.TestCase):
             self.driver.wheel(60, 400, 3)
         with self.assertRaises(mutter.InputRefused):
             self.driver.click(60, 400)
+        with self.assertRaisesRegex(mutter.InputRefused, "no button sent"):
+            self.driver.aim(60, 400)  # a click probe's press and release point
         self.assertEqual(self.session.calls, [])
+        self.dsp.app.pointer = SimpleNamespace(same_screen=True, win_x=60, win_y=400)
+        self.driver.aim(60, 400)
+        self.driver.button(True)
+        self.assertEqual(self.sent("NotifyPointerButton"), [(0x110, True)])
 
 
 class LockTest(unittest.TestCase):

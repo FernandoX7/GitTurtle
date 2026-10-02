@@ -4,10 +4,12 @@ A bundle (`qa.py scenario run --out BUNDLE`) holds:
 
   scenario.json          the spec, byte for byte
   fixture-manifest.json  the recipe build's manifest (absent with --fixture)
-  <role>/<variant>/      one launch's run directory: flow-log.json, app.log, captures/, marks/
+  <role>/<variant>/      one launch's run directory: flow-log.json, app.log, captures/, marks/ and
+                         probes/<probe>/ (probe.json and every frame it kept; never committed)
   commit/                the crops to commit, under their committed names
   commit-manifest.json   per crop: name, sha256, bytes, size, role, variant, capture, box, what it shows
-  analysis.json          every analysis with its numbers, verdict and the scenario's expectation
+  analysis.json          every analysis with its numbers, verdict and the scenario's expectation (true,
+                         false, or "record": measured and written, never a finding)
   run.json               builds, host, fixture, launches, privacy scan and the verdict
 
 A re-check directory (`qa.py recheck`) holds scenario.json, cand/<variant>/,
@@ -36,6 +38,31 @@ def write_json(path: Path, payload) -> None:
 
 def raw_frame(root: Path, role: str, variant: scenario.Variant, capture: str) -> Path:
     return root / role / variant.id / "captures" / f"{capture}.png"
+
+
+def probe_dir(root: Path, role: str, variant: scenario.Variant, probe: str) -> Path:
+    return root / role / variant.id / "probes" / probe
+
+
+def load_probe(directory: Path, root: Path) -> dict | None:
+    """A probe's record (`session.Session.probe`) with an `image` loader on every frame and each frame's `file`
+    relative to `root`, as `analysis.probe_ring` and `probe_endpoints` read it; None when it was never written."""
+    from PIL import Image
+
+    path = directory / "probe.json"
+    if not path.is_file():
+        return None
+    record = json.loads(path.read_text())
+    for press in record["presses"]:
+        for frame in press["frames"]:
+            source = directory / frame["file"]
+
+            def load(source=source):
+                with Image.open(source) as image:
+                    return image.convert("RGB")
+
+            frame.update(image=load, file=str(source.relative_to(root)))
+    return record
 
 
 def cut(source: Path, box, output: Path) -> dict:
@@ -87,7 +114,12 @@ def commit_manifest(spec: dict, entries: list[dict]) -> dict:
 
 
 def run_analyses(spec: dict, root: Path) -> dict:
-    """Every analysis of the spec over the bundle's raw captures, with the expectation it is held to."""
+    """Every analysis of the spec over the bundle's raw captures and probes, with the expectation it is held to.
+
+    An analysis expected to `record` is measured and written like the others
+    but always counts as expected, so a base's cut frames are on record
+    without failing the run; `recorded` counts them.
+    """
     from PIL import Image
 
     cache: dict = {}
@@ -115,9 +147,11 @@ def run_analyses(spec: dict, root: Path) -> dict:
 
     results = []
     for entry, role, variant in scenario.analysis_runs(spec):
-        def resolve(ref, role=role, variant=variant):
-            named, capture = scenario.split_ref(ref, role)
-            return frame(raw_frame(root, named, variant, capture))
+        def resolve(ref, role=role, variant=variant, probe=entry["kind"] in analysis.PROBE_KINDS):
+            named, name = scenario.split_ref(ref, role)
+            if probe:
+                return load_probe(probe_dir(root, named, variant, name), root)
+            return frame(raw_frame(root, named, variant, name))
 
         def reading(ref, role=role, variant=variant):
             named, label = scenario.split_ref(ref, role)
@@ -125,14 +159,20 @@ def run_analyses(spec: dict, root: Path) -> dict:
 
         result = analysis.evaluate(entry, resolve, reading)
         want = scenario.expected(entry, role)
+        inconclusive = bool(result.get("inconclusive"))  # a truncated or unsettled probe meets neither verdict
         results.append(dict(name=entry["name"], kind=entry["kind"], role=role, variant=variant.id,
                             frames=analysis.frame_refs(entry), expected=want, passed=result["passed"],
-                            as_expected=result["passed"] == want, note=entry.get("note", ""), result=result))
+                            inconclusive=inconclusive,
+                            as_expected=want == scenario.RECORD or (not inconclusive and result["passed"] == want),
+                            note=entry.get("note", ""), result=result))
     unexpected = [f"{r['name']} ({r['role'] or 'both roles'}, {r['variant']}): "
-                  f"{'passed' if r['passed'] else 'failed'}, expected {'pass' if r['expected'] else 'fail'}"
+                  f"{'inconclusive' if r['inconclusive'] else 'passed' if r['passed'] else 'failed'}, "
+                  f"expected {'pass' if r['expected'] else 'fail'}"
                   for r in results if not r["as_expected"]]
     return dict(version=1, task=spec["task"], scenario_sha256=spec["sha256"], total=len(results),
-                as_expected=len(results) - len(unexpected), unexpected=unexpected, results=results)
+                as_expected=len(results) - len(unexpected),
+                recorded=sum(1 for r in results if r["expected"] == scenario.RECORD), unexpected=unexpected,
+                results=results)
 
 
 def privacy_scan(paths: list[Path], loaded: dict, jobs: int = 1) -> dict:
@@ -252,10 +292,12 @@ def attestation(bundle: Path, task: str, candidate: str, base: str, recheck: Pat
     shown = what or spec["summary"] or "the scenario's captures"
     pair = f"base {revisions['base']} vs candidate {revisions['cand']}" if "base" in builds else \
         f"candidate {revisions['cand']}"
+    recorded = analyses.get("recorded", 0)
     sessions.append(dict(utc=utc_span([l["started_utc"] for l in launches], [l["ended_utc"] for l in launches]),
                          what=f"{pair}: {shown}; {len(manifest['frames'])} crops privacy-scanned clean "
                               f"({run['privacy']['frames']} scanned, {run['privacy']['matched']} matched); "
-                              f"{analyses['as_expected']} of {analyses['total']} analyses as the scenario expects"))
+                              f"{analyses['as_expected']} of {analyses['total']} analyses as the scenario expects"
+                              + (f" ({recorded} recorded without a verdict)" if recorded else "")))
     attested = build_summary(builds["cand"])
     comparison = {}
     if "base" in builds:
@@ -303,5 +345,5 @@ def attestation(bundle: Path, task: str, candidate: str, base: str, recheck: Pat
                          + (f", {' and '.join(map(str, sizes))} pt" if sizes else "") + ") and its scenario.json",
         frames=[dict(name=f["name"], sha256=f["sha256"]) for f in manifest["frames"]],
         scenario=dict(committed_path=f"docs/evidence/{task}/scenario.json", sha256=spec["sha256"]),
-        analyses=dict(total=analyses["total"], as_expected=analyses["as_expected"]),
+        analyses=dict(total=analyses["total"], as_expected=analyses["as_expected"], recorded=recorded),
         bundle=where, limitations=limitations or spec["limitations"] or "none recorded")

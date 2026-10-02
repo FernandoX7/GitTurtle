@@ -9,7 +9,9 @@ password field included. A `read_only` step's paths get their modes back in
 `close`, whatever ended the launch, before anything else reads or removes the
 run directory. `atspi_focus` and `store_snapshot` steps send nothing: they keep
 the focused AT-SPI node, or a store's digest, size and JSON, under a label in
-flow-log.json's `readings`.
+flow-log.json's `readings`. A `probe` keeps every distinct frame of a region
+drawn after a key or a click under `probes/`, never `captures/`, so nothing it
+grabs is committed.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import contextlib
 import hashlib
 import json
 import signal
+import statistics
 import subprocess
 import sys
 import threading
@@ -31,7 +34,7 @@ DEFAULT_SCENARIO = [
     {"capture": "00-launch", "what": "after launch, pointer parked"},
 ]
 STEP_KEYS = ("key", "type", "palette", "move", "glide", "click", "press", "release", "wheel", "park", "wait",
-             "stable", "mark", "capture", "resize", "read_only")
+             "stable", "mark", "capture", "resize", "read_only", "probe")
 NO_INPUT = ("wait", "stable", "read_only")  # steps that send nothing, so they need no lock check
 # Steps that read the app's state into flow-log.json's `readings` under a label; they send nothing either.
 READING_STEPS = ("atspi_focus", "store_snapshot")
@@ -41,6 +44,122 @@ PALETTE_KEY = ("p", ("Control_L", "Shift_L"))  # the command palette's shortcut
 # The palette is a modal dialog that dims the whole window: opening it changed about 640,000 of 680,000 pixels
 # on 2026-10-02 (Midnight and Porcelain, 1000x680), where a caret blink changes under 100.
 OVERLAY_SHARE = 0.5
+PROBE_QUIET = 0.3     # s a probed region stays unchanged after a press before it counts as settled
+PROBE_TIMEOUT = 3.0   # s after a press before a probe gives up waiting for its region to change and settle
+PROBE_STABLE = 4.0    # s a probe waits, before its first press, for the region to stay unchanged `quiet` s
+PROBE_FRAME_CAP = 60  # distinct frames kept per press; more ends the press, truncated, so memory stays bounded
+# Raw frame bytes kept per press: 98 whole 1000x680 BGRX frames, or 8 of a 3840x2160 window, so name a region.
+PROBE_BYTE_BUDGET = 256 * 1024 * 1024
+
+
+def ms(seconds: float) -> float:
+    return round(seconds * 1000, 2)
+
+
+def interval_stats(gaps: list[float]) -> dict | None:
+    """Min, median and max of the seconds between consecutive grabs, in ms (None without two grabs)."""
+    if not gaps:
+        return None
+    return dict(min=ms(min(gaps)), median=ms(statistics.median(gaps)), max=ms(max(gaps)))
+
+
+def wait_quiet(grab, timeout: float, quiet: float, clock=time.perf_counter, pause=time.sleep,
+               every: float = 0.01) -> float | None:
+    """Seconds until two grabs `quiet` s apart, and every grab between them, were identical; None after `timeout`
+    (counted, like `quiet`, from the first grab's return, so a `timeout` of at least `quiet` can settle)."""
+    last = grab()
+    start = since = clock()
+    while True:
+        now = clock()
+        if now - since >= quiet:
+            return round(now - start, 3)
+        if now - start >= timeout:
+            return None
+        pause(every)
+        data = grab()
+        if data != last:
+            last, since = data, clock()
+
+
+def probe_press(grab, send, quiet: float, timeout: float, cap: int = PROBE_FRAME_CAP,
+                clock=time.perf_counter, ready=None,
+                budget: int = PROBE_BYTE_BUDGET) -> tuple[dict, list[bytes], list[float]]:
+    """One press of a probe: the region just before `send()`, then grabs back to back until it has been unchanged
+    for `quiet` s after a change (`ended` "quiet"), `timeout` s passed since the press ("timeout"; a press that
+    changed nothing ends so), `cap` distinct frames were kept ("frame-cap") or their raw bytes reached `budget`
+    ("byte-budget"). The last two leave the press `truncated`: its frames stop before the region settled.
+
+    `ready()` runs between that first grab and `send()`, for the checks that
+    must come immediately before the press; if it raises, nothing is sent.
+    Only the raw bytes are compared while grabbing; nothing is decoded or
+    written until the press ends. Times are ms since `send()` returned. Each
+    kept frame records `ms`, when the grab that first showed it returned,
+    `previous_ms`, when the grab before it returned (it still showed the
+    earlier frame), `last_ms` and `grabs`, the last grab and the number of
+    grabs that showed it. Frame 0 is the region grabbed just before the
+    press, at a negative `ms`; its `last_ms` is the last grab before the first
+    change. `resolution_ms` is the longest time without a grab, from that
+    grab to the first after the press and between grabs: a frame shown for
+    less may have been missed. Returns the press's record, the kept frames'
+    bytes and the seconds between consecutive grabs.
+    """
+    before = grab()
+    grabbed = clock()
+    if ready is not None:
+        ready()
+    started = clock()
+    send()
+    pressed = clock()
+    kept = [dict(index=0, ms=ms(grabbed - pressed), previous_ms=None, last_ms=ms(grabbed - pressed), grabs=1)]
+    raw, times, held = [before], [], len(before)
+    last, changed_at, ended = before, None, "timeout"
+    while True:
+        data = grab()
+        now = clock() - pressed
+        times.append(now)
+        if data != last:
+            kept.append(dict(index=len(kept), ms=ms(now),
+                             previous_ms=ms(times[-2] if len(times) > 1 else grabbed - pressed),
+                             last_ms=ms(now), grabs=1))
+            raw.append(data)
+            held += len(data)
+            last, changed_at = data, now
+            if len(kept) - 1 >= cap:
+                ended = "frame-cap"
+                break
+            if held >= budget:
+                ended = "byte-budget"
+                break
+        else:
+            kept[-1]["grabs"] += 1
+            kept[-1]["last_ms"] = ms(now)
+            if changed_at is not None and now - changed_at >= quiet:
+                ended = "quiet"
+                break
+        if now >= timeout:
+            break
+    gaps = [b - a for a, b in zip(times, times[1:])]
+    record = dict(send_ms=ms(pressed - started), grabs=len(times), first_grab_ms=ms(times[0]),
+                  interval_ms=interval_stats(gaps),
+                  resolution_ms=ms(max([times[0] + pressed - grabbed, *gaps])),
+                  first_change_ms=kept[1]["ms"] if len(kept) > 1 else None,
+                  last_change_ms=None if changed_at is None else ms(changed_at), end_ms=ms(times[-1]),
+                  ended=ended, changed=len(kept) > 1, settled=ended == "quiet",
+                  truncated=ended in ("frame-cap", "byte-budget"), bytes=held, frames=kept)
+    return record, raw, gaps
+
+
+class PointerMoved(Exception):
+    """The pointer was no longer at a click probe's point on the app window just before its press."""
+
+
+def probe_input_problem(send, click_at, release_at) -> str | None:
+    """Why a probe's input is not exactly one key (`send`) or one pointer press at `click_at`, or None."""
+    if (send is None) == (click_at is None):
+        return "a probe sends a key (\"send\") or presses a point (\"click_at\"), exactly one of them"
+    if release_at is not None and click_at is None:
+        return "\"release_at\" moves a probe's pressed button elsewhere before releasing it, so it needs \"click_at\""
+    return None
 
 
 def utc() -> str:
@@ -94,6 +213,10 @@ def load_scenario(path: Path | None) -> list[dict]:
             raise SystemExit(f"refusing: scenario step {number} needs exactly one of {', '.join(STEP_KEYS)}: {step!r}")
         if actions == ["wheel"] and "steps" not in step:
             raise SystemExit(f"refusing: scenario step {number} is a wheel without steps: {step!r}")
+        if actions == ["probe"]:
+            problem = probe_input_problem(step.get("send"), step.get("click_at"), step.get("release_at"))
+            if problem is not None:
+                raise SystemExit(f"refusing: scenario step {number}: {problem}: {step!r}")
         if actions == ["read_only"]:
             problem = runenv.read_only_problem(step["read_only"])
             if problem is not None:
@@ -135,6 +258,7 @@ class Session:
         self.lock_check = lock_check
         self.frames: dict = {}  # captures and marks by name, for a scenario's guards
         self.readings: dict[str, dict] = {}  # atspi_focus and store_snapshot readings by label, for guards
+        self.clock, self.pause = time.perf_counter, time.sleep  # a probe's; the tests drive them
         self.proc = self.driver = self.remote = None
         self.locked: list[tuple[runenv.Locked, dict]] = []  # read_only paths, restored last first by close
         self.restore_failures: list[str] = []
@@ -149,7 +273,7 @@ class Session:
                 env={key: self.env[key] for key in (*runenv.LAYOUT, "DISPLAY", "GPUI_X11_SCALE_FACTOR")},
                 env_extra=sorted(extra_env or ()),
             ),
-            input=[], captures=[], checks=[], read_only=[], readings=[])
+            input=[], captures=[], checks=[], read_only=[], readings=[], probes=[])
         if described["build_info"].get("source_tree") != "clean":
             print("warning: the binary's source_tree is not clean", file=sys.stderr, flush=True)
 
@@ -318,6 +442,153 @@ class Session:
         self.log["checks"].append(dict(check="mark", name=name, at_utc=utc()))
         return frame
 
+    def probe(self, name: str, send: str | None = None, mods=(), note: str | None = None, region=None,
+              repeat: int = 1, quiet: float = PROBE_QUIET, timeout: float = PROBE_TIMEOUT,
+              stable_within: float = PROBE_STABLE, keep_pointer: bool = False, click_at=None,
+              release_at=None) -> dict:
+        """Press the key `send`, or the pointer's first button at `click_at`, `repeat` times and keep every
+        distinct frame of `region` drawn after each press.
+
+        A key probe parks the pointer first unless `keep_pointer` (a focused
+        and hovered row stays hovered), then gives the region up to
+        `stable_within` s to stay unchanged `quiet` s; each press is checked
+        for the lock and sent through the driver's `key`, with its focus guard.
+        A click probe instead aims the pointer at `click_at` before every
+        press through the driver's `aim`, the click steps' guard (XWayland must
+        report the pointer there on the app window), and waits for the region
+        again, since the hover changes it. Immediately before the button goes
+        down the lock is checked and the pointer must still be there; if it
+        moved during the wait, it is aimed once more, and a second miss
+        refuses with no button sent. Its press sends the button down and
+        up back to back; with `release_at`, only down, and once the frames are
+        grabbed the pointer is aimed at `release_at` and the button released
+        there, so a press can focus a row without the release choosing it.
+        From the moment the button goes down its release is owed: whatever
+        stops the probe, the release is still sent if the lock check allows,
+        and `owed_release` records whether it was.
+        `probe_press` grabs only the region, back to back. The frames are
+        written after each press to probes/NAME/PRESS-INDEX.png, with
+        probe.json and the same record in flow-log.json; none is committed.
+        """
+        from . import x11
+
+        problem = probe_input_problem(send, click_at, release_at)
+        if problem is not None:
+            raise SystemExit(f"refusing: probe {name}: {problem}")
+        directory = self.dirs.root / "probes" / name
+        if directory.exists():
+            raise SystemExit(f"refusing: probe {name} already exists in this run")
+        width, height = self.driver.size()
+        box = tuple(region) if region is not None else (0, 0, width, height)
+        if not (0 <= box[0] < box[2] <= width and 0 <= box[1] < box[3] <= height):
+            raise runenv.Refusal(f"probe {name}: region {list(box)} is not inside the {width}x{height} window; "
+                                 "nothing sent")
+        for x, y in (p for p in (click_at, release_at) if p is not None):
+            if not (0 <= x < width and 0 <= y < height):
+                raise runenv.Refusal(f"probe {name}: point [{x}, {y}] is not inside the {width}x{height} window; "
+                                     "nothing sent")
+        clicks = click_at is not None
+        parked = not clicks and not keep_pointer
+        if parked:
+            self.driver.park()
+
+        def grab():
+            return self.driver.grab(box)
+
+        def settle():
+            return wait_quiet(grab, stable_within, quiet, self.clock, self.pause) if stable_within else None
+
+        state = dict(press=0, held=None)  # `held`: the press whose button went down and is owed its release
+
+        def ready():
+            """Immediately before the press, after any settling: the lock, and the pointer still at `click_at`."""
+            self.require_unlocked(f"probe {name} press {state['press']}")
+            if clicks and not self.driver.on_window(*click_at):
+                raise PointerMoved()
+
+        def send_input():
+            if not clicks:
+                self.driver.key(send, mods, note, wait=0.0)
+                return
+            state["held"] = state["press"]  # owed from here on, whatever raises next
+            self.driver.button(True, 1, note)
+            if release_at is None:
+                self.driver.button(False, 1, note)
+                state["held"] = None
+
+        def release(why: str) -> None:
+            self.require_unlocked(f"probe {name} release {state['held']}"
+                                  + (f" at {list(release_at)}" if release_at is not None else ""))
+            if release_at is not None:
+                self.driver.aim(*release_at, why, settle=0.2)
+            self.driver.button(False, 1, note)
+            state["held"] = None
+
+        settled = None if clicks else settle()
+        directory.mkdir(parents=True)
+        size = (box[2] - box[0], box[3] - box[1])
+        record = dict(probe=name, key=send, mods=list(mods), click_at=list(click_at) if clicks else None,
+                      release_at=list(release_at) if release_at is not None else None, region=list(box),
+                      repeat=repeat, quiet=quiet, timeout=timeout, stable_within=stable_within, parked=parked,
+                      settled_before_s=settled, at_utc=utc(), presses=[])
+        gaps: list[float] = []
+        try:
+            for press in range(1, repeat + 1):
+                state["press"] = press
+                before: dict = {}
+                for attempt in (1, 2):
+                    if clicks:
+                        self.require_unlocked(f"probe {name} pointer to {list(click_at)} for press {press}")
+                        self.driver.aim(*click_at, note)  # refuses, with nothing pressed, if it lands elsewhere
+                        before["settled_before_s"] = settle()
+                    try:
+                        entry, raw, between = probe_press(grab, send_input, quiet, timeout, clock=self.clock,
+                                                          ready=ready)
+                        break
+                    except PointerMoved:
+                        if attempt == 2:
+                            raise runenv.Refusal(f"probe {name}: the pointer left {list(click_at)} on the app window "
+                                                 f"again before press {press}; no button sent") from None
+                        before["reaimed"] = True
+                        self.log["input"].append(f"probe {name}: the pointer left {list(click_at)} before press "
+                                                 f"{press}; aiming again")
+                if clicks and press == 1:
+                    record["settled_before_s"] = before["settled_before_s"]
+                for frame, data in zip(entry["frames"], raw):
+                    path = directory / f"{press:03d}-{frame['index']:02d}.png"
+                    x11.image_from(data, size).save(path)
+                    frame.update(file=path.name, sha256=identity.sha256_file(path))
+                record["presses"].append(dict(press=press, **before, **entry))
+                gaps += between
+                if release_at is not None:
+                    record["presses"][-1]["released"] = False  # until the release below is sent
+                    release("probe release point")
+                    record["presses"][-1]["released"] = True
+        finally:  # a refusal or error mid-probe still leaves the presses it made, and any owed release, on record
+            if state["held"] is not None:  # the button went down and was not released: release it, or say so
+                owed = state["held"]
+                try:
+                    release("probe release point, after an error")
+                    record["owed_release"] = dict(press=owed, released=True)
+                except (Exception, SystemExit) as error:
+                    record["owed_release"] = dict(press=owed, released=False, error=str(error))
+                    print(f"error: probe {name}: the button pressed at {list(click_at)} for press {owed} was never "
+                          f"released: {error}", file=sys.stderr, flush=True)
+                for entry_ in record["presses"]:
+                    if entry_["press"] == owed:
+                        entry_["released"] = record["owed_release"]["released"]
+            presses = record["presses"]
+            record.update(grabs=sum(p["grabs"] for p in presses), frames=sum(len(p["frames"]) - 1 for p in presses),
+                          interval_ms=interval_stats(gaps),
+                          resolution_ms=max((p["resolution_ms"] for p in presses), default=None))
+            (directory / "probe.json").write_text(json.dumps(record, indent=1) + "\n")
+            self.log["probes"].append(record)
+        unsettled = sum(1 for p in record["presses"] if not p["settled"])
+        print(f"probe {name}: {len(record['presses'])} press(es), {record['frames']} frames after them, "
+              f"{record['grabs']} grabs {record['interval_ms']} ms apart, resolution {record['resolution_ms']} ms"
+              + (f", {unsettled} unsettled" if unsettled else ""), flush=True)
+        return record
+
     def press_key(self, name: str, mods, note: str | None, wait: float, await_change: float | None) -> None:
         """One key press; with `await_change`, the seconds until the window changed are logged (None: it did not)."""
         if await_change is None:
@@ -472,6 +743,11 @@ class Session:
                 self.capture(step["capture"], step.get("what", ""), park=not step.get("keep_pointer", False),
                              settle=step.get("settle", 0.0), stable=step.get("stable_within"),
                              quiet=step.get("quiet", 1.15))
+            elif "probe" in step:
+                self.probe(step["probe"], step.get("send"), step.get("mods", ()), note, step.get("region"),
+                           step.get("repeat", 1), step.get("quiet", PROBE_QUIET), step.get("timeout", PROBE_TIMEOUT),
+                           step.get("stable_within", PROBE_STABLE), step.get("keep_pointer", False),
+                           step.get("click_at"), step.get("release_at"))
             elif "resize" in step:
                 d.resize(*step["resize"])
             elif "read_only" in step:

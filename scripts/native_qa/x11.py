@@ -27,6 +27,13 @@ CHAR_KEYSYMS = {
 }
 
 
+def image_from(data: bytes, size):
+    """An RGB frame from a grab's BGRX bytes (`Driver.grab`)."""
+    from PIL import Image
+
+    return Image.frombytes("RGB", tuple(size), data, "raw", "BGRX")
+
+
 def connect(name: str):
     if xdisplay is None:
         raise SystemExit("launch needs python-xlib (import Xlib failed)")
@@ -168,8 +175,18 @@ class Driver:
         self.d.sync()
         self.record(f"{'press' if down else 'release'} button {number}", note)
 
+    def on_window(self, x: int, y: int) -> bool:
+        """True while the X server reports the pointer at window point (x, y) on this window."""
+        q = self.w.query_pointer()
+        width, height = self.size()
+        return bool(q.same_screen) and (q.win_x, q.win_y) == (x, y) and 0 <= x < width and 0 <= y < height
+
+    def aim(self, x: int, y: int, note: str | None = None, settle: float = 0.8) -> None:
+        """Bring the pointer to (x, y) for a button sent next; XTest delivers it wherever the pointer is."""
+        self.glide(x, y, note, settle=settle)
+
     def click(self, x: int, y: int, note: str | None = None) -> None:
-        self.glide(x, y, note, settle=0.2)
+        self.aim(x, y, note, settle=0.2)
         self.button(True)
         time.sleep(0.05)
         self.button(False)
@@ -228,11 +245,14 @@ class Driver:
 
     # ---------- frames ----------
     def snap(self):
-        from PIL import Image
-
         width, height = self.size()
-        raw = self.w.get_image(0, 0, width, height, X.ZPixmap, 0xFFFFFFFF)
-        return Image.frombytes("RGB", (width, height), raw.data, "raw", "BGRX")
+        return image_from(self.grab((0, 0, width, height)), (width, height))
+
+    def grab(self, box) -> bytes:
+        """The raw BGRX bytes of `box` (window pixels, exclusive ends): one GetImage and no geometry query, so a
+        probe can grab back to back and compare bytes; `image_from` turns them into a frame."""
+        x0, y0, x1, y1 = box
+        return self.w.get_image(x0, y0, x1 - x0, y1 - y0, X.ZPixmap, 0xFFFFFFFF).data
 
     def stable(self, timeout: float = 4.0, quiet: float = 0.5) -> float | None:
         """Seconds until two grabs `quiet` apart are identical (animations and tooltips settled)."""
