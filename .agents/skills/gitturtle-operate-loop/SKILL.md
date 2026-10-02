@@ -18,6 +18,7 @@ python3 scripts/agent-loop.py stop --run <run>
 
 - The model, efforts and budgets are the owner's; take them from the brief or HANDOFF, never from habit. The scripts add none.
 - Both scripts strip every `CLAUDE*` variable, run the loop in tmux session `gitturtle-loop` and print the new console log (`.local/agent-loop/console-<UTC>.log`); `start.sh` then prints the run directory. `<run>` may be a directory or its name under `.local/agent-loop`.
+- `resume.sh` runs the run's saved controller (`<run>/controller/scripts/agent-loop.py`), the only copy a run resumes on after `main` changes the controller, and falls back to this checkout's for a run without one; stderr names the one it used.
 - `start.sh` needs a clean checkout on `main`. A finished session (its log ends in `[loop process exited]`) is replaced; while a loop is alive both refuse.
 - `stop` ends the loop at its next safe point; the log then ends in `[loop process exited]`. Record the run, the log and the reason in HANDOFF when you start or stop one.
 
