@@ -170,7 +170,7 @@ impl<T: Styled> CodeFont for T {}
 /// Store the text sizes and project them onto the toolkit theme and the
 /// window's rem geometry, leaving invalidation to the caller.
 ///
-/// The one appearance application path ([`GitTurtle::apply_appearance`]) calls
+/// The one appearance application path ([`crate::GitTurtle::apply_appearance`]) calls
 /// this and invalidates with the root's `cx.notify()` instead of
 /// [`Window::refresh`]. Both mark the window dirty, but `refresh` also bars
 /// GPUI's view reuse for that frame, which would rebuild the twenty
