@@ -14,7 +14,7 @@ struct ExternalPreviewSlot;
 impl ExternalPreviewSlot {
     fn reserve() -> anyhow::Result<Self> {
         EXTERNAL_PREVIEWS
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < 4).then_some(count + 1)
             })
             .map_err(|_| {
