@@ -109,7 +109,10 @@ def solid(colour, size=(40, 30)):
 
 @unittest.skipUnless(HAVE_PIL, "Pillow is not installed")
 class ProbePressTest(unittest.TestCase):
-    A, B, C = solid((10, 10, 10)), solid((20, 20, 20)), solid((30, 30, 30))
+    @classmethod
+    def setUpClass(cls) -> None:
+        # Built here, not in the class body, so the module imports where Pillow is missing.
+        cls.A, cls.B, cls.C = solid((10, 10, 10)), solid((20, 20, 20)), solid((30, 30, 30))
 
     def press(self, script, quiet=0.051, timeout=0.5, cap=session.PROBE_FRAME_CAP, budget=session.PROBE_BYTE_BUDGET):
         clock = FakeClock()
