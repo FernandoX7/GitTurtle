@@ -74,8 +74,9 @@ shas that exist nowhere else. Two habits make stopping cheap:
   candidate shas and evidence paths when they are produced rather than at the end.
 - Preserve accepted work onto the branch before stopping. Accepted commits live
   in the run's `accepted` checkout, not your worktree, and a saved run pins its
-  controller by digest — once a harness fix lands, that run refuses to resume and
-  anything left only inside it is stranded. Land each task with
+  controller by digest — once a harness fix lands, that run resumes only on its
+  saved, unfixed controller, and anything left only inside it is stranded if that
+  controller cannot finish it. Land each task with
   `scripts/operator/land.py --run <run> --task <task>` as it is accepted rather
   than as one batch at the end.
 
@@ -85,7 +86,7 @@ The existing controller runs Claude sessions with `python3 scripts/agent-loop.py
 
 The operator steers a running loop with three commands, none of which needs the loop stopped, killed or resumed. `python3 scripts/agent-loop.py note --run R --task T --text "…"` (or `--file F`) gives the task's later implementer sessions coordinator guidance that never changes its contract or acceptance, and shows it to the reviewers as context only ([coordinator notes](README.md#coordinator-notes)). `attest` registers evidence for a parked candidate. While the loop holds the run, both queue in the run's inbox, and the controller applies or refuses each one before its next step. `status --run R` shows the run state with the pending requests and the latest outcomes under `inbox`.
 
-A coordinator session operates the loop with the [`gitturtle-operate-loop`](../../.agents/skills/gitturtle-operate-loop/SKILL.md) skill and the `scripts/operator/` tools ([runbook](README.md#operate-a-run)). `start.sh` and `resume.sh` run it in tmux without the session's `CLAUDE*` variables, which would otherwise reach every child session. A Monitor on `watch.sh` relays one line per event, and `land.py` turns each accepted task into a squash-merged PR. A short prompt that names the run or queue and the owner's model and effort choices is then enough to take a run over.
+A coordinator session operates the loop with the [`gitturtle-operate-loop`](../../.agents/skills/gitturtle-operate-loop/SKILL.md) skill and the `scripts/operator/` tools ([runbook](README.md#operate-a-run)). `start.sh` and `resume.sh` run it in tmux without the session's `CLAUDE*` variables, which would otherwise reach every child session. `resume.sh` runs the run's saved controller, so a run started before a harness change resumes on its original code. A Monitor on `watch.sh` relays one line per event, and `land.py` turns each accepted task into a squash-merged PR. A short prompt that names the run or queue and the owner's model and effort choices is then enough to take a run over.
 
 Watch the host for anything that writes into a checkout behind the run. An editor or another agent tool that mirrors Claude's configuration files into `.codex/` or `.agents/skills/` no longer rejects a candidate: untracked files under those two roots are left out of the candidate and listed as `mirror_untracked` on the task record, because nothing a candidate may add lives there. A change to a tracked file under them, or an untracked file anywhere else, is still judged by the task scope and the protected paths. The [decision record](2026-09-17-claude-code-support.md#an-untracked-mirror-stops-a-run-from-accepting-anything) records how the sweep was recognized and worked around while a run was pinned to the earlier controller digest.
 
