@@ -17,6 +17,7 @@ The shared guides, skills and review contracts apply across AI tools. The `.code
 | [Architecture review](development/architecture-review.md) | Cohesive boundaries, state ownership, compatibility and failure-path evidence for material changes |
 | [Performance skill](../.agents/skills/gitturtle-performance/SKILL.md) | Affected scheduling/read/cache investigation and conditional measurement procedure |
 | [Native-QA skill](../.agents/skills/gitturtle-native-qa/SKILL.md) | Affected real-app workflows, state restoration and conditional package checks |
+| [Operate-loop skill](../.agents/skills/gitturtle-operate-loop/SKILL.md) | A coordinator's run of the controller with `scripts/operator/`: start, watch, diagnose, own the evidence round and land |
 | [Task specification](development/tasks.json) and [schema](development/task.schema.json) | Versioned feature outcomes, dependencies, scope and evidence requirements |
 | [Controller](../scripts/agent-loop.py) | Isolated execution, fresh sessions, checks, evidence and acceptance state |
 

@@ -29,7 +29,7 @@ from .task_spec import Task, evidence_criteria, load_spec, path_allowed, require
 from .security_review import candidate_requires_security, validate_security_review
 
 
-CONTROLS = (".codex", ".agents", ".claude", "scripts/agent_loop", "scripts/agent-loop.py", "scripts/check-agent-guidance.py", "docs/development/tasks.json", "docs/development/task.schema.json", "docs/development/security-review.md")
+CONTROLS = (".codex", ".agents", ".claude", "scripts/agent_loop", "scripts/operator", "scripts/agent-loop.py", "scripts/check-agent-guidance.py", "docs/development/tasks.json", "docs/development/task.schema.json", "docs/development/security-review.md")
 # An IDE sweep writes byte copies of `.claude/` under these protected roots in
 # every checkout a session ran in. Nothing a candidate may add lives there, so
 # an untracked file under them is left out of the candidate and recorded with

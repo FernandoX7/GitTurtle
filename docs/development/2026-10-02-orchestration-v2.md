@@ -110,6 +110,25 @@ Each item names its owner files, design and acceptance. Controller items change 
 
    The skill states the operator loop, the evidence-owner duties (display ownership, `idle-delay`, the lock check) and the notification points, so a new session needs a short prompt.
 
+   Decisions:
+   - `land.py` reads the evidence commit from the task record's `evidence_commit`, where item 4 stores it, and takes `record.base..` that commit (else the candidate). Reason: the landing trusts one recorded field rather than guessing `E` from the branch.
+   - `watch.sh` matches any `<step> <task> attempt <n>` line and prints inbox outcomes and the idle-wait lines when they appear. Reason: `pre_verifying`, `evidence_gating` and item 7's `rebasing` and waits need no change to the filter.
+   - The `review-candidate` workflow takes `args.dir` and returns compact results. Reason: the coordinator reviews each agent's worktree before its PR without its own context filling up.
+   - The `docs/validation.md` merge works on whole `## ` sections taken from the picked commit's own diff and placed by date among the entries `main` gained at the same place; it never parses conflict markers. Reason: conflict hunks split on shared blank and boilerplate lines, sections do not.
+   - On the same date the landing entry goes first. Reason: the file lists later landings first within a day.
+   - Patch identity is checked per commit pair without context (`-U0`): equal paths and mode lines, a binary file's new object id, and each file's added and removed lines in order, with blank lines free to slide. Reason: `patch-id` hashes context, so a clean pick next to a line `main` changed would fail; frames count by object id, and blank-line placement depends on the neighbouring entry.
+   - A task lands only after every task the run accepted ahead of it: each range between the run's `source_head` and the task's base must belong to an accepted task whose subject is on `origin/main` with that whole range's content, give or take HANDOFF and the queue file. Reason: the squash messages on `main` (#132 to #136) carry no `cherry picked from` trailer, and one squash folds the evidence, task and HANDOFF commits together.
+   - The merge passes `--match-head-commit` with the pushed head. Reason: it merges exactly the commit whose checks passed.
+   - Cleanup removes a `src-cand-*` clone only when it is clean and its HEAD is the landed tip or an ancestor; it names any other. Reason: a clone can hold an unregistered evidence commit or notes.
+   - The HANDOFF patch may touch only `HANDOFF.md` and the run's queue file. Reason: that is the bookkeeping the controller sets aside when it recognises a squash, so the merge still lands the task.
+   - The PR body uses named attestation fields only and rewrites checkout and home paths. Reason: it becomes the squash commit message on `main`.
+   - Merging waits until every check is `pass` or `skipping` and every workflow run on the head has completed. Reason: jobs that wait on `needs:` are not listed as checks until queued.
+   - A push that changes `.github/workflows/` goes to origin's SSH URL. Reason: the `gh` HTTPS token lacks the `workflow` scope.
+   - `start.sh` and `resume.sh` add no run options, and `loop-session.sh` strips `CLAUDE*` inside the tmux session. Reason: the model and efforts are the owner's choice, and the tmux server may carry the variables of the Claude session that started it.
+   - `watch.sh` hides task statuses printed before a log's first step, tails from the line after those it counted at startup, and exits at `[loop process exited]` even while the pane lives on. Reason: a resume reprints every task's status, no line may fall between the startup checks and the tail, and the pane outlives the loop by a day.
+   - `scripts/operator/**` is protected in controller sessions (`CONTROLS`, `protect_paths.py`) and loads the tooling rule. Reason: the operator tools land and attest work, so an attempt must not change them.
+   - `scripts/operator` is not a Python package; its suite runs with `-s scripts/operator` and no `-t` in CI's development tooling job, and `scripts/ci/changes.py` routes the path to the tooling lane like its siblings. Reason: `operator` is a standard-library module.
+
 7. **Rebase without an implementer, and work during evidence** (after item 4).
    - **Mechanical rebase:** when `accepted_head` advances, the controller first rebases each pending candidate (and its evidence commit, if any) without an implementer session. If the rebase is clean and the gates pass, it keeps the attempt count and asks only for `qa.py recheck` evidence. If the frames differ, the evidence is redone; a conflict or a red gate falls back to a normal attempt.
    - **Concurrency:** with `--max-awaiting-evidence N` (default 3), the controller keeps implementing eligible tasks while up to N candidates wait for evidence.
@@ -138,9 +157,9 @@ The evidence standard does not change: release builds of base and candidate in t
 | 1 Tolerant reviewer results | done 2026-10-02 | #137 |
 | 2 Coordinator notes | done 2026-10-02 | #138 |
 | 3 Verify before evidence | done 2026-10-02 | #140 |
-| 4 Evidence on top | done 2026-10-02 | this PR |
+| 4 Evidence on top | done 2026-10-02 | #141 |
 | 5 Native QA tooling | done 2026-10-02 (in parallel with 1 to 4, as planned) | #139 |
-| 6 Operator tooling | open | |
+| 6 Operator tooling | done 2026-10-02 | this PR |
 | 7 Rebase and concurrency | open | |
 | 8 Contracts and queue | open | |
 | 9 Pilot and run | open | |

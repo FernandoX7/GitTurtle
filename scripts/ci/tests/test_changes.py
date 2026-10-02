@@ -51,7 +51,7 @@ class ClassificationTests(unittest.TestCase):
 
     def test_path_boundaries_do_not_match_similar_prefixes(self):
         for path in [b"website-old/public.js", b"docs-old/README.md", b"scripts/ci-other/tool.py",
-                     b"scripts/native_qa-old/qa.py", b".claude-old/settings.json", b".claudeignore",
+                     b"scripts/native_qa-old/qa.py", b"scripts/operator-old/land.py", b".claude-old/settings.json", b".claudeignore",
                      b"crates/app/CLAUDE.md.orig", b"NOTCLAUDE.md"]:
             with self.subTest(path=path):
                 self.assertTrue(changes.classify_paths([path])["product"])

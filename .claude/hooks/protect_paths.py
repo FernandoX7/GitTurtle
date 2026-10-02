@@ -20,6 +20,7 @@ PROTECTED_PREFIXES = (
     ".agents/",
     ".config/nextest.toml",
     "scripts/agent_loop/",
+    "scripts/operator/",
     "scripts/agent-loop.py",
     "scripts/check-agent-guidance.py",
     "scripts/gate.py",
