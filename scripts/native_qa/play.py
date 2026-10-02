@@ -76,8 +76,10 @@ def launch(spec: dict, role: str, variant: scenario.Variant, binary: Path, fixtu
     """One launch of `binary` for `variant`; its record, with `error` set when it did not finish cleanly."""
     from . import session
 
-    record = dict(role=role, variant=variant.id, run_dir=str(run_dir), error=None, refusal=False)
     store = stores.store_text(variant.palette, settings=scenario.store_settings(spec, variant))
+    # The digest flow-log.json's header records too: the merged store this launch starts from.
+    record = dict(role=role, variant=variant.id, run_dir=str(run_dir), store_sha256=identity.sha256_bytes(store),
+                  error=None, refusal=False)
     width, height = spec["window"]
     try:
         run = session.Session(binary, fixture, run_dir, store, width=width, height=height,

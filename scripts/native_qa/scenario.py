@@ -1,9 +1,10 @@
 """Declarative native-QA scenarios: the versioned JSON spec, its strict validation and the committed names.
 
 A scenario names its fixture (a deterministic recipe that `recipe.py` builds),
-the window size, the variants (palette x interface text size), one ordered
-list of steps that every build role runs identically, named crop boxes, the
-captures to commit and the analyses to run on them. `qa.py scenario run`
+the window size, the variants (palette x interface text size, each optionally
+with its own store settings), one ordered list of steps that every build role
+runs identically, named crop boxes, the captures to commit and the analyses to
+run on them. `qa.py scenario run`
 drives it (`play.py`), and `evidence.py` turns its captures into the committed
 crops, manifest, re-check and attestation.
 
@@ -18,7 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -98,14 +99,21 @@ class Variant:
     id: str
     palette: str
     text_size: int | None
+    settings: dict = field(default_factory=dict, hash=False)  # store settings over the spec's, for this variant
 
     @property
     def label(self) -> str:
-        """The variant's part of a committed name: `midnight`, or `midnight-13pt` with a text size."""
-        return self.palette if self.text_size is None else f"{self.palette}-{self.text_size}pt"
+        """The variant's part of a committed name: `midnight`, or `midnight-13pt` with a text size; a variant with
+        its own settings uses its id, which extends that with what they change (`midnight-13pt-code-18pt`)."""
+        if self.settings:
+            return self.id
+        return palette_label(self.palette, self.text_size)
 
     def describe(self) -> dict:
-        return dict(id=self.id, palette=self.palette, text_size=self.text_size)
+        described = dict(id=self.id, palette=self.palette, text_size=self.text_size)
+        if self.settings:
+            described["settings"] = self.settings
+        return described
 
 
 @dataclass(frozen=True)
@@ -334,6 +342,19 @@ def fixture_recipe(value, path: str) -> dict:
 
 
 # ---------- variants, filters and references ----------
+def palette_label(palette: str, text_size: int | None) -> str:
+    """`midnight` or `midnight-13pt`: a plain variant's default id and its part of a committed name."""
+    return palette if text_size is None else f"{palette}-{text_size}pt"
+
+
+def store_settings_entry(value, path: str) -> dict:
+    """Extra preference-store settings, the spec's or a variant's; neither sets what the variants decide."""
+    settings = mapping(value, path)
+    if "theme" in settings or "interface_text_size" in settings:
+        fail(path, "the palette and text size come from the variants")
+    return dict(settings)
+
+
 def variant_list(value, path: str) -> list[Variant]:
     if isinstance(value, dict):
         obj(value, path, {"palettes"}, {"text_sizes"})
@@ -348,13 +369,23 @@ def variant_list(value, path: str) -> list[Variant]:
     variants = []
     for index, item in enumerate(items):
         where = f"{path}[{index}]"
-        obj(item, where, {"palette"}, {"text_size", "id"})
+        obj(item, where, {"palette"}, {"text_size", "id", "settings"})
         size = item.get("text_size")
         if size is not None:
             integer(size, f"{where}.text_size", TEXT_SIZES.start, TEXT_SIZES.stop - 1)
         palette = text(item["palette"], f"{where}.palette", PALETTE)
-        default = palette if size is None else f"{palette}-{size}pt"
-        variants.append(Variant(text(item.get("id", default), f"{where}.id", IDENTIFIER), palette, size))
+        default = palette_label(palette, size)
+        settings = {}
+        if "settings" in item:
+            settings = store_settings_entry(item["settings"], f"{where}.settings")
+            if not settings:
+                fail(f"{where}.settings", "no settings; leave \"settings\" out instead")
+            ident = item.get("id")
+            if not (isinstance(ident, str) and ident.startswith(f"{default}-") and len(ident) > len(default) + 1):
+                fail(f"{where}.id", f"a variant with settings needs an \"id\" that extends '{default}-' with what "
+                                    f"they change, such as '{default}-code-18pt'; its committed names carry that id "
+                                    f"in place of '{default}'")
+        variants.append(Variant(text(item.get("id", default), f"{where}.id", IDENTIFIER), palette, size, settings))
     ids = [variant.id for variant in variants]
     duplicate = sorted({i for i in ids if ids.count(i) > 1})
     if duplicate:
@@ -651,10 +682,7 @@ def validate(data, sha256: str = "") -> dict:
         fail("$.roles", f"expected distinct roles of {', '.join(ROLES)}")
     spec["roles"] = [role for role in ROLES if role in roles]
     spec["fixture"] = fixture_recipe(data["fixture"], "$.fixture") if "fixture" in data else None
-    settings = mapping(data.get("settings", {}), "$.settings")
-    if "theme" in settings or "interface_text_size" in settings:
-        fail("$.settings", "the palette and text size come from the variants")
-    spec["settings"] = settings
+    spec["settings"] = store_settings_entry(data.get("settings", {}), "$.settings")
     env = mapping(data.get("env", {}), "$.env")
     for key, item in env.items():
         text(key, "$.env", re.compile(r"[A-Z][A-Z0-9_]{0,63}"))
@@ -724,7 +752,8 @@ def steps_for(spec: dict, variant: Variant) -> list[dict]:
 
 
 def crop_name(role: str, variant: Variant, window, capture: str) -> str:
-    """The committed file name: `{base|candidate}-{palette}[-{size}pt]-{W}x{H}-{capture}.png`."""
+    """The committed file name: `{base|candidate}-{palette}[-{size}pt]-{W}x{H}-{capture}.png`, with the variant's
+    id in place of `{palette}[-{size}pt]` when it has its own settings."""
     return f"{COMMITTED_PREFIX[role]}-{variant.label}-{window[0]}x{window[1]}-{capture}.png"
 
 
@@ -745,8 +774,13 @@ def committed(spec: dict, roles=None) -> list[Crop]:
                     continue
                 name = crop_name(role, variant, spec["window"], step["capture"])
                 if name in seen:
-                    fail(f"$.steps[{step['index']}]", f"commits {name}, as step {seen[name]} already does")
-                seen[name] = step["index"]
+                    index, other = seen[name]
+                    if other != variant.id:
+                        fail("$.variants", f"variants {other} and {variant.id} would both commit {name} (step "
+                                           f"{index}); a committed name tells variants apart by palette and text "
+                                           "size, or by the id of a variant with \"settings\"")
+                    fail(f"$.steps[{step['index']}]", f"commits {name}, as step {index} already does")
+                seen[name] = (step["index"], variant.id)
                 crops.append(Crop(name, role, variant, step["capture"], step["crop"],
                                   spec["crops"].get(step["crop"]) if step["crop"] else None, shows_for(step, role)))
     return crops
@@ -769,7 +803,8 @@ def expected(entry: dict, role: str | None) -> bool:
 
 
 def store_settings(spec: dict, variant: Variant) -> dict:
-    settings = dict(spec["settings"])
+    """The settings seeded into a launch's store: the spec's, the variant's own over them, then its text size."""
+    settings = {**spec["settings"], **variant.settings}
     if variant.text_size is not None:
         settings["interface_text_size"] = variant.text_size
     return settings
