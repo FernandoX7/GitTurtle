@@ -15,6 +15,7 @@ mod diff_view;
 mod discard;
 mod editor_find;
 mod file_history;
+mod focus_reveal;
 mod folder_picker;
 mod gif_playback;
 mod github;

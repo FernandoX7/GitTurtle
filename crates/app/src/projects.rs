@@ -1,5 +1,6 @@
 use crate::{
     GitTurtle,
+    focus_reveal::{FocusReveal, Trigger},
     preferences::{Preferences, directory_name, validate_project_name},
 };
 use gpui_kit::component::{
@@ -12,10 +13,8 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use std::{
-    cell::RefCell,
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    rc::Rc,
 };
 
 /// User intent only. The application executes repository work in the background.
@@ -43,13 +42,6 @@ enum ProjectMode {
     Create,
 }
 
-#[derive(Default, PartialEq)]
-struct FocusObservation {
-    focus: Option<FocusHandle>,
-    viewport: Bounds<Pixels>,
-    rem_size: Pixels,
-}
-
 pub struct ProjectHub {
     recent: Vec<PathBuf>,
     names: HashMap<PathBuf, String>,
@@ -71,8 +63,9 @@ pub struct ProjectHub {
     can_go_back: bool,
     error: Option<String>,
     recent_scroll: UniformListScrollHandle,
-    body_scroll: ScrollHandle,
-    revealed_focus: Rc<RefCell<FocusObservation>>,
+    /// The page body's scroll, which reveals the form control focus moves
+    /// onto.
+    body: FocusReveal,
     action_tabs_focus: FocusHandle,
     parent_field_focus: FocusHandle,
     submit_focus: FocusHandle,
@@ -123,8 +116,7 @@ impl ProjectHub {
             can_go_back: false,
             error: None,
             recent_scroll: UniformListScrollHandle::new(),
-            body_scroll: ScrollHandle::new(),
-            revealed_focus: Rc::default(),
+            body: FocusReveal::new(Trigger::AnyFocus),
             action_tabs_focus: cx.focus_handle(),
             parent_field_focus: cx.focus_handle(),
             submit_focus: cx.focus_handle(),
@@ -582,54 +574,13 @@ impl ProjectHub {
             .into_any_element()
     }
 
+    /// Reveals the control `focus` contains, 12 px clear of the body's edges,
+    /// whenever focus moves into it.
     fn reveal_on_focus(
         &self,
         focus: FocusHandle,
     ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
-        let scroll = self.body_scroll.clone();
-        let revealed = self.revealed_focus.clone();
-        move |bounds, window, cx| {
-            let observed = FocusObservation {
-                focus: window.focused(cx),
-                viewport: scroll.bounds(),
-                rem_size: window.rem_size(),
-            };
-            if *revealed.borrow() == observed || !focus.contains_focused(window, cx) {
-                return;
-            }
-            let Some(bounds) = bounds.into_iter().reduce(|a, b| a.union(&b)) else {
-                return;
-            };
-            let viewport = observed.viewport;
-            let inset = px(12.);
-            let delta = if bounds.top() < viewport.top() + inset {
-                viewport.top() + inset - bounds.top()
-            } else if bounds.bottom() > viewport.bottom() - inset {
-                viewport.bottom() - inset - bounds.bottom()
-            } else {
-                return;
-            };
-            let previous = scroll.offset();
-            let offset = point(
-                previous.x,
-                (previous.y + delta).clamp(-scroll.max_offset().y, px(0.)),
-            );
-            if offset == previous {
-                return;
-            }
-            let scroll = scroll.clone();
-            // Layout only measures. Apply one reveal after painting, unless
-            // focus or a user's scroll has already superseded this request.
-            window.defer(cx, move |window, cx| {
-                if window.focused(cx) == observed.focus
-                    && scroll.offset() == previous
-                    && scroll.bounds() == viewport
-                {
-                    scroll.set_offset(offset);
-                    window.refresh();
-                }
-            });
-        }
+        self.body.control(focus, px(12.))
     }
 
     fn field(&self, label: &'static str, input: &Entity<InputState>, cx: &App) -> AnyElement {
@@ -1033,8 +984,6 @@ impl Render for ProjectHub {
         let colors = Theme::global(cx).colors;
         let compact = window.viewport_size().width < px(900.);
         let narrow = window.viewport_size().width < px(640.);
-        let scroll = self.body_scroll.clone();
-        let revealed = self.revealed_focus.clone();
         div()
             .size_full()
             .bg(colors.background)
@@ -1088,21 +1037,15 @@ impl Render for ProjectHub {
             )
             .child(
                 div()
-                    .on_children_prepainted(move |_, window, cx| {
-                        // Record even focus outside the form, so returning to
-                        // the same field reveals it again. Scrolling alone
-                        // leaves this unchanged and never snaps the view back.
-                        *revealed.borrow_mut() = FocusObservation {
-                            focus: window.focused(cx),
-                            viewport: scroll.bounds(),
-                            rem_size: window.rem_size(),
-                        };
-                    })
+                    // Record even focus outside the form, so returning to the
+                    // same field reveals it again. Scrolling alone leaves the
+                    // record unchanged and never snaps the view back.
+                    .on_children_prepainted(self.body.observe())
                     .id("project-hub-body")
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .track_scroll(&self.body_scroll)
+                    .track_scroll(self.body.scroll())
                     .flex()
                     .flex_col()
                     .items_center()
@@ -1564,6 +1507,7 @@ impl Render for RenameProjectForm {
 mod tests {
     use super::*;
     use core::prelude::v1::test;
+    use std::{cell::RefCell, rc::Rc};
 
     #[gpui::test]
     fn keyboard_focus_reveals_project_fields_and_submit_at_small_window(cx: &mut TestAppContext) {
@@ -1594,7 +1538,7 @@ mod tests {
             selector: &'static str,
         ) {
             let bounds = cx.debug_bounds(selector).expect("rendered focus target");
-            let viewport = cx.read(|cx| hub.read(cx).body_scroll.bounds());
+            let viewport = cx.read(|cx| hub.read(cx).body.scroll().bounds());
             assert!(
                 bounds.top() >= viewport.top() && bounds.bottom() <= viewport.bottom(),
                 "{selector}: {bounds:?} must be inside {viewport:?}"
@@ -1649,11 +1593,11 @@ mod tests {
             // A user may scroll away from a focused control. Unchanged focus
             // must not schedule another reveal or continuously redraw.
             cx.update(|window, cx| {
-                hub.read(cx).body_scroll.set_offset(point(px(0.), px(0.)));
+                hub.read(cx).body.scroll().set_offset(point(px(0.), px(0.)));
                 window.refresh();
             });
             settle(cx);
-            cx.read(|cx| assert_eq!(hub.read(cx).body_scroll.offset().y, px(0.)));
+            cx.read(|cx| assert_eq!(hub.read(cx).body.scroll().offset().y, px(0.)));
             cx.simulate_keystrokes("shift-tab");
             settle(cx);
             assert_visible(

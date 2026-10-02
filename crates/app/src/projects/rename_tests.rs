@@ -2,6 +2,7 @@ use super::*;
 use crate::{activity, image_lifetime, preferences, recovery_drafts, repository_tabs};
 use core::prelude::v1::test;
 use gpui_kit::component::Root;
+use std::{cell::RefCell, rc::Rc};
 
 fn test_app(
     cx: &mut TestAppContext,
