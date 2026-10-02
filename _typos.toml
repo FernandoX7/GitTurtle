@@ -43,6 +43,10 @@ extend-ignore-re = [
     "contains\\(\"authenticat\"\\)",
     # A UI label quoted as the window truncated it in themes evidence notes.
     "focus rin…",
+    # Ordinal fractions such as "256ths".
+    "\\b[0-9]+ths\\b",
+    # The quoted pattern of a recorded `grep -E` command in a dated note.
+    "grep -[a-zA-Z]*E '[^']*'",
 ]
 
 [default.extend-words]

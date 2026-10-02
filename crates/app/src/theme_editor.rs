@@ -1216,7 +1216,7 @@ impl GitTurtle {
     }
 
     /// Give a parsed document a free name and an id and save it. A collision
-    /// with a saved theme or a built-in label becomes "<name> (imported)", the
+    /// with a saved theme or a built-in label becomes "`<name>` (imported)", the
     /// 32-theme bound refuses the import with the bound, and the saved theme is
     /// highlighted rather than applied.
     fn add_imported_theme(
