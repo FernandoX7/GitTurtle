@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import fnmatch
 import json
 import os
@@ -15,11 +16,11 @@ import unittest
 from unittest.mock import patch
 
 from agent_loop.claude import (
-    CHILD_ENVIRONMENT, NESTED_NAMESPACE_PROBE, REVIEW_ALLOWED, SELECTION_OVERRIDES, SETTINGS_TEMPLATE, Claude, UsageLimited, effort_above,
-    parse_version, resolve_selection, snapshot_files,
+    CHILD_ENVIRONMENT, NESTED_NAMESPACE_PROBE, RESULT_RETRY_PROMPT, REVIEW_ALLOWED, SELECTION_OVERRIDES, SETTINGS_TEMPLATE,
+    Claude, UsageLimited, effort_above, parse_version, resolve_selection, snapshot_files,
 )
 from agent_loop.codex import validate_review
-from agent_loop.process import EnvironmentBlocked, LoopError, MalformedResponse, atomic_json, digest
+from agent_loop.process import EnvironmentBlocked, LoopError, MalformedResponse, atomic_json, digest, run_process
 from agent_loop.task_spec import Task
 from agent_loop.test_codex_process import example_task, passing_review
 # Records and run state stay private even when the host umask is permissive.
@@ -27,6 +28,7 @@ from agent_loop.test_support import setUpModule, tearDownModule
 
 
 AGENTS = ("implementer", "implementer-hard", "verifier", "security-reviewer")
+SESSION = "5d0c6f3e-8a3b-4c1d-9e2f-7a6b5c4d3e2f"
 
 
 def claude_adapter(controller: Path, model: str = "opus", effort: str = "high", **chosen) -> Claude:
@@ -64,24 +66,26 @@ class ClaudeProcessTests(unittest.TestCase):
         self.adapter = claude_adapter(self.controller, "selected-model", "medium",
                                       settings_sha256=digest(self.controller / "claude-settings.json"))
         self.invocation = self.root / "invocation.json"
+        self.invocations = self.root / "invocations.jsonl"
 
     def fake_claude(self, *, result=None, structured=None, exitcode=0, stderr="", version="2.1.274 (Claude Code)",
-                    help_flags=None, logged_in=True, raw_stdout=None):
+                    help_flags=None, logged_in=True, raw_stdout=None, then=()):
+        """A fake CLI answering with `result` first, then each of `then` in turn (the last repeats)."""
         if structured is None:
             structured = {"task_id": self.task.id, "status": "ready", "summary": "Fixture change is ready."}
         payload = {
             "type": "result", "subtype": "success", "is_error": False, "result": json.dumps(structured),
-            "structured_output": structured, "session_id": "fixture-session", "num_turns": 3,
+            "structured_output": structured, "session_id": SESSION, "num_turns": 3,
             "usage": {"output_tokens": 37, "input_tokens": 5}, "total_cost_usd": 0.5,
             "modelUsage": {"selected-model": {"outputTokens": 37}}, "permission_denials": [], "duration_ms": 10,
         }
-        if result:
-            payload.update(result)
+        payloads = [payload | (overrides or {}) for overrides in (result, *then)]
         if help_flags is None:
             help_flags = ("--agent --json-schema --permission-mode --permission-prompts --settings --strict-mcp-config "
-                          "--output-format --effort --model --tools --disallowedTools --allowedTools")
-        config = {"payload": payload, "exitcode": exitcode, "stderr": stderr, "version": version,
+                          "--output-format --effort --model --tools --disallowedTools --allowedTools --resume")
+        config = {"payloads": payloads, "exitcode": exitcode, "stderr": stderr, "version": version,
                   "help": help_flags, "logged_in": logged_in, "raw_stdout": raw_stdout}
+        self.invocations.unlink(missing_ok=True)
         executable = self.root / "fake-claude"
         executable.write_text(
             f"#!{sys.executable}\n"
@@ -99,9 +103,12 @@ class ClaudeProcessTests(unittest.TestCase):
             "           'environment': {k: v for k, v in os.environ.items()\n"
             "                           if k in keys or k.startswith(('ANTHROPIC_', 'CLAUDE_', 'MAX_THINKING_'))}}\n"
             f"Path({str(self.invocation)!r}).write_text(json.dumps(capture))\n"
+            f"log = Path({str(self.invocations)!r})\n"
+            "count = len(log.read_text().splitlines()) if log.exists() else 0\n"
+            "with log.open('a') as stream:\n    stream.write(json.dumps(capture) + '\\n')\n"
             "if config['stderr']:\n    print(config['stderr'], file=sys.stderr)\n"
             "if config['raw_stdout'] is not None:\n    sys.stdout.write(config['raw_stdout'])\n"
-            "else:\n    print(json.dumps(config['payload']))\n"
+            "else:\n    print(json.dumps(config['payloads'][min(count, len(config['payloads']) - 1)]))\n"
             "raise SystemExit(config['exitcode'])\n", encoding="utf-8"
         )
         executable.chmod(0o755)
@@ -113,6 +120,12 @@ class ClaudeProcessTests(unittest.TestCase):
 
     def capture(self) -> dict:
         return json.loads(self.invocation.read_text())
+
+    def captures(self) -> list[dict]:
+        """Every session the fake has answered since it was last configured."""
+        if not self.invocations.exists():
+            return []
+        return [json.loads(line) for line in self.invocations.read_text().splitlines()]
 
     def test_implementer_cli_contract_environment_and_evidence_files(self):
         self.fake_claude()
@@ -150,7 +163,7 @@ class ClaudeProcessTests(unittest.TestCase):
                      "implementer.schema.json", "implementer.contract.json", "implementer.stdout.log"):
             self.assertTrue((attempt / name).is_file(), name)
         session = json.loads((attempt / "implementer.session.json").read_text())
-        self.assertEqual(session["session_id"], "fixture-session")
+        self.assertEqual(session["session_id"], SESSION)
         self.assertEqual(session["output_tokens"], 37)
 
     def test_active_task_queue_reaches_the_session_only_when_supplied(self):
@@ -239,20 +252,212 @@ class ClaudeProcessTests(unittest.TestCase):
                 for field in fields:
                     self.assertIn(f'"{field}"', prompt)
 
-    def test_an_unreadable_verdict_is_reported_as_a_malformed_response(self):
+    def test_an_unreadable_verdict_is_retried_once_then_reported_as_a_malformed_response(self):
         # The gated candidate it judged is intact, so the runner retries the
         # review rather than spending an attempt rebuilding it.
         self.fake_claude(result={"structured_output": None, "result": "I could not complete the review."})
-        with self.assertRaisesRegex(MalformedResponse, "no usable result object"):
-            self.session("verifier", candidate="a" * 40)
+        with self.assertRaisesRegex(MalformedResponse, "no usable result object, also after one retry") as caught:
+            self.session("verifier", directory="review", candidate="a" * 40)
+        review = self.root / "review"
+        self.assertIn(str(review / "verifier.stdout.log"), str(caught.exception))
+        self.assertIn(str(review / "verifier.retry.stdout.log"), str(caught.exception))
+        self.assertEqual(len(self.captures()), 2)
+        # Each try keeps its own transcript and usage, and both count.
+        for name in ("verifier", "verifier.retry"):
+            for suffix in (".prompt.txt", ".stdout.log", ".stderr.log", ".process.json", ".session.json"):
+                self.assertTrue((review / (name + suffix)).is_file(), name + suffix)
+        self.assertEqual(self.adapter.output_tokens, 74)
+        self.assertFalse((review / "verifier.response.json").exists())
+        retry = json.loads((review / "verifier.retry.json").read_text())
+        self.assertEqual(retry["resumed_session"], SESSION)
+        self.assertIn("no JSON object", retry["reason"])
 
-    def test_a_verdict_left_in_the_transcript_is_still_read(self):
+    def test_a_verdict_written_as_text_after_a_sentence_is_read_without_a_retry(self):
+        # 2026-10-01: a security review passed with no findings but wrote its
+        # JSON unfenced after a sentence, and the run recorded review_blocked.
+        from agent_loop.test_security_review import passing_security
+        verdict = passing_security(self.task.id, "b" * 40, "a" * 40)
+        report = "The review found no security defects. " + json.dumps(verdict)
+        self.fake_claude(result={"structured_output": None, "result": report})
+        self.assertEqual(self.session("security-reviewer", candidate="a" * 40, base="b" * 40), verdict)
+        self.assertEqual(len(self.captures()), 1)
+        self.assertFalse((self.root / "attempt/security-reviewer.retry.prompt.txt").exists())
+
+    def test_a_fenced_verdict_left_in_the_transcript_is_still_read(self):
         # The CLI does not always surface structured output for a long final
         # message, so the object in the transcript is the verdict.
         verdict = passing_review()
-        report = "I inspected the candidate.\n\n```json\n" + json.dumps(verdict) + "\n```\n"
+        report = "I inspected the candidate.\n\n```json\n" + json.dumps(verdict, indent=2) + "\n```\nThat is all.\n"
         self.fake_claude(result={"structured_output": None, "result": report})
         self.assertEqual(self.session("verifier", candidate="a" * 40), verdict)
+        self.assertEqual(len(self.captures()), 1)
+
+    def test_the_last_result_object_in_the_text_is_the_verdict(self):
+        stale = passing_review()
+        stale["candidate"] = "c" * 40
+        final = passing_review()
+        report = ("The previous review said:\n" + json.dumps(stale) + "\nMy verdict for this candidate:\n"
+                  + json.dumps(final) + "\nIt does not call {\"example\": 1} anywhere.")
+        self.fake_claude(result={"structured_output": None, "result": report})
+        # An unrelated object after the verdict carries none of its fields and is passed over.
+        self.assertEqual(self.session("verifier", directory="last", candidate="a" * 40), final)
+        self.assertEqual(len(self.captures()), 1)
+
+    def test_a_malformed_last_verdict_is_retried_rather_than_replaced_by_an_earlier_one(self):
+        # The session's final word was the failing verdict; falling back to the
+        # pass before it would accept a verdict the session withdrew.
+        passed = passing_review()
+        withdrawn = dict(passing_review(), verdict="failed", findings=["docs/one.md:1 is wrong"])
+        report = json.dumps(passed) + "\nCorrection:\n" + json.dumps(withdrawn)
+        failing = dict(passing_review(), verdict="fail", findings=["docs/one.md:1 is wrong"])
+        failing["criteria"] = [dict(criterion, status="fail") for criterion in failing["criteria"]]
+        self.fake_claude(result={"structured_output": None, "result": report}, then=[{"structured_output": failing}])
+        self.assertEqual(self.session("verifier", directory="withdrawn", candidate="a" * 40), failing)
+        self.assertEqual(len(self.captures()), 2)
+        reason = json.loads((self.root / "withdrawn/verifier.retry.json").read_text())["reason"]
+        self.assertIn("$.verdict is not one of", reason)
+        self.assertEqual(json.loads((self.root / "withdrawn/verifier.response.json").read_text()), failing)
+
+    def test_invalid_json_resumes_the_same_session_for_the_result_only(self):
+        verdict = passing_review()
+        truncated = "Verdict follows. " + json.dumps(verdict)[:-40]
+        self.fake_claude(result={"structured_output": None, "result": truncated}, then=[{"structured_output": verdict}])
+        with patch.dict(os.environ, {"GITTURTLE_TASKS_PATH": "inherited.json"}):
+            self.assertEqual(self.session("verifier", directory="resumed", candidate="a" * 40), verdict)
+        first, retry = self.captures()
+        # The same agent, model, effort, permissions, settings, schema and tool
+        # allowlist, with --resume ahead of the variadic options.
+        split = first["args"].index("--tools")
+        self.assertEqual(retry["args"], first["args"][:split] + ["--resume", SESSION] + first["args"][split:])
+        self.assertEqual(retry["args"][retry["args"].index("--allowedTools") + 1:], list(REVIEW_ALLOWED))
+        self.assertEqual(retry["prompt"], RESULT_RETRY_PROMPT)
+        self.assertNotIn(self.task.id, retry["prompt"])
+        self.assertEqual(retry["environment"], first["environment"])
+        self.assertEqual(retry["cwd"], first["cwd"])
+        resumed = self.root / "resumed"
+        self.assertEqual((resumed / "verifier.retry.prompt.txt").read_text(), RESULT_RETRY_PROMPT)
+        self.assertEqual(json.loads((resumed / "verifier.response.json").read_text()), verdict)
+        self.assertEqual(self.adapter.output_tokens, 74)
+
+    def test_the_implementer_result_is_retried_the_same_way(self):
+        build = {"task_id": self.task.id, "status": "ready", "summary": "Fixture change is ready."}
+        self.fake_claude(result={"structured_output": None, "result": "Done; the patch is ready."},
+                         then=[{"structured_output": build}])
+        self.assertEqual(self.session(directory="built"), build)
+        first, retry = self.captures()
+        self.assertEqual(retry["args"], first["args"] + ["--resume", SESSION])
+        self.assertEqual(retry["args"][retry["args"].index("--permission-mode") + 1], "bypassPermissions")
+
+    def test_a_session_without_a_resumable_id_is_rerun_fresh_once(self):
+        verdict = passing_review()
+        for session_id in (None, "--dangerously-skip-permissions"):
+            with self.subTest(session_id=session_id):
+                self.fake_claude(result={"structured_output": None, "result": "No verdict.", "session_id": session_id},
+                                 then=[{"structured_output": verdict}])
+                directory = f"fresh-{session_id is None}"
+                self.assertEqual(self.session("verifier", directory=directory, candidate="a" * 40), verdict)
+                first, retry = self.captures()
+                self.assertEqual(retry["args"], first["args"])
+                self.assertNotIn("--resume", retry["args"])
+                self.assertEqual(retry["prompt"], first["prompt"])
+                self.assertIsNone(json.loads((self.root / directory / "verifier.retry.json").read_text())["resumed_session"])
+
+    def test_an_implementer_without_a_resumable_id_is_not_rerun(self):
+        # Its first try already changed the checkout; a fresh session would redo the work on top.
+        self.fake_claude(result={"structured_output": None, "result": "Done.", "session_id": None})
+        with self.assertRaisesRegex(MalformedResponse, "no usable result object .* cannot be resumed"):
+            self.session(directory="unresumable")
+        self.assertEqual(len(self.captures()), 1)
+        self.assertFalse((self.root / "unresumable/implementer.retry.prompt.txt").exists())
+
+    def test_structured_output_is_held_to_the_same_schema(self):
+        invalid = dict(passing_review(), verdict="passed")
+        self.fake_claude(structured=invalid, then=[{"structured_output": passing_review()}])
+        self.assertEqual(self.session("verifier", directory="strict", candidate="a" * 40), passing_review())
+        reason = json.loads((self.root / "strict/verifier.retry.json").read_text())["reason"]
+        self.assertEqual(reason, "structured output: $.verdict is not one of pass, fail, blocked")
+        # A nested violation is found too, and twice is unreadable.
+        nested = passing_review()
+        nested["criteria"] = [{"id": "content", "status": "pass"}]
+        self.fake_claude(structured=nested)
+        with self.assertRaisesRegex(MalformedResponse, r"\$\.criteria\[0\] is missing evidence"):
+            self.session("verifier", directory="nested", candidate="a" * 40)
+
+    def test_the_retry_honours_stop_usage_limits_and_the_remaining_session_time(self):
+        prose = {"structured_output": None, "result": "No verdict."}
+        # A stop requested once the first try has finished leaves the retry unstarted.
+        self.fake_claude(result=prose)
+        stopped = self.root / "stopped"
+        with self.assertRaisesRegex(EnvironmentBlocked, r"verifier result retry not started \(.*\): stop requested"):
+            self.adapter.run("verifier", self.task, self.repo, stopped, 5,
+                             lambda: (stopped / "verifier.process.json").exists(), candidate="a" * 40)
+        self.assertEqual(len(self.captures()), 1)
+        self.assertFalse((stopped / "verifier.retry.prompt.txt").exists())
+        self.assertFalse(self.adapter.output_usage_incomplete)
+        # One requested while the retry runs stops it like any session.
+        self.fake_claude(result=prose)
+        stopping = self.root / "stopping"
+        with self.assertRaisesRegex(EnvironmentBlocked, "verifier session incomplete: stop requested"):
+            self.adapter.run("verifier", self.task, self.repo, stopping, 5,
+                             lambda: (stopping / "verifier.retry.prompt.txt").exists(), candidate="a" * 40)
+        self.assertTrue(self.adapter.output_usage_incomplete)
+        self.assertEqual(json.loads((stopping / "verifier.retry.process.json").read_text())["stopped"], "stop requested")
+        # A usage limit on the retry pauses the run as on any session.
+        self.fake_claude(result=prose, then=[{"is_error": True, "subtype": "error_during_execution",
+                                              "result": "You've hit your session limit. Try again at 3pm."}])
+        with self.assertRaises(UsageLimited):
+            self.session("verifier", directory="limited", candidate="a" * 40)
+        # The retry gets what the first try left of the session's time.
+        from agent_loop import claude as module
+        budgets, results = [], []
+
+        def recorded(*args, **kwargs):
+            budgets.append(args[3])
+            results.append(run_process(*args, **kwargs))
+            return results[-1]
+
+        self.fake_claude(result=prose, then=[{"structured_output": passing_review()}])
+        with patch.object(module, "run_process", side_effect=recorded):
+            self.session("verifier", directory="timed", candidate="a" * 40)
+        self.assertEqual(budgets[0], 5)
+        self.assertAlmostEqual(budgets[1], 5 - results[0].elapsed)
+        # A first try that used the whole time leaves the retry none, and it never
+        # launches, so no usage goes unreported.
+        budgets.clear()
+        self.adapter.output_usage_incomplete = False
+
+        def exhausting(*args, **kwargs):
+            budgets.append(args[3])
+            return replace(run_process(*args, **kwargs), elapsed=6.0)
+
+        self.fake_claude(result=prose)
+        with patch.object(module, "run_process", side_effect=exhausting), \
+                self.assertRaisesRegex(EnvironmentBlocked, r"verifier result retry not started \(.*\): time budget exhausted"):
+            self.session("verifier", directory="late", candidate="a" * 40)
+        self.assertEqual(budgets, [5])
+        self.assertEqual(len(self.captures()), 1)
+        self.assertFalse((self.root / "late/verifier.retry.prompt.txt").exists())
+        self.assertFalse(self.adapter.output_usage_incomplete)
+        self.assertEqual(self.adapter.recover_usage(self.root / "late"), (37, False))
+        # Nor does any session given no time at all.
+        with self.assertRaisesRegex(EnvironmentBlocked, "verifier session not started: time budget exhausted"):
+            self.adapter.run("verifier", self.task, self.repo, self.root / "none", 0, lambda: False, candidate="a" * 40)
+        self.assertFalse((self.root / "none/verifier.prompt.txt").exists())
+        self.assertFalse(self.adapter.output_usage_incomplete)
+
+    def test_the_retry_starts_only_within_the_runner_budget(self):
+        # The output cap is checked between sessions, and the retry is one.
+        self.adapter.budget_stop = lambda: "output-token budget exhausted"
+        self.fake_claude(result={"structured_output": None, "result": "No verdict."})
+        with self.assertRaisesRegex(EnvironmentBlocked, r"retry not started \(.*\): output-token budget exhausted"):
+            self.session("verifier", directory="capped-review", candidate="a" * 40)
+        self.assertEqual(len(self.captures()), 1)
+        # An implementer attempt ends the way the runner ends one past its budget.
+        self.fake_claude(result={"structured_output": None, "result": "Done."})
+        with self.assertRaisesRegex(LoopError, "output-token budget exhausted") as caught:
+            self.session(directory="capped-build")
+        self.assertNotIsInstance(caught.exception, (EnvironmentBlocked, MalformedResponse))
+        self.assertEqual(len(self.captures()), 1)
 
     def test_a_transcript_object_with_forbidden_extra_fields_is_refused(self):
         # additionalProperties is False, so the CLI would never have produced
@@ -261,14 +466,14 @@ class ClaudeProcessTests(unittest.TestCase):
         verdict["reviewer_notes"] = "not in the schema"
         report = "```json\n" + json.dumps(verdict) + "\n```"
         self.fake_claude(result={"structured_output": None, "result": report})
-        with self.assertRaisesRegex(MalformedResponse, "no usable result object"):
+        with self.assertRaisesRegex(MalformedResponse, "no usable result object.*unexpected properties: reviewer_notes"):
             self.session("verifier", candidate="a" * 40)
 
     def test_a_transcript_object_missing_required_fields_is_refused(self):
         # The first themes verifier returned candidate_sha with no findings.
         report = "```json\n" + json.dumps({"task_id": "one", "candidate_sha": "a" * 40, "verdict": "pass"}) + "\n```"
         self.fake_claude(result={"structured_output": None, "result": report})
-        with self.assertRaisesRegex(MalformedResponse, "no usable result object"):
+        with self.assertRaisesRegex(MalformedResponse, "no usable result object.*is missing candidate"):
             self.session("verifier", candidate="a" * 40)
 
     def test_security_reviewer_uses_its_schema_agent_and_explicit_base(self):
@@ -466,15 +671,17 @@ class ClaudeProcessTests(unittest.TestCase):
 
     def test_recover_usage_reads_session_records(self):
         attempts = self.root / "attempts"
-        for relative, tokens in (("one/1/implementer", 12), ("one/1/review-x/verifier", 30)):
+        # A result retry is a session of its own and counts like one.
+        for relative, tokens in (("one/1/implementer", 12), ("one/1/review-x/verifier", 30), ("one/1/review-x/verifier.retry", 8)):
             path = attempts / relative
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.with_suffix(".prompt.txt").write_text("prompt")
-            atomic_json(path.with_suffix(".session.json"), {"output_tokens": tokens})
-        self.assertEqual(self.adapter.recover_usage(attempts), (42, False))
-        (attempts / "one/2/implementer.prompt.txt").parent.mkdir(parents=True)
-        (attempts / "one/2/implementer.prompt.txt").write_text("interrupted")
-        self.assertEqual(self.adapter.recover_usage(attempts), (42, True))
+            path.with_name(path.name + ".prompt.txt").write_text("prompt")
+            atomic_json(path.with_name(path.name + ".session.json"), {"output_tokens": tokens})
+        (attempts / "one/1/review-x/notes.retry.prompt.txt").write_text("not a session")
+        self.assertEqual(self.adapter.recover_usage(attempts), (50, False))
+        (attempts / "one/2/security-reviewer.retry.prompt.txt").parent.mkdir(parents=True)
+        (attempts / "one/2/security-reviewer.retry.prompt.txt").write_text("interrupted")
+        self.assertEqual(self.adapter.recover_usage(attempts), (50, True))
 
     def test_prepare_run_writes_effective_settings_from_the_pinned_template(self):
         run = self.root / "run"
