@@ -1,0 +1,1233 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "native-qa-display-check-lock",
+      "title": "Make qa.py display-check report a locked desktop session",
+      "description": "HANDOFF lesson of the 2026-10-01 unattended run: \"`qa.py display-check` does not detect a GNOME lock.\" The evidence owner runs `display-check` before taking display :0 and when handing it back (.agents/skills/gitturtle-native-qa/references/visual-evidence.md), but a locked GNOME session passes it, and keys and captures sent to a locked session are wasted: the shield covers the window and Mutter input reaches the lock screen. `display.check` (scripts/native_qa/display.py:67) prints `date -u`, foreign GitTurtle and driver processes and windows, and returns an exit code; its tests are in scripts/native_qa/test_display.py (for example `test_unreadable_display_is_inconclusive` and `test_missing_pgrep_is_inconclusive`). Checked on this host on 2026-10-02: GNOME Shell 50.1 exposes `org.gnome.ScreenSaver` at `/org/gnome/ScreenSaver` on the session bus with `GetActive(out b active)` (it returned `(false,)` unlocked), `ActiveChanged` and `Lock`, and systemd 259's logind reports `LockedHint=no` for the graphical (Wayland) session. Decision (coordinator, 2026-10-02, delegated by the owner): display-check reads both sources through fixed argument arrays with a short timeout (`gdbus call --session` to `GetActive`, and `loginctl show-session` with `-p LockedHint` for the graphical session); either one reporting a lock fails the check with a line naming its source; when neither can be read it prints an inconclusive line and exits as an unreadable display does; it never locks, unlocks, wakes or changes the session. Reason: either source alone misses a case (a GNOME shield with logind lagging, or a desktop with logind only), both are read-only, and an inconclusive result keeps today's meaning for an unreadable display. The task needs no external evidence: the unit tests and the tooling gate prove it. It edits the package plan item 5 extends (`qa.py scenario`, `recheck`), so it runs after item 5 lands. Suggested as the pilot's task without external evidence (plan item 9), because every app Rust change in this queue carries the native profile.",
+      "depends_on": [],
+      "scope": [
+        "scripts/native_qa/display.py",
+        "scripts/native_qa/qa.py",
+        "scripts/native_qa/test_display.py",
+        "scripts/native_qa/README.md"
+      ],
+      "acceptance": [
+        {
+          "id": "lock",
+          "description": "`qa.py display-check` exits 1 with a line naming the source when GNOME ScreenSaver's `GetActive` returns true or logind's `LockedHint` is yes for the graphical session, and its output and exit code are otherwise unchanged when both report unlocked; unit tests in scripts/native_qa/test_display.py cover a lock reported by each source, both unlocked, and the argument arrays of the stubbed commands."
+        },
+        {
+          "id": "inconclusive",
+          "description": "When neither source can be read (no session bus, `gdbus` or `loginctl` missing, a timeout or unparseable output), display-check prints an inconclusive lock line and exits with the code an unreadable display uses; unit tests cover each case without a real bus."
+        },
+        {
+          "id": "read-only",
+          "description": "Every command display-check builds only reads state: none calls `Lock`, `SetActive`, `SimulateUserActivity` or a `loginctl` lock, unlock or activate verb, asserted by a test over the argument arrays it builds."
+        },
+        {
+          "id": "docs",
+          "description": "scripts/native_qa/README.md's display-check row names the two lock sources, the failing and inconclusive results and which desktops each source covers."
+        }
+      ],
+      "profiles": [
+        "tooling"
+      ],
+      "commit": "fix(native-qa): report a locked desktop session in display-check"
+    },
+    {
+      "id": "theme-editor-panel-bounds",
+      "title": "Keep the theme editor panel inside the window frame and clear of the status bar",
+      "description": "Coordinator follow-up of 2026-10-01 (HANDOFF \"Open findings\", Theme editor; docs/validation.md ~1070, the #83 design review). The editor's height cap `max_height` (crates/app/src/theme_editor.rs:1684) calls `max_height_for(viewport, rem, ui_size(28.), pixel_snap)` (:1705; formula :1711-1718: a tenth of the viewport above, the panel's border and 16 px padding, the header, a one-row footer and 16 px under the panel) from `window.viewport_size()`. (1) Under untiled Linux client decorations the kit's dialog subtracts `window_paddings` (vendor/gpui-component/src/dialog/dialog.rs:492-496, :530; window_border.rs:70, :88) but the cap does not, so the panel would overrun by about 20 px. (2) A save error (:1337, \"Could not save the theme: …\", in `ThemeForm::footer` :2046) that wraps makes the footer taller than the cap assumes. (3) At 18 pt the 16 px inset puts the panel's lower edge across the status-bar hints (at 13 pt it crosses their tops), and DESIGN.md does not say how the status bar looks under a modal; the kit's backdrop covers the whole window, status bar included (dialog.rs:550-558). Decision (coordinator, 2026-10-01, delegated by the owner): under a modal the status bar stays in place, dimmed and inert under the backdrop like the rest of the window, and a modal panel's edge never crosses it: the theme editor's cap keeps the panel's lower edge at least 16 px above the status bar's top edge (instead of 16 px above the window's bottom) at every text size, inside the window's client-decoration paddings, and a footer that grows takes its room from the scrolling body, never from the window. DESIGN.md's editor paragraph (~159) and its dialog rules say so. Reason: the status bar is window chrome like the tab strip, and a panel edge through its text reads as a layout fault; reserving the bar costs the editor only the bar's height, which the scrolling body absorbs. qa.py launches only X11 clients (`WAYLAND_DISPLAY` is removed, scripts/native_qa/README.md:23) and cannot capture a Wayland window, so the client-decoration case is covered by a focused test plus X11 evidence, and native Wayland with client decorations stays an interactive check. Check the other window-capped dialogs (the Reflog's `body_height`, reflog.rs:318) against the rule and report the result in the handoff without changing them. Tests to extend: `the_cap_leaves_16_px_under_the_panel_at_scale_1_and_2` (:3820) and `strips_cover_the_ring_room_while_the_rows_stand_off_a_boundary` (:5796). Queue 2026-10-03 (coordinator, 2026-10-02): references re-checked on main 9f38416; only the Reflog's `body_height` moved (reflog.rs:318). No dependency: no other task in this queue edits theme_editor.rs. Suggested as one of the pilot's two independent native tasks (plan item 9).",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/theme_editor.rs",
+        "crates/app/src/theme_editor/**",
+        "DESIGN.md",
+        "docs/validation.md",
+        "docs/evidence/theme-editor-panel-bounds/**"
+      ],
+      "acceptance": [
+        {
+          "id": "decorations",
+          "description": "A unit or GPUI test computes the cap with the kit's window paddings for an untiled client-decorated window (as `window_paddings` returns them) and asserts that the panel's lower edge stays at least 16 px above the status bar's top edge inside the padded window at 13 and 18 pt and scale factors 1 and 2. It fails on origin/main and passes after the change."
+        },
+        {
+          "id": "footer",
+          "description": "A GPUI view test opens the editor at 1000 × 680, sets a save error long enough to wrap to two lines, and asserts that the panel's outer bounds equal those without the error and that the scrolling body gives up the room. It fails on origin/main and passes after the change."
+        },
+        {
+          "id": "status",
+          "description": "At 1000 × 680 at 13 and 18 pt a view test asserts that the panel's lower edge lies at least 16 px above the status bar's top edge. `the_cap_leaves_16_px_under_the_panel_at_scale_1_and_2` is updated to the new rule, and `strips_cover_the_ring_room_while_the_rows_stand_off_a_boundary` passes unchanged. DESIGN.md states how the status bar looks under a modal and where a window-capped modal panel ends."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/theme-editor-panel-bounds/scenario.json. States: the New theme editor at rest, scrolled to its end, and with a save error wrapped to two lines (forced by making the launch's app-data theme directory read-only), each with the status bar below the panel. Palettes: Midnight and Porcelain. Text sizes: 13 pt and 18 pt. Window: 1000 × 680. Measured: the clearance from the panel's lower edge to the status bar's top edge (16 px or more) on every candidate frame and the base's overlap, and masked base-versus-candidate compares. The entry records whether the Reflog's `body_height` (reflog.rs:318) follows the rule, and says native Wayland with client decorations was not exercised (qa.py launches only X11 clients). The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(themes): keep the theme editor clear of the frame and status bar"
+    },
+    {
+      "id": "pr-source-gutter-like-compare",
+      "title": "Give the PR review's Source patch Compare's gutter",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (D1b, a follow-up of #116). The PR review's Source patch (crates/app/src/github_view/review.rs:736, `text::editor(patch, \"diff\", None, …)` then `decorate_source` :166 and `refresh_theme` :173) keeps the editor's own single column of line numbers, no hunk folding and an untinted gutter. Compare's unified patch (crates/app/src/main.rs:1342-1347, `text::editor_with_decorations(…)` with its PatchPresentation; repository_tabs.rs:773 is session serialisation, not an editor) shows old and new line numbers, folds hunks and tints the gutter. Owner decision (2026-10-01): match Compare. Reuse Compare's presentation path for the Source patch, whose PatchPresentation is already prepared off the UI thread since #116; do not copy Compare's code. Find over the decorations (editor_find::PatchDecorations) and Compare's bounds (`source_presentation_stops_at_compares_bounds`) keep working. Native capture: drivers from session 11 drive the offline fixture (`GITTURTLE_GITHUB_FIXTURE=review`: Pull requests, Refresh fixture PRs, #42, Files, src/review/session.rs, Source). Queue 2026-10-02 (coordinator, 2026-10-01): references checked against main; `source_patch_takes_the_decorations_its_file_preparation_made` is at review.rs:1377, `source_presentation_stops_at_compares_bounds` at :1547, and a test already builds the Source with `text::editor_with_decorations(patch, \"diff\", Some(&presentation)…)` (:1455). Tests go in review.rs `mod tests` (:1101). Queue 2026-10-03 (coordinator, 2026-10-02): references re-checked on main 9f38416; all hold (review.rs:166, :173, :736, :1101, :1377, :1455, :1547; main.rs:1347). No dependency: review-file-preparation-lifecycle follows it because both edit the Source preparation path in github_view/review.rs. Suggested as one of the pilot's two independent native tasks (plan item 9).",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/github_view/review.rs",
+        "crates/app/src/github_view/**",
+        "crates/app/src/text.rs",
+        "crates/app/src/editor_find.rs",
+        "docs/github-collaboration.md",
+        "docs/validation.md",
+        "docs/evidence/pr-source-gutter-like-compare/**"
+      ],
+      "acceptance": [
+        {
+          "id": "gutter",
+          "description": "For the same patch, the PR review's Source shows the same old and new line-number columns, gutter tint and hunk folding as Compare's unified patch; a test compares the two editors' presentations for a fixture patch and fails on origin/main."
+        },
+        {
+          "id": "find",
+          "description": "Find in the PR's Source still marks matches over the decorations, and a patch past Compare's bounds still draws plain: `source_patch_takes_the_decorations_its_file_preparation_made` and `source_presentation_stops_at_compares_bounds` pass, unchanged or strengthened."
+        },
+        {
+          "id": "thread",
+          "description": "Preparation stays off the UI thread and is cancelled on close and on a file change, as today, asserted by an existing or new test."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/pr-source-gutter-like-compare/scenario.json. Through the offline fixture (`GITTURTLE_GITHUB_FIXTURE=review`: Pull requests, Refresh fixture PRs, #42, Files, src/review/session.rs, Source). States: PR #42's Source patch at rest, with a hunk folded, and with Find open on its current match, beside Compare's unified view of a comparable patch in the same states. Palettes: Midnight and Daylight. Text sizes: interface 13 pt with code 12 pt (the defaults), and code 18 pt. Measured: the old and new line-number columns' positions and widths and the gutter tint's fill against Compare's, and masked base-versus-candidate compares. The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(github): give the review's source patch compare's gutter"
+    },
+    {
+      "id": "focus-reveal-same-frame",
+      "title": "Reveal a keyboard-focused row in the frame that first draws its focus",
+      "description": "Follow-up (7) of the `tab-reveals-branch-and-tag-rows` design review (#136, HANDOFF). `focus_reveal::FocusReveal` (crates/app/src/focus_reveal.rs, from #136) measures the focused control's bounds while the container's children prepaint and applies the reveal after painting through `window.defer` (:195; module docs :9-11), so #136's native probe saw the newly focused row unrevealed, its ring cut at the list's edge, for one 6 to 12 ms frame on 2 of 8 scrolling keys (its docs/validation.md entry, ~:89). Users: the branch chooser (branch_actions.rs:948) and the remote manager (:1223), the tag inspector (tags.rs:143) and Tags (:296) with `Trigger::Keyboard`, and the project hub body (projects.rs:119, `Trigger::AnyFocus`, 12 px margin, `reveal_on_focus` :579-584). Settings' Your themes rows already reveal within the frame: `reveal_in_page` (settings.rs:121-135) sets the page offset during render from the last frame's bounds, and `reveal_focused_row` (theme_editor.rs:325-340) uses `scroll_to_item`, which the uniform_list applies in its own prepaint (settings.rs:75). Decision (coordinator, 2026-10-02, delegated by the owner): every FocusReveal user applies the reveal before the frame that first draws the new focus is painted, with the rule unchanged (least scroll to the nearest edge plus the ring room, no animation; a click and a redraw without a focus change scroll nothing; the hub keeps its 12 px and its click reveal). The mechanism is the implementer's (for example computing the offset when focus changes from the bounds the last frame recorded, as `reveal_in_page` does, or laying the container out again within the frame); a later frame may refine the offset but no painted frame may show the control cut. Reason: a ring cut for one frame is a visible flicker on every scrolling key, and Settings shows the toolkit allows a same-frame reveal. DESIGN.md:333 then says the list scrolls in the frame that first draws the focus, as its theme-editor sentence (:162) does. No list in this task marks a selected row (the chooser, remote manager and Tags rows set no `.selected`), so focused rows are the only row state. Hard: GPUI's frame order (layout, prepaint, paint, deferred effects) decides what can be measured when, and the test must observe individual painted frames.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/focus_reveal.rs",
+        "crates/app/src/branch_actions.rs",
+        "crates/app/src/branch_actions/**",
+        "crates/app/src/tags.rs",
+        "crates/app/src/projects.rs",
+        "crates/app/src/projects/**",
+        "DESIGN.md",
+        "docs/validation.md",
+        "docs/evidence/focus-reveal-same-frame/**"
+      ],
+      "acceptance": [
+        {
+          "id": "frames",
+          "description": "A GPUI view test records, for every frame painted after each real `tab` and `shift-tab` keystroke through the branch chooser with 30 branches at 1000 × 680, the focused row's painted bounds grown by the installed ring's gap plus width and the list's visible bounds (for example from the bounds FocusReveal already observes in prepaint), and asserts that no painted frame shows the row outside the list; the same for Tags with 30 tags. It fails on origin/main, whose first frame after a scrolling key paints the row cut."
+        },
+        {
+          "id": "hub",
+          "description": "The project hub reveals a focused field 12 px clear of the page's edges in the first frame painted after a keyboard or a pointer focus change, asserted by the same per-frame recording, and `keyboard_focus_reveals_project_fields_and_submit_at_small_window` (projects.rs:1513) passes."
+        },
+        {
+          "id": "steady",
+          "description": "#136's tests pass unchanged (the branch chooser, remote manager, Tags and tag inspector reveal tests through `focus_reveal::tests::assert_tab_reveals` and `assert_steady`), as do `branch_chooser_keeps_room_for_rings_at_either_end` and `tag_inspector_keeps_room_for_every_push_ring`; a click and a redraw without a focus change still scroll nothing, and DESIGN.md:333 says the reveal lands in the frame that first draws the focus."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/focus-reveal-same-frame/scenario.json. A frame-by-frame probe captures every frame drawn from each key press until the list settles (its schedule is part of scenario.json, or recorded beside it if `qa.py scenario` cannot express it, as #136's probe was) and runs ring-side analysis on each. Fixture: 30 branches, 30 tags and a local bare remote. States: the focused row after each Tab past the lower edge and each Shift+Tab past the upper edge of the branch chooser and Tags (rows have no selected state), focused+hovered (pointer parked on the row), a pointer click on a partly visible row (no scroll), and a hub field focused by Tab and by a click. Palettes: Midnight and Porcelain. Text sizes: 13 pt and 18 pt. Measured: every captured candidate frame shows all four ring sides at their contrast against the list surface and inside the list's clip; the base's cut frames are recorded with their timing. The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(focus): reveal focused rows before the frame is painted"
+    },
+    {
+      "id": "gpui-base-disabled-focus-note",
+      "title": "Complete the gpui-base disabled-focus note and guard Enter and Space on focused disabled controls",
+      "description": "Coordinator follow-up of 2026-10-01 (HANDOFF, non-blocking findings of the `gpui-base-sibling-focus-traps` reviews, #124). The disabled-focus entry in vendor/gpui-base/GITTURTLE-PATCH.md (~33-78) explains that a focused disabled Checkbox, Switch, Radio, Toggle, Link or ColorPicker swatch keeps its handle through `disabled_focus::track_control_focus` (vendor/gpui-base/src/disabled_focus.rs) as a target that is not a tab stop. The reviews found three effects of tracking that handle that it omits: a caller's focus styles apply to the disabled control; AccessKit reports it as the focused node instead of the window root; and a mouse-down on it no longer lets a focusable ancestor take focus. The component Button's note (vendor/gpui-component/GITTURTLE-PATCH.md ~119-133) states the equivalent effects for #102 and is the model. The entry also says \"All three fail without this patch\", but `tab_and_shift_tab_leave_follow_system_once_omarchy_disables_it` (crates/app/src/settings.rs:5187-5189) runs only on Linux. No test presses Enter or Space on a focused disabled control; activation stays off because the controls pass their click and change handlers only while enabled (for example vendor/gpui-base/src/switch.rs ~381, `(!disabled).then_some(self.on_change)`). gpui-base is an excluded workspace member whose own tests do not run (vendor/AGENTS.md), so the new regression goes beside the existing ones in crates/app/src/native_accessibility/control_tests.rs (`tab_and_shift_tab_leave_focused_kit_controls_that_turn_disabled`, :647): the task needs that app test file and is not vendor-only. No runtime source changes. The controller still derives vendor, rust and native from these paths (vendor/gpui*, and a whole-file test module counts as app Rust that can render), so the evidence is a vendor review of the note against the code, a mutation run, and a native keyboard run of the guarded behaviour. The test guards behaviour main already has, so it passes on origin/main; the mutation shows its strength. Queue 2026-10-03 (coordinator, 2026-10-02): references re-checked on main 9f38416; all hold (GITTURTLE-PATCH.md :33-78, \"All three fail\" at :73; settings.rs:5187-5189; switch.rs:381; control_tests.rs:647). The mutation run is vendor evidence and the native keyboard run native evidence, both the evidence owner's. No dependency; kit-button-focused-border and gpui-base-disabled-accesskit-flag follow it because they add tests to the same control_tests.rs and, for the second, edit the same GITTURTLE-PATCH.md.",
+      "depends_on": [],
+      "scope": [
+        "vendor/gpui-base/GITTURTLE-PATCH.md",
+        "crates/app/src/native_accessibility/control_tests.rs",
+        "docs/validation.md",
+        "docs/evidence/gpui-base-disabled-focus-note/**"
+      ],
+      "acceptance": [
+        {
+          "id": "note",
+          "description": "The disabled-focus entry in vendor/gpui-base/GITTURTLE-PATCH.md names each effect of tracking a focused disabled control's handle that holds when checked against the code (the reviews named a caller's focus styles applying, AccessKit reporting the control as focused, and a mouse-down keeping focus on it rather than a focusable ancestor), says that the Settings regression runs only on Linux so all three regressions fail without the patch there and two elsewhere, and names the new test. Runtime and test-only changes stay apart (vendor/AGENTS.md), and no file under vendor/gpui-base/src changes."
+        },
+        {
+          "id": "enter-space",
+          "description": "A test in crates/app/src/native_accessibility/control_tests.rs renders the six bare kit controls and a component Button between two tab stops, focuses each with Tab, disables it, and sends real `enter` and `space` keystrokes: no click or change handler runs, each control's checked or toggled state is unchanged, and focus stays on the control until Tab moves it on. It passes on origin/main and after the change."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed on top of the candidate (the implementer writes no docs/validation.md entry or \"pending\" placeholder): a native keyboard run on Linux X11 at scale factor 1 on display :0 with `qa.py --input mutter` (never XTest on this host), base and candidate release builds in the same session, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, driven by the committed docs/evidence/gpui-base-disabled-focus-note/scenario.json. With an Omarchy theme seeded in the launch's HOME (as the #124 run did), focus Settings' Follow system Switch, select the Omarchy card with the pointer so the Switch turns disabled while it holds focus, and press Space and Enter. States: focused+disabled, then the next tab stop focused after Tab. Palette: Omarchy Tokyo Night; text size 13 pt (no pixels change). On both builds the Switch's state and the saved preference stay unchanged, AT-SPI reports the Switch as the focused node (`org.a11y.Status IsEnabled` set for the launches only, then restored and read back) and Tab leaves it. The dated docs/validation.md entry records the keys, the focus order, the AT-SPI node and the preference file before and after; any committed frame goes under docs/evidence/gpui-base-disabled-focus-note/ and is privacy-scanned."
+        },
+        {
+          "id": "vendor",
+          "description": "Evidence owner: with the Switch's change handler passed while disabled (vendor/gpui-base/src/switch.rs:381, `(!disabled).then_some(self.on_change)`) in a throwaway copy built in its own CARGO_TARGET_DIR, the new enter-space test fails, and with the sources restored it passes; a read-only code-reviewer pass checks each effect the note names against vendor/gpui-base/src/disabled_focus.rs. The task's docs/validation.md entry, committed by the evidence owner on top of the candidate, records both runs and the exact mutation."
+        }
+      ],
+      "profiles": [
+        "vendor",
+        "rust",
+        "native"
+      ],
+      "commit": "docs(vendor): complete the disabled-focus note and test enter and space"
+    },
+    {
+      "id": "history-vanished-scope-refresh",
+      "title": "Open All history when Refresh finds History's scoped branch gone",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (B1; validation entry \"September 30 Git writes and network actions on Omarchy\", frames 27b and 28 in docs/evidence/omarchy-git-writes/). With History scoped to a local branch that the user then deletes, an explicit Refresh (Ctrl+R) reopens with the stale scope (crates/app/src/main.rs:1707, `open(path, self.scope.clone(), …)`). `read_snapshot` resolves it through `scope_oid` (crates/app/src/worker.rs:1327-1353, `?` at :1212), which fails the whole snapshot, so the page reads \"Could not open repository … Local branch '‹name›' no longer exists in the local repository snapshot\" (views.rs:979-982) and the tab \"· unavailable\" (repository_tabs.rs:1948) until All history is chosen. Separately, quiet refresh keeps the vanished scope (worker.rs:979-990, `QuietHistory::Retained`), so every later accepted write raises the red \"History scope changed\" banner again after it was dismissed (history_updates.rs:64-72, automatic_refresh.rs:307-320). History search resolves the scope the same way (worker.rs:889). Owner decision (2026-10-01): an explicit Refresh that finds the scope gone opens All history and says once, politely announced, why the scope changed; it never reports the repository unavailable. Quiet refresh keeps the displayed history with its explanation (crates/app/docs/navigation-and-refresh.md:81) but reports one vanished scope once. A worktree scope behaves like a branch scope. AGENTS.md: resolve branch and worktree identities again on Refresh. Tests to copy: worker.rs `quiet_deleted_scope_keeps_history_context_but_updates_navigation_metadata` (:2833); no view test deletes a branch and refreshes yet. Queue 2026-10-02 (coordinator, 2026-10-01): the other references hold on main (worker.rs:1327, :1340, :1212, :889, :986, :2833; views.rs:981; history_updates.rs:66; automatic_refresh.rs:319; navigation-and-refresh.md:81). Worker tests go in worker.rs `mod tests` (:1936); view tests in main.rs or views.rs test modules. Decision (coordinator, 2026-10-01, delegated by the owner): the native evidence runs on Linux X11 through qa.py on this GNOME host instead of native Wayland. Reason: explicit and quiet refresh take the same path on both backends, and qa.py launches only X11 clients. Hard: explicit refresh, quiet refresh, search and the banner each resolve the scope on their own, and a fix in one leaves the others reporting the vanished scope. Queue 2026-10-03 (coordinator, 2026-10-02): references re-checked on main 9f38416; only the tab's unavailable suffix moved (repository_tabs.rs:1948). No dependency: the other tasks that list main.rs, views.rs or repository_tabs.rs edit other functions.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/main.rs",
+        "crates/app/src/worker.rs",
+        "crates/app/src/worker/**",
+        "crates/app/src/history_updates.rs",
+        "crates/app/src/automatic_refresh.rs",
+        "crates/app/src/history_*.rs",
+        "crates/app/src/views.rs",
+        "crates/app/src/repository_tabs.rs",
+        "crates/app/docs/navigation-and-refresh.md",
+        "docs/validation.md",
+        "docs/evidence/history-vanished-scope-refresh/**"
+      ],
+      "acceptance": [
+        {
+          "id": "refresh",
+          "description": "With History scoped to a local branch that has since been deleted, an explicit Refresh opens All history: the page lists the repository's commits, the tab has no \"unavailable\" suffix, and one explanation names the vanished branch and is announced politely. A GPUI view test fails on origin/main and passes; a second covers a worktree scope whose worktree or branch is gone."
+        },
+        {
+          "id": "once",
+          "description": "Once a vanished scope has been reported and the report dismissed, later accepted writes and quiet refreshes do not raise it again; a test with two writes after the deletion asserts a single report."
+        },
+        {
+          "id": "quiet",
+          "description": "Quiet refresh still keeps the displayed history with its explanation when the scope vanishes between explicit refreshes (`quiet_deleted_scope_keeps_history_context_but_updates_navigation_metadata` passes), and History search under a vanished scope reports the scope change, never an unavailable repository (asserted by a test)."
+        },
+        {
+          "id": "spec",
+          "description": "crates/app/docs/navigation-and-refresh.md states the explicit-Refresh rule beside the quiet one."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/history-vanished-scope-refresh/scenario.json. Fixture: a local bare remote; History scoped to a local branch that is then deleted through the app, and Refresh (Ctrl+R) pressed. States: the page and the tab strip after Refresh on the base (\"Could not open repository …\", \"· unavailable\") and on the candidate (All history with the one explanation), the explanation dismissed, and the page after a later accepted write with no second report. Palettes: Midnight and Porcelain. Text sizes: 13 pt, and 18 pt for the explanation (its wrap). Measured: masked base-versus-candidate compares; the polite announcement is the view test's, not the frames'. The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(history): open all history when refresh finds the scoped branch gone"
+    },
+    {
+      "id": "narrow-large-text-minimums",
+      "title": "Scale narrow-window minimums with the text size and keep the inspector whole",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (N1, first of two; validation entry \"September 30 paging and the diff in narrow windows\"). At 18 pt in a 461 × 490 window the column minimum (TIGHT_CONTENT_MIN 176 px, crates/app/src/views.rs:2078, beside SIDEBAR_FIT_WIDTH :2068, NARROW_CONTENT_MIN :2070, INSPECTOR_MIN :2072 and TIGHT_INSPECTOR_MIN :2077, applied in `render_repository` :2310, :2317-2329) is fixed, so Older is cut; the inspector's Hash toolbar (crates/app/src/commit_message.rs:245-262, flex_wrap) draws over \"Changed files\" (views.rs:1528) in History and Compare; and in Changes the placeholder is cut and \"Filter working paths…\" runs past the right edge. Owner decision (2026-10-01, compact chrome): scale these minimums with the interface size (`appearance::ui_size`) and reserve the inspector toolbar's wrapped height. At the default size every layout stays pixel-identical to origin/main. The vertical chrome is the next task, narrow-large-text-compact-chrome. Tests to copy, views.rs: `narrow_windows_keep_the_inspector_whole_and_the_header_on_one_row` (:3164), `narrow_history_keeps_paging_in_the_column` (:3253); commit_message.rs:485 (`rendered_narrow_inspector_reserves_files_and_copies_offscreen_text`). Queue 2026-10-02 (coordinator, 2026-10-01): references checked against main; view tests go in views.rs `mod tests` (:3005). Queue 2026-10-03 (coordinator, 2026-10-02): references re-checked on main 9f38416; all hold (views.rs:2068-2078, :2310, :2322, :2325, :1528; commit_message.rs:245-262, :485). No dependency; narrow-large-text-compact-chrome follows it (the same breakpoints in `render_repository`) and copy-actions-say-copied follows it (the same Hash and Copy message buttons).",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/views.rs",
+        "crates/app/src/commit_message.rs",
+        "crates/app/src/workspace.rs",
+        "crates/app/src/columns.rs",
+        "crates/app/src/path_filter.rs",
+        "DESIGN.md",
+        "docs/validation.md",
+        "docs/evidence/narrow-large-text-minimums/**"
+      ],
+      "acceptance": [
+        {
+          "id": "minimums",
+          "description": "The column and inspector minimums scale with the interface text size; at 461 × 490 and 18 pt History's Columns, Latest, Previous and Older are whole in the column, asserted by a test in the style of `narrow_history_keeps_paging_in_the_column` that fails on origin/main."
+        },
+        {
+          "id": "inspector",
+          "description": "At 461 × 490 and 18 pt the inspector's Hash and Copy message toolbar never overlaps \"Changed files\" in History or Compare, and Changes' filter field and its placeholder stay inside the window; asserted by bounds."
+        },
+        {
+          "id": "unchanged",
+          "description": "At the default text size nothing moves: the existing narrow tests pass unchanged, and a test asserts that at 13 pt the column, inspector and toolbar bounds at 461 × 490 and 493 × 526 equal those of origin/main's constants."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/narrow-large-text-minimums/scenario.json. States: History, Compare and Changes at 461 × 490 at 18 pt, with the inspector's Hash toolbar wrapped and Changes' filter field focused and unfocused, and the same views at 13 pt at 461 × 490, 493 × 526, 1000 × 680 and 1480 × 800. Palettes: Midnight, and Porcelain at 18 pt. Text sizes: 13 pt and 18 pt. Measured: the 13 pt frames identical to the base under `qa.py compare --mask status-timing`; at 18 pt the clearance between the Hash toolbar and \"Changed files\" and between the filter field and the window's right edge (none overlap). The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(app): scale narrow-window minimums with the text size"
+    },
+    {
+      "id": "lfs-download-icon",
+      "title": "Give the LFS download buttons their own file download icon",
+      "description": "Coordinator follow-up of 2026-10-01 (HANDOFF \"Design follow-ups\": `pull.svg` now also marks the LFS download buttons). crates/app/src/lfs_download.rs:89-99 builds Download Source LFS…, Download Before LFS… and Download After LFS… with the `button` helper and the symbol \"pull\" (:98), the glyph Pull uses in the workspace toolbar (workspace.rs ~1452-1461). Control icons are original artwork embedded from assets/icons/ (crates/app/src/main.rs:137-160, `EmbeddedAssets`), drawn to assets/icons/README.md's conventions: a 24 × 24 view box, white 1.65-unit strokes with rounded ends and joins, no fill, rendered at 16-18 px and tinted, with an accessible name on the containing control. No existing icon reads as \"download this file\": pull.svg (an arrow into a tray) means Pull, and fetch.svg (a cloud and an arrow) means Fetch. Decision (coordinator, 2026-10-01, delegated by the owner): draw a new original `assets/icons/file-download.svg`, the file-* family's page outline with its folded corner (file-added.svg's page path) holding a downward arrow onto a short baseline, and use it for the three LFS buttons; Pull keeps pull.svg. Reason: the buttons download one file's large content in the Compare preview, where file-status glyphs share that page outline, so the page reads as \"this file\" and the arrow as \"download\"; Pull's or Fetch's glyph suggests a branch or remote operation the button does not perform. A new file under assets/ adds the package profile (scripts/agent_loop/runner.py ~136), so the task carries Linux package evidence (.agents/skills/gitturtle-native-qa/references/linux-package.md). Tests to extend: main.rs `icon_symbol_tests` (:2355), whose `every_literal_icon_symbol_resolves_through_the_app_assets` (:2546) already resolves each literal symbol through the embedded assets. Queue 2026-10-03 (coordinator, 2026-10-02): references re-checked on main 9f38416; all hold (lfs_download.rs:89-99, \"pull\" at :98; main.rs:139, :2355, :2463, :2546; runner.py:136). No dependency: no other task edits its files. The buttons are disabled while an operation runs (lfs_download.rs:101), too briefly to capture, so disabled is covered by the glyph taking the Button's disabled tint like every other icon.",
+      "depends_on": [],
+      "scope": [
+        "assets/icons/file-download.svg",
+        "crates/app/src/lfs_download.rs",
+        "crates/app/src/main.rs",
+        "docs/validation.md",
+        "docs/evidence/lfs-download-icon/**"
+      ],
+      "acceptance": [
+        {
+          "id": "artwork",
+          "description": "assets/icons/file-download.svg is original artwork drawn for this project in the README's conventions: `viewBox=\"0 0 24 24\"`, `fill=\"none\"`, `stroke=\"#FFFFFF\"`, `stroke-width=\"1.65\"`, round caps and joins, no raster or third-party content. A unit test in main.rs `icon_symbol_tests` parses the file and asserts those attributes; THIRD_PARTY_NOTICES.md is unchanged."
+        },
+        {
+          "id": "use",
+          "description": "The three LFS download buttons pass the symbol `file-download` and keep their labels and accessible names, while Pull, Fetch and Push keep theirs; a test asserts the symbols lfs_download.rs passes (for example through `literal_icon_symbols`) and fails on origin/main, and `every_literal_icon_symbol_resolves_through_the_app_assets` passes."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/lfs-download-icon/scenario.json. Fixture: a committed Git LFS pointer whose object is absent, and no network. States: the LFS download buttons in Compare at rest, hovered, pressed, focused and focused+hovered, and a 4× crop of the new glyph beside the toolbar's Pull glyph. Palettes: Midnight and Daylight. Text sizes: 13 pt and 18 pt. Measured: the glyph's contrast against the button surface (3:1 or more) and masked base-versus-candidate compares that differ only inside the glyph. The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        },
+        {
+          "id": "package",
+          "description": "Evidence owner, committed on top of the candidate: a fresh `scripts/package-linux.sh` bundle of the candidate in its own output directory, whose executable's `--build-info` and sha256, `build-info.json` and `SHA256SUMS` match the candidate build; `python3 scripts/test-install-linux.py --bundle <absolute bundle path>` passes in its disposable homes; and the bundle's extracted executable, launched through qa.py, draws the new glyph on the LFS buttons. Recorded in the task's docs/validation.md entry."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native",
+        "package"
+      ],
+      "commit": "fix(icons): mark lfs downloads with a file download icon"
+    },
+    {
+      "id": "builtin-light-hover-lift",
+      "title": "Lift hover off subtle in GitTurtle's light built-in palettes",
+      "description": "Omarchy follow-up D5, queued by the owner on 2026-09-29. The Omarchy fitter holds a secondary control's hover at least 1.08:1 off its resting subtle fill (HOVER_STEP, crates/app/src/appearance/omarchy/palette.rs:317), which restores DESIGN.md's rule that hover stays distinguishable. Five of GitTurtle's own light palettes in crates/app/src/appearance.rs sit closer: One Light 1.010:1, Rosé Pine Dawn 1.032, Braden 1.047, Alucard 1.056 and Porcelain 1.076. The existing `shared_button_fills_lift_every_surface_and_keep_the_label_readable` (appearance.rs:2144; CONTROL_HOVER_LIFT :2133) checks the composited `control_fill(hover)` against surfaces at 1.07:1 (CONTROL_HOVER_LIFT), not the raw hover-to-subtle step. Retune those palettes' hover, and subtle only where required, keeping every existing readability, pressed-step and focus-ring rule, and hold all twenty built-ins to the same rule. Braden is also the Omarchy light fallback, so the Omarchy tests must still pass. Committed frames under docs/evidence that show these palettes' hover or subtle fills move, and are re-taken in the same change. Its former dependency `app-button-focus-ring` landed as #85; the ring's contrast on hovered rows that #85 measured (worst 3.26:1) must still hold after the retune. Queue 2026-10-02 (coordinator, 2026-10-01): references checked against main (HOVER_STEP at appearance/omarchy/palette.rs:317; palette.rs:1664-1680 already applies the step to Omarchy-mapped palettes). Frames this retune moves may sit anywhere under docs/evidence/, so the scope keeps docs/evidence/**; new frames go under docs/evidence/builtin-light-hover-lift/. Queue 2026-10-03 (coordinator, 2026-10-02): references re-checked on main 9f38416; all hold (palette.rs:317, :1664-1680; appearance.rs:2133, :2144). The five ratios come from the Omarchy session's measurement; no test reports them yet, which `rule-test` fixes. No dependency: worktree-rows-hover-align-marker reads the hover colour this retunes, and either order leaves both correct; frames another task lands first are re-taken here as moved frames.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/appearance.rs",
+        "crates/app/src/appearance/**",
+        "DESIGN.md",
+        "docs/evidence/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "rule-test",
+          "description": "A unit test asserts that every built-in palette's hover is at least 1.08:1 off its subtle; it fails on origin/main for the five palettes named and passes after."
+        },
+        {
+          "id": "rules-held",
+          "description": "`cargo test --locked -p gitturtle appearance::` passes, including the focus-ring, pressed-step, label-readability and Omarchy mapping tests."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/builtin-light-hover-lift/scenario.json. Full tier. States: History rows, Settings controls and the hovered branch and profile pickers at rest, hovered, pressed and focused+hovered, and a selected History row hovered (hovered+selected). Palettes: One Light, Rosé Pine Dawn, Braden, Alucard and Porcelain, and Midnight as an unchanged control. Text sizes: 13 pt, and 18 pt for the hovered History row in Porcelain (the retune changes colours only). Measured: rest-to-hover ratios (1.08:1 or more), the focus ring's contrast on hovered rows (3:1 or more, as #85 measured), and masked compares with a design review of every non-timing difference. Every committed frame under docs/evidence/ that the retune moves is re-taken in place; new frames go under docs/evidence/builtin-light-hover-lift/, and the entry lists each with its ratios. The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(themes): lift hover off subtle in the light built-in palettes"
+    },
+    {
+      "id": "code-font-cold-launch-wait",
+      "title": "Keep waiting for the desktop code font on a cold launch",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (F1; record docs/benchmarks/2026-09-29-code-font-cold-launch.md, validation entry \"September 29 desktop code font at a cold launch\"). With no fontconfig cache, `fc-match` (crates/app/src/desktop_text.rs:581-597, through `command_output_limited` :841) outlives FAMILY_WAIT (500 ms, :515), is killed (:824), and the lookup stores `SystemCodeFont::Unavailable` (`apply_code_font`, :271-289). Nothing retries (worker loops :747 and :784), so the family arrives only with the window-activation refresh (main.rs:902, `observe_window_activation`), about 0.8 s after launch, and in 2 of 24 cold launches never. Owner decision (2026-10-01): pending, then apply. The Settings row keeps saying the lookup is pending while the lookup keeps running in the background under a longer bound of a few seconds (chosen from the record's cold timings, with the reason stated); the family applies when it answers, through the existing generation check; the row says unavailable only when that bound also runs out. The UI thread never waits, at most one lookup process runs at a time, and the output byte bound is unchanged. Test hooks: `code_font_lookup_generation` (:292) and `answer_code_font_lookup` (:301), used by `settings::picker_tests::the_code_font_row_describes_off_pending_and_on`. Queue 2026-10-02 (coordinator, 2026-10-01): the other references hold on main (settings.rs:4805 in `picker_tests`). The controller adds the native profile to any app Rust change that can render (scripts/agent_loop/rust_surface.py), so the task carries a native criterion. Queue 2026-10-03 (coordinator, 2026-10-02): references re-checked on main 9f38416; all hold (desktop_text.rs:271, :282, :292, :301, :515, :587, :747, :784, :824, :841; main.rs:902; settings.rs:4805). No dependency; settings-focus-reveal-and-steady-switch follows it, because its row heights are measured over the code-font row's description states, which this task may change.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/desktop_text.rs",
+        "crates/app/src/desktop_text/**",
+        "crates/app/src/main.rs",
+        "crates/app/src/settings.rs",
+        "crates/app/src/settings/**",
+        "crates/app/docs/**",
+        "docs/benchmarks/**",
+        "docs/validation.md",
+        "docs/evidence/code-font-cold-launch-wait/**"
+      ],
+      "acceptance": [
+        {
+          "id": "late",
+          "description": "Tests drive a lookup that answers after 500 ms but within the new bound and assert the row stays pending and then shows the family with the code font applied, one that outlives the bound ends unavailable, and a stale generation's late answer is still dropped; the first fails on origin/main."
+        },
+        {
+          "id": "process",
+          "description": "At most one fontconfig lookup runs at a time and every child is reaped, or killed at the bound, asserted by a test (for example through the lookup hooks `code_font_lookup_generation` and `answer_code_font_lookup`)."
+        },
+        {
+          "id": "performance",
+          "description": "Evidence owner (the performance reviewer), committed in the task's evidence commit on top of the candidate: on this Linux host, with fontconfig's user cache absent before each of 24 launches as in docs/benchmarks/2026-09-29-code-font-cold-launch.md, the family applies in every candidate launch, and time-to-family and first-window time (p50, p95, max) are recorded against the base; with a warm cache both are unchanged within noise. Release builds of the candidate and of a same-session base designated in writing before the first recorded launch, pinned with `taskset -c 0-7`; a new dated docs/benchmarks/ record keeps the raw samples, cache state and p50, p95 and max, and the task's docs/validation.md entry cites it."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/code-font-cold-launch-wait/scenario.json. On a cold fontconfig cache (the launch's fresh HOME and XDG_CACHE_HOME). States: the Settings code-font row while the lookup is pending and once the desktop family applies on the candidate, the base's row at the same moments, and the row's Switch focused while pending (focused+pending). Palettes: Midnight and Porcelain. Text sizes: 13 pt, and 18 pt for the pending row, whose description may wrap. Measured: with a warm cache, `qa.py compare --mask status-timing` finds the row identical to the base. The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "performance",
+        "native"
+      ],
+      "commit": "fix(app): keep waiting for the desktop code font on a cold launch"
+    },
+    {
+      "id": "history-columns-steady-after-toggle",
+      "title": "Keep History's columns still after toggling navigation twice",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (M1, seen in session 9). On native Wayland, Ctrl+B twice (hide, then show navigation) leaves History's columns 1 to 2 px from where they were. History measures its width in on_prepaint and takes a new width only when it differs by more than 1 px (crates/app/src/views.rs:1109-1115); `history_column_layout` (:1185) uses `history_width - 26.` and columns.rs:169-215 gives the leftover to Subject, so a stale width within 1 px survives. The same window width must always give the same column layout (for example compare exactly, or after rounding to device pixels), without laying out on every frame. History render is a hot path. Ctrl+B tests to copy: views.rs `narrow_history_keeps_the_navigation_choice` (:3882). Queue 2026-10-02 (coordinator, 2026-10-01): views.rs:1109-1115 and :1185-1187 and columns.rs:169-215 (`layout`, the leftover at :205-210) checked against main; tests go in views.rs `mod tests` (:3005). Decision (coordinator, 2026-10-01, delegated by the owner): the native evidence runs on Linux X11 through qa.py at scale factor 1 and at a fractional `--scale 1.25` instead of native Wayland. Reason: qa.py cannot launch a Wayland client on this host; the GPUI test carries the fractional case if X11 does not reproduce the shift, and the entry says which. Queue 2026-10-03 (coordinator, 2026-10-02): references re-checked on main 9f38416; all hold (views.rs:1109-1115, :1185-1187, :3005, :3882; columns.rs:169, :205-210). No dependency: narrow-large-text-minimums edits the content minimums in `render_repository`, not History's width measurement or the column leftover.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/views.rs",
+        "crates/app/src/columns.rs",
+        "docs/benchmarks/**",
+        "docs/validation.md",
+        "docs/evidence/history-columns-steady-after-toggle/**"
+      ],
+      "acceptance": [
+        {
+          "id": "steady",
+          "description": "A GPUI test toggles navigation twice, including at a fractional scale factor, and asserts History's column boundaries equal those before the toggle; it fails on origin/main."
+        },
+        {
+          "id": "notify",
+          "description": "History lays its columns out again only when the measured width changes; a test asserts no extra layout for an unchanged width."
+        },
+        {
+          "id": "performance",
+          "description": "Evidence owner (the performance reviewer), committed in the task's evidence commit on top of the candidate: History scrolling on a disposable 3,000-commit repository like the one in docs/benchmarks/2026-09-30-narrow-history-scroll.md, at 1480 × 800 and 461 × 490, shows no regression beyond noise; the record states its timing source on X11. Release builds of the candidate and of a same-session base designated in writing before the first recorded launch, pinned with `taskset -c 0-7`; a new dated docs/benchmarks/ record keeps the raw samples, cache state and p50, p95 and max, and the task's docs/validation.md entry cites it."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/history-columns-steady-after-toggle/scenario.json. States: History before and after Ctrl+B twice (navigation hidden, then shown), at scale factor 1 and under `qa.py launch --scale 1.25`. Palettes: Midnight, and Porcelain at scale factor 1. Text sizes: 13 pt and 18 pt. Measured: `qa.py compare` finds the candidate's before and after frames identical at both scales; the entry records whether the base shifts on X11. The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native",
+        "performance"
+      ],
+      "commit": "fix(history): keep columns still after toggling navigation"
+    },
+    {
+      "id": "decorations-in-retained-bounds",
+      "title": "Count patch decorations in their views' retained-bytes bounds",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (P1, a follow-up of #116). Compare's unified patch (crates/app/src/main.rs:439 `patch_decoration`, set at :1356), recovery (recovery.rs:1082-1086), rewrite review (rewrite_review.rs:363-367) and the PR review's Source (github_view/review.rs) build decoration lists and a PatchPresentation, but no retained-bytes accounting counts them. Each view keeps its own `retained_bytes()` (split_diff.rs:114, editor_find.rs:86 `PatchDecorations::retained_bytes`, revision_inspection.rs:66, file_history.rs:197 and :258, blame.rs:46, history_search.rs:63), and review_bench.rs:188 and :256-270 already measure `presentation.retained_bytes()`. Count each view's decorations and presentation in the accounting of the view that owns them, so the existing bounds (retained sessions and evictions; docs/architecture.md and crates/app/AGENTS.md) see them. This is a state-lifetime change: read docs/development/architecture-review.md first. Where a view has no bound, say so in the handoff and add the accounting to its nearest owner rather than inventing a global budget. Queue 2026-10-02 (coordinator, 2026-10-01): checked on main: the PR review's Source is already counted (github_view/review.rs:336-345, asserted at :1494), so it leaves the scope. The retained-session bound is `MAX_RETAINED_BYTES` (512 MiB, repository_tabs.rs:14), checked at :793-794 over `tab_retained_bytes()` (:617-629), which sums history, inspector, files, file history, revision inspection, blame, search and updates but not Compare's `patch_decoration` or its presentation. recovery.rs and rewrite_review.rs have no retained-bytes accounting, so the nearest-owner rule applies to them. Tests go in repository_tabs.rs `mod tests` (:2143) and recovery.rs `mod tests` (:1418). The controller adds the native profile to any app Rust change that can render (scripts/agent_loop/rust_surface.py); this change should be pixel-neutral. Queue 2026-10-03 (coordinator, 2026-10-02): references re-checked on main 9f38416; only repository_tabs.rs's `mod tests` moved (:2143). It calls the existing `PatchDecorations::retained_bytes` (editor_find.rs:86) and `PatchPresentation::retained_bytes` (text.rs:48) without editing them, so it shares no function with editor-highlights-keep-syntax-readable or pr-source-gutter-like-compare and has no dependency.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/main.rs",
+        "crates/app/src/repository_tabs.rs",
+        "crates/app/src/recovery.rs",
+        "crates/app/src/rewrite_review.rs",
+        "crates/app/src/text.rs",
+        "crates/app/src/editor_find.rs",
+        "crates/app/src/review_bench.rs",
+        "crates/app/docs/**",
+        "docs/architecture.md",
+        "docs/benchmarks/**",
+        "docs/validation.md",
+        "docs/evidence/decorations-in-retained-bounds/**"
+      ],
+      "acceptance": [
+        {
+          "id": "counted",
+          "description": "For Compare's unified patch, recovery and rewrite review, the owning view's retained-bytes figure includes its decorations' and presentation's retained bytes; tests assert it per view and fail on origin/main. The PR review's Source stays counted (its test at github_view/review.rs:1494 passes)."
+        },
+        {
+          "id": "bound",
+          "description": "Where a retained-bytes bound evicts or refuses, a test shows a decorated patch now counts toward it, for example a retained session evicted earlier with decorations than without."
+        },
+        {
+          "id": "performance",
+          "description": "Evidence owner (the performance reviewer), committed in the task's evidence commit on top of the candidate: opening a large patch on review_bench or a large Compare fixture shows no regression beyond noise. Release builds of the candidate and of a same-session base designated in writing before the first recorded launch, pinned with `taskset -c 0-7`; a new dated docs/benchmarks/ record keeps the raw samples, cache state and p50, p95 and max, and the task's docs/validation.md entry cites it."
+        },
+        {
+          "id": "docs",
+          "description": "docs/architecture.md, or the owning crate document, names decorations among what each bound counts."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/decorations-in-retained-bounds/scenario.json. Pixel-neutral. States: Compare's unified patch, a recovery review and a rewrite review at rest on disposable fixtures. Palette: Midnight; text size: 13 pt (nothing this changes depends on palette or size). Measured: candidate frames identical to the base under `qa.py compare --mask status-timing`. The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame and what it shows are privacy-scanned on their committed bytes; any difference from the base escalates to a design review."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "performance",
+        "native"
+      ],
+      "commit": "fix(app): count patch decorations in retained-bytes bounds"
+    },
+    {
+      "id": "editor-highlights-keep-syntax-readable",
+      "title": "Fit editor selection, Find and word tints so syntax stays readable",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (D1a and D1b's word tints, follow-ups of #116; validation entry \"September 30 diff headers and syntax colours from the palette\"). Syntax colours are fitted to 4.75:1 on canvas, panel and the added and removed tints (`SyntaxTargets`, crates/app/src/appearance.rs:1579, impl :1588), but not on the highlights drawn behind them: the editor selection (`theme.colors.selection = palette.selected`, appearance.rs:1358), Find's matches (`palette.selected` and `accent`, crates/app/src/editor_find.rs:559, `match_style`) and the changed-word tints (`strong_tint`, crates/app/src/text.rs:225, used at :171 and :183). Lowest measured: 3.78:1 on selection and Find, 2.58:1 on split word tints and 3.05:1 on unified ones. Owner decision (2026-10-01): fit the highlights, not the syntax. Editors get their own selection, Find-match (other and current) and word-tint colours derived from the palette and fitted so text and every syntax colour keep at least 4.5:1 on them (aim 4.75, as #116 did). Syntax hues stay as #116 made them, and row and list selection elsewhere (`palette.selected`) does not change. Each fitted highlight must stay visibly distinct from the line background it sits on; state the measure and threshold chosen and why. Fitting runs on theme apply, never per frame. Hard: it must hold for the 20 built-ins, the 24 embedded Omarchy fixtures and arbitrary themes (`arbitrary_themes_always_map_to_a_readable_palette`, appearance/omarchy/palette.rs:1778). Queue 2026-10-02 (coordinator, 2026-10-01): references checked against main; editor_find.rs's `mod tests` (:756) hardcodes `palette.selected` at :793 and may need updating. Queue 2026-10-03 (coordinator, 2026-10-02): references re-checked on main 9f38416; all hold (appearance.rs:1358, :1579, :1588; editor_find.rs:559, :724, :756, :793; text.rs:171, :183, :225; palette.rs:1778). The measure and threshold that keep each highlight distinct from its line background are stated in a doc comment beside the fitting. No dependency; markdown-diff-fence-colours follows it, because its fence colours become syntax roles that this task's highlight rule must also cover.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/appearance.rs",
+        "crates/app/src/appearance/**",
+        "crates/app/src/editor_find.rs",
+        "crates/app/src/text.rs",
+        "crates/app/src/split_diff.rs",
+        "DESIGN.md",
+        "docs/development/themes/spec.md",
+        "docs/benchmarks/**",
+        "docs/validation.md",
+        "docs/evidence/editor-highlights-keep-syntax-readable/**"
+      ],
+      "acceptance": [
+        {
+          "id": "contrast",
+          "description": "A test asserts that text and every syntax colour read at least 4.5:1 on the editor selection, Find's match and current-match backgrounds and both word tints in every built-in palette, dark and light, and every embedded Omarchy fixture, and the arbitrary-theme property test checks the same; it fails on origin/main."
+        },
+        {
+          "id": "unchanged",
+          "description": "Syntax colours and row and list selection are byte-identical to origin/main for every built-in and Omarchy fixture palette (dumped and compared), and each fitted highlight stays distinct from its line background by the measure a doc comment beside the fitting states."
+        },
+        {
+          "id": "performance",
+          "description": "Evidence owner (the performance reviewer), committed in the task's evidence commit on top of the candidate: theme apply on every built-in palette and an Omarchy theme shows the added fitting within the theme-apply budget in docs/development/themes/spec.md. Release builds of the candidate and of a same-session base designated in writing before the first recorded launch, pinned with `taskset -c 0-7`; a new dated docs/benchmarks/ record keeps the raw samples, cache state and p50, p95 and max, and the task's docs/validation.md entry cites it."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/editor-highlights-keep-syntax-readable/scenario.json. States: Compare unified and split with a text selection in the focused editor, Find open with its matches and current match, and changed-word tints. Palettes: Midnight, Daylight, Porcelain and Omarchy Tokyo Night. Text sizes: interface 13 pt with code 12 pt, and code 18 pt in Midnight. Measured: the contrast of text and of each syntax colour on every highlight (4.5:1 or more) sampled from the frames, and each highlight's distinctness from its line background by the stated measure. The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native",
+        "performance"
+      ],
+      "commit": "fix(themes): keep syntax readable on selection, find and word tints"
+    },
+    {
+      "id": "code-font-blame-conflicts-review-gutter",
+      "title": "Draw Blame, the conflict editor and review line numbers in the code font",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (F2). Since #86 code text draws through `.code_font(cx)` (crates/app/src/appearance.rs:161-167). Left: Blame's source uses the fixed `mono()` family (crates/app/src/blame.rs:598; `mono()` main.rs:2002); the conflict editor's textarea sets only a size (crates/app/src/conflicts.rs:713), while its read-only panes already use editor_find::Editor; and the PR review's old and new line-number columns are a fixed 36 px (crates/app/src/github_view/review.rs:1074-1075), so long line numbers at larger code sizes do not fit. Size them from the code font's digit width at the current code size. Compare's diff_view.rs:797 sizes its gutter from the constant FONT_SIZE (:33); say in the handoff whether Compare has the same problem, but leave it unless the same helper fixes both. DESIGN.md:117's ligature sentence lists only diffs, editors and the Settings sample; extend it to every code-text site. Tests to copy: review.rs `patch_lines_use_the_code_font`, markdown_view.rs `markdown_code_blocks_use_the_code_font`. Queue 2026-10-02 (coordinator, 2026-10-01): references checked against main (blame.rs:598 `mono()`, main.rs:2002; review.rs:1074-1075; `patch_lines_use_the_code_font` review.rs:1108; `markdown_code_blocks_use_the_code_font` markdown_view.rs:1509; the ligature sentence ends DESIGN.md:117). diff_view.rs joins the scope for the case where one helper fixes Compare too; appearance/** pairs appearance.rs. Queue 2026-10-03 (coordinator, 2026-10-02): references re-checked on main 9f38416; only the conflict textarea moved (conflicts.rs:713). Settings offers code sizes 10 to 24 pt (appearance.rs:31-32), so the gutter criterion names that range. No dependency: it edits the review's patch-line columns (review.rs:1074-1075), not the Source editor that pr-source-gutter-like-compare and review-file-preparation-lifecycle edit.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/blame.rs",
+        "crates/app/src/conflicts.rs",
+        "crates/app/src/github_view/review.rs",
+        "crates/app/src/diff_view.rs",
+        "crates/app/src/appearance.rs",
+        "crates/app/src/appearance/**",
+        "crates/app/src/main.rs",
+        "DESIGN.md",
+        "docs/validation.md",
+        "docs/evidence/code-font-blame-conflicts-review-gutter/**"
+      ],
+      "acceptance": [
+        {
+          "id": "family",
+          "description": "Blame's source lines and the conflict editor's textarea use the family and font features of `.code_font(cx)`; tests in the style of `patch_lines_use_the_code_font` assert both and fail on origin/main."
+        },
+        {
+          "id": "gutter",
+          "description": "The PR review's line-number columns fit the file's widest line number at every code size Settings offers (10 to 24 pt) without clipping it or overlapping the patch text (asserted by a test at 24 pt with a five-digit line number), and at the default size are no narrower than today."
+        },
+        {
+          "id": "design",
+          "description": "DESIGN.md's ligature sentence names every code-text site: diffs, editors, Blame, the conflict editor, Markdown code blocks, the PR review and the Settings sample."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/code-font-blame-conflicts-review-gutter/scenario.json. With a desktop monospace family applied (Settings' code-font row on). States: Blame's source, the conflict editor's textarea focused with text in it, and the offline PR review fixture's line numbers. Palettes: Midnight and Porcelain. Text sizes: interface 13 pt with code 12 pt (the defaults), code 18 pt, and code 24 pt for the review's line numbers. Measured: the clearance between the line-number columns and the patch text (none overlap) and masked base-versus-candidate compares. The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(app): draw blame, conflicts and review line numbers in the code font"
+    },
+    {
+      "id": "tab-reveals-worktree-reflog-profile-rows",
+      "title": "Scroll Tab-focused rows into view in the worktree, Reflog and profile lists",
+      "description": "Coordinator follow-up of 2026-10-01, second of two tasks split by list; it uses `focus_reveal::FocusReveal` from `tab-reveals-branch-and-tag-rows` (#136) and follows its rule. Lists with tab-stop rows and nothing that reveals focus, each nested in a scrolling dialog content, so the inner list scrolls first and then the content: the worktree manager's `managed-worktree-list` (crates/app/src/worktrees.rs:573, rows and their open, reveal, edit and remove buttons) and `worktree-branch-choices` (:596), both inside `worktree-manager-content` (:564); the Reflog's `reflog-list` (crates/app/src/reflog.rs:348, entries and `copy-reflog-oid`) inside `reflog-browser-content` (:341); and the profile manager's rows in `profile-manager-content` (crates/app/src/profiles.rs:208) and `profile-form` (:559). None has a ScrollHandle yet except the Reflog content, whose `content_scroll` (reflog.rs:136, `track_scroll` :341) drives its always-visible scrollbar (`reflog-browser-scrollbar`, :377-386) since #134; the reveal must drive that same handle so the scrollbar keeps tracking. The profile containers (`max_h(px(430.))`, `max_h(px(420.))`) have no ring room yet and gain it as #122's lists did (`p(room).m(-room)`). Keep the ring room each list gained in #122, `worktree-branch-choices-ring` and `worktree-rows-ring-and-selection`, and the Reflog layout of `reflog-selection-and-scroll-cues`; a reveal includes `appearance::button_ring_room`. Decision (coordinator, 2026-10-01, delegated by the owner): the same rule as `tab-reveals-branch-and-tag-rows`, applied through every scrolling ancestor of the focused control. Reason: one rule for every list whose rows are tab stops; the nested dialogs are where a focused row is most often hidden. Queue 2026-10-03 (coordinator, 2026-10-02): references re-checked on main 9f38416 after #136. #136's FocusReveal serves one scrolling container (focus_reveal.rs: `new`, `scroll`, `focus`, `observe`, `control`, `controls`, `items`), so revealing through the content as well needs an inner list's reveal chained to each scrolling ancestor; that is part of this task. Folded in, follow-up (8) of the #136 design review: DESIGN.md:333 already names every keyboard focus move and gives the hub's click reveal its own sentence, so this task adds the worktree manager's lists, the Reflog's list and content and the profile manager to its list of lists, leaving none open. Decision (coordinator, 2026-10-02, delegated by the owner): fold (8) here rather than edit DESIGN.md twice. Reason: the sentence is complete only once these lists reveal. Depends on focus-reveal-same-frame: both change focus_reveal.rs, and these lists must reveal in the same frame.",
+      "depends_on": [
+        "focus-reveal-same-frame"
+      ],
+      "scope": [
+        "crates/app/src/focus_reveal.rs",
+        "crates/app/src/worktrees.rs",
+        "crates/app/src/worktrees/**",
+        "crates/app/src/reflog.rs",
+        "crates/app/src/profiles.rs",
+        "crates/app/src/profiles/**",
+        "DESIGN.md",
+        "docs/validation.md",
+        "docs/evidence/tab-reveals-worktree-reflog-profile-rows/**"
+      ],
+      "acceptance": [
+        {
+          "id": "worktrees",
+          "description": "A GPUI view test opens the worktree manager at 1000 × 680 with enough worktrees and branches to scroll both lists, sends real `tab` and `shift-tab` keystrokes through every row control of `managed-worktree-list` and every choice of `worktree-branch-choices`, and asserts after each key that the focused control, grown by the installed ring's gap plus width, lies inside the list's and the content's visible bounds. It fails on origin/main and passes after the change."
+        },
+        {
+          "id": "reflog-profiles",
+          "description": "The same test shape for the Reflog's entries (with enough entries to scroll the list and an entry selected so the content scrolls too) and for the profile manager with enough profiles to scroll fails on origin/main and passes after the change."
+        },
+        {
+          "id": "steady",
+          "description": "Clicking a partly visible row scrolls nothing, and the ring-room tests of these lists (`manager_keeps_room_for_every_focus_ring`, `reflog_browser_keeps_room_for_every_focus_ring` and those added by the two worktree tasks), `selected_entry_keeps_lists_and_message_whole`, #134's Reflog scrollbar tests and #136's reveal tests pass unchanged. DESIGN.md:333's list of lists names the worktree manager's lists, the Reflog and the profile manager."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/tab-reveals-worktree-reflog-profile-rows/scenario.json. Fixture: several worktrees, 30 branches, a Reflog long enough to scroll its list and its content, and five profiles. States: the focused control after Tab past a list's lower edge and Shift+Tab back past its upper edge in the worktree manager (rows and their open, reveal, edit and remove buttons; branch choices), the Reflog (entries and `copy-reflog-oid`) and the profile manager; focused+selected (the selected worktree row and Reflog entry) and focused+unselected; a pointer click on a partly visible row (no scroll). Palettes: Midnight and Porcelain. Text sizes: 13 pt and 18 pt. Measured: the focused control's four ring sides and contrast, the ring inside both the list's and the content's clip, and focus-reveal-same-frame's frame-by-frame probe finding no cut ring on the candidate. The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(focus): reveal tab-focused worktree, reflog and profile rows"
+    },
+    {
+      "id": "tab-lists-scroll-cues",
+      "title": "Cue the branch chooser, remote manager and Tags lists with an always-visible scrollbar",
+      "description": "Follow-up (9) of the #136 design review (HANDOFF): once scrolled, the branch chooser (`branch-chooser-list`, crates/app/src/branch_actions.rs:1040) and Tags (`tags-list`, crates/app/src/tags.rs:342) give no cue that more rows lie beyond the edge, and the remote manager (`remote-manager-list`, branch_actions.rs:1247) and the tag inspector's Push to… list (`tag-remote-list`, tags.rs:179) are the same. Each has had a ScrollHandle through its `FocusReveal` (`.track_scroll(reveal.scroll())`) since #136, and none draws a Scrollbar. The review dialogs cue overflow with the kit's always-visible scrollbar in a gutter beside the content: `reflog-browser-scrollbar` (reflog.rs:377-386, `Scrollbar::vertical(&handle).mode(ScrollbarMode::Always)` at `.right(-Scrollbar::width())`), `discard-scrollbar` (discard/review.rs:173), `worktree-force-scrollbar` (worktrees/removal_review.rs:267) and `commit-message-scrollbar` (commit_message.rs:291). Decision (coordinator, 2026-10-02, delegated by the owner): all four lists take that always-visible vertical scrollbar, driven by their FocusReveal's handle, in a gutter that overlaps no row and no row's ring room; a list whose rows fit paints no thumb and keeps origin/main's row bounds. Reason: these are the app's other scrolling lists of tab-stop rows, the dialogs' scrollbar is the established cue, and covering all four keeps them alike. These rows set no `.selected`, so focused rows are the only row state. Depends on focus-reveal-same-frame, which edits the same list containers. The worktree and profile lists keep their present cues; the Reflog entry list gets its scrollbar in reflog-marker-paths-entry-scrollbar.",
+      "depends_on": [
+        "focus-reveal-same-frame"
+      ],
+      "scope": [
+        "crates/app/src/branch_actions.rs",
+        "crates/app/src/branch_actions/**",
+        "crates/app/src/tags.rs",
+        "DESIGN.md",
+        "docs/validation.md",
+        "docs/evidence/tab-lists-scroll-cues/**"
+      ],
+      "acceptance": [
+        {
+          "id": "thumb",
+          "description": "For each of the four lists with enough rows to scroll at 1000 × 680, a GPUI view test asserts a vertical scrollbar thumb is painted whose position follows the list's scroll offset at the top, the middle and the end, and that no thumb is painted when the rows fit; it fails on origin/main."
+        },
+        {
+          "id": "room",
+          "description": "The scrollbar's bounds overlap no row and no row's ring footprint (its bounds grown by the installed ring's gap plus width) in any of the four lists at 13 and 18 pt; a list whose rows fit keeps origin/main's row bounds; `branch_chooser_keeps_room_for_rings_at_either_end`, `tag_inspector_keeps_room_for_every_push_ring` and #136's reveal tests pass unchanged."
+        },
+        {
+          "id": "design",
+          "description": "DESIGN.md says a scrolling list of tab-stop rows shows the always-visible scrollbar, naming these four lists beside the review dialogs."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/tab-lists-scroll-cues/scenario.json. Fixture: 30 branches, 30 tags and enough remotes to scroll the remote manager and the Push to… list. States: each list at its top, scrolled to the middle and at its end; a list whose rows fit (no thumb); the thumb hovered and pressed while dragging; a focused row beside the scrollbar and focused+hovered. Palettes: Midnight and Porcelain. Text sizes: 13 pt and 18 pt. Measured: the thumb's fill contrast against the list surface, and the clearance between the scrollbar and the focused row's ring (none overlap). The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(lists): cue scrolling branch, remote and tag lists with a scrollbar"
+    },
+    {
+      "id": "kit-button-focused-border",
+      "title": "Keep a focused Button's own border so only the ring shows focus",
+      "description": "Follow-up (1) of the `worktree-rows-ring-and-selection` design review (#133, HANDOFF). The kit's `apply_focus_ring` (vendor/gpui-component/src/styled.rs:197) recolours a focused element's border to `theme.ring` (:206-207, :264) before adding the outer ring, and the Button calls it when focused (vendor/gpui-component/src/button/button.rs:848-849). So a focused Button with a border shows two accent outlines, its recoloured 1 px border and the 2 px ring 1 px outside, against DESIGN.md:23 (borders stay fixed across hover, pressed and focus) and the rule since #133 that an accent outline means focus. Only Default and outline variants draw a border (button.rs:652; per-variant `border_color` :1012, applied at :659, hover :669, active :675, selected :749, disabled :757), plus Buttons whose caller adds one. App consumers: the Default Buttons `hub-clear-search` (projects.rs:569), `hub-choose-parent` (:909), `save-default-branch` (settings.rs:2246), `retry-save-settings` (:2429), `partial-hunk` (diff_view.rs:450), `clear-partial-selection` (:581) and `cancel-force-worktree-removal` (worktrees/removal_review.rs:276); the worktree rows (ghost with a caller border, worktrees.rs:504-524); and the Settings theme cards (ghost with a caller border, settings.rs:1385-1404, which keep the kit ring on and add their own through `focused_theme_card`, :3706). Decision (coordinator, 2026-10-02, delegated by the owner): in button.rs, after `apply_focus_ring`, re-apply the border the Button would have unfocused (its variant's, state's or caller's), so focus adds only the ring; `apply_focus_ring` itself is unchanged, because Input, NumberInput, OtpInput, Select, Combobox, Checkbox, Radio and DatePicker share it through `focus_ring_style` (styled.rs:292) and a focused text field's border is its design. Reason: the ring alone is the focus indicator DESIGN.md:27 defines, and a recoloured border doubles it and hides a row's neutral border. Natively, three Default Buttons stand for the seven, which share one code path the test covers. gpui-component's own tests do not run (vendor/AGENTS.md), so the regression goes in crates/app/src/native_accessibility/control_tests.rs beside `painted_quads` (:139) and `assert_ring` (:230). Every committed frame under docs/evidence/ that shows one of these consumers focused moves and is re-taken in place, hence the docs/evidence/** scope. Depends on gpui-base-disabled-focus-note, which adds tests to the same control_tests.rs. vendor/AGENTS.md is protected in controller sessions; its gpui-component row is left to the interactive librarian change.",
+      "depends_on": [
+        "gpui-base-disabled-focus-note"
+      ],
+      "scope": [
+        "vendor/gpui-component/src/button/button.rs",
+        "vendor/gpui-component/GITTURTLE-PATCH.md",
+        "crates/app/src/native_accessibility/control_tests.rs",
+        "docs/validation.md",
+        "docs/evidence/**"
+      ],
+      "acceptance": [
+        {
+          "id": "border",
+          "description": "A GPUI test in crates/app/src/native_accessibility/control_tests.rs focuses a Default Button, an outline Button and a ghost Button with a caller border (unselected and selected), each enabled and disabled, and asserts through painted quads that each border paints exactly its unfocused colour while the theme's button focus ring paints outside it (2 px, 1 px gap); it fails on origin/main, where the focused border paints `theme.ring`."
+        },
+        {
+          "id": "shared",
+          "description": "Controls that share `apply_focus_ring` through `focus_ring_style` paint exactly as on origin/main when focused (asserted for Input and Checkbox), and no vendored file other than button.rs and GITTURTLE-PATCH.md changes."
+        },
+        {
+          "id": "docs",
+          "description": "vendor/gpui-component/GITTURTLE-PATCH.md records the change in its Button focus-ring entry with its consumers and removal condition, keeping runtime and test-only changes apart."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/kit-button-focused-border/scenario.json. States, for `save-default-branch`, `hub-choose-parent` and `cancel-force-worktree-removal`, a worktree row and a theme card: rest, hovered, pressed, focused and focused+hovered, plus focused+disabled for `save-default-branch` (Enter saves the edited branch and disables it while it keeps focus); for the worktree row and the theme card also selected, focused+selected and focused+unselected. Palettes: Midnight and Porcelain. Text sizes: 13 pt and 18 pt. Measured: the masked compare of each focused frame with its rest frame differs only inside the ring band, the border pixels equal the resting border on all four sides, and the ring's four sides reach their contrast. Every committed frame under docs/evidence/ showing one of these consumers focused is re-taken in place and listed in the entry. The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        },
+        {
+          "id": "vendor",
+          "description": "Evidence owner: The border and shared tests pass on the candidate and fail with vendor/gpui-component/src/button/button.rs reverted to origin/main, each build in its own CARGO_TARGET_DIR, and a read-only code-reviewer pass checks the GITTURTLE-PATCH.md entry against the code; recorded in the task's docs/validation.md entry, which the evidence owner commits on top of the candidate."
+        }
+      ],
+      "profiles": [
+        "vendor",
+        "rust",
+        "native"
+      ],
+      "commit": "fix(vendor): keep a focused button's border under its focus ring"
+    },
+    {
+      "id": "worktree-rows-hover-align-marker",
+      "title": "Hover worktree rows with the palette hover, align their labels and mark the selected row",
+      "description": "Follow-ups (2), (3) and the worktree half of (5) of the #133 and #134 design reviews (HANDOFF). A worktree row (`worktree_row`, crates/app/src/worktrees.rs:504-524) is a kit ghost Button with `.justify_start()`, a neutral `p.border` border and, when selected, `.bg(p.selected)` with `.hover(p.row_hover(true))`. (2) An unselected row hovers with the kit's ghost fill (`secondary` lightened or darkened at 0.8 opacity, vendor/gpui-component/src/button/button.rs:1138) rather than the palette's `hover` (appearance.rs:453, `row_hover(false)`), and in Porcelain that fill (1.30:1) outweighs the selected fill (1.18:1). (3) Its label is centred: `.justify_start()` reaches only the Button's root, while `.label(text)` sits in a `size_full` child that centres it (button.rs:694-700). (5) DESIGN.md:259 gives a selected row a 2 px accent leading marker, which these rows lack; the app's other selected rows draw it with `.border_l_2()` in the accent (workspace.rs:1249, file_history.rs:1057, project_pane.rs:1104, views.rs:533 and :633, blame.rs:565). Decision (coordinator, 2026-10-02, delegated by the owner): unselected rows hover with `row_hover(false)` and selected rows keep `row_hover(true)`; the label starts at the row's leading padding (for example by passing the content as a child rather than through `.label`); a selected row draws the 2 px accent leading marker as the other lists do, without moving its label or changing its bounds when selection changes; the neutral border and #133's ring room stay. Reason: DESIGN.md:259 names the hover surface and the marker, and the marker gives Porcelain's low `selected` contrast a second cue without a palette change. The branch choices (`worktree-branch-choices`, :596) use the app's `button()` helper and are unchanged. Depends on tab-reveals-worktree-reflog-profile-rows (the same rows and file) and kit-button-focused-border (the focused rows' frames are reviewable only once focus keeps the border).",
+      "depends_on": [
+        "tab-reveals-worktree-reflog-profile-rows",
+        "kit-button-focused-border"
+      ],
+      "scope": [
+        "crates/app/src/worktrees.rs",
+        "crates/app/src/worktrees/**",
+        "docs/validation.md",
+        "docs/evidence/worktree-rows-hover-align-marker/**"
+      ],
+      "acceptance": [
+        {
+          "id": "hover",
+          "description": "Hovering an unselected worktree row paints the palette's `hover` (`row_hover(false)`) and a selected one `row_hover(true)`, asserted through painted quads at 1000 × 680 in Midnight and Porcelain; it fails on origin/main."
+        },
+        {
+          "id": "align",
+          "description": "A row's label starts at the row's leading padding (its left edge within 1 px of the row's left edge plus its border and padding) at 13 and 18 pt, asserted by bounds; it fails on origin/main."
+        },
+        {
+          "id": "marker",
+          "description": "The selected row paints a 2 px accent quad along its leading edge and unselected rows paint none; a row's label bounds and its own bounds are equal selected and unselected; the selected row's written AccessKit node still reports `toggled()` true (read as native_accessibility.rs:288-297 does); `manager_keeps_room_for_every_focus_ring` and #133's row-clearance tests pass unchanged. It fails on origin/main."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/worktree-rows-hover-align-marker/scenario.json. Fixture: several worktrees, one selected. States: unselected at rest, hovered and pressed; selected at rest and hovered (hovered+selected); focused+unselected, focused+selected and focused+hovered. Palettes: Midnight and Porcelain. Text sizes: 13 pt and 18 pt. Measured: the hover fill against the rest fill and the selected fill against the list surface, the marker's width and contrast against the row fill, the label's left inset, and the focused rows' ring sides and clearance to the neighbouring rows' borders (2 px or more, as #133 measured). The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(worktrees): hover, align and mark the selected worktree row"
+    },
+    {
+      "id": "reflog-marker-paths-entry-scrollbar",
+      "title": "Mark the selected Reflog entry, keep file names whole with a path tooltip, and cue the entry list",
+      "description": "Follow-ups (4), (6) and the Reflog half of (5) of the `reflog-selection-and-scroll-cues` design review (#134, HANDOFF). (4) A changed-file row (crates/app/src/reflog.rs:364: a `div` with `Role::Label`, text \"‹status› · ‹path›\", `.whitespace_nowrap().overflow_hidden().text_ellipsis()`) ends in an ellipsis since #134, so a long path loses its file name, and no tooltip shows the whole path. (5) The selected entry (`entry_button`, :42-55: a ghost Button with `.selected().toggled()` and `.bg(p.selected)`) lacks DESIGN.md:259's 2 px accent leading marker, which the app's other selected rows draw with `.border_l_2()` in the accent (workspace.rs:1249, file_history.rs:1057). (6) The entry list (`reflog-list`, :348, `overflow_y_scroll`) shows 6 of 14 entries without a cue, while the content and the file list have the always-visible scrollbar (`reflog-browser-scrollbar` :377-386, `reflog-files-scrollbar`). Decision (coordinator, 2026-10-02, delegated by the owner): a file row keeps its status and file name whole and elides the directory part first, and hovering it shows the full path in a tooltip (`Tooltip::new(path)`, as file_history.rs:760 does); its accessible name keeps the whole text. The selected entry draws the 2 px accent leading marker without moving its label or changing its bounds. The entry list takes the content's always-visible scrollbar, driven by the handle its focus reveal gives it, in a gutter that overlaps no entry's ring room. Reason: a reader scans for the file name and the path is one hover away; the marker and the cue match the other lists. Depends on tab-reveals-worktree-reflog-profile-rows, which gives `reflog-list` its ScrollHandle and edits the same containers. #134's tests (`selected_entry_paints_the_selected_surface`, `content_scrollbar_cues_the_fold`, `changed_files_show_whole_rows`, `changed_files_that_fit_paint_no_thumb`) and `reflog_browser_keeps_room_for_every_focus_ring` keep passing.",
+      "depends_on": [
+        "tab-reveals-worktree-reflog-profile-rows"
+      ],
+      "scope": [
+        "crates/app/src/reflog.rs",
+        "docs/validation.md",
+        "docs/evidence/reflog-marker-paths-entry-scrollbar/**"
+      ],
+      "acceptance": [
+        {
+          "id": "paths",
+          "description": "With a changed file whose path is longer than its row at 1000 × 680, a GPUI view test asserts that the file name is laid out whole inside the row while the directory part gives up the room, and that hovering the row opens a tooltip whose text is the full path; the row's accessible name is unchanged. It fails on origin/main."
+        },
+        {
+          "id": "marker",
+          "description": "The selected entry paints a 2 px accent quad along its leading edge and other entries none; an entry's label bounds and its own bounds are equal selected and unselected; its written AccessKit node still reports `toggled()` true. It fails on origin/main."
+        },
+        {
+          "id": "entries",
+          "description": "With 14 entries the entry list paints an always-visible scrollbar thumb whose position follows the list's offset, and none when the entries fit; the scrollbar overlaps no entry's ring footprint; #134's tests and `reflog_browser_keeps_room_for_every_focus_ring` pass unchanged."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/reflog-marker-paths-entry-scrollbar/scenario.json. Fixture: a Reflog of 14 entries and a commit with a changed file whose path is longer than its row. States: an entry selected, hovered+selected, focused+selected, focused+unselected and hovered; the entry list at its top and end, and with entries that fit; a file row at rest and hovered with its tooltip. Palettes: Midnight and Porcelain. Text sizes: 13 pt and 18 pt. Measured: the marker's width and contrast against the selected fill, the thumb's fill contrast, the clearance between the scrollbar and the focused entry's ring, and the file name whole in the crop. The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(reflog): mark the selection, keep file names and cue the entry list"
+    },
+    {
+      "id": "theme-card-selection-check",
+      "title": "Mark the selected theme card with a check instead of an accent outline",
+      "description": "Coordinator follow-up of 2026-10-02 from follow-up (1) of the #133 design review (HANDOFF: the Settings theme cards \"also still mark selection with an accent border\"). A theme card (`theme_card`, crates/app/src/settings.rs:1346, Button :1385) is a ghost Button with `.selected().toggled()`, `.border_1()` and `.border_color(accent if selected else border)` (:1399); a focused card adds the 2 px accent ring 3 px out (`focused_theme_card`, :3706). A focused selected card therefore shows a 1 px accent outline inside a 2 px accent ring, the double outline #133 removed from worktree rows, and a selected card's accent outline reads like focus. DESIGN.md:153 asks the cards to \"mark the selected choice explicitly\". Decision (coordinator, 2026-10-02, delegated by the owner): a selected card keeps the neutral `p.border` border and marks selection with the app's check glyph (assets/icons/check.svg, tinted with the accent, sized with `appearance::ui_size`) beside the theme's name, keeping whatever fill it has today; its accessible toggled state and name are unchanged. The glyph reaches at least 3:1 against the surface under it for every built-in palette applied and every card; if no placement reaches that, stop and report rather than change a palette. Reason: since #133 an accent outline means keyboard focus everywhere, and a check is the usual explicit mark on a picker card, needs no colour judgement and holds over every theme preview. Depends on kit-button-focused-border, after which a focused card keeps its border, so the focused frames show the final look.",
+      "depends_on": [
+        "kit-button-focused-border"
+      ],
+      "scope": [
+        "crates/app/src/settings.rs",
+        "crates/app/src/settings/**",
+        "DESIGN.md",
+        "docs/validation.md",
+        "docs/evidence/theme-card-selection-check/**"
+      ],
+      "acceptance": [
+        {
+          "id": "mark",
+          "description": "A GPUI view test renders the theme picker with one card selected and asserts through painted quads and element bounds that the selected card's border paints `p.border` like the others and that the check glyph is drawn only on the selected card, beside its name; it fails on origin/main."
+        },
+        {
+          "id": "contrast",
+          "description": "A test asserts that the glyph's colour reaches 3:1 against the surface under it for every built-in palette applied and every card, and that each card's bounds and its written AccessKit node's `toggled()` state are unchanged from origin/main."
+        },
+        {
+          "id": "design",
+          "description": "DESIGN.md:153 says how a selected theme card is marked and that an accent outline on a card means focus."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/theme-card-selection-check/scenario.json. States: a selected and an unselected card at rest, hovered, pressed and focused (focused+selected and focused+unselected), and focused+hovered. Palettes: Midnight, Porcelain and Daylight (the cards preview every built-in). Text sizes: 13 pt and 18 pt. Measured: the glyph's contrast against its surface, the selected card's border pixels against the neutral border, and the focused cards' ring sides. The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(settings): mark the selected theme card with a check"
+    },
+    {
+      "id": "narrow-large-text-compact-chrome",
+      "title": "Compact the chrome in short windows so History and Compare keep content",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (N1, second of two; validation entry \"September 30 paging and the diff in narrow windows\"). At 18 pt in a 461 × 490 window History shows no rows and Compare no diff line, because the header (about 183 px), the action bar (about 113 px) and Compare's toolbar (about 265 px) take the height. Owner decision (2026-10-01, compact chrome): below a height breakpoint measured from the interface font, as #105 measured its width breakpoints (`labelled_scope_toolbar_width`, views.rs:2088; text_review.rs:615 `options_row_width`), the header and toolbars take compact one-row forms (icon buttons with tooltips and accessible names, as #105 did for paging and the review options), so History keeps at least three whole rows and Compare at least three whole diff lines at 18 pt. Owner decision (2026-10-01): the Changes composer pins its heading (about 31 px; crates/app/src/workspace.rs:1005, `commit-composer-heading`) and the staged list above gives up the room. Taller windows and the default size stay pixel-identical to origin/main, apart from the composer heading where it was squeezed out. Queue 2026-10-02 (coordinator, 2026-10-01): references checked against main (views.rs:2088, workspace.rs:1005; the cited tests are in views.rs: `compact_controls_carry_their_accessible_names` :3501, `narrow_compare_keeps_three_diff_lines` :3569, `narrow_review_options_act_from_the_menu` :3709). Hard: three compact forms, a height breakpoint measured from the font and pixel-identical wider layouts in one change. Queue 2026-10-03 (coordinator, 2026-10-02): references re-checked on main 9f38416; all hold (views.rs:2088, :3501, :3569, :3709; text_review.rs:615; workspace.rs:1005). Depends on narrow-large-text-minimums: both change the narrow breakpoints in `render_repository`, and this task is its second half.",
+      "depends_on": [
+        "narrow-large-text-minimums"
+      ],
+      "scope": [
+        "crates/app/src/views.rs",
+        "crates/app/src/text_review.rs",
+        "crates/app/src/workspace.rs",
+        "crates/app/src/repository_tabs.rs",
+        "crates/app/src/history_*.rs",
+        "DESIGN.md",
+        "docs/benchmarks/**",
+        "docs/validation.md",
+        "docs/evidence/narrow-large-text-compact-chrome/**"
+      ],
+      "acceptance": [
+        {
+          "id": "rows",
+          "description": "At 461 × 490 and 18 pt History shows at least three whole rows and Compare at least three whole diff lines; tests in the style of `narrow_compare_keeps_three_diff_lines` at 18 pt fail on origin/main."
+        },
+        {
+          "id": "compact",
+          "description": "Every control that collapses keeps its action, tooltip and accessible name, and the Tab order is unchanged; tests in the style of `narrow_review_options_act_from_the_menu` and `compact_controls_carry_their_accessible_names` cover the new compact forms."
+        },
+        {
+          "id": "composer",
+          "description": "With two staged files in a 461 × 490 window the composer's heading is drawn whole at the default size and at 18 pt; a test asserts its bounds and fails on origin/main."
+        },
+        {
+          "id": "performance",
+          "description": "Evidence owner (the performance reviewer), committed in the task's evidence commit on top of the candidate: History scrolling at 461 × 490 on a disposable 3,000-commit repository like the one in docs/benchmarks/2026-09-30-narrow-history-scroll.md shows no regression beyond noise. Release builds of the candidate and of a same-session base designated in writing before the first recorded launch, pinned with `taskset -c 0-7`; a new dated docs/benchmarks/ record keeps the raw samples, cache state and p50, p95 and max, and the task's docs/validation.md entry cites it."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/narrow-large-text-compact-chrome/scenario.json. States: History, Compare and Changes at 461 × 490 at 13 and 18 pt; each compact control at rest, hovered, focused and with its tooltip shown; the composer heading with two staged files; and 493 × 526, 1000 × 680 and 1480 × 800 at 13 pt. Palettes: Midnight and Daylight. Text sizes: 13 pt and 18 pt. Measured: the 493 × 526 and larger frames identical to the base under `qa.py compare --mask status-timing` apart from the composer heading, the whole History rows and diff lines counted at 18 pt, and the compact controls' ring sides when focused. The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native",
+        "performance"
+      ],
+      "commit": "fix(app): compact the chrome so short windows keep history and diff"
+    },
+    {
+      "id": "review-arrow-buttons-hover",
+      "title": "Give the review row's arrow buttons a hover fill",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (M1; validation entry \"September 30 paging and the diff in narrow windows\"). In narrow Compare the review row's small previous and next change arrows (crates/app/src/text_review.rs:451 `previous-text-change` and :460 `next-text-change`, arrows at :517 and :522: `Button::new(…).small().ghost()` with `.icon(arrow(…))`) show no hover fill, unlike the other compact controls (DESIGN.md:27: hover uses the palette hover surface). Find why, in the kit's ghost icon Button or in the app's styling, name it in the handoff, and fix it where the cause is. If the cause is the vendored kit, every ghost icon Button gets the fix and the patch is recorded; the vendor profile then applies. Queue 2026-10-02 (coordinator, 2026-10-01): Decision (coordinator, 2026-10-01, delegated by the owner): fix it in the app. The arrows, and every other icon-only ghost Button whose hover does not reach the palette hover surface, take the app's shared control colours (`appearance::control_button_variant`, appearance.rs:406, whose hover is `control_fill(palette.hover)`, :576), as the other compact controls do; the kit's Ghost variant (vendor/gpui-component/src/button/button.rs:1138-1142, a lightened or darkened `secondary` at 0.8 opacity) stays upstream, and the handoff still names why the arrows showed no lift. Reason: DESIGN.md:27 asks hover to use the palette hover surface, which the app owns through the shared control; a kit patch would change every kit-internal ghost button and need vendor evidence for a rule the app already implements. The scope is therefore crates/app only. Queue 2026-10-03 (coordinator, 2026-10-02): references re-checked on main 9f38416; all hold (text_review.rs:451, :460, :517, :522; appearance.rs:406, its hover `control_fill(self.hover)` at :576). `compact_control_name` (views.rs:2191) sets only the accessible name; the shared colours come from `control_button_variant`. The other icon-only ghost Buttons are `rename-recent-project` (projects.rs:487), `project-pane-new-group` (project_pane.rs:857) and `project-row-menu` (project_pane.rs:1156, hidden until its row is hovered); none uses the shared colours. Depends on narrow-large-text-compact-chrome, which reworks the same review row in text_review.rs.",
+      "depends_on": [
+        "narrow-large-text-compact-chrome"
+      ],
+      "scope": [
+        "crates/app/src/**",
+        "docs/validation.md",
+        "docs/evidence/review-arrow-buttons-hover/**"
+      ],
+      "acceptance": [
+        {
+          "id": "hover",
+          "description": "Hovering an enabled arrow button paints the palette's hover step through the shared control colours, as the compact controls do, and a disabled one paints none; a painted-quads test fails on origin/main, and a comment at the fix names why the arrows showed no lift."
+        },
+        {
+          "id": "others",
+          "description": "`rename-recent-project`, `project-pane-new-group` and `project-row-menu` each lift to the palette hover surface when hovered, either unchanged or through the shared control colours, asserted per Button by a hover test that fails on origin/main for each Button it changes; no vendored file changes."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/review-arrow-buttons-hover/scenario.json. States: the previous and next arrows at rest, hovered, pressed, focused, focused+hovered, disabled (at the first or last change) and disabled+hovered in a narrow Compare window (461 × 490), and each other Button whose look changes at rest, hovered and focused (project hub frames cropped). Palettes: Midnight and Daylight. Text sizes: 13 pt and 18 pt. Measured: the hover fill's step against the rest fill, no fill change on a disabled arrow, and the ring sides when focused. The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(app): give the review row's arrow buttons a hover fill"
+    },
+    {
+      "id": "copy-actions-say-copied",
+      "title": "Confirm every copy action with Copied on its button",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (M1). No copy action gives feedback: Copy Before source and Copy After source (crates/app/src/image_compare.rs:409, one \"Copy {label} source\" button per side, which only writes to the clipboard), the inspector's Hash and Copy message (crates/app/src/commit_message.rs:256 and :262), and any other copy button. Owner decision (2026-10-01): for about 1.5 s the activated button reads \"Copied\" with a check icon (in its label, or in its icon and tooltip when it is icon-only), and assistive technology hears a polite \"Copied ‹what›\" announcement (`native_accessibility::polite`, as conflicts.rs:682 uses it). One shared helper serves every copy button. The button keeps its size, reverts after the timeout, restarts the timeout on a repeated click, and uses no animation, so reduced motion needs nothing more. The handoff lists every copy site it found. Queue 2026-10-02 (coordinator, 2026-10-01): clipboard writes found on main by `write_to_clipboard`: image_compare.rs:409, commit_message.rs:256 and :262, blame.rs:321, :518 and :523, model_view.rs:683, worktrees/removal_review.rs:224, rich_preview.rs:360, automatic_refresh.rs:191, github_view/conversations.rs:458, github_view.rs:1068 and :1131, platform_polish.rs:449, tags.rs:151, reflog.rs:356, integration.rs:35, interactive_rebase.rs:730, discard/review.rs:185-186, views.rs:1803, split_diff.rs:566, file_history.rs:783, recovery_drafts.rs:583 and conflicts.rs:697. Decision (coordinator, 2026-10-01, delegated by the owner): a copy with no button of its own (a menu item or a shortcut) posts the polite announcement and changes no other control. Reason: there is no activated button to relabel, and a menu that has closed shows nothing. Queue 2026-10-03 (coordinator, 2026-10-02): references re-checked on main 9f38416; only the Reflog's copy moved (reflog.rs:356); commit_message.rs:546 is inside a test. Sites that are not a plain button: split_diff.rs:566 is the editor's Copy action (announcement only); blame.rs:321 `copy_blame_line()` serves the Copy line button (:517) and an action wired at :507 (the button relabels, the action announces); discard/review.rs:185 is the same button's Enter action; platform_polish.rs:449 already relabels to \"Diagnostics copied\" through `self.copied` and moves onto the shared helper rather than keeping a second mechanism. No copy site is a menu item. Depends on narrow-large-text-minimums, which reserves the inspector toolbar's height around the same Hash and Copy message buttons (commit_message.rs:245-262).",
+      "depends_on": [
+        "narrow-large-text-minimums"
+      ],
+      "scope": [
+        "crates/app/src/**",
+        "crates/app/docs/**",
+        "DESIGN.md",
+        "docs/native-accessibility.md",
+        "docs/validation.md",
+        "docs/evidence/copy-actions-say-copied/**"
+      ],
+      "acceptance": [
+        {
+          "id": "helper",
+          "description": "One helper shows \"Copied\" with a check icon on the activated copy button for about 1.5 s and then restores it, without changing the button's bounds; a GPUI test clicks a copy button, asserts the clipboard text, the label or icon and the bounds, advances the clock, asserts the restore, and fails on origin/main."
+        },
+        {
+          "id": "sites",
+          "description": "Every copy action in the app uses the helper, at least Copy Before source, Copy After source, Hash and Copy message: outside tests, `write_to_clipboard` in crates/app/src is called only from the helper (its button form and its form for an action without a button), which a grep of the candidate shows."
+        },
+        {
+          "id": "announce",
+          "description": "Each copy posts a polite announcement naming what was copied, asserted in the test."
+        },
+        {
+          "id": "design",
+          "description": "DESIGN.md states the copy-feedback rule."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/copy-actions-say-copied/scenario.json. States: Copy After source and the inspector's Hash at rest, hovered, just after a pointer click (Copied), just after Enter while focused (focused+Copied), and restored after the timeout. Palettes: Midnight and Daylight. Text sizes: 13 pt and 18 pt. Measured: each button's bounds equal at rest and while Copied (masked compares differ only inside the label or icon), and the ring sides while focused+Copied. The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "feat(app): confirm copy actions with copied on the button"
+    },
+    {
+      "id": "review-file-preparation-lifecycle",
+      "title": "Prepare a PR file without copying its patch, and resume after reopen",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (P1, follow-ups of #116). (a) `select_review_file` (crates/app/src/github_view/review.rs:522, clone at ~557) clones the whole `PullFile` (crates/app/src/github/review.rs:9; `patch: Option<String>` up to the 8 MiB response bound, github.rs:17) on the UI thread before `background_spawn`. Hand the worker the patch without a full copy, for example as an `Arc<str>` shared with the view, keeping PullFile's other uses intact. (b) Closing the panel mid-preparation cancels it (github_view.rs:950-968, review.rs:143) and drops a late result (:581). Reopening (github_view.rs:84-102, condition :96-99) selects the file again only when `section == Files && mode == 0 && rows.is_empty() && unavailable.is_none()`, so a file left in another mode, or with rows already present, reopens as plain text until it is chosen again. Reopening must resume the cancelled preparation for the selected file in whichever mode it was. (a) is a UI-thread hot path and needs a release measurement. Test to copy: review.rs:1570 `warm_reopen_retries_interrupted_local_read_and_template_payload_evicts`. Queue 2026-10-02 (coordinator, 2026-10-01): references checked against main (`select_review_file` :522, clone :557, `background_spawn` :564; PullFile at github/review.rs:9, patch :17; MAX_RESPONSE github.rs:17). Tests go in review.rs `mod tests` (:1101) or github_view.rs `mod tests` (:1139); github/** is in scope beside github.rs because PullFile lives there. Queue 2026-10-03 (coordinator, 2026-10-02): references re-checked on main 9f38416; all hold (review.rs:143, :522, :557, :564, :580-583, :1101, :1570; github/review.rs:9, :17; github.rs:17; github_view.rs:84-102, :950-968, :1139). Depends on pr-source-gutter-like-compare: both edit `select_review_file` and the Source preparation result in github_view/review.rs.",
+      "depends_on": [
+        "pr-source-gutter-like-compare"
+      ],
+      "scope": [
+        "crates/app/src/github_view.rs",
+        "crates/app/src/github_view/**",
+        "crates/app/src/github.rs",
+        "crates/app/src/github/**",
+        "crates/app/src/review_bench.rs",
+        "docs/github-collaboration.md",
+        "docs/benchmarks/**",
+        "docs/validation.md",
+        "docs/evidence/review-file-preparation-lifecycle/**"
+      ],
+      "acceptance": [
+        {
+          "id": "no-copy",
+          "description": "Selecting a review file no longer copies its patch text on the UI thread: a test asserts the preparation receives the view's allocation (for example `Arc::ptr_eq`) for an 8 MiB fixture patch, and fails on origin/main."
+        },
+        {
+          "id": "performance",
+          "description": "Evidence owner (the performance reviewer), committed in the task's evidence commit on top of the candidate: selecting a review file with an 8 MiB patch (the selection's UI-thread time) on the offline review fixture, or on review_bench with an 8 MiB fixture patch, is no slower than the base. Release builds of the candidate and of a same-session base designated in writing before the first recorded launch, pinned with `taskset -c 0-7`; a new dated docs/benchmarks/ record keeps the raw samples, cache state and p50, p95 and max, and the task's docs/validation.md entry cites it."
+        },
+        {
+          "id": "reopen",
+          "description": "A view test closes the panel while the selected file's preparation is pending, reopens it, and asserts the patch carries its decorations without the file being chosen again, in Changes and in Source; it fails on origin/main, and `warm_reopen_retries_interrupted_local_read_and_template_payload_evicts` still passes."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/review-file-preparation-lifecycle/scenario.json. Through the offline fixture (`GITTURTLE_GITHUB_FIXTURE=review`). States: PR #42's src/review/session.rs in Source and in Changes after the panel is closed mid-preparation and reopened: decorated without choosing the file again on the candidate, plain on the base. Palettes: Midnight and Porcelain. Text sizes: interface 13 pt with code 12 pt (the change draws nothing new). Measured: the candidate's reopened frame identical, under masked compare, to a frame of the file chosen directly. The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "performance",
+        "native"
+      ],
+      "commit": "fix(github): prepare review files without a copy and resume on reopen"
+    },
+    {
+      "id": "switch-focus-ring-and-hover",
+      "title": "Draw the Button focus ring and a hover lift on Switches",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (S1a; validation entry \"September 29 desktop code font row states\"). The vendored Switch (vendor/gpui-component/src/switch.rs, render :115, element tree ~170-225, over vendor/gpui-base/src/switch.rs, which is a tab stop with a focus handle: :33, :256, :317, :368-371) draws no focus indication and no hover change, against DESIGN.md:27 (hover uses the palette hover surface; keyboard focus uses a visible accent ring). Owner decision (2026-10-01), amended below: a focused Switch draws the Button focus ring around its track (the theme's `button_focus_ring`, appearance::BUTTON_FOCUS_RING: 2 px of full accent 1 px outside the edge, through the kit's `apply_focus_ring`, vendor/gpui-component/src/styled.rs); hovering an enabled unchecked Switch lifts its track to the palette's hover step, a checked track keeps its accent fill, and a disabled Switch shows no hover and keeps #117's fade. Every Settings switch (settings.rs: `settings-system-code-font` :613, `follow-system` :2094, `settings-reopen-last` :2190, `settings-project-pane` :2213) keeps its ring whole: give the ring its 3 px of room inside any clipping card or row, as the Your themes rows do, without moving anything. Record the patch in GITTURTLE-PATCH.md. Owner finding M1, bringing vendor/AGENTS.md's gpui-component row up to date with every GITTURTLE-PATCH.md entry (it omits the Button caller focus handle, disabled-Button hover and focus, and the disabled-Switch thumb), moves to an interactive librarian change, because every AGENTS.md is protected in controller sessions (.claude/hooks/protect_paths.py). Decision (coordinator, 2026-10-01, delegated by the owner), amending the owner's: a focused Switch paints the ring whether it is enabled or disabled; with a disabled track the ring fades with it, as a focused disabled Button's does since #102; an unfocused Switch paints none. Reason: since #124 a control disabled while focused keeps keyboard focus, and focus must stay visible, as #102 settled for Buttons. Queue 2026-10-02 (coordinator, 2026-10-01): no Settings container that holds a Switch clips (the `overflow_hidden` sites at settings.rs:1401, :1420 and :1934 are theme cards and swatches) and the page scroll's padding (:2396-2397) exceeds 3 px, so no app layout change is expected: crates/app is in scope for the consumer tests (settings.rs `picker_tests`, native_accessibility/control_tests.rs) and, only if the kit's Switch needs a theme token the app does not set yet, the line in appearance.rs that sets it. If app layout clips a ring after all, report it rather than widening this task; a Switch at the page viewport's edge is revealed by `settings-focus-reveal-and-steady-switch`. Hard: a vendored control's ring, hover and disabled fade at once, proven through app consumer tests. Queue 2026-10-03 (coordinator, 2026-10-02): references re-checked on main 9f38416; all hold (gpui-base switch.rs:33, :256, :317, :368-371; settings.rs:613, :2094, :2190, :2213, :1401, :1420, :1934, :2396-2397, :5035). Decision (coordinator, 2026-10-02, delegated by the owner): the Switch's track keeps its resting border when focused, as kit-button-focused-border makes Buttons do, since `apply_focus_ring` recolours a focused element's border (styled.rs:206-207, :264). Reason: the ring alone shows focus everywhere. Depends on kit-button-focused-border (the same rule, GITTURTLE-PATCH.md and control_tests.rs).",
+      "depends_on": [
+        "kit-button-focused-border"
+      ],
+      "scope": [
+        "vendor/gpui-component/src/switch.rs",
+        "vendor/gpui-component/src/styled.rs",
+        "vendor/gpui-component/GITTURTLE-PATCH.md",
+        "crates/app/src/settings.rs",
+        "crates/app/src/settings/**",
+        "crates/app/src/appearance.rs",
+        "crates/app/src/appearance/**",
+        "crates/app/src/native_accessibility/control_tests.rs",
+        "DESIGN.md",
+        "docs/validation.md",
+        "docs/evidence/switch-focus-ring-and-hover/**"
+      ],
+      "acceptance": [
+        {
+          "id": "ring",
+          "description": "A focused Switch paints the theme's button focus ring around its track (2 px of accent, 1 px outside its edge) whether it is enabled or disabled, at the disabled strength with a disabled track, as a focused disabled Button's does since #102; an unfocused Switch paints none; the track's border paints its resting colour when focused. A test that inspects painted quads, as `settings::picker_tests::a_disabled_switch_fades_its_thumb_with_its_track` (settings.rs:5035) does, covers each case and fails on origin/main."
+        },
+        {
+          "id": "hover",
+          "description": "Hovering an enabled unchecked Switch changes its track fill to the palette's hover step, at least 6 of 255 in one channel from its resting fill, while a hovered checked or disabled Switch keeps its resting fill; asserted by a test."
+        },
+        {
+          "id": "room",
+          "description": "In Settings at the default size and at 18 pt every Switch's ring footprint (its track grown by the installed ring's gap plus width) lies inside every ancestor content mask once the Switch is scrolled into the page viewport, and no Settings row or control moves when a Switch gains focus (asserted by bounds). vendor/gpui-component/GITTURTLE-PATCH.md records the patch, its consumers (the four Settings switches and the bare Switch test) and its removal condition, keeping runtime and test-only changes apart, and DESIGN.md:27 extends the ring and hover rule to Switches, including a focused disabled Switch."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/switch-focus-ring-and-hover/scenario.json. Themes seeded in the launch's HOME. States: an unchecked and a checked Switch at rest, hovered, pressed and focused (focused+checked, focused+unchecked, focused+hovered), disabled, disabled+hovered and focused+disabled (Follow system with the Omarchy card selected). Palettes: Midnight, Daylight, Porcelain and Omarchy Tokyo Night. Text sizes: 13 pt and 18 pt. Measured: the ring's four sides and contrast around the track, the track border equal at rest and focused (masked compares differ only in the ring band), and the hover step on an unchecked track. The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        },
+        {
+          "id": "vendor",
+          "description": "Evidence owner: The ring, hover and room tests pass on the candidate and fail with vendor/gpui-component/src/switch.rs reverted to origin/main, each build in its own CARGO_TARGET_DIR, and a read-only code-reviewer pass checks the GITTURTLE-PATCH.md entry against the code; recorded in the task's docs/validation.md entry, which the evidence owner commits on top of the candidate."
+        }
+      ],
+      "profiles": [
+        "vendor",
+        "rust",
+        "native"
+      ],
+      "commit": "fix(vendor): draw the focus ring and a hover lift on switches"
+    },
+    {
+      "id": "switch-checked-knob-and-disabled-label",
+      "title": "Give a checked Switch's knob 3:1 and fade a disabled Switch's label",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (S1b; validation entries \"September 29 desktop code font row states\" and \"September 30 disabled Switch thumb fades with its track\"). (1) The thumb paints `switch_thumb`, the palette's text (crates/app/src/appearance.rs:1430), on the checked track's accent (`primary`, vendor/gpui-component/src/switch.rs:126): 1.37:1 in Midnight and 2.28:1 in Daylight. (2) A disabled Switch's label paints `muted_foreground` (switch.rs:138, :177-178) with no fade, and the Omarchy mapping sets muted to text when muted would read above text (crates/app/src/appearance/omarchy/palette.rs:781-787; Catppuccin Latte), so the disabled Follow system appearance label does not dim. Owner decision (2026-10-01): on a checked track the thumb takes the colour primary Buttons use for text on the accent (`primary_foreground`, palette.accent_foreground, appearance.rs:1353) and must reach at least 3:1 on it in every palette; an unchecked thumb is unchanged; a disabled Switch's label fades to half strength with its track and thumb, per DESIGN.md:27's disabled rule. If accent_foreground misses 3:1 on the accent in any palette, stop and report it rather than changing the palette. Queue 2026-10-02 (coordinator, 2026-10-01): references checked against main. The change is vendor-only: the checked thumb's colour and the label's fade live in the kit's `Switch::render`, and `primary_foreground` is already set by the app, so crates/app changes only in tests (beside settings.rs:5035 `a_disabled_switch_fades_its_thumb_with_its_track` and appearance.rs:2072 `theme_switch_updates_resolved_component_backgrounds_with_foregrounds`; the Omarchy fixtures' tests live under appearance/). vendor/AGENTS.md is protected in controller sessions (.claude/hooks/protect_paths.py), so its gpui-component row is left to the interactive librarian change named in `switch-focus-ring-and-hover`. Queue 2026-10-03 (coordinator, 2026-10-02): references re-checked on main 9f38416; all hold (appearance.rs:1353, :1430, :2072; palette.rs:781-787; vendor switch.rs:126, :138, :177-178; settings.rs:5035). Depends on switch-focus-ring-and-hover: both edit the kit Switch's `render`.",
+      "depends_on": [
+        "switch-focus-ring-and-hover"
+      ],
+      "scope": [
+        "vendor/gpui-component/src/switch.rs",
+        "vendor/gpui-component/GITTURTLE-PATCH.md",
+        "crates/app/src/appearance.rs",
+        "crates/app/src/appearance/**",
+        "crates/app/src/settings.rs",
+        "crates/app/src/settings/**",
+        "DESIGN.md",
+        "docs/validation.md",
+        "docs/evidence/switch-checked-knob-and-disabled-label/**"
+      ],
+      "acceptance": [
+        {
+          "id": "knob",
+          "description": "A checked enabled Switch paints its thumb in the theme's primary foreground, and a test asserts at least 3:1 against the checked track in every built-in palette and every embedded Omarchy fixture; it fails on origin/main (Midnight 1.37:1). Unchecked thumbs paint exactly as before."
+        },
+        {
+          "id": "label",
+          "description": "A disabled Switch paints its label at half the enabled label's strength, asserted on the painted text colour including under the Catppuccin Latte Omarchy fixture, where muted equals text; enabled labels paint exactly as before. The test fails on origin/main."
+        },
+        {
+          "id": "docs",
+          "description": "vendor/gpui-component/GITTURTLE-PATCH.md records both changes with their consumers and removal condition, keeping runtime and test-only changes apart, and DESIGN.md:27's Switch sentence covers the checked knob and the faded label."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/switch-checked-knob-and-disabled-label/scenario.json. Themes seeded in the launch's HOME. States: checked, unchecked, checked+hovered, focused+checked, and disabled checked and unchecked, each with its label. Palettes: Midnight, Daylight, Porcelain, Omarchy Tokyo Night and Omarchy Catppuccin Latte. Text sizes: 13 pt and 18 pt. Measured: the knob's contrast on the checked track (3:1 or more) and the disabled label's colour against the enabled label's. The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        },
+        {
+          "id": "vendor",
+          "description": "Evidence owner: The knob and label tests pass on the candidate and fail with vendor/gpui-component/src/switch.rs reverted to origin/main, each build in its own CARGO_TARGET_DIR, and a read-only code-reviewer pass checks the GITTURTLE-PATCH.md entry against the code; recorded in the task's docs/validation.md entry, which the evidence owner commits on top of the candidate."
+        }
+      ],
+      "profiles": [
+        "vendor",
+        "rust",
+        "native"
+      ],
+      "commit": "fix(vendor): contrast a checked switch's knob and fade a disabled label"
+    },
+    {
+      "id": "settings-focus-reveal-and-steady-switch",
+      "title": "Scroll a Tab-focused Settings control into view and keep switches still",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (S1b; validation entry \"September 29 desktop code font row states\"). (a) Tab and Shift-Tab move focus to Settings controls outside the page's scroll viewport (`settings-scroll`, crates/app/src/settings.rs:2388-2398) without scrolling them into view. `reveal_in_page` (settings.rs:121) already reveals Your themes rows with the focus ring's room (~1632-1649); extend that to every focusable Settings control on a keyboard focus change. (b) At 18 pt, toggling a Settings Switch moves it 11 px. The cause is unconfirmed: the track and thumb are fixed pixels (vendor/gpui-component/src/switch.rs:140-148), the label is rem `text_base`, and the Settings rows (settings.rs ~2085-2100) use justify_between with a visible label and a description. Find the cause, name it in a comment at the fix and fix it so toggling moves nothing at any interface text size. The vendor profile applies only if the fix lands in the vendored Switch. Queue 2026-10-02 (coordinator, 2026-10-01): the cause of (b) is recorded in docs/validation.md:667: the code-font row's off description wraps to two lines at 18 pt and its other states' take one, so the row changes height and the vertically centred Switch moves 11 px; the fix confirms it. Decision (coordinator, 2026-10-01, delegated by the owner): fix it in the app: a Settings row keeps the height its tallest description state needs at the current width and text size, so toggling moves neither the Switch nor any row below, and the Switch stays vertically centred. Reason: the cause is app layout, not the kit; keeping the row's height also keeps the rows below still, which top-aligning the Switch alone would not. With the cause in the app, the vendored Switch leaves the scope and the task carries no vendor profile. Queue 2026-10-03 (coordinator, 2026-10-02): references re-checked on main 9f38416; all hold (settings.rs:121, :1636-1649, :2388; validation.md:667). Settings offers interface sizes 11 to 18 pt, and 0.875 and 1.25 are desktop text scales (`set_text_size`, repository_tabs.rs:3216), so the steady criterion names both. Settings reveals in the same frame already (`reveal_in_page`), so this task does not use FocusReveal. Depends on the two Switch tasks (the same switches and settings tests) and code-font-cold-launch-wait (the code-font row's description states, whose tallest one sets the row's height).",
+      "depends_on": [
+        "switch-focus-ring-and-hover",
+        "switch-checked-knob-and-disabled-label",
+        "code-font-cold-launch-wait"
+      ],
+      "scope": [
+        "crates/app/src/settings.rs",
+        "crates/app/src/settings/**",
+        "DESIGN.md",
+        "docs/validation.md",
+        "docs/evidence/settings-focus-reveal-and-steady-switch/**"
+      ],
+      "acceptance": [
+        {
+          "id": "reveal",
+          "description": "Tab and Shift-Tab through Settings in a 1000 × 680 window bring every focused control wholly into the page viewport with the focus ring's 3 px of room, in both directions; a GPUI test walks the whole order and asserts each focused control's bounds, and fails on origin/main."
+        },
+        {
+          "id": "steady",
+          "description": "Toggling each Settings Switch at interface sizes 11, 13 and 18 pt, and at 13 pt under desktop text scales 0.875 and 1.25, leaves every Switch's and row's bounds unchanged; a test asserts it and fails on origin/main at 18 pt, and a comment at the fix names the cause."
+        },
+        {
+          "id": "design",
+          "description": "DESIGN.md's Settings text states that keyboard focus is kept in view on the page, generalising the sentence about Your themes rows."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/settings-focus-reveal-and-steady-switch/scenario.json. States: a Tab sequence that crosses the Settings viewport's lower edge and Shift+Tab back (a focused Switch, Button, check box and theme card), and each Switch toggled at 18 pt, checked and unchecked, while focused. Palettes: Midnight and Porcelain. Text sizes: 11 pt, 13 pt and 18 pt. Measured: each focused control's ring inside the page viewport, and masked compares of the page before and after a toggle that differ only inside the Switch's track. The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(settings): keep a tab-focused control in view and switches still"
+    },
+    {
+      "id": "gpui-base-disabled-accesskit-flag",
+      "title": "Report disabled gpui-base check boxes, switches and toggles as disabled to AccessKit",
+      "description": "HANDOFF \"New follow-up\" found by #129's AT-SPI read: gpui-base's Checkbox and Switch write no AccessKit disabled flag, so a disabled check box or switch reads as enabled and sensitive on Linux. Only Button (vendor/gpui-base/src/button.rs:331-332, `node.set_disabled()` in `write_a11y_info`) and the text input (input/base/state.rs:3194-3195) set it. Switch (switch.rs:346-390; `Role::Switch` :353, `aria_toggled` :354) and Checkbox (checkbox.rs:365-394; role :373, `aria_toggled` :376) drop their handlers while disabled (switch.rs:375, :381) but never mark the node; Radio (radio.rs:202), Toggle (toggle.rs:172), Link (link.rs:174) and the ColorPicker swatch (color_picker.rs:572, :750) are the same. With #129's backport the adapter reports a node whose `is_disabled()` holds as neither enabled, sensitive nor read-only, whatever its role (vendor/accesskit_atspi_common/src/node.rs:373-378), so marking the node is the whole fix. Decision (coordinator, 2026-10-02, delegated by the owner): every gpui-base control in the disabled-focus list (Checkbox, Switch, Radio, Toggle, Link and the ColorPicker swatch) marks its AccessKit node disabled while disabled, keeping its role, toggled state and focus behaviour. Reason: it is the same omission in the same family, and fixing two would leave four for the next read. gpui-base's own tests do not run (vendor/AGENTS.md), so the regression reads the written nodes in crates/app as native_accessibility.rs:288-297 does for Buttons, and #129's `atspi_state_tests::disabled_controls_are_neither_enabled_sensitive_nor_read_only` extends to these roles. App instances to read natively: Settings' History \"Subject\" column check box (always disabled, settings.rs:1069-1072) and the Follow system Switch while the Omarchy card is selected. Depends on the two Switch tasks (the same Switch, as HANDOFF asks) and gpui-base-disabled-focus-note (the same GITTURTLE-PATCH.md and tests). vendor/AGENTS.md's gpui-base row (\"Accessibility, dialog/input semantics and retained editor viewport behavior\") already covers an accessibility patch, so no new row is needed.",
+      "depends_on": [
+        "gpui-base-disabled-focus-note",
+        "switch-focus-ring-and-hover",
+        "switch-checked-knob-and-disabled-label"
+      ],
+      "scope": [
+        "vendor/gpui-base/src/checkbox.rs",
+        "vendor/gpui-base/src/switch.rs",
+        "vendor/gpui-base/src/radio.rs",
+        "vendor/gpui-base/src/toggle.rs",
+        "vendor/gpui-base/src/link.rs",
+        "vendor/gpui-base/src/color_picker.rs",
+        "vendor/gpui-base/GITTURTLE-PATCH.md",
+        "crates/app/src/native_accessibility.rs",
+        "crates/app/src/native_accessibility/**",
+        "docs/native-accessibility.md",
+        "docs/validation.md",
+        "docs/evidence/gpui-base-disabled-accesskit-flag/**"
+      ],
+      "acceptance": [
+        {
+          "id": "nodes",
+          "description": "A test in crates/app renders each of the six controls disabled and enabled (checked and unchecked where it toggles) and reads the written AccessKit node: `is_disabled()` holds exactly when disabled, and the role and `toggled()` are as on origin/main; it fails on origin/main for every control."
+        },
+        {
+          "id": "atspi-state",
+          "description": "`native_accessibility::atspi_state_tests` maps each disabled control's node to AT-SPI states without `enabled`, `sensitive` or `read-only`, keeping `checkable` and `checked` as its toggled state gives, and each enabled one to states with `enabled` and `sensitive`; #129's Button cases pass unchanged."
+        },
+        {
+          "id": "docs",
+          "description": "vendor/gpui-base/GITTURTLE-PATCH.md records the change beside the Button disabled wrapper, with its consumers and removal condition, keeping runtime and test-only changes apart, and docs/native-accessibility.md says disabled check boxes, switches and toggles report disabled."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed on top of the candidate (the implementer writes no docs/validation.md entry or \"pending\" placeholder): a native AT-SPI read on Linux X11 at scale factor 1 on display :0 with `qa.py --input mutter` (never XTest on this host), base and candidate release builds in the same session, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, driven by the committed docs/evidence/gpui-base-disabled-accesskit-flag/scenario.json, with `org.a11y.Status IsEnabled` set for the launches only, then restored and read back. States: Settings' History \"Subject\" check box (disabled, checked), an enabled column check box, the Follow system Switch disabled (Omarchy card selected, theme seeded) and enabled, and that Switch focused while disabled (focused+disabled). Palettes: Omarchy Tokyo Night for the Switch, Midnight otherwise; text size 13 pt (no pixels change). The base reports `enabled` and `sensitive` on the disabled controls and the candidate neither; the dated docs/validation.md entry records each node's role and state set, and any committed tree dump goes under docs/evidence/gpui-base-disabled-accesskit-flag/ and is privacy-scanned."
+        },
+        {
+          "id": "vendor",
+          "description": "Evidence owner: The nodes and atspi-state tests pass on the candidate and fail with vendor/gpui-base/src reverted to origin/main, each build in its own CARGO_TARGET_DIR, and a read-only code-reviewer pass checks the GITTURTLE-PATCH.md entry against the code; recorded in the task's docs/validation.md entry, which the evidence owner commits on top of the candidate."
+        }
+      ],
+      "profiles": [
+        "vendor",
+        "rust",
+        "native"
+      ],
+      "commit": "fix(vendor): report disabled check boxes and switches to accesskit"
+    },
+    {
+      "id": "menu-checked-items-accessible",
+      "title": "Expose a menu item's checked state to assistive technology",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (M1, seen in session 9). The kit's popup menu draws a checked item's tick only as an icon (vendor/gpui-component/src/menu/popup_menu.rs:181 `.checked()`, :265 `is_checked`, :1173-1175), and menu_item.rs:97-99 gives every item `Role::MenuItem` with only `aria_selected`, so a checked item is announced like an unchecked one. App users include model_view/playback.rs:227 and the `menu_with_check*` builders (popup_menu.rs:539-556, :600-647). Give a checkable item AccessKit's MenuItemCheckBox role with its toggled state; a plain item keeps MenuItem. The kit's API does not say whether a group is exclusive, so radio semantics stay out. On Linux, verify through AT-SPI with the HANDOFF's procedure: set `org.a11y.Status IsEnabled` true for the launches only, then restore it and read it back. Queue 2026-10-02 (coordinator, 2026-10-01): Decision (coordinator, 2026-10-01, delegated by the owner): an item is checkable when its builder called `.checked(…)`, true or false, or a `menu_with_check*` builder made it; every other item keeps MenuItem. The app's tick menus already call `.checked(…)` on each of their items (model_view/playback.rs:227, model_view.rs:831, project_pane.rs:1317, text_review.rs:499, profiles.rs:144, and branch_actions.rs:171's current branch), so the change is vendor-only and crates/app changes only in tests (native_accessibility/control_tests.rs). Reason: no call site needs a new API, and it matches what the ticks already mean. History's Columns control (views.rs:795-805, :1137) is an inline panel of Checkboxes, not a menu, so the AT-SPI check uses Compare's narrow Options menu (text_review.rs:479-499, `text-review-menu`, at 461 × 490) instead. vendor/AGENTS.md is protected in controller sessions (.claude/hooks/protect_paths.py), so its gpui-component row is left to the interactive librarian change named in `switch-focus-ring-and-hover`. Queue 2026-10-03 (coordinator, 2026-10-02): references re-checked on main 9f38416; the kit references hold (menu_item.rs:94-99, `aria_selected` :99; popup_menu.rs:181, :265, :539, :549, :598, :1173-1175). Two app sites were missing: repository_tabs.rs:1801 (`.checked(active == Some(index))`) and theme_editor.rs:2210 (`.checked(choice == current)`). Depends on switch-checked-knob-and-disabled-label (the same gpui-component GITTURTLE-PATCH.md) and gpui-base-disabled-accesskit-flag (the same accessibility tests and docs/native-accessibility.md).",
+      "depends_on": [
+        "switch-checked-knob-and-disabled-label",
+        "gpui-base-disabled-accesskit-flag"
+      ],
+      "scope": [
+        "vendor/gpui-component/src/menu/**",
+        "vendor/gpui-component/GITTURTLE-PATCH.md",
+        "crates/app/src/native_accessibility/control_tests.rs",
+        "docs/native-accessibility.md",
+        "docs/validation.md",
+        "docs/evidence/menu-checked-items-accessible/**"
+      ],
+      "acceptance": [
+        {
+          "id": "role",
+          "description": "A checkable menu item exposes Role::MenuItemCheckBox, toggled true when checked and false when not, and a plain item keeps Role::MenuItem; a test reads the AccessKit nodes and fails on origin/main."
+        },
+        {
+          "id": "app",
+          "description": "No production file under crates/app changes (the app's tick menus, model_view/playback.rs:227, model_view.rs:831, project_pane.rs:1317, text_review.rs:499, profiles.rs:144, branch_actions.rs:171, repository_tabs.rs:1801 and theme_editor.rs:2210, already call `.checked(…)`), and a test opens Compare's narrow Options menu (`text-review-menu`, text_review.rs:479-499) and reads its ticked items' nodes as MenuItemCheckBox with their toggled state."
+        },
+        {
+          "id": "docs",
+          "description": "vendor/gpui-component/GITTURTLE-PATCH.md records the patch, its consumers and its removal condition, keeping runtime and test-only changes apart, and docs/native-accessibility.md says checkable menu items expose their checked state."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed on top of the candidate (the implementer writes no docs/validation.md entry or \"pending\" placeholder): a native AT-SPI read on Linux X11 at scale factor 1 on display :0 with `qa.py --input mutter` (never XTest on this host), base and candidate release builds in the same session, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, driven by the committed docs/evidence/menu-checked-items-accessible/scenario.json, with `org.a11y.Status IsEnabled` set for the launches only, then restored and read back. States: Compare's narrow Options menu (`text-review-menu`, 461 × 490) open with a checked and an unchecked item, and a checked item keyboard-focused (focused+checked). Palette: Midnight; text size 13 pt (no pixels change). The candidate shows check menu items whose checked states match the ticks and the base plain menu items; the dated docs/validation.md entry records each item's role and states, and any committed tree dump goes under docs/evidence/menu-checked-items-accessible/ and is privacy-scanned."
+        },
+        {
+          "id": "vendor",
+          "description": "Evidence owner: The role test pass on the candidate and fail with vendor/gpui-component/src/menu reverted to origin/main, each build in its own CARGO_TARGET_DIR, and a read-only code-reviewer pass checks the GITTURTLE-PATCH.md entry against the code; recorded in the task's docs/validation.md entry, which the evidence owner commits on top of the candidate."
+        }
+      ],
+      "profiles": [
+        "vendor",
+        "rust",
+        "native"
+      ],
+      "commit": "fix(vendor): expose a menu item's checked state"
+    },
+    {
+      "id": "markdown-diff-fence-colours",
+      "title": "Draw diff fences in Markdown source with the patch colours",
+      "description": "Omarchy session 12 queue: picked by the owner on 2026-10-01 from the findings of the Omarchy work (D1b, a follow-up of #116; validation entry \"September 30 diff headers and syntax colours from the palette\"). Compare's unified patch draws plain text plus palette decorations since #116 (crates/app/src/text.rs), but an editor showing a Markdown file's source injects the tree-sitter diff grammar into ```diff fences (vendor/gpui-component/src/highlighter/languages/markdown/injections.scm). Its captures map deletions to the keyword role (palette renamed), additions to string (added) and locations to attribute (accent), so a removed line reads violet instead of removed. The rendered Markdown preview draws code blocks plain (crates/app/src/markdown_view.rs:1186) and is out of scope. Make a fence's lines take the patch roles: `+` lines the added colour, `-` lines the removed colour, `@@` lines the hunk colour and `---`/`+++` the text colour, each read at least 4.5:1 as #116's roles do. The mechanism is the implementer's (for example remapping the diff grammar's captures to dedicated names that the app's syntax theme maps to patch roles); the standalone unified patch stays grammar-free. Queue 2026-10-02 (coordinator, 2026-10-01): checked on main: injections.scm's only rule that can inject diff is the generic `(info_string (language) @injection.language)` (it also injects html, yaml, toml and markdown_inline); the diff captures come from the upstream query the kit loads, `tree_sitter_diff::HIGHLIGHTS_QUERY` (vendor/gpui-component/src/highlighter/languages.rs:544-547; `[(addition) (new_file)] @string`, `[(deletion) (old_file)] @keyword`, `(location) @attribute`). The kit's theme has a fixed set of 41 highlight names (highlighter/registry.rs:16, `SyntaxColors` :111), and the app maps every field in one literal (`Palette::syntax_colors`, crates/app/src/appearance.rs:1470; its doc comment: a field a later toolkit adds fails to compile until it has a role). Decision (coordinator, 2026-10-01, delegated by the owner): keep this as one task across vendor/gpui-component and crates/app/src/appearance.rs rather than splitting it. Reason: dedicated capture names need a kit field and its app mapping in the same commit, since a vendor-only first step would not build the app and an app-first step cannot name fields the kit lacks; the app part is a few lines in one file. Hard: a grammar query override, a kit theme change and every palette's contrast at once. vendor/AGENTS.md is protected in controller sessions (.claude/hooks/protect_paths.py), so its gpui-component row is left to the interactive librarian change named in `switch-focus-ring-and-hover`. Queue 2026-10-03 (coordinator, 2026-10-02): references re-checked on main 9f38416; registry.rs:16 and :111, appearance.rs:1470 and markdown_view.rs:1186 hold. Depends on menu-checked-items-accessible (the same gpui-component GITTURTLE-PATCH.md) and editor-highlights-keep-syntax-readable (its highlight rule then covers the fence roles this task adds).",
+      "depends_on": [
+        "menu-checked-items-accessible",
+        "editor-highlights-keep-syntax-readable"
+      ],
+      "scope": [
+        "vendor/gpui-component/src/highlighter/**",
+        "vendor/gpui-component/GITTURTLE-PATCH.md",
+        "crates/app/src/appearance.rs",
+        "crates/app/src/appearance/**",
+        "crates/app/src/text.rs",
+        "docs/development/themes/spec.md",
+        "docs/validation.md",
+        "docs/evidence/markdown-diff-fence-colours/**"
+      ],
+      "acceptance": [
+        {
+          "id": "roles",
+          "description": "In an editor showing Markdown source, a ```diff fence's added, removed, hunk and file-header lines draw in the applied palette's added, removed, hunk and text colours; a test highlights a fixture Markdown document and asserts each line's colour in every built-in palette, and fails on origin/main, where a removed line takes the keyword colour."
+        },
+        {
+          "id": "scope",
+          "description": "Those colours read at least 4.5:1 on canvas and panel in every built-in and embedded Omarchy palette (asserted), and other injected languages and Markdown without a diff fence highlight exactly as on origin/main."
+        },
+        {
+          "id": "docs",
+          "description": "vendor/gpui-component/GITTURTLE-PATCH.md records the highlighter change, its consumers and its removal condition, keeping runtime and test-only changes apart, and docs/development/themes/spec.md's syntax section states the fence rule."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/markdown-diff-fence-colours/scenario.json. States: a Markdown file with a ```diff fence shown as source, at rest and with a text selection across the fence. Palettes: Midnight, Daylight, Porcelain and Omarchy Tokyo Night. Text sizes: interface 13 pt with code 12 pt, and code 18 pt in Midnight. Measured: each fence line's colour against its role and its contrast on the editor background, and on the selection. The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        },
+        {
+          "id": "vendor",
+          "description": "Evidence owner: The roles and scope tests pass on the candidate and fail with vendor/gpui-component/src/highlighter reverted to origin/main, each build in its own CARGO_TARGET_DIR, and a read-only code-reviewer pass checks the GITTURTLE-PATCH.md entry against the code; recorded in the task's docs/validation.md entry, which the evidence owner commits on top of the candidate."
+        }
+      ],
+      "profiles": [
+        "vendor",
+        "rust",
+        "native"
+      ],
+      "commit": "fix(themes): draw diff fences in markdown source with the patch colours"
+    }
+  ]
+}
