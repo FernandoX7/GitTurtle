@@ -503,6 +503,59 @@ class RunnerTests(unittest.TestCase):
         self.assertTrue(record["candidate"])
         self.assertTrue(record["gate_sha256"])
 
+    def test_an_unreadable_implementer_result_spends_the_attempt(self):
+        # No candidate exists, so there is nothing a review could be retried on.
+        class UnreadableBuild(FakeCodex):
+            def run(self, role, feature, repo, directory, timeout, stop, **options):
+                if role == "implementer":
+                    self.calls.append((role, feature.id))
+                    raise MalformedResponse("implementer session returned no usable result object, also after one retry")
+                return super().run(role, feature, repo, directory, timeout, stop, **options)
+
+        directory = self.create()
+        adapter = UnreadableBuild()
+        state = self.execute(directory, adapter)
+        record = state["tasks"]["one"]
+        self.assertEqual(record["status"], "failed")
+        self.assertIn("no usable result object", record["reason"])
+        self.assertEqual(adapter.calls, [("implementer", "one"), ("implementer", "one")])
+        self.assertEqual(record["attempts"], 2)
+        self.assertNotIn("candidate", record)
+        self.assertEqual(state["phase"], "blocked")
+        # Resuming finds nothing left to try instead of reviewing a missing candidate.
+        resumed = FakeCodex()
+        self.assertEqual(self.execute(directory, resumed)["phase"], "blocked")
+        self.assertEqual(resumed.calls, [])
+
+    def candidateless_review(self, directory, attempts):
+        """A blocked review with nothing to review, as the attempt handler once left an unreadable build."""
+        state = read_json(directory / "state.json")
+        state["tasks"]["one"].update(
+            attempts=attempts, status="review_blocked", base=state["accepted_head"],
+            reason="implementer session returned no usable result object",
+            directory=str(directory / "attempts" / "one" / str(attempts)),
+        )
+        atomic_json(directory / "state.json", state)
+
+    def test_a_blocked_review_without_a_candidate_is_a_failed_attempt(self):
+        # It used to crash every resume on the missing required_evidence.
+        directory = self.create()
+        self.candidateless_review(directory, 1)
+        adapter = FakeCodex()
+        state = self.execute(directory, adapter)
+        self.assertEqual(state["tasks"]["one"]["status"], "accepted")
+        self.assertEqual(state["tasks"]["one"]["attempts"], 2)
+        self.assertEqual(adapter.calls, [("implementer", "one"), ("verifier", "one")])
+
+    def test_a_blocked_review_without_a_candidate_at_the_attempt_limit_stays_failed(self):
+        directory = self.create()
+        self.candidateless_review(directory, 2)
+        adapter = FakeCodex()
+        state = self.execute(directory, adapter)
+        self.assertEqual(state["tasks"]["one"]["status"], "failed")
+        self.assertEqual(state["phase"], "blocked")
+        self.assertEqual(adapter.calls, [])
+
     def test_app_rust_requires_native_evidence_without_the_two_revisions(self):
         feature = parse_spec({"version": 1, "tasks": [task()]})[0]
         self.assertIn("native", profiles_for(feature, ["crates/app/src/views.rs"]))

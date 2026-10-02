@@ -31,7 +31,8 @@ class MalformedResponse(LoopError):
     """A session finished but its verdict could not be read.
 
     The work it judged is intact, so a review that lands here is retried on the
-    same candidate instead of discarding it and re-running implementation.
+    same candidate instead of discarding it and re-running implementation. An
+    implementer's unreadable result has no candidate to keep and fails its attempt.
     """
 
 

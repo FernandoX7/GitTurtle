@@ -2,7 +2,9 @@
 
 Each implementer, verifier and security-review session is a separate `claude -p`
 process with no conversation history, an explicit model/effort selection, a
-schema-validated JSON result and a settings snapshot pinned by the run. Codex
+schema-validated JSON result and a settings snapshot pinned by the run. A
+result the controller cannot read is asked for once more by resuming the same
+session before it counts as unreadable. Codex
 remains the default adapter; this module changes nothing about that path.
 """
 
@@ -21,6 +23,7 @@ from typing import Callable
 
 from .codex import BUILD_SCHEMA, REVIEW_SCHEMA
 from .process import EnvironmentBlocked, LoopError, MalformedResponse, atomic_json, digest, read_json, run_process
+from .result_schema import check_schema, schema_error, text_result
 from .security_review import SECURITY_REVIEW_SCHEMA
 from .task_spec import Task
 
@@ -30,9 +33,20 @@ MINIMUM_VERSION = (2, 1, 257)
 REQUIRED_FLAGS = (
     "--agent", "--json-schema", "--permission-mode", "--permission-prompts", "--settings",
     "--strict-mcp-config", "--output-format", "--effort", "--model", "--tools",
-    "--disallowedTools", "--allowedTools",
+    "--disallowedTools", "--allowedTools", "--resume",
 )
 ROLES = ("implementer", "verifier", "security-reviewer")
+# The second try of a session whose result could not be read keeps its records
+# beside the first under this suffix (`verifier.retry.stdout.log`, ...).
+RETRY = ".retry"
+# Claude Code session IDs are UUIDs; anything else is not passed to --resume.
+SESSION_ID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+# The resumed turn already holds the contract, the schema and its own work.
+RESULT_RETRY_PROMPT = (
+    "Your final message did not carry a result object the controller could read. Do not redo, "
+    "extend or re-check the work, and run no tools. Return only the result object, through the "
+    "structured output schema you were given, using exactly its field names and nothing outside it."
+)
 REVIEW_TOOLS = "Read,Grep,Glob,Bash"
 REVIEW_DISALLOWED = "Edit,Write,NotebookEdit,Agent"
 # Runs inside bwrap: enter a nested user namespace and map it, as Claude Code's
@@ -207,6 +221,9 @@ class Claude:
         self.output_usage_incomplete = False
         self.version = ""
         self.selection: dict | None = None
+        # The runner's between-session budget (stop, time, output cap); a
+        # result retry starts a session without returning to the runner.
+        self.budget_stop: Callable[[], str | None] = lambda: None
 
     # -- capability checks ---------------------------------------------------
 
@@ -331,6 +348,8 @@ class Claude:
         if role == "security-reviewer" and not base:
             raise LoopError("security review sessions require an explicit base revision")
         schema = SECURITY_REVIEW_SCHEMA if role == "security-reviewer" else REVIEW_SCHEMA if role == "verifier" else BUILD_SCHEMA
+        # Refused before any session is spent on a schema the result check cannot enforce.
+        check_schema(schema)
         if role == "implementer":
             selection = self.selection or {"agent": "implementer", "model": self.model, "effort": self.effort, "max_turns": self.max_turns}
         else:
@@ -398,7 +417,6 @@ class Claude:
             "Return the final result through this structured output schema, using exactly its "
             "field names and nothing outside it:\n" + json.dumps(schema, indent=2),
         ])
-        (directory / f"{role}.prompt.txt").write_text(prompt, encoding="utf-8")
         contract_path = directory / f"{role}.contract.json"
         atomic_json(contract_path, asdict(task))
         args = [
@@ -409,9 +427,10 @@ class Claude:
             "--output-format", "json", "--json-schema", json.dumps(schema, separators=(",", ":")),
             "--settings", str(settings), "--strict-mcp-config",
         ]
-        if role != "implementer":
-            # Variadic list options come last so nothing after them is swallowed.
-            args += ["--tools", REVIEW_TOOLS, "--disallowedTools", REVIEW_DISALLOWED, "--allowedTools", *REVIEW_ALLOWED]
+        # Variadic list options come last so nothing after them is swallowed.
+        variadic = [] if role == "implementer" else [
+            "--tools", REVIEW_TOOLS, "--disallowedTools", REVIEW_DISALLOWED, "--allowedTools", *REVIEW_ALLOWED,
+        ]
         environment = {key: value for key, value in os.environ.items() if key not in SELECTION_OVERRIDES}
         environment.update(CHILD_ENVIRONMENT)
         environment["GITTURTLE_TASK_CONTEXT"] = str(contract_path)
@@ -419,40 +438,40 @@ class Claude:
         if spec_path:
             # The hook protects the run's own queue, which may live outside docs/development/tasks.json.
             environment["GITTURTLE_TASKS_PATH"] = spec_path
-        log = directory / f"{role}.stdout.log"
-        stderr_log = directory / f"{role}.stderr.log"
-        result = run_process(args, repo, log, timeout, stdin=prompt, stop=stop, env=environment, stderr_path=stderr_log)
-        atomic_json(directory / f"{role}.process.json", asdict(result))
-        stdout = log.read_text(encoding="utf-8", errors="replace")
-        stderr = stderr_log.read_text(encoding="utf-8", errors="replace") if stderr_log.is_file() else ""
-        if result.stopped:
-            self.output_usage_incomplete = True
-            raise EnvironmentBlocked(f"{role} session incomplete: {result.stopped}; inspect {log}")
-        payload = self._result_payload(stdout)
-        if payload is None:
-            self.output_usage_incomplete = True
-            if mentions_limit(stdout, stderr):
-                raise UsageLimited(f"{role} session hit a usage limit before producing a result; resume after the window resets (inspect {stderr_log})")
-            raise EnvironmentBlocked(f"{role} session produced no result record (exit {result.returncode}); inspect {log}")
-        self._record_usage(directory, role, payload)
-        text = payload.get("result") if isinstance(payload.get("result"), str) else ""
-        failed = payload.get("is_error") is True or result.returncode != 0 or payload.get("subtype") != "success"
-        if failed and (mentions_limit(text, stderr) or payload.get("api_error_status") == 429):
-            raise UsageLimited(f"{role} session was refused by a usage or rate limit; resume after the window resets (inspect {directory / (role + '.session.json')})")
-        if failed:
-            subtype = payload.get("subtype")
-            if subtype == "error_max_turns":
-                raise LoopError(f"{role} session exhausted its turn limit without a result; inspect {log}")
-            raise EnvironmentBlocked(f"{role} session failed ({subtype or result.returncode}); inspect {log}")
-        value = payload.get("structured_output")
-        if not isinstance(value, dict):
-            # The CLI does not always surface structured output for a long final
-            # message that ends in the verdict, and a 31-turn review usually
-            # writes its reasoning first. The object is still in the transcript,
-            # so read it from there and let the caller validate it as ever.
-            value = self._embedded_result(text, schema)
-        if not isinstance(value, dict):
-            raise MalformedResponse(f"{role} session returned no usable result object; inspect {log}")
+        payload, elapsed = self._session(role, role, [*args, *variadic], prompt, repo, directory, timeout, stop, environment)
+        value, problem = self._result_object(payload, schema)
+        if value is None:
+            # One more try before the result counts as unreadable: a review that
+            # passed but wrote its verdict as prose after a sentence otherwise
+            # costs a whole re-review on resume. Resuming the same session keeps
+            # its selection, permissions, settings and schema and asks only for
+            # the object. A review without a usable session ID is run fresh
+            # instead; an implementer is not, since its first try already
+            # changed the checkout, and its attempt fails.
+            log = directory / f"{role}.stdout.log"
+            session_id = payload.get("session_id")
+            resume = session_id if isinstance(session_id, str) and SESSION_ID.fullmatch(session_id) else None
+            if role == "implementer" and not resume:
+                raise MalformedResponse(f"{role} session returned no usable result object ({problem}) and cannot be resumed; inspect {log}")
+            # Both tries share the one session time the runner granted, and
+            # the retry starts only within the budget it checks between sessions.
+            remaining = timeout - elapsed
+            reason = self.budget_stop() or ("stop requested" if stop() else None) or ("time budget exhausted" if remaining <= 0 else None)
+            if reason:
+                # As between sessions: an implementer attempt ends, a review keeps its candidate.
+                raise (LoopError if role == "implementer" else EnvironmentBlocked)(
+                    f"{role} result retry not started ({problem}): {reason}; inspect {log}")
+            name = role + RETRY
+            atomic_json(directory / f"{name}.json", {"reason": problem, "resumed_session": resume})
+            retry_args = [*args, "--resume", resume, *variadic] if resume else [*args, *variadic]
+            payload, _ = self._session(role, name, retry_args, RESULT_RETRY_PROMPT if resume else prompt, repo,
+                                       directory, remaining, stop, environment)
+            value, retry_problem = self._result_object(payload, schema)
+            if value is None:
+                raise MalformedResponse(
+                    f"{role} session returned no usable result object, also after one retry ({problem}; then "
+                    f"{retry_problem}); inspect {log} and {directory / (name + '.stdout.log')}"
+                )
         atomic_json(response_path, value)
         if role == "implementer":
             if (set(value) != set(BUILD_SCHEMA["required"]) or value["task_id"] != task.id
@@ -461,30 +480,64 @@ class Claude:
                 raise LoopError("invalid implementation response")
         return value
 
-    @staticmethod
-    def _embedded_result(text: str, schema: dict) -> dict | None:
-        """The last JSON object in `text` carrying every field the schema requires.
+    def _session(
+        self, role: str, name: str, args: list[str], prompt: str, repo: Path, directory: Path,
+        timeout: float, stop: Callable[[], bool], environment: dict[str, str],
+    ) -> tuple[dict, float]:
+        """Run one `claude -p` process and return its successful result record and elapsed time.
 
-        Only the shape is checked here; the task id, candidate sha and verdict
-        are validated by the caller exactly as for structured output, so a quoted
-        or stale object cannot pass as a verdict.
+        `name` is the role for a first try and carries the retry suffix for the
+        second, so each try keeps its own prompt, transcript, process and usage
+        records. A stop, a usage limit or a failed session raises as it would
+        for any try.
         """
-        required = set(schema.get("required", ()))
-        found = None
-        for candidate in re.findall(r"```(?:json)?\s*\n(.*?)```", text, re.S) + [text]:
-            try:
-                value = json.loads(candidate.strip())
-            except ValueError:
-                continue
-            if not isinstance(value, dict) or not required <= set(value):
-                continue
-            # A schema that forbids extra properties means it: the CLI would have
-            # rejected them, so a transcript object must be held to the same bar
-            # rather than handed on for a validator to reject fatally later.
-            if schema.get("additionalProperties") is False and not set(value) <= set(schema.get("properties", {})):
-                continue
-            found = value
-        return found
+        if timeout <= 0:
+            # Refused before the prompt record exists: nothing ran, so no usage is unknown.
+            raise EnvironmentBlocked(f"{role} session not started: time budget exhausted")
+        (directory / f"{name}.prompt.txt").write_text(prompt, encoding="utf-8")
+        log = directory / f"{name}.stdout.log"
+        stderr_log = directory / f"{name}.stderr.log"
+        result = run_process(args, repo, log, timeout, stdin=prompt, stop=stop, env=environment, stderr_path=stderr_log)
+        atomic_json(directory / f"{name}.process.json", asdict(result))
+        if result.stopped:
+            self.output_usage_incomplete = True
+            raise EnvironmentBlocked(f"{role} session incomplete: {result.stopped}; inspect {log}")
+        stdout = log.read_text(encoding="utf-8", errors="replace")
+        stderr = stderr_log.read_text(encoding="utf-8", errors="replace") if stderr_log.is_file() else ""
+        payload = self._result_payload(stdout)
+        if payload is None:
+            self.output_usage_incomplete = True
+            if mentions_limit(stdout, stderr):
+                raise UsageLimited(f"{role} session hit a usage limit before producing a result; resume after the window resets (inspect {stderr_log})")
+            raise EnvironmentBlocked(f"{role} session produced no result record (exit {result.returncode}); inspect {log}")
+        self._record_usage(directory, name, payload)
+        text = payload.get("result") if isinstance(payload.get("result"), str) else ""
+        failed = payload.get("is_error") is True or result.returncode != 0 or payload.get("subtype") != "success"
+        if failed and (mentions_limit(text, stderr) or payload.get("api_error_status") == 429):
+            raise UsageLimited(f"{role} session was refused by a usage or rate limit; resume after the window resets (inspect {directory / (name + '.session.json')})")
+        if failed:
+            subtype = payload.get("subtype")
+            if subtype == "error_max_turns":
+                raise LoopError(f"{role} session exhausted its turn limit without a result; inspect {log}")
+            raise EnvironmentBlocked(f"{role} session failed ({subtype or result.returncode}); inspect {log}")
+        return payload, result.elapsed
+
+    @staticmethod
+    def _result_object(payload: dict, schema: dict) -> tuple[dict | None, str]:
+        """The session's result object, held strictly to its schema, or why there is none.
+
+        Structured output is the result whenever the CLI returns one. Otherwise
+        the CLI did not surface it, as happens when a long final message ends in
+        the verdict, and the object is read from that message's text. Either
+        way the whole schema applies; the task id, candidate sha and verdict
+        rules are still the caller's to check.
+        """
+        value = payload.get("structured_output")
+        if isinstance(value, dict):
+            problem = schema_error(value, schema)
+            return (None, "structured output: " + problem) if problem else (value, "")
+        text = payload.get("result") if isinstance(payload.get("result"), str) else ""
+        return text_result(text, schema)
 
     @staticmethod
     def _result_payload(stdout: str) -> dict | None:
@@ -507,7 +560,7 @@ class Claude:
                 found = event
         return found
 
-    def _record_usage(self, directory: Path, role: str, payload: dict) -> None:
+    def _record_usage(self, directory: Path, name: str, payload: dict) -> None:
         usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
         count = usage.get("output_tokens")
         if type(count) is int and count >= 0:
@@ -522,17 +575,20 @@ class Claude:
             "model_usage": payload.get("modelUsage"), "permission_denials": payload.get("permission_denials"),
             "duration_ms": payload.get("duration_ms"),
         }
-        atomic_json(directory / f"{role}.session.json", session)
+        atomic_json(directory / f"{name}.session.json", session)
 
     def recover_usage(self, attempts: Path) -> tuple[int, bool]:
-        """Replay reported output usage from durable session records after a crash."""
+        """Replay reported output usage from durable session records after a crash.
+
+        A result retry is a session of its own, with its own prompt and record.
+        """
         reported = 0
         incomplete = False
         for prompt in attempts.glob("**/*.prompt.txt"):
-            role = prompt.name[: -len(".prompt.txt")]
-            if role not in ROLES:
+            name = prompt.name[: -len(".prompt.txt")]
+            if name.removesuffix(RETRY) not in ROLES:
                 continue
-            session = prompt.with_name(f"{role}.session.json")
+            session = prompt.with_name(f"{name}.session.json")
             if session.is_symlink() or not session.is_file():
                 incomplete = True
                 continue

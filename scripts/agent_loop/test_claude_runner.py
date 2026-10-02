@@ -6,17 +6,18 @@ from contextlib import redirect_stdout
 import io
 import json
 from pathlib import Path
+import sys
 import unittest
 from unittest.mock import patch
 
 from agent_loop import test_runner as fixtures
-from agent_loop.claude import UsageLimited, resolve_selection
+from agent_loop.claude import Claude, UsageLimited, resolve_selection
 from agent_loop.git import git
-from agent_loop.process import LoopError, read_json
+from agent_loop.process import LoopError, atomic_json, digest, read_json
 from agent_loop.runner import Runner, controlled, create_run, main, make_adapter
 # Records and run state stay private even when the host umask is permissive.
 from agent_loop.test_support import setUpModule, tearDownModule
-from agent_loop.test_claude_process import light_task
+from agent_loop.test_claude_process import SESSION, light_task
 from agent_loop.test_codex_process import example_task
 
 
@@ -137,6 +138,64 @@ class ClaudeRunnerTests(unittest.TestCase):
         state = self.execute(directory, FakeClaude())
         self.assertEqual(state["tasks"]["one"]["status"], "accepted")
         self.assertEqual(state["tasks"]["one"]["attempts"], 1)
+
+    def test_a_verdict_unreadable_after_its_retry_keeps_the_candidate_and_its_attempt(self):
+        # The real adapter reviews through a fake CLI that answers only in prose.
+        role = "---\nname: verifier\ndescription: Fixture role.\n---\nReview the fixture.\n"
+        controller = self.root.parent / "run-controller"
+        for base in (self.root, controller):
+            (base / ".claude/agents").mkdir(parents=True)
+            (base / ".claude/agents/verifier.md").write_text(role)
+        git(self.root, "add", "--", ".claude/agents/verifier.md")
+        atomic_json(controller / "claude-settings.json", {"env": {}})
+        log = self.root.parent / "invocations.jsonl"
+        payload = {"type": "result", "subtype": "success", "is_error": False, "structured_output": None,
+                   "result": "I reviewed the candidate and it passes.", "session_id": SESSION,
+                   "usage": {"output_tokens": 5}}
+        executable = self.root.parent / "fake-claude"
+        executable.write_text(
+            f"#!{sys.executable}\nimport json, sys\nsys.stdin.read()\n"
+            f"with open({str(log)!r}, 'a') as stream:\n    stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            f"print(json.dumps({payload!r}))\n"
+        )
+        executable.chmod(0o755)
+        real = Claude(controller, "claude-opus-5-5", "high", **resolve_selection("claude-opus-5-5", "high", {}),
+                      settings_sha256=digest(controller / "claude-settings.json"))
+        real.executable = str(executable)
+
+        class ProseReviews(FakeClaude):
+            def run(self, role, feature, *args, **kwargs):
+                if role == "implementer":
+                    return super().run(role, feature, *args, **kwargs)
+                self.calls.append((role, feature.id))
+                return real.run(role, feature, *args, **kwargs)
+
+        directory = self.create()
+        adapter = ProseReviews()
+        state = self.execute(directory, adapter)
+        record = state["tasks"]["one"]
+        self.assertEqual(record["status"], "review_blocked")
+        self.assertIn("no usable result object, also after one retry", record["reason"])
+        self.assertEqual(adapter.calls, [("implementer", "one"), ("verifier", "one")])
+        self.assertEqual(record["attempts"], 1)
+        self.assertTrue(record["candidate"])
+        sessions = [json.loads(line) for line in log.read_text().splitlines()]
+        self.assertEqual(len(sessions), 2)
+        self.assertEqual(sessions[1][sessions[1].index("--resume") + 1], SESSION)
+        review = next(Path(record["directory"]).glob("review-*"))
+        self.assertTrue((review / "verifier.stdout.log").is_file())
+        self.assertTrue((review / "verifier.retry.stdout.log").is_file())
+        # A plain resume reviews the same candidate again without rebuilding it.
+        state = self.execute(directory, FakeClaude())
+        self.assertEqual(state["tasks"]["one"]["status"], "accepted")
+        self.assertEqual(state["tasks"]["one"]["attempts"], 1)
+
+    def test_the_runner_lends_its_session_budget_to_the_result_retry(self):
+        directory = self.create()
+        (directory / "STOP").write_text("")
+        runner = Runner(directory)
+        self.assertIsInstance(runner.adapter, Claude)
+        self.assertEqual(runner.adapter.budget_stop(), "stop requested")
 
     def test_adapter_selection_defaults_to_codex_and_rejects_unknown_tools(self):
         self.assertEqual(type(make_adapter(Path("."), {"model": "m", "effort": "high"})).__name__, "Codex")

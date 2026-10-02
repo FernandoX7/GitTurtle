@@ -236,6 +236,10 @@ class Runner:
                 raise LoopError(f"controller version changed; resume using {self.controller / 'scripts/agent-loop.py'}")
         self.repo = self.directory / "accepted"
         self.adapter = adapter or make_adapter(self.controller, self.state)
+        if isinstance(self.adapter, Claude):
+            # Its result retry is a second session inside one adapter call, so
+            # it asks the budget this runner checks between sessions first.
+            self.adapter.budget_stop = self.budget_stop
         self.usage_limited: str | None = None
         self.gate_runner = gate_runner
         self.started = time.monotonic()
@@ -380,6 +384,14 @@ class Runner:
         actual = head(self.repo)
         if not checkout_clean(self.repo):
             raise LoopError("accepted checkout has unexpected changes; preserve and inspect it")
+        for record in self.state["tasks"].values():
+            # A blocked review holds the candidate it waits on. No path here
+            # leaves one without (a run resumes only under the controller that
+            # created it), but such a record, from a defect or a hand edit, has
+            # nothing to review and would crash the selection loop: count it as
+            # a failed attempt instead.
+            if record["status"] == "review_blocked" and not record.get("candidate"):
+                record["status"] = "failed"
         phase = self.state["phase"]
         active = self.state.get("active")
         if phase == "accepting" and active:
@@ -562,7 +574,9 @@ class Runner:
                 raise
             # The candidate passed its gates; only the verdict was unreadable.
             # Retry the review on it instead of spending an attempt rebuilding it.
-            record.update(status="review_blocked", reason=str(error))
+            # Before a candidate exists the implementer's own result was
+            # unreadable, which spends the attempt like any unusable one.
+            record.update(status="review_blocked" if record.get("candidate") else "failed", reason=str(error))
         except LoopError as error:
             if self.state["phase"] == "accepting":
                 raise  # Git may have moved; preserve intent for reconciliation.
