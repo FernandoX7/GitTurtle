@@ -69,6 +69,14 @@ The [CI workflow](../.github/workflows/quality.yml) configures locked workspace 
 
 Task `tab-reveals-branch-and-tag-rows`. When keyboard focus moves onto a row that lies wholly or partly outside the branch chooser, the remote manager, Tags or the tag inspector's Push to… list, the list scrolls by the least amount that shows the whole row and its ring, to the nearest edge and without animation; a pointer press scrolls nothing. The project hub keeps its reveal through the same shared helper.
 
+Automated, `cargo test --locked -p gitturtle`, each in a 1000 × 680 window with the installed ring:
+- `branch_actions::tests::tab_reveals_every_branch_chooser_row`: 30 branches. Real `tab` keystrokes go from the filter through every row and `shift-tab` keystrokes come back; after each key the focused row, grown by the ring's gap plus width, lies inside the list's bounds, and at both ends inside the content mask it paints in. With the list then scrolled by hand so a row lies across its lower edge, two redraws and a click on that row leave the scroll and focus where they were.
+- `branch_actions::tests::tab_reveals_every_remote_manager_control`: the same through every Edit… and Remove… of 12 remotes on local bare repositories.
+- `tags::tests::tab_reveals_every_tag_row`: the same through 30 tags.
+- `tags::tests::tab_reveals_every_push_destination`: the same through Push to… for 10 remotes on local bare repositories.
+
+With the lists' reveal disabled, as on the base, all four fail at the first control past the list's lower edge (`branch-choice-9`, `edit-remote-4`, `tag-row-9`, `push-tag-remote-5`). The project hub's `keyboard_focus_reveals_project_fields_and_submit_at_small_window`, `branch_chooser_keeps_room_for_rings_at_either_end`, `tag_browser_keeps_room_for_every_focus_ring` and `tag_inspector_keeps_room_for_every_push_ring` pass unchanged.
+
 Native evidence, full tier:
 - **Builds:** base `ee87282` (the run's `accepted_head`, the attested release of `reflog-selection-and-scroll-cues`; sha256 `2f6c30d8…`) and candidate `a65720f` (sha256 `0b6bd46c…`), release builds from clean trees, each in its own target directory. `qa.py identity` reported no problem.
 - **Host:** Ubuntu 26.04, GNOME 50, XWayland `:0` at scale factor 1, window 1000 × 680, default text size, one session on 2026-10-01 from 23:36 to 23:46 UTC.
@@ -87,9 +95,11 @@ Frames in [`evidence/tab-reveals-branch-and-tag-rows/`](evidence/tab-reveals-bra
 - `candidate-{midnight,porcelain}-1000x680-branch-chooser-tab-down.png` and `…-tags-tab-down.png`: on the candidate, `topic-14` and `v1.10` revealed at the lower edge with the ring whole;
 - `candidate-{midnight,porcelain}-1000x680-branch-chooser-shift-tab-up.png` and `…-tags-shift-tab-up.png`: on the candidate, `topic-24` and `v1.11` revealed at the upper edge with the ring whole.
 
-`qa.py privacy scan --redacted` with the local template set found all 20 clean on their committed bytes. A `design-reviewer` pass approved the frames. Also queued from it: DESIGN.md's sentence should name every keyboard focus move, not only Tab, and give the project hub's reveal on a click its own sentence; and neither list shows a scroll cue once scrolled.
+`qa.py privacy scan --redacted` with the local template set found all 20 clean on their committed bytes. A `design-reviewer` pass approved the frames. Also queued from it: DESIGN.md's sentence should name every keyboard focus move, not only Tab, and give the project hub's reveal on a click its own sentence; and neither list shows a scroll cue once scrolled. DESIGN.md now names every keyboard focus move and gives the project hub's reveal on a click its own sentence; the scroll cue remains queued.
 
 Not covered natively: the remote manager and the Push to… list (their view tests cover them), other text and window sizes, macOS, native Wayland and fractional scale factors.
+
+Not covered: the project hub's recent projects are a virtualized `uniform_list` (`recent-projects`), whose unrendered rows Tab cannot reach at all, so they are unchanged; the other virtualized lists (History, the file lists, the command palette, the project pane) keep one tab stop and selection keys. A list scrolls itself only: the kit dialog keeps its body's scroll handle to itself, so a dialog body that overflows at large text sizes is not scrolled to show the list. The nested worktree, Reflog and profile lists follow in `tab-reveals-worktree-reflog-profile-rows`; the GitHub review panel keeps its own copy of the reveal.
 
 ## October 1 a marked Reflog selection and cues for what scrolls
 

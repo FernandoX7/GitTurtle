@@ -1,5 +1,6 @@
 //! Native tag browser, annotation inspector, and explicit captured actions.
 use crate::*;
+use focus_reveal::{FocusReveal, Trigger};
 use gitturtle_core::{RemoteConfig, Tag, TagCommand, TagDetails, TagList, WriteCommand};
 use gpui_kit::{
     component::{WindowExt, dialog::DialogButtonProps},
@@ -27,6 +28,9 @@ pub(super) struct State {
     generation: u64,
     task: Option<Task<()>>,
     draft: Option<Entity<TagForm>>,
+    /// The Tags list or Push to… list opened last, for tests.
+    #[cfg(test)]
+    list: Option<FocusReveal>,
 }
 
 impl GitTurtle {
@@ -45,6 +49,10 @@ impl GitTurtle {
                     let owner = cx.entity().downgrade();
                     let path = this.path.clone();
                     let browser = cx.new(|cx| TagBrowser::new(owner, path, list, window, cx));
+                    #[cfg(test)]
+                    {
+                        this.tag_actions.list = Some(browser.read(cx).rows.clone());
+                    }
                     window.open_alert_dialog(cx, move |dialog, _, cx| {
                         // The dialog clips its body to the body's bounds, and
                         // the browser keeps the focus ring's room inside them
@@ -131,6 +139,12 @@ impl GitTurtle {
         let remotes = Arc::new(remotes);
         let annotation = (details.tag.annotated && details.annotation_unavailable.is_none())
             .then(|| text::editor(&details.message, "text", None, window, cx));
+        // The Push to… list's scroll, which reveals the button Tab moves onto.
+        let list = FocusReveal::new(Trigger::Keyboard);
+        #[cfg(test)]
+        {
+            self.tag_actions.list = Some(list.clone());
+        }
         window.open_alert_dialog(cx, move |dialog, _, cx| {
             let p = palette(cx); let tag = &details.tag;
             let deletion = tag.clone(); let delete_owner = owner.clone(); let delete_path = path.clone();
@@ -139,8 +153,11 @@ impl GitTurtle {
             // on both axes: it keeps the focus ring's room around them and
             // gives it back through its margin. The content keeps the room
             // below its last control inside the dialog's clip of its body,
-            // and the footer's gap gives that back, so nothing moves.
+            // and the footer's gap gives that back, so nothing moves. A
+            // button Tab moves onto scrolls into view with its ring.
             let room = appearance::button_ring_room(cx);
+            let pushes: Vec<_> = (0..remotes.len()).map(|index| list.focus(("push-tag-remote", index), cx)).collect();
+            let reveal = list.items(pushes.clone(), room);
             let content = div().flex().flex_col().gap_3().pb(room)
                 .child(static_text("tag-target-identity", format!("{} · {} {}", if tag.annotated { "Annotated tag" } else { "Lightweight tag" }, tag.target_kind, tag.target_oid)).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
                 .child(static_text("tag-object-identity", format!("Tag object: {}", tag.oid)).text_size(crate::appearance::ui_text(11.)))
@@ -159,9 +176,9 @@ impl GitTurtle {
                     })))
                 .child(static_text("tag-push-heading", "Push this tag").text_size(crate::appearance::ui_text(12.)).font_weight(FontWeight::MEDIUM))
                 .child(static_text("tag-push-consequences", "Choose one remote, then review. No other tags or branches are pushed. Existing remote tags are never replaced.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
-                .child(div().id("tag-remote-list").debug_selector(|| "tag-remote-list".into()).max_h(px(160.) + room * 2.).p(room).m(-room).overflow_y_scroll().flex().flex_col().gap_1().children(remotes.iter().enumerate().map(|(index, remote)| {
+                .child(div().on_children_prepainted(reveal).id("tag-remote-list").debug_selector(|| "tag-remote-list".into()).max_h(px(160.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(list.scroll()).flex().flex_col().gap_1().children(remotes.iter().zip(pushes).enumerate().map(|(index, (remote, focus))| {
                     let remote = remote.clone(); let tag = tag.clone(); let owner = owner.clone(); let path = path.clone();
-                    button(("push-tag-remote", index), format!("Push to {}…", remote.name), "", false).debug_selector(move || format!("push-tag-remote-{index}")).on_click(move |_, window, cx| {
+                    button(("push-tag-remote", index), format!("Push to {}…", remote.name), "", false).track_focus(&focus).debug_selector(move || format!("push-tag-remote-{index}")).on_click(move |_, window, cx| {
                         let _ = owner.update(cx, |this, cx| {
                             if this.path == path && this.operation_busy.is_none() {
                                 window.close_dialog(cx);
@@ -249,6 +266,8 @@ struct TagBrowser {
     path: Option<PathBuf>,
     list: TagList,
     query: Entity<InputState>,
+    /// The list's scroll, which reveals the row Tab moves onto.
+    rows: FocusReveal,
     _subscription: Subscription,
 }
 impl TagBrowser {
@@ -274,6 +293,7 @@ impl TagBrowser {
             path,
             list,
             query,
+            rows: FocusReveal::new(Trigger::Keyboard),
             _subscription: subscription,
         }
     }
@@ -307,16 +327,21 @@ impl Render for TagBrowser {
         // its last control inside the dialog's clip, which the dialog gives
         // back. The list scrolls, so it clips its rows to its bounds on both
         // axes: it keeps the room around them and gives it back through its
-        // margin, so no row moves.
+        // margin, so no row moves. A row Tab moves onto scrolls into view
+        // with its ring.
         let room = appearance::button_ring_room(cx);
+        let rows: Vec<_> = (0..matches.len().min(100))
+            .map(|index| self.rows.focus(("tag-row", index), cx))
+            .collect();
+        let reveal = self.rows.items(rows.clone(), room);
         div().flex().flex_col().gap_3().py(room)
             .child(div().flex().gap_2().child(div().flex_1().child(Input::new(&self.query).aria_label("Filter local tags").cleanable(true))).child(button("create-tag", "Create tag…", "plus", false).debug_selector(|| "create-tag".into()).on_click(cx.listener(|this, _, window, cx| {
                 let _ = this.owner.update(cx, |owner, cx| { if owner.path == this.path && owner.operation_busy.is_none() { window.close_dialog(cx); owner.open_create_tag(window, cx); } });
             }))))
             .child(static_text("tag-list-summary", format!("{} local tags · Select to inspect, delete locally, or push one named tag.", self.list.tags.len())).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
-            .child(div().id("tags-list").max_h(px(360.) + room * 2.).p(room).m(-room).overflow_y_scroll().flex().flex_col().gap_1().children(matches.iter().take(100).enumerate().map(|(index, tag)| {
+            .child(div().on_children_prepainted(reveal).id("tags-list").debug_selector(|| "tags-list".into()).max_h(px(360.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(self.rows.scroll()).flex().flex_col().gap_1().children(matches.iter().zip(rows).enumerate().map(|(index, (tag, focus))| {
                 let tag = (*tag).clone(); let label = format!("{} · {} · {}", tag.name, if tag.annotated { "Annotated" } else { "Lightweight" }, short_oid(&tag.target_oid));
-                Button::new(("tag-row", index)).debug_selector(move || format!("tag-row-{index}")).ghost().w_full().h(crate::appearance::ui_size(34.)).label(label.clone()).accessibility_label(label).on_click(cx.listener(move |this, _, window, cx| this.activate(tag.clone(), window, cx)))
+                Button::new(("tag-row", index)).track_focus(&focus).debug_selector(move || format!("tag-row-{index}")).ghost().w_full().h(crate::appearance::ui_size(34.)).label(label.clone()).accessibility_label(label).on_click(cx.listener(move |this, _, window, cx| this.activate(tag.clone(), window, cx)))
             })).when(matches.is_empty(), |element| element.child(static_text("tag-list-empty", if self.list.tags.is_empty() { "No local tags yet. Create a tag to name a commit." } else { "No tags match this filter." }).p_3().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))))
             .when(matches.len() > 100, |element| element.child(static_text("tag-list-match-limit", "Showing 100 matches. Narrow the filter to find another tag.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))))
             .when(self.list.truncated, |element| element.child(static_text("tag-list-load-limit", "Loaded the first 10,000 local tags by name. Additional tags are outside this bounded browser.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning))))
@@ -404,6 +429,7 @@ impl Render for TagForm {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::focus_reveal::tests::{assert_steady, assert_tab_reveals, control, focus_filter};
     use ::core::prelude::v1::test;
     use gpui_kit::component::{FocusRing, Root, Theme};
     use std::{cell::RefCell, rc::Rc};
@@ -563,7 +589,7 @@ pub(crate) mod tests {
 
     /// `mask` holds `ring`, within float error of the device pixels both lie
     /// on.
-    fn holds(mask: Bounds<Pixels>, ring: Bounds<Pixels>) -> bool {
+    pub(crate) fn holds(mask: Bounds<Pixels>, ring: Bounds<Pixels>) -> bool {
         let slack = px(0.01);
         mask.left() <= ring.left() + slack
             && mask.top() <= ring.top() + slack
@@ -847,5 +873,87 @@ pub(crate) mod tests {
                 "tag-push-consequences",
             ],
         );
+    }
+
+    /// The application in a 1000 × 680 window on a repository with three
+    /// tagged commits and `tags` more tags on the last.
+    fn small_window_with_tags<'a>(
+        cx: &'a mut TestAppContext,
+        fixture: &std::path::Path,
+        tags: usize,
+    ) -> (GitRepository, Entity<GitTurtle>, &'a mut VisualTestContext) {
+        let repo = tagged_repository(fixture);
+        for index in 0..tags {
+            git(repo.path(), &["tag", &format!("v1.{index:02}")]);
+        }
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        draw(cx);
+        (repo, app, cx)
+    }
+
+    /// Tab moves through every row of Tags and Shift+Tab back, and the list
+    /// scrolls each row into view with its focus ring. Once a row is shown,
+    /// redraws and a click on a partly visible row scroll nothing.
+    #[gpui::test]
+    async fn tab_reveals_every_tag_row(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let (_repo, app, cx) = small_window_with_tags(cx, fixture.path(), 27);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
+        let read = app.update(cx, |app, _| app.tag_actions.task.take());
+        read.expect("the tags are read").await;
+        draw(cx);
+        let list = app
+            .read_with(cx, |app, _| app.tag_actions.list.clone())
+            .expect("the Tags list");
+
+        let rows: Vec<_> = (0..30).map(|index| control("tag-row", index)).collect();
+        focus_filter(cx, &list, &rows[0]);
+        assert_tab_reveals(cx, &list, "tags-list", &rows);
+        // A click inspects nothing while an operation runs.
+        app.update(cx, |app, _| app.operation_busy = Some("Testing"));
+        assert_steady(cx, &list, "tags-list", &rows);
+    }
+
+    /// Tab moves through every Push to… button of the tag inspector and
+    /// Shift+Tab back, and the list scrolls each into view with its ring.
+    #[gpui::test]
+    async fn tab_reveals_every_push_destination(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let (repo, app, cx) = small_window_with_tags(cx, fixture.path(), 0);
+        // Local bare remotes: the inspector only lists them.
+        let remotes = 10;
+        for index in 0..remotes {
+            let bare = fixture.path().join(format!("remote-{index:02}.git"));
+            git(
+                fixture.path(),
+                &["init", "--quiet", "--bare", bare.to_str().unwrap()],
+            );
+            git(
+                repo.path(),
+                &[
+                    "remote",
+                    "add",
+                    &format!("remote-{index:02}"),
+                    bare.to_str().unwrap(),
+                ],
+            );
+        }
+        let tag = repo.tags().unwrap().tags[0].clone();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.inspect_tag(tag, window, cx)));
+        let read = app.update(cx, |app, _| app.tag_actions.task.take());
+        read.expect("the tag is read").await;
+        draw(cx);
+        let list = app
+            .read_with(cx, |app, _| app.tag_actions.list.clone())
+            .expect("the Push to… list");
+
+        let pushes: Vec<_> = (0..remotes)
+            .map(|index| control("push-tag-remote", index))
+            .collect();
+        focus_filter(cx, &list, &pushes[0]);
+        assert_tab_reveals(cx, &list, "tag-remote-list", &pushes);
+        app.update(cx, |app, _| app.operation_busy = Some("Testing"));
+        assert_steady(cx, &list, "tag-remote-list", &pushes);
     }
 }

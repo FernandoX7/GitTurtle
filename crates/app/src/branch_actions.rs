@@ -1,6 +1,7 @@
 //! Transient native branch and remote workflows. All Git preparation runs on
 //! the serialized worker; confirmations retain the exact repository and plan.
 use crate::*;
+use focus_reveal::{FocusReveal, Trigger};
 use gitturtle_core::{BranchCommand, BranchPlan, RemoteConfig, WriteCommand};
 use gpui_kit::component::{
     WindowExt,
@@ -18,6 +19,9 @@ type PreparationFailure = Box<dyn FnOnce(String, &mut Window, &mut Context<GitTu
 pub(super) struct State {
     generation: u64,
     task: Option<Task<()>>,
+    /// The list of the chooser or remote manager opened last, for tests.
+    #[cfg(test)]
+    list: Option<FocusReveal>,
 }
 
 #[derive(Clone)]
@@ -502,6 +506,10 @@ impl GitTurtle {
                 let title = purpose.title();
                 let chooser =
                     cx.new(|cx| BranchChooser::new(owner, path, purpose, choices, window, cx));
+                #[cfg(test)]
+                {
+                    self.branch_actions.list = Some(chooser.read(cx).list.clone());
+                }
                 window.open_alert_dialog(cx, move |dialog, _, cx| {
                     let chooser_ok = chooser.clone();
                     // The dialog clips its body to the body's bounds, and the
@@ -529,6 +537,10 @@ impl GitTurtle {
                 let owner = cx.entity().downgrade();
                 let path = self.path.clone();
                 let manager = cx.new(|cx| RemoteManager::new(owner, path, remotes, window, cx));
+                #[cfg(test)]
+                {
+                    self.branch_actions.list = Some(manager.read(cx).list.clone());
+                }
                 window.open_alert_dialog(cx, move |dialog, _, _| {
                     dialog
                         .title("Remotes")
@@ -903,7 +915,8 @@ struct BranchChooser {
     purpose: ChoicePurpose,
     choices: Arc<Vec<BranchChoice>>,
     query: Entity<InputState>,
-    scroll: ScrollHandle,
+    /// The list's scroll, which reveals the row Tab moves onto.
+    list: FocusReveal,
     _subscription: Subscription,
 }
 
@@ -920,7 +933,7 @@ impl BranchChooser {
         let subscription =
             cx.subscribe_in(&query, window, |this, _, event, window, cx| match event {
                 InputEvent::Change => {
-                    this.scroll = ScrollHandle::new();
+                    this.list.scroll().set_offset(Point::default());
                     cx.notify();
                 }
                 InputEvent::PressEnter { .. } => this.activate_first(window, cx),
@@ -932,7 +945,7 @@ impl BranchChooser {
             purpose,
             choices,
             query,
-            scroll: ScrollHandle::new(),
+            list: FocusReveal::new(Trigger::Keyboard),
             _subscription: subscription,
         }
     }
@@ -1010,16 +1023,24 @@ impl Render for BranchChooser {
         // it keeps the focus ring's room around them, scrolled to either end,
         // and gives it back through its margin, so no row moves. The chooser
         // keeps the room below its last control inside the dialog's clip of
-        // its body, and the dialog gives it back.
+        // its body, and the dialog gives it back. A row Tab moves onto
+        // scrolls into view with its ring.
         let room = appearance::button_ring_room(cx);
+        let rows: Vec<_> = matching
+            .iter()
+            .take(CHOICE_LIMIT)
+            .map(|&index| (index, self.list.focus(("branch-choice", index), cx)))
+            .collect();
+        let reveal = self
+            .list
+            .items(rows.iter().map(|(_, focus)| focus.clone()).collect(), room);
         div().flex().flex_col().gap_3().pb(room)
             .child(div().debug_selector(|| "branch-chooser-detail".into()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(detail))
             .child(Input::new(&self.query).cleanable(true).prefix(Icon::default().path("icons/search.svg").size(px(14.))))
-            .child(div().id("branch-chooser-list").debug_selector(|| "branch-chooser-list".into()).max_h(px(330.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(&self.scroll).flex().flex_col().gap_1()
-                .children(matching.iter().take(CHOICE_LIMIT).map(|index| {
-                    let index = *index;
+            .child(div().on_children_prepainted(reveal).id("branch-chooser-list").debug_selector(|| "branch-chooser-list".into()).max_h(px(330.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(self.list.scroll()).flex().flex_col().gap_1()
+                .children(rows.into_iter().map(|(index, focus)| {
                     let choice = &self.choices[index];
-                    Button::new(("branch-choice", index)).debug_selector(move || format!("branch-choice-{index}")).ghost().w_full().h(crate::appearance::ui_size(34.))
+                    Button::new(("branch-choice", index)).track_focus(&focus).debug_selector(move || format!("branch-choice-{index}")).ghost().w_full().h(crate::appearance::ui_size(34.))
                         .text_size(crate::appearance::ui_text(12.)).accessibility_label(choice.name.clone())
                         .child(div().w_full().min_w_0().flex().items_center().justify_start().gap_2()
                             .child(Icon::default().path(if choice.remote { "icons/remote.svg" } else { "icons/branch.svg" }).size(px(14.)))
@@ -1174,7 +1195,8 @@ struct RemoteManager {
     path: Option<PathBuf>,
     remotes: Arc<Vec<RemoteChoice>>,
     query: Entity<InputState>,
-    scroll: ScrollHandle,
+    /// The list's scroll, which reveals the Edit… or Remove… Tab moves onto.
+    list: FocusReveal,
     _subscription: Subscription,
 }
 
@@ -1189,7 +1211,7 @@ impl RemoteManager {
         let query = cx.new(|cx| InputState::new(window, cx).placeholder("Find a remote"));
         let subscription = cx.subscribe(&query, |this, _, event, cx| {
             if matches!(event, InputEvent::Change) {
-                this.scroll = ScrollHandle::new();
+                this.list.scroll().set_offset(Point::default());
                 cx.notify();
             }
         });
@@ -1198,7 +1220,7 @@ impl RemoteManager {
             path,
             remotes,
             query,
-            scroll: ScrollHandle::new(),
+            list: FocusReveal::new(Trigger::Keyboard),
             _subscription: subscription,
         }
     }
@@ -1215,27 +1237,32 @@ impl Render for RemoteManager {
             .filter(|(_, remote)| query.is_empty() || remote.search.contains(&query))
             .take(CHOICE_LIMIT + 1)
             .collect();
+        // An Edit… or Remove… Tab moves onto scrolls into view with its ring.
+        let room = appearance::button_ring_room(cx);
         div().flex().flex_col().gap_3()
             .child(div().flex().items_center().gap_2()
                 .child(div().flex_1().child(Input::new(&self.query).cleanable(true)))
                 .child(dialog_action("add-remote", "Add remote…", &self.owner, &self.path, false, |this, window, cx| this.open_remote_form(None, window, cx))))
             .child(div().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child("Configure local destinations. Network activity starts only when you explicitly fetch, pull, or push."))
-            .child(div().id("remote-manager-list").max_h(px(360.)).overflow_y_scroll().track_scroll(&self.scroll).flex().flex_col().gap_2()
+            .child(div().on_children_prepainted(self.list.observe()).id("remote-manager-list").debug_selector(|| "remote-manager-list".into()).max_h(px(360.)).overflow_y_scroll().track_scroll(self.list.scroll()).flex().flex_col().gap_2()
                 .children(matches.iter().take(CHOICE_LIMIT).map(|(index, choice)| {
+                    let edit_focus = self.list.focus(("edit-remote", *index), cx);
+                    let remove_focus = self.list.focus(("remove-remote", *index), cx);
+                    let reveal = self.list.controls(vec![None, Some(edit_focus.clone()), Some(remove_focus.clone())], room);
                     let edit = Arc::clone(&choice.config);
                     let remove = Arc::clone(&choice.config);
                     let owner = self.owner.clone(); let path = self.path.clone();
                     let remove_owner = self.owner.clone(); let remove_path = self.path.clone();
                     let remote = &choice.config;
-                    div().id(("managed-remote", *index)).p_3().rounded(px(8.)).border_1().border_color(rgb(p.border)).flex().items_center().gap_3()
+                    div().on_children_prepainted(reveal).id(("managed-remote", *index)).p_3().rounded(px(8.)).border_1().border_color(rgb(p.border)).flex().items_center().gap_3()
                         .child(div().flex_1().min_w_0().flex().flex_col().gap_1()
                             .child(div().text_size(crate::appearance::ui_text(13.)).font_weight(FontWeight::MEDIUM).child(remote.name.clone()))
                             .child(div().truncate().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(remote.urls.first().map_or("No fetch URL configured".into(), |url| workspace::display_remote_url(url))))
                             .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(format!("{} fetch URLs · {} upstream branches", remote.urls.len(), remote.upstream_branches.len()))))
-                        .child(button(("edit-remote", *index), "Edit…", "", false).on_click(move |_, window, cx| {
+                        .child(button(("edit-remote", *index), "Edit…", "", false).track_focus(&edit_focus).debug_selector({ let index = *index; move || format!("edit-remote-{index}") }).on_click(move |_, window, cx| {
                             let _ = owner.update(cx, |this, cx| { if this.path == path && this.page == AppPage::Repository && this.operation_busy.is_none() { window.close_dialog(cx); this.open_remote_form(Some(Arc::clone(&edit)), window, cx); } });
                         }))
-                        .child(button(("remove-remote", *index), "Remove…", "", false).on_click(move |_, window, cx| {
+                        .child(button(("remove-remote", *index), "Remove…", "", false).track_focus(&remove_focus).debug_selector({ let index = *index; move || format!("remove-remote-{index}") }).on_click(move |_, window, cx| {
                             let _ = remove_owner.update(cx, |this, cx| { if this.path == remove_path && this.page == AppPage::Repository && this.operation_busy.is_none() { window.close_dialog(cx); this.prepare_remote_remove(Arc::clone(&remove), window, cx); } });
                         }))
                 }))
