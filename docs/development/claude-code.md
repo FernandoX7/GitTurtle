@@ -10,11 +10,12 @@ GitTurtle's development guidance is tool-neutral: `AGENTS.md` and the crate guid
 | `.claude/settings.json` | Shared permissions (read-only allow rules, a short deny list) and the hooks below |
 | `.claude/agents/*.md` | Roles: `planner`, `implementer`, `implementer-hard`, `verifier`, `security-reviewer`, `code-reviewer`, `design-reviewer`, `performance-reviewer`, `native-qa`, `librarian`, and an `Explore` override |
 | `.claude/rules/*.md` | Path-scoped conventions for the app, git-core, persistence, preview, vendor and tooling paths, plus unscoped validation and commit rules |
-| `.claude/skills/` | Symlinks to the shared `gitturtle-feature-work`, `gitturtle-native-qa` and `gitturtle-performance` skills, plus `gitturtle-gates`, `gitturtle-gpui-testing`, `research`, `close-task` and `queue-intake` |
+| `.claude/skills/` | Symlinks to the shared `gitturtle-feature-work`, `gitturtle-native-qa`, `gitturtle-performance` and `gitturtle-operate-loop` skills, plus `gitturtle-gates`, `gitturtle-gpui-testing`, `research`, `close-task` and `queue-intake` |
 | `.claude/hooks/*.py` | `protect_paths.py` (policy files during controller sessions, plus the run's active task queue named by `GITTURTLE_TASKS_PATH`), `stop_gate.py` (fast gate before a turn ends), `reinject_task.py` (task contract after compaction) |
-| `.claude/workflows/review-candidate.js` | Four read-only review lenses in parallel, then a refutation pass per finding |
+| `.claude/workflows/review-candidate.js` | Four read-only review lenses in parallel, then a refutation pass per finding; `args.base` sets the diff base and `args.dir` the worktree under review, and the results come back compact |
 | `scripts/gate.py`, `.config/nextest.toml`, `deny.toml` | The tiered quality gate every tool can run |
 | `scripts/agent_loop/claude.py` | The unattended controller's Claude adapter (`--tool claude`) |
+| `scripts/operator/` | The coordinator's tools for a run: `start.sh`, `resume.sh`, `watch.sh`, `build-release.sh` and `land.py` ([runbook](README.md#operate-a-run)) |
 | `docs/development/HANDOFF.md` | Human handoff between interactive sessions |
 
 ## Working interactively
@@ -74,15 +75,17 @@ shas that exist nowhere else. Two habits make stopping cheap:
 - Preserve accepted work onto the branch before stopping. Accepted commits live
   in the run's `accepted` checkout, not your worktree, and a saved run pins its
   controller by digest — once a harness fix lands, that run refuses to resume and
-  anything left only inside it is stranded. `git fetch <run>/accepted HEAD` then
-  `git cherry-pick -x FETCH_HEAD`, once per accepted commit as it lands rather than
-  as one batch at the end.
+  anything left only inside it is stranded. Land each task with
+  `scripts/operator/land.py --run <run> --task <task>` as it is accepted rather
+  than as one batch at the end.
 
 ## Unattended loop
 
 The existing controller runs Claude sessions with `python3 scripts/agent-loop.py run --tool claude ...`; the [runbook](README.md) documents the options, the per-attempt routing (one model for every session by default: the base effort first, a higher effort on the retry, the `implementer-hard` role afterwards at `--hard-effort`, `medium` for a docs or tooling task's first attempt, and a separate effort for the reviewers), the settings snapshot each session receives, how a result left as text is read and an unreadable one retried once, and the pause when a usage limit is reached. Task contracts, evidence, attestations, acceptance and the private accepted branch work exactly as they do for Codex. Every session is a fresh process with the task contract, the previous attempt's reason, the task's coordinator notes and a turn cap; the controller runs the gates and a separate read-only verifier and never trusts the implementer's summary. When a candidate needs native, performance, package or vendor evidence, the verifier and any security review run before that evidence is gathered, and the verifier runs again once it is attested ([order](README.md#native-and-external-attestations)), so a defect no evidence can fix spends the attempt before a capture session does. Frames, records and the dated validation entry go in one evidence commit on top of the candidate, registered with `attest --evidence-commit`; acceptance fast-forwards to it without a rebuild ([procedure](README.md#evidence-committed-on-top-of-the-candidate)). Implementer sessions run with bypass permissions inside the private attempt clone; `--sandbox on` additionally wraps Bash in the Claude Code sandbox, which on Linux needs `bwrap` and `socat` installed (`--sandbox auto`, the default, enables it only when both are present).
 
 The operator steers a running loop with three commands, none of which needs the loop stopped, killed or resumed. `python3 scripts/agent-loop.py note --run R --task T --text "…"` (or `--file F`) gives the task's later implementer sessions coordinator guidance that never changes its contract or acceptance, and shows it to the reviewers as context only ([coordinator notes](README.md#coordinator-notes)). `attest` registers evidence for a parked candidate. While the loop holds the run, both queue in the run's inbox, and the controller applies or refuses each one before its next step. `status --run R` shows the run state with the pending requests and the latest outcomes under `inbox`.
+
+A coordinator session operates the loop with the [`gitturtle-operate-loop`](../../.agents/skills/gitturtle-operate-loop/SKILL.md) skill and the `scripts/operator/` tools ([runbook](README.md#operate-a-run)). `start.sh` and `resume.sh` run it in tmux without the session's `CLAUDE*` variables, which would otherwise reach every child session. A Monitor on `watch.sh` relays one line per event, and `land.py` turns each accepted task into a squash-merged PR. A short prompt that names the run or queue and the owner's model and effort choices is then enough to take a run over.
 
 Watch the host for anything that writes into a checkout behind the run. An editor or another agent tool that mirrors Claude's configuration files into `.codex/` or `.agents/skills/` no longer rejects a candidate: untracked files under those two roots are left out of the candidate and listed as `mirror_untracked` on the task record, because nothing a candidate may add lives there. A change to a tracked file under them, or an untracked file anywhere else, is still judged by the task scope and the protected paths. The [decision record](2026-09-17-claude-code-support.md#an-untracked-mirror-stops-a-run-from-accepting-anything) records how the sweep was recognized and worked around while a run was pinned to the earlier controller digest.
 

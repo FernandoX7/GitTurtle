@@ -1,6 +1,7 @@
 ---
 paths:
   - "scripts/agent_loop/**"
+  - "scripts/operator/**"
   - "scripts/agent-loop.py"
   - "scripts/gate.py"
   - "scripts/test_gate.py"
@@ -9,7 +10,7 @@ paths:
 ---
 # Development tooling conventions
 
-The controller, the gate and the hooks are stdlib Python 3 with focused unit tests: `umask 022 && python3 -m unittest discover -s scripts/agent_loop -t scripts -p 'test_*.py'` for the controller (it refuses group- or other-writable records, so a umask of 002 fails the suite), `python3 -m unittest scripts/test_gate.py` for the gate, and `python3 scripts/check-agent-guidance.py` for every guidance, agent, skill, rule and hook file. Product Rust gates apply only when product code also changes.
+The controller, the gate and the hooks are stdlib Python 3 with focused unit tests: `umask 022 && python3 -m unittest discover -s scripts/agent_loop -t scripts -p 'test_*.py'` for the controller (it refuses group- or other-writable records, so a umask of 002 fails the suite), `python3 -m unittest scripts/test_gate.py` for the gate, `python3 -B -m unittest discover -s scripts/operator -p 'test_*.py'` for the operator tools (not a package, since `operator` is a standard-library module), and `python3 scripts/check-agent-guidance.py` for every guidance, agent, skill, rule and hook file. Product Rust gates apply only when product code also changes.
 
 These paths are protected during unattended attempts regardless of task scope. The Codex configuration under `.codex/` and `.agents/` is shared with other tools: leave it unchanged unless explicitly asked, keep the `.claude/skills` symlinks pointing at the shared skills, and keep every Claude-specific instruction out of `AGENTS.md`. Every role runs on `claude-opus-5-5`, and roles differ only in effort: the delegated review, exploration and librarian roles pin the model ID and their effort, while the controller's own roles (`implementer`, `implementer-hard`, `verifier`, `security-reviewer`) and the other main-session roles carry no model or effort, so the controller's explicit selection or the launched session's applies.
 

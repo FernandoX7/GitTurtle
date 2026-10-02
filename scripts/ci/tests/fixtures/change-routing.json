@@ -6,6 +6,7 @@
   {"name":"CI pinned tool installer", "paths":["scripts/ci/tools.py"], "required":["product", "tooling", "website"]},
   {"name":"ci tools", "paths":["scripts/ci/metrics.py", "scripts/ci/tests/test_metrics.py"], "required":["tooling"]},
   {"name":"native-QA tools", "paths":["scripts/native_qa/qa.py", "scripts/native_qa/ncc.c", "scripts/native_qa/README.md"], "required":["tooling"]},
+  {"name":"operator tools", "paths":["scripts/operator/land.py", "scripts/operator/watch.sh", "scripts/operator/test_land.py"], "required":["tooling"]},
   {"name":"agent guide", "paths":["crates/app/AGENTS.md", ".agents/skills/gitturtle-feature-work/SKILL.md"], "required":["tooling"]},
   {"name":"Claude agents", "paths":[".claude/agents/verifier.md", ".claude/agents/Explore.md"], "required":["tooling"]},
   {"name":"Claude hooks", "paths":[".claude/hooks/stop_gate.py"], "required":["tooling"]},

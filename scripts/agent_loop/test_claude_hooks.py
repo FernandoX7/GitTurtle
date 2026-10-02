@@ -43,7 +43,8 @@ class ProtectPathsTests(unittest.TestCase):
         self.assertEqual(result.stderr, "")
 
     def test_static_task_queue_and_guidance_remain_protected(self):
-        for relative in ("docs/development/tasks.json", ".claude/hooks/protect_paths.py", "AGENTS.md"):
+        for relative in ("docs/development/tasks.json", ".claude/hooks/protect_paths.py", "AGENTS.md",
+                         "scripts/operator/land.py"):
             with self.subTest(relative=relative):
                 result = self.hook(relative, GITTURTLE_LOOP="1", GITTURTLE_TASKS_PATH=QUEUE)
                 self.assertEqual(result.returncode, 2)

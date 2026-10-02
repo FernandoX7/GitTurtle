@@ -1,7 +1,7 @@
 export const meta = {
   name: 'review-candidate',
   description: 'Review the current change with four read-only lenses (correctness, design, performance, security), then adversarially verify each finding',
-  whenToUse: 'Before handing a GitTurtle change to the verifier or opening a PR; run with args {base: "<git ref>"} to review the diff since that ref (default: merge-base with main)',
+  whenToUse: 'Before handing a GitTurtle change to the verifier or opening a PR; run with args {base: "<git ref>", dir: "<worktree>"} to review the diff since that ref (default: main) in that worktree (default: the current directory), such as an agent\'s worktree before its PR',
   phases: [
     { title: 'Review', detail: 'one read-only reviewer per lens' },
     { title: 'Verify', detail: 'one skeptic per finding tries to refute it' },
@@ -9,6 +9,7 @@ export const meta = {
 }
 
 const base = (args && args.base) || 'main'
+const dir = (args && args.dir) || '.'
 const MAX_VERIFIED = 8
 
 const FINDINGS = {
@@ -50,7 +51,8 @@ const LENSES = [
   { key: 'security', agentType: 'security-reviewer', focus: 'Git command construction, credentials and logs, decoder and resource bounds, filesystem and symlink handling, dependencies and CI trust' },
 ]
 
-const scope = `Review the diff from \`git diff ${base}...HEAD\` plus the working tree (\`git diff\` and \`git status --porcelain\`). Read the crate guide for each touched crate before judging.`
+const where = dir === '.' ? '' : `The change under review lives in the Git worktree \`${dir}\`; run every command there (\`cd ${dir}\` first, or \`git -C ${dir}\`) and read files from that tree, not from the main checkout. `
+const scope = `${where}Review the diff from \`git diff ${base}...HEAD\` plus the working tree (\`git diff\` and \`git status --porcelain\`, untracked files included). Read the crate or tooling guide for each touched area before judging.`
 
 const reviews = await pipeline(
   LENSES,
@@ -77,9 +79,17 @@ const verified = await pipeline(
   (verdict, f) => ({ ...f, refuted: verdict ? verdict.refuted : null, verdict_reason: verdict ? verdict.reason : 'verifier did not return' }),
 )
 
+// Compact results keep the caller's context small: confirmed findings in brief, the rest as one line each.
+const at = f => `${f.file.split('/').slice(-2).join('/')}:${f.line}`
+const brief = f => ({
+  severity: f.severity, lens: f.lens, at: at(f), summary: f.summary.slice(0, 300),
+  failure_scenario: f.failure_scenario.slice(0, 300), why: (f.verdict_reason || '').slice(0, 200),
+})
+
 return {
   base,
-  confirmed: verified.filter(Boolean).filter(f => f.refuted === false),
-  refuted: verified.filter(Boolean).filter(f => f.refuted === true),
-  unverified: all.slice(MAX_VERIFIED),
+  dir,
+  confirmed: verified.filter(Boolean).filter(f => f.refuted === false).map(brief),
+  refuted: verified.filter(Boolean).filter(f => f.refuted === true).map(f => `${at(f)} ${f.summary.slice(0, 120)}`),
+  unverified: all.slice(MAX_VERIFIED).map(f => `${f.severity} ${at(f)} ${f.summary.slice(0, 160)}`),
 }
