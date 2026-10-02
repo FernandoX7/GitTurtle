@@ -21,6 +21,7 @@ import uuid
 from .claude import CLAUDE_EFFORTS, Claude, UsageLimited, resolve_selection, snapshot_files as claude_snapshot_files
 from .codex import Codex, validate_review
 from . import inbox
+from .evidence import SHA, checkout_evidence, evidence_paths, fetch_evidence
 from .git import changed_paths, clean, clone, commit, committed_paths, git, head, identity, source_root, untracked_paths, within, write_limits
 from .process import EnvironmentBlocked, LoopError, MalformedResponse, atomic_json, digest, read_json, run_process, reconcile_processes
 from .rust_surface import renders
@@ -55,8 +56,10 @@ REVIEW_PHASES = ("pre_verifying", "verifying", "security_reviewing")
 CANDIDATE_KEYS = (
     "candidate", "pre_review", "pre_review_sha256", "pre_review_inputs", "review", "review_sha256", "review_inputs",
     "security_review", "security_review_sha256", "security_review_inputs", "security_required", "security_paths",
-    "attestations", "gate_sha256", "mirror_untracked",
+    "attestations", "gate_sha256", "mirror_untracked", "evidence_commit", "evidence_directory", "evidence_gate_sha256",
 )
+# The phase in which the controller gates an evidence commit with the docs profile.
+EVIDENCE_GATING = "evidence_gating"
 EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
 TOOLS = ("codex", "claude")
 CLAUDE_OPTIONS = (
@@ -83,7 +86,7 @@ QUEUED = (
 # What a run's pinned controller can do, recorded when the run is created. The
 # operator's commands come from the live checkout, so they refuse a request an
 # older run's controller would never read instead of reporting success.
-CONTROLLER_FEATURES = ("inbox", "notes", "verify_before_evidence")
+CONTROLLER_FEATURES = ("inbox", "notes", "verify_before_evidence", "evidence_commit")
 # Another `note` or `attest` holds the lock for moments, a running loop for
 # hours: wait this long for a free lock before treating it as a running loop.
 LOCK_WAIT = 3.0
@@ -185,7 +188,7 @@ def profiles_for(task: Task, paths: list[str], sources=None) -> set[str]:
     return profiles
 
 
-def gate_context(path: Path) -> str:
+def gate_context(path: Path, label: str = "Gate") -> str:
     """The gate result itself, not only where it lives.
 
     A review session runs with prompts disabled and a command allowlist, so a
@@ -193,7 +196,7 @@ def gate_context(path: Path) -> str:
     every gate-backed criterion unverified. The outcome is small, so it travels
     in the prompt; the path stays for identification.
     """
-    summary = f"Gate evidence: {path}"
+    summary = f"{label} evidence: {path}"
     try:
         report = read_json(path)
     except LoopError:
@@ -202,7 +205,7 @@ def gate_context(path: Path) -> str:
         {key: check.get(key) for key in ("name", "returncode", "elapsed", "stopped")}
         for check in report.get("checks", []) if isinstance(check, dict)
     ]
-    return summary + "\nGate result: " + json.dumps({"passed": report.get("passed"), "checks": checks})
+    return summary + f"\n{label} result: " + json.dumps({"passed": report.get("passed"), "checks": checks})
 
 
 def revision_sources(repo: Path, base: str, candidate: str):
@@ -238,9 +241,41 @@ def review_inputs(record: dict, key: str) -> dict:
     inputs = {"base": record["base"], "candidate": record["candidate"], "gate_sha256": record["gate_sha256"]}
     if key == "review":
         inputs["attestations"] = record.get("attestations", {})
+        # Only the final review sees an evidence commit, so only it is bound to one.
+        if "evidence_commit" in record:
+            inputs.update(evidence_commit=record["evidence_commit"], evidence_gate_sha256=record.get("evidence_gate_sha256"))
     elif key == "security_review":
         inputs["paths"] = record["security_paths"]
     return inputs
+
+
+def checked_gate(path: Path, expected: str) -> dict:
+    """A stored gate report whose bytes and command logs are unchanged; it may record a failure."""
+    if path.is_symlink() or not path.is_file() or digest(path) != expected:
+        raise LoopError("gate evidence changed")
+    report = read_json(path)
+    for check in report.get("checks", []):
+        log = Path(check["log"])
+        if log.is_symlink() or not log.is_file() or digest(log) != check["sha256"]:
+            raise LoopError("gate command log changed")
+    return report
+
+
+def accepted_target(record: dict) -> str:
+    """The commit acceptance fast-forwards to: the evidence commit on top of the candidate, if any."""
+    return record.get("evidence_commit") or record["candidate"]
+
+
+def evidence_context(record: dict, paths: list[str], gates: Path) -> str:
+    """What the final verifier needs to grade the candidate and its evidence commit together."""
+    return (
+        f"Evidence commit: {record['evidence_commit']}. This checkout is at it, and its only parent is the candidate: "
+        "base..candidate is the code under review, and candidate..evidence adds only these evidence files (data): "
+        + json.dumps(paths) + ". Grade the evidence-gated criteria from the committed frames and records, the dated "
+        "validation entry and the attestations: open each frame the entry names with the Read tool, which shows "
+        "images, and confirm it shows what the entry says. A frame you cannot open, or one that contradicts the "
+        "entry, leaves its criterion unverified or failing.\n" + gate_context(gates, "Evidence commit docs gate")
+    )
 
 
 def review_validator(task: Task, record: dict, key: str):
@@ -404,7 +439,7 @@ class Runner:
             self.recover_usage()
         self.interrupted = False
         self.reported_phase: tuple[str, str | None] | None = None
-        self.reported_status: dict[str, tuple[str, int]] = {}
+        self.reported_status: dict[str, tuple[str, int, str]] = {}
 
     def recover_usage(self) -> None:
         reported = 0
@@ -459,14 +494,15 @@ class Runner:
         if active:
             return  # a step's intermediate statuses are reported by its outcome
         for task_id, record in self.state["tasks"].items():
-            outcome = (record["status"], record["attempts"])
+            reason = " ".join(str(record.get("reason", "")).split())[:240]
+            # The reason counts: a refused evidence commit keeps the task awaiting evidence.
+            outcome = (record["status"], record["attempts"], reason)
             if self.reported_status.get(task_id) == outcome:
                 continue
-            if record["status"] == "awaiting_evidence" and not self.missing_evidence(record):
+            if record["status"] == "awaiting_evidence" and not self.missing_evidence(record) and not self.evidence_refused(record):
                 continue  # reviewed and about to be accepted; only waiting on an owner is news
             self.reported_status[task_id] = outcome
-            reason = " ".join(str(record.get("reason", "")).split())[:240]
-            where = f" at {record['candidate'][:12]}" if record["status"] == "accepted" and record.get("candidate") else ""
+            where = f" at {accepted_target(record)[:12]}" if record["status"] == "accepted" and record.get("candidate") else ""
             print(f"{stamp} {task_id}: {record['status']}{where}" + (f" ({reason})" if reason else ""), flush=True)
 
     def stop_requested(self) -> bool:
@@ -550,8 +586,7 @@ class Runner:
         if phase == "accepting" and active:
             task_id = active["task"]
             record = self.state["tasks"][task_id]
-            candidate = record["candidate"]
-            if actual == candidate:
+            if actual == accepted_target(record):
                 self.finish_acceptance(task_id, record)
                 self.ingest()
                 return
@@ -567,6 +602,10 @@ class Runner:
             if phase in REVIEW_PHASES and record.get("candidate") and record.get("gate_sha256"):
                 self.validate_candidate(record)
                 record.update(status="review_blocked", reason="independent review interrupted; candidate and gates retained")
+            elif phase == EVIDENCE_GATING and record.get("candidate") and record.get("gate_sha256"):
+                # Only the evidence commit's own gate was running; it reruns in a fresh checkout.
+                self.validate_candidate(record)
+                record.update(status="awaiting_evidence", reason="evidence commit gate interrupted; resume reruns it")
             else:
                 record["status"] = "interrupted"
                 record["reason"] = f"interrupted during {phase}; preserved attempt, retry from accepted source"
@@ -678,7 +717,9 @@ class Runner:
                         continue
                 else:
                     missing = self.missing_evidence(record)
-                    if missing and evidence_round_open(task, record):
+                    # Waiting on its owner: evidence not yet attested, or an evidence
+                    # commit whose docs gate failed and needs replacing.
+                    if (missing and evidence_round_open(task, record)) or (not missing and self.evidence_refused(record)):
                         visited.add(task.id)
                         continue
                     try:
@@ -688,7 +729,9 @@ class Runner:
                         if self.state["phase"] == "accepting":
                             raise
                         self.note_limit(error)
-                        record.update(status="review_blocked", reason=str(error))
+                        # A stopped evidence gate reruns as it was; a stopped review is retried.
+                        status = "awaiting_evidence" if self.state["phase"] == EVIDENCE_GATING else "review_blocked"
+                        record.update(status=status, reason=str(error))
                     except RejectedVerdict as error:
                         # As on an attempt's first pass: a verdict that contradicts itself
                         # fails the attempt instead of stopping every resume at it.
@@ -863,12 +906,18 @@ class Runner:
         if self.budget_stop():
             record["status"] = "awaiting_evidence"
             return
+        # An evidence commit is gated before the final verification grades it with the candidate.
+        evidence_files = None
+        if "evidence_commit" in record and (evidence_files := self.evidence_stage(task, record)) is None:
+            return
         if not saved_review(task, record, "review"):
             # The final verification; with evidence required, the pre-evidence verdict is its context.
             earlier = read_json(Path(record["pre_review"])) if saved_review(task, record, "pre_review") else None
             context = (gate_context(directory / "checks/gates.json")
                        + "\nExternal evidence: " + json.dumps(record.get("attestations", {})) + "\n"
                        + verification_mode(evidence_gated(task, record), pre_evidence=False, earlier=earlier))
+            if evidence_files is not None:
+                context += "\n" + evidence_context(record, evidence_files, Path(record["evidence_directory"]) / "checks/gates.json")
             if notes := notes_context(record, REVIEW_NOTES):
                 context += "\n" + notes
             if self.verify(task, record, "review", context)["verdict"] != "pass":
@@ -885,18 +934,29 @@ class Runner:
             record["status"] = "awaiting_evidence"
             self.save()
             return
+        # Accept the evidence commit, which carries the candidate, when there is one.
+        target, source = candidate, repo
+        if "evidence_commit" in record:
+            evidence_paths(repo, task, candidate, record["evidence_commit"], protected=controlled)
+            target, source = record["evidence_commit"], self.evidence_checkout(record)
         # Persist the acceptance intent before touching the private accepted ref.
         self.state.update(phase="accepting", active={"task": task.id})
         record["status"] = "accepting"
         self.save()
-        git(self.repo, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", str(repo), candidate)
-        git(self.repo, "merge", "--quiet", "--ff-only", candidate)
+        git(self.repo, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", str(source), target)
+        git(self.repo, "merge", "--quiet", "--ff-only", target)
         self.finish_acceptance(task.id, record)
 
     def verify(self, task: Task, record: dict, key: str, context: str) -> dict:
-        """Run one verifier session on the candidate and store its validated verdict under `key`."""
+        """Run one verifier session and store its validated verdict under `key`.
+
+        The final verification of a candidate with an evidence commit runs in the
+        gated evidence checkout, so it reads the committed frames beside the code.
+        """
         directory = Path(record["directory"])
-        repo = directory / "repo"
+        repo, at = directory / "repo", record["candidate"]
+        if key == "review" and "evidence_commit" in record:
+            repo, at = self.evidence_checkout(record), record["evidence_commit"]
         pre = key == "pre_review"
         review_dir = directory / (("pre-review-" if pre else "review-") + uuid.uuid4().hex[:10])
         self.state.update(phase="pre_verifying" if pre else "verifying", active={"task": task.id})
@@ -906,9 +966,11 @@ class Runner:
             candidate=record["candidate"], context=context,
         )
         verdict = checked_verdict(review_validator(task, record, key), value)
-        if head(repo) != record["candidate"] or not checkout_clean(repo, record):
+        if head(repo) != at or not checkout_clean(repo, record):
             raise LoopError("verifier changed candidate source or HEAD")
         self.validate_candidate(record)
+        if at != record["candidate"]:
+            self.evidence_checkout(record)
         self.store_review(record, key, review_dir, value, None if verdict == "pass" else {
             "status": "review_blocked" if verdict == "blocked" else "failed", "reason": json.dumps(value["findings"]),
         })
@@ -968,10 +1030,17 @@ class Runner:
         self.save()
 
     def finish_acceptance(self, task_id: str, record: dict) -> None:
-        if head(self.repo) != record["candidate"] or not checkout_clean(self.repo):
+        target = accepted_target(record)
+        if head(self.repo) != target or not checkout_clean(self.repo):
             raise LoopError("accepted checkout changed during acceptance")
         self.validate_candidate(record)
         task = next(task for task in self.tasks if task.id == task_id)
+        if target != record["candidate"]:
+            # The accepted checkout now holds both; recheck what the evidence commit may change.
+            evidence_paths(self.repo, task, record["candidate"], target, protected=controlled)
+            self.evidence_checkout(record)
+            if self.evidence_refused(record):
+                raise LoopError("acceptance requires an evidence commit whose docs gate passed")
         if not saved_review(task, record, "review"):
             raise LoopError("acceptance requires a passing independent review")
         repo = Path(record["directory"]) / "repo"
@@ -984,7 +1053,7 @@ class Runner:
         if self.missing_evidence(record):
             raise LoopError("acceptance requires all external evidence")
         record.update(status="accepted", accepted_at=now(), reason="all required evidence accepted")
-        self.state.update(accepted_head=record["candidate"], phase="idle", active=None)
+        self.state.update(accepted_head=target, phase="idle", active=None)
         self.save()
 
     def validate_candidate(self, record: dict) -> None:
@@ -992,16 +1061,51 @@ class Runner:
         repo = directory / "repo"
         if head(repo) != record["candidate"] or not checkout_clean(repo, record):
             raise LoopError("candidate source or HEAD changed")
-        report_path = directory / "checks/gates.json"
-        if digest(report_path) != record["gate_sha256"]:
-            raise LoopError("gate evidence changed")
-        report = read_json(report_path)
-        if report.get("passed") is not True:
+        if checked_gate(directory / "checks/gates.json", record["gate_sha256"]).get("passed") is not True:
             raise LoopError("required gates did not pass")
-        for check in report["checks"]:
-            log = Path(check["log"])
-            if log.is_symlink() or not log.is_file() or digest(log) != check["sha256"]:
-                raise LoopError("gate command log changed")
+
+    def evidence_stage(self, task: Task, record: dict) -> list[str] | None:
+        """Check and gate the evidence commit; return its paths, or None when its gate refused it.
+
+        The docs gate runs here, in the loop under its lock, in a fresh private
+        clone of the attempt at the evidence commit; an interrupted gate leaves
+        no half-made checkout behind as evidence. A red gate keeps the task
+        awaiting a corrected evidence commit and spends no attempt.
+        """
+        evidence = record["evidence_commit"]
+        attempt = Path(record["directory"]) / "repo"
+        paths = evidence_paths(attempt, task, record["candidate"], evidence, protected=controlled)
+        if "evidence_gate_sha256" not in record:
+            directory = Path(record["directory"]) / ("evidence-" + uuid.uuid4().hex[:10])
+            self.state.update(phase=EVIDENCE_GATING, active={"task": task.id})
+            self.save()
+            checkout_evidence(attempt, directory / "repo", task.id, record["candidate"], evidence,
+                              tuple(self.state["author"]), owner=self.directory)
+            self.gates(directory / "repo", {"docs"}, directory / "checks")
+            record.update(evidence_directory=str(directory), evidence_gate_sha256=digest(directory / "checks/gates.json"))
+            self.save()
+        self.evidence_checkout(record)
+        if self.evidence_refused(record):
+            gates = Path(record["evidence_directory"]) / "checks/gates.json"
+            record.update(status="awaiting_evidence", reason=f"evidence commit {evidence[:12]} failed its docs gate; "
+                          f"attest a corrected one with --replace-evidence-commit (inspect {gates})")
+            return None
+        return paths
+
+    def evidence_checkout(self, record: dict) -> Path:
+        """The gated checkout of the evidence commit, unchanged since its gate ran."""
+        repo = Path(record["evidence_directory"]) / "repo"
+        if head(repo) != record["evidence_commit"] or not checkout_clean(repo):
+            raise LoopError("evidence checkout source or HEAD changed")
+        checked_gate(Path(record["evidence_directory"]) / "checks/gates.json", record["evidence_gate_sha256"])
+        return repo
+
+    def evidence_refused(self, record: dict) -> bool:
+        """Whether the evidence commit's docs gate ran and failed, so only a replacement can proceed."""
+        if "evidence_commit" not in record or "evidence_gate_sha256" not in record:
+            return False
+        gates = Path(record["evidence_directory"]) / "checks/gates.json"
+        return checked_gate(gates, record["evidence_gate_sha256"]).get("passed") is not True
 
 
 def revert_target(subject: str) -> str | None:
@@ -1204,14 +1308,15 @@ def apply_note(state: dict, request: dict) -> bool:
     return True
 
 
-def checked_attestation(directory: Path, state: dict, request: dict) -> dict | None:
+def checked_attestation(directory: Path, state: dict, request: dict, *, commit_check: str = "fetch") -> dict | None:
     """The task record an attestation request applies to, or None when it already did.
 
     The one rule set for an attestation applied directly, one queued while a
     controller holds the run, and that controller's ingestion of it. The
     evidence file itself is checked as it is copied: a regular file, not a
     symlink, of at most 32 MiB, and for a queued request the digest recorded
-    when it was queued.
+    when it was queued. `commit_check` sets how far a named evidence commit is
+    checked (see `checked_evidence_commit`).
     """
     task_id, candidate, kind, summary = (request.get(key) for key in ("task", "candidate", "evidence_kind", "summary"))
     record = task_record(state, task_id)
@@ -1228,15 +1333,55 @@ def checked_attestation(directory: Path, state: dict, request: dict) -> dict | N
         raise LoopError("this candidate is not waiting for that evidence kind")
     if not isinstance(summary, str) or not summary.strip():
         raise LoopError("provide a nonempty summary and a regular evidence file no larger than 32 MiB")
+    task = next((item for item in load_spec(directory / "tasks.json") if item.id == task_id), None)
+    if task is None:
+        raise LoopError(f"task {task_id!r} is not part of this run's contract")
     # Evidence rounds are the expensive step; spend one only on a candidate
     # that already passed every review that needs no evidence. A run whose
     # controller predates that order, or a contract that marks no criterion as
     # waiting for evidence, never runs those reviews.
-    if "verify_before_evidence" in state.get("controller_features", ()):
-        task = next((item for item in load_spec(directory / "tasks.json") if item.id == task_id), None)
-        if task is None or not evidence_round_open(task, record):
-            raise LoopError("candidate has not passed its pre-evidence verification and security review; resume to finish them first")
+    if "verify_before_evidence" in state.get("controller_features", ()) and not evidence_round_open(task, record):
+        raise LoopError("candidate has not passed its pre-evidence verification and security review; resume to finish them first")
+    checked_evidence_commit(state, task, record, request, commit_check)
     return record
+
+
+def checked_evidence_commit(state: dict, task: Task, record: dict, request: dict, check: str) -> None:
+    """The evidence-commit rules of an attestation request; an attestation may name none.
+
+    `check` sets how far they go. "fetch", under the run lock, copies the
+    commit from the owner's repository into the attempt clone under its own ref
+    and checks it there. "inspect" checks it read-only in the owner's
+    repository, so a request refused anyway is never queued, and writes no run
+    state while a controller holds the lock. "later" checks the request alone,
+    for the polls that wait for a busy lock.
+    """
+    evidence_commit, source, replace = (request.get(key) for key in ("evidence_commit", "evidence_repo", "replace_evidence_commit"))
+    if (evidence_commit is None) != (source is None) or replace not in {None, False, True}:
+        raise LoopError("name an evidence commit and the repository holding it together")
+    if evidence_commit is None:
+        if replace:
+            raise LoopError("replacing the evidence commit needs the new one")
+        return
+    if "evidence_commit" not in state.get("controller_features", ()):
+        raise LoopError("this run's saved controller predates evidence commits and would never accept one; "
+                        "attest without --evidence-commit, or use a run created by this controller")
+    if not isinstance(evidence_commit, str) or not SHA.fullmatch(evidence_commit) or not isinstance(source, str) or not Path(source).is_absolute():
+        raise LoopError("an evidence commit is named by its full hexadecimal sha and the absolute path of the repository holding it")
+    current = record.get("evidence_commit")
+    if current and current != evidence_commit and not replace:
+        raise LoopError(f"candidate already carries evidence commit {current[:12]}; replacing it needs "
+                        "--replace-evidence-commit, which drops the attestations bound to it")
+    if check == "later":
+        return
+    attempt = Path(record["directory"]) / "repo"
+    if head(attempt) != record["candidate"] or not checkout_clean(attempt):
+        raise LoopError("candidate source or HEAD changed")
+    if check == "fetch":
+        fetch_evidence(attempt, Path(source), task.id, evidence_commit)
+        evidence_paths(attempt, task, record["candidate"], evidence_commit, protected=controlled)
+    else:
+        evidence_paths(Path(source), task, record["candidate"], evidence_commit, protected=controlled, checkout=attempt)
 
 
 def apply_attestation(directory: Path, state: dict, request: dict, evidence: Path, sha256: str | None = None) -> bool:
@@ -1249,23 +1394,39 @@ def apply_attestation(directory: Path, state: dict, request: dict, evidence: Pat
     if sha256 is not None and copied != sha256:
         (directory / artifact).unlink()
         raise LoopError("queued evidence changed after it was submitted")
+    evidence_commit = request.get("evidence_commit")
+    if evidence_commit and (record.get("evidence_commit") != evidence_commit or request.get("replace_evidence_commit")):
+        # One evidence commit per candidate: a replacement unbinds every
+        # attestation made for the old one, and any replacement, even by the
+        # same commit, clears its docs-gate result so the gate runs again.
+        old = record.get("evidence_commit")
+        if old != evidence_commit:
+            record["attestations"] = {
+                key: value for key, value in record.get("attestations", {}).items()
+                if not old or value.get("evidence_commit") != old
+            }
+        for key in ("evidence_directory", "evidence_gate_sha256"):
+            record.pop(key, None)
+        record["evidence_commit"] = evidence_commit
     proof = {
         "candidate": candidate, "kind": kind, "summary": request["summary"], "artifact": artifact.as_posix(),
         "sha256": copied, "recorded_at": now(),
     }
+    if evidence_commit:
+        proof["evidence_commit"] = evidence_commit
     if sha256 is not None:
         proof["request"] = request["id"]  # makes a re-run ingestion of this queued request a no-op
     record.setdefault("attestations", {})[kind] = proof
     return True
 
 
-def check_request(directory: Path, state: dict, request: dict) -> None:
+def check_request(directory: Path, state: dict, request: dict, *, commit_check: str = "later") -> None:
     """Validate a request against `state` without changing anything."""
     kind = request.get("kind")
     if kind == "note":
         checked_note(state, request)
     elif kind == "attest":
-        checked_attestation(directory, state, request)
+        checked_attestation(directory, state, request, commit_check=commit_check)
     else:
         raise LoopError(f"unknown request kind {kind!r}")
 
@@ -1315,16 +1476,24 @@ def submit(directory: Path, request: dict, evidence: Path | None = None) -> str:
                         f"never apply a queued request; stop it (agent-loop.py stop --run {directory}), then attest with the "
                         f"run's saved controller: python3 {directory / 'controller/scripts/agent-loop.py'} attest ..."
                     )
+                # Once, before queuing: an evidence commit is checked where it lives, read-only.
+                check_request(directory, state, request, commit_check="inspect")
                 inbox.submit(directory, request, evidence, EVIDENCE_BYTES, "evidence file")
                 return "queued"
         time.sleep(LOCK_POLL)
 
 
-def attest(directory: Path, task_id: str, candidate: str, kind: str, evidence: Path, summary: str) -> str:
-    return submit(directory, {
+def attest(directory: Path, task_id: str, candidate: str, kind: str, evidence: Path, summary: str, *,
+           evidence_commit: str | None = None, evidence_repo: Path | None = None, replace: bool = False) -> str:
+    request = {
         "version": 1, "kind": "attest", "id": uuid.uuid4().hex, "at": now(), "task": task_id,
         "candidate": candidate, "evidence_kind": kind, "summary": summary,
-    }, evidence)
+    }
+    if evidence_commit is not None or evidence_repo is not None or replace:
+        # A queued request carries these to the controller, which fetches the commit at ingestion.
+        request.update(evidence_commit=evidence_commit, replace_evidence_commit=replace,
+                       evidence_repo=None if evidence_repo is None else str(evidence_repo.resolve()))
+    return submit(directory, request, evidence)
 
 
 def note(directory: Path, task_id: str, text: str) -> str:
@@ -1389,6 +1558,10 @@ def main(argv=None) -> int:
             command.add_argument("--kind", choices=sorted(EVIDENCE_KINDS), required=True)
             command.add_argument("--evidence", type=Path, required=True)
             command.add_argument("--summary", required=True)
+            command.add_argument("--evidence-commit", help="full sha of the evidence commit on top of the candidate")
+            command.add_argument("--evidence-repo", type=Path, help="repository holding the evidence commit")
+            command.add_argument("--replace-evidence-commit", action="store_true",
+                                 help="replace the candidate's evidence commit, dropping the attestations bound to it")
     args = parser.parse_args(argv)
     # Run directories and records are private to this user: records.py refuses a
     # group- or other-writable record directory or file, so every path the
@@ -1415,7 +1588,9 @@ def main(argv=None) -> int:
             print("stop requested; the controller will terminate owned work and preserve the attempt")
             return 0
         if args.command == "attest":
-            outcome = attest(directory, args.task, args.candidate, args.kind, args.evidence, args.summary)
+            outcome = attest(directory, args.task, args.candidate, args.kind, args.evidence, args.summary,
+                             evidence_commit=args.evidence_commit, evidence_repo=args.evidence_repo,
+                             replace=args.replace_evidence_commit)
             print("evidence recorded; resume to independently verify the candidate" if outcome == "applied" else "evidence " + QUEUED)
             return 0
         if args.command == "note":

@@ -114,8 +114,9 @@ sweep above rejected the second, the evidence and benchmark commits (`5d0d4b5`, 
 run's `accepted` checkout) forced the fifth, and the security-review coverage fault below ended the run
 during that fifth attempt's review, after the review itself had passed.
 
-What generalizes is written once, as the runbook's
-[evidence gated by its own commit](README.md#evidence-gated-by-its-own-commit). The findings behind it:
+What generalizes was written once in the runbook; since October 2, 2026 the evidence is committed on top of
+the candidate instead, with no rebuild ([evidence committed on top of the candidate](README.md#evidence-committed-on-top-of-the-candidate)).
+The findings behind the original order:
 
 - Every acceptance restales every other pending candidate and costs it an implementer attempt, so a queue of
   evidence-bound tasks needs `--max-attempts` headroom for rebuilds that contain no new work, and the tasks

@@ -170,7 +170,9 @@ class Codex:
             "only when the patch is ready for independent validation. Return blocked for a "
             "missing capability or material decision that prevents preparing the patch. "
             "External native/performance/package/vendor attestations follow candidate creation; "
-            "report those pending in the summary. Never invent evidence."
+            "report those pending in the summary, never in the repository: write no dated "
+            "validation entry and no 'pending' placeholder for them, because their owner "
+            "commits the whole entry with the evidence. Never invent evidence."
             if role == "implementer" else
             "Independently review this exact candidate against every acceptance criterion. "
             "The source checkout is read-only. Inspect actual implementation and gate evidence; "

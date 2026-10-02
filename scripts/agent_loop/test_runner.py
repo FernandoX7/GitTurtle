@@ -57,6 +57,7 @@ class FakeCodex:
         self.calls = []
         self.sessions = []
         self.context_log = []
+        self.repos = []
         self.output_tokens = 0
 
     def preflight(self):
@@ -66,6 +67,7 @@ class FakeCodex:
         self.calls.append((role, feature.id))
         self.sessions.append((role, options))
         self.context_log.append((role, context))
+        self.repos.append((role, repo))
         self.output_tokens += 10
         if role == "implementer":
             (repo / "docs").mkdir(exist_ok=True)

@@ -44,7 +44,7 @@ On Linux, capture through a [scenario](../../../scripts/native_qa/README.md#scen
 1. Write the task's spec, or extend the committed `docs/evidence/<task>/scenario.json` of the screen you are re-taking: its fixture recipe, variants, steps with guards that stop a route gone astray, crop boxes, a `shows` line per committed capture, and the analyses the criterion names (ring sides, clearance, fill contrast, masked compares). `qa.py scenario check` validates it without a display.
 2. `qa.py scenario run SPEC --build base=EXE --build cand=EXE --out /tmp/gitturtle-evidence/runs/<task>` captures both builds, crops, measures and privacy-scans the crops it will commit; it exits 0 only when every analysis met its expectation and every crop scanned clean.
 3. Give the design reviewer the bundle's `commit/` crops, `analysis.json` and `commit-manifest.json`.
-4. Commit the crops from `commit/`, the spec as `docs/evidence/<task>/scenario.json`, and the dated validation entry naming every frame.
+4. Commit the crops from `commit/`, the spec as `docs/evidence/<task>/scenario.json`, and the dated validation entry naming every frame. For a controller candidate they form one evidence commit on top of the candidate, registered with `attest --evidence-commit SHA --evidence-repo PATH` ([procedure](../../../docs/development/README.md#evidence-committed-on-top-of-the-candidate)).
 
 A rebuilt candidate is re-checked with `qa.py recheck docs/evidence/<task>/scenario.json --exe EXE --committed docs/evidence/<task>`, and `qa.py attestation` writes the attestation file from the bundle and that re-check.
 
