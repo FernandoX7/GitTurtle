@@ -168,6 +168,20 @@ class ReadOnlyTest(unittest.TestCase):
         self.assertEqual(self.dirs.preferences.stat().st_mode & 0o7777, 0o664)
         (self.themes / "themes.json").write_text("{}")
 
+    def test_a_failure_after_the_mode_changed_puts_it_back(self) -> None:
+        real, calls = os.fchmod, []
+
+        def interrupted(fd, mode):
+            calls.append(mode)
+            real(fd, mode)
+            if len(calls) == 1:
+                raise KeyboardInterrupt  # an asynchronous exception just after the mode changed
+
+        with mock.patch.object(runenv.os, "fchmod", interrupted), self.assertRaises(KeyboardInterrupt):
+            runenv.lock_read_only(self.dirs.root, "config/gitturtle")
+        self.assertEqual(calls, [0o500, 0o755])
+        self.assertEqual(self.themes.stat().st_mode & 0o7777, 0o755)
+
     def test_the_restore_changes_the_locked_directory_not_what_now_has_its_path(self) -> None:
         outside = self.root / "outside"
         outside.mkdir()

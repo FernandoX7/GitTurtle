@@ -211,6 +211,56 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(restores, ["restore config/gitturtle: mode 0500 -> 0755",  # the last locked goes first
                                     "restore config/gitturtle/preferences.json: mode 0444 -> 0644"])
 
+    def test_sigterm_just_after_the_mode_changed_waits_until_the_path_is_recorded(self) -> None:
+        previous = signal.getsignal(signal.SIGTERM)
+        run = self.open_session()
+        themes = run.dirs.preferences.parent
+        themes.chmod(0o755)
+        real = os.fchmod
+
+        def terminated(fd, mode):
+            real(fd, mode)
+            os.kill(os.getpid(), signal.SIGTERM)  # between the mode change and its record
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            try:
+                with mock.patch.object(session.runenv.os, "fchmod", terminated), \
+                        self.assertRaisesRegex(SystemExit, "SIGTERM"):
+                    run.run([{"read_only": "config/gitturtle"}])
+                self.assertEqual([locked.path for locked, _ in run.locked], ["config/gitturtle"])
+                self.assertEqual(themes.stat().st_mode & 0o7777, 0o500)
+            finally:
+                run.close()
+        self.assertEqual(themes.stat().st_mode & 0o7777, 0o755)
+        self.assertEqual(run.log["read_only"][0]["restored"], True)
+        self.assertEqual(signal.getsignal(signal.SIGTERM), previous)
+        self.assertNotIn(signal.SIGTERM, signal.pthread_sigmask(signal.SIG_BLOCK, ()))
+
+    def test_sigterm_during_the_restore_waits_until_every_mode_is_back(self) -> None:
+        received = []
+        self.addCleanup(signal.signal, signal.SIGTERM,
+                        signal.signal(signal.SIGTERM, lambda signum, frame: received.append(signum)))
+        run = self.open_session()
+        run.dirs.preferences.parent.chmod(0o755)
+        run.dirs.preferences.chmod(0o644)
+        real = session.runenv.restore_mode
+
+        def terminated(locked):
+            if not received:
+                os.kill(os.getpid(), signal.SIGTERM)  # before the first of two restores
+            real(locked)
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            run.run([{"read_only": "config/gitturtle/preferences.json"}, {"read_only": "config/gitturtle"}])
+            with mock.patch.object(session.runenv, "restore_mode", terminated):
+                run.close()
+        self.assertEqual(received, [signal.SIGTERM])  # delivered once, to the tool's own handler, afterwards
+        self.assertEqual(run.dirs.preferences.parent.stat().st_mode & 0o7777, 0o755)
+        self.assertEqual(run.dirs.preferences.stat().st_mode & 0o7777, 0o644)
+        log = json.loads((self.root / "run" / "flow-log.json").read_text())
+        self.assertEqual([entry["restored"] for entry in log["read_only"]], [True, True])
+        self.assertNotIn(signal.SIGTERM, signal.pthread_sigmask(signal.SIG_BLOCK, ()))
+
     def test_a_failed_restore_is_reported(self) -> None:
         run = self.open_session()
         themes = run.dirs.preferences.parent

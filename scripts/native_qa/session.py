@@ -12,6 +12,7 @@ run directory.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import signal
@@ -56,6 +57,25 @@ def fixture_state(fixture: Path) -> dict:
     return dict(head=git(fixture, "rev-parse", "HEAD"),
                 status=git(fixture, "status", "--porcelain=v1", "--untracked-files=all"),
                 index_sha256=index_sha)
+
+
+@contextlib.contextmanager
+def sigterm_deferred():
+    """Keep SIGTERM pending through a section that must finish; it is delivered on leaving, once state is consistent.
+
+    Main thread only, like the handler `Session.watch_sigterm` installs. A mask
+    is per thread, so this relies on the main thread being the only thread
+    that can take the signal during a launch: none other runs until the bundle
+    is scanned. The sections start no process, so no child inherits the mask.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
+    try:
+        yield
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
 
 def load_scenario(path: Path | None) -> list[dict]:
@@ -211,33 +231,40 @@ class Session:
         if runenv.within(target, fixture) or runenv.within(fixture, target):
             raise runenv.Refusal(f"read_only {relative}: {target} overlaps the fixture {fixture}; nothing changed")
         self.watch_sigterm()
-        locked = runenv.lock_read_only(self.dirs.root, relative)
-        entry = dict(path=relative, old_mode=f"{locked.old_mode:04o}", new_mode=f"{locked.new_mode:04o}",
-                     at_utc=utc(), restored=None)
-        self.locked.append((locked, entry))
-        self.log["read_only"].append(entry)
-        self.log["input"].append(f"read_only {relative}: mode {entry['old_mode']} -> {entry['new_mode']}"
-                                 + (f"  # {note}" if note else ""))
+        with sigterm_deferred():  # a changed mode is always recorded for close before SIGTERM can end the launch
+            locked = runenv.lock_read_only(self.dirs.root, relative)
+            entry = dict(path=relative, old_mode=f"{locked.old_mode:04o}", new_mode=f"{locked.new_mode:04o}",
+                         at_utc=utc(), restored=None)
+            self.locked.append((locked, entry))
+            self.log["read_only"].append(entry)
+            self.log["input"].append(f"read_only {relative}: mode {entry['old_mode']} -> {entry['new_mode']}"
+                                     + (f"  # {note}" if note else ""))
         print(f"read_only {relative}: mode {entry['old_mode']} -> {entry['new_mode']} until the launch ends",
               flush=True)
 
     def restore_read_only(self) -> None:
-        """Put back every mode `read_only` removed, the last first; a failure is printed and kept, never dropped."""
-        while self.locked:
-            locked, entry = self.locked.pop()
-            try:
-                runenv.restore_mode(locked)
-            except OSError as error:
-                entry.update(restored=False, error=str(error))
-                message = f"could not restore mode {entry['old_mode']} of {locked.path} in {self.dirs.root}: {error}"
-                self.restore_failures.append(message)
-                print(f"error: {message}", file=sys.stderr, flush=True)
-            else:
-                entry["restored"] = True
-                self.log["input"].append(f"restore {locked.path}: mode {entry['new_mode']} -> {entry['old_mode']}")
-        if self.watching_sigterm:
-            signal.signal(signal.SIGTERM, signal.SIG_DFL if self.previous_sigterm is None else self.previous_sigterm)
-            self.watching_sigterm = False
+        """Put back every mode `read_only` removed, the last first; a failure is printed and kept, never dropped.
+
+        A SIGTERM that arrives meanwhile waits until every mode is back and the
+        tool's own handler is reinstated, which then receives it.
+        """
+        with sigterm_deferred():
+            while self.locked:
+                locked, entry = self.locked.pop()
+                try:
+                    runenv.restore_mode(locked)
+                except OSError as error:
+                    entry.update(restored=False, error=str(error))
+                    message = (f"could not restore mode {entry['old_mode']} of {locked.path} in {self.dirs.root}: "
+                               f"{error}")
+                    self.restore_failures.append(message)
+                    print(f"error: {message}", file=sys.stderr, flush=True)
+                else:
+                    entry["restored"] = True
+                    self.log["input"].append(f"restore {locked.path}: mode {entry['new_mode']} -> {entry['old_mode']}")
+            if self.watching_sigterm:
+                signal.signal(signal.SIGTERM, signal.SIG_DFL if self.previous_sigterm is None else self.previous_sigterm)
+                self.watching_sigterm = False
 
     # ---------- frames ----------
     def capture(self, name: str, what: str = "", park: bool = True, settle: float = 0.0,

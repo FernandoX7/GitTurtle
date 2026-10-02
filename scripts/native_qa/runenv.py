@@ -169,13 +169,15 @@ def lock_read_only(root: Path, relative: str) -> Locked:
 
     Refuses, with nothing changed, a symbolic link in any component, a missing
     component, a final entry that is neither a directory nor a regular file,
-    and a target that resolves outside `root`.
+    and a target that resolves outside `root`. Any exception after the mode
+    changed puts the old mode back before it propagates.
     """
     problem = read_only_problem(relative)
     if problem is not None:
         raise Refusal(f"read_only: {problem}")
     parts = relative.split("/")
     fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    old = None
     try:
         for depth, part in enumerate(parts):
             where = "/".join(parts[:depth + 1])
@@ -204,7 +206,11 @@ def lock_read_only(root: Path, relative: str) -> Locked:
         os.fchmod(fd, new)
         return Locked(relative, fd, old, new)
     except BaseException:
-        os.close(fd)
+        try:
+            if old is not None and stat.S_IMODE(os.fstat(fd).st_mode) != old:
+                os.fchmod(fd, old)  # the mode changed before the failure: put it back before reporting it
+        finally:
+            os.close(fd)
         raise
 
 
