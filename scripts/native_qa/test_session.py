@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from native_qa import session, stores
+from native_qa import runenv, session, stores
 
 QA = Path(__file__).resolve().parent / "qa.py"
 INFO = {"application": "GitTurtle", "version": "0.1.0", "source_revision": "c" * 40, "source_tree": "clean",
@@ -286,8 +286,81 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(themes.stat().st_mode, mode)
         self.assertEqual(run.locked, [])
 
+    def test_home_files_are_seeded_before_the_launch_and_their_digests_logged(self) -> None:
+        files = {".local/state/omarchy/current/theme/colors.toml": b'accent = "#7aa2f7"\n',
+                 ".local/state/omarchy/current/theme.name": b"tokyo-night\n"}
+        run = self.open_session(home_files=files)
+        home = run.dirs.paths["HOME"]
+        for relative, data in files.items():
+            self.assertEqual((home / relative).read_bytes(), data)
+        digests = {path: stores.sha256(data) for path, data in sorted(files.items())}
+        self.assertEqual(run.log["header"]["home_files"], digests)
+        with contextlib.redirect_stdout(io.StringIO()):
+            run.close()
+        self.assertEqual(json.loads((self.root / "run" / "flow-log.json").read_text())["header"]["home_files"], digests)
+        self.assertEqual(self.open_session(run_dir=self.root / "plain").log["header"]["home_files"], {})
+
+    def test_reading_steps_send_nothing_and_keep_their_readings(self) -> None:
+        focused = dict(name="Follow system appearance", role="toggle button", states=["focused", "focusable"],
+                       depth=5)
+        found = dict(pid=4242, seconds=0.1, application="GitTurtle", nodes=40, truncated=False, focused=focused,
+                     all_focused=[focused])
+        asked = []
+
+        def read_focus(pid, within):
+            asked.append((pid, within))
+            return dict(found)
+
+        run = self.open_session(lock_check=lambda: True)  # locked: a reading still runs, since it sends nothing
+        run.driver = None  # any input would fail
+        run.proc = mock.Mock(pid=4242)
+        with mock.patch.object(session.a11y, "read_focus", read_focus), contextlib.redirect_stdout(io.StringIO()):
+            run.run([{"atspi_focus": "switch", "within": 2.0, "note": "Switch focused"},
+                     {"store_snapshot": "seeded", "quiet": 0.1, "within": 2.0}])
+        self.assertEqual(asked, [(4242, 2.0)])
+        self.assertEqual(sorted(run.readings), ["seeded", "switch"])
+        switch = run.readings["switch"]
+        self.assertEqual((switch["kind"], switch["note"], switch["focused"]), ("atspi_focus", "Switch focused", focused))
+        seeded = run.readings["seeded"]
+        self.assertEqual((seeded["kind"], seeded["path"], seeded["stable"]),
+                         ("store_snapshot", "config/gitturtle/preferences.json", True))
+        self.assertEqual(seeded["sha256"], stores.sha256(run.dirs.preferences.read_bytes()))
+        self.assertEqual(seeded["json"]["settings"]["theme"], "midnight")
+        with self.assertRaisesRegex(SystemExit, "reading switch was already taken"):
+            run.run([{"store_snapshot": "switch"}])
+        # No application on the bus, a store that never settles, or a path outside the XDG homes stops the launch.
+        lost = dict(found, application=None, focused=None, all_focused=[], error="no AT-SPI application with pid 4242")
+        with mock.patch.object(session.a11y, "read_focus", lambda pid, within: lost), \
+                self.assertRaisesRegex(SystemExit, "atspi_focus gone: no AT-SPI application"):
+            run.run([{"atspi_focus": "gone"}])
+        self.assertIn("gone", run.readings)  # kept for the record all the same
+        # AT-SPI that cannot even be initialised or read is the tool's failure: a refusal (inconclusive), not a
+        # finding on the build.
+        with mock.patch.object(session.a11y, "read_focus", side_effect=RuntimeError("atspi_init failed")), \
+                self.assertRaisesRegex(runenv.Refusal, r"refusing: atspi_focus broken: AT-SPI could not be read "
+                                                       r"\(RuntimeError\('atspi_init failed'\)\)"):
+            run.run([{"atspi_focus": "broken"}])
+        self.assertEqual((run.readings["broken"]["focused"], run.readings["broken"]["pid"]), (None, 4242))
+        busy = {key: seeded[key] for key in ("waited_s", "quiet_s", "exists", "sha256", "bytes", "mtime_ns", "inode",
+                                             "json")}
+        with mock.patch.object(session.stores, "snapshot", lambda *args, **kwargs: dict(busy, stable=False)), \
+                self.assertRaisesRegex(SystemExit, "still changing after 10.0 s"):
+            run.run([{"store_snapshot": "busy"}])
+        for path in ("home/.config/x", "/config/gitturtle/preferences.json", "config/../../x"):
+            with self.subTest(path=path), self.assertRaisesRegex(SystemExit, "store_snapshot bad"):
+                run.run([{"store_snapshot": "bad", "path": path}])
+        run.proc = None
+        with contextlib.redirect_stdout(io.StringIO()):
+            run.close()
+        log = json.loads((self.root / "run" / "flow-log.json").read_text())
+        self.assertEqual([(r["label"], r["kind"]) for r in log["readings"]],
+                         [("switch", "atspi_focus"), ("seeded", "store_snapshot"), ("gone", "atspi_focus"),
+                          ("broken", "atspi_focus"), ("busy", "store_snapshot")])
+        self.assertEqual(log["input"], [])
+
     def test_refusals_leave_no_run_directory(self) -> None:
-        for kwargs in (dict(for_commit=True), dict(extra_env={"XDG_CONFIG_HOME": "/x"})):
+        for kwargs in (dict(for_commit=True), dict(extra_env={"XDG_CONFIG_HOME": "/x"}),
+                       dict(home_files={"../outside": b"x"}), dict(home_files={".gitconfig": b"[user]"})):
             with self.subTest(kwargs=kwargs), self.assertRaises(SystemExit):
                 session.Session(self.binary, self.fixture, self.root / "run", b'{"version": 6}', **kwargs)
             self.assertFalse((self.root / "run").exists())
@@ -321,6 +394,12 @@ class ScenarioTest(unittest.TestCase):
                 path.write_text(json.dumps([{"wait": 0}, {"read_only": bad}]))
                 with self.subTest(bad=bad), self.assertRaisesRegex(SystemExit, r"scenario step 1 \(\$\[1\]\.read_only\)"):
                     session.load_scenario(path)
+            path.write_text(json.dumps([{"atspi_focus": "switch"}, {"store_snapshot": "store"},
+                                        {"store_snapshot": "themes", "path": "config/gitturtle/themes.json"}]))
+            self.assertEqual(len(session.load_scenario(path)), 3)
+            path.write_text(json.dumps([{"store_snapshot": "x", "path": "home/.gitconfig"}]))
+            with self.assertRaisesRegex(SystemExit, r"scenario step 0 \(\$\[0\]\.path\)"):
+                session.load_scenario(path)
 
 
 class CommandLineTest(unittest.TestCase):

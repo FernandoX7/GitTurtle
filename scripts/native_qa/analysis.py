@@ -1,11 +1,14 @@
-"""Pixel analyses for native-QA evidence: focus-ring sides, clearance, fill contrast and masked compares.
+"""Analyses for native-QA evidence: focus-ring sides, clearance, fill contrast and masked compares on frames,
+and the focused AT-SPI node and store snapshots on a launch's readings.
 
 Pure functions on Pillow images, with no display. Coordinates are window
 pixels and boxes are PIL boxes, `(x0, y0, x1, y1)` with exclusive ends. Each
 analysis returns its measurements, a `passed` verdict against the thresholds
 it was given, and the `reasons` for a failure. `evaluate` runs one analysis
 entry of a scenario (`scenario.py` validates and normalises those entries);
-contrast is the WCAG ratio of relative luminances (`frames.contrast`).
+contrast is the WCAG ratio of relative luminances (`frames.contrast`). The
+reading kinds read what a launch's `atspi_focus` and `store_snapshot` steps
+recorded in its flow-log.json, not frames.
 """
 
 from __future__ import annotations
@@ -15,7 +18,9 @@ from collections import Counter
 from . import frames
 
 SIDES = ("top", "right", "bottom", "left")
-KINDS = ("ring", "clearance", "fill", "compare")
+# Each reading kind with the step kind whose readings it reads.
+READING_KINDS = {"atspi_focus": "atspi_focus", "store_compare": "store_snapshot"}
+KINDS = ("ring", "clearance", "fill", "compare", *READING_KINDS)
 TOLERANCE = 6     # per channel; a ring is one colour, but blending at its ends can move it a few units
 REACH = 4         # px searched on each side of a rect's edge for its ring
 CORNER = 10       # px left out at each end of a side, where a ring rounds its corner (8 left blended pixels in 2026)
@@ -296,9 +301,136 @@ def masked_compare(a, b, region=None, masks=(), max_pixels: int | None = None, m
                 passed=not reasons, reasons=reasons)
 
 
+# ---------- readings ----------
+ABSENT = "<absent>"  # a JSON key one snapshot lacks
+
+
+def focused_node(reading: dict, node: str | None = None, role: str | None = None, states=(), not_states=(),
+                 same: dict | None = None) -> dict:
+    """Whether an `atspi_focus` reading's focused node has this name and role, holds `states` and none of
+    `not_states`, and, given `same` (another reading), matches its focused node in name, role and states."""
+    focused, reasons = reading.get("focused"), []
+    if reading.get("error"):
+        reasons.append(reading["error"])
+    if focused is None:
+        reasons.append("AT-SPI reported no focused node")
+    else:
+        if node is not None and focused.get("name") != node:
+            reasons.append(f"the focused node is {focused.get('name')!r}, not {node!r}")
+        if role is not None and focused.get("role") != role:
+            reasons.append(f"the focused node is a {focused.get('role')!r}, not a {role!r}")
+        held = set(focused.get("states", []))
+        lacking = [state for state in states if state not in held]
+        if lacking:
+            reasons.append(f"the focused node lacks {', '.join(lacking)}")
+        unwanted = [state for state in not_states if state in held]
+        if unwanted:
+            reasons.append(f"the focused node is {', '.join(unwanted)}")
+    other = None
+    if same is not None:
+        other = same.get("focused")
+        if other is None:
+            reasons.append(f"reading {same.get('label')!r} has no focused node to match")
+        elif focused is not None:
+            differ = [key for key in ("name", "role") if focused.get(key) != other.get(key)]
+            if sorted(focused.get("states", [])) != sorted(other.get("states", [])):
+                differ.append("states")
+            if differ:
+                reasons.append(f"the focused node differs from reading {same.get('label')!r} in {', '.join(differ)}"
+                               f": {focused} against {other}")
+    return dict(application=reading.get("application"), focused=focused, all_focused=reading.get("all_focused", []),
+                same_as=other, passed=not reasons, reasons=reasons)
+
+
+def json_at(value, key: str):
+    """The value at a dotted `key` (`settings.theme`, `recent_repositories.0`), or ABSENT."""
+    for part in key.split("."):
+        if isinstance(value, dict) and part in value:
+            value = value[part]
+        elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
+            value = value[int(part)]
+        else:
+            return ABSENT
+    return value
+
+
+def json_changes(a, b, prefix: str = "", limit: int = 32) -> list[str]:
+    """The dotted keys whose values differ between two parsed JSON documents, at most `limit`."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        found = []
+        for key in sorted(set(a) | set(b), key=str):
+            if a.get(key, ABSENT) != b.get(key, ABSENT):
+                found += json_changes(a.get(key, ABSENT), b.get(key, ABSENT), f"{prefix}{key}.", limit - len(found))
+            if len(found) >= limit:
+                break
+        return found[:limit]
+    return [] if a == b else [prefix.rstrip(".") or "(the whole document)"]
+
+
+def store_compare(a: dict, b: dict, keys=None) -> dict:
+    """Two `store_snapshot` readings: byte-identical, or, with `keys`, equal at each dotted key of their JSON.
+
+    `changed_keys` lists every key that differs, for the record; `rewritten`
+    says whether the file was written between them (another mtime or inode),
+    which only the byte or key verdict judges.
+    """
+    def summary(snapshot):
+        return {key: snapshot.get(key) for key in ("label", "exists", "stable", "sha256", "bytes")}
+
+    reasons = [f"snapshot {s.get('label')!r} never settled" for s in (a, b) if not s.get("stable", False)]
+    identical = (a.get("exists"), a.get("sha256")) == (b.get("exists"), b.get("sha256"))
+    parsed = all(s.get("json") is not None or not s.get("exists") for s in (a, b))
+    changed = json_changes(a.get("json"), b.get("json")) if parsed else None
+    differing = []
+    if keys is None:
+        if not identical:
+            reasons.append(f"the store's bytes differ: {(a.get('sha256') or 'absent')[:12]} ({a.get('bytes')} bytes) "
+                           f"against {(b.get('sha256') or 'absent')[:12]} ({b.get('bytes')} bytes)"
+                           + (f"; changed keys {', '.join(changed[:8])}" if changed else ""))
+    elif not parsed:
+        reasons.append("a snapshot is not JSON, so its keys cannot be compared")
+    else:
+        for key in keys:
+            before, after = json_at(a.get("json"), key), json_at(b.get("json"), key)
+            if before != after:
+                differing.append(dict(key=key, a=before, b=after))
+                reasons.append(f"{key}: {before!r} against {after!r}")
+    rewritten = (a.get("mtime_ns"), a.get("inode")) != (b.get("mtime_ns"), b.get("inode"))
+    return dict(a=summary(a), b=summary(b), identical=identical, rewritten=rewritten, changed_keys=changed,
+                keys=list(keys) if keys is not None else None, differing=differing, passed=not reasons,
+                reasons=reasons)
+
+
+def reading_refs(entry: dict) -> list[str]:
+    """The readings a normalised analysis entry reads, in a stable order; none for a frame analysis."""
+    if entry["kind"] == "atspi_focus":
+        return [entry["focus"]] + ([entry["same_as"]] if entry.get("same_as") else [])
+    if entry["kind"] == "store_compare":
+        return [entry["a"], entry["b"]]
+    return []
+
+
+def evaluate_readings(entry: dict, reading) -> dict:
+    """Run one reading analysis; `reading(ref)` returns that reading, or None if it is missing."""
+    found = {ref: reading(ref) for ref in reading_refs(entry)}
+    missing = [ref for ref, value in found.items() if value is None]
+    if missing:
+        return dict(passed=False, missing=missing, reasons=[f"reading {ref} is missing" for ref in missing])
+    wrong = [ref for ref, value in found.items() if value.get("kind") != READING_KINDS[entry["kind"]]]
+    if wrong:
+        return dict(passed=False, reasons=[f"reading {ref} comes from {found[ref].get('kind')}, but {entry['kind']} "
+                                           f"reads only {READING_KINDS[entry['kind']]} readings" for ref in wrong])
+    if entry["kind"] == "atspi_focus":
+        return focused_node(found[entry["focus"]], entry.get("node"), entry.get("role"), entry["states"],
+                            entry["not_states"], found.get(entry.get("same_as")))
+    return store_compare(found[entry["a"]], found[entry["b"]], entry.get("keys"))
+
+
 # ---------- scenario entries ----------
 def frame_refs(entry: dict) -> list[str]:
     """The frames a normalised analysis entry reads, in a stable order."""
+    if entry["kind"] in READING_KINDS:
+        return []
     if entry["kind"] == "compare":
         return [entry["a"], entry["b"]]
     refs = [entry["frame"]]
@@ -308,8 +440,16 @@ def frame_refs(entry: dict) -> list[str]:
     return refs
 
 
-def evaluate(entry: dict, resolve) -> dict:
-    """Run one normalised analysis entry; `resolve(ref)` returns that frame as an image, or None if it is missing."""
+def refs(entry: dict) -> list[str]:
+    """Every frame and reading a normalised analysis entry reads."""
+    return frame_refs(entry) + reading_refs(entry)
+
+
+def evaluate(entry: dict, resolve, reading=None) -> dict:
+    """Run one normalised analysis entry; `resolve(ref)` returns that frame as an image and `reading(ref)` that
+    reading, or None if it is missing."""
+    if entry["kind"] in READING_KINDS:
+        return evaluate_readings(entry, reading or (lambda ref: None))
     images = {ref: resolve(ref) for ref in frame_refs(entry)}
     missing = [ref for ref, image in images.items() if image is None]
     if missing:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -215,6 +216,187 @@ class ReadOnlyTest(unittest.TestCase):
         self.assertEqual((outside / "gitturtle").stat().st_mode & 0o7777, 0o755)
         self.assertEqual(outside.stat().st_mode & 0o7777, 0o755)
         self.assertEqual(self.dirs.preferences.stat().st_mode & 0o7777, 0o664)
+
+
+OMARCHY = {".local/state/omarchy/current/theme/colors.toml": b'accent = "#7aa2f7"\n',
+           ".local/state/omarchy/current/theme.name": b"tokyo-night\n",
+           ".local/state/omarchy/current/theme/light.mode": b""}
+
+
+class HomeFilesTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.scratch = tempfile.TemporaryDirectory()
+        self.root = Path(self.scratch.name).resolve()
+        self.operator = self.root / "operator"
+        self.operator.mkdir()
+
+    def tearDown(self) -> None:
+        self.scratch.cleanup()
+
+    def test_paths_are_validated(self) -> None:
+        for good in (".local/state/omarchy/current/theme/colors.toml", "notes.txt", ".config/x/y", "a..b/c"):
+            with self.subTest(good=good):
+                self.assertIsNone(runenv.home_file_problem(good))
+        for bad in ("", "/etc/passwd", "../outside", "a/../../b", ".", "a/./b", "a//b", "a/", "a\\b", ".gitconfig",
+                    ".gitconfig/x", "x\0y", None, 3, "x" * 301):
+            with self.subTest(bad=bad):
+                self.assertIsNotNone(runenv.home_file_problem(bad))
+        self.assertIsNone(runenv.home_overlap(["a/b", "a/c", "ab"]))
+        self.assertEqual(runenv.home_overlap(["a/b/c", "a/b"]), "'a/b' is a file, but 'a/b/c' needs it as a directory")
+
+    def test_prepare_seeds_the_files_before_the_store(self) -> None:
+        dirs = runenv.prepare(self.root / "run", b'{"version": 6}', home=self.operator, home_files=OMARCHY)
+        home = dirs.paths["HOME"]
+        for relative, data in OMARCHY.items():
+            with self.subTest(relative=relative):
+                path = home / relative
+                self.assertTrue(path.is_file() and not path.is_symlink())
+                self.assertEqual(path.read_bytes(), data)
+                self.assertEqual(path.stat().st_mode & 0o777, 0o644 & ~self.umask())
+        self.assertTrue((home / ".gitconfig").is_file())
+        self.assertEqual(dirs.preferences.read_bytes(), b'{"version": 6}')
+
+    @staticmethod
+    def umask() -> int:
+        mask = os.umask(0)
+        os.umask(mask)
+        return mask
+
+    def test_seed_home_returns_each_digest(self) -> None:
+        home = self.root / "home"
+        home.mkdir()
+        digests = runenv.seed_home(home, OMARCHY)
+        self.assertEqual(digests, {path: stores.sha256(data) for path, data in OMARCHY.items()})
+        self.assertEqual(sorted(digests), sorted(OMARCHY))
+
+    def test_bad_files_are_refused_before_anything_is_created(self) -> None:
+        for files, reason in (({"../escape": b"x"}, "without empty, . or .. parts"),
+                              ({"/abs": b"x"}, "relative POSIX path"),
+                              ({".gitconfig": b"[user]"}, "Git identity"),
+                              ({"a": b"x", "a/b": b"y"}, "'a' is a file, but 'a/b' needs it as a directory"),
+                              ({"big": b"x" * (runenv.HOME_FILE_BYTES + 1)}, "at most"),
+                              ({f"f{i}": b"" for i in range(runenv.HOME_FILES + 1)}, "at most 64")):
+            with self.subTest(reason=reason), self.assertRaisesRegex(runenv.Refusal, reason):
+                runenv.prepare(self.root / "run", b"{}", home=self.operator, home_files=files)
+            self.assertFalse((self.root / "run").exists())
+
+    def test_a_link_or_an_existing_file_in_home_is_refused_not_followed(self) -> None:
+        outside = self.root / "outside"
+        outside.mkdir()
+        home = self.root / "home"
+        (home / ".local").mkdir(parents=True)
+        (home / ".local" / "state").symlink_to(outside)
+        with self.assertRaisesRegex(runenv.Refusal, r"\.local/state is not a plain directory"):
+            runenv.seed_home(home, {".local/state/omarchy/current/theme.name": b"x"})
+        self.assertEqual(list(outside.iterdir()), [])
+        (home / "note").symlink_to(outside / "note")
+        with self.assertRaisesRegex(runenv.Refusal, "HOME file note: cannot create it"):
+            runenv.seed_home(home, {"note": b"x"})
+        self.assertFalse((outside / "note").exists())
+        (home / "plain").write_text("kept")
+        with self.assertRaisesRegex(runenv.Refusal, "HOME file plain: cannot create it"):
+            runenv.seed_home(home, {"plain": b"replaced"})
+        self.assertEqual((home / "plain").read_text(), "kept")
+        linked = self.root / "linked-home"
+        linked.symlink_to(home)
+        with self.assertRaises(OSError):
+            runenv.seed_home(linked, {"x": b"x"})  # HOME itself is never reached through a link
+
+
+class SnapshotTest(unittest.TestCase):
+    """`stores.snapshot` on a real file, with a clock that advances one poll per sleep."""
+
+    def setUp(self) -> None:
+        self.scratch = tempfile.TemporaryDirectory()
+        self.root = Path(self.scratch.name).resolve()
+        self.store = self.root / "config" / "gitturtle" / "preferences.json"
+        self.store.parent.mkdir(parents=True)
+        self.now, self.sleeps, self.writes = 0.0, 0, {}
+
+    def tearDown(self) -> None:
+        self.scratch.cleanup()
+
+    def clock(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+        self.sleeps += 1
+        if self.sleeps in self.writes:  # the app saves again at this poll
+            data = self.writes[self.sleeps]
+            partial = self.store.with_name(".preferences.json.tmp")
+            partial.write_bytes(data)
+            os.replace(partial, self.store)  # a new inode, as an atomic save makes
+
+    def snap(self, relative: str = stores.PREFERENCES, quiet: float = 1.0, within: float = 10.0) -> dict:
+        return stores.snapshot(self.root, relative, quiet=quiet, within=within, poll=0.25, clock=self.clock,
+                               sleep=self.sleep)
+
+    def test_a_settled_store_is_read_with_its_digest_size_and_json(self) -> None:
+        data = b'{"version": 6, "settings": {"theme": "omarchy"}}'
+        self.store.write_bytes(data)
+        entry = self.snap()
+        self.assertEqual((entry["stable"], entry["exists"], entry["sha256"], entry["bytes"]),
+                         (True, True, stores.sha256(data), len(data)))
+        self.assertEqual(entry["json"], {"version": 6, "settings": {"theme": "omarchy"}})
+        self.assertEqual(entry["inode"], self.store.stat().st_ino)
+        self.assertEqual(entry["waited_s"], 1.0)
+
+    def test_it_waits_until_the_saves_stop(self) -> None:
+        self.store.write_bytes(b'{"version": 6}')
+        # Saves at 0.75, 1.5 and 2.25 s, each within the quiet second of the one before.
+        self.writes = {3: b'{"version": 6, "a": 1}', 6: b'{"version": 6, "a": 2}', 9: b'{"version": 6, "a": 2}'}
+        entry = self.snap()
+        self.assertTrue(entry["stable"])
+        self.assertEqual(entry["json"], {"version": 6, "a": 2})
+        # The last save (same bytes, a new inode) still restarts the wait: quiet 1 s after it.
+        self.assertEqual(entry["waited_s"], 3.25)
+
+    def test_a_store_that_never_settles_is_returned_unstable(self) -> None:
+        self.store.write_bytes(b"{}")
+        self.writes = {n: f'{{"n": {n}}}'.encode() for n in range(1, 200, 2)}  # a save every half second
+        entry = self.snap(quiet=1.0, within=3.0)
+        self.assertFalse(entry["stable"])
+        self.assertEqual(entry["waited_s"], 3.0)
+
+    def test_an_absent_store_and_one_that_is_not_json(self) -> None:
+        absent = self.snap()
+        self.assertEqual((absent["stable"], absent["exists"], absent["sha256"], absent["json"]),
+                         (True, False, None, None))
+        self.store.write_bytes(b"{not json")
+        garbled = self.snap()
+        self.assertIsNone(garbled["json"])
+        self.assertIn("json_error", garbled)
+        self.assertEqual(garbled["bytes"], 9)
+
+    def test_a_link_anywhere_on_the_way_is_refused_never_followed(self) -> None:
+        outside = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, outside)
+        (outside / "preferences.json").write_text('{"outside": true}')
+        self.store.symlink_to(outside / "preferences.json")
+        with self.assertRaisesRegex(OSError, "config/gitturtle/preferences.json is not a regular file"):
+            self.snap()
+        self.store.unlink()
+        (self.root / "config" / "elsewhere.json").write_text("{}")
+        self.store.symlink_to(self.root / "config" / "elsewhere.json")
+        with self.assertRaisesRegex(OSError, "is not a regular file"):
+            self.snap()  # inside the run directory, but still a link: never followed
+        # A directory on the way that is a link, whether it leads out of the run directory or stays inside it.
+        self.store.unlink()
+        self.store.parent.rmdir()
+        for target in (outside, self.root / "data"):
+            target.mkdir(exist_ok=True)
+            (target / "preferences.json").write_text("{}")
+            self.store.parent.symlink_to(target)
+            with self.subTest(target=target), \
+                    self.assertRaisesRegex(OSError, r"config/gitturtle is not a plain directory"):
+                self.snap()
+            self.store.parent.unlink()
+        for bad in ("../outside.json", "/etc/passwd", "config//x", "config/./x"):
+            with self.subTest(bad=bad), self.assertRaisesRegex(OSError, "not a relative path"):
+                self.snap(bad)
+        # A directory on the way that does not exist yet is an absent store, not an error.
+        self.assertEqual(self.snap("state/gitturtle/absent.json")["exists"], False)
 
 
 class StoreTest(unittest.TestCase):

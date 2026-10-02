@@ -2,9 +2,10 @@
 
 A scenario names its fixture (a deterministic recipe that `recipe.py` builds),
 the window size, the variants (palette x interface text size, each optionally
-with its own store settings), one ordered list of steps that every build role
-runs identically, named crop boxes, the captures to commit and the analyses to
-run on them. `qa.py scenario run`
+with its own store settings and HOME files), one ordered list of steps that
+every build role runs identically, named crop boxes, the captures to commit and
+the analyses to run on them and on the steps' readings (the focused AT-SPI
+node, a settled store). `qa.py scenario run`
 drives it (`play.py`), and `evidence.py` turns its captures into the committed
 crops, manifest, re-check and attestation.
 
@@ -16,6 +17,8 @@ crops with one committed name is a `SpecError` naming its JSON path.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import re
@@ -23,7 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from . import analysis, frames, runenv
+from . import a11y, analysis, frames, runenv, stores
 
 VERSION = 1
 ROLES = ("base", "cand")
@@ -42,7 +45,8 @@ CAPTURE_STABLE = 8.0  # seconds a capture waits, after parking, for two identica
 CAPTURE_QUIET = 1.15  # seconds between those grabs: longer than a caret blink's half period
 
 TOP_LEVEL = ({"version", "task", "variants", "steps"},
-             {"summary", "limitations", "window", "roles", "fixture", "settings", "env", "crops", "analyses"})
+             {"summary", "limitations", "window", "roles", "fixture", "settings", "env", "crops", "analyses",
+              "home", "atspi"})
 # Each step has exactly one action key; these are the options each action takes beside `note` and `when`.
 # No option shares an action's name, so a normalised step still names exactly one action.
 STEPS = {
@@ -60,6 +64,9 @@ STEPS = {
     "stable": {"quiet"},
     "resize": set(),
     "read_only": set(),
+    # Readings: the app's state under a label in flow-log.json, for the reading analyses; they send no input.
+    "atspi_focus": {"within"},
+    "store_snapshot": {"path", "quiet", "within"},
     "mark": {"park_first", "stable_within", "quiet"},
     "guard": {"on_fail"},
     "capture": {"shows", "crop", "roles", "commit", "keep_pointer", "settle", "stable_within", "quiet"},
@@ -73,7 +80,11 @@ ANALYSES = {
                                                          "max_px"}),
     "fill": ({"frame", "region", "reference"}, {"min_contrast", "max_contrast"}),
     "compare": ({"a", "b"}, {"region", "crop", "masks", "max_pixels", "min_pixels", "bands", "band_min"}),
+    "atspi_focus": ({"focus"}, {"node", "role", "states", "not_states", "same_as"}),
+    "store_compare": ({"a", "b"}, {"keys"}),
 }
+READING_STEPS = tuple(analysis.READING_KINDS.values())
+JSON_KEY = re.compile(r"[A-Za-z0-9_-]{1,64}(\.[A-Za-z0-9_-]{1,64}){0,15}")
 # Recipe operations: the action key and the options it takes beside `date`.
 OPERATIONS = {
     "commit": {"files", "allow_empty"},
@@ -103,12 +114,14 @@ class Variant:
     palette: str
     text_size: int | None
     settings: dict = field(default_factory=dict, hash=False)  # store settings over the spec's, for this variant
+    home: dict = field(default_factory=dict, hash=False)  # HOME files (path: bytes) over the spec's, for this variant
 
     @property
     def label(self) -> str:
         """The variant's part of a committed name: `midnight`, or `midnight-13pt` with a text size; a variant with
-        its own settings uses its id, which extends that with what they change (`midnight-13pt-code-18pt`)."""
-        if self.settings:
+        its own settings or HOME files uses its id, which extends that with what they change
+        (`midnight-13pt-code-18pt`)."""
+        if self.settings or self.home:
             return self.id
         return palette_label(self.palette, self.text_size)
 
@@ -116,6 +129,8 @@ class Variant:
         described = dict(id=self.id, palette=self.palette, text_size=self.text_size)
         if self.settings:
             described["settings"] = self.settings
+        if self.home:
+            described["home"] = sorted(self.home)
         return described
 
 
@@ -361,6 +376,42 @@ def store_settings_entry(value, path: str) -> dict:
     return dict(settings)
 
 
+def home_entry(value, path: str) -> dict[str, bytes]:
+    """Files seeded under each launch's HOME, the spec's or a variant's: a relative path to its text, or to
+    `{"base64": ...}`; never the run's Git identity, a path leaving HOME or a file another needs as a directory."""
+    files = mapping(value, path)
+    if not files:
+        fail(path, "no files; leave \"home\" out instead")
+    if len(files) > runenv.HOME_FILES:
+        fail(path, f"{len(files)} files; at most {runenv.HOME_FILES}")
+    seeded = {}
+    for name, content in files.items():
+        problem = runenv.home_file_problem(name)
+        if problem is not None:
+            fail(path, problem)
+        where = f"{path}[{name!r}]"
+        if isinstance(content, str):  # an empty file, such as Omarchy's light.mode marker, is allowed
+            try:
+                data = content.encode()
+            except UnicodeEncodeError:
+                fail(where, "the text is not valid UTF-8; give {\"base64\": ...} instead")
+        else:
+            encoded = obj(content, where, {"base64"})["base64"]
+            if not isinstance(encoded, str):
+                fail(f"{where}.base64", f"expected a base64 string, got {encoded!r}")
+            try:
+                data = base64.b64decode(encoded, validate=True)
+            except binascii.Error as error:
+                fail(f"{where}.base64", f"not base64 ({error})")
+        if len(data) > runenv.HOME_FILE_BYTES:
+            fail(where, f"{len(data)} bytes; at most {runenv.HOME_FILE_BYTES}")
+        seeded[name] = data
+    problem = runenv.home_overlap(seeded)
+    if problem is not None:
+        fail(path, problem)
+    return seeded
+
+
 def variant_list(value, path: str) -> list[Variant]:
     if isinstance(value, dict):
         obj(value, path, {"palettes"}, {"text_sizes"})
@@ -375,7 +426,7 @@ def variant_list(value, path: str) -> list[Variant]:
     variants = []
     for index, item in enumerate(items):
         where = f"{path}[{index}]"
-        obj(item, where, {"palette"}, {"text_size", "id", "settings"})
+        obj(item, where, {"palette"}, {"text_size", "id", "settings", "home"})
         size = item.get("text_size")
         if size is not None:
             integer(size, f"{where}.text_size", TEXT_SIZES.start, TEXT_SIZES.stop - 1)
@@ -386,16 +437,20 @@ def variant_list(value, path: str) -> list[Variant]:
             settings = store_settings_entry(item["settings"], f"{where}.settings")
             if not settings:
                 fail(f"{where}.settings", "no settings; leave \"settings\" out instead")
+        home = home_entry(item["home"], f"{where}.home") if "home" in item else {}
+        if settings or home:
+            what = "settings" if settings else "HOME files"
             ident = item.get("id")
             own = ident[len(default) + 1:] if isinstance(ident, str) and ident.startswith(f"{default}-") else ""
             if not own:
-                fail(f"{where}.id", f"a variant with settings needs an \"id\" that extends '{default}-' with what "
+                fail(f"{where}.id", f"a variant with {what} needs an \"id\" that extends '{default}-' with what "
                                     f"they change, such as '{default}-code-18pt'; its committed names carry that id "
                                     f"in place of '{default}'")
             if SIZE_SEGMENT.match(own):
                 fail(f"{where}.id", f"{ident!r} names an interface size after '{default}-' that only \"text_size\" "
-                                    f"sets; extend '{default}-' with what the settings change instead")
-        variants.append(Variant(text(item.get("id", default), f"{where}.id", VARIANT_ID), palette, size, settings))
+                                    f"sets; extend '{default}-' with what the {what} change instead")
+        variants.append(Variant(text(item.get("id", default), f"{where}.id", VARIANT_ID), palette, size, settings,
+                                home))
     ids = [variant.id for variant in variants]
     duplicate = sorted({i for i in ids if ids.count(i) > 1})
     if duplicate:
@@ -449,6 +504,8 @@ def step_entry(value, path: str, spec: dict) -> dict:
         text(step["note"], f"{path}.note", limit=300)
     step["when"] = when_filter(value.get("when"), f"{path}.when", spec["variants"])
     where = f"{path}.{action}"
+    if action in READING_STEPS:
+        return reading_step(step, path, spec)
     if action == "key":
         text(value["key"], where, KEYSYM)
         step["mods"] = [text(m, f"{path}.mods[{i}]", KEYSYM)
@@ -530,6 +587,64 @@ def step_entry(value, path: str, spec: dict) -> dict:
     return step
 
 
+def reading_step(step: dict, path: str, spec: dict) -> dict:
+    """An `atspi_focus` or `store_snapshot` step, normalised: a label and its waits (and a snapshot's store)."""
+    action = next(key for key in READING_STEPS if key in step)
+    text(step[action], f"{path}.{action}", IDENTIFIER)
+    if action == "atspi_focus":
+        if not spec["atspi"]:
+            fail(f"{path}.atspi_focus", "needs \"atspi\": true, which sets org.a11y.Status IsEnabled for each launch "
+                                        "so the app registers on the accessibility bus")
+        step["within"] = number(step.get("within", a11y.WITHIN), f"{path}.within", 0.1, 60)
+        return step
+    problem = runenv.read_only_problem(step.get("path", stores.PREFERENCES))  # a run-directory path in its XDG homes
+    if problem is not None:
+        fail(f"{path}.path", problem)
+    step["path"] = step.get("path", stores.PREFERENCES)
+    step["quiet"] = number(step.get("quiet", stores.SNAPSHOT_QUIET), f"{path}.quiet", 0.1, 30)
+    step["within"] = number(step.get("within", stores.SNAPSHOT_WITHIN), f"{path}.within", 0.1, 120)
+    if step["within"] < step["quiet"]:
+        fail(f"{path}.within", f"{step['within']} s is shorter than quiet ({step['quiet']} s), so the store could "
+                               "never settle")
+    return step
+
+
+def reading_analysis(entry: dict, value, path: str, ref) -> None:
+    """The parameters of an `atspi_focus` or `store_compare` analysis; `ref` validates a reading's label."""
+    def reading(key):
+        label = ref(key)
+        if label == NOW:
+            fail(f"{path}.{key}", f"{NOW} is a frame; give a reading's label")
+        return label
+
+    if entry["kind"] == "atspi_focus":
+        entry["focus"] = reading("focus")
+        if "same_as" in value:
+            entry["same_as"] = reading("same_as")
+        if "node" in value:
+            entry["node"] = text(value["node"], f"{path}.node", limit=300)
+        if "role" in value:
+            entry["role"] = text(value["role"], f"{path}.role", limit=80)
+        for key in ("states", "not_states"):
+            states = array(value.get(key, []), f"{path}.{key}", 0, len(a11y.STATES))
+            for i, state in enumerate(states):
+                if state not in a11y.STATES:
+                    fail(f"{path}.{key}[{i}]", f"{state!r} is not a state a reading reports: "
+                                               f"{', '.join(a11y.STATES)}")
+            entry[key] = list(states)
+        if set(entry["states"]) & set(entry["not_states"]):
+            fail(path, "a state cannot be both required and refused")
+        if not ({"node", "role", "same_as"} & set(entry) or entry["states"] or entry["not_states"]):
+            fail(path, "an atspi_focus analysis needs node, role, states, not_states or same_as to pass or fail")
+        return
+    entry.update(a=reading("a"), b=reading("b"))
+    if entry["a"] == entry["b"]:
+        fail(path, "a and b name the same snapshot")
+    if "keys" in value:
+        entry["keys"] = [text(key, f"{path}.keys[{i}]", JSON_KEY)
+                         for i, key in enumerate(array(value["keys"], f"{path}.keys", 1, 64))]
+
+
 # ---------- analyses ----------
 def analysis_entry(value, path: str, spec: dict, guard: bool = False) -> dict:
     """A normalised analysis: its kind's parameters with defaults; a guard has no name, filter or expectation."""
@@ -570,7 +685,9 @@ def analysis_entry(value, path: str, spec: dict, guard: bool = False) -> dict:
         if key in value:
             entry[key] = integer(value[key], f"{path}.{key}", minimum, maximum)
 
-    if kind == "ring":
+    if kind in analysis.READING_KINDS:
+        reading_analysis(entry, value, path, ref)
+    elif kind == "ring":
         entry.update(frame=ref("frame"), rect=box(value["rect"], f"{path}.rect", window))
         detect = value.get("colour", "detect")
         entry["colour"] = "detect" if detect == "detect" else colour(detect, f"{path}.colour")
@@ -656,7 +773,7 @@ def analysis_entry(value, path: str, spec: dict, guard: bool = False) -> dict:
         if not {"max_pixels", "min_pixels", "bands"} & set(entry):
             entry["max_pixels"] = 0
     if not guard:
-        per_role = any(split_ref(r, None)[0] is None for r in analysis.frame_refs(entry))
+        per_role = any(split_ref(r, None)[0] is None for r in analysis.refs(entry))
         entry["when"] = when_filter(value.get("when"), f"{path}.when", spec["variants"])
         if per_role:
             entry["roles"] = [text(r, f"{path}.roles", re.compile("|".join(roles)))
@@ -701,7 +818,13 @@ def validate(data, sha256: str = "") -> dict:
                                  "Git isolation), so a spec cannot change what run.json and the attestation report")
         text(item, f"$.env.{key}", limit=500)
     spec["env"] = env
+    spec["home"] = home_entry(data["home"], "$.home") if "home" in data else {}
+    spec["atspi"] = boolean(data.get("atspi", False), "$.atspi")
     spec["variants"] = variant_list(data["variants"], "$.variants")
+    for index, variant in enumerate(spec["variants"]):  # what each launch would seed, as Session checks it
+        problem = runenv.home_files_problem(home_files(spec, variant))
+        if problem is not None:
+            fail(f"$.variants[{index}].home", f"with the spec's own HOME files, {problem}")
     spec["crops"] = {}
     for name, value in mapping(data.get("crops", {}), "$.crops").items():
         spec["crops"][text(name, "$.crops", IDENTIFIER)] = box(value, f"$.crops.{name}", spec["window"])
@@ -721,12 +844,19 @@ def validate(data, sha256: str = "") -> dict:
 
 
 def check_references(spec: dict) -> None:
-    """Per variant: captures are unique, guards read only frames taken before them, analyses only captures."""
+    """Per variant: captures and readings are unique, guards read only frames and readings taken before them,
+    analyses only captures and readings."""
     for variant in spec["variants"]:
         taken: set[str] = set()
         captures: set[str] = set()
+        readings: dict[str, str] = {}  # label: the step kind that took it
         for step in steps_for(spec, variant):
             where = f"$.steps[{step['index']}]"
+            kind = next((key for key in READING_STEPS if key in step), None)
+            if kind is not None:
+                if step[kind] in readings:
+                    fail(where, f"reading {step[kind]!r} is taken twice in variant {variant.id}")
+                readings[step[kind]] = kind
             if "capture" in step:
                 if step["capture"] in captures:
                     fail(where, f"capture {step['capture']!r} is taken twice in variant {variant.id}")
@@ -739,12 +869,26 @@ def check_references(spec: dict) -> None:
                     if ref != NOW and ref not in taken:
                         fail(where, f"the guard reads {ref!r}, which is not marked or captured before it "
                                     f"in variant {variant.id}")
+                check_readings(step["guard"], readings, where, "is not taken before it", variant)
         for index, entry in enumerate(spec["analyses"]):
             if not applies(entry["when"], variant):
                 continue
             for ref in analysis.frame_refs(entry):
                 if split_ref(ref, None)[1] not in captures:
                     fail(f"$.analyses[{index}]", f"reads {ref!r}, which variant {variant.id} never captures")
+            check_readings(entry, readings, f"$.analyses[{index}]", "is never taken", variant)
+
+
+def check_readings(entry: dict, readings: dict[str, str], where: str, absent: str, variant: Variant) -> None:
+    """An analysis or guard reads only readings its variant takes, each of the kind it reads."""
+    wanted = analysis.READING_KINDS.get(entry["kind"])
+    for ref in analysis.reading_refs(entry):
+        label = split_ref(ref, None)[1]
+        if label not in readings:
+            fail(where, f"reads reading {ref!r}, which {absent} in variant {variant.id}")
+        if readings[label] != wanted:
+            fail(where, f"reads {ref!r}, which comes from {readings[label]}, but {entry['kind']} reads only "
+                        f"{wanted} readings")
 
 
 def load(path: Path) -> dict:
@@ -818,3 +962,8 @@ def store_settings(spec: dict, variant: Variant) -> dict:
     if variant.text_size is not None:
         settings["interface_text_size"] = variant.text_size
     return settings
+
+
+def home_files(spec: dict, variant: Variant) -> dict[str, bytes]:
+    """The files seeded under a launch's HOME: the spec's, with the variant's own over them path by path."""
+    return {**spec["home"], **variant.home}
