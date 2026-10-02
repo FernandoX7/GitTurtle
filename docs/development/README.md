@@ -90,6 +90,8 @@ python3 scripts/agent-loop.py status --run /absolute/path/to/run
 python3 scripts/agent-loop.py stop --run /absolute/path/to/run
 ```
 
+Every `--run` (`status`, `stop`, `resume`, `attest` and `note`) also takes the run's bare name under the checkout's `.local/agent-loop`, as the operator scripts do; an existing directory of that name wins, and a name with a path separator, `.` or `..` is never looked up there.
+
 Do not bypass a lock, manually rewrite the state file, or kill an unrelated Codex process to force progress. On interruption, retain the run directory and use the controller's reconciliation procedure below.
 
 ### Coordinator notes
