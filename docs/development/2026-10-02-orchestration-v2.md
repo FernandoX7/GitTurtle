@@ -157,6 +157,48 @@ Each item names its owner files, design and acceptance. Controller items change 
      - the 21 remaining tasks of `queue-2026-10-02.json`, with real dependencies only;
      - the follow-ups in HANDOFF (the kit's focused Button border, the selected-row accent marker, the worktree rows' hover, the Reflog file-row tooltip and entry-list scrollbar, the same-frame reveal, DESIGN.md's reveal sentence, scroll cues for the chooser and Tags, and centred worktree labels);
      - the gpui-base Checkbox and Switch AccessKit disabled flag, after the Switch tasks.
+   - **Queue cut (2026-10-02):** [`queue-2026-10-03.json`](queue-2026-10-03.json), 30 tasks; `python3 scripts/agent-loop.py validate --tasks docs/development/queue-2026-10-03.json` prints `valid task graph: 30 tasks`.
+     - **Carried:** `queue-2026-10-02.json` had 22 remaining tasks, not 21: its 28 minus the six that landed from it (#130, #131, #132, #133, #134, #136). `auth-prompt-platform-wording` (#125) was never in it. All 22 are carried and were re-checked on `main` `9f38416`. None was dropped or narrowed, because no landed PR fixed any of their findings. Moved references and two missing menu call sites are corrected in each contract's dated note.
+     - **Order:** the file order is the controller's order among ready tasks. The kinds are T (tooling, no external evidence), N (native), P (performance), K (package) and V (vendor). Hard tasks say so in their descriptions.
+       - Pilot: `native-qa-display-check-lock` (T), `theme-editor-panel-bounds` (N), `pr-source-gutter-like-compare` (N).
+       - Roots: `focus-reveal-same-frame` (N, hard), `gpui-base-disabled-focus-note` (V N), `history-vanished-scope-refresh` (N, hard), `narrow-large-text-minimums` (N), `lfs-download-icon` (N K), `builtin-light-hover-lift` (N), `code-font-cold-launch-wait` (N P), `history-columns-steady-after-toggle` (N P), `decorations-in-retained-bounds` (N P), `editor-highlights-keep-syntax-readable` (N P, hard), `code-font-blame-conflicts-review-gutter` (N).
+       - Dependents: `tab-reveals-worktree-reflog-profile-rows` (N), `tab-lists-scroll-cues` (N), `kit-button-focused-border` (V N), `worktree-rows-hover-align-marker` (N), `reflog-marker-paths-entry-scrollbar` (N), `theme-card-selection-check` (N), `narrow-large-text-compact-chrome` (N P, hard), `review-arrow-buttons-hover` (N), `copy-actions-say-copied` (N), `review-file-preparation-lifecycle` (N P), `switch-focus-ring-and-hover` (V N, hard), `switch-checked-knob-and-disabled-label` (V N), `settings-focus-reveal-and-steady-switch` (N), `gpui-base-disabled-accesskit-flag` (V N), `menu-checked-items-accessible` (V N), `markdown-diff-fence-colours` (V N, hard).
+     - **Contract rules applied:**
+       - Every native criterion names its states (with their combinations), its palettes (at least Midnight and a light built-in), its text sizes (13 and 18 pt, plus 11 pt where small text matters) and what is measured from the frames.
+       - Each criterion that needs external evidence has an id equal to its kind, one criterion per kind. Renamed: `perf` and `measure` to `performance`, and `mutation` to `vendor`. Split: `menu-checked-items-accessible`'s `atspi` into `native` and `vendor`; `narrow-large-text-compact-chrome`'s `unchanged` into `native` and `performance`; and `narrow-large-text-minimums`' `unchanged` into a test criterion plus `native`. Merged: `code-font-cold-launch-wait`'s `cold` and `warm` into `performance`, and `builtin-light-hover-lift`'s `frames` into `native`. Moved out of `native` into their own `vendor` criterion: the revert runs of the Switch, menu and highlighter tasks.
+       - Every other criterion can be graded from the repository and the gate logs. Requirements that only the handoff or a pull request could show became a comment at the fix, a grep check or a test. The `gates` criteria are gone, because the controller runs the full gate on every candidate.
+       - The evidence owner commits the frames, `docs/evidence/<task>/scenario.json`, the dated `docs/validation.md` entry and any benchmark record on top of the candidate. The implementer writes none of them and no "pending" placeholder.
+     - **Dependencies:** only real ones (the same function, element, test module or `GITTURTLE-PATCH.md`, or one task relying on another's helper or rule). Two tasks that list the same large file but edit different functions stay independent, and item 7's rebase merges them.
+       - The reveal chain: `focus-reveal-same-frame` before `tab-reveals-worktree-reflog-profile-rows` and `tab-lists-scroll-cues`, and the nested-reveal task before the worktree-row and Reflog tasks.
+       - The vendor chain, linked by its shared files: `gpui-base-disabled-focus-note`, then `kit-button-focused-border`, then the two Switch tasks, then the AccessKit flag, `menu-checked-items-accessible` and `markdown-diff-fence-colours`.
+       - The kit border before the worktree rows and theme cards, whose focused frames depend on it.
+       - Narrow minimums before compact chrome, compact chrome before the review arrows, and narrow minimums before copy feedback.
+       - The PR Source gutter before the review-file preparation.
+       - The code-font wait before the steady Settings rows.
+       - The editor highlights before the Markdown fences.
+     - **Decisions (coordinator, 2026-10-02, delegated by the owner; each also in its contract):**
+       - Follow-up (8) folds into `tab-reveals-worktree-reflog-profile-rows`, because #136 already wrote the keyboard and hub sentences and the list of lists is complete only once those lists reveal.
+       - Follow-ups (2), (3) and (5) become one worktree-row task, and (4), (5) and (6) one Reflog task, split by file. The marker reuses the app's `.border_l_2()` pattern, so the two tasks share no helper.
+       - The scroll cue covers all four #136 lists, so the lists stay alike.
+       - The focused Button keeps its unfocused border in `button.rs`, while `apply_focus_ring` stays shared. Three Default Buttons stand for the seven natively, because they share one code path, and the frames that the fix moves are re-taken in place.
+       - A selected theme card is marked with `check.svg` instead of an accent outline, because an accent outline now means focus.
+       - The AccessKit flag covers all six gpui-base toggles from the disabled-focus list, not only Checkbox and Switch, because they have the same omission.
+       - `display-check` reads both GNOME ScreenSaver's `GetActive` and logind's `LockedHint`, as checked on this host on 2026-10-02.
+     - **Added beyond the brief:**
+       - `theme-card-selection-check`, from follow-up (1)'s note that the cards still mark selection with an accent border.
+       - `native-qa-display-check-lock`, from the HANDOFF lesson that `display-check` misses a GNOME lock.
+     - **Left out on purpose:**
+       - Already fixed: the Your themes ring cases (#96), DESIGN.md's worktree branch-choices clip (#132 made it true), the changed-file list's bound (#134) and the sandbox probe and old scope (#126, #127).
+       - Owner or other hardware: VoiceOver live nodes (Mac), the two-column picker (not on Linux X11), the CI cache budget, text scales below about 0.875, the XWayland scale and portal questions (Omarchy host), `gnome-monospace-evidence` (the System76 laptop), `themes-evidence-gaps-macos` and the CI checkpoints C0 to C4.
+       - Owner taste: the theme editor's graph-lane warning on Text.
+     - **Before the run:**
+       - Items 3, 4, 5 and 7 must have landed, because the contracts name `qa.py scenario run`, a committed `scenario.json`, evidence on top of the candidate and the mechanical rebase.
+       - Item 4's evidence-commit check must accept frames re-taken in place elsewhere under `docs/evidence/` when a task's scope is `docs/evidence/**` (`kit-button-focused-border` and `builtin-light-hover-lift`).
+       - No task is rust-only: every app Rust change carries the native profile. The pilot's slot without external evidence is therefore the tooling task, and `--max-tasks 3` takes exactly the three pilot tasks at the head of the file.
+     - **Interactive, not queued:** `vendor/AGENTS.md` is protected in controller sessions.
+       - Its gpui-component row omits the Button's caller focus handle, the disabled Button's hover and focus, and the disabled Switch's thumb (HANDOFF, owner finding M1). It will also need this queue's Button border, Switch, menu and highlighter patches.
+       - Its gpui-base row ("Accessibility, …") already covers the AccessKit flag, but not the disabled-focus patch.
+       - The librarian should update both rows after the vendor tasks land.
 
 9. **Pilot, then the full run.** Start a new run on two or three tasks from the new queue (one rust-only, one native, one with evidence concurrency) to exercise items 1 to 7 end to end; fix what it shows, then run the rest.
 
@@ -175,6 +217,6 @@ The evidence standard does not change: release builds of base and candidate in t
 | 4 Evidence on top | done 2026-10-02 | #141 |
 | 5 Native QA tooling | done 2026-10-02 (in parallel with 1 to 4, as planned) | #139 |
 | 6 Operator tooling | done 2026-10-02 | #142 |
-| 7 Rebase and concurrency | done 2026-10-02 | this PR |
-| 8 Contracts and queue | open | |
+| 7 Rebase and concurrency | done 2026-10-02 | #143 |
+| 8 Contracts and queue | done 2026-10-02: `queue-2026-10-03.json`, 30 tasks | this PR |
 | 9 Pilot and run | open | |
