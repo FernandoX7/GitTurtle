@@ -107,9 +107,10 @@ pub fn editor_with_decorations(
 }
 
 /// Decorate a patch editor built without a presentation, once its caller has prepared one:
-/// the pull request review's Source patch keeps the editor's own line numbers and may open
-/// before its file's preparation finishes. Keep the handle for the editor's life: Find removes
-/// the backgrounds under its matches through it, and [`refresh_theme`] redecorates it.
+/// the pull request review's Source patch may open before its file's preparation finishes, and
+/// then takes these decorations and `diff_view::new`'s gutter in place of the editor's own line
+/// numbers. Keep the handle for the editor's life: Find removes the backgrounds under its
+/// matches through it, and [`refresh_theme`] redecorates it.
 pub fn decorate(
     editor: &Entity<EditorState>,
     presentation: &PatchPresentation,
