@@ -154,6 +154,8 @@ Update the closest contract when behavior changes. Use the [research template](r
 
 Validate development-tool changes with the controller's focused tests and guidance checks. Run Rust/native gates only when changed product code, dependencies or a concrete product concern requires them. A successful fake-child or disposable-runner test establishes controller behavior, not a completed model-driven product feature or an hours-long production run.
 
+The [orchestration v2 plan](2026-10-02-orchestration-v2.md) lists the controller, QA and operator changes in progress since 2026-10-02 and their order. Until an item lands, the procedure above stays in force.
+
 ## Claude Code adapter
 
 The controller can run its fresh sessions through Claude Code instead of Codex with `run --tool claude`. Codex remains the default; a saved run remembers its tool, so `resume` needs no flag. The adapter ([claude.py](../../scripts/agent_loop/claude.py)) launches one non-interactive `claude -p` process per implementer, verifier and security-review session with an explicit `--model`/`--effort`, `--permission-prompts none`, a turn cap, `--output-format json` and `--json-schema` for the same build/review/security result schemas the Codex path validates. Requirements: Claude Code 2.1.257 or later, a completed interactive sign-in (`claude auth status` must report `loggedIn: true`; subscription usage is billed to that account), and committed `.claude/agents/{implementer,implementer-hard,verifier,security-reviewer}.md` role files. Preflight checks all of these before creating a run.
