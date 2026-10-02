@@ -182,17 +182,18 @@ class ReadOnlyTest(unittest.TestCase):
         self.assertEqual(calls, [0o500, 0o755])
         self.assertEqual(self.themes.stat().st_mode & 0o7777, 0o755)
 
-    def test_the_restore_changes_the_locked_directory_not_what_now_has_its_path(self) -> None:
-        outside = self.root / "outside"
-        outside.mkdir()
-        outside.chmod(0o700)
-        locked =runenv.lock_read_only(self.dirs.root, "config/gitturtle")
-        moved = self.root / "run" / "config" / "moved"
-        self.themes.rename(moved)
-        self.themes.symlink_to(outside)
+    def test_the_restore_changes_the_locked_entry_not_what_now_has_its_path(self) -> None:
+        # A regular file, because macOS refuses to move a directory without write permission on it.
+        outside = self.root / "outside.json"
+        outside.write_bytes(b"{}")
+        outside.chmod(0o600)
+        locked = runenv.lock_read_only(self.dirs.root, "config/gitturtle/preferences.json")
+        moved = self.themes / "moved.json"
+        self.dirs.preferences.rename(moved)
+        self.dirs.preferences.symlink_to(outside)
         runenv.restore_mode(locked)
-        self.assertEqual(moved.stat().st_mode & 0o7777, 0o755)
-        self.assertEqual(outside.stat().st_mode & 0o7777, 0o700)
+        self.assertEqual(moved.stat().st_mode & 0o7777, 0o664)
+        self.assertEqual(outside.stat().st_mode & 0o7777, 0o600)
 
     def test_a_link_a_missing_path_or_another_file_type_is_refused_with_nothing_changed(self) -> None:
         outside = self.root / "outside"
