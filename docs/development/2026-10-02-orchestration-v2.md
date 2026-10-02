@@ -77,7 +77,7 @@ The evidence standard does not change: release builds of base and candidate in t
 
 | Item | State | PR |
 | --- | --- | --- |
-| 0 Retire the run | open | |
+| 0 Retire the run | done 2026-10-02: `tab-reveals-branch-and-tag-rows` landed, run stopped | this PR |
 | 1 Tolerant reviewer results | open | |
 | 2 Coordinator notes | open | |
 | 3 Verify before evidence | open | |
