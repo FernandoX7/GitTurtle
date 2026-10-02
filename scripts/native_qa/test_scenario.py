@@ -68,6 +68,8 @@ class SpecTest(unittest.TestCase):
         loaded = scenario.load(EXAMPLE)
         names = [crop.name for crop in scenario.committed(loaded)]
         self.assertEqual(len(names), 20)
+        # Exactly the crops committed beside the spec, so its recheck finds every one under its name.
+        self.assertEqual(sorted(names), sorted(path.name for path in EXAMPLE.parent.glob("*.png")))
         self.assertIn("candidate-midnight-1000x680-branch-chooser-tab-down.png", names)
         self.assertIn("base-porcelain-1000x680-tags-shift-tab-confirm.png", names)
         self.assertNotIn("candidate-porcelain-1000x680-tags-shift-tab-confirm.png", names)
@@ -131,6 +133,54 @@ class SpecTest(unittest.TestCase):
         self.assertEqual([c.name for c in scenario.committed(only_cand)],
                          ["candidate-midnight-1000x680-focus.png", "candidate-porcelain-1000x680-focus.png"])
 
+    def test_a_variant_carries_its_own_store_settings(self) -> None:
+        steps = SPEC["steps"] + [{"key": "Escape", "when": {"variant": ["midnight-13pt-code-18pt"]}}]
+        variants = [{"palette": "midnight", "text_size": 13},
+                    {"palette": "midnight", "text_size": 13, "id": "midnight-13pt-code-18pt",
+                     "settings": {"code_text_size": 18}},
+                    {"palette": "porcelain", "id": "porcelain-code-18pt",
+                     "settings": {"code_text_size": 18, "reopen_last": False}}]
+        loaded = scenario.validate(spec(settings={"code_text_size": 12, "system_code_font": False}, steps=steps,
+                                        variants=variants))
+        plain, code, light = loaded["variants"]
+        # The spec's settings, the variant's own over them, then the variant's text size.
+        self.assertEqual(scenario.store_settings(loaded, plain),
+                         {"code_text_size": 12, "system_code_font": False, "interface_text_size": 13})
+        self.assertEqual(scenario.store_settings(loaded, code),
+                         {"code_text_size": 18, "system_code_font": False, "interface_text_size": 13})
+        self.assertEqual(scenario.store_settings(loaded, light),
+                         {"code_text_size": 18, "system_code_font": False, "reopen_last": False})
+        # A variant with settings commits under its id; a plain one keeps its palette and size. A size after the
+        # settings' own part (`code-18pt`) is theirs, not the interface's.
+        self.assertEqual([c.name for c in scenario.committed(loaded, roles=("cand",))], [
+            "candidate-midnight-13pt-1000x680-focus.png", "candidate-midnight-13pt-code-18pt-1000x680-focus.png",
+            "candidate-porcelain-code-18pt-1000x680-focus.png"])
+        self.assertEqual((plain.describe(), code.describe()),
+                         ({"id": "midnight-13pt", "palette": "midnight", "text_size": 13},
+                          {"id": "midnight-13pt-code-18pt", "palette": "midnight", "text_size": 13,
+                           "settings": {"code_text_size": 18}}))
+        # `when` names a variant by its id.
+        self.assertEqual(scenario.steps_for(loaded, code)[-1].get("key"), "Escape")
+        self.assertEqual([len(scenario.steps_for(loaded, v)) for v in (plain, code, light)], [6, 7, 6])
+
+    def test_a_theme_key_with_underscores_takes_every_variant_form(self) -> None:
+        # 11 of the 20 built-in theme keys have one; ids and committed names keep it, as the palette label does.
+        steps = SPEC["steps"] + [{"key": "Escape", "when": {"variant": ["solarized_dark-18pt-code-14pt"]}}]
+        loaded = scenario.validate(spec(steps=steps, variants=[
+            {"palette": "solarized_dark", "text_size": 18},
+            {"palette": "solarized_dark", "text_size": 18, "id": "solarized_dark-18pt-code-14pt",
+             "settings": {"code_text_size": 14}}]))
+        plain, code = loaded["variants"]
+        self.assertEqual((plain.id, code.id), ("solarized_dark-18pt", "solarized_dark-18pt-code-14pt"))
+        self.assertEqual([c.name for c in scenario.committed(loaded, roles=("cand",))], [
+            "candidate-solarized_dark-18pt-1000x680-focus.png",
+            "candidate-solarized_dark-18pt-code-14pt-1000x680-focus.png"])
+        self.assertEqual(scenario.store_settings(loaded, code), {"code_text_size": 14, "interface_text_size": 18})
+        self.assertEqual(scenario.steps_for(loaded, code)[-1].get("key"), "Escape")
+        combined = scenario.validate(spec(variants={"palettes": ["solarized_dark", "rose_pine_dawn"],
+                                                    "text_sizes": [13]}))
+        self.assertEqual([v.id for v in combined["variants"]], ["solarized_dark-13pt", "rose_pine_dawn-13pt"])
+
     def test_steps_filtered_by_variant(self) -> None:
         steps = spec()["steps"] + [{"key": "Escape", "when": {"palette": ["porcelain"]}},
                                    {"wait": 1, "when": {"variant": ["midnight"], "text_size": [None]}}]
@@ -170,7 +220,43 @@ class SpecTest(unittest.TestCase):
             (dict(variants=[{"palette": "midnight", "text_size": 30}]), r"text_size: 30 is outside 11..18"),
             (dict(crops={"panel": [10, 10, 5, 60]}), r"\$\.crops\.panel: .* is empty"),
             (dict(crops={"panel": [10, 10, 1100, 60]}), "reaches outside the 1000x680 window"),
-            (dict(settings={"theme": "porcelain"}), "come from the variants"),
+            (dict(settings={"theme": "porcelain"}), r"\$\.settings: the palette and text size come from the variants"),
+            (dict(settings={"interface_text_size": 14}), r"\$\.settings: the palette and text size come from"),
+            (dict(settings=["code_text_size"]), r"\$\.settings: expected an object, got list"),
+            (dict(settings={"follow_system": False}),
+             r"\$\.settings\.follow_system: the generated store turns Follow system off so frames do not depend on "
+             r"the host's appearance"),
+            # A variant's settings are refused exactly as the spec's are.
+            (dict(variants=[{"palette": "midnight", "id": "midnight-x", "settings": {"theme": "porcelain"}}]),
+             r"\$\.variants\[0\]\.settings: the palette and text size come from the variants"),
+            (dict(variants=[{"palette": "midnight"}, {"palette": "midnight", "text_size": 13, "id": "midnight-13pt-x",
+                                                     "settings": {"interface_text_size": 18}}]),
+             r"\$\.variants\[1\]\.settings: the palette and text size come from the variants"),
+            (dict(variants=[{"palette": "midnight", "id": "midnight-x", "settings": ["code_text_size"]}]),
+             r"\$\.variants\[0\]\.settings: expected an object, got list"),
+            (dict(variants=[{"palette": "midnight"}, {"palette": "midnight", "id": "midnight-x",
+                                                     "settings": {"code_text_size": 18, "follow_system": True}}]),
+             r"\$\.variants\[1\]\.settings\.follow_system: the generated store turns Follow system off"),
+            (dict(variants=[{"palette": "midnight", "id": "midnight-x", "settings": {}}]),
+             r"\$\.variants\[0\]\.settings: no settings; leave \"settings\" out"),
+            (dict(variants=[{"palette": "midnight", "settings": {"code_text_size": 18}}]),
+             r"\$\.variants\[0\]\.id: a variant with settings needs an \"id\" that extends 'midnight-'"),
+            (dict(variants=[{"palette": "midnight", "text_size": 13, "id": "code-18pt",
+                             "settings": {"code_text_size": 18}}]),
+             r"\$\.variants\[0\]\.id: .* extends 'midnight-13pt-'"),
+            (dict(variants=[{"palette": "midnight", "id": "midnight-", "settings": {"code_text_size": 18}}]),
+             r"\$\.variants\[0\]\.id: a variant with settings needs"),
+            # The id cannot claim an interface size the launch never sets.
+            (dict(variants=[{"palette": "midnight", "id": "midnight-18pt-code", "settings": {"code_text_size": 18}}]),
+             r"\$\.variants\[0\]\.id: 'midnight-18pt-code' names an interface size after 'midnight-' that only "
+             r"\"text_size\" sets"),
+            (dict(variants=[{"palette": "midnight", "id": "midnight-18pt", "settings": {"code_text_size": 18}}]),
+             r"\$\.variants\[0\]\.id: 'midnight-18pt' names an interface size"),
+            (dict(variants=[{"palette": "midnight", "text_size": 13, "id": "midnight-13pt-18pt-code",
+                             "settings": {"code_text_size": 18}}]),
+             r"\$\.variants\[0\]\.id: 'midnight-13pt-18pt-code' names an interface size after 'midnight-13pt-'"),
+            (dict(variants={"palettes": ["midnight"], "settings": {"code_text_size": 18}}),
+             r"\$\.variants: unknown key\(s\) settings"),
             (dict(env={"GITTURTLE_GITHUB_FIXTURE": 1}), r"\$\.env\.GITTURTLE_GITHUB_FIXTURE: expected a non-empty"),
             (dict(env={"GPUI_X11_SCALE_FACTOR": "2"}), r"\$\.env\.GPUI_X11_SCALE_FACTOR: the run sets this itself"),
             (dict(env={"DISPLAY": ":5"}), r"\$\.env\.DISPLAY: the run sets this itself"),
@@ -222,9 +308,15 @@ class SpecTest(unittest.TestCase):
         for changes, match in cases:
             with self.subTest(match=match), self.assertRaisesRegex(scenario.SpecError, match):
                 scenario.validate(spec(**changes))
-        duplicate = spec(variants=[{"palette": "midnight", "id": "a"}, {"palette": "midnight", "id": "b"}])
-        with self.assertRaisesRegex(scenario.SpecError, "commits base-midnight-1000x680-focus.png, as step 4"):
-            scenario.validate(duplicate)
+        # Two variants that would commit one name, plain or through a settings variant's id.
+        for variants, clash in (([{"palette": "midnight", "id": "a"}, {"palette": "midnight", "id": "b"}],
+                                 "a and b would both commit base-midnight-1000x680-focus.png"),
+                                ([{"palette": "midnight-code", "id": "plain"},
+                                  {"palette": "midnight", "id": "midnight-code", "settings": {"code_text_size": 18}}],
+                                 "plain and midnight-code would both commit base-midnight-code-1000x680-focus.png")):
+            with self.subTest(clash=clash), \
+                    self.assertRaisesRegex(scenario.SpecError, rf"\$\.variants: variants {clash} \(step 4\)"):
+                scenario.validate(spec(variants=variants))
 
     def test_load_reports_json_errors(self) -> None:
         with tempfile.TemporaryDirectory() as scratch:
@@ -238,6 +330,8 @@ class SpecTest(unittest.TestCase):
                             capture_output=True, text=True)
         self.assertEqual(ok.returncode, 0, ok.stderr)
         self.assertIn("20 committed crops", ok.stdout)
+        self.assertEqual(sorted(re.findall(r"^    (\S+\.png)  \(", ok.stdout, re.M)),
+                         sorted(path.name for path in EXAMPLE.parent.glob("*.png")))
         with tempfile.TemporaryDirectory() as scratch:
             bad = Path(scratch) / "bad.json"
             bad.write_text(json.dumps(spec(steps=[{"park": False}])))
@@ -459,14 +553,19 @@ class BundleTest(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("git"), "no git")
 class LaunchRecordTest(unittest.TestCase):
-    def test_a_mode_the_launch_could_not_restore_fails_it(self) -> None:
-        class FakeSession:
-            """Runs the steps and, on close, reports a read_only path whose mode could not be restored."""
+    def launch(self, loaded: dict, variant: scenario.Variant, restore_failure: str | None = None):
+        """`play.launch` through a session that keeps its store and runs nothing; the record and that session."""
+        sessions = []
 
-            def __init__(self, *args, **kwargs) -> None:
+        class FakeSession:
+            """Runs the steps and, on close, reports `restore_failure` as a read_only path it could not restore."""
+
+            def __init__(self, binary, fixture, run_dir, store, **kwargs) -> None:
+                self.store = store
                 self.log = dict(header=dict(started_utc="2026-10-02T10:00:00Z", ended_utc="2026-10-02T10:01:00Z"),
                                 captures=[], fixture_unchanged=True)
                 self.restore_failures, self.steps = [], []
+                sessions.append(self)
 
             def launch(self) -> None:
                 pass
@@ -475,19 +574,43 @@ class LaunchRecordTest(unittest.TestCase):
                 self.steps += steps
 
             def close(self) -> int:
-                self.restore_failures.append("could not restore mode 0755 of config/gitturtle in /run: denied")
+                if restore_failure is not None:
+                    self.restore_failures.append(restore_failure)
                 self.log["exit"] = -15
                 return -15
 
-        loaded = scenario.validate(spec(steps=[{"read_only": "config/gitturtle"}, {"wait": 0}], analyses=[]), "f" * 64)
         with tempfile.TemporaryDirectory() as scratch:
             fixture = Path(scratch) / "fixture"
             subprocess.run(["git", "init", "-q", str(fixture)], check=True)
             with mock.patch("native_qa.session.Session", FakeSession), contextlib.redirect_stdout(io.StringIO()):
-                record = play.launch(loaded, "cand", loaded["variants"][0], Path("/x/cand"), fixture,
-                                     Path(scratch) / "run", dict(display=":1", settle=0, backend="xtest"))
-        self.assertEqual((record["error"], record["refusal"]),
-                         ("could not restore mode 0755 of config/gitturtle in /run: denied", False))
+                record = play.launch(loaded, "cand", variant, Path("/x/cand"), fixture, Path(scratch) / "run",
+                                     dict(display=":1", settle=0, backend="xtest"))
+        return record, sessions[0]
+
+    def test_a_mode_the_launch_could_not_restore_fails_it(self) -> None:
+        loaded = scenario.validate(spec(steps=[{"read_only": "config/gitturtle"}, {"wait": 0}], analyses=[]), "f" * 64)
+        failure = "could not restore mode 0755 of config/gitturtle in /run: denied"
+        record, _ = self.launch(loaded, loaded["variants"][0], failure)
+        self.assertEqual((record["error"], record["refusal"]), (failure, False))
+
+    def test_a_launch_seeds_its_variants_merged_store_and_records_its_digest(self) -> None:
+        loaded = scenario.validate(spec(settings={"code_text_size": 12, "system_code_font": False}, variants=[
+            {"palette": "midnight", "text_size": 13},
+            {"palette": "porcelain", "text_size": 13, "id": "porcelain-13pt-code-18pt",
+             "settings": {"code_text_size": 18}}], steps=[{"wait": 0}], analyses=[]), "f" * 64)
+        plain, code = loaded["variants"]
+        record, session = self.launch(loaded, code)
+        self.assertEqual(json.loads(session.store)["settings"],
+                         {"theme": "porcelain", "follow_system": False, "code_text_size": 18,
+                          "system_code_font": False, "interface_text_size": 13})
+        self.assertEqual(session.log["scenario"]["variant"], code.describe())
+        self.assertEqual(record["store_sha256"], evidence.identity.sha256_bytes(session.store))
+        plain_record, plain_session = self.launch(loaded, plain)
+        self.assertEqual(json.loads(plain_session.store)["settings"],
+                         {"theme": "midnight", "follow_system": False, "code_text_size": 12,
+                          "system_code_font": False, "interface_text_size": 13})
+        self.assertNotIn("settings", plain_session.log["scenario"]["variant"])
+        self.assertEqual(plain_record["store_sha256"], evidence.identity.sha256_bytes(plain_session.store))
 
 
 @unittest.skipUnless(HAVE_PIL and shutil.which("git"), "Pillow or git is missing")
