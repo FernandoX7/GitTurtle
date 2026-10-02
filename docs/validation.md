@@ -65,6 +65,120 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## October 2 Enter and Space leave a focused disabled kit control inert
+
+Task `gpui-base-disabled-focus-note`, the coordinator's follow-up to the non-blocking findings of [Tab leaves a focused kit control that turns disabled](#october-1-tab-leaves-a-focused-kit-control-that-turns-disabled) (#124). No runtime source changes. The disabled-focus entry in the [gpui-base patch record](../vendor/gpui-base/GITTURTLE-PATCH.md) now names the effects of keeping a focused disabled Checkbox, Switch, Radio, Toggle, Link or ColorPicker swatch's handle:
+- a caller's `focus`, `focus_visible` and `in_focus` styles apply to it;
+- AccessKit reports it as the focused node instead of the window root;
+- every ancestor key binding reaches it;
+- a mouse-down on it keeps focus on it rather than letting a focusable ancestor take it.
+
+It also says that the controls pass their click or change handler only while enabled, so GPUI registers no Enter or Space keyboard click for a disabled one. The Settings regression runs only on Linux, so all three regressions fail without the patch there and two elsewhere. The entry names the new test.
+
+Automated, `cargo test --locked -p gitturtle`: `native_accessibility::control_tests::enter_and_space_leave_focused_kit_controls_that_turn_disabled_inert` (new) renders a bare Radio, Toggle, Link, ColorPicker swatch, Checkbox and Switch, then a component Button, each between two tab stops. It focuses each with Tab and checks that Enter and Space, each sent as a key-down and a key-up, activate the control while it is enabled. Then it disables the control. Enter, Space and Enter again run no click or change handler and leave its state unchanged, focus stays on it, and Tab moves on to the next tab stop. The mutation run below shows the test catches a disabled Switch that keeps its change handler.
+
+Native evidence, full tier. Let `$EVIDENCE` be `/tmp/gitturtle-evidence`.
+- **Builds:** the evidence was captured on the original candidate `059dde0` (sha256 `78bc49c745ba3cbe3d6a95ae216fefb90d79d398555c7dc15c4e8b6de6452e2f`) against its parent, base `50cc974` (sha256 `95a19b469c3eedc6385336bcabba7e8eb02d881e6b24268dd9a0f7fc112eb813`). Both are release builds of clean trees, each in its own `CARGO_TARGET_DIR`, `x86_64-unknown-linux-gnu`, rustc 1.99.0, and `qa.py identity` accepted the pair. The base executable is the attested release build of exactly `50cc974`, reused from the `focus-reveal-same-frame` round. The controller then rebased the candidate mechanically onto `f695dce` (`focus-reveal-same-frame` accepted) as `d20f8f4`, with an unchanged patch. A fresh release build of `d20f8f4` (sha256 `65f9b46733011ceaeeaee85e7951fbf2013b5efea8848e6ff29047b7de9edf7c`; clean tree, its own `CARGO_TARGET_DIR`, rustc 1.99.0, accepted by `qa.py identity`) re-captured the committed crops with `qa.py recheck`.
+  The re-check (`$EVIDENCE/runs/gpui-base-disabled-focus-note-recheck-d20f8f4`, 2026-10-02 from 21:05:05 to 21:05:43 UTC, the same spec, host and Mutter input) exited 0 with verdict identical. All four crops were re-captured byte-identical, its 4 guards passed and the fixture was unchanged. Its readings repeat the run's: AT-SPI focus on "Follow system appearance" (toggle button, not pressed) before the click and after Space and Enter, and on "Omarchy theme" (toggle button, pressed) after Tab. The store was `3794c701…` after the click and byte-identical after the keys, and `IsEnabled` was `false`, set `true` for the launch, then restored and read back `false`.
+- **Host:** Ubuntu 26.04.1 LTS, GNOME 50.1, XWayland `:0` at scale factor 1, window 1000 × 680, interface text 13 pt.
+- **Run:** `qa.py scenario run` of `docs/evidence/gpui-base-disabled-focus-note/scenario.json` (sha256 `af66e698…`) with both builds into `$EVIDENCE/runs/gpui-base-disabled-focus-note`, 2026-10-02 from 20:32:37 to 20:33:58 UTC. The base launch ran from 20:32:37 to 20:33:16 and the candidate's from 20:33:17 to 20:33:55. Every input went through Mutter RemoteDesktop, never XTest. The run exited 0 with verdict pass:
+  - 2 launches, each with all 4 guards passed;
+  - 24 of 24 analyses as expected, none recorded;
+  - no crop matched a privacy template.
+- **Fixture:** the spec's recipe, one commit under the QA identity (HEAD `e16ee60` on `main`) at `$EVIDENCE/fixtures/gpui-base-disabled-focus-note/repo`. Its HEAD, status and index were unchanged by both launches. Each launch had its own HOME and XDG directories and the same generated store (sha256 `c92f36ba…`): Midnight, with Follow system off.
+- **Omarchy theme:** as in #124's run, each launch's HOME was seeded with `.local/state/omarchy/current/theme.name` (`tokyo-night`) and `theme/colors.toml` with the Tokyo Night colours (accent `#7aa2f7`), so Settings offered the Omarchy card "Follows Tokyo Night".
+- **AT-SPI:** `org.a11y.Status IsEnabled` was `false` before each of the two launches, set `true` for that launch only, then restored and read back `false` after each (`run.json`).
+
+Keys and focus order, the same input in both builds:
+1. Ctrl+comma opens Settings with nothing focused (`settings-open`, not committed).
+2. Tab 7 focuses the Follow system Switch; Tab 6 is Back to repository, #124's order. The Switch draws no ring, so the frame equals `settings-open` (a guard, 0 px with the status-timing mask). AT-SPI reading `switch-focused`, then the store snapshot `store-before-click`.
+3. A pointer click on the Omarchy card at window (187, 340) selects it. Tokyo Night applies (a guard: 499,171 px change), and the Switch turns disabled while it holds focus. Store snapshot `store-after-click`, then AT-SPI reading `focus-before-keys`.
+4. Space, then Enter, on the focused disabled Switch. Store snapshot `store-after-keys`, then AT-SPI reading `focus-after-keys`.
+5. A park moves the pointer off the window, then Tab. `after-tab` is captured with no further park (`keep_pointer`), then AT-SPI reading `focus-after-tab`.
+
+The window's first change came 0.065–0.067 s after Ctrl+comma, 0.036–0.074 s after each of the 7 Tabs, and 0.055 s (candidate) and 0.078 s (base) after the last Tab. Each is a single sample.
+
+AT-SPI's focused node, the same on both builds (76 nodes in every reading):
+
+| Reading | Focused node | Role | States |
+| --- | --- | --- | --- |
+| `switch-focused`, after Tab 7 | Follow system appearance | toggle button | focused, focusable, enabled, sensitive, showing, visible; not pressed (off) |
+| `focus-before-keys`, after the click | Follow system appearance | toggle button | the same |
+| `focus-after-keys`, after Space and Enter | Follow system appearance | toggle button | the same (`keys-keep-focus-and-state`) |
+| `focus-after-tab` | Omarchy theme | toggle button | focused, focusable, enabled, sensitive, pressed, showing, visible |
+
+The disabled Switch still reports `enabled` and `sensitive`, as #124 found. gpui-base's Switch sets no AccessKit disabled flag; `gpui-base-disabled-accesskit-flag` follows that up.
+
+The preference file `config/gitturtle/preferences.json`, each snapshot taken once the file had been quiet for 1 s, was the same on both builds:
+
+| Snapshot | sha256 | Bytes | `settings.theme` | `settings.follow_system` |
+| --- | --- | --- | --- | --- |
+| `store-before-click` | `ff01ead52de5417683e79bf2752961e6f4f24e0b5aeaa2e5a5a0e1244c00afb6` | 1230 | `midnight` | `false` |
+| `store-after-click` | `3794c701589786db630bdb5e152141e9592ede3aa66a65db26898595b163a2dc` | 1229 | `omarchy` | `false` |
+| `store-after-keys` | `3794c701589786db630bdb5e152141e9592ede3aa66a65db26898595b163a2dc` | 1229 | `omarchy` | `false` |
+
+The click changed only `settings.theme` (`click-keeps-follow-system-off`). Space and Enter left the file byte-identical and unwritten, with the same inode and mtime (`keys-keep-the-store`).
+
+Pixels: on either build, neither Space nor Enter changed a pixel within the 2 s wait after it. The full-window `switch-disabled`, `after-space` and `after-enter` frames are byte-identical (`space-changes-nothing` and `enter-changes-nothing`: 0 px, and the status-timing mask covered 0 px). So the committed `after-enter` crop is byte-identical to `switch-disabled`. Base against candidate: each committed capture is 0 px apart in the crop (`*-base-equals-cand`), and the builds' full-window captures have the same sha256 at every step.
+
+The card after Tab: on both builds `tab-reaches-the-card` finds a whole ring with its outer box at [33, 287, 342, 425] in window pixels. It is 2 px of (122, 162, 247), `#7AA2F7`, continuous on all four sides, at 7.29:1 against the surface (19, 20, 28), `#13141C`. It sits 1 px outside the card's 1 px selected border, with 1 px of surface between them. That is the box and contrast #124 measured. The card's box in this run's `after-tab` capture is pixel-identical to #124's committed `omarchy-1000x680-settings-after-tab.png`. Outside the card, the two frames differ only at the disabled Switch's thumb (216 px, (770, 222)–(785, 237)): #124's frame draws it in (169, 177, 214), this run's builds in (102, 108, 135). The cause was not traced. Against `after-enter`, only the ring's pixels change (1,808 px, bbox [33, 287, 342, 425]; `tab-moves-only-the-ring`).
+
+Decision by the coordinator: an earlier capture lost this ring. The QA runner's pointer park moved the pointer into the window, which switches GPUI to mouse mode, and the card draws its ring only while the last input was a key (`window.last_input_was_keyboard()`, `crates/app/src/settings.rs:1245-1249`). The diagnostic bundles `$EVIDENCE/runs/diag-park-a`, `diag-park-b` and `diag-park-c` (local only, not committed) show it. With the pointer kept where it was after Tab, the ring is whole at [33, 287, 342, 425]. After the usual park only the 1 px selected border, [36, 290, 339, 422], remains. The spec therefore parks before the final Tab and captures `after-tab` with `keep_pointer: true`. Reason: Tab is then the last input, as for a keyboard user, and the pointer stays off the window, so nothing is hovered. The park itself is being fixed in the tooling.
+
+The Follow system Switch draws no focus ring, enabled or disabled, on either build. `switch-focused` equals Settings with nothing focused, and `switch-disabled` and `after-enter` show none while AT-SPI places focus on the Switch. That is `switch-focus-ring-and-hover`.
+
+Frames in [`evidence/gpui-base-disabled-focus-note/`](evidence/gpui-base-disabled-focus-note/): four candidate crops, 980 × 305 at window (10, 130), of Settings' Appearance section with the Follow system row and the Desktop group's Omarchy card. Their names carry `midnight-13pt`, the variant's id, which names the starting palette; the card click switched the app to Omarchy Tokyo Night before the last three frames. No base crops are committed, because the builds' frames are byte-identical.
+- `candidate-midnight-13pt-1000x680-switch-focused.png`: Midnight after Tab 7. The Follow system Switch is off, holds keyboard focus and draws no ring, and its row reads "Braden in Light Mode; your selected dark palette in Dark Mode." The Omarchy card, "Follows Tokyo Night", is not selected. AT-SPI names the Switch as focused.
+- `candidate-midnight-13pt-1000x680-switch-disabled.png`: after the pointer click on the Omarchy card. Tokyo Night is applied, and the card is selected, with its 1 px accent border and check badge. The Switch is off, faded and disabled, and its row reads "Omarchy follows your desktop theme". AT-SPI still names the Switch as focused.
+- `candidate-midnight-13pt-1000x680-after-enter.png`: after Space and Enter on the focused disabled Switch. It is byte-identical to `switch-disabled` (sha256 `a0eb602e…`): the Switch, the card and the palette are unchanged.
+- `candidate-midnight-13pt-1000x680-after-tab.png`: Tab has left the Switch for the Omarchy card, which draws its whole 2 px ring outside the selected border. AT-SPI names "Omarchy theme" as focused.
+
+`qa.py privacy scan --redacted --jobs 4` with the local template set (28 templates) found all four committed crops clean on their committed bytes (1.9 s wall), as did the run's own scan of the same bytes (2.4 s). The crops show app labels and theme names only.
+
+Vendor evidence, from a throwaway clone of the original candidate `059dde0` built in its own `CARGO_TARGET_DIR` with rustc 1.99.0 (b940084d7 2026-09-28) and cargo 1.99.0. The mutation passes the Switch's change handler while it is disabled (`vendor/gpui-base/src/switch.rs:381`):
+
+```diff
+diff --git a/vendor/gpui-base/src/switch.rs b/vendor/gpui-base/src/switch.rs
+index ee5d5bf..48cd31b 100644
+--- a/vendor/gpui-base/src/switch.rs
++++ b/vendor/gpui-base/src/switch.rs
+@@ -378,7 +378,7 @@ impl RenderOnce for Switch {
+                 })
+             })
+             .when_some(
+-                (!disabled).then_some(self.on_change).flatten(),
++                self.on_change,
+                 |this, on_change| {
+                     this.on_click(move |event, window, cx| {
+                         on_change(!checked, event, window, cx);
+```
+
+Each run executed only the new test in the `gitturtle` binary's unit tests (681 others filtered out), on 2026-10-02 between about 18:17 and 18:22 UTC:
+1. **Unmodified sources:** passes, after a fresh build of 4 min 31 s (271 s).
+2. **Mutated:** fails at `crates/app/src/native_accessibility/control_tests.rs:925:13`:
+   ```text
+   assertion `left == right` failed: enter runs no handler and changes no state on the disabled switch
+     left: (true, 1)
+    right: (false, 0)
+   ```
+   The Radio, Toggle, Link, ColorPicker swatch and Checkbox passed every check first, as did the enabled Switch's Enter and Space. The disabled Switch's first Enter then ran its change handler once and turned it on.
+3. **Sources restored:** passes.
+
+The clone and its target directory were deleted afterwards. The diff and the three logs are kept locally in `.local/evidence/gpui-base-disabled-focus-note/` (`vendor-mutation.diff`, `vendor-run1.log`, `vendor-run2-mutated.log`, `vendor-run3-restored.log`).
+
+Decision by the coordinator: these runs carry over to the rebased candidate `d20f8f4` by identity rather than being repeated. Reason: `d20f8f4` adds and removes exactly `059dde0`'s lines in `control_tests.rs` and `GITTURTLE-PATCH.md`. `git diff --stat 50cc974 f695dce` shows that the change it was rebased over touches only `DESIGN.md`, `crates/app/src/focus_reveal.rs`, `branch_actions.rs` and its tests, `projects.rs`, `tags.rs`, this file and `docs/evidence/focus-reveal-same-frame/`. Nothing under `vendor/`, in `native_accessibility/`, or in `Cargo.toml` or `Cargo.lock` changed, so a repeat would run the same test against the same vendor sources and dependencies.
+
+Code review: a read-only `code-reviewer` pass (2026-10-02, about 18:20 UTC) checked each effect the note names against the code at `059dde0`, whose vendor sources `d20f8f4` keeps unchanged. Every one holds:
+- the handle tracking in `vendor/gpui-base/src/disabled_focus.rs:29-35`;
+- the handler gating at `switch.rs:381` and its equivalents in the other five controls;
+- in gpui-pre 0.3.4's `div.rs`, the focus styles and AccessKit focus.
+
+One LOW wording finding: the note's lines 56-59 say a mouse-down on a disabled control "focuses its own handle and calls `prevent_default`". For the Switch, Toggle and Link, their `stop_propagation` runs first and halts dispatch before that listener (gpui `div.rs:2719-2733`, `window.rs:5576-5579`). The observable result is the same: focus stays on the control and no ancestor takes it. Two omissions: AccessKit also offers the Focus action for the tracked handle (`div.rs:3530`), and a caller's `on_focus` and `on_blur` listeners may fire for it. Decision by the coordinator: non-blocking. The finding is recorded here, and the sentence will be fixed in a later interactive vendor-guidance change. Reason: the note states the observable behaviour correctly, and rewording one clause is not worth an attempt and an evidence round.
+
+Design review: passed, 2026-10-02; the `after-tab` crop was re-reviewed at about 20:37 UTC. After Tab leaves the disabled Follow system Switch, the selected Omarchy card holds keyboard focus with its whole 2 px Tokyo Night accent ring (#7AA2F7, 7.29:1 on #13141C) 1 px outside its 1 px selected border on all four sides, no hover fill (pointer parked and kept off the window), and AT-SPI reports the same focus. The focused selected card shows a double outline: the 1 px selected border inside the 2 px ring, with a 1 px surface gap. `DESIGN.md:149` describes that ring and border, so the outline stands for this task. Removing it is `theme-card-selection-check`'s.
+
+Not covered: macOS, native Wayland, fractional scale factors and a screen reader speaking. Natively, the other five controls and the component Button are not covered either; the view test covers them.
+
 ## October 2 a focused row is revealed in the frame that first draws it
 
 Task `focus-reveal-same-frame`. `focus_reveal::FocusReveal` now scrolls a newly focused control into view before the frame that first draws its focus is laid out. When focus moves onto a control the last frame drew, the view that builds the container sets the offset from that frame's bounds while it renders, so the frame prepaints and paints the control whole. The base applied the offset after painting (`window.defer`), so #136's probe saw the newly focused row cut at the list's edge for one frame. The rule is unchanged: the least scroll that shows the whole control plus the ring's 3 px room, to the nearest edge, without animation; a click and a redraw without a focus change scroll nothing; and the project hub keeps its 12 px and its reveal on a click. It covers the branch chooser, the remote manager, Tags, the tag inspector's Push to… list and the project hub. A control the previous frame did not draw, or one that has moved since, is still revealed after painting. `DESIGN.md:333` now says the list scrolls "in the frame that first draws the focus, so no painted frame shows the control cut", and that the hub's page does so "in the same frame".
