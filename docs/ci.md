@@ -442,7 +442,7 @@ Steps, in order:
    repository, so its own Git commands and `crates/app/build.rs` pass Git's
    ownership check without the exception.
 5. `rustup toolchain install` reads `rust-toolchain.toml`, so the job builds with the
-   same Rust 1.98.0 as the other runners.
+   same Rust 1.99.0 as the other runners.
 6. Call the [setup action](#bounded-rust-dependency-caching) with `profile: debug`,
    `vendor-reuse: true`, `container: archlinux` and `run-as: builder`, which keys
    and restores the cache (below), then install nextest and run the tests. After the
