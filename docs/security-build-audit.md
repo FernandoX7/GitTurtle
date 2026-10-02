@@ -22,6 +22,30 @@ justifying that expansion. The first-party [RustSec database](https://rustsec.or
 is the catalog source. Future-incompatibility output for the existing `block`
 crate is recorded with gate logs; it is not a current Rust 1.98 compilation error.
 
+**Update, October 2, 2026 (cargo-audit 0.22.2, 1,280 advisories, Rust 1.99.0).**
+The same six crates still match, now under `RUSTSEC-2025-0141` (bincode),
+`RUSTSEC-2024-0384` (instant), `RUSTSEC-2024-0436` (paste), `RUSTSEC-2025-0134`
+(rustls-pemfile), `RUSTSEC-2026-0206` (rustybuzz) and `RUSTSEC-2026-0192`
+(ttf-parser); no vulnerability matches. Each still comes from the pinned
+toolkit or the vendored Mermaid renderer's font stack (`instant` also through
+`notify-types`, which the app's exact `notify` 7.0.0 pin brings in, as the
+table says), so the decisions above stand. The quality gate's audit stage runs with `--deny
+warnings`, which turned these accepted warnings into a red stage, so
+[`.cargo/audit.toml`](../.cargo/audit.toml) now lists exactly these six IDs,
+each with its path. Decision by the coordinator (delegated by the owner): accept
+them by ID rather than drop the "unmaintained" kind, so that a new advisory, a
+vulnerability above all, still turns the audit stage red (a failure under
+`--strict`) until it is reviewed and recorded here; `deny.toml` keeps reporting unmaintained crates the workspace depends on
+directly.
+
+`block` 0.1.6 is the one accepted future-incompatibility report. On macOS it
+arrives through `cocoa` 0.26 and `cocoa-foundation` (from `gpui-pre-apple` and
+the vendored `gpui-pre-macos`) and through `core-graphics2`/`core-video` (from
+`gpui-pre`); Linux does not compile it. Moving off `block` means changing the
+toolkit's macOS stack, which the [Linux notes](linux.md) say not to upgrade
+independently of the toolkit, so it is retained until a toolkit update replaces
+those crates. Rust 1.99.0 still compiles it.
+
 ## Source and native boundaries
 
 The workspace has no custom build scripts. The local GPUI component build script
